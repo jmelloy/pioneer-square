@@ -14,7 +14,9 @@ export function useWebSocket(url, onMessage) {
       try {
         const data = JSON.parse(event.data)
         if (onMessage) onMessage(data)
-      } catch {}
+      } catch (err) {
+        console.warn('WebSocket message parse error:', err)
+      }
     }
     ws.value.onclose = () => {
       isConnected.value = false

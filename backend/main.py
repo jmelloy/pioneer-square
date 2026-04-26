@@ -3,7 +3,8 @@ import json
 import os
 import random
 import string
-from datetime import datetime
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import aiosqlite
@@ -11,7 +12,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI(title="Pioneer Square")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
+
+app = FastAPI(title="Pioneer Square", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,11 +77,6 @@ async def init_db():
     await db.close()
 
 
-@app.on_event("startup")
-async def startup():
-    await init_db()
-
-
 def generate_session_id():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
@@ -85,7 +88,7 @@ class SessionCreate(BaseModel):
 @app.post("/sessions")
 async def create_session(data: SessionCreate = SessionCreate()):
     session_id = generate_session_id()
-    created_at = datetime.utcnow().isoformat()
+    created_at = datetime.now(timezone.utc).isoformat()
     db = await get_db()
     try:
         # Ensure unique
@@ -171,7 +174,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 agent_id = data.get("agentId")
                 agent_name = data.get("agentName", "Unknown")
                 agent_type = data.get("agentType", "worker")
-                joined_at = datetime.utcnow().isoformat()
+                joined_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
                     """INSERT OR REPLACE INTO agents (id, session_id, name, type, state, joined_at)
                        VALUES (?, ?, ?, ?, 'idle', ?)""",
@@ -206,7 +209,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 from_agent = data.get("from", "user")
                 to_agent = data.get("to", "overseer")
                 content = data.get("content", "")
-                created_at = datetime.utcnow().isoformat()
+                created_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
                     "INSERT INTO messages (session_id, from_agent, to_agent, content, message_type, created_at) VALUES (?, ?, ?, ?, 'chat', ?)",
                     (session_id, from_agent, to_agent, content, created_at)
@@ -223,7 +226,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             elif msg_type == "terminal-output":
                 agent_id = data.get("agentId")
                 line = data.get("line", "")
-                created_at = datetime.utcnow().isoformat()
+                created_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
                     "INSERT INTO messages (session_id, from_agent, content, message_type, created_at) VALUES (?, ?, ?, 'terminal', ?)",
                     (session_id, agent_id, line, created_at)
