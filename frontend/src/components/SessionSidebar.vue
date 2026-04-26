@@ -81,6 +81,7 @@ function formatTime(isoStr) {
   color: var(--color-brass-light);
   letter-spacing: 2px;
   text-transform: uppercase;
+  text-shadow: 0 0 6px rgba(255, 214, 68, 0.4);
 }
 
 .new-btn {
@@ -106,7 +107,7 @@ function formatTime(isoStr) {
 }
 
 .session-item.active {
-  background: rgba(181, 134, 13, 0.15);
+  background: rgba(232, 170, 0, 0.12);
   border-left: 3px solid var(--color-brass);
 }
 

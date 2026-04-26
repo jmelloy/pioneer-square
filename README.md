@@ -1,12 +1,14 @@
 # Pioneer Square
 
-A real-time multi-agent workspace with a steampunk pixel-art factory floor UI.
+A real-time multi-agent workspace with a colorful pixel-art factory floor UI.
+
+![Factory Floor](screenshots/factory-floor.png)
 
 ## Features
 
 - 🏭 Pixel-art steampunk factory floor with animated gears, steam, and furnaces
 - 🤖 Agent avatars with state-based animations (idle/thinking/working/busy/error)
-- 💬 Real-time chat with the Overseer agent
+- 💬 Real-time chat with the Foreman agent
 - 🖥️ Terminal log panes per agent
 - 🔗 WebRTC peer connections for agent-to-agent communication
 - 📡 WebSocket signaling for real-time updates

@@ -72,7 +72,7 @@ const activeTab = ref('factory')
 }
 
 .tab:hover {
-  background: var(--color-bg-tertiary);
+  background: rgba(232, 170, 0, 0.07);
   color: var(--color-text);
 }
 
@@ -81,6 +81,7 @@ const activeTab = ref('factory')
   color: var(--color-brass-light);
   border-bottom: 2px solid var(--color-brass);
   margin-bottom: -2px;
+  box-shadow: inset 0 -2px 6px rgba(232, 170, 0, 0.1);
 }
 
 .tab-icon {

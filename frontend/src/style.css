@@ -1,31 +1,48 @@
 @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Share+Tech+Mono&display=swap');
 
 :root {
-  --color-bg: #1a0e00;
-  --color-bg-secondary: #2a1a05;
-  --color-bg-tertiary: #3a2510;
-  --color-brass: #b5860d;
-  --color-brass-light: #d4a017;
-  --color-brass-dark: #8a6300;
-  --color-copper: #b87333;
-  --color-copper-light: #d4894a;
-  --color-steam: #c8bfb0;
-  --color-text: #e8d5b0;
-  --color-text-dim: #9a8060;
-  --color-green: #00ff88;
-  --color-amber: #ffb300;
-  --color-red: #ff3333;
-  --color-blue: #4499ff;
-  --color-orange: #ff8844;
+  /* Warm dark SNES/CT background */
+  --color-bg: #120900;
+  --color-bg-secondary: #1c1000;
+  --color-bg-tertiary: #2a1800;
+
+  /* Primary: warm gold (brass) */
+  --color-brass: #e8aa00;
+  --color-brass-light: #ffd644;
+  --color-brass-dark: #a07800;
+
+  /* Secondary: warm copper/orange */
+  --color-copper: #cc5500;
+  --color-copper-light: #ee7722;
+
+  --color-steam: #ffe8b0;
+  --color-text: #ffe8c0;
+  --color-text-dim: #886644;
+
+  /* Status colors — vibrant SNES-saturated */
+  --color-green: #33dd88;
+  --color-amber: #ffcc00;
+  --color-red: #ee3322;
+  --color-blue: #44aaee;
+  --color-orange: #ff7700;
+
+  /* CT-signature teal and extra warm accents */
+  --color-teal: #00bbaa;
+  --color-gold: #ffd644;
+  --color-sky: #44aaee;
+  --color-lime: #88dd22;
+  --color-crimson: #cc2200;
+  --color-cream: #ffe8c0;
+
   --font-pixel: 'Press Start 2P', monospace;
   --font-mono: 'Share Tech Mono', 'Courier New', monospace;
   --border-brass: 2px solid var(--color-brass);
   --border-copper: 2px solid var(--color-copper);
-  --shadow-brass: 0 0 8px var(--color-brass-dark), inset 0 0 4px rgba(181, 134, 13, 0.2);
-  --shadow-glow-green: 0 0 12px rgba(0, 255, 136, 0.6);
-  --shadow-glow-amber: 0 0 12px rgba(255, 179, 0, 0.6);
-  --shadow-glow-red: 0 0 12px rgba(255, 51, 51, 0.6);
-  --shadow-glow-blue: 0 0 12px rgba(68, 153, 255, 0.6);
+  --shadow-brass: 0 0 8px var(--color-brass-dark), inset 0 0 4px rgba(232, 170, 0, 0.2);
+  --shadow-glow-green: 0 0 12px rgba(51, 221, 136, 0.6);
+  --shadow-glow-amber: 0 0 12px rgba(255, 204, 0, 0.6);
+  --shadow-glow-red: 0 0 12px rgba(238, 51, 34, 0.6);
+  --shadow-glow-blue: 0 0 12px rgba(68, 170, 238, 0.6);
 }
 
 * {
@@ -60,15 +77,15 @@ html, body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-brass-dark);
-  border: 1px solid var(--color-brass);
+  background: linear-gradient(180deg, var(--color-brass), var(--color-copper));
+  border: 1px solid var(--color-brass-light);
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-brass);
+  background: linear-gradient(180deg, var(--color-brass-light), var(--color-brass));
 }
 
-/* Pixel art border utility */
 .pixel-border {
   border: 2px solid var(--color-brass);
   box-shadow: var(--shadow-brass);
@@ -79,7 +96,7 @@ html, body {
   font-family: var(--font-pixel);
   font-size: 8px;
   background: linear-gradient(180deg, var(--color-brass-light) 0%, var(--color-brass-dark) 100%);
-  color: var(--color-bg);
+  color: #120900;
   border: 2px solid var(--color-brass-light);
   padding: 6px 10px;
   cursor: pointer;
@@ -90,8 +107,9 @@ html, body {
 }
 
 .pixel-btn:hover {
-  background: linear-gradient(180deg, #ffe066 0%, var(--color-brass) 100%);
-  box-shadow: 0 0 8px var(--color-brass-light);
+  background: linear-gradient(180deg, #ffe880 0%, var(--color-brass) 100%);
+  box-shadow: 0 0 10px var(--color-brass-light), 0 0 20px rgba(255, 214, 68, 0.3);
+  transform: translateY(-1px);
 }
 
 .pixel-btn:active {
