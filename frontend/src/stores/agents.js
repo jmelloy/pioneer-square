@@ -19,7 +19,8 @@ export const useAgentsStore = defineStore('agents', () => {
         type: agentData.agentType || 'worker',
         state: agentData.state || 'idle',
         logs: [],
-        joinedAt: agentData.joinedAt || new Date().toISOString()
+        joinedAt: agentData.joinedAt || new Date().toISOString(),
+        lastDone: null,
       })
     }
   }
@@ -34,6 +35,13 @@ export const useAgentsStore = defineStore('agents', () => {
     if (agent) {
       agent.logs.push({ line, timestamp: timestamp || new Date().toISOString() })
       if (agent.logs.length > 500) agent.logs.shift()
+    }
+  }
+
+  function markDone(agentId, { tool, exitCode, summary }) {
+    const agent = agents.value.find(a => a.id === agentId)
+    if (agent) {
+      agent.lastDone = { tool, exitCode, summary, at: new Date().toISOString() }
     }
   }
 
@@ -86,6 +94,13 @@ export const useAgentsStore = defineStore('agents', () => {
       updateAgentState(data.agentId, data.state)
     } else if (data.type === 'terminal-output') {
       addLog(data.agentId, data.line, data.timestamp)
+    } else if (data.type === 'agent-done') {
+      markDone(data.agentId, {
+        tool: data.tool,
+        exitCode: data.exitCode,
+        summary: data.summary,
+      })
+      // state is already updated to idle/error by agent-state event
     }
   }
 
@@ -94,6 +109,7 @@ export const useAgentsStore = defineStore('agents', () => {
     registerAgent,
     updateAgentState,
     addLog,
+    markDone,
     sendMessage,
     runAgent,
     stopAgent,

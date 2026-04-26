@@ -45,6 +45,31 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function updateSessionConfig({ githubToken, githubRepo, githubProjectId }) {
+    const sessionId = currentSession.value?.id
+    if (!sessionId) throw new Error('No active session')
+
+    const body = {}
+    if (githubToken !== undefined) body.github_token = githubToken || null
+    if (githubRepo !== undefined) body.github_repo = githubRepo || null
+    if (githubProjectId !== undefined) body.github_project_id = githubProjectId || null
+
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/config`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+    // Reflect changes locally so the UI updates immediately
+    if (currentSession.value) {
+      if (githubToken !== undefined) currentSession.value.github_token = githubToken
+      if (githubRepo !== undefined) currentSession.value.github_repo = githubRepo
+      if (githubProjectId !== undefined) currentSession.value.github_project_id = githubProjectId
+    }
+    return res.json()
+  }
+
   function connectWebSocket(sessionId, onMessage, retryCount = 0) {
     const MAX_RETRIES = 10
     if (ws) {
@@ -96,6 +121,7 @@ export const useSessionStore = defineStore('session', () => {
     loadSessions,
     createSession,
     joinSession,
+    updateSessionConfig,
     connectWebSocket,
     sendMessage,
     addMessageHandler,

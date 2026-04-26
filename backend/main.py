@@ -12,6 +12,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from foreman import ForemanService
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -35,6 +37,9 @@ connections: Dict[str, List[WebSocket]] = {}
 # Running agent subprocesses: agent_id -> asyncio.subprocess.Process
 running_processes: Dict[str, asyncio.subprocess.Process] = {}
 
+# Active foreman services: session_id -> ForemanService
+foremans: Dict[str, ForemanService] = {}
+
 
 async def get_db():
     db = await aiosqlite.connect(DB_PATH)
@@ -48,9 +53,23 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             created_at TEXT NOT NULL,
-            name TEXT
+            name TEXT,
+            github_token TEXT,
+            github_repo TEXT,
+            github_project_id TEXT
         )
     """)
+    # Migrate existing sessions table if columns are missing
+    for col, typedef in [
+        ("github_token", "TEXT"),
+        ("github_repo", "TEXT"),
+        ("github_project_id", "TEXT"),
+    ]:
+        try:
+            await db.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass  # column already exists
+
     await db.execute("""
         CREATE TABLE IF NOT EXISTS agents (
             id TEXT PRIMARY KEY,
@@ -82,8 +101,18 @@ def generate_session_id():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
 class SessionCreate(BaseModel):
     name: Optional[str] = None
+
+
+class SessionConfig(BaseModel):
+    github_token: Optional[str] = None
+    github_repo: Optional[str] = None
+    github_project_id: Optional[str] = None
 
 
 class RunAgentRequest(BaseModel):
@@ -93,6 +122,10 @@ class RunAgentRequest(BaseModel):
     provider: Optional[str] = None   # pi only
 
 
+# ---------------------------------------------------------------------------
+# Session endpoints
+# ---------------------------------------------------------------------------
+
 @app.post("/sessions")
 async def create_session(data: Optional[SessionCreate] = None):
     if data is None:
@@ -100,7 +133,6 @@ async def create_session(data: Optional[SessionCreate] = None):
     created_at = datetime.now(timezone.utc).isoformat()
     db = await get_db()
     try:
-        # Retry on collision (UNIQUE constraint); negligible probability with 36^6 space
         for _ in range(5):
             session_id = generate_session_id()
             try:
@@ -154,8 +186,40 @@ async def get_session(session_id: str):
         await db.close()
 
 
+@app.patch("/sessions/{session_id}/config")
+async def update_session_config(session_id: str, config: SessionConfig):
+    """Update GitHub integration settings for a session."""
+    db = await get_db()
+    try:
+        async with db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)) as cur:
+            if not await cur.fetchone():
+                raise HTTPException(status_code=404, detail="Session not found")
+
+        fields = {k: v for k, v in config.model_dump().items() if v is not None}
+        if not fields:
+            return {"ok": True}
+
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        await db.execute(
+            f"UPDATE sessions SET {set_clause} WHERE id = ?",
+            (*fields.values(), session_id),
+        )
+        await db.commit()
+
+        # Invalidate cached GitHub field IDs if the project changed
+        if "github_project_id" in fields and session_id in foremans:
+            foremans[session_id]._gh_field_cache.clear()
+
+        return {"ok": True}
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket broadcast helper
+# ---------------------------------------------------------------------------
+
 async def broadcast(session_id: str, message: dict, exclude: WebSocket = None):
-    """Broadcast a message to all connections in a session."""
     if session_id not in connections:
         return
     dead = []
@@ -169,6 +233,57 @@ async def broadcast(session_id: str, message: dict, exclude: WebSocket = None):
     for ws in dead:
         connections[session_id].remove(ws)
 
+
+# ---------------------------------------------------------------------------
+# Foreman factory
+# ---------------------------------------------------------------------------
+
+def _get_or_create_foreman(session_id: str) -> ForemanService:
+    if session_id not in foremans:
+        async def _spawn(sid, agent_id, tool, prompt, model):
+            req = RunAgentRequest(tool=tool, prompt=prompt, model=model)
+            asyncio.create_task(_stream_agent(sid, agent_id, req))
+
+        foremans[session_id] = ForemanService(
+            session_id=session_id,
+            broadcast_fn=broadcast,
+            get_db_fn=get_db,
+            spawn_agent_fn=_spawn,
+        )
+    return foremans[session_id]
+
+
+async def _ensure_foreman_registered(session_id: str):
+    """Insert the foreman agent row if it doesn't already exist."""
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT id FROM agents WHERE id = 'foreman' AND session_id = ?", (session_id,)
+        ) as cur:
+            if await cur.fetchone():
+                return
+        joined_at = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            "INSERT INTO agents (id, session_id, name, type, state, joined_at)"
+            " VALUES ('foreman', ?, 'Foreman', 'foreman', 'idle', ?)",
+            (session_id, joined_at),
+        )
+        await db.commit()
+        await broadcast(session_id, {
+            "type": "agent-joined",
+            "agentId": "foreman",
+            "agentName": "Foreman",
+            "agentType": "foreman",
+            "state": "idle",
+            "joinedAt": joined_at,
+        })
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket endpoint
+# ---------------------------------------------------------------------------
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
@@ -193,15 +308,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     (agent_id, session_id, agent_name, agent_type, joined_at)
                 )
                 await db.commit()
-                broadcast_msg = {
+                await broadcast(session_id, {
                     "type": "agent-joined",
                     "agentId": agent_id,
                     "agentName": agent_name,
                     "agentType": agent_type,
                     "state": "idle",
                     "joinedAt": joined_at
-                }
-                await broadcast(session_id, broadcast_msg)
+                })
 
             elif msg_type == "agent-state":
                 agent_id = data.get("agentId")
@@ -223,7 +337,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 content = data.get("content", "")
                 created_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
-                    "INSERT INTO messages (session_id, from_agent, to_agent, content, message_type, created_at) VALUES (?, ?, ?, ?, 'chat', ?)",
+                    "INSERT INTO messages (session_id, from_agent, to_agent, content, message_type, created_at)"
+                    " VALUES (?, ?, ?, ?, 'chat', ?)",
                     (session_id, from_agent, to_agent, content, created_at)
                 )
                 await db.commit()
@@ -235,12 +350,19 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     "createdAt": created_at
                 })
 
+                # Route chat messages addressed to the foreman
+                if to_agent == "foreman" and from_agent != "foreman":
+                    await _ensure_foreman_registered(session_id)
+                    foreman = _get_or_create_foreman(session_id)
+                    foreman.notify({"type": "chat", "content": content, "from": from_agent})
+
             elif msg_type == "terminal-output":
                 agent_id = data.get("agentId")
                 line = data.get("line", "")
                 created_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
-                    "INSERT INTO messages (session_id, from_agent, content, message_type, created_at) VALUES (?, ?, ?, 'terminal', ?)",
+                    "INSERT INTO messages (session_id, from_agent, content, message_type, created_at)"
+                    " VALUES (?, ?, ?, 'terminal', ?)",
                     (session_id, agent_id, line, created_at)
                 )
                 await db.commit()
@@ -252,11 +374,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 })
 
             elif msg_type in ("offer", "answer", "ice-candidate"):
-                # WebRTC signaling - forward to all
                 await broadcast(session_id, data, exclude=websocket)
 
             else:
-                # Generic broadcast
                 await broadcast(session_id, data)
 
     except WebSocketDisconnect:
@@ -274,7 +394,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 # ---------------------------------------------------------------------------
 
 async def _emit_terminal_line(session_id: str, agent_id: str, line: str):
-    """Broadcast a terminal output line and persist it to the DB."""
     now = datetime.now(timezone.utc).isoformat()
     await broadcast(session_id, {
         "type": "terminal-output",
@@ -295,7 +414,6 @@ async def _emit_terminal_line(session_id: str, agent_id: str, line: str):
 
 
 async def _set_agent_state(session_id: str, agent_id: str, state: str):
-    """Broadcast and persist an agent state change."""
     await broadcast(session_id, {"type": "agent-state", "agentId": agent_id, "state": state})
     db = await get_db()
     try:
@@ -309,11 +427,7 @@ async def _set_agent_state(session_id: str, agent_id: str, state: str):
 
 
 def _build_command(req: RunAgentRequest) -> tuple[list[str], bool]:
-    """Return (cmd_list, needs_stdin_prompt).
-
-    needs_stdin_prompt=True means we must write the RPC prompt to stdin
-    (Pi RPC mode) rather than passing it on the command line.
-    """
+    """Return (cmd_list, needs_stdin_prompt)."""
     tool = req.tool.lower()
 
     if tool == "claude":
@@ -323,14 +437,12 @@ def _build_command(req: RunAgentRequest) -> tuple[list[str], bool]:
         return cmd, False
 
     if tool == "codex":
-        # codex exec --full-auto accepts a prompt as positional arg; --json for structured output
         cmd = ["codex", "exec", "--json", req.prompt]
         if req.model:
             cmd += ["--model", req.model]
         return cmd, False
 
     if tool == "pi":
-        # Pi --mode rpc: bidirectional JSONL over stdin/stdout
         cmd = ["pi", "--mode", "rpc", "--no-session"]
         if req.provider:
             cmd += ["--provider", req.provider]
@@ -342,7 +454,6 @@ def _build_command(req: RunAgentRequest) -> tuple[list[str], bool]:
 
 
 async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
-    """Spawn the agent subprocess and stream its output as terminal-output events."""
     tool = req.tool.lower()
 
     try:
@@ -350,6 +461,15 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
     except ValueError as exc:
         await _emit_terminal_line(session_id, agent_id, f"✗ {exc}")
         return
+
+    # Look up agent name for the done notification
+    db = await get_db()
+    try:
+        async with db.execute("SELECT name FROM agents WHERE id = ?", (agent_id,)) as cur:
+            row = await cur.fetchone()
+        agent_name = row["name"] if row else agent_id
+    finally:
+        await db.close()
 
     stdin_pipe = asyncio.subprocess.PIPE if needs_stdin else asyncio.subprocess.DEVNULL
     proc = await asyncio.create_subprocess_exec(
@@ -360,7 +480,6 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
     )
 
     if needs_stdin:
-        # Pi RPC: send the initial prompt as a JSON command, then leave stdin open
         rpc_msg = json.dumps({"type": "prompt", "content": req.prompt}) + "\n"
         proc.stdin.write(rpc_msg.encode())
         await proc.stdin.drain()
@@ -368,8 +487,8 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
     running_processes[agent_id] = proc
     await _set_agent_state(session_id, agent_id, "working")
 
-    # For Pi message_update we track accumulated text to emit only deltas
     pi_last_text = ""
+    output_lines: list[str] = []  # collect for agent-done summary
 
     try:
         async for raw_line in proc.stdout:
@@ -381,11 +500,11 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
                 event = json.loads(line_str)
             except json.JSONDecodeError:
                 await _emit_terminal_line(session_id, agent_id, line_str)
+                output_lines.append(line_str)
                 continue
 
             text = _parse_event(tool, event, pi_last_text)
 
-            # Pi: update delta baseline
             if tool == "pi" and event.get("type") == "message_update":
                 full = ""
                 for blk in event.get("message", {}).get("content", []):
@@ -397,18 +516,44 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
 
             if text:
                 await _emit_terminal_line(session_id, agent_id, text)
+                output_lines.append(text)
 
     finally:
         if needs_stdin and proc.stdin and not proc.stdin.is_closing():
             proc.stdin.close()
         exit_code = await proc.wait()
         running_processes.pop(agent_id, None)
-        await _set_agent_state(session_id, agent_id, "idle" if exit_code == 0 else "error")
+        final_state = "idle" if exit_code == 0 else "error"
+        await _set_agent_state(session_id, agent_id, final_state)
+
+        # Build a summary for the foreman (last 30 non-empty lines)
+        summary_lines = [l for l in output_lines if l.strip()][-30:]
+        summary = "\n".join(summary_lines)
+
+        # Broadcast agent-done so the UI can show a notification
+        await broadcast(session_id, {
+            "type": "agent-done",
+            "agentId": agent_id,
+            "agentName": agent_name,
+            "tool": tool,
+            "exitCode": exit_code,
+            "summary": summary,
+        })
+
+        # Notify the foreman so it can review and follow up
+        if session_id in foremans or exit_code == 0:
+            foreman = _get_or_create_foreman(session_id)
+            foreman.notify({
+                "type": "agent_done",
+                "agent_id": agent_id,
+                "agent_name": agent_name,
+                "tool": tool,
+                "exit_code": exit_code,
+                "summary": summary,
+            })
 
 
 def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
-    """Extract a human-readable line from one stream-JSON / RPC event."""
-
     if tool == "claude":
         t = event.get("type")
         if t == "assistant":
@@ -438,17 +583,14 @@ def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
                 return f"✓ Done in {turns} turns{cost_str}"
             return f"✗ {subtype}: {event.get('error', '')}"
         if t == "system" and event.get("subtype") == "init":
-            tools = event.get("tools", [])
-            return f"[claude] tools: {', '.join(tools[:6])}"
+            return f"[claude] tools: {', '.join(event.get('tools', [])[:6])}"
 
     elif tool == "codex":
         t = event.get("type")
         if t == "message" and event.get("role") == "assistant":
             return (event.get("content") or "").strip() or None
         if t == "function_call":
-            name = event.get("name", "")
-            args = event.get("arguments", "")
-            return f"▶ {name}({args[:80]})"
+            return f"▶ {event.get('name', '')}({str(event.get('arguments', ''))[:80]})"
         if t == "function_result":
             return f"  → {str(event.get('output', ''))[:200]}"
         if t == "done":
@@ -479,9 +621,7 @@ def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
             if not out:
                 return None
             lines = out.split("\n")
-            preview = lines[0][:120]
-            if len(lines) > 1:
-                preview += f" (+{len(lines) - 1} lines)"
+            preview = lines[0][:120] + (f" (+{len(lines) - 1} lines)" if len(lines) > 1 else "")
             return f"  → {preview}"
         if t == "agent_end":
             err = event.get("error")
@@ -492,24 +632,26 @@ def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Run / stop endpoints
+# ---------------------------------------------------------------------------
+
 @app.post("/sessions/{session_id}/agents/{agent_id}/run")
 async def start_agent_run(session_id: str, agent_id: str, req: RunAgentRequest):
-    """Spawn an AI coding agent subprocess and stream its output over WebSocket."""
-    # Kill any existing run for this agent
     old = running_processes.get(agent_id)
     if old:
         try:
             old.kill()
         except ProcessLookupError:
             pass
-
+    # Register the foreman so it receives the agent-done notification
+    await _ensure_foreman_registered(session_id)
     asyncio.create_task(_stream_agent(session_id, agent_id, req))
     return {"status": "started", "agentId": agent_id, "tool": req.tool}
 
 
 @app.delete("/sessions/{session_id}/agents/{agent_id}/run")
 async def stop_agent_run(session_id: str, agent_id: str):
-    """Terminate a running agent subprocess."""
     proc = running_processes.get(agent_id)
     if not proc:
         raise HTTPException(status_code=404, detail="No running process for this agent")
