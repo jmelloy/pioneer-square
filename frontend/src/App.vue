@@ -54,7 +54,8 @@ async function initSession(sessionId) {
   }
 
   const clientId = getClientId()
-  const foremanName = ghStore.user ? ghStore.user.login : `Foreman-${clientId.slice(0, 4)}`
+  const suffix = clientId.slice(0, 4)
+  const foremanName = ghStore.user ? `${ghStore.user.login}-${suffix}` : `Foreman-${suffix}`
 
   sessionStore.connectWebSocket(sessionId, (data) => {
     agentsStore.handleWebSocketMessage(data)
