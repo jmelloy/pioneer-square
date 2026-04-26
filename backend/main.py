@@ -123,7 +123,14 @@ async def create_session(data: Optional[SessionCreate] = None):
 async def list_sessions():
     db = await get_db()
     try:
-        async with db.execute("SELECT * FROM sessions ORDER BY created_at DESC") as cursor:
+        async with db.execute("""
+            SELECT s.id, s.created_at, s.name,
+                   COUNT(a.id) as agent_count
+            FROM sessions s
+            LEFT JOIN agents a ON a.session_id = s.id
+            GROUP BY s.id
+            ORDER BY s.created_at DESC
+        """) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
     finally:
