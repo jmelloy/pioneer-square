@@ -15,9 +15,30 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+try:
+    import anthropic as _anthropic
+    HAS_ANTHROPIC = True
+except ImportError:
+    HAS_ANTHROPIC = False
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # Recover persisted workers (tokens are not stored — workers restart without push/PR capability
+    # until the human re-deploys or sets a token via the UI)
+    db = await get_db()
+    try:
+        async with db.execute("SELECT * FROM workers") as cur:
+            saved_workers = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+    for w in saved_workers:
+        wid = w["id"]
+        sid = w["session_id"]
+        repos = json.loads(w.get("repos", "[]"))
+        worker_configs[wid] = {"session_id": sid, "repos": repos, "token": None}
+        worker_task_queues[wid] = asyncio.Queue()
+        worker_loops[wid] = asyncio.create_task(_worker_loop(sid, wid))
     yield
 
 app = FastAPI(title="Pioneer Square", lifespan=lifespan)
@@ -44,6 +65,9 @@ running_processes: Dict[str, asyncio.subprocess.Process] = {}
 worker_configs:     Dict[str, dict]           = {}   # worker_id -> {session_id, repos, token}
 worker_task_queues: Dict[str, asyncio.Queue]  = {}   # worker_id -> Queue[task_dict]
 worker_loops:       Dict[str, asyncio.Task]   = {}   # worker_id -> asyncio.Task
+
+# Foreman AI conversation history per session
+foreman_conversations: Dict[str, List[dict]] = {}    # session_id -> messages list
 
 
 async def get_db():
@@ -217,9 +241,9 @@ async def _pull_repos(session_id: str, worker_id: str, repos: list, token: str =
 
 async def _run_claude_auto(
     session_id: str, worker_id: str, task_id: str, description: str, cwd: str
-) -> bool:
+) -> tuple[bool, str]:
     """Run `claude --dangerously-skip-permissions` on *description* in *cwd*.
-    Streams output as terminal lines. Returns True on exit code 0."""
+    Streams output as terminal lines. Returns (success, last_assistant_text)."""
     cmd = [
         "claude",
         "--output-format", "stream-json",
@@ -229,11 +253,12 @@ async def _run_claude_auto(
     ]
     await _emit_terminal_line(session_id, worker_id, f"[claude] Starting: {description[:80]}")
     key = f"{worker_id}:{task_id}"
+    last_text = ""
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE,   # keep open so foreman can inject messages
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -248,14 +273,17 @@ async def _run_claude_auto(
                 text = _parse_event("claude", event, "")
                 if text:
                     await _emit_terminal_line(session_id, worker_id, text)
+                    # Track last substantive assistant message for escalation context
+                    if not text.startswith(("▶", "✓", "✗", "[")):
+                        last_text = text
             except json.JSONDecodeError:
                 await _emit_terminal_line(session_id, worker_id, line_str)
 
         exit_code = await proc.wait()
-        return exit_code == 0
+        return exit_code == 0, last_text
     except Exception as exc:
         await _emit_terminal_line(session_id, worker_id, f"[claude] ✗ {exc}")
-        return False
+        return False, last_text
     finally:
         running_processes.pop(key, None)
 
@@ -402,7 +430,7 @@ async def _execute_worker_task(session_id: str, worker_id: str, task: dict):
     await db.commit()
     await db.close()
 
-    success = await _run_claude_auto(session_id, worker_id, task_id, desc, primary_wt)
+    success, last_msg = await _run_claude_auto(session_id, worker_id, task_id, desc, primary_wt)
     finished_at = datetime.now(timezone.utc).isoformat()
 
     if success:
@@ -424,16 +452,242 @@ async def _execute_worker_task(session_id: str, worker_id: str, task: dict):
         await db.commit()
         await db.close()
         await _set_agent_state(session_id, worker_id, "error")
+        # Broadcast needs-input so the frontend surfaces it
         await broadcast(session_id, {
-            "type": "task-failed",
+            "type": "needs-input",
             "workerId": worker_id,
             "taskId": task_id,
             "description": desc,
+            "lastMessage": last_msg,
         })
+        # Also route escalation through the foreman AI so it can advise the human
+        escalation = (
+            f"Worker {worker_id} failed on task: \"{desc}\""
+            + (f"\n\nLast output: {last_msg}" if last_msg else "")
+        )
+        asyncio.create_task(_run_foreman_ai(session_id, escalation,
+                                            extra_context=f"ESCALATION from worker {worker_id}"))
 
     # Remove worktrees
     for repo_full, repo_path, wt_path in worktree_entries:
         await _run_git(["worktree", "remove", "--force", wt_path], cwd=repo_path)
+
+
+FOREMAN_SYSTEM = """\
+You are the Foreman AI in Pioneer Square, a multi-agent coding workshop.
+You coordinate worker agents that autonomously clone repos, write code, and open PRs.
+
+Your responsibilities:
+- Understand what the human wants done and break it into concrete tasks
+- Assign tasks to appropriate idle workers via assign_task
+- Message a specific worker to give it mid-task context via message_worker
+- Summarise worker status and recent task outcomes when asked
+- Escalate back to the human only when you genuinely cannot decide
+
+Workers are already configured with a list of repos. Prefer workers whose repo
+list covers the task. If multiple workers are idle, split work across them.
+
+Be concise — one short paragraph maximum per response unless detail is requested.\
+"""
+
+FOREMAN_TOOLS = [
+    {
+        "name": "assign_task",
+        "description": (
+            "Queue a coding task for a worker agent. The worker will create a git worktree, "
+            "run `claude --dangerously-skip-permissions` on the task description, then push and "
+            "open a GitHub PR."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "worker_id": {
+                    "type": "string",
+                    "description": "Worker agent ID (e.g. w-abc123). Must be an idle worker.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Detailed, self-contained task description the coding agent will receive.",
+                },
+                "issue_number": {"type": "integer", "description": "GitHub issue number to close (optional)."},
+                "issue_repo": {"type": "string", "description": "owner/repo for the issue (optional)."},
+            },
+            "required": ["worker_id", "description"],
+        },
+    },
+    {
+        "name": "message_worker",
+        "description": "Send a message to a specific worker's terminal — useful to provide mid-task context.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "worker_id": {"type": "string"},
+                "message": {"type": "string"},
+            },
+            "required": ["worker_id", "message"],
+        },
+    },
+]
+
+
+async def _foreman_exec_tools(session_id: str, tool_uses: list) -> list:
+    """Execute tool calls from the foreman AI and return tool-result blocks."""
+    results = []
+    for tu in tool_uses:
+        inp = tu.input
+        result_text = ""
+
+        if tu.name == "assign_task":
+            wid  = inp["worker_id"]
+            desc = inp["description"]
+            task_id    = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+            created_at = datetime.now(timezone.utc).isoformat()
+            task = {
+                "id": task_id, "worker_id": wid, "session_id": session_id,
+                "description": desc,
+                "issue_number": inp.get("issue_number"),
+                "issue_repo": inp.get("issue_repo"),
+            }
+            db = await get_db()
+            try:
+                await db.execute(
+                    "INSERT INTO tasks (id, worker_id, session_id, description, issue_number,"
+                    " issue_repo, state, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+                    (task_id, wid, session_id, desc, inp.get("issue_number"), inp.get("issue_repo"), created_at),
+                )
+                await db.commit()
+            finally:
+                await db.close()
+            if wid in worker_task_queues:
+                await worker_task_queues[wid].put(task)
+                await broadcast(session_id, {"type": "task-assigned", "workerId": wid,
+                                             "taskId": task_id, "description": desc})
+                result_text = f"Task {task_id} queued for {wid}."
+            else:
+                result_text = f"Worker {wid} not found — task NOT queued."
+
+        elif tu.name == "message_worker":
+            wid = inp["worker_id"]
+            msg = inp["message"]
+            await _emit_terminal_line(session_id, wid, f"[foreman] {msg}")
+            # If worker has a running subprocess with an open stdin, inject the message
+            for key, proc in running_processes.items():
+                if key.startswith(wid + ":") and proc.stdin and not proc.stdin.is_closing():
+                    try:
+                        proc.stdin.write((msg + "\n").encode())
+                        await proc.stdin.drain()
+                    except Exception:
+                        pass
+                    break
+            result_text = f"Message delivered to {wid}."
+
+        results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result_text})
+    return results
+
+
+async def _run_foreman_ai(session_id: str, human_message: str, extra_context: str = ""):
+    """Process a human message (or escalation) through the Claude foreman AI."""
+    if not HAS_ANTHROPIC:
+        # Fallback: echo a notice that anthropic package is missing
+        now = datetime.now(timezone.utc).isoformat()
+        await broadcast(session_id, {
+            "type": "chat", "from": "foreman", "to": "user",
+            "content": "Foreman AI offline (install `anthropic` package to enable).",
+            "createdAt": now,
+        })
+        return
+
+    # Build live context for the system prompt
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT w.id, w.repos, a.state FROM workers w"
+            " LEFT JOIN agents a ON a.id = w.id WHERE w.session_id=?", (session_id,)
+        ) as cur:
+            worker_rows = [dict(r) for r in await cur.fetchall()]
+        async with db.execute(
+            "SELECT id, worker_id, description, state, branch, pr_url FROM tasks"
+            " WHERE session_id=? ORDER BY created_at DESC LIMIT 10", (session_id,)
+        ) as cur:
+            task_rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+    workers_block = json.dumps(
+        [{"id": r["id"], "state": r["state"] or "idle",
+          "repos": json.loads(r["repos"] or "[]")} for r in worker_rows],
+        indent=2,
+    )
+    tasks_block = json.dumps(task_rows[:6], indent=2)
+    system = (
+        f"{FOREMAN_SYSTEM}\n\n"
+        f"## Current workers\n```json\n{workers_block}\n```\n\n"
+        f"## Recent tasks\n```json\n{tasks_block}\n```"
+        + (f"\n\n## Context\n{extra_context}" if extra_context else "")
+    )
+
+    history = foreman_conversations.setdefault(session_id, [])
+    history.append({"role": "user", "content": human_message})
+    if len(history) > 40:
+        history = history[-40:]
+
+    client = _anthropic.AsyncAnthropic()
+
+    try:
+        # Turn 1 — foreman reasons and optionally calls tools
+        resp1 = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=system,
+            messages=history,
+            tools=FOREMAN_TOOLS,
+        )
+        history.append({"role": "assistant", "content": resp1.content})
+
+        text_parts = [b.text for b in resp1.content if b.type == "text" and b.text.strip()]
+        tool_uses  = [b for b in resp1.content if b.type == "tool_use"]
+
+        if tool_uses:
+            tool_results = await _foreman_exec_tools(session_id, tool_uses)
+            history.append({"role": "user", "content": tool_results})
+
+            # Turn 2 — final reply after tool execution (no tools allowed)
+            resp2 = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=512,
+                system=system,
+                messages=history,
+            )
+            history.append({"role": "assistant", "content": resp2.content})
+            text_parts += [b.text for b in resp2.content if b.type == "text" and b.text.strip()]
+
+        # Trim history
+        foreman_conversations[session_id] = history[-40:]
+
+        response_text = "\n".join(text_parts).strip()
+        if response_text:
+            now = datetime.now(timezone.utc).isoformat()
+            await broadcast(session_id, {
+                "type": "chat", "from": "foreman", "to": "user",
+                "content": response_text, "createdAt": now,
+            })
+            db = await get_db()
+            try:
+                await db.execute(
+                    "INSERT INTO messages (session_id, from_agent, to_agent, content, message_type, created_at)"
+                    " VALUES (?, 'foreman', 'user', ?, 'chat', ?)",
+                    (session_id, response_text, now),
+                )
+                await db.commit()
+            finally:
+                await db.close()
+
+    except Exception as exc:
+        now = datetime.now(timezone.utc).isoformat()
+        await broadcast(session_id, {
+            "type": "chat", "from": "foreman", "to": "user",
+            "content": f"Foreman error: {exc}", "createdAt": now,
+        })
 
 
 async def _worker_loop(session_id: str, worker_id: str):
@@ -610,6 +864,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     "content": content,
                     "createdAt": created_at
                 })
+                # Route human messages addressed to foreman through the AI
+                if from_agent == "user" and to_agent == "foreman" and content:
+                    asyncio.create_task(_run_foreman_ai(session_id, content))
 
             elif msg_type == "terminal-output":
                 agent_id = data.get("agentId")
@@ -1004,3 +1261,31 @@ async def list_tasks(session_id: str, worker_id: str):
         return [dict(r) for r in rows]
     finally:
         await db.close()
+
+
+class WorkerMessage(BaseModel):
+    message: str
+
+
+@app.post("/sessions/{session_id}/workers/{worker_id}/message")
+async def message_worker(session_id: str, worker_id: str, data: WorkerMessage):
+    """Send a message to a worker's terminal; inject into stdin if a task is running."""
+    text = data.message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    await _emit_terminal_line(session_id, worker_id, f"[foreman → worker] {text}")
+
+    # Try to write to an active claude subprocess stdin
+    injected = False
+    for key, proc in running_processes.items():
+        if key.startswith(worker_id + ":") and proc.stdin and not proc.stdin.is_closing():
+            try:
+                proc.stdin.write((text + "\n").encode())
+                await proc.stdin.drain()
+                injected = True
+            except Exception:
+                pass
+            break
+
+    return {"status": "delivered", "injected": injected}

@@ -3,3 +3,4 @@ uvicorn[standard]
 websockets
 aiosqlite
 python-multipart
+anthropic

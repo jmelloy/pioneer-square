@@ -48,6 +48,9 @@
           >
             <span class="msg-from">{{ msg.from === 'user' ? 'YOU' : msg.from === 'system' ? 'SYS' : msg.from }}</span>
             <span class="msg-content">{{ msg.content }}</span>
+            <a v-if="msg.prUrl" :href="msg.prUrl" target="_blank" rel="noopener" class="pr-link">
+              Open PR →
+            </a>
             <span class="msg-time">{{ formatTime(msg.createdAt || msg.created_at) }}</span>
           </div>
         </div>
@@ -184,33 +187,27 @@ async function sendMessage() {
   }
 }
 
-// Listen for task-complete / task-failed broadcasts
+// Listen for task lifecycle + escalation broadcasts
 function handleTaskEvent(data) {
   if (data.type === 'task-complete') {
-    const msg = data.prUrl
-      ? `✓ Worker ${data.workerId} finished — PR: ${data.prUrl}`
-      : `✓ Worker ${data.workerId} finished (no PR created)`
     sessionStore.messages.push({
-      type: 'chat',
-      from: 'foreman',
-      to: 'user',
-      content: msg,
+      type: 'chat', from: 'system', to: 'user',
+      content: data.prUrl
+        ? `✓ ${data.workerId} done — PR: ${data.prUrl}`
+        : `✓ ${data.workerId} finished (no PR)`,
+      prUrl: data.prUrl || null,
       createdAt: new Date().toISOString(),
     })
-  } else if (data.type === 'task-failed') {
+  } else if (data.type === 'needs-input') {
     sessionStore.messages.push({
-      type: 'chat',
-      from: 'foreman',
-      to: 'user',
-      content: `✗ Worker ${data.workerId} failed on: ${data.description}`,
+      type: 'chat', from: 'system', to: 'user',
+      content: `⚠ ${data.workerId} needs attention on: "${data.description}"`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'task-assigned') {
     sessionStore.messages.push({
-      type: 'chat',
-      from: 'foreman',
-      to: 'user',
-      content: `Worker ${data.workerId} received task: ${data.description}`,
+      type: 'chat', from: 'system', to: 'user',
+      content: `→ ${data.workerId} assigned: ${data.description}`,
       createdAt: new Date().toISOString(),
     })
   }
@@ -465,6 +462,23 @@ watch(messages, async () => {
 .from-system .msg-content {
   font-size: 11px;
   color: var(--color-text-dim);
+}
+
+.pr-link {
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  color: var(--color-teal);
+  text-decoration: none;
+  align-self: flex-end;
+  margin-top: 2px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-teal);
+  transition: all 0.15s;
+}
+
+.pr-link:hover {
+  background: rgba(0, 187, 170, 0.15);
+  box-shadow: 0 0 6px rgba(0, 187, 170, 0.4);
 }
 
 .msg-content {
