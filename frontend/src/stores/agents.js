@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useSessionStore } from './session'
 
+const API_BASE = 'http://localhost:8000'
+
 export const useAgentsStore = defineStore('agents', () => {
   const agents = ref([])
 
@@ -45,6 +47,38 @@ export const useAgentsStore = defineStore('agents', () => {
     })
   }
 
+  async function runAgent(agentId, { tool, prompt, model, provider }) {
+    const sessionStore = useSessionStore()
+    const sessionId = sessionStore.currentSession?.id
+    if (!sessionId) throw new Error('No active session')
+
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/agents/${agentId}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool, prompt, model: model || undefined, provider: provider || undefined })
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${res.status}`)
+    }
+    return res.json()
+  }
+
+  async function stopAgent(agentId) {
+    const sessionStore = useSessionStore()
+    const sessionId = sessionStore.currentSession?.id
+    if (!sessionId) throw new Error('No active session')
+
+    const res = await fetch(`${API_BASE}/sessions/${sessionId}/agents/${agentId}/run`, {
+      method: 'DELETE'
+    })
+    if (!res.ok && res.status !== 404) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.detail || `HTTP ${res.status}`)
+    }
+    return res.json()
+  }
+
   function handleWebSocketMessage(data) {
     if (data.type === 'agent-joined') {
       registerAgent(data)
@@ -61,6 +95,8 @@ export const useAgentsStore = defineStore('agents', () => {
     updateAgentState,
     addLog,
     sendMessage,
+    runAgent,
+    stopAgent,
     handleWebSocketMessage
   }
 })
