@@ -1,11 +1,11 @@
 <template>
   <div class="chat-pane" :class="{ minimized }">
     <div class="chat-header" @click="toggleMinimize">
-      <span class="chat-title">✨ OVERSEER COMMS</span>
+      <span class="chat-title">⚙ FOREMAN COMMS</span>
       <div class="header-controls">
-        <span class="agent-status" v-if="overseer">
-          <span class="status-dot" :class="overseer.state"></span>
-          {{ overseer.state }}
+        <span class="agent-status" v-if="foreman">
+          <span class="status-dot" :class="foreman.state"></span>
+          {{ foreman.state }}
         </span>
         <span class="minimize-btn">{{ minimized ? '▲' : '▼' }}</span>
       </div>
@@ -13,7 +13,7 @@
     <div v-if="!minimized" class="chat-body">
       <div class="chat-messages" ref="messagesEl">
         <div v-if="messages.length === 0" class="chat-empty">
-          Awaiting overseer connection...
+          Awaiting foreman connection...
         </div>
         <div
           v-for="(msg, i) in messages"
@@ -52,7 +52,7 @@ const inputText = ref('')
 const messagesEl = ref(null)
 
 const messages = computed(() => sessionStore.messages)
-const overseer = computed(() => agentsStore.agents.find(a => a.type === 'overseer'))
+const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
 
 function toggleMinimize() {
   minimized.value = !minimized.value
@@ -63,7 +63,7 @@ function sendMessage() {
   sessionStore.sendMessage({
     type: 'chat',
     from: 'user',
-    to: 'overseer',
+    to: 'foreman',
     content: inputText.value.trim()
   })
   inputText.value = ''
@@ -96,7 +96,7 @@ watch(messages, async () => {
   display: flex;
   flex-direction: column;
   z-index: 100;
-  box-shadow: -4px -4px 20px rgba(192, 122, 255, 0.25), -2px -2px 40px rgba(255, 107, 179, 0.1);
+  box-shadow: -4px -4px 20px rgba(232, 170, 0, 0.2);
 }
 
 .chat-pane.minimized {
@@ -108,25 +108,22 @@ watch(messages, async () => {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  background: linear-gradient(135deg, var(--color-bg-tertiary), rgba(255, 107, 179, 0.15));
+  background: var(--color-bg-tertiary);
   border-bottom: 2px solid var(--color-brass-dark);
   cursor: pointer;
   flex-shrink: 0;
 }
 
 .chat-header:hover {
-  background: linear-gradient(135deg, rgba(192, 122, 255, 0.12), rgba(255, 107, 179, 0.18));
+  background: rgba(232, 170, 0, 0.08);
 }
 
 .chat-title {
   font-family: var(--font-pixel);
   font-size: 7px;
+  color: var(--color-brass-light);
   letter-spacing: 2px;
-  background: linear-gradient(90deg, var(--color-pink), var(--color-purple));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+  text-shadow: 0 0 6px rgba(255, 214, 68, 0.4);
 }
 
 .header-controls {
@@ -199,27 +196,27 @@ watch(messages, async () => {
 
 .chat-message.from-user {
   align-self: flex-end;
-  background: rgba(192, 122, 255, 0.12);
+  background: rgba(232, 170, 0, 0.12);
   border: 1px solid var(--color-brass-dark);
-  border-right: 3px solid var(--color-purple);
+  border-right: 3px solid var(--color-brass);
 }
 
 .chat-message.from-agent {
   align-self: flex-start;
-  background: rgba(255, 107, 179, 0.08);
-  border: 1px solid rgba(255, 107, 179, 0.3);
-  border-left: 3px solid var(--color-pink);
+  background: rgba(0, 187, 170, 0.08);
+  border: 1px solid rgba(0, 187, 170, 0.3);
+  border-left: 3px solid var(--color-teal);
 }
 
 .msg-from {
   font-family: var(--font-pixel);
   font-size: 6px;
-  color: var(--color-purple);
+  color: var(--color-brass);
   letter-spacing: 1px;
 }
 
 .from-agent .msg-from {
-  color: var(--color-pink);
+  color: var(--color-teal);
 }
 
 .msg-content {
@@ -257,7 +254,7 @@ watch(messages, async () => {
 
 .chat-input:focus {
   border-color: var(--color-brass);
-  box-shadow: 0 0 8px rgba(192, 122, 255, 0.4), 0 0 2px var(--color-pink);
+  box-shadow: 0 0 8px rgba(232, 170, 0, 0.35);
 }
 
 .chat-input::placeholder {

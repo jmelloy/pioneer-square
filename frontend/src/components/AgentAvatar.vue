@@ -9,7 +9,7 @@
       <div class="avatar-head">
         <div class="avatar-eye left"></div>
         <div class="avatar-eye right"></div>
-        <div v-if="agent.type === 'overseer'" class="avatar-crown">👑</div>
+        <div v-if="agent.type === 'foreman'" class="avatar-crown">👑</div>
       </div>
       <div class="avatar-torso">
         <div class="avatar-arm left"></div>
@@ -40,15 +40,16 @@ const props = defineProps({
   }
 })
 
+/* Warm SNES/CT palette — gold, teal, orange, sky, red, lime, copper, amber */
 const palette = [
-  { color: '#ff6bb3', dim: 'rgba(255,107,179,0.2)' },
-  { color: '#66ccff', dim: 'rgba(102,204,255,0.2)' },
-  { color: '#ffe566', dim: 'rgba(255,229,102,0.2)' },
-  { color: '#00ffb3', dim: 'rgba(0,255,179,0.2)' },
-  { color: '#c07aff', dim: 'rgba(192,122,255,0.2)' },
-  { color: '#ff9a6c', dim: 'rgba(255,154,108,0.2)' },
-  { color: '#d9a6ff', dim: 'rgba(217,166,255,0.2)' },
-  { color: '#ff6b8a', dim: 'rgba(255,107,138,0.2)' },
+  { color: '#ffd644', dim: 'rgba(255,214,68,0.2)' },
+  { color: '#00bbaa', dim: 'rgba(0,187,170,0.2)' },
+  { color: '#ff7700', dim: 'rgba(255,119,0,0.2)' },
+  { color: '#44aaee', dim: 'rgba(68,170,238,0.2)' },
+  { color: '#ee3322', dim: 'rgba(238,51,34,0.2)' },
+  { color: '#88dd22', dim: 'rgba(136,221,34,0.2)' },
+  { color: '#ee7722', dim: 'rgba(238,119,34,0.2)' },
+  { color: '#ffcc00', dim: 'rgba(255,204,0,0.2)' },
 ]
 
 function hashAgent(str) {
@@ -92,22 +93,22 @@ const agentColorDim = computed(() => {
 .avatar-head {
   width: 22px;
   height: 20px;
-  background: var(--agent-color-dim, rgba(192, 122, 255, 0.15));
-  border: 2px solid var(--agent-color, #c07aff);
-  border-radius: 5px;
+  background: var(--agent-color-dim, rgba(232, 170, 0, 0.15));
+  border: 2px solid var(--agent-color, #e8aa00);
+  border-radius: 3px;
   position: relative;
   display: flex;
   align-items: center;
   justify-content: space-around;
-  box-shadow: 0 0 6px var(--agent-color, transparent);
+  box-shadow: 0 0 5px var(--agent-color, transparent);
 }
 
 .avatar-eye {
-  width: 5px;
-  height: 5px;
-  background: white;
-  border-radius: 50%;
-  box-shadow: 0 0 3px white, 0 0 6px rgba(255, 255, 255, 0.5);
+  width: 4px;
+  height: 4px;
+  background: var(--color-cream, #ffe8c0);
+  border-radius: 1px;
+  box-shadow: 0 0 3px var(--color-cream, #ffe8c0);
 }
 
 .avatar-crown {
@@ -116,7 +117,7 @@ const agentColorDim = computed(() => {
   left: 50%;
   transform: translateX(-50%);
   font-size: 14px;
-  filter: drop-shadow(0 0 4px #ffe566);
+  filter: drop-shadow(0 0 4px var(--color-gold, #ffd644));
 }
 
 /* Torso */
@@ -131,16 +132,16 @@ const agentColorDim = computed(() => {
 .avatar-arm {
   width: 5px;
   height: 14px;
-  background: var(--agent-color-dim, rgba(192, 122, 255, 0.15));
-  border: 1px solid var(--agent-color, #c07aff);
-  border-radius: 2px;
+  background: var(--agent-color-dim, rgba(232, 170, 0, 0.15));
+  border: 1px solid var(--agent-color, #e8aa00);
+  border-radius: 1px;
 }
 
 .avatar-chest {
   flex: 1;
   height: 18px;
-  background: rgba(10, 9, 24, 0.85);
-  border: 2px solid var(--agent-color, #c07aff);
+  background: rgba(18, 9, 0, 0.85);
+  border: 2px solid var(--agent-color, #e8aa00);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -152,15 +153,15 @@ const agentColorDim = computed(() => {
   border-radius: 50%;
 }
 
-.avatar-led.idle { background: var(--color-text-dim); }
-.avatar-led.thinking { background: var(--color-blue); box-shadow: 0 0 8px var(--color-blue); }
-.avatar-led.working { background: var(--color-green); box-shadow: 0 0 8px var(--color-green); animation: ledPulse 0.5s infinite alternate; }
-.avatar-led.busy { background: var(--color-orange); box-shadow: 0 0 8px var(--color-orange); }
-.avatar-led.error { background: var(--color-red); box-shadow: 0 0 8px var(--color-red); }
+.avatar-led.idle     { background: var(--color-text-dim); }
+.avatar-led.thinking { background: var(--color-blue);   box-shadow: 0 0 8px var(--color-blue); }
+.avatar-led.working  { background: var(--color-green);  box-shadow: 0 0 8px var(--color-green); animation: ledPulse 0.5s infinite alternate; }
+.avatar-led.busy     { background: var(--color-orange); box-shadow: 0 0 8px var(--color-orange); }
+.avatar-led.error    { background: var(--color-red);    box-shadow: 0 0 8px var(--color-red); }
 
 @keyframes ledPulse {
   from { transform: scale(1); }
-  to { transform: scale(1.4); box-shadow: 0 0 14px var(--color-green); }
+  to   { transform: scale(1.4); box-shadow: 0 0 14px var(--color-green); }
 }
 
 /* Legs */
@@ -172,9 +173,9 @@ const agentColorDim = computed(() => {
 .avatar-leg {
   width: 8px;
   height: 12px;
-  background: var(--agent-color-dim, rgba(192, 122, 255, 0.15));
-  border: 1px solid var(--agent-color, #c07aff);
-  border-radius: 2px 2px 3px 3px;
+  background: var(--agent-color-dim, rgba(232, 170, 0, 0.15));
+  border: 1px solid var(--agent-color, #e8aa00);
+  border-radius: 1px 1px 2px 2px;
 }
 
 /* Label */
@@ -206,7 +207,7 @@ const agentColorDim = computed(() => {
   right: -10px;
   font-size: 14px;
   animation: burstSpin 1s infinite linear;
-  filter: drop-shadow(0 0 4px var(--color-yellow));
+  filter: drop-shadow(0 0 4px var(--color-amber));
 }
 
 /* Error burst */
@@ -223,83 +224,58 @@ const agentColorDim = computed(() => {
 }
 
 /* State animations */
-.avatar-wrapper.thinking .avatar-head {
-  animation: tiltHead 1.5s infinite ease-in-out;
-}
+.avatar-wrapper.thinking .avatar-head { animation: tiltHead 1.5s infinite ease-in-out; }
+.avatar-wrapper.working  .avatar-body { animation: workBounce 0.4s infinite alternate; }
 
-.avatar-wrapper.working .avatar-body {
-  animation: workBounce 0.4s infinite alternate;
-}
+.avatar-wrapper.busy .avatar-arm.left  { animation: leftArmSwing 0.5s infinite alternate; transform-origin: top center; }
+.avatar-wrapper.busy .avatar-arm.right { animation: rightArmSwing 0.5s infinite alternate; transform-origin: top center; }
 
-.avatar-wrapper.busy .avatar-arm.left {
-  animation: leftArmSwing 0.5s infinite alternate;
-  transform-origin: top center;
-}
+.avatar-wrapper.error .avatar-head { animation: shake 0.3s infinite; }
 
-.avatar-wrapper.busy .avatar-arm.right {
-  animation: rightArmSwing 0.5s infinite alternate;
-  transform-origin: top center;
-}
+.avatar-wrapper.thinking { filter: drop-shadow(0 0 6px var(--color-blue)); }
+.avatar-wrapper.working  { filter: drop-shadow(0 0 6px var(--color-green)); }
+.avatar-wrapper.busy     { filter: drop-shadow(0 0 6px var(--color-orange)); }
+.avatar-wrapper.error    { filter: drop-shadow(0 0 8px var(--color-red)); }
 
-.avatar-wrapper.error .avatar-head {
-  animation: shake 0.3s infinite;
-}
-
-.avatar-wrapper.thinking {
-  filter: drop-shadow(0 0 6px var(--color-blue));
-}
-
-.avatar-wrapper.working {
-  filter: drop-shadow(0 0 6px var(--color-green));
-}
-
-.avatar-wrapper.busy {
-  filter: drop-shadow(0 0 6px var(--color-orange));
-}
-
-.avatar-wrapper.error {
-  filter: drop-shadow(0 0 8px var(--color-red));
-}
-
-.avatar-wrapper.overseer .avatar-head {
-  border-color: #ffe566;
-  box-shadow: 0 0 8px #ffe566;
+.avatar-wrapper.foreman .avatar-head {
+  border-color: var(--color-gold, #ffd644);
+  box-shadow: 0 0 8px var(--color-gold, #ffd644);
 }
 
 @keyframes tiltHead {
   0%, 100% { transform: rotate(-5deg); }
-  50% { transform: rotate(5deg); }
+  50%       { transform: rotate(5deg); }
 }
 
 @keyframes workBounce {
   from { transform: translateY(0px); }
-  to { transform: translateY(-3px); }
+  to   { transform: translateY(-3px); }
 }
 
 @keyframes leftArmSwing {
   from { transform: rotate(-20deg); }
-  to { transform: rotate(20deg); }
+  to   { transform: rotate(20deg); }
 }
 
 @keyframes rightArmSwing {
   from { transform: rotate(20deg); }
-  to { transform: rotate(-20deg); }
+  to   { transform: rotate(-20deg); }
 }
 
 @keyframes shake {
   0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-3px); }
-  75% { transform: translateX(3px); }
+  25%       { transform: translateX(-3px); }
+  75%       { transform: translateX(3px); }
 }
 
 @keyframes bubblePop {
   0%, 100% { opacity: 1; transform: scale(1) rotate(-5deg); }
-  50% { opacity: 0.7; transform: scale(0.85) rotate(5deg); }
+  50%       { opacity: 0.7; transform: scale(0.85) rotate(5deg); }
 }
 
 @keyframes burstSpin {
   from { transform: rotate(0deg) scale(1); }
-  50% { transform: rotate(180deg) scale(1.2); }
-  to { transform: rotate(360deg) scale(1); }
+  50%  { transform: rotate(180deg) scale(1.2); }
+  to   { transform: rotate(360deg) scale(1); }
 }
 </style>

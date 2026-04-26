@@ -209,7 +209,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
             elif msg_type == "chat":
                 from_agent = data.get("from", "user")
-                to_agent = data.get("to", "overseer")
+                to_agent = data.get("to", "foreman")
                 content = data.get("content", "")
                 created_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(

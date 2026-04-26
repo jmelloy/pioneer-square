@@ -1,38 +1,48 @@
 @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Share+Tech+Mono&display=swap');
 
 :root {
-  --color-bg: #0a0918;
-  --color-bg-secondary: #110f26;
-  --color-bg-tertiary: #181530;
-  --color-brass: #c07aff;
-  --color-brass-light: #d9a6ff;
-  --color-brass-dark: #7733bb;
-  --color-copper: #ff6bb3;
-  --color-copper-light: #ff99cc;
-  --color-steam: #e2d9ff;
-  --color-text: #f0e8ff;
-  --color-text-dim: #8877aa;
-  --color-green: #00ffb3;
-  --color-amber: #ffe566;
-  --color-red: #ff6b8a;
-  --color-blue: #66ccff;
-  --color-orange: #ff9a6c;
-  --color-pink: #ff6bb3;
-  --color-mint: #00ffb3;
-  --color-purple: #c07aff;
-  --color-cyan: #66ccff;
-  --color-yellow: #ffe566;
-  --color-coral: #ff6b8a;
-  --color-lavender: #d9a6ff;
+  /* Warm dark SNES/CT background */
+  --color-bg: #120900;
+  --color-bg-secondary: #1c1000;
+  --color-bg-tertiary: #2a1800;
+
+  /* Primary: warm gold (brass) */
+  --color-brass: #e8aa00;
+  --color-brass-light: #ffd644;
+  --color-brass-dark: #a07800;
+
+  /* Secondary: warm copper/orange */
+  --color-copper: #cc5500;
+  --color-copper-light: #ee7722;
+
+  --color-steam: #ffe8b0;
+  --color-text: #ffe8c0;
+  --color-text-dim: #886644;
+
+  /* Status colors — vibrant SNES-saturated */
+  --color-green: #33dd88;
+  --color-amber: #ffcc00;
+  --color-red: #ee3322;
+  --color-blue: #44aaee;
+  --color-orange: #ff7700;
+
+  /* CT-signature teal and extra warm accents */
+  --color-teal: #00bbaa;
+  --color-gold: #ffd644;
+  --color-sky: #44aaee;
+  --color-lime: #88dd22;
+  --color-crimson: #cc2200;
+  --color-cream: #ffe8c0;
+
   --font-pixel: 'Press Start 2P', monospace;
   --font-mono: 'Share Tech Mono', 'Courier New', monospace;
   --border-brass: 2px solid var(--color-brass);
   --border-copper: 2px solid var(--color-copper);
-  --shadow-brass: 0 0 8px var(--color-brass-dark), inset 0 0 4px rgba(192, 122, 255, 0.2);
-  --shadow-glow-green: 0 0 12px rgba(0, 255, 179, 0.6);
-  --shadow-glow-amber: 0 0 12px rgba(255, 229, 102, 0.6);
-  --shadow-glow-red: 0 0 12px rgba(255, 107, 138, 0.6);
-  --shadow-glow-blue: 0 0 12px rgba(102, 204, 255, 0.6);
+  --shadow-brass: 0 0 8px var(--color-brass-dark), inset 0 0 4px rgba(232, 170, 0, 0.2);
+  --shadow-glow-green: 0 0 12px rgba(51, 221, 136, 0.6);
+  --shadow-glow-amber: 0 0 12px rgba(255, 204, 0, 0.6);
+  --shadow-glow-red: 0 0 12px rgba(238, 51, 34, 0.6);
+  --shadow-glow-blue: 0 0 12px rgba(68, 170, 238, 0.6);
 }
 
 * {
@@ -67,13 +77,13 @@ html, body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, var(--color-pink), var(--color-purple));
-  border: 1px solid var(--color-brass);
-  border-radius: 4px;
+  background: linear-gradient(180deg, var(--color-brass), var(--color-copper));
+  border: 1px solid var(--color-brass-light);
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, var(--color-brass-light), var(--color-pink));
+  background: linear-gradient(180deg, var(--color-brass-light), var(--color-brass));
 }
 
 .pixel-border {
@@ -85,21 +95,20 @@ html, body {
 .pixel-btn {
   font-family: var(--font-pixel);
   font-size: 8px;
-  background: linear-gradient(135deg, var(--color-pink) 0%, var(--color-purple) 100%);
-  color: white;
+  background: linear-gradient(180deg, var(--color-brass-light) 0%, var(--color-brass-dark) 100%);
+  color: #120900;
   border: 2px solid var(--color-brass-light);
   padding: 6px 10px;
   cursor: pointer;
   text-transform: uppercase;
   letter-spacing: 1px;
-  transition: all 0.15s;
+  transition: all 0.1s;
   image-rendering: pixelated;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 .pixel-btn:hover {
-  background: linear-gradient(135deg, var(--color-brass-light) 0%, var(--color-pink) 100%);
-  box-shadow: 0 0 12px var(--color-pink), 0 0 24px rgba(255, 107, 179, 0.3);
+  background: linear-gradient(180deg, #ffe880 0%, var(--color-brass) 100%);
+  box-shadow: 0 0 10px var(--color-brass-light), 0 0 20px rgba(255, 214, 68, 0.3);
   transform: translateY(-1px);
 }
 

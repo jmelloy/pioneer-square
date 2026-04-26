@@ -72,19 +72,16 @@ function formatTime(isoStr) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: linear-gradient(135deg, var(--color-bg-tertiary), rgba(192, 122, 255, 0.15));
+  background: var(--color-bg-tertiary);
 }
 
 .sidebar-title {
   font-family: var(--font-pixel);
   font-size: 7px;
+  color: var(--color-brass-light);
   letter-spacing: 2px;
   text-transform: uppercase;
-  background: linear-gradient(90deg, var(--color-pink), var(--color-purple));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
+  text-shadow: 0 0 6px rgba(255, 214, 68, 0.4);
 }
 
 .new-btn {
@@ -110,9 +107,8 @@ function formatTime(isoStr) {
 }
 
 .session-item.active {
-  background: rgba(192, 122, 255, 0.12);
+  background: rgba(232, 170, 0, 0.12);
   border-left: 3px solid var(--color-brass);
-  box-shadow: inset 0 0 8px rgba(192, 122, 255, 0.1);
 }
 
 .session-id {
@@ -146,7 +142,7 @@ function formatTime(isoStr) {
 .sidebar-footer {
   padding: 10px 12px;
   border-top: 2px solid var(--color-brass-dark);
-  background: linear-gradient(135deg, var(--color-bg-tertiary), rgba(255, 107, 179, 0.08));
+  background: var(--color-bg-tertiary);
 }
 
 .connection-status {
