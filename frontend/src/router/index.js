@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import LandingView from '../views/LandingView.vue'
 import AppView from '../views/AppView.vue'
 
 const router = createRouter({
@@ -6,20 +7,14 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: () => {
-        return { path: '/new' }
-      }
-    },
-    {
-      path: '/new',
-      component: AppView
+      component: LandingView,
     },
     {
       path: '/:sessionId',
       component: AppView,
-      props: true
-    }
-  ]
+      props: true,
+    },
+  ],
 })
 
 export default router

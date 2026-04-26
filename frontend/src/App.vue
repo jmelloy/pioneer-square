@@ -11,6 +11,7 @@ import { onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from './stores/session.js'
 import { useAgentsStore } from './stores/agents.js'
+import { useGitHubStore } from './stores/github.js'
 import SessionSidebar from './components/SessionSidebar.vue'
 import MainView from './components/MainView.vue'
 import ChatPane from './components/ChatPane.vue'
@@ -19,16 +20,30 @@ const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
 const agentsStore = useAgentsStore()
+const ghStore = useGitHubStore()
+
+function getClientId() {
+  let id = localStorage.getItem('client_id')
+  if (!id) {
+    id = Math.random().toString(36).slice(2, 10)
+    localStorage.setItem('client_id', id)
+  }
+  return id
+}
 
 async function initSession(sessionId) {
-  if (!sessionId || sessionId === 'new') {
-    const session = await sessionStore.createSession()
-    router.replace(`/${session.id}`)
+  if (!sessionId) {
+    router.replace('/')
     return
   }
+
   const session = await sessionStore.joinSession(sessionId)
-  // Hydrate agents store from REST snapshot so existing agents appear on load
-  if (session?.agents) {
+  if (!session) {
+    router.replace('/')
+    return
+  }
+
+  if (session.agents) {
     session.agents.forEach(a => agentsStore.registerAgent({
       agentId: a.id,
       agentName: a.name,
@@ -37,9 +52,29 @@ async function initSession(sessionId) {
       joinedAt: a.joined_at,
     }))
   }
+
+  const clientId = getClientId()
+  const suffix = clientId.slice(0, 4)
+  const foremanName = ghStore.user ? `${ghStore.user.login}-${suffix}` : `Foreman-${suffix}`
+
   sessionStore.connectWebSocket(sessionId, (data) => {
     agentsStore.handleWebSocketMessage(data)
   })
+
+  // Register this browser as a foreman after the socket opens
+  setTimeout(() => {
+    sessionStore.sendMessage({
+      type: 'join',
+      agentId: `foreman-${clientId}`,
+      agentName: foremanName,
+      agentType: 'foreman',
+    })
+  }, 200)
+
+  // If GitHub repos are configured, refresh issues in the background
+  if (ghStore.isConfigured && ghStore.selectedRepos.length > 0) {
+    ghStore.fetchIssues()
+  }
 }
 
 onMounted(async () => {
@@ -49,11 +84,8 @@ onMounted(async () => {
 })
 
 watch(() => route.params.sessionId, async (newId) => {
-  if (newId && newId !== 'new') {
-    await sessionStore.joinSession(newId)
-    sessionStore.connectWebSocket(newId, (data) => {
-      agentsStore.handleWebSocketMessage(data)
-    })
+  if (newId) {
+    await initSession(newId)
   }
 })
 </script>
