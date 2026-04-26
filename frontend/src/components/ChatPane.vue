@@ -1,7 +1,7 @@
 <template>
   <div class="chat-pane" :class="{ minimized }">
     <div class="chat-header" @click="toggleMinimize">
-      <span class="chat-title">⚙ OVERSEER COMMS</span>
+      <span class="chat-title">✨ OVERSEER COMMS</span>
       <div class="header-controls">
         <span class="agent-status" v-if="overseer">
           <span class="status-dot" :class="overseer.state"></span>
@@ -96,7 +96,7 @@ watch(messages, async () => {
   display: flex;
   flex-direction: column;
   z-index: 100;
-  box-shadow: -4px -4px 20px rgba(181, 134, 13, 0.2);
+  box-shadow: -4px -4px 20px rgba(192, 122, 255, 0.25), -2px -2px 40px rgba(255, 107, 179, 0.1);
 }
 
 .chat-pane.minimized {
@@ -108,21 +108,25 @@ watch(messages, async () => {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  background: var(--color-bg-tertiary);
+  background: linear-gradient(135deg, var(--color-bg-tertiary), rgba(255, 107, 179, 0.15));
   border-bottom: 2px solid var(--color-brass-dark);
   cursor: pointer;
   flex-shrink: 0;
 }
 
 .chat-header:hover {
-  background: rgba(181, 134, 13, 0.1);
+  background: linear-gradient(135deg, rgba(192, 122, 255, 0.12), rgba(255, 107, 179, 0.18));
 }
 
 .chat-title {
   font-family: var(--font-pixel);
   font-size: 7px;
-  color: var(--color-brass-light);
   letter-spacing: 2px;
+  background: linear-gradient(90deg, var(--color-pink), var(--color-purple));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
 .header-controls {
@@ -195,27 +199,27 @@ watch(messages, async () => {
 
 .chat-message.from-user {
   align-self: flex-end;
-  background: rgba(181, 134, 13, 0.15);
+  background: rgba(192, 122, 255, 0.12);
   border: 1px solid var(--color-brass-dark);
-  border-right: 3px solid var(--color-brass);
+  border-right: 3px solid var(--color-purple);
 }
 
 .chat-message.from-agent {
   align-self: flex-start;
-  background: rgba(68, 153, 255, 0.1);
-  border: 1px solid rgba(68, 153, 255, 0.3);
-  border-left: 3px solid var(--color-blue);
+  background: rgba(255, 107, 179, 0.08);
+  border: 1px solid rgba(255, 107, 179, 0.3);
+  border-left: 3px solid var(--color-pink);
 }
 
 .msg-from {
   font-family: var(--font-pixel);
   font-size: 6px;
-  color: var(--color-brass);
+  color: var(--color-purple);
   letter-spacing: 1px;
 }
 
 .from-agent .msg-from {
-  color: var(--color-blue);
+  color: var(--color-pink);
 }
 
 .msg-content {
@@ -253,7 +257,7 @@ watch(messages, async () => {
 
 .chat-input:focus {
   border-color: var(--color-brass);
-  box-shadow: 0 0 6px rgba(181, 134, 13, 0.3);
+  box-shadow: 0 0 8px rgba(192, 122, 255, 0.4), 0 0 2px var(--color-pink);
 }
 
 .chat-input::placeholder {

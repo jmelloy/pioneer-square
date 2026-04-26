@@ -1,31 +1,38 @@
 @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Share+Tech+Mono&display=swap');
 
 :root {
-  --color-bg: #1a0e00;
-  --color-bg-secondary: #2a1a05;
-  --color-bg-tertiary: #3a2510;
-  --color-brass: #b5860d;
-  --color-brass-light: #d4a017;
-  --color-brass-dark: #8a6300;
-  --color-copper: #b87333;
-  --color-copper-light: #d4894a;
-  --color-steam: #c8bfb0;
-  --color-text: #e8d5b0;
-  --color-text-dim: #9a8060;
-  --color-green: #00ff88;
-  --color-amber: #ffb300;
-  --color-red: #ff3333;
-  --color-blue: #4499ff;
-  --color-orange: #ff8844;
+  --color-bg: #0a0918;
+  --color-bg-secondary: #110f26;
+  --color-bg-tertiary: #181530;
+  --color-brass: #c07aff;
+  --color-brass-light: #d9a6ff;
+  --color-brass-dark: #7733bb;
+  --color-copper: #ff6bb3;
+  --color-copper-light: #ff99cc;
+  --color-steam: #e2d9ff;
+  --color-text: #f0e8ff;
+  --color-text-dim: #8877aa;
+  --color-green: #00ffb3;
+  --color-amber: #ffe566;
+  --color-red: #ff6b8a;
+  --color-blue: #66ccff;
+  --color-orange: #ff9a6c;
+  --color-pink: #ff6bb3;
+  --color-mint: #00ffb3;
+  --color-purple: #c07aff;
+  --color-cyan: #66ccff;
+  --color-yellow: #ffe566;
+  --color-coral: #ff6b8a;
+  --color-lavender: #d9a6ff;
   --font-pixel: 'Press Start 2P', monospace;
   --font-mono: 'Share Tech Mono', 'Courier New', monospace;
   --border-brass: 2px solid var(--color-brass);
   --border-copper: 2px solid var(--color-copper);
-  --shadow-brass: 0 0 8px var(--color-brass-dark), inset 0 0 4px rgba(181, 134, 13, 0.2);
-  --shadow-glow-green: 0 0 12px rgba(0, 255, 136, 0.6);
-  --shadow-glow-amber: 0 0 12px rgba(255, 179, 0, 0.6);
-  --shadow-glow-red: 0 0 12px rgba(255, 51, 51, 0.6);
-  --shadow-glow-blue: 0 0 12px rgba(68, 153, 255, 0.6);
+  --shadow-brass: 0 0 8px var(--color-brass-dark), inset 0 0 4px rgba(192, 122, 255, 0.2);
+  --shadow-glow-green: 0 0 12px rgba(0, 255, 179, 0.6);
+  --shadow-glow-amber: 0 0 12px rgba(255, 229, 102, 0.6);
+  --shadow-glow-red: 0 0 12px rgba(255, 107, 138, 0.6);
+  --shadow-glow-blue: 0 0 12px rgba(102, 204, 255, 0.6);
 }
 
 * {
@@ -60,15 +67,15 @@ html, body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-brass-dark);
+  background: linear-gradient(180deg, var(--color-pink), var(--color-purple));
   border: 1px solid var(--color-brass);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-brass);
+  background: linear-gradient(180deg, var(--color-brass-light), var(--color-pink));
 }
 
-/* Pixel art border utility */
 .pixel-border {
   border: 2px solid var(--color-brass);
   box-shadow: var(--shadow-brass);
@@ -78,20 +85,22 @@ html, body {
 .pixel-btn {
   font-family: var(--font-pixel);
   font-size: 8px;
-  background: linear-gradient(180deg, var(--color-brass-light) 0%, var(--color-brass-dark) 100%);
-  color: var(--color-bg);
+  background: linear-gradient(135deg, var(--color-pink) 0%, var(--color-purple) 100%);
+  color: white;
   border: 2px solid var(--color-brass-light);
   padding: 6px 10px;
   cursor: pointer;
   text-transform: uppercase;
   letter-spacing: 1px;
-  transition: all 0.1s;
+  transition: all 0.15s;
   image-rendering: pixelated;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 .pixel-btn:hover {
-  background: linear-gradient(180deg, #ffe066 0%, var(--color-brass) 100%);
-  box-shadow: 0 0 8px var(--color-brass-light);
+  background: linear-gradient(135deg, var(--color-brass-light) 0%, var(--color-pink) 100%);
+  box-shadow: 0 0 12px var(--color-pink), 0 0 24px rgba(255, 107, 179, 0.3);
+  transform: translateY(-1px);
 }
 
 .pixel-btn:active {

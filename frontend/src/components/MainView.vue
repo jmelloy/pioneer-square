@@ -49,7 +49,7 @@ const activeTab = ref('factory')
 
 .tab-bar {
   display: flex;
-  background: var(--color-bg-secondary);
+  background: linear-gradient(180deg, var(--color-bg-secondary), var(--color-bg));
   border-bottom: 2px solid var(--color-brass-dark);
   overflow-x: auto;
   flex-shrink: 0;
@@ -72,15 +72,16 @@ const activeTab = ref('factory')
 }
 
 .tab:hover {
-  background: var(--color-bg-tertiary);
-  color: var(--color-text);
+  background: rgba(192, 122, 255, 0.08);
+  color: var(--color-brass-light);
 }
 
 .tab.active {
-  background: var(--color-bg);
+  background: rgba(192, 122, 255, 0.12);
   color: var(--color-brass-light);
   border-bottom: 2px solid var(--color-brass);
   margin-bottom: -2px;
+  box-shadow: inset 0 -2px 8px rgba(192, 122, 255, 0.15);
 }
 
 .tab-icon {
