@@ -1,6 +1,8 @@
 # Pioneer Square
 
-A real-time multi-agent workspace with a steampunk pixel-art factory floor UI.
+A real-time multi-agent workspace with a colorful pixel-art factory floor UI.
+
+![Factory Floor](screenshots/factory-floor.png)
 
 ## Features
 
