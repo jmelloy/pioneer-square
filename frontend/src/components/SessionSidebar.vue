@@ -27,6 +27,14 @@
     </div>
 
     <div class="sidebar-footer">
+      <!-- Deploy worker — only when in an active session -->
+      <button
+        v-if="currentSession"
+        class="pixel-btn deploy-btn"
+        @click="showDeployModal = true"
+        title="Deploy a new worker agent"
+      >+ WORKER</button>
+
       <!-- GitHub identity block -->
       <div class="gh-block" @click="showGitHubModal = true" :title="ghStore.isConfigured ? 'GitHub: ' + ghStore.user.login : 'Configure GitHub'">
         <div class="gh-inner" :class="{ configured: ghStore.isConfigured }">
@@ -50,6 +58,7 @@
   </aside>
 
   <GitHubConfigModal v-if="showGitHubModal" @close="showGitHubModal = false" />
+  <DeployWorkerModal v-if="showDeployModal" @close="showDeployModal = false" />
 </template>
 
 <script setup>
@@ -58,15 +67,17 @@ import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session.js'
 import { useGitHubStore } from '../stores/github.js'
 import GitHubConfigModal from './GitHubConfigModal.vue'
+import DeployWorkerModal from './DeployWorkerModal.vue'
 
 const router = useRouter()
 const sessionStore = useSessionStore()
 const ghStore = useGitHubStore()
 
 const showGitHubModal = ref(false)
+const showDeployModal = ref(false)
+const currentSession = computed(() => sessionStore.currentSession)
 
 const sessions = computed(() => sessionStore.sessions)
-const currentSession = computed(() => sessionStore.currentSession)
 const isConnected = computed(() => sessionStore.isConnected)
 
 function goHome() {
@@ -209,6 +220,22 @@ function formatTime(isoStr) {
   padding: 10px 12px;
   border-top: 2px solid var(--color-brass-dark);
   background: var(--color-bg-tertiary);
+}
+
+/* ── Deploy worker button ── */
+.deploy-btn {
+  width: 100%;
+  font-size: 7px;
+  padding: 6px 10px;
+  background: linear-gradient(180deg, rgba(0, 187, 170, 0.3) 0%, rgba(0, 120, 110, 0.5) 100%);
+  border-color: var(--color-teal);
+  color: var(--color-teal);
+}
+
+.deploy-btn:hover {
+  background: linear-gradient(180deg, rgba(0, 187, 170, 0.5) 0%, rgba(0, 150, 140, 0.7) 100%);
+  box-shadow: 0 0 10px rgba(0, 187, 170, 0.4);
+  color: var(--color-cream);
 }
 
 /* ── GitHub block ── */

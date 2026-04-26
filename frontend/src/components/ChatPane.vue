@@ -40,9 +40,13 @@
             v-for="(msg, i) in messages"
             :key="i"
             class="chat-message"
-            :class="{ 'from-user': msg.from === 'user', 'from-agent': msg.from !== 'user' }"
+            :class="{
+              'from-user': msg.from === 'user',
+              'from-system': msg.from === 'system',
+              'from-agent': msg.from !== 'user' && msg.from !== 'system'
+            }"
           >
-            <span class="msg-from">{{ msg.from === 'user' ? 'YOU' : msg.from }}</span>
+            <span class="msg-from">{{ msg.from === 'user' ? 'YOU' : msg.from === 'system' ? 'SYS' : msg.from }}</span>
             <span class="msg-content">{{ msg.content }}</span>
             <span class="msg-time">{{ formatTime(msg.createdAt || msg.created_at) }}</span>
           </div>
@@ -103,7 +107,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
 import { useSessionStore } from '../stores/session.js'
 import { useAgentsStore } from '../stores/agents.js'
 import { useGitHubStore } from '../stores/github.js'
@@ -121,20 +125,99 @@ const activeTab = ref('chat')
 const messages = computed(() => sessionStore.messages)
 const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
 
+// Issue assignment pattern: "Work on issue #N in owner/repo: title"
+const ISSUE_PATTERN = /Work on issue #(\d+) in ([^:]+): "(.+)"/
+
 function toggleMinimize() {
   minimized.value = !minimized.value
 }
 
-function sendMessage() {
-  if (!inputText.value.trim()) return
+async function sendMessage() {
+  const text = inputText.value.trim()
+  if (!text) return
+
   sessionStore.sendMessage({
     type: 'chat',
     from: 'user',
     to: 'foreman',
-    content: inputText.value.trim(),
+    content: text,
   })
   inputText.value = ''
+
+  // Auto-assign to first idle worker if the message matches issue pattern
+  const match = text.match(ISSUE_PATTERN)
+  if (match) {
+    const [, issueNum, repoName, title] = match
+    const worker = agentsStore.firstIdleWorker()
+    if (worker) {
+      try {
+        await agentsStore.assignTask(worker.id, {
+          description: text,
+          issueNumber: parseInt(issueNum, 10),
+          issueRepo: repoName.trim(),
+        })
+        sessionStore.messages.push({
+          type: 'chat',
+          from: 'system',
+          to: 'user',
+          content: `Task assigned to ${worker.name}`,
+          createdAt: new Date().toISOString(),
+        })
+      } catch (e) {
+        sessionStore.messages.push({
+          type: 'chat',
+          from: 'system',
+          to: 'user',
+          content: `Could not assign task: ${e.message}`,
+          createdAt: new Date().toISOString(),
+        })
+      }
+    } else {
+      sessionStore.messages.push({
+        type: 'chat',
+        from: 'system',
+        to: 'user',
+        content: 'No idle worker available. Deploy a worker first.',
+        createdAt: new Date().toISOString(),
+      })
+    }
+  }
 }
+
+// Listen for task-complete / task-failed broadcasts
+function handleTaskEvent(data) {
+  if (data.type === 'task-complete') {
+    const msg = data.prUrl
+      ? `✓ Worker ${data.workerId} finished — PR: ${data.prUrl}`
+      : `✓ Worker ${data.workerId} finished (no PR created)`
+    sessionStore.messages.push({
+      type: 'chat',
+      from: 'foreman',
+      to: 'user',
+      content: msg,
+      createdAt: new Date().toISOString(),
+    })
+  } else if (data.type === 'task-failed') {
+    sessionStore.messages.push({
+      type: 'chat',
+      from: 'foreman',
+      to: 'user',
+      content: `✗ Worker ${data.workerId} failed on: ${data.description}`,
+      createdAt: new Date().toISOString(),
+    })
+  } else if (data.type === 'task-assigned') {
+    sessionStore.messages.push({
+      type: 'chat',
+      from: 'foreman',
+      to: 'user',
+      content: `Worker ${data.workerId} received task: ${data.description}`,
+      createdAt: new Date().toISOString(),
+    })
+  }
+}
+
+onMounted(() => sessionStore.addMessageHandler(handleTaskEvent))
+onUnmounted(() => sessionStore.removeMessageHandler(handleTaskEvent))
 
 async function switchToIssues() {
   activeTab.value = 'issues'
@@ -365,6 +448,23 @@ watch(messages, async () => {
 
 .from-agent .msg-from {
   color: var(--color-teal);
+}
+
+.chat-message.from-system {
+  align-self: center;
+  background: rgba(255, 204, 0, 0.06);
+  border: 1px solid rgba(255, 204, 0, 0.2);
+  border-left: 3px solid var(--color-amber);
+  max-width: 95%;
+}
+
+.from-system .msg-from {
+  color: var(--color-amber);
+}
+
+.from-system .msg-content {
+  font-size: 11px;
+  color: var(--color-text-dim);
 }
 
 .msg-content {
