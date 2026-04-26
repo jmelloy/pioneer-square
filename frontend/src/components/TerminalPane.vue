@@ -14,6 +14,7 @@
         </span>
       </div>
     </div>
+
     <div class="terminal-body" ref="terminalEl">
       <div class="terminal-welcome">
         <pre>╔══════════════════════════════════════╗
@@ -26,7 +27,7 @@
       </div>
       <div v-for="(log, i) in logs" :key="i" class="terminal-line">
         <span class="log-time">{{ formatTime(log.timestamp) }}</span>
-        <span class="log-content">{{ log.line }}</span>
+        <span class="log-content" :class="lineClass(log.line)">{{ log.line }}</span>
       </div>
       <div class="terminal-prompt">
         <span class="prompt-user">agent@pioneer-square</span>
@@ -36,6 +37,52 @@
         <span class="cursor-blink">_</span>
       </div>
     </div>
+
+    <!-- Run command bar -->
+    <div class="run-bar">
+      <select v-model="runTool" class="tool-select" :disabled="isRunning">
+        <option value="claude">claude</option>
+        <option value="codex">codex</option>
+        <option value="pi">pi</option>
+      </select>
+      <input
+        v-model="runModel"
+        class="model-input"
+        :placeholder="modelPlaceholder"
+        :disabled="isRunning"
+        title="Model (optional)"
+      />
+      <input
+        v-if="runTool === 'pi'"
+        v-model="runProvider"
+        class="provider-input"
+        placeholder="provider"
+        :disabled="isRunning"
+        title="Provider (anthropic, openai, google…)"
+      />
+      <input
+        v-model="runPrompt"
+        class="prompt-input"
+        placeholder="Enter task prompt…"
+        :disabled="isRunning"
+        @keydown.enter.exact="handleRun"
+      />
+      <button
+        v-if="!isRunning"
+        class="run-btn pixel-btn"
+        :disabled="!runPrompt.trim()"
+        @click="handleRun"
+        title="Run agent"
+      >▶ RUN</button>
+      <button
+        v-else
+        class="stop-btn pixel-btn"
+        @click="handleStop"
+        title="Stop agent"
+      >■ STOP</button>
+    </div>
+
+    <div v-if="runError" class="run-error">{{ runError }}</div>
   </div>
 </template>
 
@@ -55,6 +102,19 @@ const terminalEl = ref(null)
 
 const agent = computed(() => agentsStore.agents.find(a => a.id === props.agentId))
 const logs = computed(() => agent.value?.logs || [])
+const isRunning = computed(() => agent.value?.state === 'working' || agent.value?.state === 'thinking' || agent.value?.state === 'busy')
+
+const runTool = ref('claude')
+const runPrompt = ref('')
+const runModel = ref('')
+const runProvider = ref('')
+const runError = ref('')
+
+const modelPlaceholder = computed(() => {
+  if (runTool.value === 'claude') return 'claude-opus-4-7'
+  if (runTool.value === 'codex') return 'o4-mini'
+  return 'model (optional)'
+})
 
 function padName(name) {
   if (!name) return ''.padEnd(20)
@@ -65,6 +125,41 @@ function formatTime(isoStr) {
   if (!isoStr) return '00:00:00'
   const d = new Date(isoStr)
   return d.toLocaleTimeString('en-US', { hour12: false })
+}
+
+function lineClass(line) {
+  if (!line) return ''
+  if (line.startsWith('✓')) return 'log-success'
+  if (line.startsWith('✗')) return 'log-error'
+  if (line.startsWith('▶')) return 'log-tool'
+  if (line.startsWith('  →')) return 'log-result'
+  if (line.startsWith('[')) return 'log-meta'
+  return ''
+}
+
+async function handleRun() {
+  if (!runPrompt.value.trim() || isRunning.value) return
+  runError.value = ''
+  try {
+    await agentsStore.runAgent(props.agentId, {
+      tool: runTool.value,
+      prompt: runPrompt.value.trim(),
+      model: runModel.value.trim(),
+      provider: runProvider.value.trim()
+    })
+    runPrompt.value = ''
+  } catch (e) {
+    runError.value = e.message
+  }
+}
+
+async function handleStop() {
+  runError.value = ''
+  try {
+    await agentsStore.stopAgent(props.agentId)
+  } catch (e) {
+    runError.value = e.message
+  }
 }
 
 watch(logs, async () => {
@@ -122,17 +217,16 @@ watch(logs, async () => {
   letter-spacing: 1px;
 }
 
-.agent-state-badge.idle { background: rgba(154,128,96,0.2); color: var(--color-text-dim); }
-.agent-state-badge.thinking { background: rgba(68,153,255,0.2); color: var(--color-blue); }
-.agent-state-badge.working { background: rgba(0,255,136,0.2); color: var(--color-green); }
-.agent-state-badge.busy { background: rgba(255,136,68,0.2); color: var(--color-orange); }
-.agent-state-badge.error { background: rgba(255,51,51,0.2); color: var(--color-red); }
+.agent-state-badge.idle    { background: rgba(154,128,96,0.2); color: var(--color-text-dim); }
+.agent-state-badge.thinking{ background: rgba(68,153,255,0.2); color: var(--color-blue); }
+.agent-state-badge.working { background: rgba(0,255,136,0.2);  color: var(--color-green); }
+.agent-state-badge.busy    { background: rgba(255,136,68,0.2); color: var(--color-orange); }
+.agent-state-badge.error   { background: rgba(255,51,51,0.2);  color: var(--color-red); }
 
 .live-indicator {
   font-size: 11px;
   color: var(--color-text-dim);
 }
-
 .live-indicator.active {
   color: var(--color-green);
   animation: livePulse 1.5s infinite;
@@ -140,7 +234,7 @@ watch(logs, async () => {
 
 @keyframes livePulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50%       { opacity: 0.4; }
 }
 
 .terminal-body {
@@ -180,10 +274,12 @@ watch(logs, async () => {
   font-size: 11px;
 }
 
-.log-content {
-  color: var(--color-green);
-  word-break: break-all;
-}
+.log-content         { color: var(--color-green);    word-break: break-all; }
+.log-content.log-success { color: var(--color-teal); }
+.log-content.log-error   { color: var(--color-red);  }
+.log-content.log-tool    { color: var(--color-amber); }
+.log-content.log-result  { color: var(--color-text-dim); }
+.log-content.log-meta    { color: var(--color-brass-dark); }
 
 .terminal-prompt {
   margin-top: 8px;
@@ -193,9 +289,9 @@ watch(logs, async () => {
   gap: 2px;
 }
 
-.prompt-user { color: var(--color-green); }
-.prompt-sep { color: var(--color-text-dim); }
-.prompt-path { color: var(--color-blue); }
+.prompt-user   { color: var(--color-green); }
+.prompt-sep    { color: var(--color-text-dim); }
+.prompt-path   { color: var(--color-blue); }
 .prompt-dollar { color: var(--color-text); margin: 0 4px; }
 
 .cursor-blink {
@@ -205,6 +301,123 @@ watch(logs, async () => {
 
 @keyframes blink {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
+  50%       { opacity: 0; }
+}
+
+/* ── Run bar ──────────────────────────────────────────────────── */
+.run-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: #0c0700;
+  border-top: 2px solid #2a1a05;
+  flex-shrink: 0;
+}
+
+.tool-select {
+  background: var(--color-bg);
+  border: 2px solid var(--color-brass-dark);
+  color: var(--color-amber);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 6px;
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tool-select:focus {
+  border-color: var(--color-brass);
+}
+
+.model-input,
+.provider-input {
+  background: var(--color-bg);
+  border: 2px solid var(--color-brass-dark);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 8px;
+  outline: none;
+  width: 120px;
+  flex-shrink: 0;
+}
+.model-input:focus,
+.provider-input:focus {
+  border-color: var(--color-brass);
+}
+.model-input::placeholder,
+.provider-input::placeholder {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
+.prompt-input {
+  flex: 1;
+  background: var(--color-bg);
+  border: 2px solid var(--color-brass-dark);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 10px;
+  outline: none;
+  min-width: 0;
+}
+.prompt-input:focus {
+  border-color: var(--color-brass);
+  box-shadow: 0 0 8px rgba(232, 170, 0, 0.25);
+}
+.prompt-input::placeholder {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+.prompt-input:disabled,
+.model-input:disabled,
+.provider-input:disabled,
+.tool-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.run-btn {
+  padding: 5px 12px;
+  font-size: 10px;
+  color: var(--color-green);
+  border-color: var(--color-green);
+  flex-shrink: 0;
+}
+.run-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.run-btn:not(:disabled):hover {
+  background: rgba(0, 255, 136, 0.12);
+  box-shadow: 0 0 8px rgba(0, 255, 136, 0.3);
+}
+
+.stop-btn {
+  padding: 5px 12px;
+  font-size: 10px;
+  color: var(--color-red);
+  border-color: var(--color-red);
+  flex-shrink: 0;
+  animation: stopPulse 1.2s infinite;
+}
+.stop-btn:hover {
+  background: rgba(255, 51, 51, 0.12);
+}
+
+@keyframes stopPulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255,51,51,0); }
+  50%       { box-shadow: 0 0 8px rgba(255,51,51,0.4); }
+}
+
+.run-error {
+  padding: 4px 12px 6px;
+  font-size: 11px;
+  color: var(--color-red);
+  background: rgba(255, 51, 51, 0.07);
+  border-top: 1px solid rgba(255, 51, 51, 0.2);
+  flex-shrink: 0;
 }
 </style>

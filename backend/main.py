@@ -32,6 +32,9 @@ DB_PATH = "pioneer_square.db"
 # In-memory WebSocket connections: session_id -> list of WebSocket
 connections: Dict[str, List[WebSocket]] = {}
 
+# Running agent subprocesses: agent_id -> asyncio.subprocess.Process
+running_processes: Dict[str, asyncio.subprocess.Process] = {}
+
 
 async def get_db():
     db = await aiosqlite.connect(DB_PATH)
@@ -81,6 +84,13 @@ def generate_session_id():
 
 class SessionCreate(BaseModel):
     name: Optional[str] = None
+
+
+class RunAgentRequest(BaseModel):
+    tool: str          # "claude" | "codex" | "pi"
+    prompt: str
+    model: Optional[str] = None
+    provider: Optional[str] = None   # pi only
 
 
 @app.post("/sessions")
@@ -252,8 +262,259 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         if session_id in connections and websocket in connections[session_id]:
             connections[session_id].remove(websocket)
-    except Exception as e:
+    except Exception:
         if session_id in connections and websocket in connections[session_id]:
             connections[session_id].remove(websocket)
     finally:
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# Agent process management
+# ---------------------------------------------------------------------------
+
+async def _emit_terminal_line(session_id: str, agent_id: str, line: str):
+    """Broadcast a terminal output line and persist it to the DB."""
+    now = datetime.now(timezone.utc).isoformat()
+    await broadcast(session_id, {
+        "type": "terminal-output",
+        "agentId": agent_id,
+        "line": line,
+        "timestamp": now,
+    })
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO messages (session_id, from_agent, content, message_type, created_at)"
+            " VALUES (?, ?, ?, 'terminal', ?)",
+            (session_id, agent_id, line, now),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def _set_agent_state(session_id: str, agent_id: str, state: str):
+    """Broadcast and persist an agent state change."""
+    await broadcast(session_id, {"type": "agent-state", "agentId": agent_id, "state": state})
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE agents SET state = ? WHERE id = ? AND session_id = ?",
+            (state, agent_id, session_id),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+def _build_command(req: RunAgentRequest) -> tuple[list[str], bool]:
+    """Return (cmd_list, needs_stdin_prompt).
+
+    needs_stdin_prompt=True means we must write the RPC prompt to stdin
+    (Pi RPC mode) rather than passing it on the command line.
+    """
+    tool = req.tool.lower()
+
+    if tool == "claude":
+        cmd = ["claude", "-p", req.prompt, "--output-format", "stream-json", "--max-turns", "20"]
+        if req.model:
+            cmd += ["--model", req.model]
+        return cmd, False
+
+    if tool == "codex":
+        # codex exec --full-auto accepts a prompt as positional arg; --json for structured output
+        cmd = ["codex", "exec", "--json", req.prompt]
+        if req.model:
+            cmd += ["--model", req.model]
+        return cmd, False
+
+    if tool == "pi":
+        # Pi --mode rpc: bidirectional JSONL over stdin/stdout
+        cmd = ["pi", "--mode", "rpc", "--no-session"]
+        if req.provider:
+            cmd += ["--provider", req.provider]
+        if req.model:
+            cmd += ["--model", req.model]
+        return cmd, True
+
+    raise ValueError(f"Unknown tool: {req.tool!r}")
+
+
+async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
+    """Spawn the agent subprocess and stream its output as terminal-output events."""
+    tool = req.tool.lower()
+
+    try:
+        cmd, needs_stdin = _build_command(req)
+    except ValueError as exc:
+        await _emit_terminal_line(session_id, agent_id, f"✗ {exc}")
+        return
+
+    stdin_pipe = asyncio.subprocess.PIPE if needs_stdin else asyncio.subprocess.DEVNULL
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=stdin_pipe,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    if needs_stdin:
+        # Pi RPC: send the initial prompt as a JSON command, then leave stdin open
+        rpc_msg = json.dumps({"type": "prompt", "content": req.prompt}) + "\n"
+        proc.stdin.write(rpc_msg.encode())
+        await proc.stdin.drain()
+
+    running_processes[agent_id] = proc
+    await _set_agent_state(session_id, agent_id, "working")
+
+    # For Pi message_update we track accumulated text to emit only deltas
+    pi_last_text = ""
+
+    try:
+        async for raw_line in proc.stdout:
+            line_str = raw_line.decode(errors="replace").strip()
+            if not line_str:
+                continue
+
+            try:
+                event = json.loads(line_str)
+            except json.JSONDecodeError:
+                await _emit_terminal_line(session_id, agent_id, line_str)
+                continue
+
+            text = _parse_event(tool, event, pi_last_text)
+
+            # Pi: update delta baseline
+            if tool == "pi" and event.get("type") == "message_update":
+                full = ""
+                for blk in event.get("message", {}).get("content", []):
+                    if isinstance(blk, dict) and blk.get("type") == "text":
+                        full += blk.get("text", "")
+                pi_last_text = full
+            elif tool == "pi" and event.get("type") == "agent_end":
+                pi_last_text = ""
+
+            if text:
+                await _emit_terminal_line(session_id, agent_id, text)
+
+    finally:
+        if needs_stdin and proc.stdin and not proc.stdin.is_closing():
+            proc.stdin.close()
+        exit_code = await proc.wait()
+        running_processes.pop(agent_id, None)
+        await _set_agent_state(session_id, agent_id, "idle" if exit_code == 0 else "error")
+
+
+def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
+    """Extract a human-readable line from one stream-JSON / RPC event."""
+
+    if tool == "claude":
+        t = event.get("type")
+        if t == "assistant":
+            parts = []
+            for blk in event.get("message", {}).get("content", []):
+                if blk.get("type") == "text":
+                    txt = blk.get("text", "").strip()
+                    if txt:
+                        parts.append(txt)
+                elif blk.get("type") == "tool_use":
+                    name = blk.get("name", "")
+                    inp = blk.get("input", {})
+                    if name == "Bash":
+                        parts.append(f"▶ bash: {inp.get('command', '')[:120]}")
+                    elif name in ("Read", "Write", "Edit"):
+                        fp = inp.get("file_path", inp.get("path", ""))
+                        parts.append(f"▶ {name.lower()}: {fp}")
+                    else:
+                        parts.append(f"▶ {name}: {json.dumps(inp)[:80]}")
+            return "\n".join(parts) or None
+        if t == "result":
+            subtype = event.get("subtype", "success")
+            turns = event.get("num_turns", 0)
+            cost = event.get("cost_usd")
+            cost_str = f" (${cost:.4f})" if cost else ""
+            if subtype == "success":
+                return f"✓ Done in {turns} turns{cost_str}"
+            return f"✗ {subtype}: {event.get('error', '')}"
+        if t == "system" and event.get("subtype") == "init":
+            tools = event.get("tools", [])
+            return f"[claude] tools: {', '.join(tools[:6])}"
+
+    elif tool == "codex":
+        t = event.get("type")
+        if t == "message" and event.get("role") == "assistant":
+            return (event.get("content") or "").strip() or None
+        if t == "function_call":
+            name = event.get("name", "")
+            args = event.get("arguments", "")
+            return f"▶ {name}({args[:80]})"
+        if t == "function_result":
+            return f"  → {str(event.get('output', ''))[:200]}"
+        if t == "done":
+            return "✓ Done"
+        if t == "error":
+            return f"✗ {event.get('message', '')}"
+
+    elif tool == "pi":
+        t = event.get("type")
+        if t == "message_update":
+            full = ""
+            for blk in event.get("message", {}).get("content", []):
+                if isinstance(blk, dict) and blk.get("type") == "text":
+                    full += blk.get("text", "")
+            delta = full[len(pi_last_text):]
+            return delta if delta.strip() else None
+        if t == "tool_execution_start":
+            ti = event.get("tool", {})
+            name = ti.get("name", "")
+            inp = ti.get("input", {})
+            if name == "bash":
+                return f"▶ bash: {inp.get('command', '')[:120]}"
+            if name in ("read", "write", "edit"):
+                return f"▶ {name}: {inp.get('path', inp.get('file_path', ''))}"
+            return f"▶ {name}({json.dumps(inp)[:80]})"
+        if t == "tool_execution_end":
+            out = str(event.get("output", "")).strip()
+            if not out:
+                return None
+            lines = out.split("\n")
+            preview = lines[0][:120]
+            if len(lines) > 1:
+                preview += f" (+{len(lines) - 1} lines)"
+            return f"  → {preview}"
+        if t == "agent_end":
+            err = event.get("error")
+            return f"✗ {err}" if err else None
+        if t == "agent_start":
+            return "[pi] agent started"
+
+    return None
+
+
+@app.post("/sessions/{session_id}/agents/{agent_id}/run")
+async def start_agent_run(session_id: str, agent_id: str, req: RunAgentRequest):
+    """Spawn an AI coding agent subprocess and stream its output over WebSocket."""
+    # Kill any existing run for this agent
+    old = running_processes.get(agent_id)
+    if old:
+        try:
+            old.kill()
+        except ProcessLookupError:
+            pass
+
+    asyncio.create_task(_stream_agent(session_id, agent_id, req))
+    return {"status": "started", "agentId": agent_id, "tool": req.tool}
+
+
+@app.delete("/sessions/{session_id}/agents/{agent_id}/run")
+async def stop_agent_run(session_id: str, agent_id: str):
+    """Terminate a running agent subprocess."""
+    proc = running_processes.get(agent_id)
+    if not proc:
+        raise HTTPException(status_code=404, detail="No running process for this agent")
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    return {"status": "stopped", "agentId": agent_id}
