@@ -26,7 +26,17 @@ async function initSession(sessionId) {
     router.replace(`/${session.id}`)
     return
   }
-  await sessionStore.joinSession(sessionId)
+  const session = await sessionStore.joinSession(sessionId)
+  // Hydrate agents store from REST snapshot so existing agents appear on load
+  if (session?.agents) {
+    session.agents.forEach(a => agentsStore.registerAgent({
+      agentId: a.id,
+      agentName: a.name,
+      agentType: a.type,
+      state: a.state,
+      joinedAt: a.joined_at,
+    }))
+  }
   sessionStore.connectWebSocket(sessionId, (data) => {
     agentsStore.handleWebSocketMessage(data)
   })
