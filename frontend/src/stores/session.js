@@ -45,7 +45,8 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  function connectWebSocket(sessionId, onMessage) {
+  function connectWebSocket(sessionId, onMessage, retryCount = 0) {
+    const MAX_RETRIES = 10
     if (ws) {
       ws.close()
     }
@@ -63,8 +64,9 @@ export const useSessionStore = defineStore('session', () => {
     }
     ws.onclose = () => {
       isConnected.value = false
-      // Reconnect after 2s
-      setTimeout(() => connectWebSocket(sessionId, onMessage), 2000)
+      if (retryCount < MAX_RETRIES) {
+        setTimeout(() => connectWebSocket(sessionId, onMessage, retryCount + 1), 2000)
+      }
     }
     ws.onerror = () => {
       isConnected.value = false

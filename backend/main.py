@@ -84,22 +84,26 @@ class SessionCreate(BaseModel):
 
 
 @app.post("/sessions")
-async def create_session(data: SessionCreate = SessionCreate()):
-    session_id = generate_session_id()
+async def create_session(data: Optional[SessionCreate] = None):
+    if data is None:
+        data = SessionCreate()
     created_at = datetime.now(timezone.utc).isoformat()
     db = await get_db()
     try:
-        # Ensure unique
-        while True:
-            async with db.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)) as cursor:
-                if not await cursor.fetchone():
-                    break
+        # Retry on collision (UNIQUE constraint); negligible probability with 36^6 space
+        for _ in range(5):
             session_id = generate_session_id()
-        await db.execute(
-            "INSERT INTO sessions (id, created_at, name) VALUES (?, ?, ?)",
-            (session_id, created_at, data.name or f"Session {session_id}")
-        )
-        await db.commit()
+            try:
+                await db.execute(
+                    "INSERT INTO sessions (id, created_at, name) VALUES (?, ?, ?)",
+                    (session_id, created_at, data.name or f"Session {session_id}")
+                )
+                await db.commit()
+                break
+            except aiosqlite.IntegrityError:
+                continue
+        else:
+            raise HTTPException(status_code=500, detail="Could not generate unique session ID")
     finally:
         await db.close()
     return {"id": session_id, "created_at": created_at, "name": data.name or f"Session {session_id}"}
