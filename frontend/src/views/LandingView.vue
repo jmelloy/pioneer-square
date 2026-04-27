@@ -14,7 +14,17 @@
       <!-- Workshop illustration panel -->
       <div class="workshop-panel">
         <div class="workshop-frame">
-          <img src="@/assets/workshop.jpg" alt="Pioneer Square Workshop" class="workshop-img" />
+          <video
+            class="workshop-img"
+            autoplay
+            loop
+            muted
+            playsinline
+            poster="@/assets/workshop.jpg"
+          >
+            <source src="@/assets/workshop.mp4" type="video/mp4" />
+            <img src="@/assets/workshop.jpg" alt="Pioneer Square Workshop" />
+          </video>
           <div class="workshop-label">PIONEER SQUARE WORKSHOP</div>
         </div>
         <div class="workshop-lore">
