@@ -14,7 +14,7 @@
       <!-- Workshop illustration panel -->
       <div class="workshop-panel">
         <div class="workshop-frame">
-          <img src="@/assets/workshop.png" alt="Pioneer Square Workshop" class="workshop-img" />
+          <img src="@/assets/workshop.jpg" alt="Pioneer Square Workshop" class="workshop-img" />
           <div class="workshop-label">PIONEER SQUARE WORKSHOP</div>
         </div>
         <div class="workshop-lore">
