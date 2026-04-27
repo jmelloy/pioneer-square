@@ -1,0 +1,273 @@
+"""Main worker loop: register, listen for tasks over WebSocket, execute, report."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import random
+import re
+import string
+from datetime import datetime, timezone
+from typing import Optional
+
+import httpx
+
+from . import claude_runner, config as config_mod, git_ops, github_pr
+from .ws_client import WSClient
+
+logger = logging.getLogger(__name__)
+
+
+def _gen_task_id() -> str:
+    return "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text[:40].lower()).strip("-")
+
+
+class Worker:
+    def __init__(self, cfg: config_mod.Config) -> None:
+        self.cfg = cfg
+        self.ws = WSClient(cfg.ws_url)
+        self.task_queue: asyncio.Queue[dict] = asyncio.Queue()
+        self.current_claude: Optional[claude_runner.ClaudeProcess] = None
+        self._known_task_ids: set[str] = set()
+
+    # ------------------------------------------------------------------ HTTP
+    async def _http(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(base_url=self.cfg.http_url, timeout=30.0)
+
+    async def _register_if_needed(self) -> None:
+        if self.cfg.worker_id:
+            return
+        async with await self._http() as client:
+            resp = await client.post(
+                f"/sessions/{self.cfg.session_id}/workers",
+                json={"repos": self.cfg.repos, "github_token": None},
+            )
+            resp.raise_for_status()
+            wid = resp.json()["id"]
+        config_mod.save_worker_id(self.cfg, wid)
+        logger.info("Registered new worker id %s", wid)
+
+    async def _fetch_pending_tasks(self) -> list[dict]:
+        async with await self._http() as client:
+            resp = await client.get(
+                f"/sessions/{self.cfg.session_id}/workers/{self.cfg.worker_id}/tasks"
+            )
+            resp.raise_for_status()
+            tasks = resp.json()
+        return [t for t in tasks if t.get("state") in ("pending", "working")]
+
+    # ------------------------------------------------------------------ WS
+    async def _send(self, payload: dict) -> None:
+        await self.ws.send(payload)
+
+    async def _emit(self, line: str) -> None:
+        await self._send({
+            "type": "terminal-output",
+            "agentId": self.cfg.worker_id,
+            "line": line,
+            "timestamp": _now_iso(),
+        })
+
+    async def _set_state(self, state: str) -> None:
+        await self._send({
+            "type": "agent-state",
+            "agentId": self.cfg.worker_id,
+            "state": state,
+        })
+
+    async def _join(self) -> None:
+        name = self.cfg.worker_name or f"Worker-{self.cfg.worker_id[2:6]}"
+        await self._send({
+            "type": "join",
+            "agentId": self.cfg.worker_id,
+            "agentName": name,
+            "agentType": "worker",
+        })
+        await self._send({
+            "type": "worker-register",
+            "workerId": self.cfg.worker_id,
+            "repos": self.cfg.repos,
+        })
+
+    async def _task_update(self, task_id: str, **fields: object) -> None:
+        await self._send({
+            "type": "task-update",
+            "workerId": self.cfg.worker_id,
+            "taskId": task_id,
+            **fields,
+        })
+
+    # ------------------------------------------------------------------ Loop
+    async def run(self) -> None:
+        await self._register_if_needed()
+        assert self.cfg.worker_id, "worker_id must be set after registration"
+
+        await self.ws.connect()
+        await self._join()
+        await self._emit("[worker] Online. Watching for tasks.")
+        await self._set_state("idle")
+
+        for task in await self._fetch_pending_tasks():
+            self._known_task_ids.add(task["id"])
+            await self.task_queue.put(task)
+
+        listener = asyncio.create_task(self._listen())
+        runner = asyncio.create_task(self._task_runner())
+        puller = asyncio.create_task(self._idle_puller())
+        try:
+            await asyncio.gather(listener, runner, puller)
+        finally:
+            await self.ws.close()
+
+    async def _listen(self) -> None:
+        async for msg in self.ws.messages():
+            mtype = msg.get("type")
+            if mtype == "task-assigned":
+                if msg.get("workerId") != self.cfg.worker_id:
+                    continue
+                task_id = msg.get("taskId")
+                if not task_id or task_id in self._known_task_ids:
+                    continue
+                self._known_task_ids.add(task_id)
+                await self.task_queue.put({
+                    "id": task_id,
+                    "worker_id": self.cfg.worker_id,
+                    "session_id": self.cfg.session_id,
+                    "description": msg.get("description", ""),
+                    "issue_number": msg.get("issueNumber"),
+                    "issue_repo": msg.get("issueRepo"),
+                })
+            elif mtype == "worker-message":
+                if msg.get("workerId") != self.cfg.worker_id:
+                    continue
+                text = msg.get("message", "")
+                if self.current_claude and text:
+                    delivered = await self.current_claude.send_message(text)
+                    if delivered:
+                        await self._emit(f"[worker] Injected: {text[:80]}")
+
+    async def _idle_puller(self) -> None:
+        while True:
+            await asyncio.sleep(self.cfg.pull_interval)
+            # Catch tasks that were broadcast while we were briefly disconnected.
+            try:
+                for task in await self._fetch_pending_tasks():
+                    if task["id"] in self._known_task_ids:
+                        continue
+                    self._known_task_ids.add(task["id"])
+                    await self.task_queue.put(task)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Pending-task poll failed: %s", exc)
+            if self.task_queue.empty() and self.current_claude is None and self.cfg.repos:
+                await git_ops.pull_repos(
+                    self.cfg.repos_dir, self.cfg.repos, self.cfg.github_token, self._emit
+                )
+
+    async def _task_runner(self) -> None:
+        while True:
+            task = await self.task_queue.get()
+            try:
+                await self._execute_task(task)
+            except Exception as exc:  # pragma: no cover
+                logger.exception("Task %s crashed: %s", task.get("id"), exc)
+                await self._emit(f"[worker] ✗ Internal error: {exc}")
+                await self._task_update(task["id"], state="failed", finishedAt=_now_iso())
+                await self._set_state("error")
+
+    async def _execute_task(self, task: dict) -> None:
+        task_id = task["id"]
+        desc = task["description"]
+        token = self.cfg.github_token
+        repos = self.cfg.repos
+
+        await self._set_state("working")
+        await self._task_update(task_id, state="working")
+
+        branch = f"claude/{_slug(desc)}-{task_id[:6]}"
+        work_dir = os.path.join(self.cfg.work_dir, self.cfg.session_id, self.cfg.worker_id, task_id)
+        os.makedirs(work_dir, exist_ok=True)
+
+        await self._emit(f"[worker] Task: {desc}")
+        await self._emit(f"[worker] Branch: {branch}")
+
+        worktree_entries: list[tuple[str, str, str]] = []
+        primary_wt: Optional[str] = None
+
+        for repo_full in repos:
+            await self._emit(f"[worker] Preparing {repo_full}...")
+            repo_path = await git_ops.ensure_repo(self.cfg.repos_dir, repo_full, token)
+            if not repo_path:
+                await self._emit(f"[worker] ✗ Clone failed: {repo_full}")
+                continue
+            repo_name = repo_full.split("/")[-1]
+            wt_path = os.path.join(work_dir, repo_name)
+            if await git_ops.create_worktree(repo_path, wt_path, branch):
+                worktree_entries.append((repo_full, repo_path, wt_path))
+                if primary_wt is None:
+                    primary_wt = wt_path
+            else:
+                await self._emit(f"[worker] ✗ Worktree failed: {repo_full}")
+
+        if not primary_wt:
+            await self._emit("[worker] ✗ No worktrees — aborting.")
+            await self._task_update(task_id, state="failed", finishedAt=_now_iso())
+            await self._set_state("error")
+            return
+
+        await self._task_update(task_id, branch=branch, worktreePath=primary_wt)
+
+        def _on_proc(proc: claude_runner.ClaudeProcess) -> None:
+            self.current_claude = proc
+
+        success, last_msg = await claude_runner.run_claude_auto(
+            desc,
+            primary_wt,
+            max_turns=self.cfg.claude_max_turns,
+            emit=self._emit,
+            on_proc=_on_proc,
+        )
+        self.current_claude = None
+        finished_at = _now_iso()
+
+        if success:
+            pr_url = await github_pr.push_and_open_pr(
+                task=task,
+                branch=branch,
+                worktree_path=primary_wt,
+                token=token,
+                emit=self._emit,
+            )
+            await self._task_update(
+                task_id, state="done", branch=branch, prUrl=pr_url or "", finishedAt=finished_at,
+            )
+            await self._send({
+                "type": "task-complete",
+                "workerId": self.cfg.worker_id,
+                "taskId": task_id,
+                "prUrl": pr_url,
+                "branch": branch,
+                "description": desc,
+            })
+            await self._set_state("idle")
+        else:
+            await self._task_update(task_id, state="failed", finishedAt=finished_at)
+            await self._set_state("error")
+            await self._send({
+                "type": "needs-input",
+                "workerId": self.cfg.worker_id,
+                "taskId": task_id,
+                "description": desc,
+                "lastMessage": last_msg,
+            })
+
+        for _repo_full, repo_path, wt_path in worktree_entries:
+            await git_ops.remove_worktree(repo_path, wt_path)
