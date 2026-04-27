@@ -1,10 +1,16 @@
 node_modules/
 dist/
+build/
 __pycache__/
 *.pyc
+*.egg-info/
 .venv/
 venv/
 *.sqlite
 *.db
 .env
 .DS_Store
+
+# Worker runtime state (auto-written next to pioneer-worker.toml)
+pioneer-worker.toml
+pioneer-worker.state.json
