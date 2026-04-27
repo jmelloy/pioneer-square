@@ -1,5 +1,5 @@
 <template>
-  <aside class="sidebar">
+  <aside class="sidebar panel-bg">
     <div class="sidebar-header">
       <span class="sidebar-title">Sessions</span>
       <button class="pixel-btn new-btn" @click="goHome">⌂ Home</button>
@@ -105,8 +105,6 @@ function formatTime(isoStr) {
 .sidebar {
   width: 220px;
   min-width: 220px;
-  background: var(--color-bg-secondary);
-  border-right: 2px solid var(--color-brass-dark);
   display: flex;
   flex-direction: column;
   overflow: hidden;

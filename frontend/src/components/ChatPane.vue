@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-pane" :class="{ minimized }">
+  <div class="chat-pane panel-bg" :class="{ minimized }">
     <div class="chat-header" @click="toggleMinimize">
       <span class="chat-title">⚙ FOREMAN COMMS</span>
       <div class="header-controls">
@@ -265,14 +265,9 @@ watch(messages, async () => {
   right: 0;
   width: 360px;
   max-height: 500px;
-  background: var(--color-bg-secondary);
-  border-top: 3px solid var(--color-brass);
-  border-left: 3px solid var(--color-brass);
-  border-top-left-radius: 4px;
   display: flex;
   flex-direction: column;
   z-index: 100;
-  box-shadow: -4px -4px 20px rgba(232, 170, 0, 0.2);
 }
 
 .chat-pane.minimized {
