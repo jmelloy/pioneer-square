@@ -12,7 +12,7 @@ session_id = "abc123"
 # worker_name = "Builder"
 
 # Optional pre-assigned worker id. If omitted, the worker registers with the
-# backend on startup and writes the assigned id to .pioneer-worker.state.json.
+# backend on startup and writes the assigned id to pioneer-worker.state.json.
 # worker_id = "w-myname"
 
 # Pull repos in the background every N seconds while idle.

@@ -12,22 +12,30 @@ import logging
 from typing import AsyncIterator, Optional
 
 import websockets
-from websockets.client import WebSocketClientProtocol
+from websockets.protocol import State
 
 logger = logging.getLogger(__name__)
+
+
+def _is_open(ws) -> bool:
+    state = getattr(ws, "state", None)
+    if state is not None:
+        return state is State.OPEN
+    # Older websockets versions exposed `.closed`.
+    return not getattr(ws, "closed", True)
 
 
 class WSClient:
     def __init__(self, url: str, *, max_backoff: float = 30.0) -> None:
         self.url = url
         self.max_backoff = max_backoff
-        self._ws: Optional[WebSocketClientProtocol] = None
+        self._ws = None
         self._lock = asyncio.Lock()
 
-    async def connect(self) -> WebSocketClientProtocol:
+    async def connect(self):
         """Connect (or reconnect) with exponential backoff."""
         async with self._lock:
-            if self._ws is not None and not self._ws.closed:
+            if self._ws is not None and _is_open(self._ws):
                 return self._ws
             backoff = 1.0
             while True:
@@ -47,7 +55,7 @@ class WSClient:
         ws = await self.connect()
         try:
             await ws.send(json.dumps(payload))
-        except websockets.WebSocketException as exc:
+        except (websockets.WebSocketException, ConnectionError) as exc:
             logger.warning("WS send failed (%s); reconnecting", exc)
             await self.close()
             ws = await self.connect()

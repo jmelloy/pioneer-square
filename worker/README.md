@@ -40,7 +40,7 @@ Optional:
 
 - `worker_id` — pre-existing worker id from the backend. If omitted, the worker
   registers itself on first launch and writes the assigned id to
-  `.pioneer-worker.state.json` next to the config.
+  `pioneer-worker.state.json` next to the config.
 - `[github] token` — inline token, or `"env:VAR"` to read from the environment.
   Required to push and open PRs against private repos.
 
