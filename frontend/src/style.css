@@ -39,6 +39,10 @@
   --border-brass: 2px solid var(--color-brass);
   --border-copper: 2px solid var(--color-copper);
   --shadow-brass: 0 0 8px var(--color-brass-dark), inset 0 0 4px rgba(232, 170, 0, 0.2);
+
+  /* Panel frame — 9-slice image background */
+  --panel-frame-border: 36px;
+  --panel-frame-slice: 9%;
   --shadow-glow-green: 0 0 12px rgba(51, 221, 136, 0.6);
   --shadow-glow-amber: 0 0 12px rgba(255, 204, 0, 0.6);
   --shadow-glow-red: 0 0 12px rgba(238, 51, 34, 0.6);
@@ -84,6 +88,18 @@ html, body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: linear-gradient(180deg, var(--color-brass-light), var(--color-brass));
+}
+
+/* 9-slice panel background — apply to any pane that has panel-bg.png as its frame.
+   Add `padding` inside to push content clear of the decorative border. */
+.panel-bg {
+  border: var(--panel-frame-border) solid transparent;
+  border-image-source: url('./assets/panel-bg.jpg');
+  border-image-slice: var(--panel-frame-slice) fill;
+  border-image-width: var(--panel-frame-border);
+  border-image-outset: 0;
+  border-image-repeat: round;
+  background: none;
 }
 
 .pixel-border {
