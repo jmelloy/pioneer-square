@@ -64,6 +64,17 @@ class ClaudeProcess:
             return False
 
 
+async def _drain_stderr(stream, pid: int) -> None:
+    """Log claude's stderr line-by-line so we can diagnose silent failures."""
+    try:
+        async for raw in stream:
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                logger.warning("claude[%d] stderr: %s", pid, line[:500])
+    except Exception as exc:  # pragma: no cover
+        logger.debug("claude[%d] stderr drain error: %s", pid, exc)
+
+
 async def run_claude_auto(
     description: str,
     cwd: str,
@@ -80,8 +91,10 @@ async def run_claude_auto(
         "--dangerously-skip-permissions",
         "-p", description,
     ]
+    logger.info("Spawning claude in %s: %s", cwd, " ".join(cmd[:5] + ["…"]))
     await emit(f"[claude] Starting: {description[:80]}")
     last_text = ""
+    event_count = 0
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -90,18 +103,27 @@ async def run_claude_auto(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        logger.info("claude subprocess started pid=%s", proc.pid)
         if on_proc is not None:
             on_proc(ClaudeProcess(proc))
+
+        stderr_task = asyncio.create_task(_drain_stderr(proc.stderr, proc.pid))  # type: ignore[arg-type]
 
         async for raw in proc.stdout:  # type: ignore[union-attr]
             line_str = raw.decode(errors="replace").strip()
             if not line_str:
                 continue
+            event_count += 1
             try:
                 event = json.loads(line_str)
             except json.JSONDecodeError:
+                logger.debug("claude[%d] non-JSON stdout: %s", proc.pid, line_str[:200])
                 await emit(line_str)
                 continue
+            logger.debug(
+                "claude[%d] event #%d type=%s subtype=%s",
+                proc.pid, event_count, event.get("type"), event.get("subtype"),
+            )
             text = parse_claude_event(event)
             if text:
                 await emit(text)
@@ -109,10 +131,22 @@ async def run_claude_auto(
                     last_text = text
 
         exit_code = await proc.wait()
+        await stderr_task
+        logger.info(
+            "claude[%d] exited rc=%s after %d event(s)",
+            proc.pid, exit_code, event_count,
+        )
+        if event_count == 0:
+            logger.warning(
+                "claude[%d] produced no stdout events — check stderr above and PATH/auth",
+                proc.pid,
+            )
         return exit_code == 0, last_text
     except FileNotFoundError:
+        logger.error("`claude` CLI not found on PATH")
         await emit("[claude] ✗ `claude` CLI not found on PATH")
         return False, last_text
     except Exception as exc:  # pragma: no cover
+        logger.exception("claude subprocess crashed: %s", exc)
         await emit(f"[claude] ✗ {exc}")
         return False, last_text

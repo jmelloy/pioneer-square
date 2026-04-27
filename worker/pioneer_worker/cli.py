@@ -39,16 +39,22 @@ def main(argv: Optional[list[str]] = None) -> int:
         level=args.log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    log = logging.getLogger("pioneer_worker.cli")
+    log.info("pioneer-worker CLI starting (log_level=%s)", args.log_level)
+
     try:
         cfg = config_mod.load(args.config)
     except (FileNotFoundError, ValueError) as exc:
+        log.error("Config load failed: %s", exc)
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    log.info("Config loaded from %s", cfg.config_path)
     worker = Worker(cfg)
     try:
         asyncio.run(worker.run())
     except KeyboardInterrupt:
+        log.info("Interrupted; shutting down")
         print("\nShutting down.", file=sys.stderr)
         return 0
     return 0
