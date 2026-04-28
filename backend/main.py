@@ -193,6 +193,9 @@ async def init_db():
         await db.commit()
     except Exception:
         pass
+    # On every startup, no worker processes are connected yet.
+    await db.execute("UPDATE workers SET state = 'offline'")
+    await db.execute("UPDATE agents SET state = 'offline' WHERE type = 'worker'")
     await db.commit()
     await db.close()
 
