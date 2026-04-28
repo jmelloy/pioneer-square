@@ -211,6 +211,14 @@ async def init_db():
             FOREIGN KEY (task_id) REFERENCES tasks(id)
         )
     """)
+    for col_sql in [
+        "ALTER TABLE task_logs ADD COLUMN worker_id TEXT",
+        "ALTER TABLE task_logs ADD COLUMN agent_id TEXT",
+    ]:
+        try:
+            await db.execute(col_sql)
+        except aiosqlite.OperationalError:
+            pass
     # On every startup, no worker processes are connected yet.
     await db.execute("UPDATE workers SET state = 'offline'")
     await db.execute(
@@ -1255,15 +1263,26 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 line = data.get("line", "")
                 task_id = data.get("taskId")
                 created_at = datetime.now(timezone.utc).isoformat()
+                # Look up worker_id for this agent to tag logs for cross-filter queries.
+                worker_id = None
+                if agent_id:
+                    async with db.execute(
+                        "SELECT worker_id FROM agents WHERE id=?", (agent_id,)
+                    ) as cur:
+                        row = await cur.fetchone()
+                        if row:
+                            worker_id = row["worker_id"]
                 if task_id and line:
                     await db.execute(
-                        "INSERT INTO task_logs (task_id, timestamp, line) VALUES (?, ?, ?)",
-                        (task_id, created_at, line),
+                        "INSERT INTO task_logs (task_id, timestamp, line, worker_id, agent_id)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        (task_id, created_at, line, worker_id, agent_id),
                     )
                     await db.commit()
                 await broadcast(guild_id, {
                     "type": "terminal-output",
                     "agentId": agent_id,
+                    "workerId": worker_id,
                     "taskId": task_id,
                     "line": line,
                     "timestamp": created_at
@@ -1830,8 +1849,41 @@ async def get_task_logs(guild_id: str, task_id: str):
             if not await cur.fetchone():
                 raise HTTPException(status_code=404, detail="Task not found")
         async with db.execute(
-            "SELECT timestamp, line FROM task_logs WHERE task_id=? ORDER BY id ASC",
+            "SELECT timestamp, line, worker_id, agent_id FROM task_logs"
+            " WHERE task_id=? ORDER BY id ASC",
             (task_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+@app.get("/guilds/{guild_id}/logs")
+async def get_guild_logs(
+    guild_id: str,
+    worker_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+):
+    """Get task_logs filtered by worker_id, agent_id, or task_id."""
+    if not (worker_id or agent_id or task_id):
+        raise HTTPException(status_code=400, detail="Specify worker_id, agent_id, or task_id")
+    db = await get_db()
+    try:
+        async with db.execute("SELECT 1 FROM guilds WHERE id=?", (guild_id,)) as cur:
+            if not await cur.fetchone():
+                raise HTTPException(status_code=404, detail="Guild not found")
+        if task_id:
+            col, val = "task_id", task_id
+        elif worker_id:
+            col, val = "worker_id", worker_id
+        else:
+            col, val = "agent_id", agent_id
+        async with db.execute(
+            f"SELECT timestamp, line, worker_id, agent_id, task_id"
+            f" FROM task_logs WHERE {col}=? ORDER BY id ASC",
+            (val,),
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
