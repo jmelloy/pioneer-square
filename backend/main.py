@@ -632,7 +632,7 @@ def _build_command(req: RunAgentRequest) -> tuple[list[str], bool]:
     tool = req.tool.lower()
 
     if tool == "claude":
-        cmd = ["claude", "-p", req.prompt, "--output-format", "stream-json", "--max-turns", "20"]
+        cmd = ["claude", "-p", req.prompt, "--output-format", "stream-json", "--verbose", "--max-turns", "20"]
         if req.model:
             cmd += ["--model", req.model]
         return cmd, False
@@ -667,12 +667,21 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
         return
 
     stdin_pipe = asyncio.subprocess.PIPE if needs_stdin else asyncio.subprocess.DEVNULL
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=stdin_pipe,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=stdin_pipe,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        await _emit_terminal_line(session_id, agent_id, f"✗ command not found: {cmd[0]}")
+        await _set_agent_state(session_id, agent_id, "error")
+        return
+    except Exception as exc:
+        await _emit_terminal_line(session_id, agent_id, f"✗ failed to start process: {exc}")
+        await _set_agent_state(session_id, agent_id, "error")
+        return
 
     if needs_stdin:
         # Pi RPC: send the initial prompt as a JSON command, then leave stdin open
@@ -685,6 +694,14 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
 
     # For Pi message_update we track accumulated text to emit only deltas
     pi_last_text = ""
+
+    async def _drain_stderr():
+        async for raw in proc.stderr:  # type: ignore[union-attr]
+            line = raw.decode(errors="replace").strip()
+            if line:
+                await _emit_terminal_line(session_id, agent_id, f"[stderr] {line}")
+
+    stderr_task = asyncio.create_task(_drain_stderr())
 
     try:
         async for raw_line in proc.stdout:
@@ -717,6 +734,7 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
         if needs_stdin and proc.stdin and not proc.stdin.is_closing():
             proc.stdin.close()
         exit_code = await proc.wait()
+        await stderr_task
         running_processes.pop(agent_id, None)
         await _set_agent_state(session_id, agent_id, "idle" if exit_code == 0 else "error")
 
@@ -729,11 +747,17 @@ def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
         if t == "assistant":
             parts = []
             for blk in event.get("message", {}).get("content", []):
-                if blk.get("type") == "text":
+                btype = blk.get("type")
+                if btype == "text":
                     txt = blk.get("text", "").strip()
                     if txt:
                         parts.append(txt)
-                elif blk.get("type") == "tool_use":
+                elif btype == "thinking":
+                    thinking = blk.get("thinking", "").strip()
+                    if thinking:
+                        preview = thinking[:100].replace("\n", " ")
+                        parts.append(f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}")
+                elif btype == "tool_use":
                     name = blk.get("name", "")
                     inp = blk.get("input", {})
                     if name == "Bash":
@@ -743,6 +767,20 @@ def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
                         parts.append(f"▶ {name.lower()}: {fp}")
                     else:
                         parts.append(f"▶ {name}: {json.dumps(inp)[:80]}")
+            return "\n".join(parts) or None
+        if t == "user":
+            parts = []
+            for blk in event.get("message", {}).get("content", []):
+                if blk.get("type") == "tool_result":
+                    content = blk.get("content", "")
+                    if isinstance(content, list):
+                        content = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+                    if isinstance(content, str) and content.strip():
+                        lines = content.strip().split("\n")
+                        preview = lines[0][:120]
+                        if len(lines) > 1:
+                            preview += f" (+{len(lines) - 1} lines)"
+                        parts.append(f"  → {preview}")
             return "\n".join(parts) or None
         if t == "result":
             subtype = event.get("subtype", "success")

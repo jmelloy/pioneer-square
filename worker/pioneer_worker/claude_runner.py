@@ -18,11 +18,17 @@ def parse_claude_event(event: dict) -> Optional[str]:
     if t == "assistant":
         parts: list[str] = []
         for blk in event.get("message", {}).get("content", []):
-            if blk.get("type") == "text":
+            btype = blk.get("type")
+            if btype == "text":
                 txt = blk.get("text", "").strip()
                 if txt:
                     parts.append(txt)
-            elif blk.get("type") == "tool_use":
+            elif btype == "thinking":
+                thinking = blk.get("thinking", "").strip()
+                if thinking:
+                    preview = thinking[:100].replace("\n", " ")
+                    parts.append(f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}")
+            elif btype == "tool_use":
                 name = blk.get("name", "")
                 inp = blk.get("input", {})
                 if name == "Bash":
@@ -32,6 +38,20 @@ def parse_claude_event(event: dict) -> Optional[str]:
                     parts.append(f"▶ {name.lower()}: {fp}")
                 else:
                     parts.append(f"▶ {name}: {json.dumps(inp)[:80]}")
+        return "\n".join(parts) or None
+    if t == "user":
+        parts = []
+        for blk in event.get("message", {}).get("content", []):
+            if blk.get("type") == "tool_result":
+                content = blk.get("content", "")
+                if isinstance(content, list):
+                    content = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+                if isinstance(content, str) and content.strip():
+                    lines = content.strip().split("\n")
+                    preview = lines[0][:120]
+                    if len(lines) > 1:
+                        preview += f" (+{len(lines) - 1} lines)"
+                    parts.append(f"  → {preview}")
         return "\n".join(parts) or None
     if t == "result":
         subtype = event.get("subtype", "success")
@@ -76,6 +96,7 @@ async def run_claude_auto(
     cmd = [
         "claude",
         "--output-format", "stream-json",
+        "--verbose",
         "--max-turns", str(max_turns),
         "--dangerously-skip-permissions",
         "-p", description,
@@ -93,6 +114,14 @@ async def run_claude_auto(
         if on_proc is not None:
             on_proc(ClaudeProcess(proc))
 
+        async def _drain_stderr() -> None:
+            async for raw in proc.stderr:  # type: ignore[union-attr]
+                line = raw.decode(errors="replace").strip()
+                if line:
+                    await emit(f"[stderr] {line}")
+
+        stderr_task = asyncio.create_task(_drain_stderr())
+
         async for raw in proc.stdout:  # type: ignore[union-attr]
             line_str = raw.decode(errors="replace").strip()
             if not line_str:
@@ -105,10 +134,11 @@ async def run_claude_auto(
             text = parse_claude_event(event)
             if text:
                 await emit(text)
-                if not text.startswith(("▶", "✓", "✗", "[")):
+                if not text.startswith(("▶", "✓", "✗", "[", "  →")):
                     last_text = text
 
         exit_code = await proc.wait()
+        await stderr_task
         return exit_code == 0, last_text
     except FileNotFoundError:
         await emit("[claude] ✗ `claude` CLI not found on PATH")
