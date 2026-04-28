@@ -33,8 +33,8 @@ class Config:
     worker_id: Optional[str] = None
     worker_name: Optional[str] = None
     github_token: Optional[str] = None
-    repos_dir: str = "/tmp/pioneer-repos"
-    work_dir: str = "/tmp/pioneer-work"
+    repos_dir: str = "src"
+    work_dir: str = "worktrees"
     pull_interval: float = 300.0
     claude_max_turns: int = 50
 
@@ -100,6 +100,13 @@ def load(explicit_path: Optional[str] = None) -> Config:
     elif token is None:
         token = os.environ.get("PIONEER_GITHUB_TOKEN")
 
+    cfg_dir = cfg_path.parent
+
+    def _resolve(p: str) -> str:
+        """Resolve *p* relative to the config file's directory if not absolute."""
+        path = Path(p)
+        return str(path if path.is_absolute() else cfg_dir / path)
+
     return Config(
         backend_url=backend_url.rstrip("/"),
         session_id=session_id,
@@ -107,8 +114,8 @@ def load(explicit_path: Optional[str] = None) -> Config:
         worker_id=state.get("worker_id") or raw.get("worker_id"),
         worker_name=raw.get("worker_name"),
         github_token=token,
-        repos_dir=paths_block.get("repos_dir", "/tmp/pioneer-repos"),
-        work_dir=paths_block.get("work_dir", "/tmp/pioneer-work"),
+        repos_dir=_resolve(paths_block.get("repos_dir", "src")),
+        work_dir=_resolve(paths_block.get("work_dir", "worktrees")),
         pull_interval=float(raw.get("pull_interval", 300.0)),
         claude_max_turns=int(claude_block.get("max_turns", 50)),
         config_path=cfg_path,

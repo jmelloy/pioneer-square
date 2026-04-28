@@ -27,8 +27,9 @@ repos = ["owner/repo"]
 token = "env:GITHUB_TOKEN"
 
 [paths]
-repos_dir = "/tmp/pioneer-repos"
-work_dir = "/tmp/pioneer-work"
+# Paths are resolved relative to this config file's directory when not absolute.
+# repos_dir = "src"        # cloned repo mirrors
+# work_dir = "worktrees"   # per-task git worktrees
 
 [claude]
 max_turns = 50
