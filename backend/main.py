@@ -4,12 +4,22 @@ import random
 import string
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import aiosqlite
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# Load .env (looked up from CWD upward, then alongside this file) before any
+# code reads os.environ, so ANTHROPIC_API_KEY etc. are available.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 try:
     import anthropic as _anthropic

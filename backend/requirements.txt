@@ -4,3 +4,4 @@ websockets
 aiosqlite
 python-multipart
 anthropic
+python-dotenv
