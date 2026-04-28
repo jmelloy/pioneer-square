@@ -4,16 +4,12 @@
 # Backend URL (http or ws scheme; the worker derives the WebSocket URL automatically).
 backend_url = "http://localhost:8000"
 
-# Session this worker joins. Create a session via the UI (or POST /sessions)
+# Guild this worker joins. Create a guild via the UI (or POST /guilds)
 # and paste the 6-char id here.
-session_id = "abc123"
+guild_id = "abc123"
 
 # Optional human-readable name shown in the UI. Auto-generated if absent.
 # worker_name = "Builder"
-
-# Optional pre-assigned worker id. If omitted, the worker registers with the
-# backend on startup and writes the assigned id to pioneer-worker.state.json.
-# worker_id = "w-myname"
 
 # Pull repos in the background every N seconds while idle.
 pull_interval = 300

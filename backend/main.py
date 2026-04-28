@@ -112,11 +112,13 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS agents (
             id TEXT PRIMARY KEY,
             guild_id TEXT NOT NULL,
+            worker_id TEXT,
             name TEXT NOT NULL,
             type TEXT NOT NULL DEFAULT 'worker',
             state TEXT NOT NULL DEFAULT 'idle',
             joined_at TEXT NOT NULL,
-            FOREIGN KEY (guild_id) REFERENCES guilds(id)
+            FOREIGN KEY (guild_id) REFERENCES guilds(id),
+            FOREIGN KEY (worker_id) REFERENCES workers(id)
         )
     """)
     await db.execute("""
@@ -180,6 +182,7 @@ async def init_db():
     """)
     for col_sql in [
         "ALTER TABLE guilds ADD COLUMN github_user_id TEXT",
+        "ALTER TABLE agents ADD COLUMN worker_id TEXT REFERENCES workers(id)",
     ]:
         try:
             await db.execute(col_sql)
@@ -367,8 +370,18 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
     db = await get_db()
     try:
         async with db.execute(
-            "SELECT w.id, w.repos, a.state FROM workers w"
-            " LEFT JOIN agents a ON a.id = w.id WHERE w.guild_id=?", (guild_id,)
+            "SELECT w.id, w.repos, w.state as worker_state,"
+            " COUNT(a.id) as agent_count,"
+            " GROUP_CONCAT(a.id || ':' || a.state) as agents"
+            " FROM workers w"
+            " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
+            " WHERE w.guild_id=?"
+            " GROUP BY w.id"
+            " UNION ALL"
+            " SELECT a.id, '[]', a.state, 1, a.id || ':' || a.state"
+            " FROM agents a"
+            " WHERE a.guild_id=? AND a.type='worker' AND a.worker_id IS NULL AND a.state != 'offline'",
+            (guild_id, guild_id)
         ) as cur:
             worker_rows = [dict(r) for r in await cur.fetchall()]
         async with db.execute(
@@ -380,8 +393,9 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
         await db.close()
 
     workers_block = json.dumps(
-        [{"id": r["id"], "state": r["state"] or "idle",
-          "repos": json.loads(r["repos"] or "[]")} for r in worker_rows],
+        [{"id": r["id"], "state": r["worker_state"] or "idle",
+          "repos": json.loads(r["repos"] or "[]"),
+          "agent_count": r["agent_count"] or 0} for r in worker_rows],
         indent=2,
     )
     tasks_block = json.dumps(task_rows[:6], indent=2)
@@ -527,7 +541,7 @@ async def github_login():
     params = urllib.parse.urlencode({
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": GITHUB_REDIRECT_URI,
-        "scope": "repo read:org read:project",
+        "scope": "repo read:org project",
         "state": state,
     })
     return {"url": f"https://github.com/login/oauth/authorize?{params}"}
@@ -764,11 +778,12 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 agent_id = data.get("agentId")
                 agent_name = data.get("agentName", "Unknown")
                 agent_type = data.get("agentType", "worker")
+                worker_id = data.get("workerId")
                 joined_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
-                    """INSERT OR REPLACE INTO agents (id, guild_id, name, type, state, joined_at)
-                       VALUES (?, ?, ?, ?, 'idle', ?)""",
-                    (agent_id, guild_id, agent_name, agent_type, joined_at)
+                    """INSERT OR REPLACE INTO agents (id, guild_id, worker_id, name, type, state, joined_at)
+                       VALUES (?, ?, ?, ?, ?, 'idle', ?)""",
+                    (agent_id, guild_id, worker_id, agent_name, agent_type, joined_at)
                 )
                 await db.commit()
                 if agent_id:
@@ -1191,9 +1206,9 @@ async def create_worker(guild_id: str, data: WorkerCreate):
             (worker_id, guild_id, json.dumps(data.repos), created_at),
         )
         await db.execute(
-            "INSERT OR REPLACE INTO agents (id, guild_id, name, type, state, joined_at)"
-            " VALUES (?, ?, ?, 'worker', 'offline', ?)",
-            (worker_id, guild_id, worker_name, created_at),
+            "INSERT OR REPLACE INTO agents (id, guild_id, worker_id, name, type, state, joined_at)"
+            " VALUES (?, ?, ?, ?, 'worker', 'offline', ?)",
+            (worker_id, guild_id, worker_id, worker_name, created_at),
         )
         await db.commit()
     finally:
