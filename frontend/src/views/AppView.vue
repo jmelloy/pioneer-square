@@ -8,9 +8,10 @@
 
 <script setup>
 import { onMounted, onUnmounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild.js'
 import { useAgentsStore } from '../stores/agents.js'
+import { useAuthStore } from '../stores/auth.js'
 import { useGitHubStore } from '../stores/github.js'
 import GuildSidebar from '../components/GuildSidebar.vue'
 import MainView from '../components/MainView.vue'
@@ -18,10 +19,10 @@ import ChatPane from '../components/ChatPane.vue'
 
 const props = defineProps({ guildId: String })
 
-const route = useRoute()
 const router = useRouter()
 const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
+const authStore = useAuthStore()
 const ghStore = useGitHubStore()
 
 function getClientId() {
@@ -34,6 +35,10 @@ function getClientId() {
 }
 
 async function initGuild(guildId) {
+  if (!authStore.isLoggedIn) {
+    router.replace('/')
+    return
+  }
   if (!guildId) {
     router.replace('/')
     return
@@ -60,7 +65,7 @@ async function initGuild(guildId) {
 
   const clientId = getClientId()
   const suffix = clientId.slice(0, 4)
-  const foremanName = ghStore.user ? `${ghStore.user.login}-${suffix}` : `Foreman-${suffix}`
+  const foremanName = authStore.user ? `${authStore.user.login}-${suffix}` : `Foreman-${suffix}`
 
   guildStore.connectWebSocket(guildId, (data) => {
     agentsStore.handleWebSocketMessage(data)

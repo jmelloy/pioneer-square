@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useGuildStore } from './guild'
+import { useAuthStore } from './auth.js'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -51,6 +52,10 @@ export const useAgentsStore = defineStore('agents', () => {
     })
   }
 
+  function _authHeaders() {
+    return useAuthStore().authHeaders()
+  }
+
   async function runAgent(agentId, { tool, prompt, model, provider }) {
     const guildStore = useGuildStore()
     const guildId = guildStore.currentGuild?.id
@@ -58,7 +63,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
     const res = await fetch(`${API_BASE}/guilds/${guildId}/agents/${agentId}/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ tool, prompt, model: model || undefined, provider: provider || undefined })
     })
     if (!res.ok) {
@@ -74,7 +79,8 @@ export const useAgentsStore = defineStore('agents', () => {
     if (!guildId) throw new Error('No active guild')
 
     const res = await fetch(`${API_BASE}/guilds/${guildId}/agents/${agentId}/run`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: _authHeaders(),
     })
     if (!res.ok && res.status !== 404) {
       const err = await res.json().catch(() => ({}))
@@ -83,15 +89,15 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  async function deployWorker({ repos, githubToken }) {
+  async function deployWorker({ repos }) {
     const guildStore = useGuildStore()
     const guildId = guildStore.currentGuild?.id
     if (!guildId) throw new Error('No active guild')
 
     const res = await fetch(`${API_BASE}/guilds/${guildId}/workers`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repos, github_token: githubToken || null })
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body: JSON.stringify({ repos, github_token: null })
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
@@ -107,7 +113,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
     const res = await fetch(`${API_BASE}/guilds/${guildId}/workers/${workerId}/tasks`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({
         description,
         issue_number: issueNumber || null,
@@ -128,7 +134,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
     const res = await fetch(`${API_BASE}/guilds/${guildId}/workers/${workerId}/message`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ message })
     })
     if (!res.ok) {

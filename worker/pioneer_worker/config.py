@@ -1,13 +1,10 @@
 """Configuration for the Pioneer Square worker.
 
-Reads a TOML file (default: ``./pioneer-worker.toml``) and a sidecar JSON
-state file (``.pioneer-worker.state.json`` next to the config) used to
-persist runtime values like the worker id assigned by the backend.
+Reads a TOML file (default: ``./pioneer-worker.toml``).
 """
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -22,7 +19,6 @@ else:  # pragma: no cover
 
 
 DEFAULT_CONFIG_NAME = "pioneer-worker.toml"
-STATE_SUFFIX = ".state.json"
 
 
 @dataclass
@@ -42,7 +38,6 @@ class Config:
     claude_max_turns: int = 50
 
     config_path: Path = field(default_factory=Path)
-    state_path: Path = field(default_factory=Path)
 
     @property
     def http_url(self) -> str:
@@ -67,10 +62,10 @@ def _resolve_config_path(explicit: Optional[str]) -> Path:
 
 
 def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) -> Config:
-    """Load config from TOML, layered with optional sidecar state, env vars, and overrides.
+    """Load config from TOML layered with env vars and overrides.
 
     *overrides* keys map directly to Config field names and take highest priority.
-    If the config file is missing but overrides supply backend_url and session_id,
+    If the config file is missing but overrides supply backend_url and guild_id,
     the file is treated as empty (all other values fall back to defaults).
     """
     overrides = overrides or {}
@@ -89,14 +84,6 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
                 "Create one (see pioneer-worker.toml.example), pass --config, "
                 "or supply --backend-url and --guild-id."
             )
-
-    state_path = cfg_path.with_name(cfg_path.stem + STATE_SUFFIX)
-    state: dict = {}
-    if state_path.exists():
-        try:
-            state = json.loads(state_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            state = {}
 
     backend_url = overrides.get("backend_url") or raw.get("backend_url") or os.environ.get("PIONEER_BACKEND_URL")
     guild_id = overrides.get("guild_id") or raw.get("guild_id") or os.environ.get("PIONEER_GUILD_ID")
@@ -121,7 +108,6 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
         repos=list(overrides.get("repos") or github_block.get("repos") or raw.get("repos") or []),
-        worker_id=overrides.get("worker_id") or state.get("worker_id") or raw.get("worker_id"),
         worker_name=overrides.get("worker_name") or raw.get("worker_name"),
         github_token=token,
         repos_dir=os.path.abspath(overrides.get("repos_dir") or paths_block.get("repos_dir", "/tmp/pioneer-repos")),
@@ -132,18 +118,4 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
         pull_interval=float(overrides.get("pull_interval") if overrides.get("pull_interval") is not None else raw.get("pull_interval", 300.0)),
         claude_max_turns=int(overrides.get("claude_max_turns") if overrides.get("claude_max_turns") is not None else claude_block.get("max_turns", 50)),
         config_path=cfg_path,
-        state_path=state_path,
     )
-
-
-def save_worker_id(cfg: Config, worker_id: str) -> None:
-    """Persist the assigned worker_id to the sidecar state file."""
-    state: dict = {}
-    if cfg.state_path.exists():
-        try:
-            state = json.loads(cfg.state_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            state = {}
-    state["worker_id"] = worker_id
-    cfg.state_path.write_text(json.dumps(state, indent=2) + "\n")
-    cfg.worker_id = worker_id

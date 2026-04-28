@@ -1,15 +1,22 @@
 import asyncio
 import json
+import os
 import random
+import secrets
 import string
+import urllib.error
+import urllib.parse
+import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import aiosqlite
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -45,6 +52,17 @@ app.add_middleware(
 )
 
 DB_PATH = "pioneer_square.db"
+
+# GitHub OAuth config (set via environment variables)
+GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
+GITHUB_REDIRECT_URI = os.environ.get("GITHUB_REDIRECT_URI", "http://localhost:8000/auth/github/callback")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+
+# In-memory: short-lived state tokens for OAuth CSRF protection
+oauth_states: set[str] = set()
+
+_http_bearer = HTTPBearer(auto_error=False)
 
 # In-memory WebSocket connections: guild_id -> list of WebSocket
 connections: Dict[str, List[WebSocket]] = {}
@@ -86,18 +104,21 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS guilds (
             id TEXT PRIMARY KEY,
             created_at TEXT NOT NULL,
-            name TEXT
+            name TEXT,
+            github_user_id TEXT
         )
     """)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS agents (
             id TEXT PRIMARY KEY,
             guild_id TEXT NOT NULL,
+            worker_id TEXT,
             name TEXT NOT NULL,
             type TEXT NOT NULL DEFAULT 'worker',
             state TEXT NOT NULL DEFAULT 'idle',
             joined_at TEXT NOT NULL,
-            FOREIGN KEY (guild_id) REFERENCES guilds(id)
+            FOREIGN KEY (guild_id) REFERENCES guilds(id),
+            FOREIGN KEY (worker_id) REFERENCES workers(id)
         )
     """)
     await db.execute("""
@@ -140,6 +161,33 @@ async def init_db():
             FOREIGN KEY (worker_id) REFERENCES workers(id)
         )
     """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS github_tokens (
+            github_user_id TEXT PRIMARY KEY,
+            github_username TEXT,
+            access_token TEXT NOT NULL,
+            token_type TEXT NOT NULL DEFAULT 'bearer',
+            scope TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            token TEXT PRIMARY KEY,
+            github_user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (github_user_id) REFERENCES github_tokens(github_user_id)
+        )
+    """)
+    for col_sql in [
+        "ALTER TABLE guilds ADD COLUMN github_user_id TEXT",
+        "ALTER TABLE agents ADD COLUMN worker_id TEXT REFERENCES workers(id)",
+    ]:
+        try:
+            await db.execute(col_sql)
+        except aiosqlite.OperationalError:
+            pass
     try:
         await db.execute("ALTER TABLE tasks ADD COLUMN tool TEXT NOT NULL DEFAULT 'claude'")
         await db.commit()
@@ -322,8 +370,18 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
     db = await get_db()
     try:
         async with db.execute(
-            "SELECT w.id, w.repos, a.state FROM workers w"
-            " LEFT JOIN agents a ON a.id = w.id WHERE w.guild_id=?", (guild_id,)
+            "SELECT w.id, w.repos, w.state as worker_state,"
+            " COUNT(a.id) as agent_count,"
+            " GROUP_CONCAT(a.id || ':' || a.state) as agents"
+            " FROM workers w"
+            " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
+            " WHERE w.guild_id=?"
+            " GROUP BY w.id"
+            " UNION ALL"
+            " SELECT a.id, '[]', a.state, 1, a.id || ':' || a.state"
+            " FROM agents a"
+            " WHERE a.guild_id=? AND a.type='worker' AND a.worker_id IS NULL AND a.state != 'offline'",
+            (guild_id, guild_id)
         ) as cur:
             worker_rows = [dict(r) for r in await cur.fetchall()]
         async with db.execute(
@@ -335,8 +393,9 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
         await db.close()
 
     workers_block = json.dumps(
-        [{"id": r["id"], "state": r["state"] or "idle",
-          "repos": json.loads(r["repos"] or "[]")} for r in worker_rows],
+        [{"id": r["id"], "state": r["worker_state"] or "idle",
+          "repos": json.loads(r["repos"] or "[]"),
+          "agent_count": r["agent_count"] or 0} for r in worker_rows],
         indent=2,
     )
     tasks_block = json.dumps(task_rows[:6], indent=2)
@@ -411,8 +470,211 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
         })
 
 
+# ---------------------------------------------------------------------------
+# GitHub OAuth helpers
+# ---------------------------------------------------------------------------
+
+def _gh_exchange_code(code: str) -> dict:
+    payload = urllib.parse.urlencode({
+        "client_id": GITHUB_CLIENT_ID,
+        "client_secret": GITHUB_CLIENT_SECRET,
+        "code": code,
+        "redirect_uri": GITHUB_REDIRECT_URI,
+    }).encode()
+    req = urllib.request.Request(
+        "https://github.com/login/oauth/access_token",
+        data=payload,
+        headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+def _gh_get_user(token: str) -> dict:
+    req = urllib.request.Request(
+        "https://api.github.com/user",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+# ---------------------------------------------------------------------------
+# Auth dependency
+# ---------------------------------------------------------------------------
+
+async def require_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
+) -> str:
+    """FastAPI dependency: validates the login_token and returns github_user_id."""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    token = credentials.credentials
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT github_user_id FROM user_sessions WHERE token=?", (token,)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid or expired session token")
+        return row["github_user_id"]
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
+# GitHub OAuth endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/github/login")
+async def github_login():
+    """Start the GitHub OAuth flow. Returns the authorization URL."""
+    if not GITHUB_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="GitHub OAuth not configured (missing GITHUB_CLIENT_ID)")
+    state = secrets.token_urlsafe(16)
+    oauth_states.add(state)
+    params = urllib.parse.urlencode({
+        "client_id": GITHUB_CLIENT_ID,
+        "redirect_uri": GITHUB_REDIRECT_URI,
+        "scope": "repo read:org project",
+        "state": state,
+    })
+    return {"url": f"https://github.com/login/oauth/authorize?{params}"}
+
+
+@app.get("/auth/github/callback")
+async def github_callback(code: str = Query(...), state: str = Query(...)):
+    """Handle the GitHub OAuth callback: store token, issue a login_token, redirect to frontend."""
+    if state not in oauth_states:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    oauth_states.discard(state)
+
+    try:
+        token_data = await asyncio.to_thread(_gh_exchange_code, code)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub token exchange failed: {exc}")
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=502, detail=f"No access_token in GitHub response: {token_data}")
+
+    try:
+        user_data = await asyncio.to_thread(_gh_get_user, access_token)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub user fetch failed: {exc}")
+
+    github_user_id = str(user_data["id"])
+    github_username = user_data.get("login", "")
+    login_token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc).isoformat()
+
+    db = await get_db()
+    try:
+        await db.execute(
+            """
+            INSERT INTO github_tokens (github_user_id, github_username, access_token, token_type, scope, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(github_user_id) DO UPDATE SET
+                github_username=excluded.github_username,
+                access_token=excluded.access_token,
+                token_type=excluded.token_type,
+                scope=excluded.scope,
+                updated_at=excluded.updated_at
+            """,
+            (
+                github_user_id, github_username, access_token,
+                token_data.get("token_type", "bearer"),
+                token_data.get("scope", ""),
+                now, now,
+            ),
+        )
+        await db.execute(
+            "INSERT INTO user_sessions (token, github_user_id, created_at) VALUES (?, ?, ?)",
+            (login_token, github_user_id, now),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    # Redirect to the frontend landing page with the login_token and GitHub info
+    qs = urllib.parse.urlencode({
+        "login_token": login_token,
+        "gh_token": access_token,
+        "gh_user_id": github_user_id,
+        "gh_login": github_username,
+        "gh_name": user_data.get("name") or "",
+        "gh_avatar": user_data.get("avatar_url") or "",
+    })
+    return RedirectResponse(url=f"{FRONTEND_URL}/?{qs}")
+
+
+@app.get("/auth/github/token")
+async def get_github_token(guild_id: str = Query(...)):
+    """Return the stored OAuth token for the guild's linked GitHub user. Used by workers."""
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT github_user_id FROM guilds WHERE id=?", (guild_id,)
+        ) as cur:
+            guild_row = await cur.fetchone()
+        if not guild_row or not guild_row["github_user_id"]:
+            raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")
+        async with db.execute(
+            "SELECT access_token, github_username FROM github_tokens WHERE github_user_id=?",
+            (guild_row["github_user_id"],),
+        ) as cur:
+            token_row = await cur.fetchone()
+        if not token_row:
+            raise HTTPException(status_code=404, detail="GitHub token not found")
+        return {"access_token": token_row["access_token"], "username": token_row["github_username"]}
+    finally:
+        await db.close()
+
+
+@app.get("/auth/me")
+async def get_me(github_user_id: str = Depends(require_user)):
+    """Return the currently authenticated user's info."""
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT github_user_id, github_username, scope FROM github_tokens WHERE github_user_id=?",
+            (github_user_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "github_user_id": row["github_user_id"],
+            "github_username": row["github_username"],
+            "scope": row["scope"],
+        }
+    finally:
+        await db.close()
+
+
+@app.delete("/auth/logout")
+async def logout(credentials: HTTPAuthorizationCredentials = Depends(_http_bearer)):
+    """Invalidate the current login_token."""
+    if credentials:
+        db = await get_db()
+        try:
+            await db.execute("DELETE FROM user_sessions WHERE token=?", (credentials.credentials,))
+            await db.commit()
+        finally:
+            await db.close()
+    return {"status": "logged_out"}
+
+
 @app.post("/guilds")
-async def create_guild(data: Optional[GuildCreate] = None):
+async def create_guild(
+    data: Optional[GuildCreate] = None,
+    github_user_id: str = Depends(require_user),
+):
     if data is None:
         data = GuildCreate()
     created_at = datetime.now(timezone.utc).isoformat()
@@ -422,8 +684,8 @@ async def create_guild(data: Optional[GuildCreate] = None):
             guild_id = generate_guild_id()
             try:
                 await db.execute(
-                    "INSERT INTO guilds (id, created_at, name) VALUES (?, ?, ?)",
-                    (guild_id, created_at, data.name or f"Guild {guild_id}")
+                    "INSERT INTO guilds (id, created_at, name, github_user_id) VALUES (?, ?, ?, ?)",
+                    (guild_id, created_at, data.name or f"Guild {guild_id}", github_user_id)
                 )
                 await db.commit()
                 break
@@ -437,7 +699,7 @@ async def create_guild(data: Optional[GuildCreate] = None):
 
 
 @app.get("/guilds")
-async def list_guilds():
+async def list_guilds(github_user_id: str = Depends(require_user)):
     db = await get_db()
     try:
         async with db.execute("""
@@ -445,9 +707,10 @@ async def list_guilds():
                    COUNT(a.id) as agent_count
             FROM guilds s
             LEFT JOIN agents a ON a.guild_id = s.id AND a.type != 'foreman'
+            WHERE s.github_user_id = ?
             GROUP BY s.id
             ORDER BY s.created_at DESC
-        """) as cursor:
+        """, (github_user_id,)) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
     finally:
@@ -515,11 +778,12 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 agent_id = data.get("agentId")
                 agent_name = data.get("agentName", "Unknown")
                 agent_type = data.get("agentType", "worker")
+                worker_id = data.get("workerId")
                 joined_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
-                    """INSERT OR REPLACE INTO agents (id, guild_id, name, type, state, joined_at)
-                       VALUES (?, ?, ?, ?, 'idle', ?)""",
-                    (agent_id, guild_id, agent_name, agent_type, joined_at)
+                    """INSERT OR REPLACE INTO agents (id, guild_id, worker_id, name, type, state, joined_at)
+                       VALUES (?, ?, ?, ?, ?, 'idle', ?)""",
+                    (agent_id, guild_id, worker_id, agent_name, agent_type, joined_at)
                 )
                 await db.commit()
                 if agent_id:
@@ -942,9 +1206,9 @@ async def create_worker(guild_id: str, data: WorkerCreate):
             (worker_id, guild_id, json.dumps(data.repos), created_at),
         )
         await db.execute(
-            "INSERT OR REPLACE INTO agents (id, guild_id, name, type, state, joined_at)"
-            " VALUES (?, ?, ?, 'worker', 'offline', ?)",
-            (worker_id, guild_id, worker_name, created_at),
+            "INSERT OR REPLACE INTO agents (id, guild_id, worker_id, name, type, state, joined_at)"
+            " VALUES (?, ?, ?, ?, 'worker', 'offline', ?)",
+            (worker_id, guild_id, worker_id, worker_name, created_at),
         )
         await db.commit()
     finally:

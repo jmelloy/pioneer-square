@@ -36,14 +36,14 @@
       >+ WORKER</button>
 
       <!-- GitHub identity block -->
-      <div class="gh-block" @click="showGitHubModal = true" :title="ghStore.isConfigured ? 'GitHub: ' + ghStore.user.login : 'Configure GitHub'">
-        <div class="gh-inner" :class="{ configured: ghStore.isConfigured }">
-          <img v-if="ghStore.isConfigured" :src="ghStore.user.avatar_url" class="gh-avatar" alt="gh" />
+      <div class="gh-block" @click="showGitHubModal = true" :title="authStore.user ? 'GitHub: ' + authStore.user.login : 'Configure GitHub'">
+        <div class="gh-inner" :class="{ configured: authStore.isLoggedIn }">
+          <img v-if="authStore.isLoggedIn" :src="authStore.user?.avatar_url" class="gh-avatar" alt="gh" />
           <span v-else class="gh-icon">⚙</span>
           <div class="gh-text">
-            <span v-if="ghStore.isConfigured" class="gh-login">{{ ghStore.user.login }}</span>
+            <span v-if="authStore.isLoggedIn" class="gh-login">{{ authStore.user?.login }}</span>
             <span v-else class="gh-setup">Connect GitHub</span>
-            <span class="gh-repos" v-if="ghStore.isConfigured && ghStore.selectedRepos.length > 0">
+            <span class="gh-repos" v-if="authStore.isLoggedIn && ghStore.selectedRepos.length > 0">
               {{ ghStore.selectedRepos.length }} repo{{ ghStore.selectedRepos.length !== 1 ? 's' : '' }}
             </span>
           </div>
@@ -66,12 +66,14 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild.js'
 import { useGitHubStore } from '../stores/github.js'
+import { useAuthStore } from '../stores/auth.js'
 import GitHubConfigModal from './GitHubConfigModal.vue'
 import DeployWorkerModal from './DeployWorkerModal.vue'
 
 const router = useRouter()
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
+const authStore = useAuthStore()
 
 const showGitHubModal = ref(false)
 const showDeployModal = ref(false)

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { useAuthStore } from './auth.js'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -11,9 +12,15 @@ export const useGuildStore = defineStore('guild', () => {
   let ws = null
   const messageHandlers = ref([])
 
+  function _authHeaders() {
+    const authStore = useAuthStore()
+    return authStore.authHeaders()
+  }
+
   async function loadGuilds() {
     try {
-      const res = await fetch(`${API_BASE}/guilds`)
+      const res = await fetch(`${API_BASE}/guilds`, { headers: _authHeaders() })
+      if (!res.ok) { guilds.value = []; return }
       guilds.value = await res.json()
     } catch (e) {
       console.error('Failed to load guilds', e)
@@ -23,7 +30,7 @@ export const useGuildStore = defineStore('guild', () => {
   async function createGuild(name) {
     const res = await fetch(`${API_BASE}/guilds`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ name })
     })
     const guild = await res.json()

@@ -43,9 +43,7 @@ class Worker:
     async def _http(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(base_url=self.cfg.http_url, timeout=30.0)
 
-    async def _register_if_needed(self) -> None:
-        if self.cfg.worker_id:
-            return
+    async def _register(self) -> None:
         async with await self._http() as client:
             resp = await client.post(
                 f"/guilds/{self.cfg.guild_id}/workers",
@@ -53,8 +51,27 @@ class Worker:
             )
             resp.raise_for_status()
             wid = resp.json()["id"]
-        config_mod.save_worker_id(self.cfg, wid)
-        logger.info("Registered new worker id %s", wid)
+        self.cfg.worker_id = wid
+        logger.info("Registered as worker %s", wid)
+
+    async def _fetch_github_token_if_needed(self) -> None:
+        """If no token in config, try fetching the OAuth token stored in the backend DB."""
+        if self.cfg.github_token:
+            return
+        try:
+            async with await self._http() as client:
+                resp = await client.get(
+                    f"/auth/github/token",
+                    params={"guild_id": self.cfg.guild_id},
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                self.cfg.github_token = data.get("access_token")
+                logger.info("Fetched GitHub OAuth token from backend for user %s", data.get("username"))
+            else:
+                logger.warning("No GitHub token available from backend (status %d)", resp.status_code)
+        except Exception as exc:
+            logger.warning("Could not fetch GitHub token from backend: %s", exc)
 
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:
@@ -94,6 +111,7 @@ class Worker:
             "agentId": self.cfg.worker_id,
             "agentName": name,
             "agentType": "worker",
+            "workerId": self.cfg.worker_id,
         })
         await self._send({
             "type": "worker-register",
@@ -124,8 +142,10 @@ class Worker:
             self.cfg.claude_path, self.cfg.codex_path, self.cfg.pi_path,
         )
 
-        await self._register_if_needed()
+        await self._register()
         assert self.cfg.worker_id, "worker_id must be set after registration"
+
+        await self._fetch_github_token_if_needed()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         await self.ws.connect()
