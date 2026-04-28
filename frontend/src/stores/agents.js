@@ -63,23 +63,19 @@ export const useAgentsStore = defineStore('agents', () => {
 
   function addLog(agentId, line, timestamp) {
     const agent = agents.value.find(a => a.id === agentId)
-    if (agent) {
+    if (agent && line) {
       const ts = timestamp || new Date().toISOString()
-      for (const l of line.split('\n')) {
-        agent.logs.push({ line: l, timestamp: ts })
-        if (agent.logs.length > 500) agent.logs.shift()
-      }
+      agent.logs.push({ line, timestamp: ts })
+      if (agent.logs.length > 500) agent.logs.shift()
     }
   }
 
   function addWorkerLog(workerId, line, timestamp) {
+    if (!line) return
     if (!workerLogs.value[workerId]) workerLogs.value[workerId] = []
     const ts = timestamp || new Date().toISOString()
-    for (const l of (line || '').split('\n')) {
-      if (!l) continue
-      workerLogs.value[workerId].push({ line: l, timestamp: ts })
-      if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
-    }
+    workerLogs.value[workerId].push({ line, timestamp: ts })
+    if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
   }
 
   function selectWorker(workerId) {

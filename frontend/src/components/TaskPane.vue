@@ -259,7 +259,7 @@ function formatTs(iso) {
   opacity: 0.6;
 }
 
-.log-text { word-break: break-all; }
+.log-text { word-break: break-all; white-space: pre-wrap; }
 .log-success { color: var(--color-green); }
 .log-error { color: var(--color-red); }
 .log-worker { color: var(--color-brass); }
