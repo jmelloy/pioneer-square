@@ -39,6 +39,7 @@ async function initSession(sessionId) {
     return
   }
 
+  agentsStore.clearAgents()
   const session = await sessionStore.joinSession(sessionId)
   if (!session) {
     router.replace('/')
@@ -46,13 +47,15 @@ async function initSession(sessionId) {
   }
 
   if (session.agents) {
-    session.agents.forEach(a => agentsStore.registerAgent({
-      agentId: a.id,
-      agentName: a.name,
-      agentType: a.type,
-      state: a.state,
-      joinedAt: a.joined_at,
-    }))
+    session.agents
+      .filter(a => a.state !== 'offline')
+      .forEach(a => agentsStore.registerAgent({
+        agentId: a.id,
+        agentName: a.name,
+        agentType: a.type,
+        state: a.state,
+        joinedAt: a.joined_at,
+      }))
   }
 
   const clientId = getClientId()

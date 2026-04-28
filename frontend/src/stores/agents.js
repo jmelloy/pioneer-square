@@ -8,6 +8,7 @@ export const useAgentsStore = defineStore('agents', () => {
   const agents = ref([])
 
   function registerAgent(agentData) {
+    if (agentData.agentType === 'foreman') return
     const existing = agents.value.find(a => a.id === agentData.agentId)
     if (existing) {
       existing.state = agentData.state || 'idle'
@@ -140,6 +141,10 @@ export const useAgentsStore = defineStore('agents', () => {
     return workers.find(a => a.state === 'idle') || workers[0] || null
   }
 
+  function clearAgents() {
+    agents.value = []
+  }
+
   function handleWebSocketMessage(data) {
     if (data.type === 'agent-joined') {
       registerAgent(data)
@@ -163,6 +168,7 @@ export const useAgentsStore = defineStore('agents', () => {
     assignTask,
     messageWorker,
     firstIdleWorker,
+    clearAgents,
     handleWebSocketMessage
   }
 })
