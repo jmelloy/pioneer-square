@@ -604,32 +604,24 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
     client = _anthropic.AsyncAnthropic()
 
     try:
-        # Turn 1 — foreman reasons and optionally calls tools
-        resp1 = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=system,
-            messages=history,
-            tools=FOREMAN_TOOLS,
-        )
-        history.append({"role": "assistant", "content": resp1.content})
-
-        text_parts = [b.text for b in resp1.content if b.type == "text" and b.text.strip()]
-        tool_uses  = [b for b in resp1.content if b.type == "tool_use"]
-
-        if tool_uses:
-            tool_results = await _foreman_exec_tools(guild_id, tool_uses)
-            history.append({"role": "user", "content": tool_results})
-
-            # Turn 2 — final reply after tool execution (no tools allowed)
-            resp2 = await client.messages.create(
+        text_parts = []
+        for _ in range(6):  # safety cap on tool-call rounds
+            resp = await client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=512,
+                max_tokens=1024,
                 system=system,
                 messages=history,
+                tools=FOREMAN_TOOLS,
             )
-            history.append({"role": "assistant", "content": resp2.content})
-            text_parts += [b.text for b in resp2.content if b.type == "text" and b.text.strip()]
+            history.append({"role": "assistant", "content": resp.content})
+            text_parts += [b.text for b in resp.content if b.type == "text" and b.text.strip()]
+
+            tool_uses = [b for b in resp.content if b.type == "tool_use"]
+            if not tool_uses:
+                break  # end_turn — foreman is done
+
+            tool_results = await _foreman_exec_tools(guild_id, tool_uses)
+            history.append({"role": "user", "content": tool_results})
 
         # Trim history
         foreman_conversations[guild_id] = history[-40:]
