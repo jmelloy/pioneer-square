@@ -1,5 +1,22 @@
 <template>
   <aside class="sidebar panel-bg">
+    <div v-if="currentGuild" class="guild-name-bar">
+      <template v-if="renamingGuild">
+        <input
+          ref="renameInput"
+          v-model="renameValue"
+          class="guild-rename-input"
+          @keydown.enter="commitRename"
+          @keydown.escape="cancelRename"
+          @blur="commitRename"
+        />
+      </template>
+      <template v-else>
+        <span class="guild-name-text" @click="startRename" title="Click to rename">{{ currentGuild.name }}</span>
+        <button class="rename-btn" @click="startRename" title="Rename guild">✎</button>
+      </template>
+    </div>
+
     <div class="sidebar-header">
       <span class="sidebar-title">Tasks</span>
       <button class="pixel-btn new-btn" @click="goHome">⌂ Home</button>
@@ -104,7 +121,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild.js'
 import { useGitHubStore } from '../stores/github.js'
@@ -125,6 +142,35 @@ const showGitHubModal = ref(false)
 const showDeployModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
 const isConnected = computed(() => guildStore.isConnected)
+
+const renamingGuild = ref(false)
+const renameValue = ref('')
+const renameInput = ref(null)
+
+async function startRename() {
+  if (!currentGuild.value) return
+  renameValue.value = currentGuild.value.name || ''
+  renamingGuild.value = true
+  await nextTick()
+  renameInput.value?.select()
+}
+
+async function commitRename() {
+  if (!renamingGuild.value) return
+  renamingGuild.value = false
+  const trimmed = renameValue.value.trim()
+  if (trimmed && trimmed !== currentGuild.value?.name) {
+    try {
+      await guildStore.renameGuild(currentGuild.value.id, trimmed)
+    } catch (e) {
+      console.error('Failed to rename guild', e)
+    }
+  }
+}
+
+function cancelRename() {
+  renamingGuild.value = false
+}
 
 const groupedTasks = computed(() => {
   const now = new Date()
@@ -198,6 +244,70 @@ function formatTime(isoStr) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.guild-name-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--color-brass-dark);
+  background: var(--color-bg);
+  flex-shrink: 0;
+  min-height: 32px;
+}
+
+.guild-name-text {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  color: var(--color-brass);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  text-shadow: 0 0 6px rgba(255, 214, 68, 0.3);
+  transition: color 0.12s;
+}
+
+.guild-name-text:hover {
+  color: var(--color-brass-light);
+}
+
+.rename-btn {
+  background: none;
+  border: none;
+  color: var(--color-brass-dark);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 3px;
+  border-radius: 2px;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity 0.12s, background 0.12s;
+  flex-shrink: 0;
+}
+
+.rename-btn:hover {
+  opacity: 1;
+  background: rgba(232, 170, 0, 0.1);
+}
+
+.guild-rename-input {
+  flex: 1;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-brass);
+  color: var(--color-brass-light);
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 3px 6px;
+  outline: none;
+  border-radius: 2px;
+  min-width: 0;
 }
 
 .sidebar-header {
