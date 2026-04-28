@@ -509,12 +509,22 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                 if not row:
                     result_text = f"Task {task_id} not found."
                 else:
-                    await db.execute("UPDATE tasks SET state='done' WHERE id=?", (task_id,))
+                    finished_at = datetime.now(timezone.utc).isoformat()
+                    await db.execute(
+                        "UPDATE tasks SET state='done', finished_at=? WHERE id=?",
+                        (finished_at, task_id),
+                    )
                     await db.commit()
                     await broadcast(guild_id, {
                         "type": "task-finalize",
                         "workerId": row["worker_id"],
                         "taskId": task_id,
+                    })
+                    await broadcast(guild_id, {
+                        "type": "task-update",
+                        "taskId": task_id,
+                        "state": "done",
+                        "finishedAt": finished_at,
                     })
                     result_text = f"Task {task_id} finalized."
 
@@ -1652,7 +1662,11 @@ async def finalize_task_endpoint(guild_id: str, task_id: str):
         if not row:
             raise HTTPException(status_code=404, detail="Task not found")
         worker_id = row["worker_id"]
-        await db.execute("UPDATE tasks SET state='done' WHERE id=?", (task_id,))
+        finished_at = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            "UPDATE tasks SET state='done', finished_at=? WHERE id=?",
+            (finished_at, task_id),
+        )
         await db.commit()
     finally:
         await db.close()
@@ -1660,5 +1674,11 @@ async def finalize_task_endpoint(guild_id: str, task_id: str):
         "type": "task-finalize",
         "workerId": worker_id,
         "taskId": task_id,
+    })
+    await broadcast(guild_id, {
+        "type": "task-update",
+        "taskId": task_id,
+        "state": "done",
+        "finishedAt": finished_at,
     })
     return {"status": "finalized", "taskId": task_id}
