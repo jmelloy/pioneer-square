@@ -14,11 +14,13 @@ export const useAgentsStore = defineStore('agents', () => {
     if (existing) {
       existing.state = agentData.state || 'idle'
       existing.name = agentData.agentName || existing.name
+      if (agentData.workerId) existing.workerId = agentData.workerId
     } else {
       agents.value.push({
         id: agentData.agentId,
         name: agentData.agentName || 'Unknown',
         type: agentData.agentType || 'worker',
+        workerId: agentData.workerId || null,
         state: agentData.state || 'idle',
         logs: [],
         joinedAt: agentData.joinedAt || new Date().toISOString()
@@ -144,10 +146,12 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  // First idle worker agent, or any worker if none are idle
+  // First online worker that has no active (non-offline) task agents.
   function firstIdleWorker() {
-    const workers = agents.value.filter(a => a.type === 'worker' && a.id.startsWith('w-'))
-    return workers.find(a => a.state === 'idle') || workers[0] || null
+    const workers = agents.value.filter(a => a.id.startsWith('w-') && a.state !== 'offline')
+    return workers.find(w =>
+      !agents.value.some(a => a.workerId === w.id && a.state !== 'offline')
+    ) || workers[0] || null
   }
 
   function clearAgents() {

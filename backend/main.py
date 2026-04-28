@@ -799,6 +799,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     "agentId": agent_id,
                     "agentName": agent_name,
                     "agentType": agent_type,
+                    "workerId": worker_id,
                     "state": "idle",
                     "joinedAt": joined_at
                 }
