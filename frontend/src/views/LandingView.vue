@@ -39,43 +39,64 @@
             <div class="logo-title">PIONEER SQUARE</div>
             <div class="logo-subtitle">Multi-Agent Coding Workshop</div>
           </div>
-          <div class="header-actions">
-            <button class="pixel-btn new-btn" @click="openNewSession">+ NEW SESSION</button>
-          </div>
-        </div>
-
-        <div class="sessions-section">
-        <div class="section-label">ACTIVE SESSIONS</div>
-
-        <div v-if="loading" class="loading-msg">Loading sessions...</div>
-
-        <div v-else-if="sessions.length === 0" class="empty-state">
-          <div class="empty-icon">⚙</div>
-          <div class="empty-text">No sessions running.</div>
-          <div class="empty-sub">Start one to begin coordinating agents.</div>
-          <button class="pixel-btn" @click="openNewSession">+ NEW SESSION</button>
-        </div>
-
-        <div v-else class="sessions-grid">
-          <div
-            v-for="session in sessions"
-            :key="session.id"
-            class="session-card"
-            @click="goToSession(session.id)"
-          >
-            <div class="card-top">
-              <span class="card-id">{{ session.id }}</span>
-              <span class="card-agents">
-                <span class="agent-dot" :class="session.agent_count > 0 ? 'active' : 'empty'"></span>
-                {{ session.agent_count || 0 }} agent{{ session.agent_count !== 1 ? 's' : '' }}
-              </span>
+          <div class="header-actions" v-if="authStore.isLoggedIn">
+            <div class="user-pill">
+              <img :src="authStore.user.avatar_url" class="user-avatar" alt="" />
+              <span class="user-login">{{ authStore.user.login }}</span>
             </div>
-            <div class="card-name">{{ session.name }}</div>
-            <div class="card-time">Created {{ formatTime(session.created_at) }}</div>
-            <div class="card-enter">ENTER →</div>
+            <button class="pixel-btn new-btn" @click="openNewSession">+ NEW SESSION</button>
+            <button class="pixel-btn logout-btn" @click="handleLogout">Sign out</button>
           </div>
         </div>
-      </div>
+
+        <!-- Login gate -->
+        <div v-if="!authStore.isLoggedIn" class="login-gate">
+          <div class="login-card">
+            <div class="login-icon">⚙</div>
+            <div class="login-title">SIGN IN TO GET STARTED</div>
+            <div class="login-sub">Connect your GitHub account to create sessions and run agents.</div>
+            <button class="pixel-btn login-btn" :disabled="loggingIn" @click="handleLogin">
+              {{ loggingIn ? 'Redirecting...' : 'SIGN IN WITH GITHUB' }}
+            </button>
+            <div v-if="loginError" class="login-error">{{ loginError }}</div>
+          </div>
+        </div>
+
+        <!-- Sessions list (only shown when logged in) -->
+        <template v-else>
+          <div class="sessions-section">
+            <div class="section-label">YOUR SESSIONS</div>
+
+            <div v-if="loading" class="loading-msg">Loading sessions...</div>
+
+            <div v-else-if="sessions.length === 0" class="empty-state">
+              <div class="empty-icon">⚙</div>
+              <div class="empty-text">No sessions yet.</div>
+              <div class="empty-sub">Start one to begin coordinating agents.</div>
+              <button class="pixel-btn" @click="openNewSession">+ NEW SESSION</button>
+            </div>
+
+            <div v-else class="sessions-grid">
+              <div
+                v-for="session in sessions"
+                :key="session.id"
+                class="session-card"
+                @click="goToSession(session.id)"
+              >
+                <div class="card-top">
+                  <span class="card-id">{{ session.id }}</span>
+                  <span class="card-agents">
+                    <span class="agent-dot" :class="session.agent_count > 0 ? 'active' : 'empty'"></span>
+                    {{ session.agent_count || 0 }} agent{{ session.agent_count !== 1 ? 's' : '' }}
+                  </span>
+                </div>
+                <div class="card-name">{{ session.name }}</div>
+                <div class="card-time">Created {{ formatTime(session.created_at) }}</div>
+                <div class="card-enter">ENTER →</div>
+              </div>
+            </div>
+          </div>
+        </template>
       </div><!-- end main-panel -->
     </div>
 
@@ -108,9 +129,13 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session.js'
+import { useAuthStore } from '../stores/auth.js'
+import { useGitHubStore } from '../stores/github.js'
 
 const router = useRouter()
 const sessionStore = useSessionStore()
+const authStore = useAuthStore()
+const ghStore = useGitHubStore()
 
 const loading = ref(true)
 const sessions = ref([])
@@ -118,15 +143,45 @@ const showNewModal = ref(false)
 const newSessionName = ref('')
 const creating = ref(false)
 const nameInput = ref(null)
+const loggingIn = ref(false)
+const loginError = ref('')
 
 onMounted(async () => {
-  await sessionStore.loadSessions()
-  sessions.value = sessionStore.sessions
+  // Handle the OAuth callback redirect: GitHub sends us back with query params
+  const params = new URLSearchParams(window.location.search)
+  if (params.has('login_token')) {
+    authStore.restoreFromCallback(params)
+    ghStore.restoreGitHubToken(params)
+    // Clean URL without reloading
+    window.history.replaceState({}, '', '/')
+  }
+
+  if (authStore.isLoggedIn) {
+    await sessionStore.loadSessions()
+    sessions.value = sessionStore.sessions
+  }
   loading.value = false
 })
 
 function goToSession(id) {
   router.push(`/${id}`)
+}
+
+async function handleLogin() {
+  loggingIn.value = true
+  loginError.value = ''
+  try {
+    await authStore.loginWithGitHub()
+  } catch (e) {
+    loginError.value = e.message
+    loggingIn.value = false
+  }
+}
+
+async function handleLogout() {
+  await authStore.logout()
+  ghStore.logout()
+  sessions.value = []
 }
 
 async function openNewSession() {
@@ -354,6 +409,104 @@ function sparkleStyle(n) {
 .new-btn {
   font-size: 9px;
   padding: 10px 16px;
+}
+
+.user-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-brass-dark);
+}
+
+.user-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--color-teal);
+}
+
+.user-login {
+  font-size: 11px;
+  color: var(--color-teal);
+}
+
+.logout-btn {
+  font-size: 9px;
+  padding: 6px 12px;
+  background: transparent;
+  border-color: var(--color-brass-dark);
+  color: var(--color-text-dim);
+}
+
+.logout-btn:hover {
+  border-color: var(--color-red);
+  color: var(--color-red);
+  box-shadow: none;
+}
+
+/* ── Login gate ── */
+.login-gate {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 0;
+}
+
+.login-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 48px 40px;
+  background: var(--color-bg-secondary);
+  border: 2px solid var(--color-brass-dark);
+  box-shadow: 0 0 32px rgba(232, 170, 0, 0.1);
+  max-width: 400px;
+  width: 100%;
+  text-align: center;
+}
+
+.login-icon {
+  font-size: 48px;
+  opacity: 0.4;
+  animation: spin 8s linear infinite;
+}
+
+.login-title {
+  font-family: var(--font-pixel);
+  font-size: 9px;
+  color: var(--color-brass-light);
+  letter-spacing: 2px;
+}
+
+.login-sub {
+  font-size: 12px;
+  color: var(--color-text-dim);
+  line-height: 1.6;
+}
+
+.login-btn {
+  font-size: 9px;
+  padding: 12px 24px;
+  margin-top: 8px;
+}
+
+.login-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.login-error {
+  font-size: 11px;
+  color: var(--color-red);
+  padding: 6px 10px;
+  background: rgba(238, 51, 34, 0.1);
+  border: 1px solid rgba(238, 51, 34, 0.3);
+  width: 100%;
 }
 
 /* ── Sessions ── */

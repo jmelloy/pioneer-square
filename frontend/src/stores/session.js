@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { useAuthStore } from './auth.js'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -11,9 +12,15 @@ export const useSessionStore = defineStore('session', () => {
   let ws = null
   const messageHandlers = ref([])
 
+  function _authHeaders() {
+    const authStore = useAuthStore()
+    return authStore.authHeaders()
+  }
+
   async function loadSessions() {
     try {
-      const res = await fetch(`${API_BASE}/sessions`)
+      const res = await fetch(`${API_BASE}/sessions`, { headers: _authHeaders() })
+      if (!res.ok) { sessions.value = []; return }
       sessions.value = await res.json()
     } catch (e) {
       console.error('Failed to load sessions', e)
@@ -23,7 +30,7 @@ export const useSessionStore = defineStore('session', () => {
   async function createSession(name) {
     const res = await fetch(`${API_BASE}/sessions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ name })
     })
     const session = await res.json()

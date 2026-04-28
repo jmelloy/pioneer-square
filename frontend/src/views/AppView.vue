@@ -8,9 +8,10 @@
 
 <script setup>
 import { onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session.js'
 import { useAgentsStore } from '../stores/agents.js'
+import { useAuthStore } from '../stores/auth.js'
 import { useGitHubStore } from '../stores/github.js'
 import SessionSidebar from '../components/SessionSidebar.vue'
 import MainView from '../components/MainView.vue'
@@ -18,10 +19,10 @@ import ChatPane from '../components/ChatPane.vue'
 
 const props = defineProps({ sessionId: String })
 
-const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
 const agentsStore = useAgentsStore()
+const authStore = useAuthStore()
 const ghStore = useGitHubStore()
 
 function getClientId() {
@@ -34,6 +35,10 @@ function getClientId() {
 }
 
 async function initSession(sessionId) {
+  if (!authStore.isLoggedIn) {
+    router.replace('/')
+    return
+  }
   if (!sessionId) {
     router.replace('/')
     return
@@ -57,7 +62,7 @@ async function initSession(sessionId) {
 
   const clientId = getClientId()
   const suffix = clientId.slice(0, 4)
-  const foremanName = ghStore.user ? `${ghStore.user.login}-${suffix}` : `Foreman-${suffix}`
+  const foremanName = authStore.user ? `${authStore.user.login}-${suffix}` : `Foreman-${suffix}`
 
   sessionStore.connectWebSocket(sessionId, (data) => {
     agentsStore.handleWebSocketMessage(data)
@@ -80,18 +85,6 @@ async function initSession(sessionId) {
 onMounted(async () => {
   await sessionStore.loadSessions()
   await initSession(props.sessionId)
-
-  // Handle OAuth callback: GitHub redirects back here with gh_* query params
-  const urlParams = new URLSearchParams(window.location.search)
-  if (urlParams.has('gh_token')) {
-    const restored = ghStore.restoreFromOAuthCallback(urlParams)
-    if (restored && ghStore.repos.length === 0) {
-      ghStore.fetchRepos()
-    }
-    // Clean up the URL without reloading
-    const cleanUrl = window.location.pathname
-    window.history.replaceState({}, '', cleanUrl)
-  }
 })
 
 watch(() => props.sessionId, async (newId) => {

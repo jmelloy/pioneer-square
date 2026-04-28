@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useSessionStore } from './session'
+import { useAuthStore } from './auth.js'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -47,6 +48,10 @@ export const useAgentsStore = defineStore('agents', () => {
     })
   }
 
+  function _authHeaders() {
+    return useAuthStore().authHeaders()
+  }
+
   async function runAgent(agentId, { tool, prompt, model, provider }) {
     const sessionStore = useSessionStore()
     const sessionId = sessionStore.currentSession?.id
@@ -54,7 +59,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
     const res = await fetch(`${API_BASE}/sessions/${sessionId}/agents/${agentId}/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ tool, prompt, model: model || undefined, provider: provider || undefined })
     })
     if (!res.ok) {
@@ -70,7 +75,8 @@ export const useAgentsStore = defineStore('agents', () => {
     if (!sessionId) throw new Error('No active session')
 
     const res = await fetch(`${API_BASE}/sessions/${sessionId}/agents/${agentId}/run`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: _authHeaders(),
     })
     if (!res.ok && res.status !== 404) {
       const err = await res.json().catch(() => ({}))
@@ -79,15 +85,15 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  async function deployWorker({ repos, githubToken }) {
+  async function deployWorker({ repos }) {
     const sessionStore = useSessionStore()
     const sessionId = sessionStore.currentSession?.id
     if (!sessionId) throw new Error('No active session')
 
     const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repos, github_token: githubToken || null })
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body: JSON.stringify({ repos, github_token: null })
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
@@ -103,7 +109,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
     const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}/tasks`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({
         description,
         issue_number: issueNumber || null,
@@ -124,7 +130,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
     const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}/message`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ message })
     })
     if (!res.ok) {

@@ -2,7 +2,6 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
 const GH_API = 'https://api.github.com'
-const API_BASE = 'http://localhost:8000'
 
 function ghHeaders(token) {
   return {
@@ -13,53 +12,21 @@ function ghHeaders(token) {
 
 export const useGitHubStore = defineStore('github', () => {
   const token = ref(localStorage.getItem('gh_token') || '')
-  const user = ref(JSON.parse(localStorage.getItem('gh_user') || 'null'))
   const selectedRepos = ref(JSON.parse(localStorage.getItem('gh_repos') || '[]'))
   const repos = ref([])
   const issues = ref([])
   const loading = ref(false)
   const error = ref('')
 
-  const isConfigured = computed(() => !!token.value && !!user.value)
+  const isConfigured = computed(() => !!token.value)
 
-  // Called after the OAuth callback redirects back with query params
-  function restoreFromOAuthCallback(params) {
+  // Called after the OAuth callback redirects back with query params.
+  function restoreGitHubToken(params) {
     const ghToken = params.get('gh_token')
-    const ghLogin = params.get('gh_login')
-    const ghName = params.get('gh_name')
-    const ghAvatar = params.get('gh_avatar')
-    const ghUserId = params.get('gh_user_id')
-    if (!ghToken || !ghLogin) return false
-
-    const userData = {
-      id: ghUserId,
-      login: ghLogin,
-      name: ghName || ghLogin,
-      avatar_url: ghAvatar || '',
-    }
+    if (!ghToken) return false
     token.value = ghToken
-    user.value = userData
     localStorage.setItem('gh_token', ghToken)
-    localStorage.setItem('gh_user', JSON.stringify(userData))
     return true
-  }
-
-  // Redirect to GitHub OAuth. sessionId is used by the backend to link the token.
-  async function loginWithOAuth(sessionId) {
-    error.value = ''
-    loading.value = true
-    try {
-      const res = await fetch(`${API_BASE}/auth/github/login?session_id=${sessionId}`)
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error(body.detail || `Server error ${res.status}`)
-      }
-      const { url } = await res.json()
-      window.location.href = url
-    } catch (e) {
-      error.value = e.message
-      loading.value = false
-    }
   }
 
   async function fetchRepos() {
@@ -119,27 +86,23 @@ export const useGitHubStore = defineStore('github', () => {
 
   function logout() {
     token.value = ''
-    user.value = null
     selectedRepos.value = []
     repos.value = []
     issues.value = []
     error.value = ''
     localStorage.removeItem('gh_token')
-    localStorage.removeItem('gh_user')
     localStorage.removeItem('gh_repos')
   }
 
   return {
     token,
-    user,
     repos,
     selectedRepos,
     issues,
     loading,
     error,
     isConfigured,
-    loginWithOAuth,
-    restoreFromOAuthCallback,
+    restoreGitHubToken,
     fetchRepos,
     setSelectedRepos,
     fetchIssues,

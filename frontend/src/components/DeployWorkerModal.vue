@@ -7,8 +7,8 @@
       </div>
 
       <div class="modal-body">
-        <div v-if="!ghStore.isConfigured" class="warn-block">
-          Configure GitHub first (sidebar footer) to enable repo tracking and PR creation.
+        <div v-if="!authStore.isLoggedIn" class="warn-block">
+          Sign in with GitHub first to enable repo tracking and PR creation.
         </div>
 
         <div class="section-label">REPOSITORIES TO WATCH</div>
@@ -64,12 +64,14 @@
 <script setup>
 import { ref } from 'vue'
 import { useGitHubStore } from '../stores/github.js'
+import { useAuthStore } from '../stores/auth.js'
 import { useAgentsStore } from '../stores/agents.js'
 import { useSessionStore } from '../stores/session.js'
 
 const emit = defineEmits(['close', 'deployed'])
 
 const ghStore = useGitHubStore()
+const authStore = useAuthStore()
 const agentsStore = useAgentsStore()
 const sessionStore = useSessionStore()
 
@@ -94,7 +96,6 @@ async function deploy() {
   try {
     const worker = await agentsStore.deployWorker({
       repos: selectedRepos.value,
-      githubToken: ghStore.token || undefined,
     })
     emit('deployed', worker)
     emit('close')

@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import aiosqlite
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -58,8 +59,10 @@ GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
 GITHUB_REDIRECT_URI = os.environ.get("GITHUB_REDIRECT_URI", "http://localhost:8000/auth/github/callback")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
-# In-memory: state token -> session_id (short-lived, for OAuth CSRF protection)
-oauth_states: Dict[str, str] = {}
+# In-memory: short-lived state tokens for OAuth CSRF protection
+oauth_states: set[str] = set()
+
+_http_bearer = HTTPBearer(auto_error=False)
 
 # In-memory WebSocket connections: session_id -> list of WebSocket
 connections: Dict[str, List[WebSocket]] = {}
@@ -149,11 +152,22 @@ async def init_db():
             updated_at TEXT NOT NULL
         )
     """)
-    # Add github_user_id to sessions if it doesn't exist yet (migration)
-    try:
-        await db.execute("ALTER TABLE sessions ADD COLUMN github_user_id TEXT")
-    except aiosqlite.OperationalError:
-        pass
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            token TEXT PRIMARY KEY,
+            github_user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (github_user_id) REFERENCES github_tokens(github_user_id)
+        )
+    """)
+    # Migrations: add columns if they don't exist yet
+    for col_sql in [
+        "ALTER TABLE sessions ADD COLUMN github_user_id TEXT",
+    ]:
+        try:
+            await db.execute(col_sql)
+        except aiosqlite.OperationalError:
+            pass
     await db.commit()
     await db.close()
 
@@ -441,16 +455,40 @@ def _gh_get_user(token: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Auth dependency
+# ---------------------------------------------------------------------------
+
+async def require_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
+) -> str:
+    """FastAPI dependency: validates the login_token and returns github_user_id."""
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    token = credentials.credentials
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT github_user_id FROM user_sessions WHERE token=?", (token,)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid or expired session token")
+        return row["github_user_id"]
+    finally:
+        await db.close()
+
+
+# ---------------------------------------------------------------------------
 # GitHub OAuth endpoints
 # ---------------------------------------------------------------------------
 
 @app.get("/auth/github/login")
-async def github_login(session_id: str = Query(...)):
+async def github_login():
     """Start the GitHub OAuth flow. Returns the authorization URL."""
     if not GITHUB_CLIENT_ID:
         raise HTTPException(status_code=500, detail="GitHub OAuth not configured (missing GITHUB_CLIENT_ID)")
     state = secrets.token_urlsafe(16)
-    oauth_states[state] = session_id
+    oauth_states.add(state)
     params = urllib.parse.urlencode({
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": GITHUB_REDIRECT_URI,
@@ -462,10 +500,10 @@ async def github_login(session_id: str = Query(...)):
 
 @app.get("/auth/github/callback")
 async def github_callback(code: str = Query(...), state: str = Query(...)):
-    """Handle the GitHub OAuth callback, store token in DB, redirect to frontend."""
-    session_id = oauth_states.pop(state, None)
-    if session_id is None:
+    """Handle the GitHub OAuth callback: store token, issue a login_token, redirect to frontend."""
+    if state not in oauth_states:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    oauth_states.discard(state)
 
     try:
         token_data = await asyncio.to_thread(_gh_exchange_code, code)
@@ -483,6 +521,7 @@ async def github_callback(code: str = Query(...), state: str = Query(...)):
 
     github_user_id = str(user_data["id"])
     github_username = user_data.get("login", "")
+    login_token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc).isoformat()
 
     db = await get_db()
@@ -506,22 +545,23 @@ async def github_callback(code: str = Query(...), state: str = Query(...)):
             ),
         )
         await db.execute(
-            "UPDATE sessions SET github_user_id=? WHERE id=?",
-            (github_user_id, session_id),
+            "INSERT INTO user_sessions (token, github_user_id, created_at) VALUES (?, ?, ?)",
+            (login_token, github_user_id, now),
         )
         await db.commit()
     finally:
         await db.close()
 
-    # Redirect back to the frontend session with OAuth result in query params
+    # Redirect to the frontend landing page with the login_token and GitHub info
     qs = urllib.parse.urlencode({
+        "login_token": login_token,
         "gh_token": access_token,
         "gh_user_id": github_user_id,
         "gh_login": github_username,
         "gh_name": user_data.get("name") or "",
         "gh_avatar": user_data.get("avatar_url") or "",
     })
-    return RedirectResponse(url=f"{FRONTEND_URL}/{session_id}?{qs}")
+    return RedirectResponse(url=f"{FRONTEND_URL}/?{qs}")
 
 
 @app.get("/auth/github/token")
@@ -547,22 +587,19 @@ async def get_github_token(session_id: str = Query(...)):
         await db.close()
 
 
-@app.get("/auth/github/user")
-async def get_github_user(session_id: str = Query(...)):
-    """Return the GitHub user linked to this session (no token exposed)."""
+@app.get("/auth/me")
+async def get_me(github_user_id: str = Depends(require_user)):
+    """Return the currently authenticated user's info."""
     db = await get_db()
     try:
         async with db.execute(
-            "SELECT s.github_user_id, t.github_username, t.scope "
-            "FROM sessions s LEFT JOIN github_tokens t ON t.github_user_id = s.github_user_id "
-            "WHERE s.id=?",
-            (session_id,),
+            "SELECT github_user_id, github_username, scope FROM github_tokens WHERE github_user_id=?",
+            (github_user_id,),
         ) as cur:
             row = await cur.fetchone()
-        if not row or not row["github_user_id"]:
-            return {"authenticated": False}
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
         return {
-            "authenticated": True,
             "github_user_id": row["github_user_id"],
             "github_username": row["github_username"],
             "scope": row["scope"],
@@ -571,34 +608,35 @@ async def get_github_user(session_id: str = Query(...)):
         await db.close()
 
 
-@app.delete("/auth/github/logout")
-async def github_logout(session_id: str = Query(...)):
-    """Unlink the GitHub account from this session."""
-    db = await get_db()
-    try:
-        await db.execute(
-            "UPDATE sessions SET github_user_id=NULL WHERE id=?", (session_id,)
-        )
-        await db.commit()
-    finally:
-        await db.close()
+@app.delete("/auth/logout")
+async def logout(credentials: HTTPAuthorizationCredentials = Depends(_http_bearer)):
+    """Invalidate the current login_token."""
+    if credentials:
+        db = await get_db()
+        try:
+            await db.execute("DELETE FROM user_sessions WHERE token=?", (credentials.credentials,))
+            await db.commit()
+        finally:
+            await db.close()
     return {"status": "logged_out"}
 
 
 @app.post("/sessions")
-async def create_session(data: Optional[SessionCreate] = None):
+async def create_session(
+    data: Optional[SessionCreate] = None,
+    github_user_id: str = Depends(require_user),
+):
     if data is None:
         data = SessionCreate()
     created_at = datetime.now(timezone.utc).isoformat()
     db = await get_db()
     try:
-        # Retry on collision (UNIQUE constraint); negligible probability with 36^6 space
         for _ in range(5):
             session_id = generate_session_id()
             try:
                 await db.execute(
-                    "INSERT INTO sessions (id, created_at, name) VALUES (?, ?, ?)",
-                    (session_id, created_at, data.name or f"Session {session_id}")
+                    "INSERT INTO sessions (id, created_at, name, github_user_id) VALUES (?, ?, ?, ?)",
+                    (session_id, created_at, data.name or f"Session {session_id}", github_user_id)
                 )
                 await db.commit()
                 break
@@ -612,7 +650,8 @@ async def create_session(data: Optional[SessionCreate] = None):
 
 
 @app.get("/sessions")
-async def list_sessions():
+async def list_sessions(github_user_id: str = Depends(require_user)):
+    """List sessions belonging to the authenticated user."""
     db = await get_db()
     try:
         async with db.execute("""
@@ -620,9 +659,10 @@ async def list_sessions():
                    COUNT(a.id) as agent_count
             FROM sessions s
             LEFT JOIN agents a ON a.session_id = s.id AND a.type != 'foreman'
+            WHERE s.github_user_id = ?
             GROUP BY s.id
             ORDER BY s.created_at DESC
-        """) as cursor:
+        """, (github_user_id,)) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
     finally:
