@@ -1,5 +1,5 @@
 <template>
-  <div class="factory-floor">
+  <div class="factory-floor" ref="floorEl">
     <!-- Background grid -->
     <div class="floor-grid"></div>
 
@@ -118,7 +118,7 @@
       <div class="poi-label">H₂O</div>
     </div>
 
-    <div class="poi coffee-maker">
+    <div class="poi coffee-maker" :style="`left: ${coffeePotPos.x}px; top: ${coffeePotPos.y}px`">
       <div class="cm-body">
         <div class="cm-tank"></div>
         <div class="cm-spout"></div>
@@ -157,7 +157,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, watch, onMounted, onUnmounted } from 'vue'
+import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents.js'
 import { useTasksStore } from '../stores/tasks.js'
 import AgentAvatar from './AgentAvatar.vue'
@@ -168,40 +168,78 @@ const agents = computed(() => agentsStore.agents)
 
 const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
 
-const stationPositions = [
-  { x: 60,  y: 120 },
-  { x: 200, y: 120 },
-  { x: 340, y: 120 },
-  { x: 480, y: 120 },
-  { x: 60,  y: 280 },
-  { x: 200, y: 280 },
-  { x: 340, y: 280 },
-  { x: 480, y: 280 },
-]
+// ── Canvas dimensions ──────────────────────────────────────
+const floorEl = ref(null)
+const floorW  = ref(800)
+const floorH  = ref(600)
 
-// Expanded walkable region
-const WALK_AREA = { xMin: 15, xMax: 570, yMin: 72, yMax: 382 }
+function updateFloorSize() {
+  if (floorEl.value) {
+    floorW.value = floorEl.value.clientWidth  || 800
+    floorH.value = floorEl.value.clientHeight || 600
+  }
+}
 
-// Station desks block y=120-188 (row1) and y=280-350 (row2) across their x-ranges
-const ROW1 = { yMin: 118, yMax: 190 }
-const ROW2 = { yMin: 278, yMax: 352 }
+// ── Desk layout ────────────────────────────────────────────
+// 4 columns × 2 rows spread proportionally across the canvas.
+// Fixed per-desk jitter (seeded values) gives an organic, stable look.
+const COL_FRACS     = [0.08, 0.30, 0.53, 0.75]
+const ROW_FRACS     = [0.22, 0.60]
+const JITTER        = [[8,-5],[-6,12],[14,-8],[-10,7],[5,10],[-12,-6],[9,15],[-7,-9]]
+const GAP_X_FRACS   = [0.01, 0.22, 0.44, 0.66, 0.90]
 
-// Gap X positions clear of all four station columns (stations at x=60-160, 200-300, 340-440, 480-580)
-const GAP_XS = [32, 178, 318, 458, 545]
+const stationPositions = computed(() => {
+  const W = floorW.value, H = floorH.value
+  return ROW_FRACS.flatMap((yf, ri) =>
+    COL_FRACS.map((xf, ci) => ({
+      x: Math.round(xf * W) + JITTER[ri * 4 + ci][0],
+      y: Math.round(yf * H) + JITTER[ri * 4 + ci][1],
+    }))
+  )
+})
+
+// ── Walkable region — full canvas minus small margins ──────
+const WALK_AREA = computed(() => ({
+  xMin: 15,
+  xMax: floorW.value - 15,
+  yMin: 72,
+  yMax: floorH.value - 30, // leave room for ticker tape (28px)
+}))
+
+// Horizontal desk bands that agents must route around
+const ROW1 = computed(() => ({
+  yMin: Math.round(ROW_FRACS[0] * floorH.value) - 18,
+  yMax: Math.round(ROW_FRACS[0] * floorH.value) + 82,
+}))
+const ROW2 = computed(() => ({
+  yMin: Math.round(ROW_FRACS[1] * floorH.value) - 18,
+  yMax: Math.round(ROW_FRACS[1] * floorH.value) + 82,
+}))
+
+// Clear vertical lanes between desk columns
+const GAP_XS = computed(() =>
+  GAP_X_FRACS.map(f => Math.round(f * floorW.value))
+)
+
+// Coffee maker sits beside the rightmost top-row desk (index 3)
+const coffeePotPos = computed(() => {
+  const s = stationPositions.value[3]
+  return { x: s.x + 108, y: s.y - 5 }
+})
 
 // Points of interest — idle robots walk here occasionally
-const POIS = [
-  { id: 'toolbox', x: 26,  y: 88  },  // top-left — tool cabinet
-  { id: 'board',   x: 318, y: 88  },  // top-center — bulletin board
-  { id: 'cooler',  x: 26,  y: 232 },  // mid-left — water cooler
-  { id: 'coffee',  x: 535, y: 232 },  // mid-right — coffee maker
-]
+const POIS = computed(() => [
+  { id: 'toolbox', x: 26,  y: 88 },
+  { id: 'board',   x: 318, y: 88 },
+  { id: 'cooler',  x: 26,  y: Math.round(floorH.value * 0.42) },
+  { id: 'coffee',  x: coffeePotPos.value.x + 5, y: coffeePotPos.value.y + 30 },
+])
 
 const visibleStations = computed(() => {
   const active = tasksStore.tasks
     .filter(t => !['done', 'failed'].includes(t.state) && t.worker_id && t.worker_id !== 'foreman')
     .slice(0, 8)
-  return stationPositions.map((pos, i) => ({
+  return stationPositions.value.map((pos, i) => ({
     ...pos,
     task: active[i] || null,
   }))
@@ -218,21 +256,22 @@ const agentTimers    = {}
 const prevAtWork     = {}
 
 function agentPos(id) {
-  return agentPositions[id] || { x: 300, y: 232 }
+  return agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
 }
 
 // ── Pathfinding helpers ────────────────────────────────────
 
 function getYZone(y) {
-  if (y < ROW1.yMin) return 'top'
-  if (y < ROW1.yMax) return 'row1'
-  if (y < ROW2.yMin) return 'mid'
-  if (y < ROW2.yMax) return 'row2'
+  const r1 = ROW1.value, r2 = ROW2.value
+  if (y < r1.yMin) return 'top'
+  if (y < r1.yMax) return 'row1'
+  if (y < r2.yMin) return 'mid'
+  if (y < r2.yMax) return 'row2'
   return 'bot'
 }
 
 function closestGapX(x) {
-  return GAP_XS.reduce((best, gx) => Math.abs(gx - x) < Math.abs(best - x) ? gx : best)
+  return GAP_XS.value.reduce((best, gx) => Math.abs(gx - x) < Math.abs(best - x) ? gx : best)
 }
 
 // Returns a list of {x,y} waypoints from (x1,y1) to (x2,y2) that avoid station rows.
@@ -255,20 +294,25 @@ function computeWaypoints(x1, y1, x2, y2) {
 }
 
 function randomInClearZone() {
+  const { xMin, xMax, yMin: walkYMin, yMax: walkYMax } = WALK_AREA.value
+  const { yMin: r1Min, yMax: r1Max } = ROW1.value
+  const { yMin: r2Min, yMax: r2Max } = ROW2.value
   const zones = [
-    { yMin: WALK_AREA.yMin, yMax: ROW1.yMin - 2 },
-    { yMin: ROW1.yMax + 2,  yMax: ROW2.yMin - 2 },
-    { yMin: ROW2.yMax + 2,  yMax: WALK_AREA.yMax },
-  ]
+    { yMin: walkYMin,  yMax: r1Min - 2 },
+    { yMin: r1Max + 2, yMax: r2Min - 2 },
+    { yMin: r2Max + 2, yMax: walkYMax  },
+  ].filter(z => z.yMax > z.yMin + 10)
+  if (zones.length === 0) return { x: (xMin + xMax) / 2, y: (walkYMin + walkYMax) / 2 }
   const z = zones[Math.floor(Math.random() * zones.length)]
   return {
-    x: WALK_AREA.xMin + Math.random() * (WALK_AREA.xMax - WALK_AREA.xMin),
+    x: xMin + Math.random() * (xMax - xMin),
     y: z.yMin + Math.random() * (z.yMax - z.yMin),
   }
 }
 
 function pickDestination() {
-  if (Math.random() < 0.38) return POIS[Math.floor(Math.random() * POIS.length)]
+  const pois = POIS.value
+  if (Math.random() < 0.38) return pois[Math.floor(Math.random() * pois.length)]
   return randomInClearZone()
 }
 
@@ -287,7 +331,7 @@ function stepAgent(id) {
     agentTimers[id] = setTimeout(() => scheduleWalk(id), rest)
     return
   }
-  const cur = agentPositions[id] || { x: 300, y: 232 }
+  const cur = agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
   const next = queue.shift()
   const dur = walkDuration(cur.x, cur.y, next.x, next.y)
   agentDuration[id] = dur
@@ -361,10 +405,13 @@ function syncPositions() {
 }
 
 onMounted(() => {
+  updateFloorSize()
+  window.addEventListener('resize', updateFloorSize)
   agents.value.forEach(initAgent)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('resize', updateFloorSize)
   Object.values(agentTimers).forEach(clearTimeout)
 })
 
@@ -959,11 +1006,7 @@ function stateLabel(state) {
   100% { transform: translateY(12px); opacity: 0; }
 }
 
-/* Coffee maker — mid-right */
-.coffee-maker {
-  left: 510px;
-  top: 176px;
-}
+/* Coffee maker — position set dynamically beside the top-right desk */
 .cm-body {
   width: 40px;
   height: 50px;
