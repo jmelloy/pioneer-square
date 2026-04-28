@@ -7,7 +7,7 @@
 </template>
 
 <script setup>
-import { onMounted, watch } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session.js'
 import { useAgentsStore } from '../stores/agents.js'
@@ -82,14 +82,17 @@ async function initSession(sessionId) {
 
 onMounted(async () => {
   await sessionStore.loadSessions()
-  await initSession(props.sessionId)
+})
+
+onUnmounted(() => {
+  sessionStore.disconnectWebSocket()
 })
 
 watch(() => props.sessionId, async (newId) => {
   if (newId) {
     await initSession(newId)
   }
-})
+}, { immediate: true })
 </script>
 
 <style>

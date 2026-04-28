@@ -559,11 +559,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 agent_id = data.get("agentId")
                 line = data.get("line", "")
                 created_at = datetime.now(timezone.utc).isoformat()
-                await db.execute(
-                    "INSERT INTO messages (session_id, from_agent, content, message_type, created_at) VALUES (?, ?, ?, 'terminal', ?)",
-                    (session_id, agent_id, line, created_at)
-                )
-                await db.commit()
                 await broadcast(session_id, {
                     "type": "terminal-output",
                     "agentId": agent_id,
@@ -641,7 +636,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 # ---------------------------------------------------------------------------
 
 async def _emit_terminal_line(session_id: str, agent_id: str, line: str):
-    """Broadcast a terminal output line and persist it to the DB."""
+    """Broadcast a terminal output line."""
     now = datetime.now(timezone.utc).isoformat()
     await broadcast(session_id, {
         "type": "terminal-output",
@@ -649,16 +644,6 @@ async def _emit_terminal_line(session_id: str, agent_id: str, line: str):
         "line": line,
         "timestamp": now,
     })
-    db = await get_db()
-    try:
-        await db.execute(
-            "INSERT INTO messages (session_id, from_agent, content, message_type, created_at)"
-            " VALUES (?, ?, ?, 'terminal', ?)",
-            (session_id, agent_id, line, now),
-        )
-        await db.commit()
-    finally:
-        await db.close()
 
 
 async def _set_agent_state(session_id: str, agent_id: str, state: str):

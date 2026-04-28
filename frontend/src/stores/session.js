@@ -62,9 +62,9 @@ export const useSessionStore = defineStore('session', () => {
       if (onMessage) onMessage(data)
       messageHandlers.value.forEach(h => h(data))
     }
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       isConnected.value = false
-      if (retryCount < MAX_RETRIES) {
+      if (!event.wasClean && retryCount < MAX_RETRIES) {
         setTimeout(() => connectWebSocket(sessionId, onMessage, retryCount + 1), 2000)
       }
     }
@@ -72,6 +72,14 @@ export const useSessionStore = defineStore('session', () => {
       isConnected.value = false
     }
     return ws
+  }
+
+  function disconnectWebSocket() {
+    if (ws) {
+      ws.close()
+      ws = null
+    }
+    isConnected.value = false
   }
 
   function sendMessage(data) {
@@ -97,6 +105,7 @@ export const useSessionStore = defineStore('session', () => {
     createSession,
     joinSession,
     connectWebSocket,
+    disconnectWebSocket,
     sendMessage,
     addMessageHandler,
     removeMessageHandler

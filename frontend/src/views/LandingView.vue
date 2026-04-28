@@ -428,7 +428,6 @@ function sparkleStyle(n) {
   border-color: var(--color-brass);
   background: var(--color-bg-tertiary);
   box-shadow: 0 0 16px rgba(232, 170, 0, 0.2);
-  transform: translateY(-2px);
 }
 
 .card-top {
