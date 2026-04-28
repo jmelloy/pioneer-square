@@ -122,9 +122,9 @@ export const useTasksStore = defineStore('tasks', () => {
       if (task) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
       const { taskId, line, timestamp } = data
-      if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
-      for (const l of (line || '').split('\n')) {
-        if (l) taskLogs.value[taskId].push({ line: l, timestamp })
+      if (line) {
+        if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
+        taskLogs.value[taskId].push({ line, timestamp })
         if (taskLogs.value[taskId].length > 2000) taskLogs.value[taskId].shift()
       }
     }

@@ -173,7 +173,7 @@ watch(logs, async () => {
   font-size: 11px;
 }
 
-.log-content         { color: var(--color-green); word-break: break-all; }
+.log-content         { color: var(--color-green); word-break: break-all; white-space: pre-wrap; }
 .log-content.log-success { color: var(--color-teal); }
 .log-content.log-error   { color: var(--color-red); }
 .log-content.log-meta    { color: var(--color-brass-dark); }
