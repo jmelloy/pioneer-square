@@ -266,7 +266,7 @@ You coordinate worker agents that autonomously clone repos, write code, and open
 
 ## Your responsibilities
 - Understand what the human wants and break it into named, tracked tasks
-- Always call create_task first to name the work and get a task_id; then assign_task to workers
+- Always call create_task first to name the work and get a task_id; then pass that task_id to assign_task so the same record is assigned to a worker (no duplicate rows)
 - After a worker finishes (task-complete), review the result and decide: send_followup for \
 additional work in the same worktree, or finalize_task when done
 - Message workers mid-task via message_worker for context
@@ -281,7 +281,7 @@ For complex work use phases:
 
 ## Task ownership
 - create_task before assign_task so every job has a human-readable name in the sidebar
-- Set parent_task_id on worker tasks to link them to your foreman task
+- Pass the task_id from create_task into assign_task — this assigns the same task to a worker instead of creating a second row
 - After task-complete: call send_followup for further work (update tests, fix lint, add docs),
   or call finalize_task to mark it complete — don't leave tasks in limbo
 
@@ -327,7 +327,8 @@ FOREMAN_TOOLS = [
         "description": (
             "Queue a coding task for a worker agent. The worker creates a git worktree, "
             "runs the chosen coding agent on the description, then pushes the branch. "
-            "Link to a foreman task via parent_task_id."
+            "Pass task_id (from create_task) to assign that existing task to a worker instead "
+            "of creating a duplicate — this is the preferred flow."
         ),
         "input_schema": {
             "type": "object",
@@ -340,6 +341,11 @@ FOREMAN_TOOLS = [
                     "type": "string",
                     "description": "Detailed, self-contained task description the coding agent receives.",
                 },
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID returned by create_task. When provided, assigns that "
+                                   "existing task to the worker instead of creating a new row.",
+                },
                 "name": {
                     "type": "string",
                     "description": "Short task name shown in the sidebar (≤60 chars).",
@@ -351,7 +357,7 @@ FOREMAN_TOOLS = [
                 },
                 "parent_task_id": {
                     "type": "string",
-                    "description": "Foreman task ID this worker task belongs to (optional).",
+                    "description": "Foreman task ID this worker task belongs to (optional, ignored if task_id provided).",
                 },
                 "phase": {
                     "type": "string",
@@ -501,19 +507,61 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
             elif tu.name == "assign_task":
                 wid = inp["worker_id"]
                 desc = inp["description"]
-                name = (inp.get("name") or desc[:60])
                 phase = inp.get("phase", "execute")
-                parent_task_id = inp.get("parent_task_id")
-                task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-                created_at = datetime.now(timezone.utc).isoformat()
+                tool = inp.get("tool", "claude")
+                existing_task_id = inp.get("task_id")
                 async with db.execute(
                     "SELECT 1 FROM workers WHERE id=? AND guild_id=?", (wid, guild_id)
                 ) as cur:
                     worker_row = await cur.fetchone()
                 if not worker_row:
                     result_text = f"Worker {wid} not found — task NOT queued."
+                elif existing_task_id:
+                    # Update the existing foreman task in place — no duplicate row
+                    name_override = inp.get("name")
+                    update_fields = [
+                        ("worker_id", wid),
+                        ("description", desc),
+                        ("tool", tool),
+                        ("phase", phase),
+                        ("state", "pending"),
+                    ]
+                    if name_override:
+                        update_fields.append(("name", name_override))
+                    if inp.get("issue_number") is not None:
+                        update_fields.append(("issue_number", inp["issue_number"]))
+                    if inp.get("issue_repo"):
+                        update_fields.append(("issue_repo", inp["issue_repo"]))
+                    sql = ("UPDATE tasks SET " +
+                           ", ".join(f"{c}=?" for c, _ in update_fields) +
+                           " WHERE id=? AND guild_id=?")
+                    params = [v for _, v in update_fields] + [existing_task_id, guild_id]
+                    await db.execute(sql, params)
+                    await db.commit()
+                    async with db.execute(
+                        "SELECT name FROM tasks WHERE id=?", (existing_task_id,)
+                    ) as cur:
+                        row = await cur.fetchone()
+                    task_name = row["name"] if row else desc[:60]
+                    task_id = existing_task_id
+                    await broadcast(guild_id, {
+                        "type": "task-assigned",
+                        "workerId": wid,
+                        "taskId": task_id,
+                        "name": task_name,
+                        "description": desc,
+                        "tool": tool,
+                        "phase": phase,
+                        "issueNumber": inp.get("issue_number"),
+                        "issueRepo": inp.get("issue_repo"),
+                    })
+                    result_text = f"Task {task_id} assigned to {wid}."
                 else:
-                    tool = inp.get("tool", "claude")
+                    # No existing task_id — create a new row
+                    name = (inp.get("name") or desc[:60])
+                    parent_task_id = inp.get("parent_task_id")
+                    task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                    created_at = datetime.now(timezone.utc).isoformat()
                     await db.execute(
                         "INSERT INTO tasks (id, worker_id, guild_id, name, description, tool,"
                         " issue_number, issue_repo, state, phase, parent_task_id, created_at)"

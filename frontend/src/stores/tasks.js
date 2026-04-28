@@ -91,6 +91,7 @@ export const useTasksStore = defineStore('tasks', () => {
         created_at: data.createdAt,
       })
     } else if (data.type === 'task-assigned') {
+      const existing = tasks.value.find(t => t.id === data.taskId)
       _upsertTask({
         id: data.taskId,
         name: data.name || (data.description || '').slice(0, 60),
@@ -99,7 +100,7 @@ export const useTasksStore = defineStore('tasks', () => {
         state: 'pending',
         worker_id: data.workerId,
         parent_task_id: data.parentTaskId || null,
-        created_at: new Date().toISOString(),
+        ...(existing ? {} : { created_at: new Date().toISOString() }),
       })
     } else if (data.type === 'task-update') {
       const task = tasks.value.find(t => t.id === data.taskId)
