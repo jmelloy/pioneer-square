@@ -91,6 +91,7 @@ export const useTasksStore = defineStore('tasks', () => {
         created_at: data.createdAt,
       })
     } else if (data.type === 'task-assigned') {
+      const existing = tasks.value.find(t => t.id === data.taskId)
       _upsertTask({
         id: data.taskId,
         name: data.name || (data.description || '').slice(0, 60),
@@ -99,7 +100,7 @@ export const useTasksStore = defineStore('tasks', () => {
         state: 'pending',
         worker_id: data.workerId,
         parent_task_id: data.parentTaskId || null,
-        created_at: new Date().toISOString(),
+        ...(existing ? {} : { created_at: new Date().toISOString() }),
       })
     } else if (data.type === 'task-update') {
       const task = tasks.value.find(t => t.id === data.taskId)
@@ -121,9 +122,9 @@ export const useTasksStore = defineStore('tasks', () => {
       if (task) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
       const { taskId, line, timestamp } = data
-      if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
-      for (const l of (line || '').split('\n')) {
-        if (l) taskLogs.value[taskId].push({ line: l, timestamp })
+      if (line) {
+        if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
+        taskLogs.value[taskId].push({ line, timestamp })
         if (taskLogs.value[taskId].length > 2000) taskLogs.value[taskId].shift()
       }
     }

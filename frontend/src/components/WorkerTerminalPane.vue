@@ -39,18 +39,25 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useAgentsStore } from '../stores/agents.js'
+import { useGuildStore } from '../stores/guild.js'
 
 const props = defineProps({
   workerId: { type: String, required: true }
 })
 
 const agentsStore = useAgentsStore()
+const guildStore = useGuildStore()
 const terminalEl = ref(null)
 
 const worker = computed(() => agentsStore.workers.find(w => w.id === props.workerId))
 const logs = computed(() => agentsStore.workerLogs[props.workerId] || [])
+
+onMounted(async () => {
+  const guildId = guildStore.currentGuild?.id
+  if (guildId) await agentsStore.fetchWorkerLogs(guildId, props.workerId)
+})
 
 function padName(name) {
   if (!name) return ''.padEnd(20)
@@ -173,7 +180,7 @@ watch(logs, async () => {
   font-size: 11px;
 }
 
-.log-content         { color: var(--color-green); word-break: break-all; }
+.log-content         { color: var(--color-green); word-break: break-all; white-space: pre-wrap; }
 .log-content.log-success { color: var(--color-teal); }
 .log-content.log-error   { color: var(--color-red); }
 .log-content.log-meta    { color: var(--color-brass-dark); }

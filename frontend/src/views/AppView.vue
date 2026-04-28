@@ -99,6 +99,7 @@ onMounted(async () => {
 onUnmounted(() => {
   guildStore.disconnectWebSocket()
   tasksStore.clearTasks()
+  document.title = 'Pioneer Square'
 })
 
 watch(() => props.guildId, async (newId) => {
@@ -106,6 +107,14 @@ watch(() => props.guildId, async (newId) => {
     await initGuild(newId)
   }
 }, { immediate: true })
+
+watch(
+  () => guildStore.currentGuild?.name,
+  (name) => {
+    document.title = name ? `${name} — Pioneer Square` : 'Pioneer Square'
+  },
+  { immediate: true }
+)
 </script>
 
 <style>

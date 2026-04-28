@@ -368,7 +368,12 @@ onUnmounted(() => {
   Object.values(agentTimers).forEach(clearTimeout)
 })
 
-watch(agents, syncPositions, { deep: true })
+// Watch agent id+state+workerId as a flat string so every agent's state change
+// triggers syncPositions independently, regardless of array-reference stability.
+watch(
+  () => agents.value.map(a => `${a.id}:${a.state}:${a.workerId}`).join(','),
+  syncPositions
+)
 watch(visibleStations, syncPositions)
 
 const tickerMessages = computed(() => {

@@ -1,5 +1,22 @@
 <template>
   <aside class="sidebar panel-bg">
+    <div v-if="currentGuild" class="guild-name-bar">
+      <template v-if="renamingGuild">
+        <input
+          ref="renameInput"
+          v-model="renameValue"
+          class="guild-rename-input"
+          @keydown.enter="commitRename"
+          @keydown.escape="cancelRename"
+          @blur="commitRename"
+        />
+      </template>
+      <template v-else>
+        <span class="guild-name-text" @click="startRename" title="Click to rename">{{ currentGuild.name }}</span>
+        <button class="rename-btn" @click="startRename" title="Rename guild">✎</button>
+      </template>
+    </div>
+
     <div class="sidebar-header">
       <span class="sidebar-title">Tasks</span>
       <button class="pixel-btn new-btn" @click="goHome">⌂ Home</button>
@@ -32,33 +49,45 @@
       </template>
     </div>
 
-    <!-- Agents section -->
-    <div v-if="agentsStore.agents.length > 0" class="workers-section">
+    <!-- Workers/Agents hierarchical section -->
+    <div v-if="agentsStore.workers.length > 0" class="workers-section">
       <div class="section-header">
-        <span class="section-label">Agents</span>
-        <span class="section-count">{{ agentsStore.agents.length }}</span>
+        <span class="section-label">Workers</span>
+        <span class="section-count">{{ agentsStore.workers.length }}</span>
       </div>
-      <div
-        v-for="agent in agentsStore.agents"
-        :key="agent.id"
-        class="worker-item"
-        :class="{ selected: agentsStore.selectedAgentId === agent.id }"
-        @click="agentsStore.selectAgent(agent.id)"
-      >
-        <span class="worker-dot" :class="'wdot-' + agent.state"></span>
-        <span class="worker-name">{{ agent.name }}</span>
-        <span class="worker-state">{{ agent.state }}</span>
-      </div>
+      <template v-for="worker in agentsStore.workers" :key="worker.id">
+        <!-- Worker row -->
+        <div class="worker-row" :class="worker.state">
+          <span class="worker-dot" :class="'wdot-' + worker.state"></span>
+          <span class="worker-row-name">{{ worker.name }}</span>
+          <span class="worker-row-state">{{ worker.state }}</span>
+        </div>
+        <!-- Agent rows under this worker -->
+        <div
+          v-for="agent in agentsForWorker(worker.id)"
+          :key="agent.id"
+          class="agent-row"
+        >
+          <span class="agent-dot" :class="'wdot-' + agent.state"></span>
+          <span class="agent-row-name">{{ agent.name }}</span>
+          <div class="agent-actions">
+            <button
+              class="agent-icon-btn"
+              title="Open agent terminal"
+              @click.stop="agentsStore.selectAgent(agent.id)"
+            >🤖</button>
+            <button
+              class="agent-icon-btn"
+              :disabled="!currentTaskForWorker(worker.id)"
+              :title="currentTaskForWorker(worker.id) ? 'Open current task' : 'No active task'"
+              @click.stop="openAgentTask(worker.id)"
+            >📋</button>
+          </div>
+        </div>
+      </template>
     </div>
 
     <div class="sidebar-footer">
-      <button
-        v-if="currentGuild"
-        class="pixel-btn deploy-btn"
-        @click="showDeployModal = true"
-        title="Deploy a new worker agent"
-      >+ WORKER</button>
-
       <div class="gh-block" @click="showGitHubModal = true" :title="authStore.user ? 'GitHub: ' + authStore.user.login : 'Configure GitHub'">
         <div class="gh-inner" :class="{ configured: authStore.isLoggedIn }">
           <img v-if="authStore.isLoggedIn" :src="authStore.user?.avatar_url" class="gh-avatar" alt="gh" />
@@ -81,11 +110,10 @@
   </aside>
 
   <GitHubConfigModal v-if="showGitHubModal" @close="showGitHubModal = false" />
-  <DeployWorkerModal v-if="showDeployModal" @close="showDeployModal = false" />
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild.js'
 import { useGitHubStore } from '../stores/github.js'
@@ -93,7 +121,6 @@ import { useAuthStore } from '../stores/auth.js'
 import { useTasksStore } from '../stores/tasks.js'
 import { useAgentsStore } from '../stores/agents.js'
 import GitHubConfigModal from './GitHubConfigModal.vue'
-import DeployWorkerModal from './DeployWorkerModal.vue'
 
 const router = useRouter()
 const guildStore = useGuildStore()
@@ -103,9 +130,37 @@ const tasksStore = useTasksStore()
 const agentsStore = useAgentsStore()
 
 const showGitHubModal = ref(false)
-const showDeployModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
 const isConnected = computed(() => guildStore.isConnected)
+
+const renamingGuild = ref(false)
+const renameValue = ref('')
+const renameInput = ref(null)
+
+async function startRename() {
+  if (!currentGuild.value) return
+  renameValue.value = currentGuild.value.name || ''
+  renamingGuild.value = true
+  await nextTick()
+  renameInput.value?.select()
+}
+
+async function commitRename() {
+  if (!renamingGuild.value) return
+  renamingGuild.value = false
+  const trimmed = renameValue.value.trim()
+  if (trimmed && trimmed !== currentGuild.value?.name) {
+    try {
+      await guildStore.renameGuild(currentGuild.value.id, trimmed)
+    } catch (e) {
+      console.error('Failed to rename guild', e)
+    }
+  }
+}
+
+function cancelRename() {
+  renamingGuild.value = false
+}
 
 const groupedTasks = computed(() => {
   const now = new Date()
@@ -142,6 +197,23 @@ function openTask(taskId) {
   tasksStore.selectTask(taskId)
 }
 
+function agentsForWorker(workerId) {
+  return agentsStore.agents.filter(a => a.workerId === workerId)
+}
+
+function currentTaskForWorker(workerId) {
+  const active = tasksStore.tasks.filter(
+    t => t.worker_id === workerId && !['done', 'failed'].includes(t.state)
+  )
+  if (active.length) return active[0]
+  return tasksStore.tasks.find(t => t.worker_id === workerId) || null
+}
+
+function openAgentTask(workerId) {
+  const task = currentTaskForWorker(workerId)
+  if (task) tasksStore.selectTask(task.id)
+}
+
 function formatTime(isoStr) {
   if (!isoStr) return ''
   const d = new Date(isoStr)
@@ -162,6 +234,70 @@ function formatTime(isoStr) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.guild-name-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--color-brass-dark);
+  background: var(--color-bg);
+  flex-shrink: 0;
+  min-height: 32px;
+}
+
+.guild-name-text {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  color: var(--color-brass);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  text-shadow: 0 0 6px rgba(255, 214, 68, 0.3);
+  transition: color 0.12s;
+}
+
+.guild-name-text:hover {
+  color: var(--color-brass-light);
+}
+
+.rename-btn {
+  background: none;
+  border: none;
+  color: var(--color-brass-dark);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 3px;
+  border-radius: 2px;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity 0.12s, background 0.12s;
+  flex-shrink: 0;
+}
+
+.rename-btn:hover {
+  opacity: 1;
+  background: rgba(232, 170, 0, 0.1);
+}
+
+.guild-rename-input {
+  flex: 1;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-brass);
+  color: var(--color-brass-light);
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 3px 6px;
+  outline: none;
+  border-radius: 2px;
+  min-width: 0;
 }
 
 .sidebar-header {
@@ -304,7 +440,7 @@ function formatTime(isoStr) {
 .workers-section {
   border-top: 2px solid var(--color-brass-dark);
   flex-shrink: 0;
-  max-height: 160px;
+  max-height: 240px;
   overflow-y: auto;
 }
 
@@ -335,24 +471,91 @@ function formatTime(isoStr) {
   border-radius: 2px;
 }
 
-.worker-item {
+/* Worker top-level row */
+.worker-row {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 7px 12px;
-  cursor: pointer;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  padding: 5px 12px;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.worker-row-name {
+  font-size: 10px;
+  color: var(--color-teal);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-pixel);
+  letter-spacing: 0.5px;
+}
+
+.worker-row-state {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Agent row (indented under worker) */
+.agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 22px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
   transition: background 0.12s;
 }
 
-.worker-item:hover {
+.agent-row:hover {
   background: rgba(0, 187, 170, 0.06);
 }
 
-.worker-item.selected {
-  background: rgba(0, 187, 170, 0.12);
-  border-left: 3px solid var(--color-teal);
-  padding-left: 9px;
+.agent-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.agent-row-name {
+  font-size: 10px;
+  color: var(--color-text);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.agent-icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 3px;
+  border-radius: 2px;
+  opacity: 0.6;
+  transition: opacity 0.12s, background 0.12s;
+  line-height: 1;
+}
+
+.agent-icon-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.agent-icon-btn:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
 }
 
 .worker-dot {
@@ -368,23 +571,6 @@ function formatTime(isoStr) {
 .wdot-error   { background: var(--color-red); }
 .wdot-offline { background: #333; }
 
-.worker-name {
-  font-size: 11px;
-  color: var(--color-teal);
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.worker-state {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
 /* ── Footer ── */
 .sidebar-footer {
   display: flex;
@@ -394,21 +580,6 @@ function formatTime(isoStr) {
   border-top: 2px solid var(--color-brass-dark);
   background: var(--color-bg-tertiary);
   flex-shrink: 0;
-}
-
-.deploy-btn {
-  width: 100%;
-  font-size: 7px;
-  padding: 6px 10px;
-  background: linear-gradient(180deg, rgba(0, 187, 170, 0.3) 0%, rgba(0, 120, 110, 0.5) 100%);
-  border-color: var(--color-teal);
-  color: var(--color-teal);
-}
-
-.deploy-btn:hover {
-  background: linear-gradient(180deg, rgba(0, 187, 170, 0.5) 0%, rgba(0, 150, 140, 0.7) 100%);
-  box-shadow: 0 0 10px rgba(0, 187, 170, 0.4);
-  color: var(--color-cream);
 }
 
 /* ── GitHub block ── */

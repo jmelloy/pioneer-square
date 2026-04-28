@@ -63,23 +63,19 @@ export const useAgentsStore = defineStore('agents', () => {
 
   function addLog(agentId, line, timestamp) {
     const agent = agents.value.find(a => a.id === agentId)
-    if (agent) {
+    if (agent && line) {
       const ts = timestamp || new Date().toISOString()
-      for (const l of line.split('\n')) {
-        agent.logs.push({ line: l, timestamp: ts })
-        if (agent.logs.length > 500) agent.logs.shift()
-      }
+      agent.logs.push({ line, timestamp: ts })
+      if (agent.logs.length > 500) agent.logs.shift()
     }
   }
 
   function addWorkerLog(workerId, line, timestamp) {
+    if (!line) return
     if (!workerLogs.value[workerId]) workerLogs.value[workerId] = []
     const ts = timestamp || new Date().toISOString()
-    for (const l of (line || '').split('\n')) {
-      if (!l) continue
-      workerLogs.value[workerId].push({ line: l, timestamp: ts })
-      if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
-    }
+    workerLogs.value[workerId].push({ line, timestamp: ts })
+    if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
   }
 
   function selectWorker(workerId) {
@@ -155,23 +151,6 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  async function deployWorker({ repos }) {
-    const guildStore = useGuildStore()
-    const guildId = guildStore.currentGuild?.id
-    if (!guildId) throw new Error('No active guild')
-
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ repos, github_token: null })
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.detail || `HTTP ${res.status}`)
-    }
-    return res.json()
-  }
-
   async function assignTask(workerId, { description, issueNumber, issueRepo }) {
     const guildStore = useGuildStore()
     const guildId = guildStore.currentGuild?.id
@@ -233,13 +212,48 @@ export const useAgentsStore = defineStore('agents', () => {
     openedAgentIds.value = []
   }
 
+  async function fetchWorkerLogs(guildId, workerId) {
+    try {
+      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?worker_id=${workerId}`)
+      if (res.ok) {
+        const logs = await res.json()
+        workerLogs.value[workerId] = logs
+      }
+    } catch (e) {
+      console.error('Failed to fetch worker logs', e)
+    }
+  }
+
+  async function fetchAgentLogs(guildId, agentId) {
+    try {
+      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?agent_id=${agentId}`)
+      if (res.ok) {
+        const historical = await res.json()
+        const agent = agents.value.find(a => a.id === agentId)
+        if (agent) {
+          const existing = agent.logs
+          agent.logs = [...historical, ...existing]
+          if (agent.logs.length > 2000) agent.logs = agent.logs.slice(-2000)
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch agent logs', e)
+    }
+  }
+
   function handleWebSocketMessage(data) {
     if (data.type === 'agent-joined') {
       registerAgent(data)
     } else if (data.type === 'agent-state') {
       updateAgentState(data.agentId, data.state)
-    } else if (data.type === 'terminal-output' && !data.taskId) {
-      addLog(data.agentId, data.line, data.timestamp)
+    } else if (data.type === 'terminal-output') {
+      // Route to per-agent log buffer (includes task logs for agent-tab view)
+      if (data.agentId) addLog(data.agentId, data.line, data.timestamp)
+      // Route to per-worker log buffer; fall back to agent's workerId if backend didn't send it
+      const wid = data.workerId || (data.agentId
+        ? agents.value.find(a => a.id === data.agentId)?.workerId
+        : null)
+      if (wid) addWorkerLog(wid, data.line, data.timestamp)
     }
   }
 
@@ -255,6 +269,8 @@ export const useAgentsStore = defineStore('agents', () => {
     updateAgentState,
     addLog,
     addWorkerLog,
+    fetchWorkerLogs,
+    fetchAgentLogs,
     selectWorker,
     closeWorker,
     selectAgent,
@@ -262,7 +278,6 @@ export const useAgentsStore = defineStore('agents', () => {
     sendMessage,
     runAgent,
     stopAgent,
-    deployWorker,
     assignTask,
     messageWorker,
     firstIdleWorker,
