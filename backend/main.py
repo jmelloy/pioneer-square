@@ -213,7 +213,10 @@ async def init_db():
     """)
     # On every startup, no worker processes are connected yet.
     await db.execute("UPDATE workers SET state = 'offline'")
-    await db.execute("UPDATE agents SET state = 'offline' WHERE type = 'worker'")
+    await db.execute(
+        "UPDATE agents SET state = 'offline'"
+        " WHERE worker_id IN (SELECT id FROM workers WHERE state = 'offline')"
+    )
     await db.commit()
     await db.close()
 
