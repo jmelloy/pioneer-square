@@ -290,7 +290,7 @@ class Worker:
             "Task %s: launching claude in %s (max_turns=%d)",
             task_id, primary_wt, self.cfg.claude_max_turns,
         )
-        success, last_msg = await claude_runner.run_claude_auto(
+        success, stop_reason, last_msg = await claude_runner.run_claude_auto(
             desc,
             primary_wt,
             max_turns=self.cfg.claude_max_turns,
@@ -299,7 +299,7 @@ class Worker:
         )
         self.current_claude = None
         finished_at = _now_iso()
-        logger.info("Task %s: claude finished success=%s", task_id, success)
+        logger.info("Task %s: claude finished success=%s stop_reason=%s", task_id, success, stop_reason)
 
         if success:
             logger.info("Task %s: pushing branch and opening PR", task_id)
@@ -324,7 +324,7 @@ class Worker:
             })
             await self._set_state("idle")
         else:
-            logger.warning("Task %s: failed, requesting human input", task_id)
+            logger.warning("Task %s: failed stop_reason=%s, requesting human input", task_id, stop_reason)
             await self._task_update(task_id, state="failed", finishedAt=finished_at)
             await self._set_state("error")
             await self._send({
@@ -332,6 +332,7 @@ class Worker:
                 "workerId": self.cfg.worker_id,
                 "taskId": task_id,
                 "description": desc,
+                "stopReason": stop_reason,
                 "lastMessage": last_msg,
             })
 
