@@ -66,18 +66,18 @@
       <div class="belt-roller right"></div>
     </div>
 
-    <!-- Work stations -->
+    <!-- Work stations — one per active task -->
     <div
-      v-for="(station, i) in stations"
+      v-for="(station, i) in visibleStations"
       :key="i"
       class="work-station"
       :style="`left: ${station.x}px; top: ${station.y}px`"
-      :class="{ occupied: station.agent }"
+      :class="{ occupied: station.task }"
     >
       <div class="station-desk">
         <div class="station-monitor">
           <div class="monitor-screen">
-            <div v-if="station.agent" class="screen-active">
+            <div v-if="station.task" class="screen-active">
               <div class="screen-line" v-for="l in 3" :key="l"></div>
             </div>
             <div v-else class="screen-idle">--</div>
@@ -85,13 +85,21 @@
         </div>
         <div class="station-table"></div>
       </div>
-      <div v-if="station.agent" class="station-agent">
-        <AgentAvatar :agent="station.agent" />
+      <div class="station-label">{{ station.task ? truncate(station.task.name, 10) : `WS-${i + 1}` }}</div>
+      <div v-if="station.task" class="task-badge" :class="`state-${station.task.state}`">
+        {{ stateLabel(station.task.state) }}
       </div>
-      <div v-else class="station-empty">
-        <div class="empty-slot">?</div>
-      </div>
-      <div class="station-label">WS-{{ i + 1 }}</div>
+    </div>
+
+    <!-- Floating agents that walk to their task station or wander when idle -->
+    <div
+      v-for="agent in agents"
+      :key="agent.id"
+      class="floating-agent"
+      :style="`left: ${agentPos(agent.id).x}px; top: ${agentPos(agent.id).y}px`"
+    >
+      <AgentAvatar :agent="agent" />
+      <div class="agent-nametag">{{ agent.name }}</div>
     </div>
 
     <!-- Info overlay -->
@@ -112,11 +120,13 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents.js'
+import { useTasksStore } from '../stores/tasks.js'
 import AgentAvatar from './AgentAvatar.vue'
 
 const agentsStore = useAgentsStore()
+const tasksStore = useTasksStore()
 const agents = computed(() => agentsStore.agents)
 
 const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
@@ -132,21 +142,97 @@ const stationPositions = [
   { x: 480, y: 280 },
 ]
 
-const stations = computed(() => {
+const WALK_AREA = { xMin: 30, xMax: 540, yMin: 80, yMax: 330 }
+
+// Stations are driven by active tasks, not agents
+const visibleStations = computed(() => {
+  const active = tasksStore.tasks
+    .filter(t => !['done', 'failed'].includes(t.state) && t.worker_id && t.worker_id !== 'foreman')
+    .slice(0, 8)
   return stationPositions.map((pos, i) => ({
     ...pos,
-    agent: agents.value[i] || null
+    task: active[i] || null,
   }))
 })
 
+// Per-agent position tracking (used for walking animation)
+const agentPositions = reactive({})
+
+function agentPos(agentId) {
+  return agentPositions[agentId] || { x: 100, y: 220 }
+}
+
+function randomPos() {
+  return {
+    x: WALK_AREA.xMin + Math.random() * (WALK_AREA.xMax - WALK_AREA.xMin),
+    y: WALK_AREA.yMin + Math.random() * (WALK_AREA.yMax - WALK_AREA.yMin),
+  }
+}
+
+function stationForAgent(agent) {
+  if (!agent.workerId) return null
+  return visibleStations.value.find(s => s.task && s.task.worker_id === agent.workerId) || null
+}
+
+function isAgentAtWork(agent) {
+  return !!stationForAgent(agent) && !['idle', 'offline'].includes(agent.state)
+}
+
+// Move working agents to their station; initialize new agents at random positions
+function syncPositions() {
+  agents.value.forEach(agent => {
+    if (isAgentAtWork(agent)) {
+      const station = stationForAgent(agent)
+      agentPositions[agent.id] = { x: station.x + 25, y: station.y + 90 }
+    } else if (!agentPositions[agent.id]) {
+      agentPositions[agent.id] = randomPos()
+    }
+  })
+}
+
+// Cycle through idle agents one at a time so they don't all move simultaneously
+let walkIdx = 0
+let walkTimer = null
+
+function tickWalk() {
+  const idle = agents.value.filter(a => !isAgentAtWork(a))
+  if (idle.length === 0) return
+  const agent = idle[walkIdx % idle.length]
+  walkIdx++
+  agentPositions[agent.id] = randomPos()
+}
+
+onMounted(() => {
+  syncPositions()
+  walkTimer = setInterval(tickWalk, 2000)
+})
+
+onUnmounted(() => {
+  if (walkTimer) clearInterval(walkTimer)
+})
+
+watch(agents, syncPositions, { deep: true })
+watch(visibleStations, syncPositions)
+
 const tickerMessages = computed(() => {
   const msgs = []
-  agents.value.forEach(a => {
-    msgs.push(`${a.name}: ${a.state.toUpperCase()}`)
-  })
+  agents.value.forEach(a => msgs.push(`${a.name}: ${a.state.toUpperCase()}`))
+  tasksStore.tasks
+    .filter(t => !['done', 'failed'].includes(t.state))
+    .slice(0, 4)
+    .forEach(t => msgs.push(`TASK: ${t.name}`))
   if (msgs.length === 0) msgs.push('AWAITING WORKERS', 'SYSTEMS NOMINAL', 'BOILER PRESSURE: 87 PSI')
   return msgs
 })
+
+function truncate(str, len) {
+  if (!str) return ''
+  return str.length > len ? str.slice(0, len) + '…' : str
+}
+
+function stateLabel(state) {
+  return tasksStore.stateLabel(state)
+}
 </script>
 
 <style scoped>
@@ -487,7 +573,6 @@ const tickerMessages = computed(() => {
   border-radius: 1px;
 }
 
-/* Teal/cyan screens — very Lucca's workshop */
 .screen-line:nth-child(1) { background: var(--color-teal); }
 .screen-line:nth-child(2) { background: var(--color-sky); animation-delay: -0.7s; opacity: 0.5; }
 .screen-line:nth-child(3) { background: var(--color-green); animation-delay: -1.4s; opacity: 0.3; width: 60%; }
@@ -512,32 +597,55 @@ const tickerMessages = computed(() => {
   border-top: 3px solid var(--color-brass);
 }
 
-.station-agent, .station-empty {
-  margin-top: 2px;
-}
-
-.empty-slot {
-  width: 30px;
-  height: 50px;
-  background: rgba(232, 170, 0, 0.04);
-  border: 1px dashed var(--color-brass-dark);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-dim);
-  font-size: 16px;
-  font-family: var(--font-mono);
-}
-
 .station-label {
   font-size: 5px;
   color: var(--color-brass-dark);
   letter-spacing: 1px;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.task-badge {
+  font-size: 5px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.state-working       { color: var(--color-green);  text-shadow: 0 0 4px var(--color-green); }
+.state-pending       { color: var(--color-text-dim); }
+.state-planning      { color: var(--color-sky);    text-shadow: 0 0 4px var(--color-sky); }
+.state-awaiting-review { color: var(--color-amber); text-shadow: 0 0 4px var(--color-amber); }
+.state-followup      { color: var(--color-orange); text-shadow: 0 0 4px var(--color-orange); }
+.state-failed        { color: var(--color-red);    text-shadow: 0 0 4px var(--color-red); }
+.state-done          { color: var(--color-teal);   text-shadow: 0 0 4px var(--color-teal); }
 
 .work-station.occupied .station-table {
   border-top-color: var(--color-brass-light);
   background: linear-gradient(180deg, #6a4820 0%, #4a2e12 100%);
+}
+
+/* Floating agents — walk via CSS left/top transitions */
+.floating-agent {
+  position: absolute;
+  z-index: 5;
+  transition: left 2.4s ease-in-out, top 2.4s ease-in-out;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.agent-nametag {
+  font-size: 5px;
+  color: var(--color-brass);
+  margin-top: 2px;
+  white-space: nowrap;
+  text-shadow: 0 0 4px rgba(232, 170, 0, 0.5);
+  letter-spacing: 1px;
 }
 
 /* Factory info overlay */
@@ -559,7 +667,6 @@ const tickerMessages = computed(() => {
 .factory-title {
   font-size: 7px;
   letter-spacing: 2px;
-  /* Warm gold shimmer — very SNES RPG title feel */
   background: linear-gradient(90deg,
     var(--color-amber),
     var(--color-gold),
