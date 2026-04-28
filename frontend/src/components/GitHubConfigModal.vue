@@ -50,18 +50,11 @@
         <!-- Not logged in state -->
         <template v-else>
           <div class="auth-section">
-            <div class="section-label">PERSONAL ACCESS TOKEN</div>
+            <div class="section-label">CONNECT GITHUB ACCOUNT</div>
             <div class="token-hint">
-              Create a token at github.com/settings/tokens with
-              <code>repo</code>, <code>read:org</code>, and <code>read:project</code> scopes.
+              Authorize Pioneer Square to access your repositories via GitHub OAuth.
+              Requires <code>repo</code>, <code>read:org</code>, and <code>read:project</code> scopes.
             </div>
-            <input
-              v-model="tokenInput"
-              type="password"
-              class="field-input"
-              placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-              @keydown.enter="connect"
-            />
             <div v-if="ghStore.error" class="error-msg">{{ ghStore.error }}</div>
           </div>
         </template>
@@ -78,10 +71,10 @@
           <button class="pixel-btn cancel-btn" @click="$emit('close')">Cancel</button>
           <button
             class="pixel-btn connect-btn"
-            @click="connect"
-            :disabled="ghStore.loading || !tokenInput.trim()"
+            @click="connectOAuth"
+            :disabled="ghStore.loading"
           >
-            {{ ghStore.loading ? 'Connecting...' : 'CONNECT' }}
+            {{ ghStore.loading ? 'Redirecting...' : 'CONNECT WITH GITHUB' }}
           </button>
         </template>
       </div>
@@ -92,11 +85,12 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useGitHubStore } from '../stores/github.js'
+import { useSessionStore } from '../stores/session.js'
 
 const emit = defineEmits(['close'])
 const ghStore = useGitHubStore()
+const sessionStore = useSessionStore()
 
-const tokenInput = ref('')
 const loadingRepos = ref(false)
 const localSelected = ref([...ghStore.selectedRepos])
 
@@ -123,15 +117,13 @@ function toggleRepo(fullName) {
   }
 }
 
-async function connect() {
-  if (!tokenInput.value.trim() || ghStore.loading) return
-  const result = await ghStore.authenticate(tokenInput.value.trim())
-  if (result.success) {
-    tokenInput.value = ''
-    loadingRepos.value = true
-    await ghStore.fetchRepos()
-    loadingRepos.value = false
+async function connectOAuth() {
+  const sessionId = sessionStore.currentSession?.id
+  if (!sessionId) {
+    ghStore.error = 'No active session — open a session first.'
+    return
   }
+  await ghStore.loginWithOAuth(sessionId)
 }
 
 async function save() {
@@ -144,7 +136,6 @@ async function save() {
 
 async function logout() {
   ghStore.logout()
-  tokenInput.value = ''
   localSelected.value = []
 }
 </script>

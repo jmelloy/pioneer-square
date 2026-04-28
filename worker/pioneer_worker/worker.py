@@ -56,6 +56,25 @@ class Worker:
         config_mod.save_worker_id(self.cfg, wid)
         logger.info("Registered new worker id %s", wid)
 
+    async def _fetch_github_token_if_needed(self) -> None:
+        """If no token in config, try fetching the OAuth token stored in the backend DB."""
+        if self.cfg.github_token:
+            return
+        try:
+            async with await self._http() as client:
+                resp = await client.get(
+                    f"/auth/github/token",
+                    params={"session_id": self.cfg.session_id},
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                self.cfg.github_token = data.get("access_token")
+                logger.info("Fetched GitHub OAuth token from backend for user %s", data.get("username"))
+            else:
+                logger.warning("No GitHub token available from backend (status %d)", resp.status_code)
+        except Exception as exc:
+            logger.warning("Could not fetch GitHub token from backend: %s", exc)
+
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:
             resp = await client.get(
@@ -121,6 +140,8 @@ class Worker:
 
         await self._register_if_needed()
         assert self.cfg.worker_id, "worker_id must be set after registration"
+
+        await self._fetch_github_token_if_needed()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         await self.ws.connect()

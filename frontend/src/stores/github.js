@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 
 const GH_API = 'https://api.github.com'
+const API_BASE = 'http://localhost:8000'
 
 function ghHeaders(token) {
   return {
@@ -21,22 +22,42 @@ export const useGitHubStore = defineStore('github', () => {
 
   const isConfigured = computed(() => !!token.value && !!user.value)
 
-  async function authenticate(newToken) {
+  // Called after the OAuth callback redirects back with query params
+  function restoreFromOAuthCallback(params) {
+    const ghToken = params.get('gh_token')
+    const ghLogin = params.get('gh_login')
+    const ghName = params.get('gh_name')
+    const ghAvatar = params.get('gh_avatar')
+    const ghUserId = params.get('gh_user_id')
+    if (!ghToken || !ghLogin) return false
+
+    const userData = {
+      id: ghUserId,
+      login: ghLogin,
+      name: ghName || ghLogin,
+      avatar_url: ghAvatar || '',
+    }
+    token.value = ghToken
+    user.value = userData
+    localStorage.setItem('gh_token', ghToken)
+    localStorage.setItem('gh_user', JSON.stringify(userData))
+    return true
+  }
+
+  // Redirect to GitHub OAuth. sessionId is used by the backend to link the token.
+  async function loginWithOAuth(sessionId) {
     error.value = ''
     loading.value = true
     try {
-      const res = await fetch(`${GH_API}/user`, { headers: ghHeaders(newToken) })
-      if (!res.ok) throw new Error(res.status === 401 ? 'Invalid token' : `GitHub error ${res.status}`)
-      const userData = await res.json()
-      token.value = newToken
-      user.value = userData
-      localStorage.setItem('gh_token', newToken)
-      localStorage.setItem('gh_user', JSON.stringify(userData))
-      return { success: true, user: userData }
+      const res = await fetch(`${API_BASE}/auth/github/login?session_id=${sessionId}`)
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `Server error ${res.status}`)
+      }
+      const { url } = await res.json()
+      window.location.href = url
     } catch (e) {
       error.value = e.message
-      return { success: false, error: e.message }
-    } finally {
       loading.value = false
     }
   }
@@ -117,7 +138,8 @@ export const useGitHubStore = defineStore('github', () => {
     loading,
     error,
     isConfigured,
-    authenticate,
+    loginWithOAuth,
+    restoreFromOAuthCallback,
     fetchRepos,
     setSelectedRepos,
     fetchIssues,

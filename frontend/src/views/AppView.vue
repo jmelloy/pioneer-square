@@ -80,6 +80,18 @@ async function initSession(sessionId) {
 onMounted(async () => {
   await sessionStore.loadSessions()
   await initSession(props.sessionId)
+
+  // Handle OAuth callback: GitHub redirects back here with gh_* query params
+  const urlParams = new URLSearchParams(window.location.search)
+  if (urlParams.has('gh_token')) {
+    const restored = ghStore.restoreFromOAuthCallback(urlParams)
+    if (restored && ghStore.repos.length === 0) {
+      ghStore.fetchRepos()
+    }
+    // Clean up the URL without reloading
+    const cleanUrl = window.location.pathname
+    window.history.replaceState({}, '', cleanUrl)
+  }
 })
 
 watch(() => props.sessionId, async (newId) => {
