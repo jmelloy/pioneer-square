@@ -31,19 +31,24 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text[:40].lower()).strip("-")
 
 
+class _AgentSlot:
+    def __init__(self, agent_id: str) -> None:
+        self.agent_id = agent_id
+        self.current_claude: Optional[claude_runner.ClaudeProcess] = None
+
+
 class Worker:
     def __init__(self, cfg: config_mod.Config) -> None:
         self.cfg = cfg
         self.ws = WSClient(cfg.ws_url)
         self.task_queue: asyncio.Queue[dict] = asyncio.Queue()
-        self.current_claude: Optional[claude_runner.ClaudeProcess] = None
         self._known_task_ids: set[str] = set()
         # Per-task queues for follow-up instructions; None signals finalization
         self._followup_queues: dict[str, asyncio.Queue] = {}
-        # Stable agent identity for this process — separate from worker_id (DB routing)
-        # and task_id (per-task). Set once at startup so the agent appears as a
-        # persistent entity in the guild throughout the worker's lifetime.
-        self.agent_id: str = _gen_id("a-")
+        # One slot per concurrent agent; each gets a stable ID for the guild.
+        self.slots: list[_AgentSlot] = [
+            _AgentSlot(_gen_id("a-")) for _ in range(cfg.max_agents)
+        ]
 
     # ------------------------------------------------------------------ HTTP
     async def _http(self) -> httpx.AsyncClient:
@@ -58,7 +63,7 @@ class Worker:
             resp.raise_for_status()
             wid = resp.json()["id"]
         self.cfg.worker_id = wid
-        logger.info("Registered as worker %s (agent_id=%s)", wid, self.agent_id)
+        logger.info("Registered as worker %s (%d agents)", wid, len(self.slots))
 
     async def _fetch_github_token_if_needed(self) -> None:
         if self.cfg.github_token:
@@ -92,48 +97,45 @@ class Worker:
         await self.ws.send(payload)
 
     async def _emit(self, line: str) -> None:
-        """Emit a log line attributed to this agent (no task context)."""
+        """Emit a worker-level log line (attributed to slot 0)."""
         await self._send({
             "type": "terminal-output",
-            "agentId": self.agent_id,
+            "agentId": self.slots[0].agent_id,
             "line": line,
             "timestamp": _now_iso(),
         })
 
-    def _task_emit(self, task_id: str):
-        """Return an emit function scoped to a task — includes taskId so the
-        backend persists lines to task_logs."""
+    def _task_emit(self, task_id: str, slot: _AgentSlot):
+        """Return an emit function scoped to a task and agent slot."""
         async def _emit_task(line: str) -> None:
             await self._send({
                 "type": "terminal-output",
-                "agentId": self.agent_id,
+                "agentId": slot.agent_id,
                 "taskId": task_id,
                 "line": line,
                 "timestamp": _now_iso(),
             })
         return _emit_task
 
-    async def _set_state(self, state: str) -> None:
+    async def _set_state(self, state: str, slot: _AgentSlot) -> None:
         await self._send({
             "type": "agent-state",
-            "agentId": self.agent_id,
+            "agentId": slot.agent_id,
             "state": state,
         })
 
     async def _join(self) -> None:
-        # Derive a human-readable name from the worker_id so it's stable and
-        # recognisable in the UI, but use agent_id as the WebSocket identity.
-        raw = self.cfg.worker_id[2:].upper()
-        split = 2 + sum(ord(c) for c in raw) % 3
-        default_name = f"{raw[:split]}-{raw[split:]}"
-        name = self.cfg.worker_name or default_name
-        await self._send({
-            "type": "join",
-            "agentId": self.agent_id,
-            "agentName": name,
-            "agentType": "worker",
-            "workerId": self.cfg.worker_id,
-        })
+        for slot in self.slots:
+            raw = slot.agent_id[2:].upper()
+            split = 2 + sum(ord(c) for c in raw) % 3
+            name = self.cfg.worker_name or f"{raw[:split]}-{raw[split:]}"
+            await self._send({
+                "type": "join",
+                "agentId": slot.agent_id,
+                "agentName": name,
+                "agentType": "worker",
+                "workerId": self.cfg.worker_id,
+            })
         await self._send({
             "type": "worker-register",
             "workerId": self.cfg.worker_id,
@@ -157,9 +159,10 @@ class Worker:
         )
         logger.info(
             "Paths: repos_dir=%s work_dir=%s pull_interval=%.1fs max_turns=%d"
-            " claude=%s codex=%s pi=%s",
+            " max_agents=%d claude=%s codex=%s pi=%s",
             self.cfg.repos_dir, self.cfg.work_dir,
             self.cfg.pull_interval, self.cfg.claude_max_turns,
+            self.cfg.max_agents,
             self.cfg.claude_path, self.cfg.codex_path, self.cfg.pi_path,
         )
 
@@ -172,11 +175,12 @@ class Worker:
         await self.ws.connect()
         await self._join()
         logger.info(
-            "Joined guild %s — worker_id=%s agent_id=%s",
-            self.cfg.guild_id, self.cfg.worker_id, self.agent_id,
+            "Joined guild %s — worker_id=%s agents=%d",
+            self.cfg.guild_id, self.cfg.worker_id, len(self.slots),
         )
         await self._emit("[worker] Online. Watching for tasks.")
-        await self._set_state("idle")
+        for slot in self.slots:
+            await self._set_state("idle", slot)
 
         initial = await self._fetch_pending_tasks()
         logger.info("Initial pending-task fetch: %d task(s)", len(initial))
@@ -186,10 +190,10 @@ class Worker:
             await self.task_queue.put(task)
 
         listener = asyncio.create_task(self._listen())
-        runner   = asyncio.create_task(self._task_runner())
+        runners  = [asyncio.create_task(self._agent_loop(slot)) for slot in self.slots]
         puller   = asyncio.create_task(self._idle_puller())
         try:
-            await asyncio.gather(listener, runner, puller)
+            await asyncio.gather(listener, *runners, puller)
         finally:
             logger.info("Worker shutting down; closing WebSocket")
             await self.ws.close()
@@ -223,14 +227,16 @@ class Worker:
                 if msg.get("workerId") != self.cfg.worker_id:
                     continue
                 text = msg.get("message", "")
-                if self.current_claude and text:
-                    delivered = await self.current_claude.send_message(text)
-                    if delivered:
-                        await self._emit(f"[worker] Injected: {text[:80]}")
+                if text:
+                    active = next((s for s in self.slots if s.current_claude), None)
+                    if active:
+                        delivered = await active.current_claude.send_message(text)
+                        if delivered:
+                            await self._emit(f"[worker] Injected: {text[:80]}")
+                        else:
+                            logger.warning("Failed to inject message (stdin closed?)")
                     else:
-                        logger.warning("Failed to inject message (stdin closed?)")
-                elif text:
-                    logger.debug("worker-message: no claude running; dropping")
+                        logger.debug("worker-message: no claude running; dropping")
 
             elif mtype == "task-followup":
                 if msg.get("workerId") != self.cfg.worker_id:
@@ -273,38 +279,39 @@ class Worker:
                 logger.debug("Poll: %d known, %d new", len(pending), new_count)
             except Exception as exc:
                 logger.warning("Pending-task poll failed: %s", exc)
-            if self.task_queue.empty() and self.current_claude is None and self.cfg.repos:
+            all_idle = all(s.current_claude is None for s in self.slots)
+            if self.task_queue.empty() and all_idle and self.cfg.repos:
                 await git_ops.pull_repos(
                     self.cfg.repos_dir, self.cfg.repos, self.cfg.github_token, self._emit
                 )
 
-    # ------------------------------------------------------------------ Task runner
-    async def _task_runner(self) -> None:
-        logger.info("Task runner started")
+    # ------------------------------------------------------------------ Agent loop
+    async def _agent_loop(self, slot: _AgentSlot) -> None:
+        logger.info("Agent loop started for %s", slot.agent_id)
         while True:
             task = await self.task_queue.get()
             task_id = task.get("id")
             logger.info(
-                "Dequeued task %s (queue depth %d): %s",
-                task_id, self.task_queue.qsize(),
+                "Dequeued task %s (agent=%s queue depth %d): %s",
+                task_id, slot.agent_id, self.task_queue.qsize(),
                 (task.get("description") or "")[:80],
             )
             try:
-                await self._execute_task(task)
+                await self._execute_task(task, slot)
             except Exception as exc:
                 logger.exception("Task %s crashed: %s", task_id, exc)
                 await self._emit(f"[worker] ✗ Internal error on task {task_id}: {exc}")
                 await self._task_update(task["id"], state="failed", finishedAt=_now_iso())
 
     # ------------------------------------------------------------------ Execution
-    async def _execute_task(self, task: dict) -> None:
+    async def _execute_task(self, task: dict, slot: _AgentSlot) -> None:
         task_id = task["id"]
         desc = task["description"]
         token = self.cfg.github_token
         repos = self.cfg.repos
 
-        logger.info("Executing task %s (agent=%s): %s", task_id, self.agent_id, desc[:120])
-        await self._set_state("working")
+        logger.info("Executing task %s (agent=%s): %s", task_id, slot.agent_id, desc[:120])
+        await self._set_state("working", slot)
         await self._task_update(task_id, state="working")
 
         branch = f"claude/{_slug(desc)}-{task_id[:6]}"
@@ -312,9 +319,7 @@ class Worker:
         logger.info("Task %s branch=%s work_dir=%s", task_id, branch, work_dir)
         os.makedirs(work_dir, exist_ok=True)
 
-        # Task-scoped emit: output is attributed to this agent AND tagged with
-        # task_id so the backend persists lines to task_logs.
-        emit = self._task_emit(task_id)
+        emit = self._task_emit(task_id, slot)
         await emit(f"[worker] Task: {desc}")
         await emit(f"[worker] Branch: {branch}")
 
@@ -345,7 +350,7 @@ class Worker:
             logger.error("Task %s: no worktrees created — aborting", task_id)
             await emit("[worker] ✗ No worktrees — aborting.")
             await self._task_update(task_id, state="failed", finishedAt=_now_iso())
-            await self._set_state("error")
+            await self._set_state("error", slot)
             return
 
         await self._task_update(task_id, branch=branch, worktreePath=primary_wt)
@@ -353,7 +358,7 @@ class Worker:
         tool = (task.get("tool") or "claude").lower()
 
         def _on_proc(proc: claude_runner.ClaudeProcess) -> None:
-            self.current_claude = proc
+            slot.current_claude = proc
 
         try:
             if tool == "codex":
@@ -378,7 +383,7 @@ class Worker:
                     on_proc=_on_proc,
                     claude_path=self.cfg.claude_path,
                 )
-            self.current_claude = None
+            slot.current_claude = None
             logger.info("Task %s: agent done success=%s stop_reason=%s", task_id, success, stop_reason)
 
             if success:
@@ -393,7 +398,6 @@ class Worker:
                     )
                 logger.info("Task %s: pushed pr_url=%s", task_id, pr_url)
 
-                # Notify backend; keep worktree alive for possible follow-ups
                 await self._task_update(
                     task_id, branch=branch, worktreePath=primary_wt, state="awaiting-review",
                 )
@@ -405,7 +409,7 @@ class Worker:
                     "description": desc,
                     "prUrl": pr_url or "",
                 })
-                await self._set_state("awaiting-review")
+                await self._set_state("awaiting-review", slot)
 
                 # Wait for foreman follow-up instructions or finalize signal
                 followup_q: asyncio.Queue[Optional[str]] = asyncio.Queue()
@@ -423,13 +427,12 @@ class Worker:
                             await emit("[worker] Task finalized by foreman.")
                             break
 
-                        # Execute follow-up in the same worktree on the same branch
-                        await self._set_state("working")
+                        await self._set_state("working", slot)
                         await self._task_update(task_id, state="working")
                         await emit(f"[worker] Follow-up: {instructions[:120]}")
 
                         def _on_proc2(proc: claude_runner.ClaudeProcess) -> None:
-                            self.current_claude = proc
+                            slot.current_claude = proc
 
                         fu_ok, fu_reason, _ = await claude_runner.run_claude_auto(
                             instructions, primary_wt,
@@ -438,7 +441,7 @@ class Worker:
                             on_proc=_on_proc2,
                             claude_path=self.cfg.claude_path,
                         )
-                        self.current_claude = None
+                        slot.current_claude = None
                         logger.info("Task %s follow-up: ok=%s reason=%s", task_id, fu_ok, fu_reason)
 
                         if fu_ok:
@@ -454,17 +457,17 @@ class Worker:
                             "stopReason": fu_reason,
                         })
                         await self._task_update(task_id, state="awaiting-review")
-                        await self._set_state("awaiting-review")
+                        await self._set_state("awaiting-review", slot)
                 finally:
                     self._followup_queues.pop(task_id, None)
 
                 await self._task_update(task_id, state="done", finishedAt=_now_iso())
-                await self._set_state("idle")
+                await self._set_state("idle", slot)
 
             else:
                 logger.warning("Task %s failed: %s", task_id, stop_reason)
                 await self._task_update(task_id, state="failed", finishedAt=_now_iso())
-                await self._set_state("error")
+                await self._set_state("error", slot)
                 await self._send({
                     "type": "needs-input",
                     "workerId": self.cfg.worker_id,

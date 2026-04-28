@@ -1,12 +1,40 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
 import { useAuthStore } from './auth.js'
 
 const API_BASE = 'http://localhost:8000'
 
+const STATE_RANK = { working: 0, thinking: 1, busy: 2, error: 3, 'awaiting-review': 4, idle: 5, offline: 6 }
+
 export const useAgentsStore = defineStore('agents', () => {
   const agents = ref([])
+  const workerLogs = ref({})       // workerId -> [{line, timestamp}]
+  const selectedWorkerId = ref(null)
+  const openedWorkerIds = ref([])
+  const selectedAgentId = ref(null)
+  const openedAgentIds = ref([])
+
+  // Unique workers derived from agent slots
+  const workers = computed(() => {
+    const map = new Map()
+    for (const agent of agents.value) {
+      if (!agent.workerId) continue
+      if (!map.has(agent.workerId)) {
+        map.set(agent.workerId, {
+          id: agent.workerId,
+          name: agent.name.replace(/\/\d+$/, ''),
+          state: agent.state,
+        })
+      } else {
+        const w = map.get(agent.workerId)
+        if ((STATE_RANK[agent.state] ?? 7) < (STATE_RANK[w.state] ?? 7)) {
+          w.state = agent.state
+        }
+      }
+    }
+    return Array.from(map.values())
+  })
 
   function registerAgent(agentData) {
     if (agentData.agentType === 'foreman') return
@@ -42,6 +70,42 @@ export const useAgentsStore = defineStore('agents', () => {
         if (agent.logs.length > 500) agent.logs.shift()
       }
     }
+  }
+
+  function addWorkerLog(workerId, line, timestamp) {
+    if (!workerLogs.value[workerId]) workerLogs.value[workerId] = []
+    const ts = timestamp || new Date().toISOString()
+    for (const l of (line || '').split('\n')) {
+      if (!l) continue
+      workerLogs.value[workerId].push({ line: l, timestamp: ts })
+      if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
+    }
+  }
+
+  function selectWorker(workerId) {
+    selectedWorkerId.value = workerId
+    if (workerId && !openedWorkerIds.value.includes(workerId)) {
+      openedWorkerIds.value.push(workerId)
+    }
+  }
+
+  function closeWorker(workerId) {
+    const idx = openedWorkerIds.value.indexOf(workerId)
+    if (idx !== -1) openedWorkerIds.value.splice(idx, 1)
+    if (selectedWorkerId.value === workerId) selectedWorkerId.value = null
+  }
+
+  function selectAgent(agentId) {
+    selectedAgentId.value = agentId
+    if (agentId && !openedAgentIds.value.includes(agentId)) {
+      openedAgentIds.value.push(agentId)
+    }
+  }
+
+  function closeAgent(agentId) {
+    const idx = openedAgentIds.value.indexOf(agentId)
+    if (idx !== -1) openedAgentIds.value.splice(idx, 1)
+    if (selectedAgentId.value === agentId) selectedAgentId.value = null
   }
 
   function sendMessage(agentId, content) {
@@ -146,11 +210,7 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  // First available worker process agent.
-  // With fixed agent_id model: agents join as "a-xxx" with workerId="w-xxx".
-  // Returns { id: worker_id, name, state } so callers can use id for task assignment.
   function firstIdleWorker() {
-    // Prefer agents with a workerId (process agents in new model)
     const workerAgents = agents.value.filter(
       a => a.workerId && a.state !== 'offline'
     )
@@ -160,13 +220,17 @@ export const useAgentsStore = defineStore('agents', () => {
       workerAgents[0]
     if (idleAgent) return { id: idleAgent.workerId, name: idleAgent.name, state: idleAgent.state }
 
-    // Legacy fallback: agents whose own id is "w-xxx" (old model)
     const legacy = agents.value.filter(a => a.id.startsWith('w-') && a.state !== 'offline')
     return legacy.find(a => a.state === 'idle') || legacy[0] || null
   }
 
   function clearAgents() {
     agents.value = []
+    workerLogs.value = {}
+    selectedWorkerId.value = null
+    openedWorkerIds.value = []
+    selectedAgentId.value = null
+    openedAgentIds.value = []
   }
 
   function handleWebSocketMessage(data) {
@@ -174,17 +238,27 @@ export const useAgentsStore = defineStore('agents', () => {
       registerAgent(data)
     } else if (data.type === 'agent-state') {
       updateAgentState(data.agentId, data.state)
-    } else if (data.type === 'terminal-output') {
+    } else if (data.type === 'terminal-output' && !data.taskId) {
       addLog(data.agentId, data.line, data.timestamp)
     }
-    // task-complete and task-failed are handled by ChatPane via the session message handler
   }
 
   return {
     agents,
+    workers,
+    workerLogs,
+    selectedWorkerId,
+    openedWorkerIds,
+    selectedAgentId,
+    openedAgentIds,
     registerAgent,
     updateAgentState,
     addLog,
+    addWorkerLog,
+    selectWorker,
+    closeWorker,
+    selectAgent,
+    closeAgent,
     sendMessage,
     runAgent,
     stopAgent,

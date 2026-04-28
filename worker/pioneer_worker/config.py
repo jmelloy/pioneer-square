@@ -36,6 +36,7 @@ class Config:
     pi_path: str = "pi"
     pull_interval: float = 300.0
     claude_max_turns: int = 50
+    max_agents: int = 4
 
     config_path: Path = field(default_factory=Path)
 
@@ -117,5 +118,6 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
         pi_path=overrides.get("pi_path") or paths_block.get("pi", "pi"),
         pull_interval=float(overrides.get("pull_interval") if overrides.get("pull_interval") is not None else raw.get("pull_interval", 300.0)),
         claude_max_turns=int(overrides.get("claude_max_turns") if overrides.get("claude_max_turns") is not None else claude_block.get("max_turns", 50)),
+        max_agents=int(overrides.get("max_agents") if overrides.get("max_agents") is not None else raw.get("max_agents", 4)),
         config_path=cfg_path,
     )

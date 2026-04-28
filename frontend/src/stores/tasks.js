@@ -27,6 +27,7 @@ export const useTasksStore = defineStore('tasks', () => {
   const tasks = ref([])
   const taskLogs = ref({})   // task_id -> [{ line, timestamp }]
   const selectedTaskId = ref(null)
+  const openedTaskIds = ref([])
 
   async function fetchTasks(guildId) {
     if (!guildId) return
@@ -130,12 +131,22 @@ export const useTasksStore = defineStore('tasks', () => {
 
   function selectTask(taskId) {
     selectedTaskId.value = taskId
+    if (taskId && !openedTaskIds.value.includes(taskId)) {
+      openedTaskIds.value.push(taskId)
+    }
+  }
+
+  function closeTask(taskId) {
+    const idx = openedTaskIds.value.indexOf(taskId)
+    if (idx !== -1) openedTaskIds.value.splice(idx, 1)
+    if (selectedTaskId.value === taskId) selectedTaskId.value = null
   }
 
   function clearTasks() {
     tasks.value = []
     taskLogs.value = {}
     selectedTaskId.value = null
+    openedTaskIds.value = []
   }
 
   function stateLabel(state) { return STATE_LABELS[state] || state }
@@ -145,12 +156,14 @@ export const useTasksStore = defineStore('tasks', () => {
     tasks,
     taskLogs,
     selectedTaskId,
+    openedTaskIds,
     fetchTasks,
     fetchTaskLogs,
     sendFollowup,
     finalizeTask,
     handleWebSocketMessage,
     selectTask,
+    closeTask,
     clearTasks,
     stateLabel,
     stateColor,

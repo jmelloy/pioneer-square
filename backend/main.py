@@ -285,6 +285,11 @@ For complex work use phases:
 - After task-complete: call send_followup for further work (update tests, fix lint, add docs),
   or call finalize_task to mark it complete — don't leave tasks in limbo
 
+## GitHub access
+You have direct GitHub access via list_github_issues, get_github_issue, and list_github_prs.
+Use these to discover work from issues, understand requirements before assigning tasks,
+and review PRs opened by workers.
+
 Workers are configured with repos. Prefer workers whose repos cover the task.
 Be concise — one short paragraph maximum unless detail is requested.\
 """
@@ -403,6 +408,60 @@ FOREMAN_TOOLS = [
                 "message": {"type": "string"},
             },
             "required": ["worker_id", "message"],
+        },
+    },
+    {
+        "name": "list_github_issues",
+        "description": (
+            "List GitHub issues for a repo. Use this to discover work that needs to be done."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo, e.g. 'acme/backend'"},
+                "state": {"type": "string", "enum": ["open", "closed", "all"], "description": "Default: open"},
+                "limit": {"type": "integer", "description": "Max issues to return (default 20, max 50)"},
+            },
+            "required": ["repo"],
+        },
+    },
+    {
+        "name": "get_github_issue",
+        "description": "Get full details of a single GitHub issue including its body and comments.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo"},
+                "issue_number": {"type": "integer"},
+            },
+            "required": ["repo", "issue_number"],
+        },
+    },
+    {
+        "name": "list_github_prs",
+        "description": "List pull requests for a repo — useful for reviewing completed worker branches.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo"},
+                "state": {"type": "string", "enum": ["open", "closed", "all"], "description": "Default: open"},
+            },
+            "required": ["repo"],
+        },
+    },
+    {
+        "name": "claim_github_issue",
+        "description": (
+            "Assign a GitHub issue to the authenticated user (claim it for this guild's operator). "
+            "Call this when picking up an issue to work on, before assigning a worker task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo"},
+                "issue_number": {"type": "integer"},
+            },
+            "required": ["repo", "issue_number"],
         },
     },
 ]
@@ -541,6 +600,78 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
         finally:
             await db.close()
 
+        # GitHub tools — use guild's OAuth token
+        if tu.name in ("list_github_issues", "get_github_issue", "list_github_prs", "claim_github_issue"):
+            creds = await _guild_github_token(guild_id)
+            if not creds:
+                result_text = "No GitHub token found for this guild — user must connect GitHub first."
+            else:
+                token, username = creds
+                try:
+                    if tu.name == "list_github_issues":
+                        repo = inp["repo"]
+                        state = inp.get("state", "open")
+                        limit = min(int(inp.get("limit", 20)), 50)
+                        issues = await asyncio.to_thread(
+                            _gh_api, f"/repos/{repo}/issues?state={state}&per_page={limit}", token
+                        )
+                        trimmed = [
+                            {"number": i["number"], "title": i["title"],
+                             "state": i["state"], "labels": [l["name"] for l in i.get("labels", [])],
+                             "assignees": [a["login"] for a in i.get("assignees", [])],
+                             "created_at": i["created_at"]}
+                            for i in issues if "pull_request" not in i
+                        ]
+                        result_text = json.dumps(trimmed)
+
+                    elif tu.name == "get_github_issue":
+                        repo = inp["repo"]
+                        num = int(inp["issue_number"])
+                        issue = await asyncio.to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
+                        comments_raw = await asyncio.to_thread(
+                            _gh_api, f"/repos/{repo}/issues/{num}/comments?per_page=20", token
+                        )
+                        result_text = json.dumps({
+                            "number": issue["number"],
+                            "title": issue["title"],
+                            "state": issue["state"],
+                            "body": (issue.get("body") or "")[:2000],
+                            "labels": [l["name"] for l in issue.get("labels", [])],
+                            "comments": [
+                                {"author": c["user"]["login"], "body": (c.get("body") or "")[:500]}
+                                for c in comments_raw
+                            ],
+                        })
+
+                    elif tu.name == "list_github_prs":
+                        repo = inp["repo"]
+                        state = inp.get("state", "open")
+                        prs = await asyncio.to_thread(
+                            _gh_api, f"/repos/{repo}/pulls?state={state}&per_page=20", token
+                        )
+                        result_text = json.dumps([
+                            {"number": p["number"], "title": p["title"],
+                             "state": p["state"], "head": p["head"]["ref"],
+                             "draft": p.get("draft", False)}
+                            for p in prs
+                        ])
+
+                    elif tu.name == "claim_github_issue":
+                        repo = inp["repo"]
+                        num = int(inp["issue_number"])
+                        await asyncio.to_thread(
+                            _gh_api_post,
+                            f"/repos/{repo}/issues/{num}/assignees",
+                            token,
+                            {"assignees": [username]},
+                        )
+                        result_text = f"Issue #{num} in {repo} assigned to {username}."
+
+                except urllib.error.HTTPError as exc:
+                    result_text = f"GitHub API error: {exc.code} {exc.reason}"
+                except Exception as exc:
+                    result_text = f"GitHub error: {exc}"
+
         results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result_text})
     return results
 
@@ -604,32 +735,24 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
     client = _anthropic.AsyncAnthropic()
 
     try:
-        # Turn 1 — foreman reasons and optionally calls tools
-        resp1 = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=system,
-            messages=history,
-            tools=FOREMAN_TOOLS,
-        )
-        history.append({"role": "assistant", "content": resp1.content})
-
-        text_parts = [b.text for b in resp1.content if b.type == "text" and b.text.strip()]
-        tool_uses  = [b for b in resp1.content if b.type == "tool_use"]
-
-        if tool_uses:
-            tool_results = await _foreman_exec_tools(guild_id, tool_uses)
-            history.append({"role": "user", "content": tool_results})
-
-            # Turn 2 — final reply after tool execution (no tools allowed)
-            resp2 = await client.messages.create(
+        text_parts = []
+        for _ in range(6):  # safety cap on tool-call rounds
+            resp = await client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=512,
+                max_tokens=1024,
                 system=system,
                 messages=history,
+                tools=FOREMAN_TOOLS,
             )
-            history.append({"role": "assistant", "content": resp2.content})
-            text_parts += [b.text for b in resp2.content if b.type == "text" and b.text.strip()]
+            history.append({"role": "assistant", "content": resp.content})
+            text_parts += [b.text for b in resp.content if b.type == "text" and b.text.strip()]
+
+            tool_uses = [b for b in resp.content if b.type == "tool_use"]
+            if not tool_uses:
+                break  # end_turn — foreman is done
+
+            tool_results = await _foreman_exec_tools(guild_id, tool_uses)
+            history.append({"role": "user", "content": tool_results})
 
         # Trim history
         foreman_conversations[guild_id] = history[-40:]
@@ -691,6 +814,52 @@ def _gh_get_user(token: str) -> dict:
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read())
+
+
+def _gh_api(path: str, token: str) -> object:
+    """GET a GitHub API path and return parsed JSON."""
+    req = urllib.request.Request(
+        f"https://api.github.com{path}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+def _gh_api_post(path: str, token: str, payload: dict, method: str = "POST") -> object:
+    """POST/PATCH a GitHub API path with a JSON body and return parsed JSON."""
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"https://api.github.com{path}",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json",
+        },
+        method=method,
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+async def _guild_github_token(guild_id: str) -> Optional[tuple[str, str]]:
+    """Return (access_token, github_username) for this guild, or None."""
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT gt.access_token, gt.github_username FROM github_tokens gt"
+            " JOIN guilds g ON g.github_user_id = gt.github_user_id"
+            " WHERE g.id = ?",
+            (guild_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return (row["access_token"], row["github_username"]) if row else None
+    finally:
+        await db.close()
 
 
 # ---------------------------------------------------------------------------

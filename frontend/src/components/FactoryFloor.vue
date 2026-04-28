@@ -597,6 +597,24 @@ function stateLabel(state) {
   border-top: 3px solid var(--color-brass);
 }
 
+.station-agent, .station-empty {
+  margin-top: 2px;
+}
+
+
+.empty-slot {
+  width: 30px;
+  height: 50px;
+  background: rgba(232, 170, 0, 0.04);
+  border: 1px dashed var(--color-brass-dark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-dim);
+  font-size: 16px;
+  font-family: var(--font-mono);
+}
+
 .station-label {
   font-size: 5px;
   color: var(--color-brass-dark);

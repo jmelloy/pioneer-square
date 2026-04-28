@@ -14,6 +14,9 @@ guild_id = "abc123"
 # Pull repos in the background every N seconds while idle.
 pull_interval = 300
 
+# Number of agents this worker runs concurrently (default: 4).
+# max_agents = 4
+
 [github]
 # Repos this worker will clone and operate on.
 repos = ["owner/repo"]
