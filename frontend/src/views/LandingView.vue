@@ -44,7 +44,7 @@
               <img :src="authStore.user.avatar_url" class="user-avatar" alt="" />
               <span class="user-login">{{ authStore.user.login }}</span>
             </div>
-            <button class="pixel-btn new-btn" @click="openNewSession">+ NEW SESSION</button>
+            <button class="pixel-btn new-btn" @click="openNewGuild">+ NEW GUILD</button>
             <button class="pixel-btn logout-btn" @click="handleLogout">Sign out</button>
           </div>
         </div>
@@ -54,7 +54,7 @@
           <div class="login-card">
             <div class="login-icon">⚙</div>
             <div class="login-title">SIGN IN TO GET STARTED</div>
-            <div class="login-sub">Connect your GitHub account to create sessions and run agents.</div>
+            <div class="login-sub">Connect your GitHub account to create guilds and run agents.</div>
             <button class="pixel-btn login-btn" :disabled="loggingIn" @click="handleLogin">
               {{ loggingIn ? 'Redirecting...' : 'SIGN IN WITH GITHUB' }}
             </button>
@@ -62,36 +62,36 @@
           </div>
         </div>
 
-        <!-- Sessions list (only shown when logged in) -->
+        <!-- Guild list (only shown when logged in) -->
         <template v-else>
           <div class="sessions-section">
-            <div class="section-label">YOUR SESSIONS</div>
+            <div class="section-label">YOUR GUILDS</div>
 
-            <div v-if="loading" class="loading-msg">Loading sessions...</div>
+            <div v-if="loading" class="loading-msg">Loading guilds...</div>
 
-            <div v-else-if="sessions.length === 0" class="empty-state">
+            <div v-else-if="guilds.length === 0" class="empty-state">
               <div class="empty-icon">⚙</div>
-              <div class="empty-text">No sessions yet.</div>
+              <div class="empty-text">No guilds yet.</div>
               <div class="empty-sub">Start one to begin coordinating agents.</div>
-              <button class="pixel-btn" @click="openNewSession">+ NEW SESSION</button>
+              <button class="pixel-btn" @click="openNewGuild">+ NEW GUILD</button>
             </div>
 
             <div v-else class="sessions-grid">
               <div
-                v-for="session in sessions"
-                :key="session.id"
+                v-for="guild in guilds"
+                :key="guild.id"
                 class="session-card"
-                @click="goToSession(session.id)"
+                @click="goToSession(guild.id)"
               >
                 <div class="card-top">
-                  <span class="card-id">{{ session.id }}</span>
+                  <span class="card-id">{{ guild.id }}</span>
                   <span class="card-agents">
-                    <span class="agent-dot" :class="session.agent_count > 0 ? 'active' : 'empty'"></span>
-                    {{ session.agent_count || 0 }} agent{{ session.agent_count !== 1 ? 's' : '' }}
+                    <span class="agent-dot" :class="guild.agent_count > 0 ? 'active' : 'empty'"></span>
+                    {{ guild.agent_count || 0 }} agent{{ guild.agent_count !== 1 ? 's' : '' }}
                   </span>
                 </div>
-                <div class="card-name">{{ session.name }}</div>
-                <div class="card-time">Created {{ formatTime(session.created_at) }}</div>
+                <div class="card-name">{{ guild.name }}</div>
+                <div class="card-time">Created {{ formatTime(guild.created_at) }}</div>
                 <div class="card-enter">ENTER →</div>
               </div>
             </div>
@@ -103,20 +103,20 @@
     <!-- New Session Modal -->
     <div v-if="showNewModal" class="modal-overlay" @click.self="showNewModal = false">
       <div class="modal">
-        <div class="modal-header">NEW SESSION</div>
+        <div class="modal-header">NEW GUILD</div>
         <div class="modal-body">
-          <label class="field-label">Session Name (optional)</label>
+          <label class="field-label">Guild Name (optional)</label>
           <input
-            v-model="newSessionName"
+            v-model="newGuildName"
             class="field-input"
             placeholder="e.g. Feature Sprint #4"
-            @keydown.enter="createSession"
+            @keydown.enter="createGuild"
             ref="nameInput"
           />
         </div>
         <div class="modal-footer">
           <button class="pixel-btn cancel-btn" @click="showNewModal = false">Cancel</button>
-          <button class="pixel-btn" @click="createSession" :disabled="creating">
+          <button class="pixel-btn" @click="createGuild" :disabled="creating">
             {{ creating ? 'Creating...' : 'CREATE' }}
           </button>
         </div>
@@ -128,37 +128,35 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useSessionStore } from '../stores/session.js'
+import { useGuildStore } from '../stores/guild.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useGitHubStore } from '../stores/github.js'
 
 const router = useRouter()
-const sessionStore = useSessionStore()
+const guildStore = useGuildStore()
 const authStore = useAuthStore()
 const ghStore = useGitHubStore()
 
 const loading = ref(true)
-const sessions = ref([])
+const guilds = ref([])
 const showNewModal = ref(false)
-const newSessionName = ref('')
+const newGuildName = ref('')
 const creating = ref(false)
 const nameInput = ref(null)
 const loggingIn = ref(false)
 const loginError = ref('')
 
 onMounted(async () => {
-  // Handle the OAuth callback redirect: GitHub sends us back with query params
   const params = new URLSearchParams(window.location.search)
   if (params.has('login_token')) {
     authStore.restoreFromCallback(params)
     ghStore.restoreGitHubToken(params)
-    // Clean URL without reloading
     window.history.replaceState({}, '', '/')
   }
 
   if (authStore.isLoggedIn) {
-    await sessionStore.loadSessions()
-    sessions.value = sessionStore.sessions
+    await guildStore.loadGuilds()
+    guilds.value = guildStore.guilds
   }
   loading.value = false
 })
@@ -181,22 +179,22 @@ async function handleLogin() {
 async function handleLogout() {
   await authStore.logout()
   ghStore.logout()
-  sessions.value = []
+  guilds.value = []
 }
 
-async function openNewSession() {
+async function openNewGuild() {
   showNewModal.value = true
-  newSessionName.value = ''
+  newGuildName.value = ''
   await nextTick()
   nameInput.value?.focus()
 }
 
-async function createSession() {
+async function createGuild() {
   if (creating.value) return
   creating.value = true
   try {
-    const session = await sessionStore.createSession(newSessionName.value.trim() || undefined)
-    router.push(`/${session.id}`)
+    const guild = await guildStore.createGuild(newGuildName.value.trim() || undefined)
+    router.push(`/${guild.id}`)
   } finally {
     creating.value = false
   }
@@ -581,7 +579,6 @@ function sparkleStyle(n) {
   border-color: var(--color-brass);
   background: var(--color-bg-tertiary);
   box-shadow: 0 0 16px rgba(232, 170, 0, 0.2);
-  transform: translateY(-2px);
 }
 
 .card-top {

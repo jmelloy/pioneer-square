@@ -1,26 +1,26 @@
 <template>
   <div class="app-layout">
-    <SessionSidebar />
+    <GuildSidebar />
     <MainView />
     <ChatPane />
   </div>
 </template>
 
 <script setup>
-import { onMounted, watch } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useSessionStore } from '../stores/session.js'
+import { useGuildStore } from '../stores/guild.js'
 import { useAgentsStore } from '../stores/agents.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useGitHubStore } from '../stores/github.js'
-import SessionSidebar from '../components/SessionSidebar.vue'
+import GuildSidebar from '../components/GuildSidebar.vue'
 import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 
-const props = defineProps({ sessionId: String })
+const props = defineProps({ guildId: String })
 
 const router = useRouter()
-const sessionStore = useSessionStore()
+const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
 const authStore = useAuthStore()
 const ghStore = useGitHubStore()
@@ -34,42 +34,45 @@ function getClientId() {
   return id
 }
 
-async function initSession(sessionId) {
+async function initGuild(guildId) {
   if (!authStore.isLoggedIn) {
     router.replace('/')
     return
   }
-  if (!sessionId) {
+  if (!guildId) {
     router.replace('/')
     return
   }
 
-  const session = await sessionStore.joinSession(sessionId)
-  if (!session) {
+  agentsStore.clearAgents()
+  const guild = await guildStore.joinGuild(guildId)
+  if (!guild) {
     router.replace('/')
     return
   }
 
-  if (session.agents) {
-    session.agents.forEach(a => agentsStore.registerAgent({
-      agentId: a.id,
-      agentName: a.name,
-      agentType: a.type,
-      state: a.state,
-      joinedAt: a.joined_at,
-    }))
+  if (guild.agents) {
+    guild.agents
+      .filter(a => a.state !== 'offline')
+      .forEach(a => agentsStore.registerAgent({
+        agentId: a.id,
+        agentName: a.name,
+        agentType: a.type,
+        state: a.state,
+        joinedAt: a.joined_at,
+      }))
   }
 
   const clientId = getClientId()
   const suffix = clientId.slice(0, 4)
   const foremanName = authStore.user ? `${authStore.user.login}-${suffix}` : `Foreman-${suffix}`
 
-  sessionStore.connectWebSocket(sessionId, (data) => {
+  guildStore.connectWebSocket(guildId, (data) => {
     agentsStore.handleWebSocketMessage(data)
   })
 
   setTimeout(() => {
-    sessionStore.sendMessage({
+    guildStore.sendMessage({
       type: 'join',
       agentId: `foreman-${clientId}`,
       agentName: foremanName,
@@ -83,15 +86,18 @@ async function initSession(sessionId) {
 }
 
 onMounted(async () => {
-  await sessionStore.loadSessions()
-  await initSession(props.sessionId)
+  await guildStore.loadGuilds()
 })
 
-watch(() => props.sessionId, async (newId) => {
-  if (newId) {
-    await initSession(newId)
-  }
+onUnmounted(() => {
+  guildStore.disconnectWebSocket()
 })
+
+watch(() => props.guildId, async (newId) => {
+  if (newId) {
+    await initGuild(newId)
+  }
+}, { immediate: true })
 </script>
 
 <style>

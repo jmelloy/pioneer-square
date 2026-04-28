@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { useSessionStore } from './session'
+import { useGuildStore } from './guild'
 import { useAuthStore } from './auth.js'
 
 const API_BASE = 'http://localhost:8000'
@@ -9,6 +9,7 @@ export const useAgentsStore = defineStore('agents', () => {
   const agents = ref([])
 
   function registerAgent(agentData) {
+    if (agentData.agentType === 'foreman') return
     const existing = agents.value.find(a => a.id === agentData.agentId)
     if (existing) {
       existing.state = agentData.state || 'idle'
@@ -33,14 +34,17 @@ export const useAgentsStore = defineStore('agents', () => {
   function addLog(agentId, line, timestamp) {
     const agent = agents.value.find(a => a.id === agentId)
     if (agent) {
-      agent.logs.push({ line, timestamp: timestamp || new Date().toISOString() })
-      if (agent.logs.length > 500) agent.logs.shift()
+      const ts = timestamp || new Date().toISOString()
+      for (const l of line.split('\n')) {
+        agent.logs.push({ line: l, timestamp: ts })
+        if (agent.logs.length > 500) agent.logs.shift()
+      }
     }
   }
 
   function sendMessage(agentId, content) {
-    const sessionStore = useSessionStore()
-    sessionStore.sendMessage({
+    const guildStore = useGuildStore()
+    guildStore.sendMessage({
       type: 'chat',
       from: 'user',
       to: agentId,
@@ -53,11 +57,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function runAgent(agentId, { tool, prompt, model, provider }) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/agents/${agentId}/run`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/agents/${agentId}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ tool, prompt, model: model || undefined, provider: provider || undefined })
@@ -70,11 +74,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function stopAgent(agentId) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/agents/${agentId}/run`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/agents/${agentId}/run`, {
       method: 'DELETE',
       headers: _authHeaders(),
     })
@@ -86,11 +90,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function deployWorker({ repos }) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ repos, github_token: null })
@@ -103,11 +107,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function assignTask(workerId, { description, issueNumber, issueRepo }) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}/tasks`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers/${workerId}/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({
@@ -124,11 +128,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function messageWorker(workerId, message) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}/message`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers/${workerId}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ message })
@@ -144,6 +148,10 @@ export const useAgentsStore = defineStore('agents', () => {
   function firstIdleWorker() {
     const workers = agents.value.filter(a => a.type === 'worker' && a.id.startsWith('w-'))
     return workers.find(a => a.state === 'idle') || workers[0] || null
+  }
+
+  function clearAgents() {
+    agents.value = []
   }
 
   function handleWebSocketMessage(data) {
@@ -169,6 +177,7 @@ export const useAgentsStore = defineStore('agents', () => {
     assignTask,
     messageWorker,
     firstIdleWorker,
+    clearAgents,
     handleWebSocketMessage
   }
 })

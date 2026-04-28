@@ -29,6 +29,10 @@ token = "env:GITHUB_TOKEN"
 [paths]
 repos_dir = "/tmp/pioneer-repos"
 work_dir = "/tmp/pioneer-work"
+# Paths to agent executables (defaults to bare name, resolved via PATH).
+# claude = "/usr/local/bin/claude"
+# codex = "/usr/local/bin/codex"
+# pi = "/usr/local/bin/pi"
 
 [claude]
 max_turns = 50

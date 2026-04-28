@@ -4,9 +4,9 @@ import { useAuthStore } from './auth.js'
 
 const API_BASE = 'http://localhost:8000'
 
-export const useSessionStore = defineStore('session', () => {
-  const currentSession = ref(null)
-  const sessions = ref([])
+export const useGuildStore = defineStore('guild', () => {
+  const currentGuild = ref(null)
+  const guilds = ref([])
   const isConnected = ref(false)
   const messages = ref([])
   let ws = null
@@ -17,47 +17,47 @@ export const useSessionStore = defineStore('session', () => {
     return authStore.authHeaders()
   }
 
-  async function loadSessions() {
+  async function loadGuilds() {
     try {
-      const res = await fetch(`${API_BASE}/sessions`, { headers: _authHeaders() })
-      if (!res.ok) { sessions.value = []; return }
-      sessions.value = await res.json()
+      const res = await fetch(`${API_BASE}/guilds`, { headers: _authHeaders() })
+      if (!res.ok) { guilds.value = []; return }
+      guilds.value = await res.json()
     } catch (e) {
-      console.error('Failed to load sessions', e)
+      console.error('Failed to load guilds', e)
     }
   }
 
-  async function createSession(name) {
-    const res = await fetch(`${API_BASE}/sessions`, {
+  async function createGuild(name) {
+    const res = await fetch(`${API_BASE}/guilds`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ name })
     })
-    const session = await res.json()
-    sessions.value.unshift(session)
-    return session
+    const guild = await res.json()
+    guilds.value.unshift(guild)
+    return guild
   }
 
-  async function joinSession(sessionId) {
+  async function joinGuild(guildId) {
     try {
-      const res = await fetch(`${API_BASE}/sessions/${sessionId}`)
-      if (!res.ok) throw new Error('Session not found')
-      const session = await res.json()
-      currentSession.value = session
-      messages.value = session.messages || []
-      return session
+      const res = await fetch(`${API_BASE}/guilds/${guildId}`)
+      if (!res.ok) throw new Error('Guild not found')
+      const guild = await res.json()
+      currentGuild.value = guild
+      messages.value = guild.messages || []
+      return guild
     } catch (e) {
-      console.error('Failed to join session', e)
+      console.error('Failed to join guild', e)
       return null
     }
   }
 
-  function connectWebSocket(sessionId, onMessage, retryCount = 0) {
+  function connectWebSocket(guildId, onMessage, retryCount = 0) {
     const MAX_RETRIES = 10
     if (ws) {
       ws.close()
     }
-    ws = new WebSocket(`ws://localhost:8000/ws/${sessionId}`)
+    ws = new WebSocket(`ws://localhost:8000/ws/${guildId}`)
     ws.onopen = () => {
       isConnected.value = true
     }
@@ -69,16 +69,24 @@ export const useSessionStore = defineStore('session', () => {
       if (onMessage) onMessage(data)
       messageHandlers.value.forEach(h => h(data))
     }
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       isConnected.value = false
-      if (retryCount < MAX_RETRIES) {
-        setTimeout(() => connectWebSocket(sessionId, onMessage, retryCount + 1), 2000)
+      if (!event.wasClean && retryCount < MAX_RETRIES) {
+        setTimeout(() => connectWebSocket(guildId, onMessage, retryCount + 1), 2000)
       }
     }
     ws.onerror = () => {
       isConnected.value = false
     }
     return ws
+  }
+
+  function disconnectWebSocket() {
+    if (ws) {
+      ws.close()
+      ws = null
+    }
+    isConnected.value = false
   }
 
   function sendMessage(data) {
@@ -96,14 +104,15 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   return {
-    currentSession,
-    sessions,
+    currentGuild,
+    guilds,
     isConnected,
     messages,
-    loadSessions,
-    createSession,
-    joinSession,
+    loadGuilds,
+    createGuild,
+    joinGuild,
     connectWebSocket,
+    disconnectWebSocket,
     sendMessage,
     addMessageHandler,
     removeMessageHandler

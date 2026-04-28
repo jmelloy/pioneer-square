@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -18,11 +19,17 @@ def parse_claude_event(event: dict) -> Optional[str]:
     if t == "assistant":
         parts: list[str] = []
         for blk in event.get("message", {}).get("content", []):
-            if blk.get("type") == "text":
+            btype = blk.get("type")
+            if btype == "text":
                 txt = blk.get("text", "").strip()
                 if txt:
                     parts.append(txt)
-            elif blk.get("type") == "tool_use":
+            elif btype == "thinking":
+                thinking = blk.get("thinking", "").strip()
+                if thinking:
+                    preview = thinking[:100].replace("\n", " ")
+                    parts.append(f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}")
+            elif btype == "tool_use":
                 name = blk.get("name", "")
                 inp = blk.get("input", {})
                 if name == "Bash":
@@ -32,6 +39,20 @@ def parse_claude_event(event: dict) -> Optional[str]:
                     parts.append(f"▶ {name.lower()}: {fp}")
                 else:
                     parts.append(f"▶ {name}: {json.dumps(inp)[:80]}")
+        return "\n".join(parts) or None
+    if t == "user":
+        parts = []
+        for blk in event.get("message", {}).get("content", []):
+            if blk.get("type") == "tool_result":
+                content = blk.get("content", "")
+                if isinstance(content, list):
+                    content = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+                if isinstance(content, str) and content.strip():
+                    lines = content.strip().split("\n")
+                    preview = lines[0][:120]
+                    if len(lines) > 1:
+                        preview += f" (+{len(lines) - 1} lines)"
+                    parts.append(f"  → {preview}")
         return "\n".join(parts) or None
     if t == "result":
         subtype = event.get("subtype", "success")
@@ -200,11 +221,18 @@ async def run_claude_auto(
     max_turns: int,
     emit: EmitFn,
     on_proc: Optional[Callable[[ClaudeProcess], None]] = None,
-) -> tuple[bool, str]:
-    """Run claude on *description* in *cwd*. Returns (success, last_assistant_text)."""
+    claude_path: str = "claude",
+) -> tuple[bool, str, str]:
+    """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text).
+
+    stop_reason is the result event subtype: "success", "max_turns",
+    "error_during_execution", "interrupted", or "no_events" when the process
+    produced no stream-json output at all.
+    """
     cmd = [
-        "claude",
+        claude_path,
         "--output-format", "stream-json",
+        "--verbose",
         "--max-turns", str(max_turns),
         "--dangerously-skip-permissions",
         "-p", description,
@@ -213,6 +241,7 @@ async def run_claude_auto(
     logger.info("claude argv: %s", cmd)
     await emit(f"[claude] Starting: {description[:80]}")
     last_text = ""
+    stop_reason = "no_events"
     event_count = 0
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -227,11 +256,17 @@ async def run_claude_auto(
         if on_proc is not None:
             on_proc(ClaudeProcess(proc))
 
-        stderr_task = asyncio.create_task(_drain_stderr(proc.stderr, proc.pid))  # type: ignore[arg-type]
+        async def _drain_stderr() -> None:
+            async for raw in proc.stderr:  # type: ignore[union-attr]
+                line = raw.decode(errors="replace").strip()
+                if line:
+                    await emit(f"[stderr] {line}")
 
-        async for raw in _iter_stdout_lines(proc.stdout):  # type: ignore[arg-type]
-            line_str = raw.decode(errors="replace").rstrip("\n")
-            if not line_str.strip():
+        stderr_task = asyncio.create_task(_drain_stderr())
+
+        async for raw in proc.stdout:  # type: ignore[union-attr]
+            line_str = raw.decode(errors="replace").strip()
+            if not line_str:
                 continue
             event_count += 1
             # Always log the full raw line at DEBUG so the wire format is recoverable.
@@ -245,29 +280,35 @@ async def run_claude_auto(
                 await emit(line_str)
                 continue
             _log_event_full(event, proc.pid, event_count)
+            if event.get("type") == "result":
+                stop_reason = event.get("subtype", "success")
             text = parse_claude_event(event)
             if text:
                 await emit(text)
-                if not text.startswith(("▶", "✓", "✗", "[")):
+                if not text.startswith(("▶", "✓", "✗", "[", "  →")):
                     last_text = text
 
         exit_code = await proc.wait()
         await stderr_task
         logger.info(
-            "claude[%d] exited rc=%s after %d stdout event(s)",
-            proc.pid, exit_code, event_count,
+            "claude[%d] exited rc=%s stop_reason=%s after %d stdout event(s)",
+            proc.pid, exit_code, stop_reason, event_count,
         )
         if event_count == 0:
             logger.warning(
                 "claude[%d] produced no stdout events — check stderr above and PATH/auth",
                 proc.pid,
             )
-        return exit_code == 0, last_text
-    except FileNotFoundError:
-        logger.error("`claude` CLI not found on PATH")
-        await emit("[claude] ✗ `claude` CLI not found on PATH")
-        return False, last_text
+        return exit_code == 0, stop_reason, last_text
+    except FileNotFoundError as exc:
+        if not os.path.exists(claude_path):
+            logger.error("claude executable not found: %r", claude_path)
+            await emit(f"[claude] ✗ executable not found: {claude_path}")
+        else:
+            logger.error("claude failed to start (cwd missing?): %s — cwd=%r", exc, cwd)
+            await emit(f"[claude] ✗ failed to start: {exc} (cwd={cwd!r})")
+        return False, "no_events", last_text
     except Exception as exc:  # pragma: no cover
         logger.exception("claude subprocess crashed: %s", exc)
         await emit(f"[claude] ✗ {exc}")
-        return False, last_text
+        return False, "error_during_execution", last_text

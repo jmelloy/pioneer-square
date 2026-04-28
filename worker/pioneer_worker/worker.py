@@ -13,7 +13,7 @@ from typing import Optional
 
 import httpx
 
-from . import claude_runner, config as config_mod, git_ops, github_pr
+from . import claude_runner, codex_runner, pi_runner, config as config_mod, git_ops, github_pr
 from .ws_client import WSClient
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class Worker:
             return
         async with await self._http() as client:
             resp = await client.post(
-                f"/sessions/{self.cfg.session_id}/workers",
+                f"/guilds/{self.cfg.guild_id}/workers",
                 json={"repos": self.cfg.repos, "github_token": None},
             )
             resp.raise_for_status()
@@ -78,7 +78,7 @@ class Worker:
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:
             resp = await client.get(
-                f"/sessions/{self.cfg.session_id}/workers/{self.cfg.worker_id}/tasks"
+                f"/guilds/{self.cfg.guild_id}/workers/{self.cfg.worker_id}/tasks"
             )
             resp.raise_for_status()
             tasks = resp.json()
@@ -104,7 +104,10 @@ class Worker:
         })
 
     async def _join(self) -> None:
-        name = self.cfg.worker_name or f"Worker-{self.cfg.worker_id[2:6]}"
+        raw = self.cfg.worker_id[2:].upper()
+        split = 2 + sum(ord(c) for c in raw) % 3
+        default_name = f"{raw[:split]}-{raw[split:]}"
+        name = self.cfg.worker_name or default_name
         await self._send({
             "type": "join",
             "agentId": self.cfg.worker_id,
@@ -128,14 +131,16 @@ class Worker:
     # ------------------------------------------------------------------ Loop
     async def run(self) -> None:
         logger.info(
-            "Worker starting: session=%s backend=%s repos=%s worker_id=%s",
-            self.cfg.session_id, self.cfg.backend_url, self.cfg.repos,
+            "Worker starting: guild=%s backend=%s repos=%s worker_id=%s",
+            self.cfg.guild_id, self.cfg.backend_url, self.cfg.repos,
             self.cfg.worker_id or "<unregistered>",
         )
         logger.info(
-            "Paths: repos_dir=%s work_dir=%s pull_interval=%.1fs max_turns=%d",
+            "Paths: repos_dir=%s work_dir=%s pull_interval=%.1fs max_turns=%d"
+            " claude=%s codex=%s pi=%s",
             self.cfg.repos_dir, self.cfg.work_dir,
             self.cfg.pull_interval, self.cfg.claude_max_turns,
+            self.cfg.claude_path, self.cfg.codex_path, self.cfg.pi_path,
         )
 
         await self._register_if_needed()
@@ -146,7 +151,7 @@ class Worker:
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         await self.ws.connect()
         await self._join()
-        logger.info("Joined session %s as worker %s", self.cfg.session_id, self.cfg.worker_id)
+        logger.info("Joined guild %s as worker %s", self.cfg.guild_id, self.cfg.worker_id)
         await self._emit("[worker] Online. Watching for tasks.")
         await self._set_state("idle")
 
@@ -188,8 +193,9 @@ class Worker:
                 await self.task_queue.put({
                     "id": task_id,
                     "worker_id": self.cfg.worker_id,
-                    "session_id": self.cfg.session_id,
+                    "guild_id": self.cfg.guild_id,
                     "description": msg.get("description", ""),
+                    "tool": msg.get("tool", "claude"),
                     "issue_number": msg.get("issueNumber"),
                     "issue_repo": msg.get("issueRepo"),
                 })
@@ -265,7 +271,7 @@ class Worker:
         await self._task_update(task_id, state="working")
 
         branch = f"claude/{_slug(desc)}-{task_id[:6]}"
-        work_dir = os.path.join(self.cfg.work_dir, self.cfg.session_id, self.cfg.worker_id, task_id)
+        work_dir = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id, task_id)
         logger.info("Task %s branch=%s work_dir=%s", task_id, branch, work_dir)
         os.makedirs(work_dir, exist_ok=True)
 
@@ -304,48 +310,65 @@ class Worker:
 
         await self._task_update(task_id, branch=branch, worktreePath=primary_wt)
 
+        tool = (task.get("tool") or "claude").lower()
+
         def _on_proc(proc: claude_runner.ClaudeProcess) -> None:
             self.current_claude = proc
 
-        logger.info(
-            "Task %s: launching claude in %s (max_turns=%d)",
-            task_id, primary_wt, self.cfg.claude_max_turns,
-        )
-        success, last_msg = await claude_runner.run_claude_auto(
-            desc,
-            primary_wt,
-            max_turns=self.cfg.claude_max_turns,
-            emit=self._emit,
-            on_proc=_on_proc,
-        )
+        if tool == "codex":
+            logger.info("Task %s: launching codex in %s", task_id, primary_wt)
+            success, stop_reason, last_msg = await codex_runner.run_codex_auto(
+                desc,
+                primary_wt,
+                emit=self._emit,
+                codex_path=self.cfg.codex_path,
+            )
+        elif tool == "pi":
+            logger.info("Task %s: launching pi in %s", task_id, primary_wt)
+            success, stop_reason, last_msg = await pi_runner.run_pi_auto(
+                desc,
+                primary_wt,
+                emit=self._emit,
+                pi_path=self.cfg.pi_path,
+            )
+        else:
+            logger.info(
+                "Task %s: launching claude in %s (max_turns=%d)",
+                task_id, primary_wt, self.cfg.claude_max_turns,
+            )
+            success, stop_reason, last_msg = await claude_runner.run_claude_auto(
+                desc,
+                primary_wt,
+                max_turns=self.cfg.claude_max_turns,
+                emit=self._emit,
+                on_proc=_on_proc,
+                claude_path=self.cfg.claude_path,
+            )
         self.current_claude = None
         finished_at = _now_iso()
-        logger.info("Task %s: claude finished success=%s", task_id, success)
+        logger.info("Task %s: claude finished success=%s stop_reason=%s", task_id, success, stop_reason)
 
         if success:
-            logger.info("Task %s: pushing branch and opening PR", task_id)
-            pr_url = await github_pr.push_and_open_pr(
-                task=task,
+            logger.info("Task %s: pushing branch %s", task_id, branch)
+            await github_pr.push_branch(
                 branch=branch,
                 worktree_path=primary_wt,
-                token=token,
                 emit=self._emit,
             )
-            logger.info("Task %s: done — pr_url=%s", task_id, pr_url or "<none>")
+            logger.info("Task %s: done", task_id)
             await self._task_update(
-                task_id, state="done", branch=branch, prUrl=pr_url or "", finishedAt=finished_at,
+                task_id, state="done", branch=branch, finishedAt=finished_at,
             )
             await self._send({
                 "type": "task-complete",
                 "workerId": self.cfg.worker_id,
                 "taskId": task_id,
-                "prUrl": pr_url,
                 "branch": branch,
                 "description": desc,
             })
             await self._set_state("idle")
         else:
-            logger.warning("Task %s: failed, requesting human input", task_id)
+            logger.warning("Task %s: failed stop_reason=%s, requesting human input", task_id, stop_reason)
             await self._task_update(task_id, state="failed", finishedAt=finished_at)
             await self._set_state("error")
             await self._send({
@@ -353,6 +376,7 @@ class Worker:
                 "workerId": self.cfg.worker_id,
                 "taskId": task_id,
                 "description": desc,
+                "stopReason": stop_reason,
                 "lastMessage": last_msg,
             })
 
