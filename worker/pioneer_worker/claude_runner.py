@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -299,9 +300,13 @@ async def run_claude_auto(
                 proc.pid,
             )
         return exit_code == 0, stop_reason, last_text
-    except FileNotFoundError:
-        logger.error("claude executable not found: %r", claude_path)
-        await emit(f"[claude] ✗ executable not found: {claude_path}")
+    except FileNotFoundError as exc:
+        if not os.path.exists(claude_path):
+            logger.error("claude executable not found: %r", claude_path)
+            await emit(f"[claude] ✗ executable not found: {claude_path}")
+        else:
+            logger.error("claude failed to start (cwd missing?): %s — cwd=%r", exc, cwd)
+            await emit(f"[claude] ✗ failed to start: {exc} (cwd={cwd!r})")
         return False, "no_events", last_text
     except Exception as exc:  # pragma: no cover
         logger.exception("claude subprocess crashed: %s", exc)

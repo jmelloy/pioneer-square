@@ -137,6 +137,12 @@ def generate_session_id():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
+def _worker_name(worker_id: str) -> str:
+    raw = worker_id[2:].upper()
+    split = 2 + sum(ord(c) for c in raw) % 3
+    return f"{raw[:split]}-{raw[split:]}"
+
+
 class SessionCreate(BaseModel):
     name: Optional[str] = None
 
@@ -929,7 +935,7 @@ async def create_worker(session_id: str, data: WorkerCreate):
     using the returned id (see the standalone /worker package)."""
     worker_id   = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     created_at  = datetime.now(timezone.utc).isoformat()
-    worker_name = f"Worker-{worker_id[2:6]}"
+    worker_name = _worker_name(worker_id)
 
     db = await get_db()
     try:

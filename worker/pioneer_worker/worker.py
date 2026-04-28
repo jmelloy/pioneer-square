@@ -85,7 +85,10 @@ class Worker:
         })
 
     async def _join(self) -> None:
-        name = self.cfg.worker_name or f"Worker-{self.cfg.worker_id[2:6]}"
+        raw = self.cfg.worker_id[2:].upper()
+        split = 2 + sum(ord(c) for c in raw) % 3
+        default_name = f"{raw[:split]}-{raw[split:]}"
+        name = self.cfg.worker_name or default_name
         await self._send({
             "type": "join",
             "agentId": self.cfg.worker_id,
@@ -325,23 +328,20 @@ class Worker:
         logger.info("Task %s: claude finished success=%s stop_reason=%s", task_id, success, stop_reason)
 
         if success:
-            logger.info("Task %s: pushing branch and opening PR", task_id)
-            pr_url = await github_pr.push_and_open_pr(
-                task=task,
+            logger.info("Task %s: pushing branch %s", task_id, branch)
+            await github_pr.push_branch(
                 branch=branch,
                 worktree_path=primary_wt,
-                token=token,
                 emit=self._emit,
             )
-            logger.info("Task %s: done — pr_url=%s", task_id, pr_url or "<none>")
+            logger.info("Task %s: done", task_id)
             await self._task_update(
-                task_id, state="done", branch=branch, prUrl=pr_url or "", finishedAt=finished_at,
+                task_id, state="done", branch=branch, finishedAt=finished_at,
             )
             await self._send({
                 "type": "task-complete",
                 "workerId": self.cfg.worker_id,
                 "taskId": task_id,
-                "prUrl": pr_url,
                 "branch": branch,
                 "description": desc,
             })

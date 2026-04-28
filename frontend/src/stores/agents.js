@@ -33,8 +33,11 @@ export const useAgentsStore = defineStore('agents', () => {
   function addLog(agentId, line, timestamp) {
     const agent = agents.value.find(a => a.id === agentId)
     if (agent) {
-      agent.logs.push({ line, timestamp: timestamp || new Date().toISOString() })
-      if (agent.logs.length > 500) agent.logs.shift()
+      const ts = timestamp || new Date().toISOString()
+      for (const l of line.split('\n')) {
+        agent.logs.push({ line: l, timestamp: ts })
+        if (agent.logs.length > 500) agent.logs.shift()
+      }
     }
   }
 
