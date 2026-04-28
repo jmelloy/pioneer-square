@@ -9,32 +9,35 @@
         <span class="tab-icon">⚙</span>
         <span class="tab-label">Factory Floor</span>
       </button>
+      <!-- Worker tabs — opened from sidebar -->
       <button
-        v-for="agent in agents"
-        :key="agent.id"
-        class="tab agent-tab"
-        :class="{ active: activeTab === agent.id }"
-        @click="activeTab = agent.id"
+        v-for="worker in visibleWorkerTabs"
+        :key="'worker-' + worker.id"
+        class="tab worker-tab"
+        :class="{ active: activeTab === 'worker-' + worker.id }"
+        @click="onWorkerTabClick($event, worker.id)"
       >
-        <span class="state-dot" :class="agent.state"></span>
-        <span class="tab-label">{{ agent.name }}</span>
+        <span class="state-dot" :class="worker.state"></span>
+        <span class="tab-label">{{ worker.name }}</span>
+        <span class="tab-close">×</span>
       </button>
-      <!-- Task tabs — shown for active/recent tasks -->
+      <!-- Task tabs — only shown when explicitly opened -->
       <button
         v-for="task in visibleTaskTabs"
         :key="'task-' + task.id"
         class="tab task-tab"
         :class="{ active: activeTab === 'task-' + task.id }"
-        @click="activeTab = 'task-' + task.id"
+        @click="onTabClick($event, task.id)"
       >
         <span class="task-dot" :class="'task-dot-' + task.state.replace(/[^a-z]/g, '-')"></span>
         <span class="tab-label">{{ task.name || task.id }}</span>
+        <span class="tab-close">×</span>
       </button>
     </div>
     <div class="tab-content">
       <FactoryFloor v-if="activeTab === 'factory'" />
+      <WorkerTerminalPane v-else-if="activeTab.startsWith('worker-')" :workerId="activeTab.slice(7)" />
       <TaskPane v-else-if="activeTab.startsWith('task-')" :taskId="activeTab.slice(5)" />
-      <TerminalPane v-else :agentId="activeTab" />
     </div>
   </div>
 </template>
@@ -44,29 +47,50 @@ import { ref, computed, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents.js'
 import { useTasksStore } from '../stores/tasks.js'
 import FactoryFloor from './FactoryFloor.vue'
-import TerminalPane from './TerminalPane.vue'
+import WorkerTerminalPane from './WorkerTerminalPane.vue'
 import TaskPane from './TaskPane.vue'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
-const agents = computed(() => agentsStore.agents)
 const activeTab = ref('factory')
 
-// Show tabs for tasks that are active or recently completed (last 8)
-const visibleTaskTabs = computed(() => {
-  const active = tasksStore.tasks.filter(t =>
-    ['pending', 'planning', 'working', 'awaiting-review', 'followup'].includes(t.state)
-  )
-  const done = tasksStore.tasks
-    .filter(t => t.state === 'done' || t.state === 'failed')
-    .slice(0, Math.max(0, 8 - active.length))
-  return [...active, ...done].slice(0, 8)
+const visibleWorkerTabs = computed(() =>
+  agentsStore.openedWorkerIds
+    .map(id => agentsStore.workers.find(w => w.id === id))
+    .filter(Boolean)
+)
+
+const visibleTaskTabs = computed(() =>
+  tasksStore.openedTaskIds
+    .map(id => tasksStore.tasks.find(t => t.id === id))
+    .filter(Boolean)
+)
+
+watch(() => agentsStore.selectedWorkerId, (id) => {
+  if (id) activeTab.value = 'worker-' + id
 })
 
-// Auto-open task tab when a new task becomes active
 watch(() => tasksStore.selectedTaskId, (id) => {
   if (id) activeTab.value = 'task-' + id
 })
+
+function onWorkerTabClick(event, workerId) {
+  if (event.target.closest('.tab-close')) {
+    agentsStore.closeWorker(workerId)
+    if (activeTab.value === 'worker-' + workerId) activeTab.value = 'factory'
+  } else {
+    activeTab.value = 'worker-' + workerId
+  }
+}
+
+function onTabClick(event, taskId) {
+  if (event.target.closest('.tab-close')) {
+    tasksStore.closeTask(taskId)
+    if (activeTab.value === 'task-' + taskId) activeTab.value = 'factory'
+  } else {
+    activeTab.value = 'task-' + taskId
+  }
+}
 </script>
 
 <style scoped>
@@ -115,13 +139,8 @@ watch(() => tasksStore.selectedTaskId, (id) => {
   box-shadow: inset 0 -2px 6px rgba(232, 170, 0, 0.1);
 }
 
-.tab-icon {
-  font-size: 14px;
-}
-
-.tab-label {
-  font-size: 11px;
-}
+.tab-icon { font-size: 14px; }
+.tab-label { font-size: 11px; }
 
 .state-dot {
   width: 8px;
@@ -130,14 +149,39 @@ watch(() => tasksStore.selectedTaskId, (id) => {
   display: inline-block;
   flex-shrink: 0;
 }
-
-.state-dot.idle { background: var(--color-text-dim); }
+.state-dot.idle    { background: var(--color-text-dim); }
 .state-dot.thinking { background: var(--color-blue); animation: dotPulse 1s infinite; }
-.state-dot.working { background: var(--color-green); animation: dotPulse 0.5s infinite; }
-.state-dot.busy { background: var(--color-orange); animation: dotPulse 0.8s infinite; }
-.state-dot.error { background: var(--color-red); }
+.state-dot.working  { background: var(--color-green); animation: dotPulse 0.5s infinite; }
+.state-dot.busy     { background: var(--color-orange); animation: dotPulse 0.8s infinite; }
+.state-dot.error    { background: var(--color-red); }
+
+.worker-tab { border-left: 1px solid rgba(0,187,170,0.2); }
+.worker-tab.active { border-bottom-color: var(--color-teal); color: var(--color-teal); }
 
 .task-tab { border-left: 1px solid rgba(255,204,0,0.2); }
+
+.tab-close {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--color-text-dim);
+  margin-left: 2px;
+  padding: 0 2px;
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+}
+
+.worker-tab:hover .tab-close,
+.worker-tab.active .tab-close,
+.task-tab:hover .tab-close,
+.task-tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  color: var(--color-red);
+  background: rgba(255, 80, 80, 0.12);
+}
 
 .task-dot {
   width: 8px;
@@ -146,17 +190,16 @@ watch(() => tasksStore.selectedTaskId, (id) => {
   display: inline-block;
   flex-shrink: 0;
 }
-.task-dot-pending { background: var(--color-text-dim); }
-.task-dot-planning { background: var(--color-blue); animation: dotPulse 1s infinite; }
-.task-dot-working { background: var(--color-green); animation: dotPulse 0.5s infinite; }
+.task-dot-pending         { background: var(--color-text-dim); }
+.task-dot-working         { background: var(--color-green); animation: dotPulse 0.5s infinite; }
 .task-dot-awaiting-review { background: var(--color-amber); animation: dotPulse 1.5s infinite; }
-.task-dot-done { background: var(--color-teal); }
-.task-dot-failed { background: var(--color-red); }
-.task-dot-follow-up { background: var(--color-orange); animation: dotPulse 0.8s infinite; }
+.task-dot-done            { background: var(--color-teal); }
+.task-dot-failed          { background: var(--color-red); }
+.task-dot-follow-up       { background: var(--color-orange); animation: dotPulse 0.8s infinite; }
 
 @keyframes dotPulse {
   0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.7); }
+  50%       { opacity: 0.5; transform: scale(0.7); }
 }
 
 .tab-content {

@@ -86,7 +86,12 @@
         <div class="station-table"></div>
       </div>
       <div v-if="station.agent" class="station-agent">
-        <AgentAvatar :agent="station.agent" />
+        <div class="worker-indicator" :class="station.agent.state">
+          <div class="wi-screen">
+            <div class="wi-line" v-for="l in 3" :key="l"></div>
+          </div>
+          <div class="wi-label">{{ station.agent.name.replace(/\/\d+$/, '') }}</div>
+        </div>
       </div>
       <div v-else class="station-empty">
         <div class="empty-slot">?</div>
@@ -114,7 +119,6 @@
 <script setup>
 import { computed } from 'vue'
 import { useAgentsStore } from '../stores/agents.js'
-import AgentAvatar from './AgentAvatar.vue'
 
 const agentsStore = useAgentsStore()
 const agents = computed(() => agentsStore.agents)
@@ -514,6 +518,55 @@ const tickerMessages = computed(() => {
 
 .station-agent, .station-empty {
   margin-top: 2px;
+}
+
+.worker-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.wi-screen {
+  width: 36px;
+  height: 28px;
+  background: #080400;
+  border: 2px solid var(--color-brass-dark);
+  border-radius: 2px;
+  padding: 4px 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.wi-line {
+  height: 3px;
+  border-radius: 1px;
+  background: var(--color-text-dim);
+  opacity: 0.4;
+}
+
+.worker-indicator.working .wi-line { background: var(--color-green); opacity: 0.85; animation: screenScroll 1.5s infinite linear; }
+.worker-indicator.working .wi-line:nth-child(2) { animation-delay: -0.5s; opacity: 0.5; }
+.worker-indicator.working .wi-line:nth-child(3) { animation-delay: -1s; opacity: 0.3; width: 60%; }
+.worker-indicator.thinking .wi-line { background: var(--color-blue); opacity: 0.7; animation: screenScroll 2s infinite linear; }
+.worker-indicator.busy .wi-line { background: var(--color-orange); opacity: 0.7; animation: screenScroll 1s infinite linear; }
+.worker-indicator.error .wi-line { background: var(--color-red); opacity: 0.8; }
+
+@keyframes screenScroll {
+  0%, 100% { opacity: 0.85; }
+  50%       { opacity: 0.2; }
+}
+
+.wi-label {
+  font-family: var(--font-pixel);
+  font-size: 5px;
+  color: var(--color-brass-dark);
+  text-align: center;
+  max-width: 60px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .empty-slot {

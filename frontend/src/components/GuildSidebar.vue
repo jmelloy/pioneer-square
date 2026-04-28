@@ -1,60 +1,57 @@
 <template>
   <aside class="sidebar panel-bg">
     <div class="sidebar-header">
-      <span class="sidebar-title">Guilds</span>
+      <span class="sidebar-title">Tasks</span>
       <button class="pixel-btn new-btn" @click="goHome">⌂ Home</button>
     </div>
 
-    <div class="session-list">
-      <div
-        v-for="guild in guilds"
-        :key="guild.id"
-        class="session-item"
-        :class="{ active: currentGuild && currentGuild.id === guild.id }"
-        @click="goToSession(guild.id)"
-      >
-        <div class="session-top">
-          <span class="session-id">{{ guild.id }}</span>
-          <span class="session-agents" v-if="guild.agent_count !== undefined">
-            <span class="agents-dot" :class="guild.agent_count > 0 ? 'active' : ''"></span>
-            {{ guild.agent_count }}
-          </span>
-        </div>
-        <div class="session-name">{{ guild.name }}</div>
-        <div class="session-time">{{ formatTime(guild.created_at) }}</div>
-      </div>
-      <div v-if="guilds.length === 0" class="no-sessions">No guilds yet</div>
-    </div>
+    <div class="tasks-list">
+      <div v-if="tasksStore.tasks.length === 0" class="empty-state">No tasks yet</div>
 
-    <!-- Tasks panel — visible when a guild is active -->
-    <div v-if="currentGuild" class="tasks-panel">
-      <div class="tasks-header">
-        <span class="tasks-title">Tasks</span>
-        <span class="tasks-count">{{ tasksStore.tasks.length }}</span>
-      </div>
-      <div class="tasks-list">
-        <div v-if="tasksStore.tasks.length === 0" class="tasks-empty">No tasks yet</div>
+      <template v-for="group in groupedTasks" :key="group.label">
+        <div class="date-separator">
+          <span class="date-label">{{ group.label }}</span>
+          <span class="date-count">{{ group.tasks.length }}</span>
+        </div>
         <div
-          v-for="task in tasksStore.tasks.slice(0, 20)"
+          v-for="task in group.tasks"
           :key="task.id"
           class="task-item"
           :class="{ selected: tasksStore.selectedTaskId === task.id }"
           @click="openTask(task.id)"
         >
-          <div class="task-item-top">
-            <span class="task-item-dot" :class="'dot-' + (task.state || 'pending').replace(/[^a-z]/g, '-')"></span>
-            <span class="task-item-name">{{ task.name || task.id }}</span>
+          <div class="task-top">
+            <span class="task-dot" :class="'dot-' + (task.state || 'pending').replace(/[^a-z]/g, '-')"></span>
+            <span class="task-name">{{ task.name || task.id }}</span>
           </div>
-          <div class="task-item-meta">
-            <span class="task-item-phase">{{ task.phase || 'execute' }}</span>
-            <span class="task-item-state">{{ tasksStore.stateLabel(task.state) }}</span>
+          <div class="task-meta">
+            <span class="task-state">{{ tasksStore.stateLabel(task.state) }}</span>
+            <span class="task-time">{{ formatTime(task.created_at) }}</span>
           </div>
         </div>
+      </template>
+    </div>
+
+    <!-- Workers section -->
+    <div v-if="agentsStore.workers.length > 0" class="workers-section">
+      <div class="section-header">
+        <span class="section-label">Workers</span>
+        <span class="section-count">{{ agentsStore.workers.length }}</span>
+      </div>
+      <div
+        v-for="worker in agentsStore.workers"
+        :key="worker.id"
+        class="worker-item"
+        :class="{ selected: agentsStore.selectedWorkerId === worker.id }"
+        @click="agentsStore.selectWorker(worker.id)"
+      >
+        <span class="worker-dot" :class="'wdot-' + worker.state"></span>
+        <span class="worker-name">{{ worker.name }}</span>
+        <span class="worker-state">{{ worker.state }}</span>
       </div>
     </div>
 
     <div class="sidebar-footer">
-      <!-- Deploy worker — only when in an active guild -->
       <button
         v-if="currentGuild"
         class="pixel-btn deploy-btn"
@@ -62,7 +59,6 @@
         title="Deploy a new worker agent"
       >+ WORKER</button>
 
-      <!-- GitHub identity block -->
       <div class="gh-block" @click="showGitHubModal = true" :title="authStore.user ? 'GitHub: ' + authStore.user.login : 'Configure GitHub'">
         <div class="gh-inner" :class="{ configured: authStore.isLoggedIn }">
           <img v-if="authStore.isLoggedIn" :src="authStore.user?.avatar_url" class="gh-avatar" alt="gh" />
@@ -95,6 +91,7 @@ import { useGuildStore } from '../stores/guild.js'
 import { useGitHubStore } from '../stores/github.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useTasksStore } from '../stores/tasks.js'
+import { useAgentsStore } from '../stores/agents.js'
 import GitHubConfigModal from './GitHubConfigModal.vue'
 import DeployWorkerModal from './DeployWorkerModal.vue'
 
@@ -103,20 +100,42 @@ const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 const authStore = useAuthStore()
 const tasksStore = useTasksStore()
+const agentsStore = useAgentsStore()
 
 const showGitHubModal = ref(false)
 const showDeployModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
-
-const guilds = computed(() => guildStore.guilds)
 const isConnected = computed(() => guildStore.isConnected)
+
+const groupedTasks = computed(() => {
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const weekAgo = new Date(today)
+  weekAgo.setDate(weekAgo.getDate() - 7)
+
+  const groupMap = new Map()
+
+  for (const task of tasksStore.tasks) {
+    const d = task.created_at ? new Date(task.created_at) : new Date()
+    const taskDay = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+
+    let label
+    if (taskDay >= today) label = 'Today'
+    else if (taskDay >= yesterday) label = 'Yesterday'
+    else if (taskDay >= weekAgo) label = d.toLocaleDateString('en-US', { weekday: 'long' })
+    else label = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+
+    if (!groupMap.has(label)) groupMap.set(label, [])
+    groupMap.get(label).push(task)
+  }
+
+  return Array.from(groupMap.entries()).map(([label, tasks]) => ({ label, tasks }))
+})
 
 function goHome() {
   router.push('/')
-}
-
-function goToSession(id) {
-  router.push(`/${id}`)
 }
 
 function openTask(taskId) {
@@ -152,6 +171,7 @@ function formatTime(isoStr) {
   align-items: center;
   justify-content: space-between;
   background: var(--color-bg-tertiary);
+  flex-shrink: 0;
 }
 
 .sidebar-title {
@@ -168,113 +188,42 @@ function formatTime(isoStr) {
   padding: 4px 7px;
 }
 
-.session-list {
+/* ── Unified task list ── */
+.tasks-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 0;
-  min-height: 80px;
-  max-height: 220px;
+  padding: 0;
 }
 
-.session-item {
-  padding: 10px 12px;
-  cursor: pointer;
-  border-bottom: 1px solid var(--color-bg-tertiary);
-  transition: background 0.15s;
-}
-
-.session-item:hover {
-  background: var(--color-bg-tertiary);
-}
-
-.session-item.active {
-  background: rgba(232, 170, 0, 0.12);
-  border-left: 3px solid var(--color-brass);
-}
-
-.session-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 3px;
-}
-
-.session-id {
-  font-family: var(--font-pixel);
-  font-size: 9px;
-  color: var(--color-brass-light);
-}
-
-.session-agents {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  color: var(--color-text-dim);
-}
-
-.agents-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--color-text-dim);
-  display: inline-block;
-}
-
-.agents-dot.active {
-  background: var(--color-green);
-  animation: pulse 2s infinite;
-}
-
-.session-name {
-  font-size: 11px;
-  color: var(--color-text);
-  margin-bottom: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.session-time {
-  font-size: 10px;
-  color: var(--color-text-dim);
-}
-
-.no-sessions {
-  padding: 20px;
+.empty-state {
+  padding: 24px 12px;
   text-align: center;
   color: var(--color-text-dim);
   font-size: 11px;
+  font-style: italic;
 }
 
-/* ── Tasks panel ── */
-.tasks-panel {
-  border-top: 2px solid var(--color-brass-dark);
-  display: flex;
-  flex-direction: column;
-  max-height: 240px;
-  flex-shrink: 0;
-}
-
-.tasks-header {
+.date-separator {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 12px;
-  background: var(--color-bg-tertiary);
+  padding: 6px 12px 4px;
+  position: sticky;
+  top: 0;
+  background: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-brass-dark);
-  flex-shrink: 0;
+  z-index: 1;
 }
 
-.tasks-title {
+.date-label {
   font-family: var(--font-pixel);
-  font-size: 7px;
-  color: var(--color-brass-light);
-  letter-spacing: 2px;
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1.5px;
   text-transform: uppercase;
 }
 
-.tasks-count {
+.date-count {
   font-size: 9px;
   color: var(--color-text-dim);
   background: var(--color-bg);
@@ -282,23 +231,10 @@ function formatTime(isoStr) {
   border-radius: 2px;
 }
 
-.tasks-list {
-  overflow-y: auto;
-  flex: 1;
-}
-
-.tasks-empty {
-  padding: 12px;
-  text-align: center;
-  color: var(--color-text-dim);
-  font-size: 10px;
-  font-style: italic;
-}
-
 .task-item {
-  padding: 7px 12px;
+  padding: 8px 12px;
   cursor: pointer;
-  border-bottom: 1px solid var(--color-bg-tertiary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   transition: background 0.12s;
 }
 
@@ -309,16 +245,17 @@ function formatTime(isoStr) {
 .task-item.selected {
   background: rgba(232, 170, 0, 0.12);
   border-left: 3px solid var(--color-brass);
+  padding-left: 9px;
 }
 
-.task-item-top {
+.task-top {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 3px;
 }
 
-.task-item-dot {
+.task-dot {
   width: 6px;
   height: 6px;
   border-radius: 2px;
@@ -333,7 +270,7 @@ function formatTime(isoStr) {
 .dot-follow-up { background: var(--color-orange); animation: pulse 0.8s infinite; }
 .dot-followup { background: var(--color-orange); animation: pulse 0.8s infinite; }
 
-.task-item-name {
+.task-name {
   font-size: 11px;
   color: var(--color-text);
   white-space: nowrap;
@@ -342,23 +279,110 @@ function formatTime(isoStr) {
   flex: 1;
 }
 
-.task-item-meta {
+.task-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
   padding-left: 12px;
 }
 
-.task-item-phase {
-  font-size: 9px;
-  color: var(--color-text-dim);
-}
-
-.task-item-state {
+.task-state {
   font-family: var(--font-pixel);
   font-size: 6px;
   color: var(--color-brass-dark);
-  margin-left: auto;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.task-time {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+}
+
+/* ── Workers section ── */
+.workers-section {
+  border-top: 2px solid var(--color-brass-dark);
+  flex-shrink: 0;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 12px 4px;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-brass-dark);
+  position: sticky;
+  top: 0;
+}
+
+.section-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-teal);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+
+.section-count {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  background: var(--color-bg);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+.worker-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: background 0.12s;
+}
+
+.worker-item:hover {
+  background: rgba(0, 187, 170, 0.06);
+}
+
+.worker-item.selected {
+  background: rgba(0, 187, 170, 0.12);
+  border-left: 3px solid var(--color-teal);
+  padding-left: 9px;
+}
+
+.worker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.wdot-idle    { background: var(--color-text-dim); }
+.wdot-working { background: var(--color-green); animation: pulse 0.5s infinite; }
+.wdot-thinking { background: var(--color-blue); animation: pulse 1s infinite; }
+.wdot-busy    { background: var(--color-orange); animation: pulse 0.8s infinite; }
+.wdot-error   { background: var(--color-red); }
+.wdot-offline { background: #333; }
+
+.worker-name {
+  font-size: 11px;
+  color: var(--color-teal);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.worker-state {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 /* ── Footer ── */
@@ -369,9 +393,9 @@ function formatTime(isoStr) {
   padding: 10px 12px;
   border-top: 2px solid var(--color-brass-dark);
   background: var(--color-bg-tertiary);
+  flex-shrink: 0;
 }
 
-/* ── Deploy worker button ── */
 .deploy-btn {
   width: 100%;
   font-size: 7px;
