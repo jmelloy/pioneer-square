@@ -32,22 +32,22 @@
       </template>
     </div>
 
-    <!-- Workers section -->
-    <div v-if="agentsStore.workers.length > 0" class="workers-section">
+    <!-- Agents section -->
+    <div v-if="agentsStore.agents.length > 0" class="workers-section">
       <div class="section-header">
-        <span class="section-label">Workers</span>
-        <span class="section-count">{{ agentsStore.workers.length }}</span>
+        <span class="section-label">Agents</span>
+        <span class="section-count">{{ agentsStore.agents.length }}</span>
       </div>
       <div
-        v-for="worker in agentsStore.workers"
-        :key="worker.id"
+        v-for="agent in agentsStore.agents"
+        :key="agent.id"
         class="worker-item"
-        :class="{ selected: agentsStore.selectedWorkerId === worker.id }"
-        @click="agentsStore.selectWorker(worker.id)"
+        :class="{ selected: agentsStore.selectedAgentId === agent.id }"
+        @click="agentsStore.selectAgent(agent.id)"
       >
-        <span class="worker-dot" :class="'wdot-' + worker.state"></span>
-        <span class="worker-name">{{ worker.name }}</span>
-        <span class="worker-state">{{ worker.state }}</span>
+        <span class="worker-dot" :class="'wdot-' + agent.state"></span>
+        <span class="worker-name">{{ agent.name }}</span>
+        <span class="worker-state">{{ agent.state }}</span>
       </div>
     </div>
 

@@ -12,6 +12,8 @@ export const useAgentsStore = defineStore('agents', () => {
   const workerLogs = ref({})       // workerId -> [{line, timestamp}]
   const selectedWorkerId = ref(null)
   const openedWorkerIds = ref([])
+  const selectedAgentId = ref(null)
+  const openedAgentIds = ref([])
 
   // Unique workers derived from agent slots
   const workers = computed(() => {
@@ -91,6 +93,19 @@ export const useAgentsStore = defineStore('agents', () => {
     const idx = openedWorkerIds.value.indexOf(workerId)
     if (idx !== -1) openedWorkerIds.value.splice(idx, 1)
     if (selectedWorkerId.value === workerId) selectedWorkerId.value = null
+  }
+
+  function selectAgent(agentId) {
+    selectedAgentId.value = agentId
+    if (agentId && !openedAgentIds.value.includes(agentId)) {
+      openedAgentIds.value.push(agentId)
+    }
+  }
+
+  function closeAgent(agentId) {
+    const idx = openedAgentIds.value.indexOf(agentId)
+    if (idx !== -1) openedAgentIds.value.splice(idx, 1)
+    if (selectedAgentId.value === agentId) selectedAgentId.value = null
   }
 
   function sendMessage(agentId, content) {
@@ -214,6 +229,8 @@ export const useAgentsStore = defineStore('agents', () => {
     workerLogs.value = {}
     selectedWorkerId.value = null
     openedWorkerIds.value = []
+    selectedAgentId.value = null
+    openedAgentIds.value = []
   }
 
   function handleWebSocketMessage(data) {
@@ -222,12 +239,7 @@ export const useAgentsStore = defineStore('agents', () => {
     } else if (data.type === 'agent-state') {
       updateAgentState(data.agentId, data.state)
     } else if (data.type === 'terminal-output' && !data.taskId) {
-      const agent = agents.value.find(a => a.id === data.agentId)
-      if (agent?.workerId) {
-        addWorkerLog(agent.workerId, data.line, data.timestamp)
-      } else {
-        addLog(data.agentId, data.line, data.timestamp)
-      }
+      addLog(data.agentId, data.line, data.timestamp)
     }
   }
 
@@ -237,12 +249,16 @@ export const useAgentsStore = defineStore('agents', () => {
     workerLogs,
     selectedWorkerId,
     openedWorkerIds,
+    selectedAgentId,
+    openedAgentIds,
     registerAgent,
     updateAgentState,
     addLog,
     addWorkerLog,
     selectWorker,
     closeWorker,
+    selectAgent,
+    closeAgent,
     sendMessage,
     runAgent,
     stopAgent,

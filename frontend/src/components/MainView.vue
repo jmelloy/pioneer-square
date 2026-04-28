@@ -9,16 +9,16 @@
         <span class="tab-icon">⚙</span>
         <span class="tab-label">Factory Floor</span>
       </button>
-      <!-- Worker tabs — opened from sidebar -->
+      <!-- Agent tabs — opened from sidebar -->
       <button
-        v-for="worker in visibleWorkerTabs"
-        :key="'worker-' + worker.id"
+        v-for="agent in visibleAgentTabs"
+        :key="'agent-' + agent.id"
         class="tab worker-tab"
-        :class="{ active: activeTab === 'worker-' + worker.id }"
-        @click="onWorkerTabClick($event, worker.id)"
+        :class="{ active: activeTab === 'agent-' + agent.id }"
+        @click="onAgentTabClick($event, agent.id)"
       >
-        <span class="state-dot" :class="worker.state"></span>
-        <span class="tab-label">{{ worker.name }}</span>
+        <span class="state-dot" :class="agent.state"></span>
+        <span class="tab-label">{{ agent.name }}</span>
         <span class="tab-close">×</span>
       </button>
       <!-- Task tabs — only shown when explicitly opened -->
@@ -36,7 +36,7 @@
     </div>
     <div class="tab-content">
       <FactoryFloor v-if="activeTab === 'factory'" />
-      <WorkerTerminalPane v-else-if="activeTab.startsWith('worker-')" :workerId="activeTab.slice(7)" />
+      <TerminalPane v-else-if="activeTab.startsWith('agent-')" :agentId="activeTab.slice(6)" />
       <TaskPane v-else-if="activeTab.startsWith('task-')" :taskId="activeTab.slice(5)" />
     </div>
   </div>
@@ -47,16 +47,16 @@ import { ref, computed, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents.js'
 import { useTasksStore } from '../stores/tasks.js'
 import FactoryFloor from './FactoryFloor.vue'
-import WorkerTerminalPane from './WorkerTerminalPane.vue'
+import TerminalPane from './TerminalPane.vue'
 import TaskPane from './TaskPane.vue'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
 const activeTab = ref('factory')
 
-const visibleWorkerTabs = computed(() =>
-  agentsStore.openedWorkerIds
-    .map(id => agentsStore.workers.find(w => w.id === id))
+const visibleAgentTabs = computed(() =>
+  agentsStore.openedAgentIds
+    .map(id => agentsStore.agents.find(a => a.id === id))
     .filter(Boolean)
 )
 
@@ -66,20 +66,20 @@ const visibleTaskTabs = computed(() =>
     .filter(Boolean)
 )
 
-watch(() => agentsStore.selectedWorkerId, (id) => {
-  if (id) activeTab.value = 'worker-' + id
+watch(() => agentsStore.selectedAgentId, (id) => {
+  if (id) activeTab.value = 'agent-' + id
 })
 
 watch(() => tasksStore.selectedTaskId, (id) => {
   if (id) activeTab.value = 'task-' + id
 })
 
-function onWorkerTabClick(event, workerId) {
+function onAgentTabClick(event, agentId) {
   if (event.target.closest('.tab-close')) {
-    agentsStore.closeWorker(workerId)
-    if (activeTab.value === 'worker-' + workerId) activeTab.value = 'factory'
+    agentsStore.closeAgent(agentId)
+    if (activeTab.value === 'agent-' + agentId) activeTab.value = 'factory'
   } else {
-    activeTab.value = 'worker-' + workerId
+    activeTab.value = 'agent-' + agentId
   }
 }
 
