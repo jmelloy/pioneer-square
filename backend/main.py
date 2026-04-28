@@ -449,6 +449,21 @@ FOREMAN_TOOLS = [
             "required": ["repo"],
         },
     },
+    {
+        "name": "claim_github_issue",
+        "description": (
+            "Assign a GitHub issue to the authenticated user (claim it for this guild's operator). "
+            "Call this when picking up an issue to work on, before assigning a worker task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo"},
+                "issue_number": {"type": "integer"},
+            },
+            "required": ["repo", "issue_number"],
+        },
+    },
 ]
 
 
@@ -585,12 +600,13 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
         finally:
             await db.close()
 
-        # GitHub tools — no DB needed, use guild's OAuth token
-        if tu.name in ("list_github_issues", "get_github_issue", "list_github_prs"):
-            token = await _guild_github_token(guild_id)
-            if not token:
+        # GitHub tools — use guild's OAuth token
+        if tu.name in ("list_github_issues", "get_github_issue", "list_github_prs", "claim_github_issue"):
+            creds = await _guild_github_token(guild_id)
+            if not creds:
                 result_text = "No GitHub token found for this guild — user must connect GitHub first."
             else:
+                token, username = creds
                 try:
                     if tu.name == "list_github_issues":
                         repo = inp["repo"]
@@ -639,6 +655,18 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                              "draft": p.get("draft", False)}
                             for p in prs
                         ])
+
+                    elif tu.name == "claim_github_issue":
+                        repo = inp["repo"]
+                        num = int(inp["issue_number"])
+                        await asyncio.to_thread(
+                            _gh_api_post,
+                            f"/repos/{repo}/issues/{num}/assignees",
+                            token,
+                            {"assignees": [username]},
+                        )
+                        result_text = f"Issue #{num} in {repo} assigned to {username}."
+
                 except urllib.error.HTTPError as exc:
                     result_text = f"GitHub API error: {exc.code} {exc.reason}"
                 except Exception as exc:
@@ -801,18 +829,35 @@ def _gh_api(path: str, token: str) -> object:
         return json.loads(resp.read())
 
 
-async def _guild_github_token(guild_id: str) -> Optional[str]:
-    """Return the GitHub access token associated with this guild, or None."""
+def _gh_api_post(path: str, token: str, payload: dict, method: str = "POST") -> object:
+    """POST/PATCH a GitHub API path with a JSON body and return parsed JSON."""
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"https://api.github.com{path}",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json",
+        },
+        method=method,
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+async def _guild_github_token(guild_id: str) -> Optional[tuple[str, str]]:
+    """Return (access_token, github_username) for this guild, or None."""
     db = await get_db()
     try:
         async with db.execute(
-            "SELECT gt.access_token FROM github_tokens gt"
+            "SELECT gt.access_token, gt.github_username FROM github_tokens gt"
             " JOIN guilds g ON g.github_user_id = gt.github_user_id"
             " WHERE g.id = ?",
             (guild_id,),
         ) as cur:
             row = await cur.fetchone()
-        return row["access_token"] if row else None
+        return (row["access_token"], row["github_username"]) if row else None
     finally:
         await db.close()
 
