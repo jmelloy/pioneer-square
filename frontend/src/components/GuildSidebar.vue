@@ -32,23 +32,42 @@
       </template>
     </div>
 
-    <!-- Agents section -->
-    <div v-if="agentsStore.agents.length > 0" class="workers-section">
+    <!-- Workers/Agents hierarchical section -->
+    <div v-if="agentsStore.workers.length > 0" class="workers-section">
       <div class="section-header">
-        <span class="section-label">Agents</span>
-        <span class="section-count">{{ agentsStore.agents.length }}</span>
+        <span class="section-label">Workers</span>
+        <span class="section-count">{{ agentsStore.workers.length }}</span>
       </div>
-      <div
-        v-for="agent in agentsStore.agents"
-        :key="agent.id"
-        class="worker-item"
-        :class="{ selected: agentsStore.selectedAgentId === agent.id }"
-        @click="agentsStore.selectAgent(agent.id)"
-      >
-        <span class="worker-dot" :class="'wdot-' + agent.state"></span>
-        <span class="worker-name">{{ agent.name }}</span>
-        <span class="worker-state">{{ agent.state }}</span>
-      </div>
+      <template v-for="worker in agentsStore.workers" :key="worker.id">
+        <!-- Worker row -->
+        <div class="worker-row" :class="worker.state">
+          <span class="worker-dot" :class="'wdot-' + worker.state"></span>
+          <span class="worker-row-name">{{ worker.name }}</span>
+          <span class="worker-row-state">{{ worker.state }}</span>
+        </div>
+        <!-- Agent rows under this worker -->
+        <div
+          v-for="agent in agentsForWorker(worker.id)"
+          :key="agent.id"
+          class="agent-row"
+        >
+          <span class="agent-dot" :class="'wdot-' + agent.state"></span>
+          <span class="agent-row-name">{{ agent.name }}</span>
+          <div class="agent-actions">
+            <button
+              class="agent-icon-btn"
+              title="Open agent terminal"
+              @click.stop="agentsStore.selectAgent(agent.id)"
+            >🤖</button>
+            <button
+              class="agent-icon-btn"
+              :disabled="!currentTaskForWorker(worker.id)"
+              :title="currentTaskForWorker(worker.id) ? 'Open current task' : 'No active task'"
+              @click.stop="openAgentTask(worker.id)"
+            >📋</button>
+          </div>
+        </div>
+      </template>
     </div>
 
     <div class="sidebar-footer">
@@ -140,6 +159,23 @@ function goHome() {
 
 function openTask(taskId) {
   tasksStore.selectTask(taskId)
+}
+
+function agentsForWorker(workerId) {
+  return agentsStore.agents.filter(a => a.workerId === workerId)
+}
+
+function currentTaskForWorker(workerId) {
+  const active = tasksStore.tasks.filter(
+    t => t.worker_id === workerId && !['done', 'failed'].includes(t.state)
+  )
+  if (active.length) return active[0]
+  return tasksStore.tasks.find(t => t.worker_id === workerId) || null
+}
+
+function openAgentTask(workerId) {
+  const task = currentTaskForWorker(workerId)
+  if (task) tasksStore.selectTask(task.id)
 }
 
 function formatTime(isoStr) {
@@ -304,7 +340,7 @@ function formatTime(isoStr) {
 .workers-section {
   border-top: 2px solid var(--color-brass-dark);
   flex-shrink: 0;
-  max-height: 160px;
+  max-height: 240px;
   overflow-y: auto;
 }
 
@@ -335,24 +371,91 @@ function formatTime(isoStr) {
   border-radius: 2px;
 }
 
-.worker-item {
+/* Worker top-level row */
+.worker-row {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 7px 12px;
-  cursor: pointer;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  padding: 5px 12px;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.worker-row-name {
+  font-size: 10px;
+  color: var(--color-teal);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-pixel);
+  letter-spacing: 0.5px;
+}
+
+.worker-row-state {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Agent row (indented under worker) */
+.agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 5px 22px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
   transition: background 0.12s;
 }
 
-.worker-item:hover {
+.agent-row:hover {
   background: rgba(0, 187, 170, 0.06);
 }
 
-.worker-item.selected {
-  background: rgba(0, 187, 170, 0.12);
-  border-left: 3px solid var(--color-teal);
-  padding-left: 9px;
+.agent-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.agent-row-name {
+  font-size: 10px;
+  color: var(--color-text);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.agent-icon-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 1px 3px;
+  border-radius: 2px;
+  opacity: 0.6;
+  transition: opacity 0.12s, background 0.12s;
+  line-height: 1;
+}
+
+.agent-icon-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.agent-icon-btn:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
 }
 
 .worker-dot {
@@ -367,23 +470,6 @@ function formatTime(isoStr) {
 .wdot-busy    { background: var(--color-orange); animation: pulse 0.8s infinite; }
 .wdot-error   { background: var(--color-red); }
 .wdot-offline { background: #333; }
-
-.worker-name {
-  font-size: 11px;
-  color: var(--color-teal);
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.worker-state {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
 
 /* ── Footer ── */
 .sidebar-footer {

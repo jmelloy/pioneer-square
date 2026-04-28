@@ -87,8 +87,9 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useAgentsStore } from '../stores/agents.js'
+import { useGuildStore } from '../stores/guild.js'
 
 const props = defineProps({
   agentId: {
@@ -98,9 +99,15 @@ const props = defineProps({
 })
 
 const agentsStore = useAgentsStore()
+const guildStore = useGuildStore()
 const terminalEl = ref(null)
 
 const agent = computed(() => agentsStore.agents.find(a => a.id === props.agentId))
+
+onMounted(async () => {
+  const guildId = guildStore.currentGuild?.id
+  if (guildId) await agentsStore.fetchAgentLogs(guildId, props.agentId)
+})
 const logs = computed(() => agent.value?.logs || [])
 const isRunning = computed(() => agent.value?.state === 'working' || agent.value?.state === 'thinking' || agent.value?.state === 'busy')
 

@@ -233,13 +233,48 @@ export const useAgentsStore = defineStore('agents', () => {
     openedAgentIds.value = []
   }
 
+  async function fetchWorkerLogs(guildId, workerId) {
+    try {
+      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?worker_id=${workerId}`)
+      if (res.ok) {
+        const logs = await res.json()
+        workerLogs.value[workerId] = logs
+      }
+    } catch (e) {
+      console.error('Failed to fetch worker logs', e)
+    }
+  }
+
+  async function fetchAgentLogs(guildId, agentId) {
+    try {
+      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?agent_id=${agentId}`)
+      if (res.ok) {
+        const historical = await res.json()
+        const agent = agents.value.find(a => a.id === agentId)
+        if (agent) {
+          const existing = agent.logs
+          agent.logs = [...historical, ...existing]
+          if (agent.logs.length > 2000) agent.logs = agent.logs.slice(-2000)
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch agent logs', e)
+    }
+  }
+
   function handleWebSocketMessage(data) {
     if (data.type === 'agent-joined') {
       registerAgent(data)
     } else if (data.type === 'agent-state') {
       updateAgentState(data.agentId, data.state)
-    } else if (data.type === 'terminal-output' && !data.taskId) {
-      addLog(data.agentId, data.line, data.timestamp)
+    } else if (data.type === 'terminal-output') {
+      // Route to per-agent log buffer (includes task logs for agent-tab view)
+      if (data.agentId) addLog(data.agentId, data.line, data.timestamp)
+      // Route to per-worker log buffer; fall back to agent's workerId if backend didn't send it
+      const wid = data.workerId || (data.agentId
+        ? agents.value.find(a => a.id === data.agentId)?.workerId
+        : null)
+      if (wid) addWorkerLog(wid, data.line, data.timestamp)
     }
   }
 
@@ -255,6 +290,8 @@ export const useAgentsStore = defineStore('agents', () => {
     updateAgentState,
     addLog,
     addWorkerLog,
+    fetchWorkerLogs,
+    fetchAgentLogs,
     selectWorker,
     closeWorker,
     selectAgent,
