@@ -2,6 +2,8 @@ fastapi
 uvicorn[standard]
 websockets
 aiosqlite
+sqlalchemy[asyncio]
+alembic
 python-multipart
 anthropic
 python-dotenv
