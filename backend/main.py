@@ -12,12 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import aiosqlite
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
 # code reads os.environ, so ANTHROPIC_API_KEY etc. are available.
@@ -34,11 +36,25 @@ try:
 except ImportError:
     HAS_ANTHROPIC = False
 
+from database import (
+    Agent,
+    AsyncSessionLocal,
+    Base,
+    GithubToken,
+    Guild,
+    Message,
+    Task,
+    TaskLog,
+    UserSession,
+    Worker,
+    engine,
+    get_db,
+)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    # Workers run as standalone processes (see /worker package) and connect over
-    # WebSocket; no in-process recovery is needed here.
     yield
 
 app = FastAPI(title="Pioneer Square", lifespan=lifespan)
@@ -50,8 +66,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-DB_PATH = "pioneer_square.db"
 
 # GitHub OAuth config (set via environment variables)
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
@@ -76,146 +90,17 @@ running_processes: Dict[str, asyncio.subprocess.Process] = {}
 foreman_conversations: Dict[str, List[dict]] = {}    # guild_id -> messages list
 
 
-async def get_db():
-    db = await aiosqlite.connect(DB_PATH)
-    db.row_factory = aiosqlite.Row
-    return db
-
-
 async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     db = await get_db()
-
-    # Migrate: rename sessions table to guilds
     try:
-        await db.execute("ALTER TABLE sessions RENAME TO guilds")
+        # On every startup, no worker processes are connected yet.
+        await db.execute(update(Worker).values(state="offline"))
+        await db.execute(update(Agent).where(Agent.type == "worker").values(state="offline"))
         await db.commit()
-    except Exception:
-        pass
-
-    # Migrate: rename session_id columns to guild_id
-    for table in ("agents", "messages", "workers", "tasks"):
-        try:
-            await db.execute(f"ALTER TABLE {table} RENAME COLUMN session_id TO guild_id")
-            await db.commit()
-        except Exception:
-            pass
-
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS guilds (
-            id TEXT PRIMARY KEY,
-            created_at TEXT NOT NULL,
-            name TEXT,
-            github_user_id TEXT
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS agents (
-            id TEXT PRIMARY KEY,
-            guild_id TEXT NOT NULL,
-            worker_id TEXT,
-            name TEXT NOT NULL,
-            type TEXT NOT NULL DEFAULT 'worker',
-            state TEXT NOT NULL DEFAULT 'idle',
-            joined_at TEXT NOT NULL,
-            FOREIGN KEY (guild_id) REFERENCES guilds(id),
-            FOREIGN KEY (worker_id) REFERENCES workers(id)
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id TEXT NOT NULL,
-            from_agent TEXT,
-            to_agent TEXT,
-            content TEXT NOT NULL,
-            message_type TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (guild_id) REFERENCES guilds(id)
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS workers (
-            id TEXT PRIMARY KEY,
-            guild_id TEXT NOT NULL,
-            repos TEXT NOT NULL DEFAULT '[]',
-            state TEXT NOT NULL DEFAULT 'idle',
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (guild_id) REFERENCES guilds(id)
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS tasks (
-            id TEXT PRIMARY KEY,
-            worker_id TEXT NOT NULL,
-            guild_id TEXT NOT NULL,
-            description TEXT NOT NULL,
-            tool TEXT NOT NULL DEFAULT 'claude',
-            issue_number INTEGER,
-            issue_repo TEXT,
-            state TEXT NOT NULL DEFAULT 'pending',
-            branch TEXT,
-            worktree_path TEXT,
-            pr_url TEXT,
-            created_at TEXT NOT NULL,
-            finished_at TEXT,
-            FOREIGN KEY (worker_id) REFERENCES workers(id)
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS github_tokens (
-            github_user_id TEXT PRIMARY KEY,
-            github_username TEXT,
-            access_token TEXT NOT NULL,
-            token_type TEXT NOT NULL DEFAULT 'bearer',
-            scope TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-    """)
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS user_sessions (
-            token TEXT PRIMARY KEY,
-            github_user_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (github_user_id) REFERENCES github_tokens(github_user_id)
-        )
-    """)
-    for col_sql in [
-        "ALTER TABLE guilds ADD COLUMN github_user_id TEXT",
-        "ALTER TABLE agents ADD COLUMN worker_id TEXT REFERENCES workers(id)",
-    ]:
-        try:
-            await db.execute(col_sql)
-        except aiosqlite.OperationalError:
-            pass
-    try:
-        await db.execute("ALTER TABLE tasks ADD COLUMN tool TEXT NOT NULL DEFAULT 'claude'")
-        await db.commit()
-    except Exception:
-        pass
-    for col_sql in [
-        "ALTER TABLE tasks ADD COLUMN name TEXT",
-        "ALTER TABLE tasks ADD COLUMN parent_task_id TEXT",
-        "ALTER TABLE tasks ADD COLUMN phase TEXT DEFAULT 'execute'",
-    ]:
-        try:
-            await db.execute(col_sql)
-        except aiosqlite.OperationalError:
-            pass
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS task_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            line TEXT NOT NULL,
-            FOREIGN KEY (task_id) REFERENCES tasks(id)
-        )
-    """)
-    # On every startup, no worker processes are connected yet.
-    await db.execute("UPDATE workers SET state = 'offline'")
-    await db.execute("UPDATE agents SET state = 'offline' WHERE type = 'worker'")
-    await db.commit()
-    await db.close()
+    finally:
+        await db.close()
 
 
 def generate_guild_id():
@@ -487,11 +372,17 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                 phase = inp.get("phase", "execute")
                 task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
                 created_at = datetime.now(timezone.utc).isoformat()
-                await db.execute(
-                    "INSERT INTO tasks (id, worker_id, guild_id, name, description, tool,"
-                    " state, phase, created_at) VALUES (?, 'foreman', ?, ?, ?, 'claude', 'pending', ?, ?)",
-                    (task_id, guild_id, name, desc, phase, created_at),
-                )
+                db.add(Task(
+                    id=task_id,
+                    worker_id="foreman",
+                    guild_id=guild_id,
+                    name=name,
+                    description=desc,
+                    tool="claude",
+                    state="pending",
+                    phase=phase,
+                    created_at=created_at,
+                ))
                 await db.commit()
                 await broadcast(guild_id, {
                     "type": "task-created",
@@ -510,39 +401,39 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                 phase = inp.get("phase", "execute")
                 tool = inp.get("tool", "claude")
                 existing_task_id = inp.get("task_id")
-                async with db.execute(
-                    "SELECT 1 FROM workers WHERE id=? AND guild_id=?", (wid, guild_id)
-                ) as cur:
-                    worker_row = await cur.fetchone()
+                result = await db.execute(
+                    select(Worker).where(Worker.id == wid, Worker.guild_id == guild_id)
+                )
+                worker_row = result.scalar_one_or_none()
                 if not worker_row:
                     result_text = f"Worker {wid} not found — task NOT queued."
                 elif existing_task_id:
                     # Update the existing foreman task in place — no duplicate row
                     name_override = inp.get("name")
-                    update_fields = [
-                        ("worker_id", wid),
-                        ("description", desc),
-                        ("tool", tool),
-                        ("phase", phase),
-                        ("state", "pending"),
-                    ]
+                    update_values = {
+                        "worker_id": wid,
+                        "description": desc,
+                        "tool": tool,
+                        "phase": phase,
+                        "state": "pending",
+                    }
                     if name_override:
-                        update_fields.append(("name", name_override))
+                        update_values["name"] = name_override
                     if inp.get("issue_number") is not None:
-                        update_fields.append(("issue_number", inp["issue_number"]))
+                        update_values["issue_number"] = inp["issue_number"]
                     if inp.get("issue_repo"):
-                        update_fields.append(("issue_repo", inp["issue_repo"]))
-                    sql = ("UPDATE tasks SET " +
-                           ", ".join(f"{c}=?" for c, _ in update_fields) +
-                           " WHERE id=? AND guild_id=?")
-                    params = [v for _, v in update_fields] + [existing_task_id, guild_id]
-                    await db.execute(sql, params)
+                        update_values["issue_repo"] = inp["issue_repo"]
+                    await db.execute(
+                        update(Task)
+                        .where(Task.id == existing_task_id, Task.guild_id == guild_id)
+                        .values(**update_values)
+                    )
                     await db.commit()
-                    async with db.execute(
-                        "SELECT name FROM tasks WHERE id=?", (existing_task_id,)
-                    ) as cur:
-                        row = await cur.fetchone()
-                    task_name = row["name"] if row else desc[:60]
+                    result = await db.execute(
+                        select(Task.name).where(Task.id == existing_task_id)
+                    )
+                    name_row = result.fetchone()
+                    task_name = name_row[0] if name_row else desc[:60]
                     task_id = existing_task_id
                     await broadcast(guild_id, {
                         "type": "task-assigned",
@@ -562,14 +453,20 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                     parent_task_id = inp.get("parent_task_id")
                     task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
                     created_at = datetime.now(timezone.utc).isoformat()
-                    await db.execute(
-                        "INSERT INTO tasks (id, worker_id, guild_id, name, description, tool,"
-                        " issue_number, issue_repo, state, phase, parent_task_id, created_at)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
-                        (task_id, wid, guild_id, name, desc, tool,
-                         inp.get("issue_number"), inp.get("issue_repo"),
-                         phase, parent_task_id, created_at),
-                    )
+                    db.add(Task(
+                        id=task_id,
+                        worker_id=wid,
+                        guild_id=guild_id,
+                        name=name,
+                        description=desc,
+                        tool=tool,
+                        issue_number=inp.get("issue_number"),
+                        issue_repo=inp.get("issue_repo"),
+                        state="pending",
+                        phase=phase,
+                        parent_task_id=parent_task_id,
+                        created_at=created_at,
+                    ))
                     await db.commit()
                     await broadcast(guild_id, {
                         "type": "task-assigned",
@@ -588,43 +485,46 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
             elif tu.name == "send_followup":
                 task_id = inp["task_id"]
                 instructions = inp["instructions"]
-                async with db.execute(
-                    "SELECT worker_id FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
-                ) as cur:
-                    row = await cur.fetchone()
+                result = await db.execute(
+                    select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_id)
+                )
+                row = result.fetchone()
                 if not row:
                     result_text = f"Task {task_id} not found."
                 else:
                     await db.execute(
-                        "UPDATE tasks SET state='working', phase='followup' WHERE id=?", (task_id,)
+                        update(Task)
+                        .where(Task.id == task_id)
+                        .values(state="working", phase="followup")
                     )
                     await db.commit()
                     await broadcast(guild_id, {
                         "type": "task-followup",
-                        "workerId": row["worker_id"],
+                        "workerId": row[0],
                         "taskId": task_id,
                         "instructions": instructions,
                     })
-                    result_text = f"Follow-up sent to {row['worker_id']} for task {task_id}."
+                    result_text = f"Follow-up sent to {row[0]} for task {task_id}."
 
             elif tu.name == "finalize_task":
                 task_id = inp["task_id"]
-                async with db.execute(
-                    "SELECT worker_id FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
-                ) as cur:
-                    row = await cur.fetchone()
+                result = await db.execute(
+                    select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_id)
+                )
+                row = result.fetchone()
                 if not row:
                     result_text = f"Task {task_id} not found."
                 else:
                     finished_at = datetime.now(timezone.utc).isoformat()
                     await db.execute(
-                        "UPDATE tasks SET state='done', finished_at=? WHERE id=?",
-                        (finished_at, task_id),
+                        update(Task)
+                        .where(Task.id == task_id)
+                        .values(state="done", finished_at=finished_at)
                     )
                     await db.commit()
                     await broadcast(guild_id, {
                         "type": "task-finalize",
-                        "workerId": row["worker_id"],
+                        "workerId": row[0],
                         "taskId": task_id,
                     })
                     await broadcast(guild_id, {
@@ -738,26 +638,33 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
     # Build live context for the system prompt
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT w.id, w.repos, w.state as worker_state,"
-            " COUNT(a.id) as agent_count,"
-            " GROUP_CONCAT(a.id || ':' || a.state) as agents"
-            " FROM workers w"
-            " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
-            " WHERE w.guild_id=?"
-            " GROUP BY w.id"
-            " UNION ALL"
-            " SELECT a.id, '[]', a.state, 1, a.id || ':' || a.state"
-            " FROM agents a"
-            " WHERE a.guild_id=? AND a.type='worker' AND a.worker_id IS NULL AND a.state != 'offline'",
-            (guild_id, guild_id)
-        ) as cur:
-            worker_rows = [dict(r) for r in await cur.fetchall()]
-        async with db.execute(
-            "SELECT id, worker_id, description, state, branch, pr_url FROM tasks"
-            " WHERE guild_id=? ORDER BY created_at DESC LIMIT 10", (guild_id,)
-        ) as cur:
-            task_rows = [dict(r) for r in await cur.fetchall()]
+        result = await db.execute(
+            text(
+                "SELECT w.id, w.repos, w.state as worker_state,"
+                " COUNT(a.id) as agent_count,"
+                " GROUP_CONCAT(a.id || ':' || a.state) as agents"
+                " FROM workers w"
+                " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
+                " WHERE w.guild_id=:guild_id"
+                " GROUP BY w.id"
+                " UNION ALL"
+                " SELECT a.id, '[]', a.state, 1, a.id || ':' || a.state"
+                " FROM agents a"
+                " WHERE a.guild_id=:guild_id AND a.type='worker'"
+                " AND a.worker_id IS NULL AND a.state != 'offline'"
+            ),
+            {"guild_id": guild_id},
+        )
+        worker_rows = [dict(r) for r in result.mappings().fetchall()]
+        result = await db.execute(
+            select(
+                Task.id, Task.worker_id, Task.description, Task.state, Task.branch, Task.pr_url
+            )
+            .where(Task.guild_id == guild_id)
+            .order_by(Task.created_at.desc())
+            .limit(10)
+        )
+        task_rows = [dict(r) for r in result.mappings().fetchall()]
     finally:
         await db.close()
 
@@ -814,11 +721,14 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
             })
             db = await get_db()
             try:
-                await db.execute(
-                    "INSERT INTO messages (guild_id, from_agent, to_agent, content, message_type, created_at)"
-                    " VALUES (?, 'foreman', 'user', ?, 'chat', ?)",
-                    (guild_id, response_text, now),
-                )
+                db.add(Message(
+                    guild_id=guild_id,
+                    from_agent="foreman",
+                    to_agent="user",
+                    content=response_text,
+                    message_type="chat",
+                    created_at=now,
+                ))
                 await db.commit()
             finally:
                 await db.close()
@@ -898,14 +808,13 @@ async def _guild_github_token(guild_id: str) -> Optional[tuple[str, str]]:
     """Return (access_token, github_username) for this guild, or None."""
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT gt.access_token, gt.github_username FROM github_tokens gt"
-            " JOIN guilds g ON g.github_user_id = gt.github_user_id"
-            " WHERE g.id = ?",
-            (guild_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        return (row["access_token"], row["github_username"]) if row else None
+        result = await db.execute(
+            select(GithubToken.access_token, GithubToken.github_username)
+            .join(Guild, Guild.github_user_id == GithubToken.github_user_id)
+            .where(Guild.id == guild_id)
+        )
+        row = result.fetchone()
+        return (row[0], row[1]) if row else None
     finally:
         await db.close()
 
@@ -923,13 +832,13 @@ async def require_user(
     token = credentials.credentials
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT github_user_id FROM user_sessions WHERE token=?", (token,)
-        ) as cur:
-            row = await cur.fetchone()
+        result = await db.execute(
+            select(UserSession.github_user_id).where(UserSession.token == token)
+        )
+        row = result.fetchone()
         if not row:
             raise HTTPException(status_code=401, detail="Invalid or expired session token")
-        return row["github_user_id"]
+        return row[0]
     finally:
         await db.close()
 
@@ -982,28 +891,30 @@ async def github_callback(code: str = Query(...), state: str = Query(...)):
 
     db = await get_db()
     try:
-        await db.execute(
-            """
-            INSERT INTO github_tokens (github_user_id, github_username, access_token, token_type, scope, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(github_user_id) DO UPDATE SET
-                github_username=excluded.github_username,
-                access_token=excluded.access_token,
-                token_type=excluded.token_type,
-                scope=excluded.scope,
-                updated_at=excluded.updated_at
-            """,
-            (
-                github_user_id, github_username, access_token,
-                token_data.get("token_type", "bearer"),
-                token_data.get("scope", ""),
-                now, now,
+        stmt = sqlite_insert(GithubToken).values(
+            github_user_id=github_user_id,
+            github_username=github_username,
+            access_token=access_token,
+            token_type=token_data.get("token_type", "bearer"),
+            scope=token_data.get("scope", ""),
+            created_at=now,
+            updated_at=now,
+        ).on_conflict_do_update(
+            index_elements=["github_user_id"],
+            set_=dict(
+                github_username=github_username,
+                access_token=access_token,
+                token_type=token_data.get("token_type", "bearer"),
+                scope=token_data.get("scope", ""),
+                updated_at=now,
             ),
         )
-        await db.execute(
-            "INSERT INTO user_sessions (token, github_user_id, created_at) VALUES (?, ?, ?)",
-            (login_token, github_user_id, now),
-        )
+        await db.execute(stmt)
+        db.add(UserSession(
+            token=login_token,
+            github_user_id=github_user_id,
+            created_at=now,
+        ))
         await db.commit()
     finally:
         await db.close()
@@ -1025,20 +936,20 @@ async def get_github_token(guild_id: str = Query(...)):
     """Return the stored OAuth token for the guild's linked GitHub user. Used by workers."""
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT github_user_id FROM guilds WHERE id=?", (guild_id,)
-        ) as cur:
-            guild_row = await cur.fetchone()
-        if not guild_row or not guild_row["github_user_id"]:
+        result = await db.execute(
+            select(Guild.github_user_id).where(Guild.id == guild_id)
+        )
+        guild_row = result.fetchone()
+        if not guild_row or not guild_row[0]:
             raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")
-        async with db.execute(
-            "SELECT access_token, github_username FROM github_tokens WHERE github_user_id=?",
-            (guild_row["github_user_id"],),
-        ) as cur:
-            token_row = await cur.fetchone()
+        result = await db.execute(
+            select(GithubToken.access_token, GithubToken.github_username)
+            .where(GithubToken.github_user_id == guild_row[0])
+        )
+        token_row = result.fetchone()
         if not token_row:
             raise HTTPException(status_code=404, detail="GitHub token not found")
-        return {"access_token": token_row["access_token"], "username": token_row["github_username"]}
+        return {"access_token": token_row[0], "username": token_row[1]}
     finally:
         await db.close()
 
@@ -1048,17 +959,20 @@ async def get_me(github_user_id: str = Depends(require_user)):
     """Return the currently authenticated user's info."""
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT github_user_id, github_username, scope FROM github_tokens WHERE github_user_id=?",
-            (github_user_id,),
-        ) as cur:
-            row = await cur.fetchone()
+        result = await db.execute(
+            select(
+                GithubToken.github_user_id,
+                GithubToken.github_username,
+                GithubToken.scope,
+            ).where(GithubToken.github_user_id == github_user_id)
+        )
+        row = result.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="User not found")
         return {
-            "github_user_id": row["github_user_id"],
-            "github_username": row["github_username"],
-            "scope": row["scope"],
+            "github_user_id": row[0],
+            "github_username": row[1],
+            "scope": row[2],
         }
     finally:
         await db.close()
@@ -1070,7 +984,9 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(_http_beare
     if credentials:
         db = await get_db()
         try:
-            await db.execute("DELETE FROM user_sessions WHERE token=?", (credentials.credentials,))
+            await db.execute(
+                delete(UserSession).where(UserSession.token == credentials.credentials)
+            )
             await db.commit()
         finally:
             await db.close()
@@ -1090,13 +1006,16 @@ async def create_guild(
         for _ in range(5):
             guild_id = generate_guild_id()
             try:
-                await db.execute(
-                    "INSERT INTO guilds (id, created_at, name, github_user_id) VALUES (?, ?, ?, ?)",
-                    (guild_id, created_at, data.name or f"Guild {guild_id}", github_user_id)
-                )
+                db.add(Guild(
+                    id=guild_id,
+                    created_at=created_at,
+                    name=data.name or f"Guild {guild_id}",
+                    github_user_id=github_user_id,
+                ))
                 await db.commit()
                 break
-            except aiosqlite.IntegrityError:
+            except IntegrityError:
+                await db.rollback()
                 continue
         else:
             raise HTTPException(status_code=500, detail="Could not generate unique guild ID")
@@ -1109,17 +1028,18 @@ async def create_guild(
 async def list_guilds(github_user_id: str = Depends(require_user)):
     db = await get_db()
     try:
-        async with db.execute("""
-            SELECT s.id, s.created_at, s.name,
-                   COUNT(a.id) as agent_count
-            FROM guilds s
-            LEFT JOIN agents a ON a.guild_id = s.id AND a.type != 'foreman'
-            WHERE s.github_user_id = ?
-            GROUP BY s.id
-            ORDER BY s.created_at DESC
-        """, (github_user_id,)) as cursor:
-            rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        result = await db.execute(
+            text(
+                "SELECT s.id, s.created_at, s.name, COUNT(a.id) as agent_count"
+                " FROM guilds s"
+                " LEFT JOIN agents a ON a.guild_id = s.id AND a.type != 'foreman'"
+                " WHERE s.github_user_id = :github_user_id"
+                " GROUP BY s.id"
+                " ORDER BY s.created_at DESC"
+            ),
+            {"github_user_id": github_user_id},
+        )
+        return [dict(r) for r in result.mappings().fetchall()]
     finally:
         await db.close()
 
@@ -1128,24 +1048,26 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
 async def get_guild(guild_id: str):
     db = await get_db()
     try:
-        async with db.execute("SELECT * FROM guilds WHERE id = ?", (guild_id,)) as cursor:
-            guild = await cursor.fetchone()
+        result = await db.execute(select(Guild).where(Guild.id == guild_id))
+        guild = result.scalar_one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
-        async with db.execute(
-            "SELECT * FROM agents WHERE guild_id = ? AND state != 'offline' AND type != 'foreman'",
-            (guild_id,)
-        ) as cursor:
-            agents = await cursor.fetchall()
-        async with db.execute(
-            "SELECT * FROM messages WHERE guild_id = ? ORDER BY created_at DESC LIMIT 100",
-            (guild_id,)
-        ) as cursor:
-            messages = await cursor.fetchall()
+        result = await db.execute(
+            select(Agent)
+            .where(Agent.guild_id == guild_id, Agent.state != "offline", Agent.type != "foreman")
+        )
+        agents = result.scalars().all()
+        result = await db.execute(
+            select(Message)
+            .where(Message.guild_id == guild_id)
+            .order_by(Message.created_at.desc())
+            .limit(100)
+        )
+        messages = result.scalars().all()
         return {
-            **dict(guild),
-            "agents": [dict(a) for a in agents],
-            "messages": [dict(m) for m in reversed(messages)]
+            **guild.as_dict(),
+            "agents": [a.as_dict() for a in agents],
+            "messages": [m.as_dict() for m in reversed(messages)],
         }
     finally:
         await db.close()
@@ -1187,16 +1109,32 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 agent_type = data.get("agentType", "worker")
                 worker_id = data.get("workerId")
                 joined_at = datetime.now(timezone.utc).isoformat()
-                await db.execute(
-                    """INSERT OR REPLACE INTO agents (id, guild_id, worker_id, name, type, state, joined_at)
-                       VALUES (?, ?, ?, ?, ?, 'idle', ?)""",
-                    (agent_id, guild_id, worker_id, agent_name, agent_type, joined_at)
+                stmt = sqlite_insert(Agent).values(
+                    id=agent_id,
+                    guild_id=guild_id,
+                    worker_id=worker_id,
+                    name=agent_name,
+                    type=agent_type,
+                    state="idle",
+                    joined_at=joined_at,
+                ).on_conflict_do_update(
+                    index_elements=["id"],
+                    set_=dict(
+                        guild_id=guild_id,
+                        worker_id=worker_id,
+                        name=agent_name,
+                        type=agent_type,
+                        state="idle",
+                        joined_at=joined_at,
+                    ),
                 )
+                await db.execute(stmt)
                 # Mark worker online when it (re)connects.
                 if agent_type == "worker" and worker_id:
                     await db.execute(
-                        "UPDATE workers SET state = 'online' WHERE id = ? AND guild_id = ?",
-                        (worker_id, guild_id),
+                        update(Worker)
+                        .where(Worker.id == worker_id, Worker.guild_id == guild_id)
+                        .values(state="online")
                     )
                 await db.commit()
                 if agent_id:
@@ -1216,8 +1154,9 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 agent_id = data.get("agentId")
                 state = data.get("state", "idle")
                 await db.execute(
-                    "UPDATE agents SET state = ? WHERE id = ? AND guild_id = ?",
-                    (state, agent_id, guild_id)
+                    update(Agent)
+                    .where(Agent.id == agent_id, Agent.guild_id == guild_id)
+                    .values(state=state)
                 )
                 await db.commit()
                 await broadcast(guild_id, {
@@ -1231,10 +1170,14 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 to_agent = data.get("to", "foreman")
                 content = data.get("content", "")
                 created_at = datetime.now(timezone.utc).isoformat()
-                await db.execute(
-                    "INSERT INTO messages (guild_id, from_agent, to_agent, content, message_type, created_at) VALUES (?, ?, ?, ?, 'chat', ?)",
-                    (guild_id, from_agent, to_agent, content, created_at)
-                )
+                db.add(Message(
+                    guild_id=guild_id,
+                    from_agent=from_agent,
+                    to_agent=to_agent,
+                    content=content,
+                    message_type="chat",
+                    created_at=created_at,
+                ))
                 await db.commit()
                 await broadcast(guild_id, {
                     "type": "chat",
@@ -1253,10 +1196,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 task_id = data.get("taskId")
                 created_at = datetime.now(timezone.utc).isoformat()
                 if task_id and line:
-                    await db.execute(
-                        "INSERT INTO task_logs (task_id, timestamp, line) VALUES (?, ?, ?)",
-                        (task_id, created_at, line),
-                    )
+                    db.add(TaskLog(task_id=task_id, timestamp=created_at, line=line))
                     await db.commit()
                 await broadcast(guild_id, {
                     "type": "terminal-output",
@@ -1272,8 +1212,9 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 repos = data.get("repos") or []
                 if worker_id:
                     await db.execute(
-                        "UPDATE workers SET repos=? WHERE id=? AND guild_id=?",
-                        (json.dumps(repos), worker_id, guild_id),
+                        update(Worker)
+                        .where(Worker.id == worker_id, Worker.guild_id == guild_id)
+                        .values(repos=json.dumps(repos))
                     )
                     await db.commit()
 
@@ -1292,9 +1233,10 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         if src in data:
                             fields.append((col, data[src]))
                     if fields:
-                        sql = "UPDATE tasks SET " + ", ".join(f"{c}=?" for c, _ in fields) + " WHERE id=?"
-                        params = [v for _, v in fields] + [task_id]
-                        await db.execute(sql, params)
+                        values_dict = {col: val for col, val in fields}
+                        await db.execute(
+                            update(Task).where(Task.id == task_id).values(**values_dict)
+                        )
                         await db.commit()
                     await broadcast(guild_id, data, exclude=websocket)
 
@@ -1305,8 +1247,9 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 branch = data.get("branch", "")
                 if task_id:
                     await db.execute(
-                        "UPDATE tasks SET state='awaiting-review' WHERE id=? AND state='working'",
-                        (task_id,),
+                        update(Task)
+                        .where(Task.id == task_id, Task.state == "working")
+                        .values(state="awaiting-review")
                     )
                     await db.commit()
                 await broadcast(guild_id, data, exclude=websocket)
@@ -1325,7 +1268,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 worker_id_msg = data.get("workerId", "")
                 if task_id:
                     await db.execute(
-                        "UPDATE tasks SET state='awaiting-review' WHERE id=?", (task_id,)
+                        update(Task).where(Task.id == task_id).values(state="awaiting-review")
                     )
                     await db.commit()
                 await broadcast(guild_id, data, exclude=websocket)
@@ -1370,13 +1313,15 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         try:
             for agent_id in joined_agents:
                 await db.execute(
-                    "UPDATE agents SET state = 'offline' WHERE id = ? AND guild_id = ?",
-                    (agent_id, guild_id),
+                    update(Agent)
+                    .where(Agent.id == agent_id, Agent.guild_id == guild_id)
+                    .values(state="offline")
                 )
                 # Mirror into workers table so foreman sees the worker as offline.
                 await db.execute(
-                    "UPDATE workers SET state = 'offline' WHERE id = ? AND guild_id = ?",
-                    (agent_id, guild_id),
+                    update(Worker)
+                    .where(Worker.id == agent_id, Worker.guild_id == guild_id)
+                    .values(state="offline")
                 )
             if joined_agents:
                 await db.commit()
@@ -1411,8 +1356,9 @@ async def _set_agent_state(guild_id: str, agent_id: str, state: str):
     db = await get_db()
     try:
         await db.execute(
-            "UPDATE agents SET state = ? WHERE id = ? AND guild_id = ?",
-            (state, agent_id, guild_id),
+            update(Agent)
+            .where(Agent.id == agent_id, Agent.guild_id == guild_id)
+            .values(state=state)
         )
         await db.commit()
     finally:
@@ -1511,7 +1457,7 @@ async def _stream_agent(guild_id: str, agent_id: str, req: RunAgentRequest):
                 await _emit_terminal_line(guild_id, agent_id, line_str)
                 continue
 
-            text = _parse_event(tool, event, pi_last_text)
+            text_out = _parse_event(tool, event, pi_last_text)
 
             # Pi: update delta baseline
             if tool == "pi" and event.get("type") == "message_update":
@@ -1523,8 +1469,8 @@ async def _stream_agent(guild_id: str, agent_id: str, req: RunAgentRequest):
             elif tool == "pi" and event.get("type") == "agent_end":
                 pi_last_text = ""
 
-            if text:
-                await _emit_terminal_line(guild_id, agent_id, text)
+            if text_out:
+                await _emit_terminal_line(guild_id, agent_id, text_out)
 
     finally:
         if needs_stdin and proc.stdin and not proc.stdin.is_closing():
@@ -1682,15 +1628,33 @@ async def create_worker(guild_id: str, data: WorkerCreate):
 
     db = await get_db()
     try:
-        await db.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at) VALUES (?, ?, ?, 'offline', ?)",
-            (worker_id, guild_id, json.dumps(data.repos), created_at),
+        db.add(Worker(
+            id=worker_id,
+            guild_id=guild_id,
+            repos=json.dumps(data.repos),
+            state="offline",
+            created_at=created_at,
+        ))
+        stmt = sqlite_insert(Agent).values(
+            id=worker_id,
+            guild_id=guild_id,
+            worker_id=worker_id,
+            name=worker_name,
+            type="worker",
+            state="offline",
+            joined_at=created_at,
+        ).on_conflict_do_update(
+            index_elements=["id"],
+            set_=dict(
+                guild_id=guild_id,
+                worker_id=worker_id,
+                name=worker_name,
+                type="worker",
+                state="offline",
+                joined_at=created_at,
+            ),
         )
-        await db.execute(
-            "INSERT OR REPLACE INTO agents (id, guild_id, worker_id, name, type, state, joined_at)"
-            " VALUES (?, ?, ?, ?, 'worker', 'offline', ?)",
-            (worker_id, guild_id, worker_id, worker_name, created_at),
-        )
+        await db.execute(stmt)
         await db.commit()
     finally:
         await db.close()
@@ -1710,11 +1674,12 @@ async def create_worker(guild_id: str, data: WorkerCreate):
 async def list_workers(guild_id: str):
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT * FROM workers WHERE guild_id = ? ORDER BY created_at DESC", (guild_id,)
-        ) as cur:
-            rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        result = await db.execute(
+            select(Worker)
+            .where(Worker.guild_id == guild_id)
+            .order_by(Worker.created_at.desc())
+        )
+        return [w.as_dict() for w in result.scalars().all()]
     finally:
         await db.close()
 
@@ -1727,20 +1692,26 @@ async def assign_task(guild_id: str, worker_id: str, data: TaskCreate):
 
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT 1 FROM workers WHERE id=? AND guild_id=?", (worker_id, guild_id)
-        ) as cur:
-            if not await cur.fetchone():
-                raise HTTPException(status_code=404, detail="Worker not found")
-        name = (data.name or data.description[:60])
-        await db.execute(
-            "INSERT INTO tasks (id, worker_id, guild_id, name, description, tool, issue_number,"
-            " issue_repo, state, phase, parent_task_id, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
-            (task_id, worker_id, guild_id, name, data.description, data.tool,
-             data.issue_number, data.issue_repo, data.phase or "execute",
-             data.parent_task_id, created_at),
+        result = await db.execute(
+            select(Worker).where(Worker.id == worker_id, Worker.guild_id == guild_id)
         )
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Worker not found")
+        name = (data.name or data.description[:60])
+        db.add(Task(
+            id=task_id,
+            worker_id=worker_id,
+            guild_id=guild_id,
+            name=name,
+            description=data.description,
+            tool=data.tool,
+            issue_number=data.issue_number,
+            issue_repo=data.issue_repo,
+            state="pending",
+            phase=data.phase or "execute",
+            parent_task_id=data.parent_task_id,
+            created_at=created_at,
+        ))
         await db.commit()
     finally:
         await db.close()
@@ -1765,12 +1736,12 @@ async def assign_task(guild_id: str, worker_id: str, data: TaskCreate):
 async def list_tasks(guild_id: str, worker_id: str):
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT * FROM tasks WHERE worker_id = ? AND guild_id = ? ORDER BY created_at DESC",
-            (worker_id, guild_id),
-        ) as cur:
-            rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        result = await db.execute(
+            select(Task)
+            .where(Task.worker_id == worker_id, Task.guild_id == guild_id)
+            .order_by(Task.created_at.desc())
+        )
+        return [t.as_dict() for t in result.scalars().all()]
     finally:
         await db.close()
 
@@ -1782,15 +1753,15 @@ class WorkerMessage(BaseModel):
 @app.post("/guilds/{guild_id}/workers/{worker_id}/message")
 async def message_worker(guild_id: str, worker_id: str, data: WorkerMessage):
     """Forward a message to a worker process via its guild WebSocket."""
-    text = data.message.strip()
-    if not text:
+    text_msg = data.message.strip()
+    if not text_msg:
         raise HTTPException(status_code=400, detail="Empty message")
 
-    await _emit_terminal_line(guild_id, worker_id, f"[foreman → worker] {text}")
+    await _emit_terminal_line(guild_id, worker_id, f"[foreman → worker] {text_msg}")
     await broadcast(guild_id, {
         "type": "worker-message",
         "workerId": worker_id,
-        "message": text,
+        "message": text_msg,
     })
     return {"status": "delivered"}
 
@@ -1804,14 +1775,18 @@ async def list_guild_tasks(guild_id: str):
     """List all tasks for a guild, most recent first."""
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT id, worker_id, name, description, tool, state, phase,"
-            " parent_task_id, branch, pr_url, issue_number, issue_repo, created_at, finished_at"
-            " FROM tasks WHERE guild_id=? ORDER BY created_at DESC LIMIT 100",
-            (guild_id,),
-        ) as cur:
-            rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        result = await db.execute(
+            select(
+                Task.id, Task.worker_id, Task.name, Task.description,
+                Task.tool, Task.state, Task.phase, Task.parent_task_id,
+                Task.branch, Task.pr_url, Task.issue_number, Task.issue_repo,
+                Task.created_at, Task.finished_at,
+            )
+            .where(Task.guild_id == guild_id)
+            .order_by(Task.created_at.desc())
+            .limit(100)
+        )
+        return [dict(r) for r in result.mappings().fetchall()]
     finally:
         await db.close()
 
@@ -1821,17 +1796,17 @@ async def get_task_logs(guild_id: str, task_id: str):
     """Get all saved log lines for a task."""
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT 1 FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
-        ) as cur:
-            if not await cur.fetchone():
-                raise HTTPException(status_code=404, detail="Task not found")
-        async with db.execute(
-            "SELECT timestamp, line FROM task_logs WHERE task_id=? ORDER BY id ASC",
-            (task_id,),
-        ) as cur:
-            rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        result = await db.execute(
+            select(Task.id).where(Task.id == task_id, Task.guild_id == guild_id)
+        )
+        if not result.fetchone():
+            raise HTTPException(status_code=404, detail="Task not found")
+        result = await db.execute(
+            select(TaskLog.timestamp, TaskLog.line)
+            .where(TaskLog.task_id == task_id)
+            .order_by(TaskLog.id.asc())
+        )
+        return [dict(r) for r in result.mappings().fetchall()]
     finally:
         await db.close()
 
@@ -1845,15 +1820,15 @@ async def create_task_followup(guild_id: str, task_id: str, data: FollowupCreate
     """Send follow-up instructions to a worker — executed in the same worktree/branch."""
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT worker_id FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
-        ) as cur:
-            row = await cur.fetchone()
+        result = await db.execute(
+            select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_id)
+        )
+        row = result.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Task not found")
-        worker_id = row["worker_id"]
+        worker_id = row[0]
         await db.execute(
-            "UPDATE tasks SET state='working', phase='followup' WHERE id=?", (task_id,)
+            update(Task).where(Task.id == task_id).values(state="working", phase="followup")
         )
         await db.commit()
     finally:
@@ -1872,17 +1847,16 @@ async def finalize_task_endpoint(guild_id: str, task_id: str):
     """Signal a worker to finalize a task — no more follow-ups."""
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT worker_id FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
-        ) as cur:
-            row = await cur.fetchone()
+        result = await db.execute(
+            select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_id)
+        )
+        row = result.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Task not found")
-        worker_id = row["worker_id"]
+        worker_id = row[0]
         finished_at = datetime.now(timezone.utc).isoformat()
         await db.execute(
-            "UPDATE tasks SET state='done', finished_at=? WHERE id=?",
-            (finished_at, task_id),
+            update(Task).where(Task.id == task_id).values(state="done", finished_at=finished_at)
         )
         await db.commit()
     finally:
