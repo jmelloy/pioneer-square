@@ -220,6 +220,7 @@ async def run_claude_auto(
     max_turns: int,
     emit: EmitFn,
     on_proc: Optional[Callable[[ClaudeProcess], None]] = None,
+    claude_path: str = "claude",
 ) -> tuple[bool, str, str]:
     """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text).
 
@@ -228,7 +229,7 @@ async def run_claude_auto(
     produced no stream-json output at all.
     """
     cmd = [
-        "claude",
+        claude_path,
         "--output-format", "stream-json",
         "--verbose",
         "--max-turns", str(max_turns),

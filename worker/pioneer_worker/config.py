@@ -35,6 +35,9 @@ class Config:
     github_token: Optional[str] = None
     repos_dir: str = "/tmp/pioneer-repos"
     work_dir: str = "/tmp/pioneer-work"
+    claude_path: str = "claude"
+    codex_path: str = "codex"
+    pi_path: str = "pi"
     pull_interval: float = 300.0
     claude_max_turns: int = 50
 
@@ -109,6 +112,9 @@ def load(explicit_path: Optional[str] = None) -> Config:
         github_token=token,
         repos_dir=paths_block.get("repos_dir", "/tmp/pioneer-repos"),
         work_dir=paths_block.get("work_dir", "/tmp/pioneer-work"),
+        claude_path=paths_block.get("claude", "claude"),
+        codex_path=paths_block.get("codex", "codex"),
+        pi_path=paths_block.get("pi", "pi"),
         pull_interval=float(raw.get("pull_interval", 300.0)),
         claude_max_turns=int(claude_block.get("max_turns", 50)),
         config_path=cfg_path,

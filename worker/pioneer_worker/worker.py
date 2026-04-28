@@ -13,7 +13,7 @@ from typing import Optional
 
 import httpx
 
-from . import claude_runner, config as config_mod, git_ops, github_pr
+from . import claude_runner, codex_runner, pi_runner, config as config_mod, git_ops, github_pr
 from .ws_client import WSClient
 
 logger = logging.getLogger(__name__)
@@ -169,6 +169,7 @@ class Worker:
                     "worker_id": self.cfg.worker_id,
                     "session_id": self.cfg.session_id,
                     "description": msg.get("description", ""),
+                    "tool": msg.get("tool", "claude"),
                     "issue_number": msg.get("issueNumber"),
                     "issue_repo": msg.get("issueRepo"),
                 })
@@ -283,20 +284,40 @@ class Worker:
 
         await self._task_update(task_id, branch=branch, worktreePath=primary_wt)
 
+        tool = (task.get("tool") or "claude").lower()
+
         def _on_proc(proc: claude_runner.ClaudeProcess) -> None:
             self.current_claude = proc
 
-        logger.info(
-            "Task %s: launching claude in %s (max_turns=%d)",
-            task_id, primary_wt, self.cfg.claude_max_turns,
-        )
-        success, stop_reason, last_msg = await claude_runner.run_claude_auto(
-            desc,
-            primary_wt,
-            max_turns=self.cfg.claude_max_turns,
-            emit=self._emit,
-            on_proc=_on_proc,
-        )
+        if tool == "codex":
+            logger.info("Task %s: launching codex in %s", task_id, primary_wt)
+            success, stop_reason, last_msg = await codex_runner.run_codex_auto(
+                desc,
+                primary_wt,
+                emit=self._emit,
+                codex_path=self.cfg.codex_path,
+            )
+        elif tool == "pi":
+            logger.info("Task %s: launching pi in %s", task_id, primary_wt)
+            success, stop_reason, last_msg = await pi_runner.run_pi_auto(
+                desc,
+                primary_wt,
+                emit=self._emit,
+                pi_path=self.cfg.pi_path,
+            )
+        else:
+            logger.info(
+                "Task %s: launching claude in %s (max_turns=%d)",
+                task_id, primary_wt, self.cfg.claude_max_turns,
+            )
+            success, stop_reason, last_msg = await claude_runner.run_claude_auto(
+                desc,
+                primary_wt,
+                max_turns=self.cfg.claude_max_turns,
+                emit=self._emit,
+                on_proc=_on_proc,
+                claude_path=self.cfg.claude_path,
+            )
         self.current_claude = None
         finished_at = _now_iso()
         logger.info("Task %s: claude finished success=%s stop_reason=%s", task_id, success, stop_reason)

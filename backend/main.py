@@ -112,6 +112,7 @@ async def init_db():
             worker_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
             description TEXT NOT NULL,
+            tool TEXT NOT NULL DEFAULT 'claude',
             issue_number INTEGER,
             issue_repo TEXT,
             state TEXT NOT NULL DEFAULT 'pending',
@@ -123,6 +124,11 @@ async def init_db():
             FOREIGN KEY (worker_id) REFERENCES workers(id)
         )
     """)
+    try:
+        await db.execute("ALTER TABLE tasks ADD COLUMN tool TEXT NOT NULL DEFAULT 'claude'")
+        await db.commit()
+    except Exception:
+        pass
     await db.commit()
     await db.close()
 
@@ -149,6 +155,7 @@ class WorkerCreate(BaseModel):
 
 class TaskCreate(BaseModel):
     description: str
+    tool: str = "claude"          # "claude" | "codex" | "pi"
     issue_number: Optional[int] = None
     issue_repo: Optional[str] = None
 
@@ -181,7 +188,7 @@ FOREMAN_TOOLS = [
         "name": "assign_task",
         "description": (
             "Queue a coding task for a worker agent. The worker will create a git worktree, "
-            "run `claude --dangerously-skip-permissions` on the task description, then push and "
+            "run the chosen coding agent (claude, codex, or pi) on the task description, then push and "
             "open a GitHub PR."
         ),
         "input_schema": {
@@ -194,6 +201,11 @@ FOREMAN_TOOLS = [
                 "description": {
                     "type": "string",
                     "description": "Detailed, self-contained task description the coding agent will receive.",
+                },
+                "tool": {
+                    "type": "string",
+                    "enum": ["claude", "codex", "pi"],
+                    "description": "Which coding agent to use. Defaults to claude.",
                 },
                 "issue_number": {"type": "integer", "description": "GitHub issue number to close (optional)."},
                 "issue_repo": {"type": "string", "description": "owner/repo for the issue (optional)."},
@@ -237,10 +249,11 @@ async def _foreman_exec_tools(session_id: str, tool_uses: list) -> list:
                 if not worker_row:
                     result_text = f"Worker {wid} not found — task NOT queued."
                 else:
+                    tool = inp.get("tool", "claude")
                     await db.execute(
-                        "INSERT INTO tasks (id, worker_id, session_id, description, issue_number,"
-                        " issue_repo, state, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
-                        (task_id, wid, session_id, desc, inp.get("issue_number"), inp.get("issue_repo"), created_at),
+                        "INSERT INTO tasks (id, worker_id, session_id, description, tool, issue_number,"
+                        " issue_repo, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                        (task_id, wid, session_id, desc, tool, inp.get("issue_number"), inp.get("issue_repo"), created_at),
                     )
                     await db.commit()
                     await broadcast(session_id, {
@@ -248,6 +261,7 @@ async def _foreman_exec_tools(session_id: str, tool_uses: list) -> list:
                         "workerId": wid,
                         "taskId": task_id,
                         "description": desc,
+                        "tool": tool,
                         "issueNumber": inp.get("issue_number"),
                         "issueRepo": inp.get("issue_repo"),
                     })
@@ -428,7 +442,10 @@ async def get_session(session_id: str):
             session = await cursor.fetchone()
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        async with db.execute("SELECT * FROM agents WHERE session_id = ?", (session_id,)) as cursor:
+        async with db.execute(
+            "SELECT * FROM agents WHERE session_id = ? AND state != 'offline' AND type != 'foreman'",
+            (session_id,)
+        ) as cursor:
             agents = await cursor.fetchall()
         async with db.execute(
             "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 100",
@@ -967,9 +984,9 @@ async def assign_task(session_id: str, worker_id: str, data: TaskCreate):
             if not await cur.fetchone():
                 raise HTTPException(status_code=404, detail="Worker not found")
         await db.execute(
-            "INSERT INTO tasks (id, worker_id, session_id, description, issue_number, issue_repo, state, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
-            (task_id, worker_id, session_id, data.description, data.issue_number, data.issue_repo, created_at),
+            "INSERT INTO tasks (id, worker_id, session_id, description, tool, issue_number, issue_repo, state, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+            (task_id, worker_id, session_id, data.description, data.tool, data.issue_number, data.issue_repo, created_at),
         )
         await db.commit()
     finally:
@@ -980,6 +997,7 @@ async def assign_task(session_id: str, worker_id: str, data: TaskCreate):
         "workerId": worker_id,
         "taskId": task_id,
         "description": data.description,
+        "tool": data.tool,
         "issueNumber": data.issue_number,
         "issueRepo": data.issue_repo,
     })
