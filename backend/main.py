@@ -4,12 +4,22 @@ import random
 import string
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import aiosqlite
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# Load .env (looked up from CWD upward, then alongside this file) before any
+# code reads os.environ, so ANTHROPIC_API_KEY etc. are available.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 try:
     import anthropic as _anthropic
@@ -456,6 +466,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     if session_id not in connections:
         connections[session_id] = []
     connections[session_id].append(websocket)
+    # Agents that joined via this websocket; marked offline when it disconnects.
+    joined_agents: set[str] = set()
     db = await get_db()
     try:
         while True:
@@ -473,6 +485,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     (agent_id, session_id, agent_name, agent_type, joined_at)
                 )
                 await db.commit()
+                if agent_id:
+                    joined_agents.add(agent_id)
                 broadcast_msg = {
                     "type": "agent-joined",
                     "agentId": agent_id,
@@ -581,7 +595,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         if session_id in connections and websocket in connections[session_id]:
             connections[session_id].remove(websocket)
     finally:
-        await db.close()
+        try:
+            for agent_id in joined_agents:
+                await db.execute(
+                    "UPDATE agents SET state = 'offline' WHERE id = ? AND session_id = ?",
+                    (agent_id, session_id),
+                )
+            if joined_agents:
+                await db.commit()
+            for agent_id in joined_agents:
+                await broadcast(session_id, {
+                    "type": "agent-state",
+                    "agentId": agent_id,
+                    "state": "offline",
+                })
+        finally:
+            await db.close()
 
 
 # ---------------------------------------------------------------------------
