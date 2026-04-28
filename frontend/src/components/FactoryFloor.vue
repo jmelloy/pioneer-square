@@ -195,6 +195,19 @@ let walkIdx = 0
 let walkTimer = null
 
 function tickWalk() {
+  // Each working agent independently walks to its station on every tick
+  agents.value.forEach(agent => {
+    if (isAgentAtWork(agent)) {
+      const station = stationForAgent(agent)
+      const nx = station.x + 25
+      const ny = station.y + 90
+      const cur = agentPositions[agent.id]
+      if (!cur || cur.x !== nx || cur.y !== ny) {
+        agentPositions[agent.id] = { x: nx, y: ny }
+      }
+    }
+  })
+
   const idle = agents.value.filter(a => !isAgentAtWork(a))
   if (idle.length === 0) return
   const agent = idle[walkIdx % idle.length]
@@ -211,7 +224,12 @@ onUnmounted(() => {
   if (walkTimer) clearInterval(walkTimer)
 })
 
-watch(agents, syncPositions, { deep: true })
+// Watch agent id+state+workerId as a flat string so every agent's state change
+// triggers syncPositions independently, regardless of array-reference stability.
+watch(
+  () => agents.value.map(a => `${a.id}:${a.state}:${a.workerId}`).join(','),
+  syncPositions
+)
 watch(visibleStations, syncPositions)
 
 const tickerMessages = computed(() => {
