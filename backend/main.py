@@ -550,6 +550,13 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                         "finishedAt": finished_at,
                     })
                     result_text = f"Task {task_id} finalized."
+                    # Compact all prior tool-result blocks mentioning this task
+                    for msg in foreman_conversations.get(guild_id, []):
+                        if msg["role"] == "user" and isinstance(msg["content"], list):
+                            for block in msg["content"]:
+                                if (block.get("type") == "tool_result"
+                                        and task_id in block.get("content", "")):
+                                    block["content"] = f"[{task_id}: done]"
 
             elif tu.name == "message_worker":
                 wid = inp["worker_id"]
@@ -699,10 +706,10 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
 
     history = foreman_conversations.setdefault(guild_id, [])
     history.append({"role": "user", "content": human_message})
-    if len(history) > 40:
-        history = history[-40:]
 
     client = _anthropic.AsyncAnthropic()
+
+    _RESULT_MAX = 400  # chars kept per tool result in history
 
     try:
         text_parts = []
@@ -722,10 +729,16 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
                 break  # end_turn — foreman is done
 
             tool_results = await _foreman_exec_tools(guild_id, tool_uses)
-            history.append({"role": "user", "content": tool_results})
+            # Truncate verbose results (e.g. GitHub JSON) before storing in history
+            trimmed = [
+                {**r, "content": r["content"][:_RESULT_MAX] + " …[truncated]"}
+                if len(r.get("content", "")) > _RESULT_MAX else r
+                for r in tool_results
+            ]
+            history.append({"role": "user", "content": trimmed})
 
         # Trim history
-        foreman_conversations[guild_id] = history[-40:]
+        foreman_conversations[guild_id] = history[-20:]
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
