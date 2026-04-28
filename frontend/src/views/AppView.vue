@@ -63,6 +63,7 @@ async function initGuild(guildId) {
         agentId: a.id,
         agentName: a.name,
         agentType: a.type,
+        workerId: a.worker_id || null,
         state: a.state,
         joinedAt: a.joined_at,
       }))

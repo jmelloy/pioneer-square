@@ -14,11 +14,13 @@ export const useAgentsStore = defineStore('agents', () => {
     if (existing) {
       existing.state = agentData.state || 'idle'
       existing.name = agentData.agentName || existing.name
+      if (agentData.workerId) existing.workerId = agentData.workerId
     } else {
       agents.value.push({
         id: agentData.agentId,
         name: agentData.agentName || 'Unknown',
         type: agentData.agentType || 'worker',
+        workerId: agentData.workerId || null,
         state: agentData.state || 'idle',
         logs: [],
         joinedAt: agentData.joinedAt || new Date().toISOString()
@@ -144,10 +146,23 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  // First idle worker agent, or any worker if none are idle
+  // First available worker process agent.
+  // With fixed agent_id model: agents join as "a-xxx" with workerId="w-xxx".
+  // Returns { id: worker_id, name, state } so callers can use id for task assignment.
   function firstIdleWorker() {
-    const workers = agents.value.filter(a => a.type === 'worker' && a.id.startsWith('w-'))
-    return workers.find(a => a.state === 'idle') || workers[0] || null
+    // Prefer agents with a workerId (process agents in new model)
+    const workerAgents = agents.value.filter(
+      a => a.workerId && a.state !== 'offline'
+    )
+    const idleAgent =
+      workerAgents.find(a => a.state === 'idle') ||
+      workerAgents.find(a => !['working', 'awaiting-review', 'error'].includes(a.state)) ||
+      workerAgents[0]
+    if (idleAgent) return { id: idleAgent.workerId, name: idleAgent.name, state: idleAgent.state }
+
+    // Legacy fallback: agents whose own id is "w-xxx" (old model)
+    const legacy = agents.value.filter(a => a.id.startsWith('w-') && a.state !== 'offline')
+    return legacy.find(a => a.state === 'idle') || legacy[0] || null
   }
 
   function clearAgents() {
