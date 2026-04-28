@@ -785,6 +785,12 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                        VALUES (?, ?, ?, ?, ?, 'idle', ?)""",
                     (agent_id, guild_id, worker_id, agent_name, agent_type, joined_at)
                 )
+                # Mark worker online when it (re)connects.
+                if agent_type == "worker" and worker_id:
+                    await db.execute(
+                        "UPDATE workers SET state = 'online' WHERE id = ? AND guild_id = ?",
+                        (worker_id, guild_id),
+                    )
                 await db.commit()
                 if agent_id:
                     joined_agents.add(agent_id)
@@ -876,6 +882,22 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         await db.commit()
                     await broadcast(guild_id, data, exclude=websocket)
 
+            elif msg_type == "needs-input":
+                # Worker escalation: broadcast to frontend and loop the foreman in.
+                await broadcast(guild_id, data, exclude=websocket)
+                wid = data.get("workerId", "a worker")
+                task_id = data.get("taskId", "")
+                description = data.get("description", "")
+                stop_reason = data.get("stopReason", "")
+                last_msg = data.get("lastMessage", "")
+                escalation = (
+                    f"Worker {wid} could not complete task {task_id} and needs your help.\n"
+                    f"Task: {description}\n"
+                    f"Stop reason: {stop_reason}"
+                    + (f"\nLast message: {last_msg}" if last_msg else "")
+                )
+                asyncio.create_task(_run_foreman_ai(guild_id, escalation))
+
             elif msg_type in ("offer", "answer", "ice-candidate"):
                 # WebRTC signaling - forward to all
                 await broadcast(guild_id, data, exclude=websocket)
@@ -895,6 +917,11 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             for agent_id in joined_agents:
                 await db.execute(
                     "UPDATE agents SET state = 'offline' WHERE id = ? AND guild_id = ?",
+                    (agent_id, guild_id),
+                )
+                # Mirror into workers table so foreman sees the worker as offline.
+                await db.execute(
+                    "UPDATE workers SET state = 'offline' WHERE id = ? AND guild_id = ?",
                     (agent_id, guild_id),
                 )
             if joined_agents:
@@ -1202,7 +1229,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
     db = await get_db()
     try:
         await db.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at) VALUES (?, ?, ?, 'idle', ?)",
+            "INSERT INTO workers (id, guild_id, repos, state, created_at) VALUES (?, ?, ?, 'offline', ?)",
             (worker_id, guild_id, json.dumps(data.repos), created_at),
         )
         await db.execute(
