@@ -424,7 +424,7 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                 created_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
                     "INSERT INTO tasks (id, worker_id, guild_id, name, description, tool,"
-                    " state, phase, created_at) VALUES (?, 'foreman', ?, ?, ?, 'claude', 'planning', ?, ?)",
+                    " state, phase, created_at) VALUES (?, 'foreman', ?, ?, ?, 'claude', 'pending', ?, ?)",
                     (task_id, guild_id, name, desc, phase, created_at),
                 )
                 await db.commit()
@@ -434,7 +434,7 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                     "name": name,
                     "description": desc,
                     "phase": phase,
-                    "state": "planning",
+                    "state": "pending",
                     "createdAt": created_at,
                 })
                 result_text = f"Task {task_id} created: '{name}'. Reference this task_id in assign_task."
