@@ -46,7 +46,7 @@ app.add_middleware(
 
 DB_PATH = "pioneer_square.db"
 
-# In-memory WebSocket connections: session_id -> list of WebSocket
+# In-memory WebSocket connections: guild_id -> list of WebSocket
 connections: Dict[str, List[WebSocket]] = {}
 
 # Running agent subprocesses: agent_id -> asyncio.subprocess.Process
@@ -54,8 +54,8 @@ connections: Dict[str, List[WebSocket]] = {}
 # Worker subprocesses live in the standalone /worker process.
 running_processes: Dict[str, asyncio.subprocess.Process] = {}
 
-# Foreman AI conversation history per session
-foreman_conversations: Dict[str, List[dict]] = {}    # session_id -> messages list
+# Foreman AI conversation history per guild
+foreman_conversations: Dict[str, List[dict]] = {}    # guild_id -> messages list
 
 
 async def get_db():
@@ -66,8 +66,24 @@ async def get_db():
 
 async def init_db():
     db = await get_db()
+
+    # Migrate: rename sessions table to guilds
+    try:
+        await db.execute("ALTER TABLE sessions RENAME TO guilds")
+        await db.commit()
+    except Exception:
+        pass
+
+    # Migrate: rename session_id columns to guild_id
+    for table in ("agents", "messages", "workers", "tasks"):
+        try:
+            await db.execute(f"ALTER TABLE {table} RENAME COLUMN session_id TO guild_id")
+            await db.commit()
+        except Exception:
+            pass
+
     await db.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
+        CREATE TABLE IF NOT EXISTS guilds (
             id TEXT PRIMARY KEY,
             created_at TEXT NOT NULL,
             name TEXT
@@ -76,41 +92,41 @@ async def init_db():
     await db.execute("""
         CREATE TABLE IF NOT EXISTS agents (
             id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
+            guild_id TEXT NOT NULL,
             name TEXT NOT NULL,
             type TEXT NOT NULL DEFAULT 'worker',
             state TEXT NOT NULL DEFAULT 'idle',
             joined_at TEXT NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sessions(id)
+            FOREIGN KEY (guild_id) REFERENCES guilds(id)
         )
     """)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
+            guild_id TEXT NOT NULL,
             from_agent TEXT,
             to_agent TEXT,
             content TEXT NOT NULL,
             message_type TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sessions(id)
+            FOREIGN KEY (guild_id) REFERENCES guilds(id)
         )
     """)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS workers (
             id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
+            guild_id TEXT NOT NULL,
             repos TEXT NOT NULL DEFAULT '[]',
             state TEXT NOT NULL DEFAULT 'idle',
             created_at TEXT NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sessions(id)
+            FOREIGN KEY (guild_id) REFERENCES guilds(id)
         )
     """)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY,
             worker_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
+            guild_id TEXT NOT NULL,
             description TEXT NOT NULL,
             tool TEXT NOT NULL DEFAULT 'claude',
             issue_number INTEGER,
@@ -133,7 +149,7 @@ async def init_db():
     await db.close()
 
 
-def generate_session_id():
+def generate_guild_id():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
@@ -143,7 +159,7 @@ def _worker_name(worker_id: str) -> str:
     return f"{raw[:split]}-{raw[split:]}"
 
 
-class SessionCreate(BaseModel):
+class GuildCreate(BaseModel):
     name: Optional[str] = None
 
 
@@ -234,7 +250,7 @@ FOREMAN_TOOLS = [
 ]
 
 
-async def _foreman_exec_tools(session_id: str, tool_uses: list) -> list:
+async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
     """Execute tool calls from the foreman AI and return tool-result blocks."""
     results = []
     for tu in tool_uses:
@@ -249,7 +265,7 @@ async def _foreman_exec_tools(session_id: str, tool_uses: list) -> list:
             db = await get_db()
             try:
                 async with db.execute(
-                    "SELECT 1 FROM workers WHERE id=? AND session_id=?", (wid, session_id)
+                    "SELECT 1 FROM workers WHERE id=? AND guild_id=?", (wid, guild_id)
                 ) as cur:
                     worker_row = await cur.fetchone()
                 if not worker_row:
@@ -257,12 +273,12 @@ async def _foreman_exec_tools(session_id: str, tool_uses: list) -> list:
                 else:
                     tool = inp.get("tool", "claude")
                     await db.execute(
-                        "INSERT INTO tasks (id, worker_id, session_id, description, tool, issue_number,"
+                        "INSERT INTO tasks (id, worker_id, guild_id, description, tool, issue_number,"
                         " issue_repo, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-                        (task_id, wid, session_id, desc, tool, inp.get("issue_number"), inp.get("issue_repo"), created_at),
+                        (task_id, wid, guild_id, desc, tool, inp.get("issue_number"), inp.get("issue_repo"), created_at),
                     )
                     await db.commit()
-                    await broadcast(session_id, {
+                    await broadcast(guild_id, {
                         "type": "task-assigned",
                         "workerId": wid,
                         "taskId": task_id,
@@ -278,9 +294,9 @@ async def _foreman_exec_tools(session_id: str, tool_uses: list) -> list:
         elif tu.name == "message_worker":
             wid = inp["worker_id"]
             msg = inp["message"]
-            await _emit_terminal_line(session_id, wid, f"[foreman] {msg}")
-            # The worker process picks this up over its session WebSocket.
-            await broadcast(session_id, {
+            await _emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
+            # The worker process picks this up over its guild WebSocket.
+            await broadcast(guild_id, {
                 "type": "worker-message",
                 "workerId": wid,
                 "message": msg,
@@ -291,12 +307,11 @@ async def _foreman_exec_tools(session_id: str, tool_uses: list) -> list:
     return results
 
 
-async def _run_foreman_ai(session_id: str, human_message: str, extra_context: str = ""):
+async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str = ""):
     """Process a human message (or escalation) through the Claude foreman AI."""
     if not HAS_ANTHROPIC:
-        # Fallback: echo a notice that anthropic package is missing
         now = datetime.now(timezone.utc).isoformat()
-        await broadcast(session_id, {
+        await broadcast(guild_id, {
             "type": "chat", "from": "foreman", "to": "user",
             "content": "Foreman AI offline (install `anthropic` package to enable).",
             "createdAt": now,
@@ -308,12 +323,12 @@ async def _run_foreman_ai(session_id: str, human_message: str, extra_context: st
     try:
         async with db.execute(
             "SELECT w.id, w.repos, a.state FROM workers w"
-            " LEFT JOIN agents a ON a.id = w.id WHERE w.session_id=?", (session_id,)
+            " LEFT JOIN agents a ON a.id = w.id WHERE w.guild_id=?", (guild_id,)
         ) as cur:
             worker_rows = [dict(r) for r in await cur.fetchall()]
         async with db.execute(
             "SELECT id, worker_id, description, state, branch, pr_url FROM tasks"
-            " WHERE session_id=? ORDER BY created_at DESC LIMIT 10", (session_id,)
+            " WHERE guild_id=? ORDER BY created_at DESC LIMIT 10", (guild_id,)
         ) as cur:
             task_rows = [dict(r) for r in await cur.fetchall()]
     finally:
@@ -332,7 +347,7 @@ async def _run_foreman_ai(session_id: str, human_message: str, extra_context: st
         + (f"\n\n## Context\n{extra_context}" if extra_context else "")
     )
 
-    history = foreman_conversations.setdefault(session_id, [])
+    history = foreman_conversations.setdefault(guild_id, [])
     history.append({"role": "user", "content": human_message})
     if len(history) > 40:
         history = history[-40:]
@@ -354,7 +369,7 @@ async def _run_foreman_ai(session_id: str, human_message: str, extra_context: st
         tool_uses  = [b for b in resp1.content if b.type == "tool_use"]
 
         if tool_uses:
-            tool_results = await _foreman_exec_tools(session_id, tool_uses)
+            tool_results = await _foreman_exec_tools(guild_id, tool_uses)
             history.append({"role": "user", "content": tool_results})
 
             # Turn 2 — final reply after tool execution (no tools allowed)
@@ -368,21 +383,21 @@ async def _run_foreman_ai(session_id: str, human_message: str, extra_context: st
             text_parts += [b.text for b in resp2.content if b.type == "text" and b.text.strip()]
 
         # Trim history
-        foreman_conversations[session_id] = history[-40:]
+        foreman_conversations[guild_id] = history[-40:]
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
             now = datetime.now(timezone.utc).isoformat()
-            await broadcast(session_id, {
+            await broadcast(guild_id, {
                 "type": "chat", "from": "foreman", "to": "user",
                 "content": response_text, "createdAt": now,
             })
             db = await get_db()
             try:
                 await db.execute(
-                    "INSERT INTO messages (session_id, from_agent, to_agent, content, message_type, created_at)"
+                    "INSERT INTO messages (guild_id, from_agent, to_agent, content, message_type, created_at)"
                     " VALUES (?, 'foreman', 'user', ?, 'chat', ?)",
-                    (session_id, response_text, now),
+                    (guild_id, response_text, now),
                 )
                 await db.commit()
             finally:
@@ -390,47 +405,46 @@ async def _run_foreman_ai(session_id: str, human_message: str, extra_context: st
 
     except Exception as exc:
         now = datetime.now(timezone.utc).isoformat()
-        await broadcast(session_id, {
+        await broadcast(guild_id, {
             "type": "chat", "from": "foreman", "to": "user",
             "content": f"Foreman error: {exc}", "createdAt": now,
         })
 
 
-@app.post("/sessions")
-async def create_session(data: Optional[SessionCreate] = None):
+@app.post("/guilds")
+async def create_guild(data: Optional[GuildCreate] = None):
     if data is None:
-        data = SessionCreate()
+        data = GuildCreate()
     created_at = datetime.now(timezone.utc).isoformat()
     db = await get_db()
     try:
-        # Retry on collision (UNIQUE constraint); negligible probability with 36^6 space
         for _ in range(5):
-            session_id = generate_session_id()
+            guild_id = generate_guild_id()
             try:
                 await db.execute(
-                    "INSERT INTO sessions (id, created_at, name) VALUES (?, ?, ?)",
-                    (session_id, created_at, data.name or f"Session {session_id}")
+                    "INSERT INTO guilds (id, created_at, name) VALUES (?, ?, ?)",
+                    (guild_id, created_at, data.name or f"Guild {guild_id}")
                 )
                 await db.commit()
                 break
             except aiosqlite.IntegrityError:
                 continue
         else:
-            raise HTTPException(status_code=500, detail="Could not generate unique session ID")
+            raise HTTPException(status_code=500, detail="Could not generate unique guild ID")
     finally:
         await db.close()
-    return {"id": session_id, "created_at": created_at, "name": data.name or f"Session {session_id}"}
+    return {"id": guild_id, "created_at": created_at, "name": data.name or f"Guild {guild_id}"}
 
 
-@app.get("/sessions")
-async def list_sessions():
+@app.get("/guilds")
+async def list_guilds():
     db = await get_db()
     try:
         async with db.execute("""
             SELECT s.id, s.created_at, s.name,
                    COUNT(a.id) as agent_count
-            FROM sessions s
-            LEFT JOIN agents a ON a.session_id = s.id AND a.type != 'foreman'
+            FROM guilds s
+            LEFT JOIN agents a ON a.guild_id = s.id AND a.type != 'foreman'
             GROUP BY s.id
             ORDER BY s.created_at DESC
         """) as cursor:
@@ -440,26 +454,26 @@ async def list_sessions():
         await db.close()
 
 
-@app.get("/sessions/{session_id}")
-async def get_session(session_id: str):
+@app.get("/guilds/{guild_id}")
+async def get_guild(guild_id: str):
     db = await get_db()
     try:
-        async with db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)) as cursor:
-            session = await cursor.fetchone()
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+        async with db.execute("SELECT * FROM guilds WHERE id = ?", (guild_id,)) as cursor:
+            guild = await cursor.fetchone()
+        if not guild:
+            raise HTTPException(status_code=404, detail="Guild not found")
         async with db.execute(
-            "SELECT * FROM agents WHERE session_id = ? AND state != 'offline' AND type != 'foreman'",
-            (session_id,)
+            "SELECT * FROM agents WHERE guild_id = ? AND state != 'offline' AND type != 'foreman'",
+            (guild_id,)
         ) as cursor:
             agents = await cursor.fetchall()
         async with db.execute(
-            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 100",
-            (session_id,)
+            "SELECT * FROM messages WHERE guild_id = ? ORDER BY created_at DESC LIMIT 100",
+            (guild_id,)
         ) as cursor:
             messages = await cursor.fetchall()
         return {
-            **dict(session),
+            **dict(guild),
             "agents": [dict(a) for a in agents],
             "messages": [dict(m) for m in reversed(messages)]
         }
@@ -467,12 +481,12 @@ async def get_session(session_id: str):
         await db.close()
 
 
-async def broadcast(session_id: str, message: dict, exclude: WebSocket = None):
-    """Broadcast a message to all connections in a session."""
-    if session_id not in connections:
+async def broadcast(guild_id: str, message: dict, exclude: WebSocket = None):
+    """Broadcast a message to all connections in a guild."""
+    if guild_id not in connections:
         return
     dead = []
-    for ws in connections[session_id]:
+    for ws in connections[guild_id]:
         if ws is exclude:
             continue
         try:
@@ -480,15 +494,15 @@ async def broadcast(session_id: str, message: dict, exclude: WebSocket = None):
         except Exception:
             dead.append(ws)
     for ws in dead:
-        connections[session_id].remove(ws)
+        connections[guild_id].remove(ws)
 
 
-@app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str):
+@app.websocket("/ws/{guild_id}")
+async def websocket_endpoint(websocket: WebSocket, guild_id: str):
     await websocket.accept()
-    if session_id not in connections:
-        connections[session_id] = []
-    connections[session_id].append(websocket)
+    if guild_id not in connections:
+        connections[guild_id] = []
+    connections[guild_id].append(websocket)
     # Agents that joined via this websocket; marked offline when it disconnects.
     joined_agents: set[str] = set()
     db = await get_db()
@@ -503,9 +517,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 agent_type = data.get("agentType", "worker")
                 joined_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
-                    """INSERT OR REPLACE INTO agents (id, session_id, name, type, state, joined_at)
+                    """INSERT OR REPLACE INTO agents (id, guild_id, name, type, state, joined_at)
                        VALUES (?, ?, ?, ?, 'idle', ?)""",
-                    (agent_id, session_id, agent_name, agent_type, joined_at)
+                    (agent_id, guild_id, agent_name, agent_type, joined_at)
                 )
                 await db.commit()
                 if agent_id:
@@ -518,17 +532,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     "state": "idle",
                     "joinedAt": joined_at
                 }
-                await broadcast(session_id, broadcast_msg)
+                await broadcast(guild_id, broadcast_msg)
 
             elif msg_type == "agent-state":
                 agent_id = data.get("agentId")
                 state = data.get("state", "idle")
                 await db.execute(
-                    "UPDATE agents SET state = ? WHERE id = ? AND session_id = ?",
-                    (state, agent_id, session_id)
+                    "UPDATE agents SET state = ? WHERE id = ? AND guild_id = ?",
+                    (state, agent_id, guild_id)
                 )
                 await db.commit()
-                await broadcast(session_id, {
+                await broadcast(guild_id, {
                     "type": "agent-state",
                     "agentId": agent_id,
                     "state": state
@@ -540,11 +554,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 content = data.get("content", "")
                 created_at = datetime.now(timezone.utc).isoformat()
                 await db.execute(
-                    "INSERT INTO messages (session_id, from_agent, to_agent, content, message_type, created_at) VALUES (?, ?, ?, ?, 'chat', ?)",
-                    (session_id, from_agent, to_agent, content, created_at)
+                    "INSERT INTO messages (guild_id, from_agent, to_agent, content, message_type, created_at) VALUES (?, ?, ?, ?, 'chat', ?)",
+                    (guild_id, from_agent, to_agent, content, created_at)
                 )
                 await db.commit()
-                await broadcast(session_id, {
+                await broadcast(guild_id, {
                     "type": "chat",
                     "from": from_agent,
                     "to": to_agent,
@@ -553,13 +567,13 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 })
                 # Route human messages addressed to foreman through the AI
                 if from_agent == "user" and to_agent == "foreman" and content:
-                    asyncio.create_task(_run_foreman_ai(session_id, content))
+                    asyncio.create_task(_run_foreman_ai(guild_id, content))
 
             elif msg_type == "terminal-output":
                 agent_id = data.get("agentId")
                 line = data.get("line", "")
                 created_at = datetime.now(timezone.utc).isoformat()
-                await broadcast(session_id, {
+                await broadcast(guild_id, {
                     "type": "terminal-output",
                     "agentId": agent_id,
                     "line": line,
@@ -572,8 +586,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 repos = data.get("repos") or []
                 if worker_id:
                     await db.execute(
-                        "UPDATE workers SET repos=? WHERE id=? AND session_id=?",
-                        (json.dumps(repos), worker_id, session_id),
+                        "UPDATE workers SET repos=? WHERE id=? AND guild_id=?",
+                        (json.dumps(repos), worker_id, guild_id),
                     )
                     await db.commit()
 
@@ -596,33 +610,33 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         params = [v for _, v in fields] + [task_id]
                         await db.execute(sql, params)
                         await db.commit()
-                    await broadcast(session_id, data, exclude=websocket)
+                    await broadcast(guild_id, data, exclude=websocket)
 
             elif msg_type in ("offer", "answer", "ice-candidate"):
                 # WebRTC signaling - forward to all
-                await broadcast(session_id, data, exclude=websocket)
+                await broadcast(guild_id, data, exclude=websocket)
 
             else:
                 # Generic broadcast
-                await broadcast(session_id, data)
+                await broadcast(guild_id, data)
 
     except WebSocketDisconnect:
-        if session_id in connections and websocket in connections[session_id]:
-            connections[session_id].remove(websocket)
+        if guild_id in connections and websocket in connections[guild_id]:
+            connections[guild_id].remove(websocket)
     except Exception:
-        if session_id in connections and websocket in connections[session_id]:
-            connections[session_id].remove(websocket)
+        if guild_id in connections and websocket in connections[guild_id]:
+            connections[guild_id].remove(websocket)
     finally:
         try:
             for agent_id in joined_agents:
                 await db.execute(
-                    "UPDATE agents SET state = 'offline' WHERE id = ? AND session_id = ?",
-                    (agent_id, session_id),
+                    "UPDATE agents SET state = 'offline' WHERE id = ? AND guild_id = ?",
+                    (agent_id, guild_id),
                 )
             if joined_agents:
                 await db.commit()
             for agent_id in joined_agents:
-                await broadcast(session_id, {
+                await broadcast(guild_id, {
                     "type": "agent-state",
                     "agentId": agent_id,
                     "state": "offline",
@@ -635,10 +649,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 # Agent process management
 # ---------------------------------------------------------------------------
 
-async def _emit_terminal_line(session_id: str, agent_id: str, line: str):
+async def _emit_terminal_line(guild_id: str, agent_id: str, line: str):
     """Broadcast a terminal output line."""
     now = datetime.now(timezone.utc).isoformat()
-    await broadcast(session_id, {
+    await broadcast(guild_id, {
         "type": "terminal-output",
         "agentId": agent_id,
         "line": line,
@@ -646,14 +660,14 @@ async def _emit_terminal_line(session_id: str, agent_id: str, line: str):
     })
 
 
-async def _set_agent_state(session_id: str, agent_id: str, state: str):
+async def _set_agent_state(guild_id: str, agent_id: str, state: str):
     """Broadcast and persist an agent state change."""
-    await broadcast(session_id, {"type": "agent-state", "agentId": agent_id, "state": state})
+    await broadcast(guild_id, {"type": "agent-state", "agentId": agent_id, "state": state})
     db = await get_db()
     try:
         await db.execute(
-            "UPDATE agents SET state = ? WHERE id = ? AND session_id = ?",
-            (state, agent_id, session_id),
+            "UPDATE agents SET state = ? WHERE id = ? AND guild_id = ?",
+            (state, agent_id, guild_id),
         )
         await db.commit()
     finally:
@@ -693,14 +707,14 @@ def _build_command(req: RunAgentRequest) -> tuple[list[str], bool]:
     raise ValueError(f"Unknown tool: {req.tool!r}")
 
 
-async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
+async def _stream_agent(guild_id: str, agent_id: str, req: RunAgentRequest):
     """Spawn the agent subprocess and stream its output as terminal-output events."""
     tool = req.tool.lower()
 
     try:
         cmd, needs_stdin = _build_command(req)
     except ValueError as exc:
-        await _emit_terminal_line(session_id, agent_id, f"✗ {exc}")
+        await _emit_terminal_line(guild_id, agent_id, f"✗ {exc}")
         return
 
     stdin_pipe = asyncio.subprocess.PIPE if needs_stdin else asyncio.subprocess.DEVNULL
@@ -712,12 +726,12 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
             stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:
-        await _emit_terminal_line(session_id, agent_id, f"✗ command not found: {cmd[0]}")
-        await _set_agent_state(session_id, agent_id, "error")
+        await _emit_terminal_line(guild_id, agent_id, f"✗ command not found: {cmd[0]}")
+        await _set_agent_state(guild_id, agent_id, "error")
         return
     except Exception as exc:
-        await _emit_terminal_line(session_id, agent_id, f"✗ failed to start process: {exc}")
-        await _set_agent_state(session_id, agent_id, "error")
+        await _emit_terminal_line(guild_id, agent_id, f"✗ failed to start process: {exc}")
+        await _set_agent_state(guild_id, agent_id, "error")
         return
 
     if needs_stdin:
@@ -727,7 +741,7 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
         await proc.stdin.drain()
 
     running_processes[agent_id] = proc
-    await _set_agent_state(session_id, agent_id, "working")
+    await _set_agent_state(guild_id, agent_id, "working")
 
     # For Pi message_update we track accumulated text to emit only deltas
     pi_last_text = ""
@@ -736,7 +750,7 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
         async for raw in proc.stderr:  # type: ignore[union-attr]
             line = raw.decode(errors="replace").strip()
             if line:
-                await _emit_terminal_line(session_id, agent_id, f"[stderr] {line}")
+                await _emit_terminal_line(guild_id, agent_id, f"[stderr] {line}")
 
     stderr_task = asyncio.create_task(_drain_stderr())
 
@@ -749,7 +763,7 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
             try:
                 event = json.loads(line_str)
             except json.JSONDecodeError:
-                await _emit_terminal_line(session_id, agent_id, line_str)
+                await _emit_terminal_line(guild_id, agent_id, line_str)
                 continue
 
             text = _parse_event(tool, event, pi_last_text)
@@ -765,7 +779,7 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
                 pi_last_text = ""
 
             if text:
-                await _emit_terminal_line(session_id, agent_id, text)
+                await _emit_terminal_line(guild_id, agent_id, text)
 
     finally:
         if needs_stdin and proc.stdin and not proc.stdin.is_closing():
@@ -773,7 +787,7 @@ async def _stream_agent(session_id: str, agent_id: str, req: RunAgentRequest):
         exit_code = await proc.wait()
         await stderr_task
         running_processes.pop(agent_id, None)
-        await _set_agent_state(session_id, agent_id, "idle" if exit_code == 0 else "error")
+        await _set_agent_state(guild_id, agent_id, "idle" if exit_code == 0 else "error")
 
 
 def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
@@ -882,10 +896,9 @@ def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
     return None
 
 
-@app.post("/sessions/{session_id}/agents/{agent_id}/run")
-async def start_agent_run(session_id: str, agent_id: str, req: RunAgentRequest):
+@app.post("/guilds/{guild_id}/agents/{agent_id}/run")
+async def start_agent_run(guild_id: str, agent_id: str, req: RunAgentRequest):
     """Spawn an AI coding agent subprocess and stream its output over WebSocket."""
-    # Kill any existing run for this agent
     old = running_processes.get(agent_id)
     if old:
         try:
@@ -893,12 +906,12 @@ async def start_agent_run(session_id: str, agent_id: str, req: RunAgentRequest):
         except ProcessLookupError:
             pass
 
-    asyncio.create_task(_stream_agent(session_id, agent_id, req))
+    asyncio.create_task(_stream_agent(guild_id, agent_id, req))
     return {"status": "started", "agentId": agent_id, "tool": req.tool}
 
 
-@app.delete("/sessions/{session_id}/agents/{agent_id}/run")
-async def stop_agent_run(session_id: str, agent_id: str):
+@app.delete("/guilds/{guild_id}/agents/{agent_id}/run")
+async def stop_agent_run(guild_id: str, agent_id: str):
     """Terminate a running agent subprocess."""
     proc = running_processes.get(agent_id)
     if not proc:
@@ -914,8 +927,8 @@ async def stop_agent_run(session_id: str, agent_id: str):
 # Worker endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/sessions/{session_id}/workers")
-async def create_worker(session_id: str, data: WorkerCreate):
+@app.post("/guilds/{guild_id}/workers")
+async def create_worker(guild_id: str, data: WorkerCreate):
     """Register a worker agent. The actual worker process must connect via WebSocket
     using the returned id (see the standalone /worker package)."""
     worker_id   = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -925,19 +938,19 @@ async def create_worker(session_id: str, data: WorkerCreate):
     db = await get_db()
     try:
         await db.execute(
-            "INSERT INTO workers (id, session_id, repos, state, created_at) VALUES (?, ?, ?, 'idle', ?)",
-            (worker_id, session_id, json.dumps(data.repos), created_at),
+            "INSERT INTO workers (id, guild_id, repos, state, created_at) VALUES (?, ?, ?, 'idle', ?)",
+            (worker_id, guild_id, json.dumps(data.repos), created_at),
         )
         await db.execute(
-            "INSERT OR REPLACE INTO agents (id, session_id, name, type, state, joined_at)"
+            "INSERT OR REPLACE INTO agents (id, guild_id, name, type, state, joined_at)"
             " VALUES (?, ?, ?, 'worker', 'offline', ?)",
-            (worker_id, session_id, worker_name, created_at),
+            (worker_id, guild_id, worker_name, created_at),
         )
         await db.commit()
     finally:
         await db.close()
 
-    await broadcast(session_id, {
+    await broadcast(guild_id, {
         "type": "agent-joined",
         "agentId": worker_id,
         "agentName": worker_name,
@@ -948,12 +961,12 @@ async def create_worker(session_id: str, data: WorkerCreate):
     return {"id": worker_id, "name": worker_name, "repos": data.repos, "created_at": created_at}
 
 
-@app.get("/sessions/{session_id}/workers")
-async def list_workers(session_id: str):
+@app.get("/guilds/{guild_id}/workers")
+async def list_workers(guild_id: str):
     db = await get_db()
     try:
         async with db.execute(
-            "SELECT * FROM workers WHERE session_id = ? ORDER BY created_at DESC", (session_id,)
+            "SELECT * FROM workers WHERE guild_id = ? ORDER BY created_at DESC", (guild_id,)
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
@@ -961,8 +974,8 @@ async def list_workers(session_id: str):
         await db.close()
 
 
-@app.post("/sessions/{session_id}/workers/{worker_id}/tasks")
-async def assign_task(session_id: str, worker_id: str, data: TaskCreate):
+@app.post("/guilds/{guild_id}/workers/{worker_id}/tasks")
+async def assign_task(guild_id: str, worker_id: str, data: TaskCreate):
     """Persist a task and broadcast a task-assigned event for the worker process."""
     task_id    = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     created_at = datetime.now(timezone.utc).isoformat()
@@ -970,20 +983,20 @@ async def assign_task(session_id: str, worker_id: str, data: TaskCreate):
     db = await get_db()
     try:
         async with db.execute(
-            "SELECT 1 FROM workers WHERE id=? AND session_id=?", (worker_id, session_id)
+            "SELECT 1 FROM workers WHERE id=? AND guild_id=?", (worker_id, guild_id)
         ) as cur:
             if not await cur.fetchone():
                 raise HTTPException(status_code=404, detail="Worker not found")
         await db.execute(
-            "INSERT INTO tasks (id, worker_id, session_id, description, tool, issue_number, issue_repo, state, created_at)"
+            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, issue_number, issue_repo, state, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-            (task_id, worker_id, session_id, data.description, data.tool, data.issue_number, data.issue_repo, created_at),
+            (task_id, worker_id, guild_id, data.description, data.tool, data.issue_number, data.issue_repo, created_at),
         )
         await db.commit()
     finally:
         await db.close()
 
-    await broadcast(session_id, {
+    await broadcast(guild_id, {
         "type": "task-assigned",
         "workerId": worker_id,
         "taskId": task_id,
@@ -996,13 +1009,13 @@ async def assign_task(session_id: str, worker_id: str, data: TaskCreate):
     return {"id": task_id, "worker_id": worker_id, "state": "pending"}
 
 
-@app.get("/sessions/{session_id}/workers/{worker_id}/tasks")
-async def list_tasks(session_id: str, worker_id: str):
+@app.get("/guilds/{guild_id}/workers/{worker_id}/tasks")
+async def list_tasks(guild_id: str, worker_id: str):
     db = await get_db()
     try:
         async with db.execute(
-            "SELECT * FROM tasks WHERE worker_id = ? AND session_id = ? ORDER BY created_at DESC",
-            (worker_id, session_id),
+            "SELECT * FROM tasks WHERE worker_id = ? AND guild_id = ? ORDER BY created_at DESC",
+            (worker_id, guild_id),
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
@@ -1014,15 +1027,15 @@ class WorkerMessage(BaseModel):
     message: str
 
 
-@app.post("/sessions/{session_id}/workers/{worker_id}/message")
-async def message_worker(session_id: str, worker_id: str, data: WorkerMessage):
-    """Forward a message to a worker process via its session WebSocket."""
+@app.post("/guilds/{guild_id}/workers/{worker_id}/message")
+async def message_worker(guild_id: str, worker_id: str, data: WorkerMessage):
+    """Forward a message to a worker process via its guild WebSocket."""
     text = data.message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
 
-    await _emit_terminal_line(session_id, worker_id, f"[foreman → worker] {text}")
-    await broadcast(session_id, {
+    await _emit_terminal_line(guild_id, worker_id, f"[foreman → worker] {text}")
+    await broadcast(guild_id, {
         "type": "worker-message",
         "workerId": worker_id,
         "message": text,

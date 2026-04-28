@@ -48,7 +48,7 @@ class Worker:
             return
         async with await self._http() as client:
             resp = await client.post(
-                f"/sessions/{self.cfg.session_id}/workers",
+                f"/guilds/{self.cfg.guild_id}/workers",
                 json={"repos": self.cfg.repos, "github_token": None},
             )
             resp.raise_for_status()
@@ -59,7 +59,7 @@ class Worker:
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:
             resp = await client.get(
-                f"/sessions/{self.cfg.session_id}/workers/{self.cfg.worker_id}/tasks"
+                f"/guilds/{self.cfg.guild_id}/workers/{self.cfg.worker_id}/tasks"
             )
             resp.raise_for_status()
             tasks = resp.json()
@@ -112,8 +112,8 @@ class Worker:
     # ------------------------------------------------------------------ Loop
     async def run(self) -> None:
         logger.info(
-            "Worker starting: session=%s backend=%s repos=%s worker_id=%s",
-            self.cfg.session_id, self.cfg.backend_url, self.cfg.repos,
+            "Worker starting: guild=%s backend=%s repos=%s worker_id=%s",
+            self.cfg.guild_id, self.cfg.backend_url, self.cfg.repos,
             self.cfg.worker_id or "<unregistered>",
         )
         logger.info(
@@ -130,7 +130,7 @@ class Worker:
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         await self.ws.connect()
         await self._join()
-        logger.info("Joined session %s as worker %s", self.cfg.session_id, self.cfg.worker_id)
+        logger.info("Joined guild %s as worker %s", self.cfg.guild_id, self.cfg.worker_id)
         await self._emit("[worker] Online. Watching for tasks.")
         await self._set_state("idle")
 
@@ -172,7 +172,7 @@ class Worker:
                 await self.task_queue.put({
                     "id": task_id,
                     "worker_id": self.cfg.worker_id,
-                    "session_id": self.cfg.session_id,
+                    "guild_id": self.cfg.guild_id,
                     "description": msg.get("description", ""),
                     "tool": msg.get("tool", "claude"),
                     "issue_number": msg.get("issueNumber"),
@@ -250,7 +250,7 @@ class Worker:
         await self._task_update(task_id, state="working")
 
         branch = f"claude/{_slug(desc)}-{task_id[:6]}"
-        work_dir = os.path.join(self.cfg.work_dir, self.cfg.session_id, self.cfg.worker_id, task_id)
+        work_dir = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id, task_id)
         logger.info("Task %s branch=%s work_dir=%s", task_id, branch, work_dir)
         os.makedirs(work_dir, exist_ok=True)
 

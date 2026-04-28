@@ -24,7 +24,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Connection
     parser.add_argument("--backend-url", help="Backend WebSocket/HTTP base URL.")
-    parser.add_argument("--session-id", help="Session ID to join.")
+    parser.add_argument("--guild-id", help="Guild ID to join.")
 
     # Identity
     parser.add_argument("--worker-id", help="Worker ID (overrides saved state).")
@@ -71,7 +71,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     overrides = {k: v for k, v in {
         "backend_url": args.backend_url,
-        "session_id": args.session_id,
+        "guild_id": args.guild_id,
         "worker_id": args.worker_id,
         "worker_name": args.worker_name,
         "github_token": args.github_token,

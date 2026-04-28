@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { useSessionStore } from './session'
+import { useGuildStore } from './guild'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -42,8 +42,8 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   function sendMessage(agentId, content) {
-    const sessionStore = useSessionStore()
-    sessionStore.sendMessage({
+    const guildStore = useGuildStore()
+    guildStore.sendMessage({
       type: 'chat',
       from: 'user',
       to: agentId,
@@ -52,11 +52,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function runAgent(agentId, { tool, prompt, model, provider }) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/agents/${agentId}/run`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/agents/${agentId}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tool, prompt, model: model || undefined, provider: provider || undefined })
@@ -69,11 +69,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function stopAgent(agentId) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/agents/${agentId}/run`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/agents/${agentId}/run`, {
       method: 'DELETE'
     })
     if (!res.ok && res.status !== 404) {
@@ -84,11 +84,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function deployWorker({ repos, githubToken }) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repos, github_token: githubToken || null })
@@ -101,11 +101,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function assignTask(workerId, { description, issueNumber, issueRepo }) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}/tasks`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers/${workerId}/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -122,11 +122,11 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function messageWorker(workerId, message) {
-    const sessionStore = useSessionStore()
-    const sessionId = sessionStore.currentSession?.id
-    if (!sessionId) throw new Error('No active session')
+    const guildStore = useGuildStore()
+    const guildId = guildStore.currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
 
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}/workers/${workerId}/message`, {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers/${workerId}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message })

@@ -65,13 +65,13 @@
 import { ref } from 'vue'
 import { useGitHubStore } from '../stores/github.js'
 import { useAgentsStore } from '../stores/agents.js'
-import { useSessionStore } from '../stores/session.js'
+import { useGuildStore } from '../stores/guild.js'
 
 const emit = defineEmits(['close', 'deployed'])
 
 const ghStore = useGitHubStore()
 const agentsStore = useAgentsStore()
-const sessionStore = useSessionStore()
+const guildStore = useGuildStore()
 
 const selectedRepos = ref([...ghStore.selectedRepos])
 const deploying = ref(false)

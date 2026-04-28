@@ -1,6 +1,6 @@
 <template>
   <div class="app-layout">
-    <SessionSidebar />
+    <GuildSidebar />
     <MainView />
     <ChatPane />
   </div>
@@ -9,18 +9,18 @@
 <script setup>
 import { onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useSessionStore } from '../stores/session.js'
+import { useGuildStore } from '../stores/guild.js'
 import { useAgentsStore } from '../stores/agents.js'
 import { useGitHubStore } from '../stores/github.js'
-import SessionSidebar from '../components/SessionSidebar.vue'
+import GuildSidebar from '../components/GuildSidebar.vue'
 import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 
-const props = defineProps({ sessionId: String })
+const props = defineProps({ guildId: String })
 
 const route = useRoute()
 const router = useRouter()
-const sessionStore = useSessionStore()
+const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
 const ghStore = useGitHubStore()
 
@@ -33,21 +33,21 @@ function getClientId() {
   return id
 }
 
-async function initSession(sessionId) {
-  if (!sessionId) {
+async function initGuild(guildId) {
+  if (!guildId) {
     router.replace('/')
     return
   }
 
   agentsStore.clearAgents()
-  const session = await sessionStore.joinSession(sessionId)
-  if (!session) {
+  const guild = await guildStore.joinGuild(guildId)
+  if (!guild) {
     router.replace('/')
     return
   }
 
-  if (session.agents) {
-    session.agents
+  if (guild.agents) {
+    guild.agents
       .filter(a => a.state !== 'offline')
       .forEach(a => agentsStore.registerAgent({
         agentId: a.id,
@@ -62,12 +62,12 @@ async function initSession(sessionId) {
   const suffix = clientId.slice(0, 4)
   const foremanName = ghStore.user ? `${ghStore.user.login}-${suffix}` : `Foreman-${suffix}`
 
-  sessionStore.connectWebSocket(sessionId, (data) => {
+  guildStore.connectWebSocket(guildId, (data) => {
     agentsStore.handleWebSocketMessage(data)
   })
 
   setTimeout(() => {
-    sessionStore.sendMessage({
+    guildStore.sendMessage({
       type: 'join',
       agentId: `foreman-${clientId}`,
       agentName: foremanName,
@@ -81,16 +81,16 @@ async function initSession(sessionId) {
 }
 
 onMounted(async () => {
-  await sessionStore.loadSessions()
+  await guildStore.loadGuilds()
 })
 
 onUnmounted(() => {
-  sessionStore.disconnectWebSocket()
+  guildStore.disconnectWebSocket()
 })
 
-watch(() => props.sessionId, async (newId) => {
+watch(() => props.guildId, async (newId) => {
   if (newId) {
-    await initSession(newId)
+    await initGuild(newId)
   }
 }, { immediate: true })
 </script>

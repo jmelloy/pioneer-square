@@ -28,7 +28,7 @@ STATE_SUFFIX = ".state.json"
 @dataclass
 class Config:
     backend_url: str
-    session_id: str
+    guild_id: str
     repos: list[str] = field(default_factory=list)
     worker_id: Optional[str] = None
     worker_name: Optional[str] = None
@@ -53,11 +53,11 @@ class Config:
 
     @property
     def ws_url(self) -> str:
-        """Backend WebSocket URL for this session."""
+        """Backend WebSocket URL for this guild."""
         parsed = urlparse(self.backend_url)
         scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme or "ws")
         base = urlunparse((scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
-        return f"{base}/ws/{self.session_id}"
+        return f"{base}/ws/{self.guild_id}"
 
 
 def _resolve_config_path(explicit: Optional[str]) -> Path:
@@ -82,12 +82,12 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
             raw = tomllib.load(fh)
     else:
         has_url = overrides.get("backend_url") or os.environ.get("PIONEER_BACKEND_URL")
-        has_sid = overrides.get("session_id") or os.environ.get("PIONEER_SESSION_ID")
+        has_sid = overrides.get("guild_id") or os.environ.get("PIONEER_GUILD_ID")
         if not (has_url and has_sid):
             raise FileNotFoundError(
                 f"Worker config not found at {cfg_path}. "
                 "Create one (see pioneer-worker.toml.example), pass --config, "
-                "or supply --backend-url and --session-id."
+                "or supply --backend-url and --guild-id."
             )
 
     state_path = cfg_path.with_name(cfg_path.stem + STATE_SUFFIX)
@@ -99,11 +99,11 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
             state = {}
 
     backend_url = overrides.get("backend_url") or raw.get("backend_url") or os.environ.get("PIONEER_BACKEND_URL")
-    session_id = overrides.get("session_id") or raw.get("session_id") or os.environ.get("PIONEER_SESSION_ID")
+    guild_id = overrides.get("guild_id") or raw.get("guild_id") or os.environ.get("PIONEER_GUILD_ID")
     if not backend_url:
         raise ValueError("backend_url is required (in config, --backend-url, or PIONEER_BACKEND_URL).")
-    if not session_id:
-        raise ValueError("session_id is required (in config, --session-id, or PIONEER_SESSION_ID).")
+    if not guild_id:
+        raise ValueError("guild_id is required (in config, --guild-id, or PIONEER_GUILD_ID).")
 
     github_block = raw.get("github") or {}
     paths_block = raw.get("paths") or {}
@@ -119,7 +119,7 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
 
     return Config(
         backend_url=backend_url.rstrip("/"),
-        session_id=session_id,
+        guild_id=guild_id,
         repos=list(overrides.get("repos") or github_block.get("repos") or raw.get("repos") or []),
         worker_id=overrides.get("worker_id") or state.get("worker_id") or raw.get("worker_id"),
         worker_name=overrides.get("worker_name") or raw.get("worker_name"),

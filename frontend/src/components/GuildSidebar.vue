@@ -1,35 +1,35 @@
 <template>
   <aside class="sidebar panel-bg">
     <div class="sidebar-header">
-      <span class="sidebar-title">Sessions</span>
+      <span class="sidebar-title">Guilds</span>
       <button class="pixel-btn new-btn" @click="goHome">⌂ Home</button>
     </div>
 
     <div class="session-list">
       <div
-        v-for="session in sessions"
-        :key="session.id"
+        v-for="guild in guilds"
+        :key="guild.id"
         class="session-item"
-        :class="{ active: currentSession && currentSession.id === session.id }"
-        @click="goToSession(session.id)"
+        :class="{ active: currentGuild && currentGuild.id === guild.id }"
+        @click="goToSession(guild.id)"
       >
         <div class="session-top">
-          <span class="session-id">{{ session.id }}</span>
-          <span class="session-agents" v-if="session.agent_count !== undefined">
-            <span class="agents-dot" :class="session.agent_count > 0 ? 'active' : ''"></span>
-            {{ session.agent_count }}
+          <span class="session-id">{{ guild.id }}</span>
+          <span class="session-agents" v-if="guild.agent_count !== undefined">
+            <span class="agents-dot" :class="guild.agent_count > 0 ? 'active' : ''"></span>
+            {{ guild.agent_count }}
           </span>
         </div>
-        <div class="session-name">{{ session.name }}</div>
-        <div class="session-time">{{ formatTime(session.created_at) }}</div>
+        <div class="session-name">{{ guild.name }}</div>
+        <div class="session-time">{{ formatTime(guild.created_at) }}</div>
       </div>
-      <div v-if="sessions.length === 0" class="no-sessions">No sessions yet</div>
+      <div v-if="guilds.length === 0" class="no-sessions">No guilds yet</div>
     </div>
 
     <div class="sidebar-footer">
-      <!-- Deploy worker — only when in an active session -->
+      <!-- Deploy worker — only when in an active guild -->
       <button
-        v-if="currentSession"
+        v-if="currentGuild"
         class="pixel-btn deploy-btn"
         @click="showDeployModal = true"
         title="Deploy a new worker agent"
@@ -64,21 +64,21 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { useSessionStore } from '../stores/session.js'
+import { useGuildStore } from '../stores/guild.js'
 import { useGitHubStore } from '../stores/github.js'
 import GitHubConfigModal from './GitHubConfigModal.vue'
 import DeployWorkerModal from './DeployWorkerModal.vue'
 
 const router = useRouter()
-const sessionStore = useSessionStore()
+const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 
 const showGitHubModal = ref(false)
 const showDeployModal = ref(false)
-const currentSession = computed(() => sessionStore.currentSession)
+const currentGuild = computed(() => guildStore.currentGuild)
 
-const sessions = computed(() => sessionStore.sessions)
-const isConnected = computed(() => sessionStore.isConnected)
+const guilds = computed(() => guildStore.guilds)
+const isConnected = computed(() => guildStore.isConnected)
 
 function goHome() {
   router.push('/')
