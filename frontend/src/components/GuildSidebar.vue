@@ -26,6 +26,33 @@
       <div v-if="guilds.length === 0" class="no-sessions">No guilds yet</div>
     </div>
 
+    <!-- Tasks panel — visible when a guild is active -->
+    <div v-if="currentGuild" class="tasks-panel">
+      <div class="tasks-header">
+        <span class="tasks-title">Tasks</span>
+        <span class="tasks-count">{{ tasksStore.tasks.length }}</span>
+      </div>
+      <div class="tasks-list">
+        <div v-if="tasksStore.tasks.length === 0" class="tasks-empty">No tasks yet</div>
+        <div
+          v-for="task in tasksStore.tasks.slice(0, 20)"
+          :key="task.id"
+          class="task-item"
+          :class="{ selected: tasksStore.selectedTaskId === task.id }"
+          @click="openTask(task.id)"
+        >
+          <div class="task-item-top">
+            <span class="task-item-dot" :class="'dot-' + (task.state || 'pending').replace(/[^a-z]/g, '-')"></span>
+            <span class="task-item-name">{{ task.name || task.id }}</span>
+          </div>
+          <div class="task-item-meta">
+            <span class="task-item-phase">{{ task.phase || 'execute' }}</span>
+            <span class="task-item-state">{{ tasksStore.stateLabel(task.state) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="sidebar-footer">
       <!-- Deploy worker — only when in an active guild -->
       <button
@@ -67,6 +94,7 @@ import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild.js'
 import { useGitHubStore } from '../stores/github.js'
 import { useAuthStore } from '../stores/auth.js'
+import { useTasksStore } from '../stores/tasks.js'
 import GitHubConfigModal from './GitHubConfigModal.vue'
 import DeployWorkerModal from './DeployWorkerModal.vue'
 
@@ -74,6 +102,7 @@ const router = useRouter()
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 const authStore = useAuthStore()
+const tasksStore = useTasksStore()
 
 const showGitHubModal = ref(false)
 const showDeployModal = ref(false)
@@ -88,6 +117,10 @@ function goHome() {
 
 function goToSession(id) {
   router.push(`/${id}`)
+}
+
+function openTask(taskId) {
+  tasksStore.selectTask(taskId)
 }
 
 function formatTime(isoStr) {
@@ -139,6 +172,8 @@ function formatTime(isoStr) {
   flex: 1;
   overflow-y: auto;
   padding: 4px 0;
+  min-height: 80px;
+  max-height: 220px;
 }
 
 .session-item {
@@ -210,6 +245,120 @@ function formatTime(isoStr) {
   text-align: center;
   color: var(--color-text-dim);
   font-size: 11px;
+}
+
+/* ── Tasks panel ── */
+.tasks-panel {
+  border-top: 2px solid var(--color-brass-dark);
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  flex-shrink: 0;
+}
+
+.tasks-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: var(--color-bg-tertiary);
+  border-bottom: 1px solid var(--color-brass-dark);
+  flex-shrink: 0;
+}
+
+.tasks-title {
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  color: var(--color-brass-light);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+.tasks-count {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  background: var(--color-bg);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+.tasks-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.tasks-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--color-text-dim);
+  font-size: 10px;
+  font-style: italic;
+}
+
+.task-item {
+  padding: 7px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-bg-tertiary);
+  transition: background 0.12s;
+}
+
+.task-item:hover {
+  background: rgba(232, 170, 0, 0.06);
+}
+
+.task-item.selected {
+  background: rgba(232, 170, 0, 0.12);
+  border-left: 3px solid var(--color-brass);
+}
+
+.task-item-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.task-item-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.dot-pending { background: var(--color-text-dim); }
+.dot-planning { background: var(--color-blue); }
+.dot-working { background: var(--color-green); animation: pulse 0.5s infinite; }
+.dot-awaiting-review { background: var(--color-amber); animation: pulse 1.5s infinite; }
+.dot-done { background: var(--color-teal); }
+.dot-failed { background: var(--color-red); }
+.dot-follow-up { background: var(--color-orange); animation: pulse 0.8s infinite; }
+.dot-followup { background: var(--color-orange); animation: pulse 0.8s infinite; }
+
+.task-item-name {
+  font-size: 11px;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+
+.task-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 12px;
+}
+
+.task-item-phase {
+  font-size: 9px;
+  color: var(--color-text-dim);
+}
+
+.task-item-state {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  margin-left: auto;
 }
 
 /* ── Footer ── */

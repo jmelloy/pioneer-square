@@ -146,12 +146,23 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  // First online worker that has no active (non-offline) task agents.
+  // First available worker process agent.
+  // With fixed agent_id model: agents join as "a-xxx" with workerId="w-xxx".
+  // Returns { id: worker_id, name, state } so callers can use id for task assignment.
   function firstIdleWorker() {
-    const workers = agents.value.filter(a => a.id.startsWith('w-') && a.state !== 'offline')
-    return workers.find(w =>
-      !agents.value.some(a => a.workerId === w.id && a.state !== 'offline')
-    ) || workers[0] || null
+    // Prefer agents with a workerId (process agents in new model)
+    const workerAgents = agents.value.filter(
+      a => a.workerId && a.state !== 'offline'
+    )
+    const idleAgent =
+      workerAgents.find(a => a.state === 'idle') ||
+      workerAgents.find(a => !['working', 'awaiting-review', 'error'].includes(a.state)) ||
+      workerAgents[0]
+    if (idleAgent) return { id: idleAgent.workerId, name: idleAgent.name, state: idleAgent.state }
+
+    // Legacy fallback: agents whose own id is "w-xxx" (old model)
+    const legacy = agents.value.filter(a => a.id.startsWith('w-') && a.state !== 'offline')
+    return legacy.find(a => a.state === 'idle') || legacy[0] || null
   }
 
   function clearAgents() {
