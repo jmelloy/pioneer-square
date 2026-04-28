@@ -193,6 +193,24 @@ async def init_db():
         await db.commit()
     except Exception:
         pass
+    for col_sql in [
+        "ALTER TABLE tasks ADD COLUMN name TEXT",
+        "ALTER TABLE tasks ADD COLUMN parent_task_id TEXT",
+        "ALTER TABLE tasks ADD COLUMN phase TEXT DEFAULT 'execute'",
+    ]:
+        try:
+            await db.execute(col_sql)
+        except aiosqlite.OperationalError:
+            pass
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS task_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            line TEXT NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES tasks(id)
+        )
+    """)
     await db.commit()
     await db.close()
 
@@ -225,9 +243,12 @@ class WorkerCreate(BaseModel):
 
 class TaskCreate(BaseModel):
     description: str
+    name: Optional[str] = None
     tool: str = "claude"          # "claude" | "codex" | "pi"
     issue_number: Optional[int] = None
     issue_repo: Optional[str] = None
+    parent_task_id: Optional[str] = None
+    phase: Optional[str] = "execute"
 
 
 # ---------------------------------------------------------------------------
@@ -240,52 +261,138 @@ FOREMAN_SYSTEM = """\
 You are the Foreman AI in Pioneer Square, a multi-agent coding workshop.
 You coordinate worker agents that autonomously clone repos, write code, and open PRs.
 
-Your responsibilities:
-- Understand what the human wants done and break it into concrete tasks
-- Assign tasks to appropriate idle workers via assign_task
-- Message a specific worker to give it mid-task context via message_worker
-- Summarise worker status and recent task outcomes when asked
-- Escalate back to the human only when you genuinely cannot decide
+## Your responsibilities
+- Understand what the human wants and break it into named, tracked tasks
+- Always call create_task first to name the work and get a task_id; then assign_task to workers
+- After a worker finishes (task-complete), review the result and decide: send_followup for \
+additional work in the same worktree, or finalize_task when done
+- Message workers mid-task via message_worker for context
+- Summarise status and outcomes when asked
+- Escalate to the human only when genuinely stuck
 
-Workers are already configured with a list of repos. Prefer workers whose repo
-list covers the task. If multiple workers are idle, split work across them.
+## Multi-step flows
+For complex work use phases:
+1. **plan** — create_task(phase='plan'), assign a worker to produce an outline/spec
+2. **execute** — assign workers to implement
+3. **review** — assign a worker to verify correctness, run tests, check the PR
 
-Be concise — one short paragraph maximum per response unless detail is requested.\
+## Task ownership
+- create_task before assign_task so every job has a human-readable name in the sidebar
+- Set parent_task_id on worker tasks to link them to your foreman task
+- After task-complete: call send_followup for further work (update tests, fix lint, add docs),
+  or call finalize_task to mark it complete — don't leave tasks in limbo
+
+Workers are configured with repos. Prefer workers whose repos cover the task.
+Be concise — one short paragraph maximum unless detail is requested.\
 """
 
 FOREMAN_TOOLS = [
     {
+        "name": "create_task",
+        "description": (
+            "Create a named foreman task. Call this before assigning worker tasks — it gives the "
+            "work a human-readable name visible in the sidebar and returns a task_id to reference "
+            "in assign_task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Short human-readable name (≤60 chars), e.g. 'Implement OAuth login'.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Full description of the work to be done.",
+                },
+                "phase": {
+                    "type": "string",
+                    "enum": ["plan", "execute", "review"],
+                    "description": "Starting phase. Default: execute.",
+                },
+            },
+            "required": ["name", "description"],
+        },
+    },
+    {
         "name": "assign_task",
         "description": (
-            "Queue a coding task for a worker agent. The worker will create a git worktree, "
-            "run the chosen coding agent (claude, codex, or pi) on the task description, then push and "
-            "open a GitHub PR."
+            "Queue a coding task for a worker agent. The worker creates a git worktree, "
+            "runs the chosen coding agent on the description, then pushes the branch. "
+            "Link to a foreman task via parent_task_id."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "worker_id": {
                     "type": "string",
-                    "description": "Worker agent ID (e.g. w-abc123). Must be an idle worker.",
+                    "description": "Worker agent ID (e.g. w-abc123). Must be idle.",
                 },
                 "description": {
                     "type": "string",
-                    "description": "Detailed, self-contained task description the coding agent will receive.",
+                    "description": "Detailed, self-contained task description the coding agent receives.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Short task name shown in the sidebar (≤60 chars).",
                 },
                 "tool": {
                     "type": "string",
                     "enum": ["claude", "codex", "pi"],
-                    "description": "Which coding agent to use. Defaults to claude.",
+                    "description": "Coding agent to use. Default: claude.",
                 },
-                "issue_number": {"type": "integer", "description": "GitHub issue number to close (optional)."},
+                "parent_task_id": {
+                    "type": "string",
+                    "description": "Foreman task ID this worker task belongs to (optional).",
+                },
+                "phase": {
+                    "type": "string",
+                    "enum": ["plan", "execute", "review", "followup"],
+                    "description": "Phase of work.",
+                },
+                "issue_number": {"type": "integer", "description": "GitHub issue to close (optional)."},
                 "issue_repo": {"type": "string", "description": "owner/repo for the issue (optional)."},
             },
             "required": ["worker_id", "description"],
         },
     },
     {
+        "name": "send_followup",
+        "description": (
+            "Send follow-up instructions to a worker for a task that just completed. "
+            "The worker executes these in the same git worktree on the same branch — "
+            "ideal for 'update tests', 'fix type errors', 'add docs', etc. "
+            "Call after receiving a task-complete notification."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID (t-xxxxxx)."},
+                "instructions": {
+                    "type": "string",
+                    "description": "Follow-up instructions to execute in the existing worktree.",
+                },
+            },
+            "required": ["task_id", "instructions"],
+        },
+    },
+    {
+        "name": "finalize_task",
+        "description": (
+            "Mark a task complete with no further follow-up needed. "
+            "Call after reviewing a completed task when no additional work is required."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to finalize."},
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "message_worker",
-        "description": "Send a message to a specific worker's terminal — useful to provide mid-task context.",
+        "description": "Send a message to a worker's terminal — for mid-task context injection.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -304,14 +411,39 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
     for tu in tool_uses:
         inp = tu.input
         result_text = ""
+        db = await get_db()
+        try:
+            if tu.name == "create_task":
+                name = (inp.get("name") or "")[:80]
+                desc = inp.get("description", name)
+                phase = inp.get("phase", "execute")
+                task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                created_at = datetime.now(timezone.utc).isoformat()
+                await db.execute(
+                    "INSERT INTO tasks (id, worker_id, guild_id, name, description, tool,"
+                    " state, phase, created_at) VALUES (?, 'foreman', ?, ?, ?, 'claude', 'planning', ?, ?)",
+                    (task_id, guild_id, name, desc, phase, created_at),
+                )
+                await db.commit()
+                await broadcast(guild_id, {
+                    "type": "task-created",
+                    "taskId": task_id,
+                    "name": name,
+                    "description": desc,
+                    "phase": phase,
+                    "state": "planning",
+                    "createdAt": created_at,
+                })
+                result_text = f"Task {task_id} created: '{name}'. Reference this task_id in assign_task."
 
-        if tu.name == "assign_task":
-            wid  = inp["worker_id"]
-            desc = inp["description"]
-            task_id    = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-            created_at = datetime.now(timezone.utc).isoformat()
-            db = await get_db()
-            try:
+            elif tu.name == "assign_task":
+                wid = inp["worker_id"]
+                desc = inp["description"]
+                name = (inp.get("name") or desc[:60])
+                phase = inp.get("phase", "execute")
+                parent_task_id = inp.get("parent_task_id")
+                task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+                created_at = datetime.now(timezone.utc).isoformat()
                 async with db.execute(
                     "SELECT 1 FROM workers WHERE id=? AND guild_id=?", (wid, guild_id)
                 ) as cur:
@@ -321,35 +453,80 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                 else:
                     tool = inp.get("tool", "claude")
                     await db.execute(
-                        "INSERT INTO tasks (id, worker_id, guild_id, description, tool, issue_number,"
-                        " issue_repo, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-                        (task_id, wid, guild_id, desc, tool, inp.get("issue_number"), inp.get("issue_repo"), created_at),
+                        "INSERT INTO tasks (id, worker_id, guild_id, name, description, tool,"
+                        " issue_number, issue_repo, state, phase, parent_task_id, created_at)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                        (task_id, wid, guild_id, name, desc, tool,
+                         inp.get("issue_number"), inp.get("issue_repo"),
+                         phase, parent_task_id, created_at),
                     )
                     await db.commit()
                     await broadcast(guild_id, {
                         "type": "task-assigned",
                         "workerId": wid,
                         "taskId": task_id,
+                        "name": name,
                         "description": desc,
                         "tool": tool,
+                        "phase": phase,
+                        "parentTaskId": parent_task_id,
                         "issueNumber": inp.get("issue_number"),
                         "issueRepo": inp.get("issue_repo"),
                     })
                     result_text = f"Task {task_id} queued for {wid}."
-            finally:
-                await db.close()
 
-        elif tu.name == "message_worker":
-            wid = inp["worker_id"]
-            msg = inp["message"]
-            await _emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
-            # The worker process picks this up over its guild WebSocket.
-            await broadcast(guild_id, {
-                "type": "worker-message",
-                "workerId": wid,
-                "message": msg,
-            })
-            result_text = f"Message delivered to {wid}."
+            elif tu.name == "send_followup":
+                task_id = inp["task_id"]
+                instructions = inp["instructions"]
+                async with db.execute(
+                    "SELECT worker_id FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
+                ) as cur:
+                    row = await cur.fetchone()
+                if not row:
+                    result_text = f"Task {task_id} not found."
+                else:
+                    await db.execute(
+                        "UPDATE tasks SET state='working', phase='followup' WHERE id=?", (task_id,)
+                    )
+                    await db.commit()
+                    await broadcast(guild_id, {
+                        "type": "task-followup",
+                        "workerId": row["worker_id"],
+                        "taskId": task_id,
+                        "instructions": instructions,
+                    })
+                    result_text = f"Follow-up sent to {row['worker_id']} for task {task_id}."
+
+            elif tu.name == "finalize_task":
+                task_id = inp["task_id"]
+                async with db.execute(
+                    "SELECT worker_id FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
+                ) as cur:
+                    row = await cur.fetchone()
+                if not row:
+                    result_text = f"Task {task_id} not found."
+                else:
+                    await db.execute("UPDATE tasks SET state='done' WHERE id=?", (task_id,))
+                    await db.commit()
+                    await broadcast(guild_id, {
+                        "type": "task-finalize",
+                        "workerId": row["worker_id"],
+                        "taskId": task_id,
+                    })
+                    result_text = f"Task {task_id} finalized."
+
+            elif tu.name == "message_worker":
+                wid = inp["worker_id"]
+                msg = inp["message"]
+                await _emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
+                await broadcast(guild_id, {
+                    "type": "worker-message",
+                    "workerId": wid,
+                    "message": msg,
+                })
+                result_text = f"Message delivered to {wid}."
+        finally:
+            await db.close()
 
         results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result_text})
     return results
@@ -836,10 +1013,18 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             elif msg_type == "terminal-output":
                 agent_id = data.get("agentId")
                 line = data.get("line", "")
+                task_id = data.get("taskId")
                 created_at = datetime.now(timezone.utc).isoformat()
+                if task_id and line:
+                    await db.execute(
+                        "INSERT INTO task_logs (task_id, timestamp, line) VALUES (?, ?, ?)",
+                        (task_id, created_at, line),
+                    )
+                    await db.commit()
                 await broadcast(guild_id, {
                     "type": "terminal-output",
                     "agentId": agent_id,
+                    "taskId": task_id,
                     "line": line,
                     "timestamp": created_at
                 })
@@ -875,6 +1060,44 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         await db.execute(sql, params)
                         await db.commit()
                     await broadcast(guild_id, data, exclude=websocket)
+
+            elif msg_type == "task-complete":
+                task_id = data.get("taskId")
+                worker_id_msg = data.get("workerId", "")
+                desc = data.get("description", "")
+                branch = data.get("branch", "")
+                if task_id:
+                    await db.execute(
+                        "UPDATE tasks SET state='awaiting-review' WHERE id=? AND state='working'",
+                        (task_id,),
+                    )
+                    await db.commit()
+                await broadcast(guild_id, data, exclude=websocket)
+                if task_id:
+                    asyncio.create_task(_run_foreman_ai(
+                        guild_id,
+                        f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
+                        f"\"{desc[:80]}\" — branch: {branch}. "
+                        "Review this result. Call send_followup if additional work is needed "
+                        "(e.g. update tests, add docs, fix lint errors). "
+                        "Otherwise call finalize_task to mark it complete.",
+                    ))
+
+            elif msg_type == "task-followup-done":
+                task_id = data.get("taskId")
+                worker_id_msg = data.get("workerId", "")
+                if task_id:
+                    await db.execute(
+                        "UPDATE tasks SET state='awaiting-review' WHERE id=?", (task_id,)
+                    )
+                    await db.commit()
+                await broadcast(guild_id, data, exclude=websocket)
+                if task_id:
+                    asyncio.create_task(_run_foreman_ai(
+                        guild_id,
+                        f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
+                        "Decide: call send_followup for more work, or call finalize_task to mark it done.",
+                    ))
 
             elif msg_type in ("offer", "answer", "ice-candidate"):
                 # WebRTC signaling - forward to all
@@ -1251,10 +1474,14 @@ async def assign_task(guild_id: str, worker_id: str, data: TaskCreate):
         ) as cur:
             if not await cur.fetchone():
                 raise HTTPException(status_code=404, detail="Worker not found")
+        name = (data.name or data.description[:60])
         await db.execute(
-            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, issue_number, issue_repo, state, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-            (task_id, worker_id, guild_id, data.description, data.tool, data.issue_number, data.issue_repo, created_at),
+            "INSERT INTO tasks (id, worker_id, guild_id, name, description, tool, issue_number,"
+            " issue_repo, state, phase, parent_task_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            (task_id, worker_id, guild_id, name, data.description, data.tool,
+             data.issue_number, data.issue_repo, data.phase or "execute",
+             data.parent_task_id, created_at),
         )
         await db.commit()
     finally:
@@ -1264,8 +1491,11 @@ async def assign_task(guild_id: str, worker_id: str, data: TaskCreate):
         "type": "task-assigned",
         "workerId": worker_id,
         "taskId": task_id,
+        "name": name,
         "description": data.description,
         "tool": data.tool,
+        "phase": data.phase or "execute",
+        "parentTaskId": data.parent_task_id,
         "issueNumber": data.issue_number,
         "issueRepo": data.issue_repo,
     })
@@ -1305,3 +1535,99 @@ async def message_worker(guild_id: str, worker_id: str, data: WorkerMessage):
         "message": text,
     })
     return {"status": "delivered"}
+
+
+# ---------------------------------------------------------------------------
+# Task endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/guilds/{guild_id}/tasks")
+async def list_guild_tasks(guild_id: str):
+    """List all tasks for a guild, most recent first."""
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT id, worker_id, name, description, tool, state, phase,"
+            " parent_task_id, branch, pr_url, issue_number, issue_repo, created_at, finished_at"
+            " FROM tasks WHERE guild_id=? ORDER BY created_at DESC LIMIT 100",
+            (guild_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+@app.get("/guilds/{guild_id}/tasks/{task_id}/logs")
+async def get_task_logs(guild_id: str, task_id: str):
+    """Get all saved log lines for a task."""
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT 1 FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
+        ) as cur:
+            if not await cur.fetchone():
+                raise HTTPException(status_code=404, detail="Task not found")
+        async with db.execute(
+            "SELECT timestamp, line FROM task_logs WHERE task_id=? ORDER BY id ASC",
+            (task_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+class FollowupCreate(BaseModel):
+    instructions: str
+
+
+@app.post("/guilds/{guild_id}/tasks/{task_id}/followup")
+async def create_task_followup(guild_id: str, task_id: str, data: FollowupCreate):
+    """Send follow-up instructions to a worker — executed in the same worktree/branch."""
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT worker_id FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        worker_id = row["worker_id"]
+        await db.execute(
+            "UPDATE tasks SET state='working', phase='followup' WHERE id=?", (task_id,)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+    await broadcast(guild_id, {
+        "type": "task-followup",
+        "workerId": worker_id,
+        "taskId": task_id,
+        "instructions": data.instructions,
+    })
+    return {"status": "sent", "taskId": task_id}
+
+
+@app.post("/guilds/{guild_id}/tasks/{task_id}/finalize")
+async def finalize_task_endpoint(guild_id: str, task_id: str):
+    """Signal a worker to finalize a task — no more follow-ups."""
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT worker_id FROM tasks WHERE id=? AND guild_id=?", (task_id, guild_id)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        worker_id = row["worker_id"]
+        await db.execute("UPDATE tasks SET state='done' WHERE id=?", (task_id,))
+        await db.commit()
+    finally:
+        await db.close()
+    await broadcast(guild_id, {
+        "type": "task-finalize",
+        "workerId": worker_id,
+        "taskId": task_id,
+    })
+    return {"status": "finalized", "taskId": task_id}

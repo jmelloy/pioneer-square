@@ -38,6 +38,8 @@ class Worker:
         self.task_queue: asyncio.Queue[dict] = asyncio.Queue()
         self.current_claude: Optional[claude_runner.ClaudeProcess] = None
         self._known_task_ids: set[str] = set()
+        # Per-task queues for follow-up instructions; None signals finalization
+        self._followup_queues: dict[str, asyncio.Queue] = {}
 
     # ------------------------------------------------------------------ HTTP
     async def _http(self) -> httpx.AsyncClient:
@@ -93,6 +95,18 @@ class Worker:
             "line": line,
             "timestamp": _now_iso(),
         })
+
+    def _task_emit(self, task_id: str):
+        """Return an async emit function that tags output with task_id for log persistence."""
+        async def _emit_task(line: str) -> None:
+            await self._send({
+                "type": "terminal-output",
+                "agentId": self.cfg.worker_id,
+                "taskId": task_id,
+                "line": line,
+                "timestamp": _now_iso(),
+            })
+        return _emit_task
 
     async def _set_state(self, state: str) -> None:
         await self._send({
@@ -212,6 +226,31 @@ class Worker:
                 elif text:
                     logger.debug("worker-message received but no claude is running; dropping")
 
+            elif mtype == "task-followup":
+                if msg.get("workerId") != self.cfg.worker_id:
+                    continue
+                task_id = msg.get("taskId")
+                instructions = msg.get("instructions", "")
+                q = self._followup_queues.get(task_id)
+                if q is not None:
+                    await q.put(instructions)
+                    logger.info("Follow-up queued for task %s: %s", task_id, instructions[:80])
+                else:
+                    logger.warning(
+                        "task-followup for %s but no queue (task may have finalized)", task_id
+                    )
+
+            elif mtype == "task-finalize":
+                if msg.get("workerId") != self.cfg.worker_id:
+                    continue
+                task_id = msg.get("taskId")
+                q = self._followup_queues.get(task_id)
+                if q is not None:
+                    await q.put(None)  # None = finalize signal
+                    logger.info("Finalize signal queued for task %s", task_id)
+                else:
+                    logger.debug("task-finalize for %s but no queue", task_id)
+
     async def _idle_puller(self) -> None:
         logger.info("Idle puller started (interval=%.1fs)", self.cfg.pull_interval)
         while True:
@@ -274,19 +313,21 @@ class Worker:
         logger.info("Task %s branch=%s work_dir=%s", task_id, branch, work_dir)
         os.makedirs(work_dir, exist_ok=True)
 
-        await self._emit(f"[worker] Task: {desc}")
-        await self._emit(f"[worker] Branch: {branch}")
+        # Task-scoped emit: tags terminal-output with taskId so backend persists to task_logs
+        emit = self._task_emit(task_id)
+        await emit(f"[worker] Task: {desc}")
+        await emit(f"[worker] Branch: {branch}")
 
         worktree_entries: list[tuple[str, str, str]] = []
         primary_wt: Optional[str] = None
 
         for repo_full in repos:
             logger.info("Task %s: preparing repo %s", task_id, repo_full)
-            await self._emit(f"[worker] Preparing {repo_full}...")
+            await emit(f"[worker] Preparing {repo_full}...")
             repo_path = await git_ops.ensure_repo(self.cfg.repos_dir, repo_full, token)
             if not repo_path:
                 logger.error("Task %s: clone/fetch failed for %s", task_id, repo_full)
-                await self._emit(f"[worker] ✗ Clone failed: {repo_full}")
+                await emit(f"[worker] ✗ Clone failed: {repo_full}")
                 continue
             repo_name = repo_full.split("/")[-1]
             wt_path = os.path.join(work_dir, repo_name)
@@ -298,11 +339,11 @@ class Worker:
                     primary_wt = wt_path
             else:
                 logger.error("Task %s: worktree creation failed for %s", task_id, repo_full)
-                await self._emit(f"[worker] ✗ Worktree failed: {repo_full}")
+                await emit(f"[worker] ✗ Worktree failed: {repo_full}")
 
         if not primary_wt:
             logger.error("Task %s: aborting — no worktrees were created", task_id)
-            await self._emit("[worker] ✗ No worktrees — aborting.")
+            await emit("[worker] ✗ No worktrees — aborting.")
             await self._task_update(task_id, state="failed", finishedAt=_now_iso())
             await self._set_state("error")
             return
@@ -317,18 +358,12 @@ class Worker:
         if tool == "codex":
             logger.info("Task %s: launching codex in %s", task_id, primary_wt)
             success, stop_reason, last_msg = await codex_runner.run_codex_auto(
-                desc,
-                primary_wt,
-                emit=self._emit,
-                codex_path=self.cfg.codex_path,
+                desc, primary_wt, emit=emit, codex_path=self.cfg.codex_path,
             )
         elif tool == "pi":
             logger.info("Task %s: launching pi in %s", task_id, primary_wt)
             success, stop_reason, last_msg = await pi_runner.run_pi_auto(
-                desc,
-                primary_wt,
-                emit=self._emit,
-                pi_path=self.cfg.pi_path,
+                desc, primary_wt, emit=emit, pi_path=self.cfg.pi_path,
             )
         else:
             logger.info(
@@ -336,49 +371,95 @@ class Worker:
                 task_id, primary_wt, self.cfg.claude_max_turns,
             )
             success, stop_reason, last_msg = await claude_runner.run_claude_auto(
-                desc,
-                primary_wt,
+                desc, primary_wt,
                 max_turns=self.cfg.claude_max_turns,
-                emit=self._emit,
+                emit=emit,
                 on_proc=_on_proc,
                 claude_path=self.cfg.claude_path,
             )
         self.current_claude = None
-        finished_at = _now_iso()
-        logger.info("Task %s: claude finished success=%s stop_reason=%s", task_id, success, stop_reason)
+        logger.info("Task %s: agent finished success=%s stop_reason=%s", task_id, success, stop_reason)
 
-        if success:
-            logger.info("Task %s: pushing branch %s", task_id, branch)
-            await github_pr.push_branch(
-                branch=branch,
-                worktree_path=primary_wt,
-                emit=self._emit,
-            )
-            logger.info("Task %s: done", task_id)
-            await self._task_update(
-                task_id, state="done", branch=branch, finishedAt=finished_at,
-            )
-            await self._send({
-                "type": "task-complete",
-                "workerId": self.cfg.worker_id,
-                "taskId": task_id,
-                "branch": branch,
-                "description": desc,
-            })
-            await self._set_state("idle")
-        else:
-            logger.warning("Task %s: failed stop_reason=%s, requesting human input", task_id, stop_reason)
-            await self._task_update(task_id, state="failed", finishedAt=finished_at)
-            await self._set_state("error")
-            await self._send({
-                "type": "needs-input",
-                "workerId": self.cfg.worker_id,
-                "taskId": task_id,
-                "description": desc,
-                "stopReason": stop_reason,
-                "lastMessage": last_msg,
-            })
+        try:
+            if success:
+                logger.info("Task %s: pushing branch %s", task_id, branch)
+                await github_pr.push_branch(branch=branch, worktree_path=primary_wt, emit=emit)
 
-        logger.info("Task %s: cleaning up %d worktree(s)", task_id, len(worktree_entries))
-        for _repo_full, repo_path, wt_path in worktree_entries:
-            await git_ops.remove_worktree(repo_path, wt_path)
+                # Notify backend the initial work is done; stay alive for follow-ups
+                await self._task_update(task_id, branch=branch, worktreePath=primary_wt, state="awaiting-review")
+                await self._send({
+                    "type": "task-complete",
+                    "workerId": self.cfg.worker_id,
+                    "taskId": task_id,
+                    "branch": branch,
+                    "description": desc,
+                })
+                await self._set_state("awaiting-review")
+
+                # Register follow-up queue; foreman can send instructions or finalize
+                followup_q: asyncio.Queue[Optional[str]] = asyncio.Queue()
+                self._followup_queues[task_id] = followup_q
+                try:
+                    while True:
+                        try:
+                            instructions = await asyncio.wait_for(followup_q.get(), timeout=300.0)
+                        except asyncio.TimeoutError:
+                            await emit("[worker] Follow-up window expired — finalizing.")
+                            break
+                        if instructions is None:
+                            await emit("[worker] Task finalized by foreman.")
+                            break
+
+                        # Execute follow-up in the same worktree on the same branch
+                        await self._set_state("working")
+                        await self._task_update(task_id, state="working")
+                        await emit(f"[worker] Follow-up: {instructions[:120]}")
+
+                        def _on_proc2(proc: claude_runner.ClaudeProcess) -> None:
+                            self.current_claude = proc
+
+                        fu_ok, fu_reason, _ = await claude_runner.run_claude_auto(
+                            instructions, primary_wt,
+                            max_turns=self.cfg.claude_max_turns,
+                            emit=emit,
+                            on_proc=_on_proc2,
+                            claude_path=self.cfg.claude_path,
+                        )
+                        self.current_claude = None
+                        logger.info("Task %s follow-up done: ok=%s reason=%s", task_id, fu_ok, fu_reason)
+
+                        if fu_ok:
+                            await github_pr.push_branch(branch=branch, worktree_path=primary_wt, emit=emit)
+
+                        await self._send({
+                            "type": "task-followup-done",
+                            "workerId": self.cfg.worker_id,
+                            "taskId": task_id,
+                            "success": fu_ok,
+                            "stopReason": fu_reason,
+                        })
+                        await self._task_update(task_id, state="awaiting-review")
+                        await self._set_state("awaiting-review")
+                finally:
+                    self._followup_queues.pop(task_id, None)
+
+                await self._task_update(task_id, state="done", finishedAt=_now_iso())
+                await self._set_state("idle")
+
+            else:
+                logger.warning("Task %s: failed stop_reason=%s", task_id, stop_reason)
+                await self._task_update(task_id, state="failed", finishedAt=_now_iso())
+                await self._set_state("error")
+                await self._send({
+                    "type": "needs-input",
+                    "workerId": self.cfg.worker_id,
+                    "taskId": task_id,
+                    "description": desc,
+                    "stopReason": stop_reason,
+                    "lastMessage": last_msg,
+                })
+
+        finally:
+            logger.info("Task %s: cleaning up %d worktree(s)", task_id, len(worktree_entries))
+            for _repo_full, repo_path, wt_path in worktree_entries:
+                await git_ops.remove_worktree(repo_path, wt_path)
