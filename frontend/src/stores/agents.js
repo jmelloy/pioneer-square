@@ -151,23 +151,6 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  async function deployWorker({ repos }) {
-    const guildStore = useGuildStore()
-    const guildId = guildStore.currentGuild?.id
-    if (!guildId) throw new Error('No active guild')
-
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ repos, github_token: null })
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.detail || `HTTP ${res.status}`)
-    }
-    return res.json()
-  }
-
   async function assignTask(workerId, { description, issueNumber, issueRepo }) {
     const guildStore = useGuildStore()
     const guildId = guildStore.currentGuild?.id
@@ -295,7 +278,6 @@ export const useAgentsStore = defineStore('agents', () => {
     sendMessage,
     runAgent,
     stopAgent,
-    deployWorker,
     assignTask,
     messageWorker,
     firstIdleWorker,

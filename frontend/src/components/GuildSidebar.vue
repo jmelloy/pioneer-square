@@ -71,13 +71,6 @@
     </div>
 
     <div class="sidebar-footer">
-      <button
-        v-if="currentGuild"
-        class="pixel-btn deploy-btn"
-        @click="showDeployModal = true"
-        title="Deploy a new worker agent"
-      >+ WORKER</button>
-
       <div class="gh-block" @click="showGitHubModal = true" :title="authStore.user ? 'GitHub: ' + authStore.user.login : 'Configure GitHub'">
         <div class="gh-inner" :class="{ configured: authStore.isLoggedIn }">
           <img v-if="authStore.isLoggedIn" :src="authStore.user?.avatar_url" class="gh-avatar" alt="gh" />
@@ -100,7 +93,6 @@
   </aside>
 
   <GitHubConfigModal v-if="showGitHubModal" @close="showGitHubModal = false" />
-  <DeployWorkerModal v-if="showDeployModal" @close="showDeployModal = false" />
 </template>
 
 <script setup>
@@ -112,7 +104,6 @@ import { useAuthStore } from '../stores/auth.js'
 import { useTasksStore } from '../stores/tasks.js'
 import { useAgentsStore } from '../stores/agents.js'
 import GitHubConfigModal from './GitHubConfigModal.vue'
-import DeployWorkerModal from './DeployWorkerModal.vue'
 
 const router = useRouter()
 const guildStore = useGuildStore()
@@ -122,7 +113,6 @@ const tasksStore = useTasksStore()
 const agentsStore = useAgentsStore()
 
 const showGitHubModal = ref(false)
-const showDeployModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
 const isConnected = computed(() => guildStore.isConnected)
 
@@ -480,21 +470,6 @@ function formatTime(isoStr) {
   border-top: 2px solid var(--color-brass-dark);
   background: var(--color-bg-tertiary);
   flex-shrink: 0;
-}
-
-.deploy-btn {
-  width: 100%;
-  font-size: 7px;
-  padding: 6px 10px;
-  background: linear-gradient(180deg, rgba(0, 187, 170, 0.3) 0%, rgba(0, 120, 110, 0.5) 100%);
-  border-color: var(--color-teal);
-  color: var(--color-teal);
-}
-
-.deploy-btn:hover {
-  background: linear-gradient(180deg, rgba(0, 187, 170, 0.5) 0%, rgba(0, 150, 140, 0.7) 100%);
-  box-shadow: 0 0 10px rgba(0, 187, 170, 0.4);
-  color: var(--color-cream);
 }
 
 /* ── GitHub block ── */
