@@ -300,8 +300,8 @@ async def run_claude_auto(
             )
         return exit_code == 0, stop_reason, last_text
     except FileNotFoundError:
-        logger.error("`claude` CLI not found on PATH")
-        await emit("[claude] ✗ `claude` CLI not found on PATH")
+        logger.error("claude executable not found: %r", claude_path)
+        await emit(f"[claude] ✗ executable not found: {claude_path}")
         return False, "no_events", last_text
     except Exception as exc:  # pragma: no cover
         logger.exception("claude subprocess crashed: %s", exc)

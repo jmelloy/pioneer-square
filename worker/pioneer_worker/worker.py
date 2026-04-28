@@ -114,9 +114,11 @@ class Worker:
             self.cfg.worker_id or "<unregistered>",
         )
         logger.info(
-            "Paths: repos_dir=%s work_dir=%s pull_interval=%.1fs max_turns=%d",
+            "Paths: repos_dir=%s work_dir=%s pull_interval=%.1fs max_turns=%d"
+            " claude=%s codex=%s pi=%s",
             self.cfg.repos_dir, self.cfg.work_dir,
             self.cfg.pull_interval, self.cfg.claude_max_turns,
+            self.cfg.claude_path, self.cfg.codex_path, self.cfg.pi_path,
         )
 
         await self._register_if_needed()
