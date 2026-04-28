@@ -11,6 +11,7 @@ import string
 from datetime import datetime, timezone
 from typing import Optional
 
+import anyio
 import httpx
 
 from . import claude_runner, codex_runner, pi_runner, config as config_mod, git_ops, github_pr
@@ -150,6 +151,20 @@ class Worker:
             **fields,
         })
 
+    async def _notify_offline(self) -> None:
+        """Send an explicit worker-disconnect message before the WebSocket closes.
+
+        Called from the run() finally block inside an anyio.CancelScope(shield=True)
+        so the message is delivered even when the task is being cancelled.
+        """
+        try:
+            await self._send({
+                "type": "worker-disconnect",
+                "workerId": self.cfg.worker_id,
+            })
+        except Exception as exc:
+            logger.debug("worker-disconnect send failed (ignored): %s", exc)
+
     # ------------------------------------------------------------------ Main loop
     async def run(self) -> None:
         logger.info(
@@ -195,6 +210,8 @@ class Worker:
         try:
             await asyncio.gather(listener, *runners, puller)
         finally:
+            with anyio.CancelScope(shield=True):
+                await self._notify_offline()
             logger.info("Worker shutting down; closing WebSocket")
             await self.ws.close()
 

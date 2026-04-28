@@ -1264,6 +1264,29 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     )
                     await db.commit()
 
+            elif msg_type == "worker-disconnect":
+                # Worker is shutting down gracefully; mark agents and worker offline now
+                # rather than waiting for the WebSocket to close.
+                worker_id = data.get("workerId")
+                for agent_id in joined_agents:
+                    await db.execute(
+                        "UPDATE agents SET state = 'offline' WHERE id = ? AND guild_id = ?",
+                        (agent_id, guild_id),
+                    )
+                if worker_id:
+                    await db.execute(
+                        "UPDATE workers SET state = 'offline' WHERE id = ? AND guild_id = ?",
+                        (worker_id, guild_id),
+                    )
+                if joined_agents or worker_id:
+                    await db.commit()
+                for agent_id in joined_agents:
+                    await broadcast(guild_id, {
+                        "type": "agent-state",
+                        "agentId": agent_id,
+                        "state": "offline",
+                    })
+
             elif msg_type == "task-update":
                 # Worker is reporting a task state change; persist + rebroadcast.
                 task_id = data.get("taskId")
