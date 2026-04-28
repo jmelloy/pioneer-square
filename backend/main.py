@@ -134,6 +134,10 @@ class GuildCreate(BaseModel):
     name: Optional[str] = None
 
 
+class GuildUpdate(BaseModel):
+    name: str
+
+
 class RunAgentRequest(BaseModel):
     tool: str          # "claude" | "codex" | "pi"
     prompt: str
@@ -1052,6 +1056,28 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
         return [dict(r._mapping) for r in result.fetchall()]
     finally:
         await db.close()
+
+
+@app.patch("/guilds/{guild_id}")
+async def update_guild(
+    guild_id: str,
+    data: GuildUpdate,
+    github_user_id: str = Depends(require_user),
+):
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(Guild).where(Guild.id == guild_id, Guild.github_user_id == github_user_id)
+        )
+        guild = result.scalar_one_or_none()
+        if not guild:
+            raise HTTPException(status_code=404, detail="Guild not found")
+        guild.name = data.name
+        await db.commit()
+    finally:
+        await db.close()
+    await broadcast(guild_id, {"type": "guild-updated", "id": guild_id, "name": data.name})
+    return {"id": guild_id, "name": data.name}
 
 
 @app.get("/guilds/{guild_id}")

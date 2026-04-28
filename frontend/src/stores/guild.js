@@ -27,6 +27,21 @@ export const useGuildStore = defineStore('guild', () => {
     }
   }
 
+  async function renameGuild(guildId, name) {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
+      body: JSON.stringify({ name })
+    })
+    if (!res.ok) throw new Error('Failed to rename guild')
+    if (currentGuild.value && currentGuild.value.id === guildId) {
+      currentGuild.value = { ...currentGuild.value, name }
+    }
+    const idx = guilds.value.findIndex(g => g.id === guildId)
+    if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name }
+    return await res.json()
+  }
+
   async function createGuild(name) {
     const res = await fetch(`${API_BASE}/guilds`, {
       method: 'POST',
@@ -65,6 +80,13 @@ export const useGuildStore = defineStore('guild', () => {
       const data = JSON.parse(event.data)
       if (data.type === 'chat') {
         messages.value.push(data)
+      }
+      if (data.type === 'guild-updated') {
+        if (currentGuild.value && currentGuild.value.id === data.id) {
+          currentGuild.value = { ...currentGuild.value, name: data.name }
+        }
+        const idx = guilds.value.findIndex(g => g.id === data.id)
+        if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name: data.name }
       }
       if (onMessage) onMessage(data)
       messageHandlers.value.forEach(h => h(data))
@@ -110,6 +132,7 @@ export const useGuildStore = defineStore('guild', () => {
     messages,
     loadGuilds,
     createGuild,
+    renameGuild,
     joinGuild,
     connectWebSocket,
     disconnectWebSocket,
