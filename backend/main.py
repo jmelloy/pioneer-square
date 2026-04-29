@@ -1551,13 +1551,15 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 worker_id = data.get("workerId")
                 for agent_id in joined_agents:
                     await db.execute(
-                        "UPDATE agents SET state = 'offline' WHERE id = ? AND guild_id = ?",
-                        (agent_id, guild_id),
+                        update(Agent)
+                        .where(Agent.id == agent_id, Agent.guild_id == guild_id)
+                        .values(state="offline")
                     )
                 if worker_id:
                     await db.execute(
-                        "UPDATE workers SET state = 'offline' WHERE id = ? AND guild_id = ?",
-                        (worker_id, guild_id),
+                        update(Worker)
+                        .where(Worker.id == worker_id, Worker.guild_id == guild_id)
+                        .values(state="offline")
                     )
                 if joined_agents or worker_id:
                     await db.commit()

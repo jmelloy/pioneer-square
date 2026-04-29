@@ -4,84 +4,93 @@ Verifies that when the server receives a worker-disconnect message over
 WebSocket, it immediately marks the worker and its agents offline in the
 database and broadcasts the offline state — without waiting for the
 WebSocket connection to close.
+
+A module-scoped `client` fixture is used so only one TestClient is created
+for the whole module, avoiding the starlette/anyio hang that occurs when a
+second TestClient tries to start against the same singleton app instance.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
+import sqlite3
 from datetime import datetime, timezone
 
-import aiosqlite
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+from starlette.testclient import TestClient
 
-# Ensure backend/ is importable.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
 
-import main as main_module  # noqa: E402  (after sys.path insert)
-from starlette.testclient import TestClient  # noqa: E402
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+import database as database_module  # noqa: E402
+import main as main_module  # noqa: E402
+from helpers import create_db as _create_db  # noqa: E402
 
 
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    """TestClient backed by a fresh temporary SQLite database."""
+@pytest.fixture(scope="module")
+def client(tmp_path_factory):
+    """Module-scoped TestClient — one TestClient for all disconnect tests."""
+    tmp_path = tmp_path_factory.mktemp("disconnect_db")
     db_path = str(tmp_path / "test.db")
-    monkeypatch.setattr(main_module, "DB_PATH", db_path)
+    db_url = f"sqlite+aiosqlite:///{db_path}"
+
+    os.environ["DATABASE_URL"] = db_url
+    _create_db(db_path)
+
+    new_engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
+    new_session = async_sessionmaker(new_engine, expire_on_commit=False, class_=AsyncSession)
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(database_module, "AsyncSessionLocal", new_session)
+    mp.setattr(main_module, "AsyncSessionLocal", new_session)
+
+    async def _stubbed_init_db() -> None:
+        pass
+
+    mp.setattr(main_module, "init_db", _stubbed_init_db)
+    mp.setenv("DATABASE_URL", db_url)
+    mp.setenv("DB_PATH", db_path)
+
     with TestClient(main_module.app) as c:
         yield c, db_path
+
+    mp.undo()
+    os.environ.pop("DATABASE_URL", None)
 
 
 def _setup_guild_and_worker(db_path: str, guild_id: str, worker_id: str) -> None:
     """Insert a test guild and worker directly into the DB."""
     now = datetime.now(timezone.utc).isoformat()
-
-    async def _run():
-        async with aiosqlite.connect(db_path) as db:
-            await db.execute(
-                "INSERT OR IGNORE INTO guilds (id, created_at, name) VALUES (?, ?, ?)",
-                (guild_id, now, "Test Guild"),
-            )
-            await db.execute(
-                "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at)"
-                " VALUES (?, ?, '[]', 'online', ?)",
-                (worker_id, guild_id, now),
-            )
-            await db.commit()
-
-    asyncio.run(_run())
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO guilds (id, created_at, name) VALUES (?, ?, ?)",
+            (guild_id, now, "Test Guild"),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at)"
+            " VALUES (?, ?, '[]', 'online', ?)",
+            (worker_id, guild_id, now),
+        )
+        conn.commit()
 
 
 def _get_states(db_path: str, agent_id: str, worker_id: str) -> tuple[str, str]:
     """Return (agent_state, worker_state) from the DB."""
-
-    async def _run():
-        async with aiosqlite.connect(db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute(
-                "SELECT state FROM agents WHERE id = ?", (agent_id,)
-            ) as cur:
-                agent_row = await cur.fetchone()
-            async with db.execute(
-                "SELECT state FROM workers WHERE id = ?", (worker_id,)
-            ) as cur:
-                worker_row = await cur.fetchone()
-        return (
-            agent_row["state"] if agent_row else None,
-            worker_row["state"] if worker_row else None,
-        )
-
-    return asyncio.run(_run())
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        agent_row = conn.execute(
+            "SELECT state FROM agents WHERE id = ?", (agent_id,)
+        ).fetchone()
+        worker_row = conn.execute(
+            "SELECT state FROM workers WHERE id = ?", (worker_id,)
+        ).fetchone()
+    return (
+        agent_row["state"] if agent_row else None,
+        worker_row["state"] if worker_row else None,
+    )
 
 
 def test_worker_disconnect_marks_agent_and_worker_offline(client):
