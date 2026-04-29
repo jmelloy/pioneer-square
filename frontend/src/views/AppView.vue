@@ -1,28 +1,31 @@
 <template>
   <div class="app-layout">
-    <SessionSidebar />
+    <GuildSidebar />
     <MainView />
     <ChatPane />
   </div>
 </template>
 
 <script setup>
-import { onMounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { useSessionStore } from '../stores/session.js'
+import { onMounted, onUnmounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { useGuildStore } from '../stores/guild.js'
 import { useAgentsStore } from '../stores/agents.js'
+import { useAuthStore } from '../stores/auth.js'
 import { useGitHubStore } from '../stores/github.js'
-import SessionSidebar from '../components/SessionSidebar.vue'
+import { useTasksStore } from '../stores/tasks.js'
+import GuildSidebar from '../components/GuildSidebar.vue'
 import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 
-const props = defineProps({ sessionId: String })
+const props = defineProps({ guildId: String })
 
-const route = useRoute()
 const router = useRouter()
-const sessionStore = useSessionStore()
+const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
+const authStore = useAuthStore()
 const ghStore = useGitHubStore()
+const tasksStore = useTasksStore()
 
 function getClientId() {
   let id = localStorage.getItem('client_id')
@@ -33,38 +36,50 @@ function getClientId() {
   return id
 }
 
-async function initSession(sessionId) {
-  if (!sessionId) {
+async function initGuild(guildId) {
+  if (!authStore.isLoggedIn) {
+    router.replace('/')
+    return
+  }
+  if (!guildId) {
     router.replace('/')
     return
   }
 
-  const session = await sessionStore.joinSession(sessionId)
-  if (!session) {
+  agentsStore.clearAgents()
+  tasksStore.clearTasks()
+  const guild = await guildStore.joinGuild(guildId)
+  if (!guild) {
     router.replace('/')
     return
   }
+  // Load existing tasks for this guild
+  await tasksStore.fetchTasks(guildId)
 
-  if (session.agents) {
-    session.agents.forEach(a => agentsStore.registerAgent({
-      agentId: a.id,
-      agentName: a.name,
-      agentType: a.type,
-      state: a.state,
-      joinedAt: a.joined_at,
-    }))
+  if (guild.agents) {
+    guild.agents
+      .filter(a => a.state !== 'offline')
+      .forEach(a => agentsStore.registerAgent({
+        agentId: a.id,
+        agentName: a.name,
+        agentType: a.type,
+        workerId: a.worker_id || null,
+        state: a.state,
+        joinedAt: a.joined_at,
+      }))
   }
 
   const clientId = getClientId()
   const suffix = clientId.slice(0, 4)
-  const foremanName = ghStore.user ? `${ghStore.user.login}-${suffix}` : `Foreman-${suffix}`
+  const foremanName = authStore.user ? `${authStore.user.login}-${suffix}` : `Foreman-${suffix}`
 
-  sessionStore.connectWebSocket(sessionId, (data) => {
+  guildStore.connectWebSocket(guildId, (data) => {
     agentsStore.handleWebSocketMessage(data)
+    tasksStore.handleWebSocketMessage(data)
   })
 
   setTimeout(() => {
-    sessionStore.sendMessage({
+    guildStore.sendMessage({
       type: 'join',
       agentId: `foreman-${clientId}`,
       agentName: foremanName,
@@ -78,15 +93,28 @@ async function initSession(sessionId) {
 }
 
 onMounted(async () => {
-  await sessionStore.loadSessions()
-  await initSession(props.sessionId)
+  await guildStore.loadGuilds()
 })
 
-watch(() => props.sessionId, async (newId) => {
-  if (newId) {
-    await initSession(newId)
-  }
+onUnmounted(() => {
+  guildStore.disconnectWebSocket()
+  tasksStore.clearTasks()
+  document.title = 'Pioneer Square'
 })
+
+watch(() => props.guildId, async (newId) => {
+  if (newId) {
+    await initGuild(newId)
+  }
+}, { immediate: true })
+
+watch(
+  () => guildStore.currentGuild?.name,
+  (name) => {
+    document.title = name ? `${name} — Pioneer Square` : 'Pioneer Square'
+  },
+  { immediate: true }
+)
 </script>
 
 <style>

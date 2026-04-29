@@ -39,63 +39,84 @@
             <div class="logo-title">PIONEER SQUARE</div>
             <div class="logo-subtitle">Multi-Agent Coding Workshop</div>
           </div>
-          <div class="header-actions">
-            <button class="pixel-btn new-btn" @click="openNewSession">+ NEW SESSION</button>
-          </div>
-        </div>
-
-        <div class="sessions-section">
-        <div class="section-label">ACTIVE SESSIONS</div>
-
-        <div v-if="loading" class="loading-msg">Loading sessions...</div>
-
-        <div v-else-if="sessions.length === 0" class="empty-state">
-          <div class="empty-icon">⚙</div>
-          <div class="empty-text">No sessions running.</div>
-          <div class="empty-sub">Start one to begin coordinating agents.</div>
-          <button class="pixel-btn" @click="openNewSession">+ NEW SESSION</button>
-        </div>
-
-        <div v-else class="sessions-grid">
-          <div
-            v-for="session in sessions"
-            :key="session.id"
-            class="session-card"
-            @click="goToSession(session.id)"
-          >
-            <div class="card-top">
-              <span class="card-id">{{ session.id }}</span>
-              <span class="card-agents">
-                <span class="agent-dot" :class="session.agent_count > 0 ? 'active' : 'empty'"></span>
-                {{ session.agent_count || 0 }} agent{{ session.agent_count !== 1 ? 's' : '' }}
-              </span>
+          <div class="header-actions" v-if="authStore.isLoggedIn">
+            <div class="user-pill">
+              <img :src="authStore.user.avatar_url" class="user-avatar" alt="" />
+              <span class="user-login">{{ authStore.user.login }}</span>
             </div>
-            <div class="card-name">{{ session.name }}</div>
-            <div class="card-time">Created {{ formatTime(session.created_at) }}</div>
-            <div class="card-enter">ENTER →</div>
+            <button class="pixel-btn new-btn" @click="openNewGuild">+ NEW GUILD</button>
+            <button class="pixel-btn logout-btn" @click="handleLogout">Sign out</button>
           </div>
         </div>
-      </div>
+
+        <!-- Login gate -->
+        <div v-if="!authStore.isLoggedIn" class="login-gate">
+          <div class="login-card">
+            <div class="login-icon">⚙</div>
+            <div class="login-title">SIGN IN TO GET STARTED</div>
+            <div class="login-sub">Connect your GitHub account to create guilds and run agents.</div>
+            <button class="pixel-btn login-btn" :disabled="loggingIn" @click="handleLogin">
+              {{ loggingIn ? 'Redirecting...' : 'SIGN IN WITH GITHUB' }}
+            </button>
+            <div v-if="loginError" class="login-error">{{ loginError }}</div>
+          </div>
+        </div>
+
+        <!-- Guild list (only shown when logged in) -->
+        <template v-else>
+          <div class="sessions-section">
+            <div class="section-label">YOUR GUILDS</div>
+
+            <div v-if="loading" class="loading-msg">Loading guilds...</div>
+
+            <div v-else-if="guilds.length === 0" class="empty-state">
+              <div class="empty-icon">⚙</div>
+              <div class="empty-text">No guilds yet.</div>
+              <div class="empty-sub">Start one to begin coordinating agents.</div>
+              <button class="pixel-btn" @click="openNewGuild">+ NEW GUILD</button>
+            </div>
+
+            <div v-else class="sessions-grid">
+              <div
+                v-for="guild in guilds"
+                :key="guild.id"
+                class="session-card"
+                @click="goToSession(guild.id)"
+              >
+                <div class="card-top">
+                  <span class="card-id">{{ guild.id }}</span>
+                  <span class="card-agents">
+                    <span class="agent-dot" :class="guild.agent_count > 0 ? 'active' : 'empty'"></span>
+                    {{ guild.agent_count || 0 }} agent{{ guild.agent_count !== 1 ? 's' : '' }}
+                  </span>
+                </div>
+                <div class="card-name">{{ guild.name }}</div>
+                <div class="card-time">Created {{ formatTime(guild.created_at) }}</div>
+                <div class="card-enter">ENTER →</div>
+              </div>
+            </div>
+          </div>
+        </template>
       </div><!-- end main-panel -->
     </div>
 
     <!-- New Session Modal -->
     <div v-if="showNewModal" class="modal-overlay" @click.self="showNewModal = false">
       <div class="modal">
-        <div class="modal-header">NEW SESSION</div>
+        <div class="modal-header">NEW GUILD</div>
         <div class="modal-body">
-          <label class="field-label">Session Name (optional)</label>
+          <label class="field-label">Guild Name (optional)</label>
           <input
-            v-model="newSessionName"
+            v-model="newGuildName"
             class="field-input"
             placeholder="e.g. Feature Sprint #4"
-            @keydown.enter="createSession"
+            @keydown.enter="createGuild"
             ref="nameInput"
           />
         </div>
         <div class="modal-footer">
           <button class="pixel-btn cancel-btn" @click="showNewModal = false">Cancel</button>
-          <button class="pixel-btn" @click="createSession" :disabled="creating">
+          <button class="pixel-btn" @click="createGuild" :disabled="creating">
             {{ creating ? 'Creating...' : 'CREATE' }}
           </button>
         </div>
@@ -107,21 +128,36 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useSessionStore } from '../stores/session.js'
+import { useGuildStore } from '../stores/guild.js'
+import { useAuthStore } from '../stores/auth.js'
+import { useGitHubStore } from '../stores/github.js'
 
 const router = useRouter()
-const sessionStore = useSessionStore()
+const guildStore = useGuildStore()
+const authStore = useAuthStore()
+const ghStore = useGitHubStore()
 
 const loading = ref(true)
-const sessions = ref([])
+const guilds = ref([])
 const showNewModal = ref(false)
-const newSessionName = ref('')
+const newGuildName = ref('')
 const creating = ref(false)
 const nameInput = ref(null)
+const loggingIn = ref(false)
+const loginError = ref('')
 
 onMounted(async () => {
-  await sessionStore.loadSessions()
-  sessions.value = sessionStore.sessions
+  const params = new URLSearchParams(window.location.search)
+  if (params.has('login_token')) {
+    authStore.restoreFromCallback(params)
+    ghStore.restoreGitHubToken(params)
+    window.history.replaceState({}, '', '/')
+  }
+
+  if (authStore.isLoggedIn) {
+    await guildStore.loadGuilds()
+    guilds.value = guildStore.guilds
+  }
   loading.value = false
 })
 
@@ -129,19 +165,36 @@ function goToSession(id) {
   router.push(`/${id}`)
 }
 
-async function openNewSession() {
+async function handleLogin() {
+  loggingIn.value = true
+  loginError.value = ''
+  try {
+    await authStore.loginWithGitHub()
+  } catch (e) {
+    loginError.value = e.message
+    loggingIn.value = false
+  }
+}
+
+async function handleLogout() {
+  await authStore.logout()
+  ghStore.logout()
+  guilds.value = []
+}
+
+async function openNewGuild() {
   showNewModal.value = true
-  newSessionName.value = ''
+  newGuildName.value = ''
   await nextTick()
   nameInput.value?.focus()
 }
 
-async function createSession() {
+async function createGuild() {
   if (creating.value) return
   creating.value = true
   try {
-    const session = await sessionStore.createSession(newSessionName.value.trim() || undefined)
-    router.push(`/${session.id}`)
+    const guild = await guildStore.createGuild(newGuildName.value.trim() || undefined)
+    router.push(`/${guild.id}`)
   } finally {
     creating.value = false
   }
@@ -356,6 +409,104 @@ function sparkleStyle(n) {
   padding: 10px 16px;
 }
 
+.user-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-brass-dark);
+}
+
+.user-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--color-teal);
+}
+
+.user-login {
+  font-size: 11px;
+  color: var(--color-teal);
+}
+
+.logout-btn {
+  font-size: 9px;
+  padding: 6px 12px;
+  background: transparent;
+  border-color: var(--color-brass-dark);
+  color: var(--color-text-dim);
+}
+
+.logout-btn:hover {
+  border-color: var(--color-red);
+  color: var(--color-red);
+  box-shadow: none;
+}
+
+/* ── Login gate ── */
+.login-gate {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 0;
+}
+
+.login-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 48px 40px;
+  background: var(--color-bg-secondary);
+  border: 2px solid var(--color-brass-dark);
+  box-shadow: 0 0 32px rgba(232, 170, 0, 0.1);
+  max-width: 400px;
+  width: 100%;
+  text-align: center;
+}
+
+.login-icon {
+  font-size: 48px;
+  opacity: 0.4;
+  animation: spin 8s linear infinite;
+}
+
+.login-title {
+  font-family: var(--font-pixel);
+  font-size: 9px;
+  color: var(--color-brass-light);
+  letter-spacing: 2px;
+}
+
+.login-sub {
+  font-size: 12px;
+  color: var(--color-text-dim);
+  line-height: 1.6;
+}
+
+.login-btn {
+  font-size: 9px;
+  padding: 12px 24px;
+  margin-top: 8px;
+}
+
+.login-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.login-error {
+  font-size: 11px;
+  color: var(--color-red);
+  padding: 6px 10px;
+  background: rgba(238, 51, 34, 0.1);
+  border: 1px solid rgba(238, 51, 34, 0.3);
+  width: 100%;
+}
+
 /* ── Sessions ── */
 .sessions-section {
   flex: 1;
@@ -428,7 +579,6 @@ function sparkleStyle(n) {
   border-color: var(--color-brass);
   background: var(--color-bg-tertiary);
   box-shadow: 0 0 16px rgba(232, 170, 0, 0.2);
-  transform: translateY(-2px);
 }
 
 .card-top {

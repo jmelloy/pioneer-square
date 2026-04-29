@@ -111,11 +111,11 @@
 
 <script setup>
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
-import { useSessionStore } from '../stores/session.js'
+import { useGuildStore } from '../stores/guild.js'
 import { useAgentsStore } from '../stores/agents.js'
 import { useGitHubStore } from '../stores/github.js'
 
-const sessionStore = useSessionStore()
+const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
 const ghStore = useGitHubStore()
 
@@ -125,7 +125,7 @@ const messagesEl = ref(null)
 const issuesEl = ref(null)
 const activeTab = ref('chat')
 
-const messages = computed(() => sessionStore.messages)
+const messages = computed(() => guildStore.messages)
 const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
 
 // Issue assignment pattern: "Work on issue #N in owner/repo: title"
@@ -139,7 +139,7 @@ async function sendMessage() {
   const text = inputText.value.trim()
   if (!text) return
 
-  sessionStore.sendMessage({
+  guildStore.sendMessage({
     type: 'chat',
     from: 'user',
     to: 'foreman',
@@ -159,7 +159,7 @@ async function sendMessage() {
           issueNumber: parseInt(issueNum, 10),
           issueRepo: repoName.trim(),
         })
-        sessionStore.messages.push({
+        guildStore.messages.push({
           type: 'chat',
           from: 'system',
           to: 'user',
@@ -167,7 +167,7 @@ async function sendMessage() {
           createdAt: new Date().toISOString(),
         })
       } catch (e) {
-        sessionStore.messages.push({
+        guildStore.messages.push({
           type: 'chat',
           from: 'system',
           to: 'user',
@@ -176,7 +176,7 @@ async function sendMessage() {
         })
       }
     } else {
-      sessionStore.messages.push({
+      guildStore.messages.push({
         type: 'chat',
         from: 'system',
         to: 'user',
@@ -190,7 +190,7 @@ async function sendMessage() {
 // Listen for task lifecycle + escalation broadcasts
 function handleTaskEvent(data) {
   if (data.type === 'task-complete') {
-    sessionStore.messages.push({
+    guildStore.messages.push({
       type: 'chat', from: 'system', to: 'user',
       content: data.prUrl
         ? `✓ ${data.workerId} done — PR: ${data.prUrl}`
@@ -199,13 +199,13 @@ function handleTaskEvent(data) {
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'needs-input') {
-    sessionStore.messages.push({
+    guildStore.messages.push({
       type: 'chat', from: 'system', to: 'user',
       content: `⚠ ${data.workerId} needs attention on: "${data.description}"`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'task-assigned') {
-    sessionStore.messages.push({
+    guildStore.messages.push({
       type: 'chat', from: 'system', to: 'user',
       content: `→ ${data.workerId} assigned: ${data.description}`,
       createdAt: new Date().toISOString(),
@@ -213,8 +213,8 @@ function handleTaskEvent(data) {
   }
 }
 
-onMounted(() => sessionStore.addMessageHandler(handleTaskEvent))
-onUnmounted(() => sessionStore.removeMessageHandler(handleTaskEvent))
+onMounted(() => guildStore.addMessageHandler(handleTaskEvent))
+onUnmounted(() => guildStore.removeMessageHandler(handleTaskEvent))
 
 async function switchToIssues() {
   activeTab.value = 'issues'

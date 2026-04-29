@@ -12,33 +12,21 @@ function ghHeaders(token) {
 
 export const useGitHubStore = defineStore('github', () => {
   const token = ref(localStorage.getItem('gh_token') || '')
-  const user = ref(JSON.parse(localStorage.getItem('gh_user') || 'null'))
   const selectedRepos = ref(JSON.parse(localStorage.getItem('gh_repos') || '[]'))
   const repos = ref([])
   const issues = ref([])
   const loading = ref(false)
   const error = ref('')
 
-  const isConfigured = computed(() => !!token.value && !!user.value)
+  const isConfigured = computed(() => !!token.value)
 
-  async function authenticate(newToken) {
-    error.value = ''
-    loading.value = true
-    try {
-      const res = await fetch(`${GH_API}/user`, { headers: ghHeaders(newToken) })
-      if (!res.ok) throw new Error(res.status === 401 ? 'Invalid token' : `GitHub error ${res.status}`)
-      const userData = await res.json()
-      token.value = newToken
-      user.value = userData
-      localStorage.setItem('gh_token', newToken)
-      localStorage.setItem('gh_user', JSON.stringify(userData))
-      return { success: true, user: userData }
-    } catch (e) {
-      error.value = e.message
-      return { success: false, error: e.message }
-    } finally {
-      loading.value = false
-    }
+  // Called after the OAuth callback redirects back with query params.
+  function restoreGitHubToken(params) {
+    const ghToken = params.get('gh_token')
+    if (!ghToken) return false
+    token.value = ghToken
+    localStorage.setItem('gh_token', ghToken)
+    return true
   }
 
   async function fetchRepos() {
@@ -98,26 +86,23 @@ export const useGitHubStore = defineStore('github', () => {
 
   function logout() {
     token.value = ''
-    user.value = null
     selectedRepos.value = []
     repos.value = []
     issues.value = []
     error.value = ''
     localStorage.removeItem('gh_token')
-    localStorage.removeItem('gh_user')
     localStorage.removeItem('gh_repos')
   }
 
   return {
     token,
-    user,
     repos,
     selectedRepos,
     issues,
     loading,
     error,
     isConfigured,
-    authenticate,
+    restoreGitHubToken,
     fetchRepos,
     setSelectedRepos,
     fetchIssues,

@@ -5,46 +5,92 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-EmitFn = Callable[[str], Awaitable[None]]
+EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 
 
-def parse_claude_event(event: dict) -> Optional[str]:
-    """Extract a human-readable line from one stream-JSON event."""
+def _summarize_lines(lines: list[str], prefix: str = "  → ") -> str:
+    """Format a list of lines as a 2+ellipsis+1 summary."""
+    if len(lines) <= 4:
+        return "\n".join(f"{prefix}{l}" for l in lines)
+    middle = len(lines) - 3
+    return (
+        f"{prefix}{lines[0]}\n"
+        f"{prefix}{lines[1]}\n"
+        f"{prefix}… ({middle} more lines)\n"
+        f"{prefix}{lines[-1]}"
+    )
+
+
+def parse_claude_event(event: dict) -> list[tuple[str, Optional[dict]]]:
+    """Extract (display_text, detail) pairs from one stream-JSON event.
+
+    detail is sent as a separate tool-detail WS message so the full content
+    is available on click without bloating the terminal-output stream.
+    """
     t = event.get("type")
     if t == "assistant":
-        parts: list[str] = []
+        pairs: list[tuple[str, Optional[dict]]] = []
         for blk in event.get("message", {}).get("content", []):
-            if blk.get("type") == "text":
+            btype = blk.get("type")
+            if btype == "text":
                 txt = blk.get("text", "").strip()
                 if txt:
-                    parts.append(txt)
-            elif blk.get("type") == "tool_use":
+                    pairs.append((txt, None))
+            elif btype == "thinking":
+                thinking = blk.get("thinking", "").strip()
+                if thinking:
+                    preview = thinking[:100].replace("\n", " ")
+                    pairs.append((f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}", None))
+            elif btype == "tool_use":
                 name = blk.get("name", "")
                 inp = blk.get("input", {})
                 if name == "Bash":
-                    parts.append(f"▶ bash: {inp.get('command', '')[:120]}")
+                    cmd = inp.get("command", "")
+                    cmd_lines = [l for l in cmd.splitlines() if l.strip()]
+                    if len(cmd_lines) <= 1:
+                        summary = f"▶ bash: {cmd[:160]}"
+                    else:
+                        summary = f"▶ bash: {cmd_lines[0][:120]}\n         {cmd_lines[1][:120]}"
+                        if len(cmd_lines) > 2:
+                            summary += f"\n         … ({len(cmd_lines) - 2} more lines)"
                 elif name in ("Read", "Write", "Edit"):
                     fp = inp.get("file_path", inp.get("path", ""))
-                    parts.append(f"▶ {name.lower()}: {fp}")
+                    summary = f"▶ {name.lower()}: {fp}"
                 else:
-                    parts.append(f"▶ {name}: {json.dumps(inp)[:80]}")
-        return "\n".join(parts) or None
+                    summary = f"▶ {name}: {json.dumps(inp)[:80]}"
+                detail = {"toolType": "tool_use", "name": name, "input": inp}
+                pairs.append((summary, detail))
+        return pairs
+    if t == "user":
+        pairs = []
+        for blk in event.get("message", {}).get("content", []):
+            if blk.get("type") == "tool_result":
+                content = blk.get("content", "")
+                if isinstance(content, list):
+                    content = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+                if isinstance(content, str) and content.strip():
+                    lines = content.strip().splitlines()
+                    summary = _summarize_lines(lines)
+                    detail = {"toolType": "tool_result", "output": content}
+                    pairs.append((summary, detail))
+        return pairs
     if t == "result":
         subtype = event.get("subtype", "success")
         turns = event.get("num_turns", 0)
         cost = event.get("cost_usd")
         cost_str = f" (${cost:.4f})" if cost else ""
         if subtype == "success":
-            return f"✓ Done in {turns} turns{cost_str}"
-        return f"✗ {subtype}: {event.get('error', '')}"
+            return [(f"✓ Done in {turns} turns{cost_str}", None)]
+        return [(f"✗ {subtype}: {event.get('error', '')}", None)]
     if t == "system" and event.get("subtype") == "init":
         tools = event.get("tools", [])
-        return f"[claude] tools: {', '.join(tools[:6])}"
-    return None
+        return [(f"[claude] tools: {', '.join(tools[:6])}", None)]
+    return []
 
 
 class ClaudeProcess:
@@ -52,6 +98,7 @@ class ClaudeProcess:
 
     def __init__(self, proc: asyncio.subprocess.Process) -> None:
         self.proc = proc
+        self.session_id: Optional[str] = None  # set once system:init is parsed
 
     async def send_message(self, text: str) -> bool:
         if self.proc.stdin is None or self.proc.stdin.is_closing():
@@ -62,6 +109,15 @@ class ClaudeProcess:
             return True
         except Exception:
             return False
+
+    async def terminate(self) -> None:
+        """Terminate the claude subprocess (SIGTERM, then SIGKILL if needed)."""
+        try:
+            self.proc.terminate()
+        except ProcessLookupError:
+            pass
+        except Exception as exc:
+            logger.debug("terminate() error: %s", exc)
 
 
 # Allow long stream-json lines (large tool_result payloads). The asyncio default
@@ -200,19 +256,34 @@ async def run_claude_auto(
     max_turns: int,
     emit: EmitFn,
     on_proc: Optional[Callable[[ClaudeProcess], None]] = None,
-) -> tuple[bool, str]:
-    """Run claude on *description* in *cwd*. Returns (success, last_assistant_text)."""
+    claude_path: str = "claude",
+    resume_session_id: Optional[str] = None,
+) -> tuple[bool, str, str]:
+    """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text).
+
+    stop_reason is the result event subtype: "success", "max_turns",
+    "error_during_execution", "interrupted", or "no_events" when the process
+    produced no stream-json output at all.
+
+    If *resume_session_id* is given, passes ``--resume <id>`` so Claude continues
+    the previous session with full context (used after a redirect/SIGTERM).
+    """
     cmd = [
-        "claude",
+        claude_path,
         "--output-format", "stream-json",
+        "--verbose",
         "--max-turns", str(max_turns),
         "--dangerously-skip-permissions",
-        "-p", description,
     ]
+    if resume_session_id:
+        cmd += ["--resume", resume_session_id, "-p", description]
+    else:
+        cmd += ["-p", description]
     logger.info("Spawning claude in %s; description=%r", cwd, description)
     logger.info("claude argv: %s", cmd)
     await emit(f"[claude] Starting: {description[:80]}")
     last_text = ""
+    stop_reason = "no_events"
     event_count = 0
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -224,14 +295,21 @@ async def run_claude_auto(
             limit=STDOUT_LINE_LIMIT,
         )
         logger.info("claude subprocess started pid=%s", proc.pid)
+        claude_proc = ClaudeProcess(proc)
         if on_proc is not None:
-            on_proc(ClaudeProcess(proc))
+            on_proc(claude_proc)
 
-        stderr_task = asyncio.create_task(_drain_stderr(proc.stderr, proc.pid))  # type: ignore[arg-type]
+        async def _drain_stderr() -> None:
+            async for raw in proc.stderr:  # type: ignore[union-attr]
+                line = raw.decode(errors="replace").strip()
+                if line:
+                    await emit(f"[stderr] {line}")
 
-        async for raw in _iter_stdout_lines(proc.stdout):  # type: ignore[arg-type]
-            line_str = raw.decode(errors="replace").rstrip("\n")
-            if not line_str.strip():
+        stderr_task = asyncio.create_task(_drain_stderr())
+
+        async for raw in proc.stdout:  # type: ignore[union-attr]
+            line_str = raw.decode(errors="replace").strip()
+            if not line_str:
                 continue
             event_count += 1
             # Always log the full raw line at DEBUG so the wire format is recoverable.
@@ -245,29 +323,39 @@ async def run_claude_auto(
                 await emit(line_str)
                 continue
             _log_event_full(event, proc.pid, event_count)
-            text = parse_claude_event(event)
-            if text:
-                await emit(text)
-                if not text.startswith(("▶", "✓", "✗", "[")):
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                sid = event.get("session_id")
+                if sid:
+                    claude_proc.session_id = sid
+                    logger.info("claude[%d] session_id=%s", proc.pid, sid)
+            if event.get("type") == "result":
+                stop_reason = event.get("subtype", "success")
+            for text, detail in parse_claude_event(event):
+                await emit(text, detail)
+                if not text.startswith(("▶", "✓", "✗", "[", "  →")):
                     last_text = text
 
         exit_code = await proc.wait()
         await stderr_task
         logger.info(
-            "claude[%d] exited rc=%s after %d stdout event(s)",
-            proc.pid, exit_code, event_count,
+            "claude[%d] exited rc=%s stop_reason=%s after %d stdout event(s)",
+            proc.pid, exit_code, stop_reason, event_count,
         )
         if event_count == 0:
             logger.warning(
                 "claude[%d] produced no stdout events — check stderr above and PATH/auth",
                 proc.pid,
             )
-        return exit_code == 0, last_text
-    except FileNotFoundError:
-        logger.error("`claude` CLI not found on PATH")
-        await emit("[claude] ✗ `claude` CLI not found on PATH")
-        return False, last_text
+        return exit_code == 0, stop_reason, last_text
+    except FileNotFoundError as exc:
+        if not os.path.exists(claude_path):
+            logger.error("claude executable not found: %r", claude_path)
+            await emit(f"[claude] ✗ executable not found: {claude_path}")
+        else:
+            logger.error("claude failed to start (cwd missing?): %s — cwd=%r", exc, cwd)
+            await emit(f"[claude] ✗ failed to start: {exc} (cwd={cwd!r})")
+        return False, "no_events", last_text
     except Exception as exc:  # pragma: no cover
         logger.exception("claude subprocess crashed: %s", exc)
         await emit(f"[claude] ✗ {exc}")
-        return False, last_text
+        return False, "error_during_execution", last_text

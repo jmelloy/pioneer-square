@@ -10,7 +10,7 @@ const router = createRouter({
       component: LandingView,
     },
     {
-      path: '/:sessionId',
+      path: '/:guildId',
       component: AppView,
       props: true,
     },

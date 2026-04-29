@@ -7,83 +7,51 @@
       </div>
 
       <div class="modal-body">
+        <div class="user-card">
+          <img :src="authStore.user?.avatar_url" class="avatar" alt="avatar" />
+          <div class="user-info">
+            <div class="user-name">{{ authStore.user?.login }}</div>
+            <div class="user-label">{{ authStore.user?.name || 'GitHub User' }}</div>
+          </div>
+        </div>
 
-        <!-- Logged in state -->
-        <template v-if="ghStore.isConfigured">
-          <div class="user-card">
-            <img :src="ghStore.user.avatar_url" class="avatar" alt="avatar" />
-            <div class="user-info">
-              <div class="user-name">{{ ghStore.user.login }}</div>
-              <div class="user-label">{{ ghStore.user.name || 'GitHub User' }}</div>
-            </div>
-            <button class="pixel-btn logout-btn" @click="logout">Disconnect</button>
+        <div class="divider"></div>
+
+        <div class="repos-section">
+          <div class="section-label">WATCHED REPOSITORIES</div>
+          <div class="repo-hint">Select repos for agents to work on and issue tracking.</div>
+
+          <div v-if="loadingRepos" class="loading-row">Loading repos...</div>
+
+          <div v-else-if="ghStore.repos.length === 0" class="loading-row">
+            No repositories found.
           </div>
 
-          <div class="divider"></div>
-
-          <div class="repos-section">
-            <div class="section-label">WATCHED REPOSITORIES</div>
-            <div class="repo-hint">Select repos for agents to work on and issue tracking.</div>
-
-            <div v-if="loadingRepos" class="loading-row">Loading repos...</div>
-
-            <div v-else class="repo-list">
-              <label
-                v-for="repo in ghStore.repos"
-                :key="repo.full_name"
-                class="repo-row"
-                :class="{ selected: isSelected(repo.full_name) }"
-              >
-                <input
-                  type="checkbox"
-                  :checked="isSelected(repo.full_name)"
-                  @change="toggleRepo(repo.full_name)"
-                  class="repo-check"
-                />
-                <span class="repo-name">{{ repo.full_name }}</span>
-                <span class="repo-lang" v-if="repo.language">{{ repo.language }}</span>
-              </label>
-            </div>
+          <div v-else class="repo-list">
+            <label
+              v-for="repo in ghStore.repos"
+              :key="repo.full_name"
+              class="repo-row"
+              :class="{ selected: isSelected(repo.full_name) }"
+            >
+              <input
+                type="checkbox"
+                :checked="isSelected(repo.full_name)"
+                @change="toggleRepo(repo.full_name)"
+                class="repo-check"
+              />
+              <span class="repo-name">{{ repo.full_name }}</span>
+              <span class="repo-lang" v-if="repo.language">{{ repo.language }}</span>
+            </label>
           </div>
-        </template>
-
-        <!-- Not logged in state -->
-        <template v-else>
-          <div class="auth-section">
-            <div class="section-label">PERSONAL ACCESS TOKEN</div>
-            <div class="token-hint">
-              Create a token at github.com/settings/tokens with
-              <code>repo</code>, <code>read:org</code>, and <code>read:project</code> scopes.
-            </div>
-            <input
-              v-model="tokenInput"
-              type="password"
-              class="field-input"
-              placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-              @keydown.enter="connect"
-            />
-            <div v-if="ghStore.error" class="error-msg">{{ ghStore.error }}</div>
-          </div>
-        </template>
+        </div>
       </div>
 
       <div class="modal-footer">
-        <template v-if="ghStore.isConfigured">
-          <div class="selected-count">
-            {{ selectedCount }} repo{{ selectedCount !== 1 ? 's' : '' }} selected
-          </div>
-          <button class="pixel-btn" @click="save">SAVE</button>
-        </template>
-        <template v-else>
-          <button class="pixel-btn cancel-btn" @click="$emit('close')">Cancel</button>
-          <button
-            class="pixel-btn connect-btn"
-            @click="connect"
-            :disabled="ghStore.loading || !tokenInput.trim()"
-          >
-            {{ ghStore.loading ? 'Connecting...' : 'CONNECT' }}
-          </button>
-        </template>
+        <div class="selected-count">
+          {{ selectedCount }} repo{{ selectedCount !== 1 ? 's' : '' }} selected
+        </div>
+        <button class="pixel-btn" @click="save">SAVE</button>
       </div>
     </div>
   </div>
@@ -92,18 +60,19 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useGitHubStore } from '../stores/github.js'
+import { useAuthStore } from '../stores/auth.js'
 
 const emit = defineEmits(['close'])
 const ghStore = useGitHubStore()
+const authStore = useAuthStore()
 
-const tokenInput = ref('')
 const loadingRepos = ref(false)
 const localSelected = ref([...ghStore.selectedRepos])
 
 const selectedCount = computed(() => localSelected.value.length)
 
 onMounted(async () => {
-  if (ghStore.isConfigured && ghStore.repos.length === 0) {
+  if (ghStore.repos.length === 0 && ghStore.token) {
     loadingRepos.value = true
     await ghStore.fetchRepos()
     loadingRepos.value = false
@@ -123,29 +92,12 @@ function toggleRepo(fullName) {
   }
 }
 
-async function connect() {
-  if (!tokenInput.value.trim() || ghStore.loading) return
-  const result = await ghStore.authenticate(tokenInput.value.trim())
-  if (result.success) {
-    tokenInput.value = ''
-    loadingRepos.value = true
-    await ghStore.fetchRepos()
-    loadingRepos.value = false
-  }
-}
-
 async function save() {
   ghStore.setSelectedRepos(localSelected.value)
   if (localSelected.value.length > 0) {
     await ghStore.fetchIssues()
   }
   emit('close')
-}
-
-async function logout() {
-  ghStore.logout()
-  tokenInput.value = ''
-  localSelected.value = []
 }
 </script>
 
@@ -210,7 +162,6 @@ async function logout() {
   gap: 16px;
 }
 
-/* ── User card ── */
 .user-card {
   display: flex;
   align-items: center;
@@ -244,28 +195,12 @@ async function logout() {
   color: var(--color-text-dim);
 }
 
-.logout-btn {
-  font-size: 7px;
-  padding: 5px 8px;
-  background: transparent;
-  border-color: var(--color-text-dim);
-  color: var(--color-text-dim);
-}
-
-.logout-btn:hover {
-  border-color: var(--color-red);
-  color: var(--color-red);
-  box-shadow: none;
-}
-
-/* ── Divider ── */
 .divider {
   height: 1px;
   background: var(--color-brass-dark);
   opacity: 0.5;
 }
 
-/* ── Section ── */
 .section-label {
   font-family: var(--font-pixel);
   font-size: 6px;
@@ -274,57 +209,6 @@ async function logout() {
   margin-bottom: 6px;
 }
 
-/* ── Auth section ── */
-.auth-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.token-hint {
-  font-size: 11px;
-  color: var(--color-text-dim);
-  line-height: 1.5;
-}
-
-.token-hint code {
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-brass-dark);
-  padding: 1px 5px;
-  font-family: var(--font-mono);
-  color: var(--color-brass-light);
-  font-size: 10px;
-}
-
-.field-input {
-  background: var(--color-bg);
-  border: 2px solid var(--color-brass-dark);
-  color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  padding: 8px 10px;
-  outline: none;
-  width: 100%;
-}
-
-.field-input:focus {
-  border-color: var(--color-brass);
-  box-shadow: 0 0 8px rgba(232, 170, 0, 0.3);
-}
-
-.field-input::placeholder {
-  color: var(--color-text-dim);
-}
-
-.error-msg {
-  font-size: 11px;
-  color: var(--color-red);
-  padding: 6px 8px;
-  background: rgba(238, 51, 34, 0.1);
-  border: 1px solid rgba(238, 51, 34, 0.3);
-}
-
-/* ── Repos section ── */
 .repos-section {
   display: flex;
   flex-direction: column;
@@ -390,7 +274,6 @@ async function logout() {
   border: 1px solid var(--color-brass-dark);
 }
 
-/* ── Footer ── */
 .modal-footer {
   display: flex;
   align-items: center;
@@ -406,22 +289,5 @@ async function logout() {
   flex: 1;
   font-size: 11px;
   color: var(--color-text-dim);
-}
-
-.cancel-btn {
-  background: transparent;
-  border-color: var(--color-brass-dark);
-  color: var(--color-text-dim);
-}
-
-.cancel-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow: none;
-}
-
-.connect-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  pointer-events: none;
 }
 </style>

@@ -1,5 +1,5 @@
 <template>
-  <div class="factory-floor">
+  <div class="factory-floor" ref="floorEl">
     <!-- Background grid -->
     <div class="floor-grid"></div>
 
@@ -66,18 +66,18 @@
       <div class="belt-roller right"></div>
     </div>
 
-    <!-- Work stations -->
+    <!-- Work stations — one per active task -->
     <div
-      v-for="(station, i) in stations"
+      v-for="(station, i) in visibleStations"
       :key="i"
       class="work-station"
       :style="`left: ${station.x}px; top: ${station.y}px`"
-      :class="{ occupied: station.agent }"
+      :class="{ occupied: station.task }"
     >
       <div class="station-desk">
         <div class="station-monitor">
           <div class="monitor-screen">
-            <div v-if="station.agent" class="screen-active">
+            <div v-if="station.task" class="screen-active">
               <div class="screen-line" v-for="l in 3" :key="l"></div>
             </div>
             <div v-else class="screen-idle">--</div>
@@ -85,13 +85,58 @@
         </div>
         <div class="station-table"></div>
       </div>
-      <div v-if="station.agent" class="station-agent">
-        <AgentAvatar :agent="station.agent" />
+      <div class="station-label">{{ station.task ? truncate(station.task.name, 10) : `WS-${i + 1}` }}</div>
+      <div v-if="station.task" class="task-badge" :class="`state-${station.task.state}`">
+        {{ stateLabel(station.task.state) }}
       </div>
-      <div v-else class="station-empty">
-        <div class="empty-slot">?</div>
+    </div>
+
+    <!-- Points of interest -->
+    <div class="poi tool-cabinet">
+      <div class="tc-body">
+        <div class="tc-drawer" v-for="n in 3" :key="n"></div>
       </div>
-      <div class="station-label">WS-{{ i + 1 }}</div>
+      <div class="poi-label">TOOLS</div>
+    </div>
+
+    <div class="poi bulletin-board">
+      <div class="bb-frame">
+        <div class="bb-pin" v-for="n in 3" :key="n" :style="`left:${8+n*18}px;top:6px`"></div>
+        <div class="bb-note n1"></div>
+        <div class="bb-note n2"></div>
+        <div class="bb-note n3"></div>
+      </div>
+      <div class="poi-label">BOARD</div>
+    </div>
+
+    <div class="poi water-cooler">
+      <div class="wc-bottle"></div>
+      <div class="wc-base">
+        <div class="wc-tap"></div>
+      </div>
+      <div class="wc-drop" v-for="n in 2" :key="n" :style="`--delay:${n*0.6}s`"></div>
+      <div class="poi-label">H₂O</div>
+    </div>
+
+    <div class="poi coffee-maker" :style="`left: ${coffeePotPos.x}px; top: ${coffeePotPos.y}px`">
+      <div class="cm-body">
+        <div class="cm-tank"></div>
+        <div class="cm-spout"></div>
+        <div class="cm-cup">☕</div>
+      </div>
+      <div class="steam-particle" v-for="n in 2" :key="n" :style="`--delay:${n*0.45}s`"></div>
+      <div class="poi-label">COFFEE</div>
+    </div>
+
+    <!-- Floating agents that walk to their task station or wander when idle -->
+    <div
+      v-for="agent in agents"
+      :key="agent.id"
+      class="floating-agent"
+      :style="`left: ${agentPos(agent.id).x}px; top: ${agentPos(agent.id).y}px; --walk-dur: ${agentDuration[agent.id] || 1.5}s`"
+    >
+      <AgentAvatar :agent="agent" :walking="agentWalking[agent.id]" />
+      <div class="agent-nametag">{{ agent.name }}</div>
     </div>
 
     <!-- Info overlay -->
@@ -112,41 +157,291 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents.js'
+import { useTasksStore } from '../stores/tasks.js'
 import AgentAvatar from './AgentAvatar.vue'
 
 const agentsStore = useAgentsStore()
+const tasksStore = useTasksStore()
 const agents = computed(() => agentsStore.agents)
 
 const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
 
-const stationPositions = [
-  { x: 60,  y: 120 },
-  { x: 200, y: 120 },
-  { x: 340, y: 120 },
-  { x: 480, y: 120 },
-  { x: 60,  y: 280 },
-  { x: 200, y: 280 },
-  { x: 340, y: 280 },
-  { x: 480, y: 280 },
-]
+// ── Canvas dimensions ──────────────────────────────────────
+const floorEl = ref(null)
+const floorW  = ref(800)
+const floorH  = ref(600)
 
-const stations = computed(() => {
-  return stationPositions.map((pos, i) => ({
+function updateFloorSize() {
+  if (floorEl.value) {
+    floorW.value = floorEl.value.clientWidth  || 800
+    floorH.value = floorEl.value.clientHeight || 600
+  }
+}
+
+// ── Desk layout ────────────────────────────────────────────
+// 3 columns × 2 rows spread proportionally across the canvas.
+// Fixed per-desk jitter (seeded values) gives an organic, stable look.
+const COL_FRACS     = [0.10, 0.40, 0.70]
+const ROW_FRACS     = [0.22, 0.60]
+const JITTER        = [[8,-5],[-6,12],[14,-8],[-10,7],[5,10],[-12,-6]]
+const GAP_X_FRACS   = [0.01, 0.25, 0.55, 0.87]
+
+const stationPositions = computed(() => {
+  const W = floorW.value, H = floorH.value
+  return ROW_FRACS.flatMap((yf, ri) =>
+    COL_FRACS.map((xf, ci) => ({
+      x: Math.round(xf * W) + JITTER[ri * 3 + ci][0],
+      y: Math.round(yf * H) + JITTER[ri * 3 + ci][1],
+    }))
+  )
+})
+
+// ── Walkable region — full canvas minus small margins ──────
+const WALK_AREA = computed(() => ({
+  xMin: 15,
+  xMax: floorW.value - 15,
+  yMin: 72,
+  yMax: floorH.value - 30, // leave room for ticker tape (28px)
+}))
+
+// Horizontal desk bands that agents must route around
+const ROW1 = computed(() => ({
+  yMin: Math.round(ROW_FRACS[0] * floorH.value) - 18,
+  yMax: Math.round(ROW_FRACS[0] * floorH.value) + 82,
+}))
+const ROW2 = computed(() => ({
+  yMin: Math.round(ROW_FRACS[1] * floorH.value) - 18,
+  yMax: Math.round(ROW_FRACS[1] * floorH.value) + 82,
+}))
+
+// Clear vertical lanes between desk columns
+const GAP_XS = computed(() =>
+  GAP_X_FRACS.map(f => Math.round(f * floorW.value))
+)
+
+// Coffee maker sits beside the rightmost top-row desk (index 2)
+const coffeePotPos = computed(() => {
+  const s = stationPositions.value[2]
+  return { x: s.x + 108, y: s.y - 5 }
+})
+
+// Points of interest — idle robots walk here occasionally
+const POIS = computed(() => [
+  { id: 'toolbox', x: 26,  y: 88 },
+  { id: 'board',   x: 318, y: 88 },
+  { id: 'cooler',  x: 26,  y: Math.round(floorH.value * 0.42) },
+  { id: 'coffee',  x: coffeePotPos.value.x + 5, y: coffeePotPos.value.y + 30 },
+])
+
+const visibleStations = computed(() => {
+  const active = tasksStore.tasks
+    .filter(t => !['done', 'failed'].includes(t.state) && t.worker_id && t.worker_id !== 'foreman')
+    .slice(0, 6)
+  return stationPositions.value.map((pos, i) => ({
     ...pos,
-    agent: agents.value[i] || null
+    task: active[i] || null,
   }))
 })
 
+// Reactive per-agent state (bound to template)
+const agentPositions = reactive({})
+const agentWalking   = reactive({})
+const agentDuration  = reactive({}) // CSS transition seconds
+
+// Non-reactive walk queues and timers
+const agentWaypoints = {}
+const agentTimers    = {}
+const prevAtWork     = {}
+
+function agentPos(id) {
+  return agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
+}
+
+// ── Pathfinding helpers ────────────────────────────────────
+
+function getYZone(y) {
+  const r1 = ROW1.value, r2 = ROW2.value
+  if (y < r1.yMin) return 'top'
+  if (y < r1.yMax) return 'row1'
+  if (y < r2.yMin) return 'mid'
+  if (y < r2.yMax) return 'row2'
+  return 'bot'
+}
+
+function closestGapX(x) {
+  return GAP_XS.value.reduce((best, gx) => Math.abs(gx - x) < Math.abs(best - x) ? gx : best)
+}
+
+// Returns a list of {x,y} waypoints from (x1,y1) to (x2,y2) that avoid station rows.
+// Within the same clear zone the path is direct (one segment).
+// Cross-zone paths route through the nearest column gap: H → V → H (three straight segments max).
+function computeWaypoints(x1, y1, x2, y2) {
+  const sz = getYZone(y1)
+  const ez = getYZone(y2)
+
+  if (sz === ez && sz !== 'row1' && sz !== 'row2') {
+    return [{ x: x2, y: y2 }]
+  }
+
+  const gx = closestGapX((x1 + x2) / 2)
+  const pts = []
+  if (Math.abs(x1 - gx) > 12) pts.push({ x: gx, y: y1 })
+  if (Math.abs(y1 - y2) > 12) pts.push({ x: gx, y: y2 })
+  pts.push({ x: x2, y: y2 })
+  return pts
+}
+
+function randomInClearZone() {
+  const { xMin, xMax, yMin: walkYMin, yMax: walkYMax } = WALK_AREA.value
+  const { yMin: r1Min, yMax: r1Max } = ROW1.value
+  const { yMin: r2Min, yMax: r2Max } = ROW2.value
+  const zones = [
+    { yMin: walkYMin,  yMax: r1Min - 2 },
+    { yMin: r1Max + 2, yMax: r2Min - 2 },
+    { yMin: r2Max + 2, yMax: walkYMax  },
+  ].filter(z => z.yMax > z.yMin + 10)
+  if (zones.length === 0) return { x: (xMin + xMax) / 2, y: (walkYMin + walkYMax) / 2 }
+  const z = zones[Math.floor(Math.random() * zones.length)]
+  return {
+    x: xMin + Math.random() * (xMax - xMin),
+    y: z.yMin + Math.random() * (z.yMax - z.yMin),
+  }
+}
+
+function pickDestination() {
+  const pois = POIS.value
+  if (Math.random() < 0.38) return pois[Math.floor(Math.random() * pois.length)]
+  return randomInClearZone()
+}
+
+function walkDuration(x1, y1, x2, y2) {
+  const dist = Math.hypot(x2 - x1, y2 - y1)
+  return Math.max(0.65, dist / 130) // 130 px/s, min 0.65 s
+}
+
+// ── Walk step machine ──────────────────────────────────────
+
+function stepAgent(id) {
+  const queue = agentWaypoints[id]
+  if (!queue || queue.length === 0) {
+    agentWalking[id] = false
+    const rest = 1200 + Math.random() * 3200
+    agentTimers[id] = setTimeout(() => scheduleWalk(id), rest)
+    return
+  }
+  const cur = agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
+  const next = queue.shift()
+  const dur = walkDuration(cur.x, cur.y, next.x, next.y)
+  agentDuration[id] = dur
+  agentWalking[id] = true
+  agentPositions[id] = next
+  agentTimers[id] = setTimeout(() => stepAgent(id), dur * 1000 + 50)
+}
+
+function scheduleWalk(id) {
+  const agent = agents.value.find(a => a.id === id)
+  if (!agent || isAgentAtWork(agent)) return
+  const cur = agentPositions[id] || randomInClearZone()
+  const dest = pickDestination()
+  agentWaypoints[id] = computeWaypoints(cur.x, cur.y, dest.x, dest.y)
+  stepAgent(id)
+}
+
+// ── Agent / station helpers ────────────────────────────────
+
+function stationForAgent(agent) {
+  if (!agent.workerId) return null
+  return visibleStations.value.find(s => s.task && s.task.worker_id === agent.workerId) || null
+}
+
+function isAgentAtWork(agent) {
+  return !!stationForAgent(agent) && !['idle', 'offline'].includes(agent.state)
+}
+
+function sendAgentToStation(agent) {
+  const station = stationForAgent(agent)
+  const target = { x: station.x + 25, y: station.y + 90 }
+  const cur = agentPositions[agent.id] || randomInClearZone()
+  clearTimeout(agentTimers[agent.id])
+  agentWaypoints[agent.id] = computeWaypoints(cur.x, cur.y, target.x, target.y)
+  stepAgent(agent.id)
+}
+
+function initAgent(agent) {
+  if (!agentPositions[agent.id]) {
+    agentPositions[agent.id] = randomInClearZone()
+    agentDuration[agent.id] = 1.5
+  }
+  if (isAgentAtWork(agent)) {
+    sendAgentToStation(agent)
+  } else {
+    const delay = 600 + Math.random() * 2000
+    agentTimers[agent.id] = setTimeout(() => scheduleWalk(agent.id), delay)
+  }
+  prevAtWork[agent.id] = isAgentAtWork(agent)
+}
+
+function syncPositions() {
+  agents.value.forEach(agent => {
+    const atWork = isAgentAtWork(agent)
+    const wasAtWork = prevAtWork[agent.id]
+
+    if (!agentPositions[agent.id]) {
+      initAgent(agent)
+      return
+    }
+
+    if (atWork && !wasAtWork) {
+      sendAgentToStation(agent)
+    } else if (!atWork && wasAtWork) {
+      clearTimeout(agentTimers[agent.id])
+      const delay = 400 + Math.random() * 1200
+      agentTimers[agent.id] = setTimeout(() => scheduleWalk(agent.id), delay)
+    }
+    prevAtWork[agent.id] = atWork
+  })
+}
+
+onMounted(() => {
+  updateFloorSize()
+  window.addEventListener('resize', updateFloorSize)
+  agents.value.forEach(initAgent)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', updateFloorSize)
+  Object.values(agentTimers).forEach(clearTimeout)
+})
+
+// Watch agent id+state+workerId as a flat string so every agent's state change
+// triggers syncPositions independently, regardless of array-reference stability.
+watch(
+  () => agents.value.map(a => `${a.id}:${a.state}:${a.workerId}`).join(','),
+  syncPositions
+)
+watch(visibleStations, syncPositions)
+
 const tickerMessages = computed(() => {
   const msgs = []
-  agents.value.forEach(a => {
-    msgs.push(`${a.name}: ${a.state.toUpperCase()}`)
-  })
+  agents.value.forEach(a => msgs.push(`${a.name}: ${a.state.toUpperCase()}`))
+  tasksStore.tasks
+    .filter(t => !['done', 'failed'].includes(t.state))
+    .slice(0, 4)
+    .forEach(t => msgs.push(`TASK: ${t.name}`))
   if (msgs.length === 0) msgs.push('AWAITING WORKERS', 'SYSTEMS NOMINAL', 'BOILER PRESSURE: 87 PSI')
   return msgs
 })
+
+function truncate(str, len) {
+  if (!str) return ''
+  return str.length > len ? str.slice(0, len) + '…' : str
+}
+
+function stateLabel(state) {
+  return tasksStore.stateLabel(state)
+}
 </script>
 
 <style scoped>
@@ -487,7 +782,6 @@ const tickerMessages = computed(() => {
   border-radius: 1px;
 }
 
-/* Teal/cyan screens — very Lucca's workshop */
 .screen-line:nth-child(1) { background: var(--color-teal); }
 .screen-line:nth-child(2) { background: var(--color-sky); animation-delay: -0.7s; opacity: 0.5; }
 .screen-line:nth-child(3) { background: var(--color-green); animation-delay: -1.4s; opacity: 0.3; width: 60%; }
@@ -516,6 +810,7 @@ const tickerMessages = computed(() => {
   margin-top: 2px;
 }
 
+
 .empty-slot {
   width: 30px;
   height: 50px;
@@ -533,11 +828,221 @@ const tickerMessages = computed(() => {
   font-size: 5px;
   color: var(--color-brass-dark);
   letter-spacing: 1px;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.task-badge {
+  font-size: 5px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.state-working       { color: var(--color-green);  text-shadow: 0 0 4px var(--color-green); }
+.state-pending       { color: var(--color-text-dim); }
+.state-planning      { color: var(--color-sky);    text-shadow: 0 0 4px var(--color-sky); }
+.state-awaiting-review { color: var(--color-amber); text-shadow: 0 0 4px var(--color-amber); }
+.state-followup      { color: var(--color-orange); text-shadow: 0 0 4px var(--color-orange); }
+.state-failed        { color: var(--color-red);    text-shadow: 0 0 4px var(--color-red); }
+.state-done          { color: var(--color-teal);   text-shadow: 0 0 4px var(--color-teal); }
 
 .work-station.occupied .station-table {
   border-top-color: var(--color-brass-light);
   background: linear-gradient(180deg, #6a4820 0%, #4a2e12 100%);
+}
+
+/* Floating agents — speed set per-agent via --walk-dur CSS var */
+.floating-agent {
+  position: absolute;
+  z-index: 5;
+  transition: left var(--walk-dur, 1.5s) ease-in-out, top var(--walk-dur, 1.5s) ease-in-out;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+.agent-nametag {
+  font-size: 5px;
+  color: var(--color-brass);
+  margin-top: 2px;
+  white-space: nowrap;
+  text-shadow: 0 0 4px rgba(232, 170, 0, 0.5);
+  letter-spacing: 1px;
+}
+
+/* ── Points of interest ──────────────────────────────── */
+.poi {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  z-index: 3;
+}
+.poi-label {
+  font-size: 5px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  white-space: nowrap;
+  text-shadow: 0 0 4px rgba(232,170,0,0.4);
+}
+
+/* Tool cabinet — top-left */
+.tool-cabinet {
+  left: 8px;
+  top: 28px;
+}
+.tc-body {
+  width: 34px;
+  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
+  border: 2px solid var(--color-copper);
+  border-radius: 2px;
+  padding: 3px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: 0 0 6px rgba(204,85,0,0.25);
+}
+.tc-drawer {
+  height: 7px;
+  background: linear-gradient(90deg, #3a2010, #4a2c18, #3a2010);
+  border: 1px solid var(--color-copper-light);
+  border-radius: 1px;
+  position: relative;
+}
+.tc-drawer::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 2px;
+  background: var(--color-brass);
+  border-radius: 1px;
+}
+
+/* Bulletin board — top-center */
+.bulletin-board {
+  left: 265px;
+  top: 24px;
+}
+.bb-frame {
+  width: 72px;
+  height: 46px;
+  background: #2a1a08;
+  border: 3px solid var(--color-brass-dark);
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 8px rgba(232,170,0,0.2);
+}
+.bb-pin {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-red);
+  box-shadow: 0 0 3px var(--color-red);
+}
+.bb-note {
+  position: absolute;
+  border-radius: 1px;
+}
+.bb-note.n1 { width: 24px; height: 16px; background: #ffe8a0; left: 6px;  top: 14px; transform: rotate(-2deg); }
+.bb-note.n2 { width: 20px; height: 14px; background: #a0f0d0; left: 34px; top: 12px; transform: rotate(3deg); }
+.bb-note.n3 { width: 18px; height: 12px; background: #f0c0a0; left: 20px; top: 28px; transform: rotate(-1deg); }
+
+/* Water cooler — mid-left */
+.water-cooler {
+  left: 8px;
+  top: 176px;
+}
+.wc-bottle {
+  width: 22px;
+  height: 36px;
+  background: linear-gradient(180deg, rgba(68,170,238,0.4) 0%, rgba(68,170,238,0.15) 100%);
+  border: 2px solid var(--color-sky);
+  border-radius: 4px 4px 2px 2px;
+  box-shadow: 0 0 6px rgba(68,170,238,0.3);
+}
+.wc-base {
+  width: 30px;
+  height: 20px;
+  background: linear-gradient(180deg, #2a1200, #180900);
+  border: 2px solid var(--color-copper);
+  border-radius: 2px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wc-tap {
+  width: 8px;
+  height: 5px;
+  background: var(--color-brass);
+  border-radius: 0 2px 2px 0;
+  box-shadow: 0 0 3px var(--color-brass-dark);
+}
+.wc-drop {
+  position: absolute;
+  width: 4px;
+  height: 5px;
+  background: var(--color-sky);
+  border-radius: 50% 50% 40% 40%;
+  left: 36px;
+  top: 230px;
+  animation: drip 1.8s var(--delay, 0s) infinite ease-in;
+  opacity: 0.7;
+}
+@keyframes drip {
+  0%   { transform: translateY(-8px); opacity: 0.8; }
+  60%  { opacity: 0.6; }
+  100% { transform: translateY(12px); opacity: 0; }
+}
+
+/* Coffee maker — position set dynamically beside the top-right desk */
+.cm-body {
+  width: 40px;
+  height: 50px;
+  background: linear-gradient(180deg, #1a0e00, #120900);
+  border: 2px solid var(--color-copper);
+  border-radius: 3px 3px 1px 1px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 4px;
+  position: relative;
+  box-shadow: 0 0 8px rgba(204,85,0,0.3);
+}
+.cm-tank {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  right: 6px;
+  height: 20px;
+  background: linear-gradient(180deg, rgba(68,170,238,0.25), rgba(68,170,238,0.08));
+  border: 1px solid var(--color-sky);
+  border-radius: 2px;
+}
+.cm-spout {
+  position: absolute;
+  bottom: 12px;
+  right: -8px;
+  width: 10px;
+  height: 3px;
+  background: var(--color-copper);
+  border-radius: 0 2px 2px 0;
+}
+.cm-cup {
+  font-size: 14px;
+  margin-bottom: -2px;
 }
 
 /* Factory info overlay */
@@ -559,7 +1064,6 @@ const tickerMessages = computed(() => {
 .factory-title {
   font-size: 7px;
   letter-spacing: 2px;
-  /* Warm gold shimmer — very SNES RPG title feel */
   background: linear-gradient(90deg,
     var(--color-amber),
     var(--color-gold),

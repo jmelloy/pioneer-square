@@ -16,6 +16,35 @@ A real-time multi-agent workspace with a colorful pixel-art factory floor UI.
 
 ## Setup
 
+### GitHub OAuth App
+
+Pioneer Square uses GitHub OAuth instead of personal access tokens. You need to create a GitHub OAuth App and set the credentials as environment variables before starting the backend.
+
+1. Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
+   (direct link: https://github.com/settings/applications/new)
+2. Fill in:
+   - **Application name**: Pioneer Square (or anything you like)
+   - **Homepage URL**: `http://localhost:5173`
+   - **Authorization callback URL**: `http://localhost:8000/auth/github/callback`
+3. Click **Register application**, then generate a **Client secret**.
+
+Set the credentials before running the backend:
+
+```bash
+export GITHUB_CLIENT_ID=your_client_id_here
+export GITHUB_CLIENT_SECRET=your_client_secret_here
+# Optional overrides (defaults shown):
+# export GITHUB_REDIRECT_URI=http://localhost:8000/auth/github/callback
+# export FRONTEND_URL=http://localhost:5173
+```
+
+Or put them in `backend/.env`:
+
+```
+GITHUB_CLIENT_ID=your_client_id_here
+GITHUB_CLIENT_SECRET=your_client_secret_here
+```
+
 ### Backend
 
 ```bash
@@ -48,7 +77,9 @@ python -m venv venv
 source venv/bin/activate
 pip install -e .
 cp pioneer-worker.toml.example pioneer-worker.toml
-# edit pioneer-worker.toml: backend_url, session_id, repos, github token
+# edit pioneer-worker.toml: backend_url, session_id, repos
+# github_token is optional — if omitted, the worker fetches the OAuth token
+# stored in the backend DB (set after the user connects via GitHub OAuth)
 pioneer-worker
 ```
 

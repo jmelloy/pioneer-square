@@ -14,7 +14,23 @@ from . import git_ops
 EmitFn = Callable[[str], Awaitable[None]]
 
 
-async def push_and_open_pr(
+async def push_branch(
+    *,
+    branch: str,
+    worktree_path: str,
+    emit: EmitFn,
+) -> bool:
+    """Push *branch* to origin. Returns True on success."""
+    await emit(f"[worker] Pushing {branch}...")
+    rc, _, err = await git_ops.run_git(["push", "-u", "origin", branch], cwd=worktree_path)
+    if rc != 0:
+        await emit(f"[worker] ✗ Push failed: {err.strip()[:120]}")
+        return False
+    await emit(f"[worker] ✓ Pushed {branch}")
+    return True
+
+
+async def open_pr(
     *,
     task: dict,
     branch: str,
@@ -22,15 +38,9 @@ async def push_and_open_pr(
     token: Optional[str],
     emit: EmitFn,
 ) -> Optional[str]:
-    """Push *branch* and create a PR. Returns PR URL or None on failure."""
-    await emit(f"[worker] Pushing {branch}...")
-    rc, _, err = await git_ops.run_git(["push", "-u", "origin", branch], cwd=worktree_path)
-    if rc != 0:
-        await emit(f"[worker] ✗ Push failed: {err.strip()[:120]}")
-        return None
-    await emit(f"[worker] ✓ Pushed {branch}")
-
+    """Create a GitHub PR for *branch*. Returns PR URL or None on failure."""
     if not token:
+        await emit("[worker] No GitHub token — skipping PR")
         return None
 
     repo_full = task.get("issue_repo")
@@ -41,6 +51,7 @@ async def push_and_open_pr(
             if m:
                 repo_full = m.group(1)
     if not repo_full:
+        await emit("[worker] Could not determine repo — skipping PR")
         return None
 
     issue_ref = f"\n\nCloses #{task['issue_number']}" if task.get("issue_number") else ""

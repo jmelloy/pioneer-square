@@ -5,7 +5,7 @@
     :style="`--agent-color: ${agentColor}; --agent-color-dim: ${agentColorDim}`"
     :title="`${agent.name} [${agent.state}]`"
   >
-    <RobotWorker :state="agent.state" :type="agent.type" />
+    <RobotWorker :state="agent.state" :type="agent.type" :walking="walking" />
 
     <div class="avatar-label">{{ agent.name.slice(0, 8) }}</div>
     <div v-if="agent.state === 'thinking'" class="think-bubble">💭</div>
@@ -19,10 +19,8 @@ import { computed } from 'vue'
 import RobotWorker from './sprites/RobotWorker.vue'
 
 const props = defineProps({
-  agent: {
-    type: Object,
-    required: true
-  }
+  agent:   { type: Object,  required: true },
+  walking: { type: Boolean, default: false },
 })
 
 /* Warm SNES/CT palette — gold, teal, orange, sky, red, lime, copper, amber */

@@ -1,6 +1,6 @@
 <template>
   <svg
-    :class="['robot-sprite', state, type]"
+    :class="['robot-sprite', state, type, { walking }]"
     viewBox="0 0 40 56"
     xmlns="http://www.w3.org/2000/svg"
     overflow="visible"
@@ -83,23 +83,28 @@
             fill="rgba(18,9,0,0.93)" stroke="var(--agent-color)" stroke-width="1.5" />
     </g>
 
-    <!-- Legs -->
-    <rect x="10" y="44" width="9" height="10" rx="2"
-          fill="rgba(18,9,0,0.93)" stroke="var(--agent-color)" stroke-width="1.5" />
-    <rect x="21" y="44" width="9" height="10" rx="2"
-          fill="rgba(18,9,0,0.93)" stroke="var(--agent-color)" stroke-width="1.5" />
-    <!-- Feet -->
-    <rect x="8"  y="51" width="13" height="5" rx="2"
-          fill="rgba(18,9,0,0.93)" stroke="var(--agent-color)" stroke-width="1.5" />
-    <rect x="19" y="51" width="13" height="5" rx="2"
-          fill="rgba(18,9,0,0.93)" stroke="var(--agent-color)" stroke-width="1.5" />
+    <!-- Left leg + foot -->
+    <g class="left-leg">
+      <rect x="10" y="44" width="9" height="10" rx="2"
+            fill="rgba(18,9,0,0.93)" stroke="var(--agent-color)" stroke-width="1.5" />
+      <rect x="8"  y="51" width="13" height="5" rx="2"
+            fill="rgba(18,9,0,0.93)" stroke="var(--agent-color)" stroke-width="1.5" />
+    </g>
+    <!-- Right leg + foot -->
+    <g class="right-leg">
+      <rect x="21" y="44" width="9" height="10" rx="2"
+            fill="rgba(18,9,0,0.93)" stroke="var(--agent-color)" stroke-width="1.5" />
+      <rect x="19" y="51" width="13" height="5" rx="2"
+            fill="rgba(18,9,0,0.93)" stroke="var(--agent-color)" stroke-width="1.5" />
+    </g>
   </svg>
 </template>
 
 <script setup>
 defineProps({
-  state: { type: String, required: true },
-  type:  { type: String, required: true },
+  state:   { type: String,  required: true },
+  type:    { type: String,  required: true },
+  walking: { type: Boolean, default: false },
 })
 </script>
 
@@ -204,5 +209,42 @@ defineProps({
   0%, 100% { transform: translateX(0); }
   25%       { transform: translateX(-3px); }
   75%       { transform: translateX(3px); }
+}
+
+/* ── Walking ──────────────────────────────────────────── */
+.robot-sprite.walking { animation: walkBob 0.36s infinite alternate ease-in-out; }
+@keyframes walkBob {
+  from { transform: translateY(0px); }
+  to   { transform: translateY(-3px); }
+}
+
+.robot-sprite.walking .left-leg {
+  transform-box: fill-box;
+  transform-origin: top center;
+  animation: legSwingA 0.36s infinite alternate ease-in-out;
+}
+.robot-sprite.walking .right-leg {
+  transform-box: fill-box;
+  transform-origin: top center;
+  animation: legSwingB 0.36s infinite alternate ease-in-out;
+}
+@keyframes legSwingA {
+  from { transform: translateX(-3px) rotate(-10deg); }
+  to   { transform: translateX(3px)  rotate(10deg); }
+}
+@keyframes legSwingB {
+  from { transform: translateX(3px)  rotate(10deg); }
+  to   { transform: translateX(-3px) rotate(-10deg); }
+}
+
+.robot-sprite.walking .left-arm {
+  transform-box: fill-box;
+  transform-origin: top right;
+  animation: rightArmSwing 0.36s infinite alternate ease-in-out;
+}
+.robot-sprite.walking .right-arm {
+  transform-box: fill-box;
+  transform-origin: top left;
+  animation: leftArmSwing 0.36s infinite alternate ease-in-out;
 }
 </style>
