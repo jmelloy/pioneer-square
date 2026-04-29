@@ -109,11 +109,12 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
-import { useGuildStore } from '../stores/guild.js'
-import { useAgentsStore } from '../stores/agents.js'
-import { useGitHubStore } from '../stores/github.js'
+import { useGuildStore } from '../stores/guild'
+import { useAgentsStore } from '../stores/agents'
+import { useGitHubStore } from '../stores/github'
+import type { GitHubIssue, WSMessage } from '../types'
 
 const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
@@ -121,9 +122,9 @@ const ghStore = useGitHubStore()
 
 const minimized = ref(false)
 const inputText = ref('')
-const messagesEl = ref(null)
-const issuesEl = ref(null)
-const activeTab = ref('chat')
+const messagesEl = ref<HTMLElement | null>(null)
+const issuesEl = ref<HTMLElement | null>(null)
+const activeTab = ref<'chat' | 'issues'>('chat')
 
 const messages = computed(() => guildStore.messages)
 const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
@@ -166,7 +167,7 @@ async function sendMessage() {
           content: `Task assigned to ${worker.name}`,
           createdAt: new Date().toISOString(),
         })
-      } catch (e) {
+      } catch (e: any) {
         guildStore.messages.push({
           type: 'chat',
           from: 'system',
@@ -188,7 +189,7 @@ async function sendMessage() {
 }
 
 // Listen for task lifecycle + escalation broadcasts
-function handleTaskEvent(data) {
+function handleTaskEvent(data: WSMessage) {
   if (data.type === 'task-complete') {
     guildStore.messages.push({
       type: 'chat', from: 'system', to: 'user',
@@ -227,23 +228,23 @@ async function refreshIssues() {
   await ghStore.fetchIssues()
 }
 
-function assignIssue(issue) {
+function assignIssue(issue: GitHubIssue) {
   const msg = `Work on issue #${issue.number} in ${issue.repo}: "${issue.title}"`
   inputText.value = msg
   activeTab.value = 'chat'
   nextTick(() => {
-    document.querySelector('.chat-input')?.focus()
+    (document.querySelector('.chat-input') as HTMLInputElement | null)?.focus()
   })
 }
 
-function formatTime(isoStr) {
+function formatTime(isoStr?: string) {
   if (!isoStr) return ''
   return new Date(isoStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-function formatAge(isoStr) {
+function formatAge(isoStr?: string) {
   if (!isoStr) return ''
-  const diffMins = Math.floor((Date.now() - new Date(isoStr)) / 60000)
+  const diffMins = Math.floor((Date.now() - new Date(isoStr).getTime()) / 60000)
   if (diffMins < 60) return `${diffMins}m`
   const diffHours = Math.floor(diffMins / 60)
   if (diffHours < 24) return `${diffHours}h`

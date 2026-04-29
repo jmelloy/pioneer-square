@@ -1,14 +1,16 @@
 import { ref } from 'vue'
 
-export function useWebRTC(sendSignal) {
-  const peerConnections = ref({})
-  const dataChannels = ref({})
+type SignalPayload = Record<string, any>
 
-  const config = {
+export function useWebRTC(sendSignal: (payload: SignalPayload) => void) {
+  const peerConnections = ref<Record<string, RTCPeerConnection>>({})
+  const dataChannels = ref<Record<string, RTCDataChannel>>({})
+
+  const config: RTCConfiguration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   }
 
-  function createPeerConnection(peerId) {
+  function createPeerConnection(peerId: string) {
     const pc = new RTCPeerConnection(config)
     peerConnections.value[peerId] = pc
 
@@ -29,7 +31,7 @@ export function useWebRTC(sendSignal) {
     return pc
   }
 
-  async function createOffer(peerId) {
+  async function createOffer(peerId: string) {
     const pc = createPeerConnection(peerId)
     const channel = pc.createDataChannel('agent-comm')
     dataChannels.value[peerId] = channel
@@ -39,7 +41,7 @@ export function useWebRTC(sendSignal) {
     return pc
   }
 
-  async function handleOffer(peerId, offer) {
+  async function handleOffer(peerId: string, offer: RTCSessionDescriptionInit) {
     const pc = createPeerConnection(peerId)
     await pc.setRemoteDescription(new RTCSessionDescription(offer))
     const answer = await pc.createAnswer()
@@ -47,17 +49,17 @@ export function useWebRTC(sendSignal) {
     sendSignal({ type: 'answer', to: peerId, answer })
   }
 
-  async function handleAnswer(peerId, answer) {
+  async function handleAnswer(peerId: string, answer: RTCSessionDescriptionInit) {
     const pc = peerConnections.value[peerId]
     if (pc) await pc.setRemoteDescription(new RTCSessionDescription(answer))
   }
 
-  async function handleIceCandidate(peerId, candidate) {
+  async function handleIceCandidate(peerId: string, candidate: RTCIceCandidateInit) {
     const pc = peerConnections.value[peerId]
     if (pc) await pc.addIceCandidate(new RTCIceCandidate(candidate))
   }
 
-  function sendDataChannelMessage(peerId, message) {
+  function sendDataChannelMessage(peerId: string, message: any) {
     const channel = dataChannels.value[peerId]
     if (channel && channel.readyState === 'open') {
       channel.send(JSON.stringify(message))

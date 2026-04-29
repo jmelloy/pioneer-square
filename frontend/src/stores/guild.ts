@@ -1,18 +1,21 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { useAuthStore } from './auth.js'
+import { useAuthStore } from './auth'
+import type { ChatMessage, Guild, WSMessage } from '../types'
 
 const API_BASE = 'http://localhost:8000'
 
-export const useGuildStore = defineStore('guild', () => {
-  const currentGuild = ref(null)
-  const guilds = ref([])
-  const isConnected = ref(false)
-  const messages = ref([])
-  let ws = null
-  const messageHandlers = ref([])
+type MessageHandler = (data: WSMessage) => void
 
-  function _authHeaders() {
+export const useGuildStore = defineStore('guild', () => {
+  const currentGuild = ref<Guild | null>(null)
+  const guilds = ref<Guild[]>([])
+  const isConnected = ref(false)
+  const messages = ref<ChatMessage[]>([])
+  let ws: WebSocket | null = null
+  const messageHandlers = ref<MessageHandler[]>([])
+
+  function _authHeaders(): Record<string, string> {
     const authStore = useAuthStore()
     return authStore.authHeaders()
   }
@@ -27,7 +30,7 @@ export const useGuildStore = defineStore('guild', () => {
     }
   }
 
-  async function renameGuild(guildId, name) {
+  async function renameGuild(guildId: string, name: string) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
@@ -42,22 +45,22 @@ export const useGuildStore = defineStore('guild', () => {
     return await res.json()
   }
 
-  async function createGuild(name) {
+  async function createGuild(name?: string) {
     const res = await fetch(`${API_BASE}/guilds`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ name })
     })
-    const guild = await res.json()
+    const guild: Guild = await res.json()
     guilds.value.unshift(guild)
     return guild
   }
 
-  async function joinGuild(guildId) {
+  async function joinGuild(guildId: string): Promise<Guild | null> {
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}`)
       if (!res.ok) throw new Error('Guild not found')
-      const guild = await res.json()
+      const guild: Guild = await res.json()
       currentGuild.value = guild
       messages.value = guild.messages || []
       return guild
@@ -67,7 +70,7 @@ export const useGuildStore = defineStore('guild', () => {
     }
   }
 
-  function connectWebSocket(guildId, onMessage, retryCount = 0) {
+  function connectWebSocket(guildId: string, onMessage?: MessageHandler, retryCount = 0): WebSocket {
     const MAX_RETRIES = 10
     if (ws) {
       ws.close()
@@ -77,9 +80,9 @@ export const useGuildStore = defineStore('guild', () => {
       isConnected.value = true
     }
     ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
+      const data: WSMessage = JSON.parse(event.data)
       if (data.type === 'chat') {
-        messages.value.push(data)
+        messages.value.push(data as ChatMessage)
       }
       if (data.type === 'guild-updated') {
         if (currentGuild.value && currentGuild.value.id === data.id) {
@@ -111,17 +114,17 @@ export const useGuildStore = defineStore('guild', () => {
     isConnected.value = false
   }
 
-  function sendMessage(data) {
+  function sendMessage(data: WSMessage) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(data))
     }
   }
 
-  function addMessageHandler(handler) {
+  function addMessageHandler(handler: MessageHandler) {
     messageHandlers.value.push(handler)
   }
 
-  function removeMessageHandler(handler) {
+  function removeMessageHandler(handler: MessageHandler) {
     messageHandlers.value = messageHandlers.value.filter(h => h !== handler)
   }
 

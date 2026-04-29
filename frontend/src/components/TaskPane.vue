@@ -108,24 +108,25 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
-import { useTasksStore } from '../stores/tasks.js'
-import { useGuildStore } from '../stores/guild.js'
+import { useTasksStore } from '../stores/tasks'
+import { useGuildStore } from '../stores/guild'
+import type { Task } from '../types'
 
-const props = defineProps({ taskId: String })
+const props = defineProps<{ taskId: string }>()
 
 const tasksStore = useTasksStore()
 const guildStore = useGuildStore()
 
-const logsEl = ref(null)
+const logsEl = ref<HTMLElement | null>(null)
 const followupText = ref('')
 const redirectText = ref('')
 const cancelling = ref(false)
 const redirecting = ref(false)
-const expandedIdx = ref(null)
+const expandedIdx = ref<number | null>(null)
 
-const task = computed(() => tasksStore.tasks.find(t => t.id === props.taskId) || {})
+const task = computed<Partial<Task>>(() => tasksStore.tasks.find(t => t.id === props.taskId) || ({} as Partial<Task>))
 const logs = computed(() => tasksStore.taskLogs[props.taskId] || [])
 
 const stateClass = computed(() => `state-${(task.value.state || 'pending').replace(/[^a-z]/g, '-')}`)
@@ -161,6 +162,8 @@ async function sendFollowup() {
     console.error('Follow-up failed', e)
   }
 }
+
+
 
 async function finalizeTask() {
   const guildId = guildStore.currentGuild?.id
@@ -201,11 +204,11 @@ async function sendRedirect() {
   }
 }
 
-function toggleDetail(i) {
+function toggleDetail(i: number) {
   expandedIdx.value = expandedIdx.value === i ? null : i
 }
 
-function lineClass(line) {
+function lineClass(line: string) {
   if (!line) return ''
   if (line.startsWith('✓') || line.includes('Done')) return 'log-success'
   if (line.startsWith('✗') || line.includes('error') || line.includes('Error')) return 'log-error'
@@ -216,12 +219,12 @@ function lineClass(line) {
   return ''
 }
 
-function formatTime(iso) {
+function formatTime(iso?: string) {
   if (!iso) return ''
   return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-function formatTs(iso) {
+function formatTs(iso?: string) {
   if (!iso) return ''
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }

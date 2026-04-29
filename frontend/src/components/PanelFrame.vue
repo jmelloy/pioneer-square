@@ -4,10 +4,13 @@
   </div>
 </template>
 
-<script setup>
-defineProps({
-  direction: { type: String, default: 'column' },
-  borderWidth: { type: Number, default: 36 },
+<script setup lang="ts">
+withDefaults(defineProps<{
+  direction?: 'row' | 'column'
+  borderWidth?: number
+}>(), {
+  direction: 'column',
+  borderWidth: 36,
 })
 </script>
 

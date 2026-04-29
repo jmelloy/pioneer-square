@@ -6,19 +6,19 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useGuildStore } from '../stores/guild.js'
-import { useAgentsStore } from '../stores/agents.js'
-import { useAuthStore } from '../stores/auth.js'
-import { useGitHubStore } from '../stores/github.js'
-import { useTasksStore } from '../stores/tasks.js'
+import { useGuildStore } from '../stores/guild'
+import { useAgentsStore } from '../stores/agents'
+import { useAuthStore } from '../stores/auth'
+import { useGitHubStore } from '../stores/github'
+import { useTasksStore } from '../stores/tasks'
 import GuildSidebar from '../components/GuildSidebar.vue'
 import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 
-const props = defineProps({ guildId: String })
+const props = defineProps<{ guildId?: string }>()
 
 const router = useRouter()
 const guildStore = useGuildStore()
@@ -36,7 +36,7 @@ function getClientId() {
   return id
 }
 
-async function initGuild(guildId) {
+async function initGuild(guildId: string) {
   if (!authStore.isLoggedIn) {
     router.replace('/')
     return

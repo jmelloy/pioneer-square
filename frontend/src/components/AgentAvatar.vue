@@ -14,13 +14,16 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 import RobotWorker from './sprites/RobotWorker.vue'
+import type { Agent } from '../types'
 
-const props = defineProps({
-  agent:   { type: Object,  required: true },
-  walking: { type: Boolean, default: false },
+const props = withDefaults(defineProps<{
+  agent: Agent
+  walking?: boolean
+}>(), {
+  walking: false,
 })
 
 /* Warm SNES/CT palette — gold, teal, orange, sky, red, lime, copper, amber */
@@ -35,7 +38,7 @@ const palette = [
   { color: '#ffcc00', dim: 'rgba(255,204,0,0.2)' },
 ]
 
-function hashAgent(str) {
+function hashAgent(str: string) {
   let hash = 0
   for (let i = 0; i < str.length; i++) {
     hash = (hash * 31 + str.charCodeAt(i)) & 0xffff

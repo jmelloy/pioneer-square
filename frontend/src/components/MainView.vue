@@ -55,10 +55,10 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { useAgentsStore } from '../stores/agents.js'
-import { useTasksStore } from '../stores/tasks.js'
+import { useAgentsStore } from '../stores/agents'
+import { useTasksStore } from '../stores/tasks'
 import FactoryFloor from './FactoryFloor.vue'
 import TerminalPane from './TerminalPane.vue'
 import WorkerTerminalPane from './WorkerTerminalPane.vue'
@@ -98,8 +98,8 @@ watch(() => tasksStore.selectedTaskId, (id) => {
   if (id) activeTab.value = 'task-' + id
 })
 
-function onWorkerTabClick(event, workerId) {
-  if (event.target.closest('.tab-close')) {
+function onWorkerTabClick(event: MouseEvent, workerId: string) {
+  if ((event.target as HTMLElement).closest('.tab-close')) {
     agentsStore.closeWorker(workerId)
     if (activeTab.value === 'worker-' + workerId) activeTab.value = 'factory'
   } else {
@@ -107,8 +107,8 @@ function onWorkerTabClick(event, workerId) {
   }
 }
 
-function onAgentTabClick(event, agentId) {
-  if (event.target.closest('.tab-close')) {
+function onAgentTabClick(event: MouseEvent, agentId: string) {
+  if ((event.target as HTMLElement).closest('.tab-close')) {
     agentsStore.closeAgent(agentId)
     if (activeTab.value === 'agent-' + agentId) activeTab.value = 'factory'
   } else {
@@ -116,8 +116,8 @@ function onAgentTabClick(event, agentId) {
   }
 }
 
-function onTabClick(event, taskId) {
-  if (event.target.closest('.tab-close')) {
+function onTabClick(event: MouseEvent, taskId: string) {
+  if ((event.target as HTMLElement).closest('.tab-close')) {
     tasksStore.closeTask(taskId)
     if (activeTab.value === 'task-' + taskId) activeTab.value = 'factory'
   } else {

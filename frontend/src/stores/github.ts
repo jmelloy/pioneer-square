@@ -1,9 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import type { GitHubIssue, GitHubRepo } from '../types'
 
 const GH_API = 'https://api.github.com'
 
-function ghHeaders(token) {
+function ghHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github.v3+json',
@@ -11,17 +12,17 @@ function ghHeaders(token) {
 }
 
 export const useGitHubStore = defineStore('github', () => {
-  const token = ref(localStorage.getItem('gh_token') || '')
-  const selectedRepos = ref(JSON.parse(localStorage.getItem('gh_repos') || '[]'))
-  const repos = ref([])
-  const issues = ref([])
+  const token = ref<string>(localStorage.getItem('gh_token') || '')
+  const selectedRepos = ref<string[]>(JSON.parse(localStorage.getItem('gh_repos') || '[]'))
+  const repos = ref<GitHubRepo[]>([])
+  const issues = ref<GitHubIssue[]>([])
   const loading = ref(false)
   const error = ref('')
 
   const isConfigured = computed(() => !!token.value)
 
   // Called after the OAuth callback redirects back with query params.
-  function restoreGitHubToken(params) {
+  function restoreGitHubToken(params: URLSearchParams) {
     const ghToken = params.get('gh_token')
     if (!ghToken) return false
     token.value = ghToken
@@ -39,7 +40,7 @@ export const useGitHubStore = defineStore('github', () => {
       if (!res.ok) throw new Error(`GitHub error ${res.status}`)
       repos.value = await res.json()
       return repos.value
-    } catch (e) {
+    } catch (e: any) {
       error.value = e.message
       return []
     } finally {
@@ -47,7 +48,7 @@ export const useGitHubStore = defineStore('github', () => {
     }
   }
 
-  function setSelectedRepos(repoFullNames) {
+  function setSelectedRepos(repoFullNames: string[]) {
     selectedRepos.value = repoFullNames
     localStorage.setItem('gh_repos', JSON.stringify(repoFullNames))
   }
@@ -62,21 +63,21 @@ export const useGitHubStore = defineStore('github', () => {
             `${GH_API}/repos/${repoName}/issues?state=open&per_page=30&sort=created&direction=desc`,
             { headers: ghHeaders(token.value) }
           )
-          if (!res.ok) return []
+          if (!res.ok) return [] as GitHubIssue[]
           const data = await res.json()
           return data
-            .filter(i => !i.pull_request)
-            .map(i => ({ ...i, repo: repoName }))
+            .filter((i: any) => !i.pull_request)
+            .map((i: any) => ({ ...i, repo: repoName })) as GitHubIssue[]
         })
       )
       issues.value = allIssues.flat().sort((a, b) => {
         const priorityLabels = ['priority: high', 'high priority', 'priority:high', 'p0', 'p1', 'urgent', 'critical']
         const aPriority = a.labels.some(l => priorityLabels.includes(l.name.toLowerCase())) ? 0 : 1
         const bPriority = b.labels.some(l => priorityLabels.includes(l.name.toLowerCase())) ? 0 : 1
-        return aPriority - bPriority || new Date(b.created_at) - new Date(a.created_at)
+        return aPriority - bPriority || (new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       })
       return issues.value
-    } catch (e) {
+    } catch (e: any) {
       error.value = e.message
       return []
     } finally {
