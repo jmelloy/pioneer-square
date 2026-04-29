@@ -28,8 +28,24 @@
         </div>
         <div v-if="entry.detail && expandedIdx === i" class="log-detail">
           <template v-if="entry.detail.toolType === 'tool_use'">
-            <div class="log-detail-label">{{ entry.detail.name }} INPUT</div>
-            <pre class="log-detail-body">{{ formatDetail(entry.detail) }}</pre>
+            <template v-if="entry.detail.name === 'Edit'">
+              <div class="log-detail-label">OLD</div>
+              <pre class="log-detail-body log-detail-old">{{ entry.detail.input?.old_string }}</pre>
+              <div class="log-detail-label log-detail-label--new">NEW</div>
+              <pre class="log-detail-body log-detail-new">{{ entry.detail.input?.new_string }}</pre>
+            </template>
+            <template v-else-if="entry.detail.name === 'Write'">
+              <div class="log-detail-label">{{ entry.detail.input?.file_path }}</div>
+              <pre class="log-detail-body">{{ entry.detail.input?.content }}</pre>
+            </template>
+            <template v-else-if="entry.detail.name === 'Bash'">
+              <div class="log-detail-label">COMMAND</div>
+              <pre class="log-detail-body">{{ entry.detail.input?.command }}</pre>
+            </template>
+            <template v-else>
+              <div class="log-detail-label">{{ entry.detail.name }}</div>
+              <pre class="log-detail-body">{{ JSON.stringify(entry.detail.input, null, 2) }}</pre>
+            </template>
           </template>
           <template v-else-if="entry.detail.toolType === 'tool_result'">
             <div class="log-detail-label">OUTPUT</div>
@@ -187,13 +203,6 @@ async function sendRedirect() {
 
 function toggleDetail(i) {
   expandedIdx.value = expandedIdx.value === i ? null : i
-}
-
-function formatDetail(detail) {
-  if (detail.toolType !== 'tool_use') return ''
-  const inp = detail.input || {}
-  if (detail.name === 'Bash') return inp.command || ''
-  return JSON.stringify(inp, null, 2)
 }
 
 function lineClass(line) {
@@ -385,20 +394,33 @@ function formatTs(iso) {
   color: var(--color-brass-dark);
   letter-spacing: 1px;
   margin-bottom: 4px;
+  margin-top: 6px;
 }
+.log-detail-label:first-child { margin-top: 0; }
+.log-detail-label--new { color: var(--color-green); }
 
 .log-detail-body {
-  margin: 0;
+  margin: 0 0 2px;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--color-text-dim);
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 400px;
+  max-height: 300px;
   overflow-y: auto;
   background: rgba(0,0,0,0.2);
   border: 1px solid var(--color-brass-dark);
   padding: 6px 8px;
+}
+.log-detail-old {
+  background: rgba(180,30,30,0.08);
+  border-color: rgba(220,50,50,0.3);
+  color: #c07070;
+}
+.log-detail-new {
+  background: rgba(0,120,60,0.08);
+  border-color: rgba(0,187,100,0.3);
+  color: #70c090;
 }
 
 .log-text { word-break: break-all; white-space: pre-wrap; }
