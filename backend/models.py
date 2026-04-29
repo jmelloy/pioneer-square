@@ -99,5 +99,4 @@ class TaskLog(Base):
     line = Column(Text, nullable=False)
     worker_id = Column(Text)
     agent_id = Column(Text)
-    log_id = Column(Text)   # correlates with tool-detail messages
     data = Column(Text)     # JSON: full tool input/output for click-to-expand

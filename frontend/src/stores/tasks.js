@@ -27,8 +27,7 @@ const STATE_COLORS = {
 
 export const useTasksStore = defineStore('tasks', () => {
   const tasks = ref([])
-  const taskLogs = ref({})      // task_id -> [{ line, timestamp, logId?, detail? }]
-  const toolDetails = ref({})   // logId -> detail object (for live WS messages)
+  const taskLogs = ref({})   // task_id -> [{ line, timestamp, detail? }]
   const selectedTaskId = ref(null)
   const openedTaskIds = ref([])
 
@@ -47,11 +46,9 @@ export const useTasksStore = defineStore('tasks', () => {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/logs`)
       if (!res.ok) return []
       const raw = await res.json()
-      // Normalize to { line, timestamp, logId, detail } shape
       const logs = raw.map(r => ({
         line: r.line,
         timestamp: r.timestamp,
-        logId: r.log_id || null,
         detail: r.detail || null,
       }))
       taskLogs.value[taskId] = logs
@@ -149,19 +146,11 @@ export const useTasksStore = defineStore('tasks', () => {
       const task = tasks.value.find(t => t.id === data.taskId)
       if (task) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
-      const { taskId, line, timestamp, logId } = data
+      const { taskId, line, timestamp, detail } = data
       if (line) {
         if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
-        taskLogs.value[taskId].push({ line, timestamp, logId: logId || null, detail: null })
+        taskLogs.value[taskId].push({ line, timestamp, detail: detail || null })
         if (taskLogs.value[taskId].length > 2000) taskLogs.value[taskId].shift()
-      }
-    } else if (data.type === 'tool-detail' && data.logId) {
-      const { logId, taskId, ...detail } = data
-      toolDetails.value[logId] = detail
-      // Also patch the matching log entry if already in taskLogs
-      if (taskId && taskLogs.value[taskId]) {
-        const entry = taskLogs.value[taskId].find(e => e.logId === logId)
-        if (entry) entry.detail = detail
       }
     }
   }
@@ -182,7 +171,6 @@ export const useTasksStore = defineStore('tasks', () => {
   function clearTasks() {
     tasks.value = []
     taskLogs.value = {}
-    toolDetails.value = {}
     selectedTaskId.value = null
     openedTaskIds.value = []
   }
@@ -193,7 +181,6 @@ export const useTasksStore = defineStore('tasks', () => {
   return {
     tasks,
     taskLogs,
-    toolDetails,
     selectedTaskId,
     openedTaskIds,
     fetchTasks,

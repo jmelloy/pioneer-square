@@ -8,7 +8,6 @@ import os
 import random
 import re
 import string
-import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -108,23 +107,19 @@ class Worker:
 
     async def _emit(self, line: str, detail: dict | None = None) -> None:
         """Emit a worker-level log line (attributed to slot 0)."""
-        log_id = str(uuid.uuid4()) if detail else None
         msg: dict = {
             "type": "terminal-output",
             "agentId": self.slots[0].agent_id,
             "line": line,
             "timestamp": _now_iso(),
         }
-        if log_id:
-            msg["logId"] = log_id
+        if detail:
+            msg["detail"] = detail
         await self._send(msg)
-        if detail and log_id:
-            await self._send({"type": "tool-detail", "logId": log_id, **detail})
 
     def _task_emit(self, task_id: str, slot: _AgentSlot):
         """Return an emit function scoped to a task and agent slot."""
         async def _emit_task(line: str, detail: dict | None = None) -> None:
-            log_id = str(uuid.uuid4()) if detail else None
             msg: dict = {
                 "type": "terminal-output",
                 "agentId": slot.agent_id,
@@ -132,11 +127,9 @@ class Worker:
                 "line": line,
                 "timestamp": _now_iso(),
             }
-            if log_id:
-                msg["logId"] = log_id
+            if detail:
+                msg["detail"] = detail
             await self._send(msg)
-            if detail and log_id:
-                await self._send({"type": "tool-detail", "logId": log_id, "taskId": task_id, **detail})
         return _emit_task
 
     async def _set_state(self, state: str, slot: _AgentSlot) -> None:
