@@ -185,15 +185,23 @@ function updateFloorSize() {
 }
 
 // ── Desk layout ────────────────────────────────────────────
-// 3 columns × 2 rows spread proportionally across the canvas.
+// 3 columns × 2 rows spread proportionally across the usable canvas.
+// Usable width excludes the foreman chat pane (fixed 360px on the right)
+// so desks stay clear of its boundary.
 // Fixed per-desk jitter (seeded values) gives an organic, stable look.
-const COL_FRACS     = [0.10, 0.40, 0.70]
+const CHAT_PANE_W   = 360
+const STATION_W     = 100
+const COL_FRACS     = [0.08, 0.42, 0.78]
 const ROW_FRACS     = [0.22, 0.60]
 const JITTER        = [[8,-5],[-6,12],[14,-8],[-10,7],[5,10],[-12,-6]]
 const GAP_X_FRACS   = [0.01, 0.25, 0.55, 0.87]
 
+const usableW = computed(() =>
+  Math.max(floorW.value - CHAT_PANE_W - STATION_W, 300)
+)
+
 const stationPositions = computed(() => {
-  const W = floorW.value, H = floorH.value
+  const W = usableW.value, H = floorH.value
   return ROW_FRACS.flatMap((yf, ri) =>
     COL_FRACS.map((xf, ci) => ({
       x: Math.round(xf * W) + JITTER[ri * 3 + ci][0],
@@ -205,7 +213,7 @@ const stationPositions = computed(() => {
 // ── Walkable region — full canvas minus small margins ──────
 const WALK_AREA = computed(() => ({
   xMin: 15,
-  xMax: floorW.value - 15,
+  xMax: usableW.value + STATION_W - 15,
   yMin: 72,
   yMax: floorH.value - 30, // leave room for ticker tape (28px)
 }))
@@ -222,7 +230,7 @@ const ROW2 = computed(() => ({
 
 // Clear vertical lanes between desk columns
 const GAP_XS = computed(() =>
-  GAP_X_FRACS.map(f => Math.round(f * floorW.value))
+  GAP_X_FRACS.map(f => Math.round(f * usableW.value))
 )
 
 // Coffee maker sits beside the rightmost top-row desk (index 2)
