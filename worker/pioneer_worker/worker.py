@@ -32,10 +32,14 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text[:40].lower()).strip("-")
 
 
+_CANCEL_SENTINEL = object()  # placed in followup queue to signal task cancellation
+
+
 class _AgentSlot:
     def __init__(self, agent_id: str) -> None:
         self.agent_id = agent_id
         self.current_claude: Optional[claude_runner.ClaudeProcess] = None
+        self.current_task_id: Optional[str] = None
 
 
 class Worker:
@@ -46,6 +50,10 @@ class Worker:
         self._known_task_ids: set[str] = set()
         # Per-task queues for follow-up instructions; None signals finalization
         self._followup_queues: dict[str, asyncio.Queue] = {}
+        # Tasks that have been cancelled (by foreman or human); checked before/during execution
+        self._cancelled_tasks: set[str] = set()
+        # Per-task queues for mid-run redirect instructions (SIGTERM + --resume)
+        self._redirect_queues: dict[str, asyncio.Queue] = {}
         # One slot per concurrent agent; each gets a stable ID for the guild.
         self.slots: list[_AgentSlot] = [
             _AgentSlot(_gen_id("a-")) for _ in range(cfg.max_agents)
@@ -278,6 +286,50 @@ class Worker:
                 else:
                     logger.debug("task-finalize for %s but no queue", task_id)
 
+            elif mtype == "task-cancel":
+                if msg.get("workerId") != self.cfg.worker_id:
+                    continue
+                task_id = msg.get("taskId")
+                if not task_id:
+                    continue
+                logger.info("Cancel signal for task %s", task_id)
+                self._cancelled_tasks.add(task_id)
+                # Kill subprocess if this task is currently running
+                active = next((s for s in self.slots if s.current_task_id == task_id), None)
+                if active and active.current_claude:
+                    await active.current_claude.terminate()
+                    logger.info("Terminated subprocess for cancelled task %s", task_id)
+                # Unblock awaiting-review loop if the task is waiting for follow-up
+                q = self._followup_queues.get(task_id)
+                if q is not None:
+                    await q.put(_CANCEL_SENTINEL)
+                    logger.info("Signalled followup queue for cancelled task %s", task_id)
+
+            elif mtype == "task-redirect":
+                if msg.get("workerId") != self.cfg.worker_id:
+                    continue
+                task_id = msg.get("taskId")
+                instructions = msg.get("instructions", "")
+                if not task_id or not instructions:
+                    continue
+                logger.info("Redirect for task %s: %s", task_id, instructions[:80])
+                active = next((s for s in self.slots if s.current_task_id == task_id), None)
+                if active and active.current_claude:
+                    # Subprocess is running — terminate it, queue redirect instructions
+                    await active.current_claude.terminate()
+                    logger.info("Terminated subprocess for redirect of task %s", task_id)
+                    rq = self._redirect_queues.get(task_id)
+                    if rq is not None:
+                        await rq.put(instructions)
+                else:
+                    # No subprocess running — task is awaiting-review; use followup queue
+                    fq = self._followup_queues.get(task_id)
+                    if fq is not None:
+                        await fq.put(instructions)
+                        logger.info("Redirect queued as followup for task %s", task_id)
+                    else:
+                        logger.warning("task-redirect for %s: no active subprocess or followup queue", task_id)
+
     # ------------------------------------------------------------------ Idle puller
     async def _idle_puller(self) -> None:
         logger.info("Idle puller started (interval=%.1fs)", self.cfg.pull_interval)
@@ -308,17 +360,23 @@ class Worker:
         while True:
             task = await self.task_queue.get()
             task_id = task.get("id")
+            if task_id in self._cancelled_tasks:
+                logger.info("Skipping cancelled task %s", task_id)
+                continue
             logger.info(
                 "Dequeued task %s (agent=%s queue depth %d): %s",
                 task_id, slot.agent_id, self.task_queue.qsize(),
                 (task.get("description") or "")[:80],
             )
+            slot.current_task_id = task_id
             try:
                 await self._execute_task(task, slot)
             except Exception as exc:
                 logger.exception("Task %s crashed: %s", task_id, exc)
                 await self._emit(f"[worker] ✗ Internal error on task {task_id}: {exc}")
                 await self._task_update(task["id"], state="failed", finishedAt=_now_iso())
+            finally:
+                slot.current_task_id = None
 
     # ------------------------------------------------------------------ Execution
     async def _execute_task(self, task: dict, slot: _AgentSlot) -> None:
@@ -374,34 +432,82 @@ class Worker:
 
         tool = (task.get("tool") or "claude").lower()
 
+        # Tracks the last claude session ID so redirects can --resume with full context
+        resume_session_id: Optional[str] = None
+
+        # Queue for redirect instructions; listener puts new instructions here after SIGTERM
+        redirect_q: asyncio.Queue = asyncio.Queue()
+        self._redirect_queues[task_id] = redirect_q
+
+        def _capture_session_and_clear() -> None:
+            """Save session_id from the just-finished ClaudeProcess, then clear the slot."""
+            nonlocal resume_session_id
+            if slot.current_claude is not None:
+                if slot.current_claude.session_id:
+                    resume_session_id = slot.current_claude.session_id
+                slot.current_claude = None
+
         def _on_proc(proc: claude_runner.ClaudeProcess) -> None:
             slot.current_claude = proc
 
         try:
-            if tool == "codex":
-                logger.info("Task %s: launching codex in %s", task_id, primary_wt)
-                success, stop_reason, last_msg = await codex_runner.run_codex_auto(
-                    desc, primary_wt, emit=emit, codex_path=self.cfg.codex_path,
-                )
-            elif tool == "pi":
-                logger.info("Task %s: launching pi in %s", task_id, primary_wt)
-                success, stop_reason, last_msg = await pi_runner.run_pi_auto(
-                    desc, primary_wt, emit=emit, pi_path=self.cfg.pi_path,
-                )
-            else:
+            # ── Main execution with redirect loop ──────────────────────────
+            current_desc = desc
+            success = False
+            stop_reason = "no_events"
+            last_msg = ""
+
+            while True:
+                if tool == "codex":
+                    logger.info("Task %s: launching codex in %s", task_id, primary_wt)
+                    success, stop_reason, last_msg = await codex_runner.run_codex_auto(
+                        current_desc, primary_wt, emit=emit, codex_path=self.cfg.codex_path,
+                    )
+                elif tool == "pi":
+                    logger.info("Task %s: launching pi in %s", task_id, primary_wt)
+                    success, stop_reason, last_msg = await pi_runner.run_pi_auto(
+                        current_desc, primary_wt, emit=emit, pi_path=self.cfg.pi_path,
+                    )
+                else:
+                    logger.info(
+                        "Task %s: launching claude in %s (max_turns=%d, resume=%s)",
+                        task_id, primary_wt, self.cfg.claude_max_turns, resume_session_id,
+                    )
+                    success, stop_reason, last_msg = await claude_runner.run_claude_auto(
+                        current_desc, primary_wt,
+                        max_turns=self.cfg.claude_max_turns,
+                        emit=emit,
+                        on_proc=_on_proc,
+                        claude_path=self.cfg.claude_path,
+                        resume_session_id=resume_session_id,
+                    )
+
+                _capture_session_and_clear()
                 logger.info(
-                    "Task %s: launching claude in %s (max_turns=%d)",
-                    task_id, primary_wt, self.cfg.claude_max_turns,
+                    "Task %s: run done success=%s stop=%s session=%s",
+                    task_id, success, stop_reason, resume_session_id,
                 )
-                success, stop_reason, last_msg = await claude_runner.run_claude_auto(
-                    desc, primary_wt,
-                    max_turns=self.cfg.claude_max_turns,
-                    emit=emit,
-                    on_proc=_on_proc,
-                    claude_path=self.cfg.claude_path,
-                )
-            slot.current_claude = None
-            logger.info("Task %s: agent done success=%s stop_reason=%s", task_id, success, stop_reason)
+
+                if task_id in self._cancelled_tasks:
+                    await emit("[worker] Task cancelled.")
+                    await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                    await self._set_state("idle", slot)
+                    return
+
+                try:
+                    redirect_instr = redirect_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    redirect_instr = None
+
+                if redirect_instr is not None:
+                    await emit(f"[worker] ↩ Redirected: {redirect_instr[:120]}")
+                    current_desc = redirect_instr
+                    await self._task_update(task_id, state="working")
+                    continue
+
+                break  # normal exit from redirect loop
+
+            logger.info("Task %s: final success=%s stop_reason=%s", task_id, success, stop_reason)
 
             if success:
                 push_ok = await github_pr.push_branch(
@@ -428,9 +534,10 @@ class Worker:
                 })
                 await self._set_state("awaiting-review", slot)
 
-                # Wait for foreman follow-up instructions or finalize signal
-                followup_q: asyncio.Queue[Optional[str]] = asyncio.Queue()
+                # ── Followup loop (redirects arriving here use the followup queue) ──
+                followup_q: asyncio.Queue = asyncio.Queue()
                 self._followup_queues[task_id] = followup_q
+                followup_cancelled = False
                 try:
                     while True:
                         try:
@@ -440,6 +547,10 @@ class Worker:
                         except asyncio.TimeoutError:
                             await emit("[worker] Follow-up window expired — finalizing.")
                             break
+                        if instructions is _CANCEL_SENTINEL:
+                            await emit("[worker] Task cancelled.")
+                            followup_cancelled = True
+                            break
                         if instructions is None:
                             await emit("[worker] Task finalized by foreman.")
                             break
@@ -448,18 +559,41 @@ class Worker:
                         await self._task_update(task_id, state="working")
                         await emit(f"[worker] Follow-up: {instructions[:120]}")
 
-                        def _on_proc2(proc: claude_runner.ClaudeProcess) -> None:
-                            slot.current_claude = proc
+                        # Inner redirect loop for followup runs
+                        current_fu_desc = instructions
+                        fu_ok = False
+                        fu_reason = "no_events"
+                        while True:
+                            fu_ok, fu_reason, _ = await claude_runner.run_claude_auto(
+                                current_fu_desc, primary_wt,
+                                max_turns=self.cfg.claude_max_turns,
+                                emit=emit,
+                                on_proc=_on_proc,
+                                claude_path=self.cfg.claude_path,
+                                resume_session_id=resume_session_id,
+                            )
+                            _capture_session_and_clear()
+                            logger.info("Task %s follow-up: ok=%s reason=%s session=%s",
+                                        task_id, fu_ok, fu_reason, resume_session_id)
 
-                        fu_ok, fu_reason, _ = await claude_runner.run_claude_auto(
-                            instructions, primary_wt,
-                            max_turns=self.cfg.claude_max_turns,
-                            emit=emit,
-                            on_proc=_on_proc2,
-                            claude_path=self.cfg.claude_path,
-                        )
-                        slot.current_claude = None
-                        logger.info("Task %s follow-up: ok=%s reason=%s", task_id, fu_ok, fu_reason)
+                            if task_id in self._cancelled_tasks:
+                                followup_cancelled = True
+                                break
+
+                            try:
+                                redir = redirect_q.get_nowait()
+                            except asyncio.QueueEmpty:
+                                redir = None
+
+                            if redir is not None:
+                                await emit(f"[worker] ↩ Redirected during follow-up: {redir[:120]}")
+                                current_fu_desc = redir
+                                continue
+
+                            break
+
+                        if followup_cancelled:
+                            break
 
                         if fu_ok:
                             await github_pr.push_branch(
@@ -478,6 +612,11 @@ class Worker:
                 finally:
                     self._followup_queues.pop(task_id, None)
 
+                if followup_cancelled:
+                    await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                    await self._set_state("idle", slot)
+                    return
+
                 await self._task_update(task_id, state="done", finishedAt=_now_iso())
                 await self._set_state("idle", slot)
 
@@ -495,6 +634,7 @@ class Worker:
                 })
 
         finally:
+            self._redirect_queues.pop(task_id, None)
             logger.info("Task %s: cleaning up %d worktree(s)", task_id, len(worktree_entries))
             for _repo_full, repo_path, wt_path in worktree_entries:
                 await git_ops.remove_worktree(repo_path, wt_path)
