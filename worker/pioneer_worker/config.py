@@ -29,8 +29,8 @@ class Config:
     worker_id: Optional[str] = None
     worker_name: Optional[str] = None
     github_token: Optional[str] = None
-    repos_dir: str = "/tmp/pioneer-repos"
-    work_dir: str = "/tmp/pioneer-work"
+    repos_dir: str = "src"
+    work_dir: str = "worktrees"
     claude_path: str = "claude"
     codex_path: str = "codex"
     pi_path: str = "pi"
@@ -104,6 +104,13 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
             token = os.environ.get(token[4:].strip()) or None
         elif token is None:
             token = os.environ.get("PIONEER_GITHUB_TOKEN")
+
+    cfg_dir = cfg_path.parent
+
+    def _resolve(p: str) -> str:
+        """Resolve *p* relative to the config file's directory if not absolute."""
+        path = Path(p)
+        return str(path if path.is_absolute() else cfg_dir / path)
 
     return Config(
         backend_url=backend_url.rstrip("/"),
