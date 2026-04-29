@@ -135,6 +135,7 @@
       class="floating-agent"
       :style="`left: ${agentPos(agent.id).x}px; top: ${agentPos(agent.id).y}px; --walk-dur: ${agentDuration[agent.id] || 1.5}s`"
     >
+      <div v-if="agentChatting[agent.id]" class="chat-bubble">💬</div>
       <AgentAvatar :agent="agent" :walking="agentWalking[agent.id]" />
       <div class="agent-nametag">{{ agent.name }}</div>
     </div>
@@ -185,15 +186,23 @@ function updateFloorSize() {
 }
 
 // ── Desk layout ────────────────────────────────────────────
-// 3 columns × 2 rows spread proportionally across the canvas.
+// 3 columns × 2 rows spread proportionally across the usable canvas.
+// Usable width excludes the foreman chat pane (fixed 360px on the right)
+// so desks stay clear of its boundary.
 // Fixed per-desk jitter (seeded values) gives an organic, stable look.
-const COL_FRACS     = [0.10, 0.40, 0.70]
+const CHAT_PANE_W   = 360
+const STATION_W     = 100
+const COL_FRACS     = [0.08, 0.42, 0.78]
 const ROW_FRACS     = [0.22, 0.60]
 const JITTER        = [[8,-5],[-6,12],[14,-8],[-10,7],[5,10],[-12,-6]]
 const GAP_X_FRACS   = [0.01, 0.25, 0.55, 0.87]
 
+const usableW = computed(() =>
+  Math.max(floorW.value - CHAT_PANE_W - STATION_W, 300)
+)
+
 const stationPositions = computed(() => {
-  const W = floorW.value, H = floorH.value
+  const W = usableW.value, H = floorH.value
   return ROW_FRACS.flatMap((yf, ri) =>
     COL_FRACS.map((xf, ci) => ({
       x: Math.round(xf * W) + JITTER[ri * 3 + ci][0],
@@ -205,7 +214,7 @@ const stationPositions = computed(() => {
 // ── Walkable region — full canvas minus small margins ──────
 const WALK_AREA = computed(() => ({
   xMin: 15,
-  xMax: floorW.value - 15,
+  xMax: usableW.value + STATION_W - 15,
   yMin: 72,
   yMax: floorH.value - 30, // leave room for ticker tape (28px)
 }))
@@ -222,7 +231,7 @@ const ROW2 = computed(() => ({
 
 // Clear vertical lanes between desk columns
 const GAP_XS = computed(() =>
-  GAP_X_FRACS.map(f => Math.round(f * floorW.value))
+  GAP_X_FRACS.map(f => Math.round(f * usableW.value))
 )
 
 // Coffee maker sits beside the rightmost top-row desk (index 2)
@@ -253,11 +262,15 @@ const visibleStations = computed<Station[]>(() => {
 const agentPositions = reactive<Record<string, Position>>({})
 const agentWalking   = reactive<Record<string, boolean>>({})
 const agentDuration  = reactive<Record<string, number>>({}) // CSS transition seconds
+const agentChatting  = reactive<Record<string, boolean>>({})
 
 // Non-reactive walk queues and timers
 const agentWaypoints: Record<string, Position[]> = {}
 const agentTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+const agentDestPoi: Record<string, string | null> = {}
 const prevAtWork: Record<string, boolean> = {}
+
+const SOCIAL_POIS = new Set(['cooler', 'coffee'])
 
 function agentPos(id: string): Position {
   return agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
@@ -314,10 +327,13 @@ function randomInClearZone(): Position {
   }
 }
 
-function pickDestination(): Position {
+function pickDestination(): { pos: Position; poiId: string | null } {
   const pois = POIS.value
-  if (Math.random() < 0.38) return pois[Math.floor(Math.random() * pois.length)]
-  return randomInClearZone()
+  if (Math.random() < 0.55) {
+    const p = pois[Math.floor(Math.random() * pois.length)]
+    return { pos: { x: p.x, y: p.y }, poiId: p.id }
+  }
+  return { pos: randomInClearZone(), poiId: null }
 }
 
 function walkDuration(x1: number, y1: number, x2: number, y2: number) {
@@ -327,11 +343,38 @@ function walkDuration(x1: number, y1: number, x2: number, y2: number) {
 
 // ── Walk step machine ──────────────────────────────────────
 
+function tryStartChat(id: string): boolean {
+  const myPoi = agentDestPoi[id]
+  if (!myPoi || !SOCIAL_POIS.has(myPoi)) return false
+  const partner = agents.value.find(a =>
+    a.id !== id &&
+    agentDestPoi[a.id] === myPoi &&
+    !agentWalking[a.id] &&
+    !agentChatting[a.id] &&
+    !isAgentAtWork(a)
+  )
+  if (!partner) return false
+  const dur = 10000 + Math.random() * 5000 // 10–15s
+  agentChatting[id] = true
+  agentChatting[partner.id] = true
+  clearTimeout(agentTimers[partner.id])
+  agentTimers[id] = setTimeout(() => {
+    agentChatting[id] = false
+    scheduleWalk(id)
+  }, dur)
+  agentTimers[partner.id] = setTimeout(() => {
+    agentChatting[partner.id] = false
+    scheduleWalk(partner.id)
+  }, dur + 250)
+  return true
+}
+
 function stepAgent(id: string) {
   const queue = agentWaypoints[id]
   if (!queue || queue.length === 0) {
     agentWalking[id] = false
-    const rest = 1200 + Math.random() * 3200
+    if (tryStartChat(id)) return
+    const rest = 4000 + Math.random() * 5000 // 4–9s general lingering
     agentTimers[id] = setTimeout(() => scheduleWalk(id), rest)
     return
   }
@@ -347,9 +390,11 @@ function stepAgent(id: string) {
 function scheduleWalk(id: string) {
   const agent = agents.value.find(a => a.id === id)
   if (!agent || isAgentAtWork(agent)) return
+  agentChatting[id] = false
   const cur = agentPositions[id] || randomInClearZone()
   const dest = pickDestination()
-  agentWaypoints[id] = computeWaypoints(cur.x, cur.y, dest.x, dest.y)
+  agentDestPoi[id] = dest.poiId
+  agentWaypoints[id] = computeWaypoints(cur.x, cur.y, dest.pos.x, dest.pos.y)
   stepAgent(id)
 }
 
@@ -370,6 +415,8 @@ function sendAgentToStation(agent: Agent) {
   const target = { x: station.x + 25, y: station.y + 90 }
   const cur = agentPositions[agent.id] || randomInClearZone()
   clearTimeout(agentTimers[agent.id])
+  agentChatting[agent.id] = false
+  agentDestPoi[agent.id] = null
   agentWaypoints[agent.id] = computeWaypoints(cur.x, cur.y, target.x, target.y)
   stepAgent(agent.id)
 }
@@ -880,6 +927,19 @@ function stateLabel(state: string) {
   letter-spacing: 1px;
 }
 
+.chat-bubble {
+  font-size: 10px;
+  line-height: 1;
+  margin-bottom: 2px;
+  filter: drop-shadow(0 0 3px rgba(255, 214, 68, 0.5));
+  animation: chatBob 1.4s infinite ease-in-out;
+}
+
+@keyframes chatBob {
+  0%, 100% { transform: translateY(0); opacity: 0.9; }
+  50%       { transform: translateY(-2px); opacity: 1; }
+}
+
 /* ── Points of interest ──────────────────────────────── */
 .poi {
   position: absolute;
@@ -1000,8 +1060,9 @@ function stateLabel(state: string) {
   height: 5px;
   background: var(--color-sky);
   border-radius: 50% 50% 40% 40%;
-  left: 36px;
-  top: 230px;
+  left: 50%;
+  top: 48px;
+  margin-left: -2px;
   animation: drip 1.8s var(--delay, 0s) infinite ease-in;
   opacity: 0.7;
 }
