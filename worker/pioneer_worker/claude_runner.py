@@ -168,7 +168,7 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
                     pid, n, i, blk.get("text", ""),
                 )
             elif btype == "tool_use":
-                logger.info(
+                logger.debug(
                     "claude[%d] event#%d tool_use[%d] name=%s id=%s input=%s",
                     pid, n, i, blk.get("name", ""), blk.get("id", ""),
                     json.dumps(blk.get("input", {}), ensure_ascii=False),
@@ -190,7 +190,7 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
                 content = blk.get("content")
                 if not isinstance(content, str):
                     content = json.dumps(content, ensure_ascii=False)
-                logger.info(
+                logger.debug(
                     "claude[%d] event#%d tool_result[%d] tool_use_id=%s is_error=%s:\n%s",
                     pid, n, i, blk.get("tool_use_id", ""),
                     blk.get("is_error", False), content,
