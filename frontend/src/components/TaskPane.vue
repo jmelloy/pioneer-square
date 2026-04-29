@@ -22,6 +22,13 @@
       </div>
     </div>
 
+    <!-- Cancel button — shown for active worker tasks -->
+    <div v-if="canCancel" class="cancel-panel">
+      <button class="pixel-btn cancel-task-btn" @click="cancelTask" :disabled="cancelling">
+        {{ cancelling ? '…' : '✕ Cancel Task' }}
+      </button>
+    </div>
+
     <!-- Follow-up panel — shown when task is awaiting review -->
     <div v-if="task.state === 'awaiting-review'" class="followup-panel">
       <div class="followup-header">FOREMAN FOLLOW-UP</div>
@@ -58,11 +65,18 @@ const guildStore = useGuildStore()
 
 const logsEl = ref(null)
 const followupText = ref('')
+const cancelling = ref(false)
 
 const task = computed(() => tasksStore.tasks.find(t => t.id === props.taskId) || {})
 const logs = computed(() => tasksStore.taskLogs[props.taskId] || [])
 
 const stateClass = computed(() => `state-${(task.value.state || 'pending').replace(/[^a-z]/g, '-')}`)
+
+const canCancel = computed(() => {
+  const s = task.value.state
+  const isWorkerTask = task.value.worker_id && task.value.worker_id !== 'foreman'
+  return isWorkerTask && (s === 'pending' || s === 'working' || s === 'awaiting-review')
+})
 
 onMounted(async () => {
   const guildId = guildStore.currentGuild?.id
@@ -96,6 +110,19 @@ async function finalizeTask() {
     await tasksStore.finalizeTask(guildId, props.taskId)
   } catch (e) {
     console.error('Finalize failed', e)
+  }
+}
+
+async function cancelTask() {
+  const guildId = guildStore.currentGuild?.id
+  if (!guildId || cancelling.value) return
+  cancelling.value = true
+  try {
+    await tasksStore.cancelTask(guildId, props.taskId)
+  } catch (e) {
+    console.error('Cancel failed', e)
+  } finally {
+    cancelling.value = false
   }
 }
 
@@ -180,6 +207,7 @@ function formatTs(iso) {
 .state-awaiting-review { color: var(--color-amber); border-color: var(--color-amber); }
 .state-done { color: var(--color-teal); border-color: var(--color-teal); }
 .state-failed { color: var(--color-red); border-color: var(--color-red); }
+.state-cancelled { color: var(--color-red); border-color: var(--color-red); opacity: 0.7; }
 .state-follow-up { color: var(--color-orange); border-color: var(--color-orange); }
 
 @keyframes statePulse {
@@ -266,6 +294,28 @@ function formatTs(iso) {
 .log-tool { color: var(--color-teal); }
 .log-result { color: var(--color-text-dim); }
 .log-thinking { color: var(--color-blue); font-style: italic; }
+
+/* ── Cancel panel ── */
+.cancel-panel {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-top: 1px solid var(--color-brass-dark);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cancel-task-btn {
+  background: linear-gradient(180deg, rgba(220,50,50,0.15) 0%, rgba(160,30,30,0.25) 100%);
+  border-color: var(--color-red);
+  color: var(--color-red);
+  font-size: 8px;
+  padding: 4px 10px;
+}
+.cancel-task-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(220,50,50,0.35) 0%, rgba(180,40,40,0.45) 100%);
+  box-shadow: 0 0 8px rgba(220,50,50,0.3);
+}
+.cancel-task-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* ── Follow-up panel ── */
 .followup-panel {

@@ -32,10 +32,14 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text[:40].lower()).strip("-")
 
 
+_CANCEL_SENTINEL = object()  # placed in followup queue to signal task cancellation
+
+
 class _AgentSlot:
     def __init__(self, agent_id: str) -> None:
         self.agent_id = agent_id
         self.current_claude: Optional[claude_runner.ClaudeProcess] = None
+        self.current_task_id: Optional[str] = None
 
 
 class Worker:
@@ -46,6 +50,8 @@ class Worker:
         self._known_task_ids: set[str] = set()
         # Per-task queues for follow-up instructions; None signals finalization
         self._followup_queues: dict[str, asyncio.Queue] = {}
+        # Tasks that have been cancelled (by foreman or human); checked before/during execution
+        self._cancelled_tasks: set[str] = set()
         # One slot per concurrent agent; each gets a stable ID for the guild.
         self.slots: list[_AgentSlot] = [
             _AgentSlot(_gen_id("a-")) for _ in range(cfg.max_agents)
@@ -278,6 +284,25 @@ class Worker:
                 else:
                     logger.debug("task-finalize for %s but no queue", task_id)
 
+            elif mtype == "task-cancel":
+                if msg.get("workerId") != self.cfg.worker_id:
+                    continue
+                task_id = msg.get("taskId")
+                if not task_id:
+                    continue
+                logger.info("Cancel signal for task %s", task_id)
+                self._cancelled_tasks.add(task_id)
+                # Kill subprocess if this task is currently running
+                active = next((s for s in self.slots if s.current_task_id == task_id), None)
+                if active and active.current_claude:
+                    await active.current_claude.terminate()
+                    logger.info("Terminated subprocess for cancelled task %s", task_id)
+                # Unblock awaiting-review loop if the task is waiting for follow-up
+                q = self._followup_queues.get(task_id)
+                if q is not None:
+                    await q.put(_CANCEL_SENTINEL)
+                    logger.info("Signalled followup queue for cancelled task %s", task_id)
+
     # ------------------------------------------------------------------ Idle puller
     async def _idle_puller(self) -> None:
         logger.info("Idle puller started (interval=%.1fs)", self.cfg.pull_interval)
@@ -308,17 +333,23 @@ class Worker:
         while True:
             task = await self.task_queue.get()
             task_id = task.get("id")
+            if task_id in self._cancelled_tasks:
+                logger.info("Skipping cancelled task %s", task_id)
+                continue
             logger.info(
                 "Dequeued task %s (agent=%s queue depth %d): %s",
                 task_id, slot.agent_id, self.task_queue.qsize(),
                 (task.get("description") or "")[:80],
             )
+            slot.current_task_id = task_id
             try:
                 await self._execute_task(task, slot)
             except Exception as exc:
                 logger.exception("Task %s crashed: %s", task_id, exc)
                 await self._emit(f"[worker] ✗ Internal error on task {task_id}: {exc}")
                 await self._task_update(task["id"], state="failed", finishedAt=_now_iso())
+            finally:
+                slot.current_task_id = None
 
     # ------------------------------------------------------------------ Execution
     async def _execute_task(self, task: dict, slot: _AgentSlot) -> None:
@@ -403,6 +434,12 @@ class Worker:
             slot.current_claude = None
             logger.info("Task %s: agent done success=%s stop_reason=%s", task_id, success, stop_reason)
 
+            if task_id in self._cancelled_tasks:
+                await emit("[worker] Task cancelled.")
+                await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                await self._set_state("idle", slot)
+                return
+
             if success:
                 push_ok = await github_pr.push_branch(
                     branch=branch, worktree_path=primary_wt, emit=emit,
@@ -428,9 +465,10 @@ class Worker:
                 })
                 await self._set_state("awaiting-review", slot)
 
-                # Wait for foreman follow-up instructions or finalize signal
-                followup_q: asyncio.Queue[Optional[str]] = asyncio.Queue()
+                # Wait for foreman follow-up instructions or finalize/cancel signal
+                followup_q: asyncio.Queue = asyncio.Queue()
                 self._followup_queues[task_id] = followup_q
+                followup_cancelled = False
                 try:
                     while True:
                         try:
@@ -439,6 +477,10 @@ class Worker:
                             )
                         except asyncio.TimeoutError:
                             await emit("[worker] Follow-up window expired — finalizing.")
+                            break
+                        if instructions is _CANCEL_SENTINEL:
+                            await emit("[worker] Task cancelled.")
+                            followup_cancelled = True
                             break
                         if instructions is None:
                             await emit("[worker] Task finalized by foreman.")
@@ -461,6 +503,11 @@ class Worker:
                         slot.current_claude = None
                         logger.info("Task %s follow-up: ok=%s reason=%s", task_id, fu_ok, fu_reason)
 
+                        if task_id in self._cancelled_tasks:
+                            await emit("[worker] Task cancelled during follow-up.")
+                            followup_cancelled = True
+                            break
+
                         if fu_ok:
                             await github_pr.push_branch(
                                 branch=branch, worktree_path=primary_wt, emit=emit,
@@ -477,6 +524,11 @@ class Worker:
                         await self._set_state("awaiting-review", slot)
                 finally:
                     self._followup_queues.pop(task_id, None)
+
+                if followup_cancelled:
+                    await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                    await self._set_state("idle", slot)
+                    return
 
                 await self._task_update(task_id, state="done", finishedAt=_now_iso())
                 await self._set_state("idle", slot)

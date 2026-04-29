@@ -84,6 +84,15 @@ class ClaudeProcess:
         except Exception:
             return False
 
+    async def terminate(self) -> None:
+        """Terminate the claude subprocess (SIGTERM, then SIGKILL if needed)."""
+        try:
+            self.proc.terminate()
+        except ProcessLookupError:
+            pass
+        except Exception as exc:
+            logger.debug("terminate() error: %s", exc)
+
 
 # Allow long stream-json lines (large tool_result payloads). The asyncio default
 # StreamReader limit is 64 KiB which is easily exceeded by file reads.

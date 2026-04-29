@@ -11,6 +11,7 @@ const STATE_LABELS = {
   done: 'done',
   failed: 'failed',
   followup: 'follow-up',
+  cancelled: 'cancelled',
 }
 
 const STATE_COLORS = {
@@ -21,6 +22,7 @@ const STATE_COLORS = {
   done: 'teal',
   failed: 'red',
   followup: 'orange',
+  cancelled: 'red',
 }
 
 export const useTasksStore = defineStore('tasks', () => {
@@ -64,6 +66,14 @@ export const useTasksStore = defineStore('tasks', () => {
 
   async function finalizeTask(guildId, taskId) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/finalize`, {
+      method: 'POST',
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  }
+
+  async function cancelTask(guildId, taskId) {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/cancel`, {
       method: 'POST',
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -162,6 +172,7 @@ export const useTasksStore = defineStore('tasks', () => {
     fetchTaskLogs,
     sendFollowup,
     finalizeTask,
+    cancelTask,
     handleWebSocketMessage,
     selectTask,
     closeTask,
