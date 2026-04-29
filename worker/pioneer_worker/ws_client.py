@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import random
-from typing import AsyncIterator, Optional
+from typing import Awaitable, AsyncIterator, Callable, Optional
 
 import websockets
 from websockets.protocol import State
@@ -47,6 +47,11 @@ class WSClient:
         self.send_retries = max(1, send_retries)
         self._ws = None
         self._lock = asyncio.Lock()
+        # Fired after every successful reconnect (not the initial connect).
+        # Lets callers re-send join/register/state so the backend treats the
+        # worker as online again.
+        self.on_reconnect: Optional[Callable[[], Awaitable[None]]] = None
+        self._has_connected_once = False
 
     async def connect(self):
         """Connect (or reconnect) with exponential backoff and jitter.
@@ -54,6 +59,7 @@ class WSClient:
         Retries indefinitely — the worker is a long-running daemon, so a transient
         backend outage shouldn't kill it. Backoff caps at ``max_backoff``.
         """
+        just_reconnected = False
         async with self._lock:
             if self._ws is not None and _is_open(self._ws):
                 return self._ws
@@ -68,7 +74,11 @@ class WSClient:
                         logger.info("WebSocket reconnected after %d attempts", attempt + 1)
                     else:
                         logger.info("WebSocket connected")
-                    return self._ws
+                    if self._has_connected_once:
+                        just_reconnected = True
+                    self._has_connected_once = True
+                    ws = self._ws
+                    break
                 except (OSError, websockets.WebSocketException, asyncio.TimeoutError) as exc:
                     delay = _backoff_delay(attempt, self.base_backoff, self.max_backoff)
                     logger.warning(
@@ -77,6 +87,12 @@ class WSClient:
                     )
                     await asyncio.sleep(delay)
                     attempt += 1
+        if just_reconnected and self.on_reconnect is not None:
+            try:
+                await self.on_reconnect()
+            except Exception as exc:
+                logger.warning("on_reconnect hook raised: %s", exc)
+        return ws
 
     async def send(self, payload: dict) -> None:
         """Send a JSON payload, reconnecting on failure.

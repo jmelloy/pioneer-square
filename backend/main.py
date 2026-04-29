@@ -75,6 +75,11 @@ _http_bearer = HTTPBearer(auto_error=False)
 # In-memory WebSocket connections: guild_id -> list of WebSocket
 connections: Dict[str, List[WebSocket]] = {}
 
+# Tracks which WebSocket currently owns a given agent_id. Used so that when a
+# worker reconnects (new WS joins before the old WS's finally block runs), the
+# stale finally doesn't mark the freshly-online agent offline again.
+agent_owners: Dict[str, WebSocket] = {}
+
 # Running agent subprocesses: agent_id -> asyncio.subprocess.Process
 # Used only by /agents/{id}/run (one-off claude/codex/pi invocations).
 # Worker subprocesses live in the standalone /worker process.
@@ -1456,6 +1461,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 await db.commit()
                 if agent_id:
                     joined_agents.add(agent_id)
+                    agent_owners[agent_id] = websocket
                 broadcast_msg = {
                     "type": "agent-joined",
                     "agentId": agent_id,
@@ -1662,7 +1668,14 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             connections[guild_id].remove(websocket)
     finally:
         try:
-            for agent_id in joined_agents:
+            # Only mark agents offline if this WS is still the current owner.
+            # If a reconnect already produced a newer WS that re-joined the
+            # agent, that newer WS owns the agent now and we must not clobber it.
+            stale_agents = [
+                aid for aid in joined_agents if agent_owners.get(aid) is websocket
+            ]
+            for agent_id in stale_agents:
+                agent_owners.pop(agent_id, None)
                 await db.execute(
                     update(Agent)
                     .where(Agent.id == agent_id, Agent.guild_id == guild_id)
@@ -1674,9 +1687,9 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     .where(Worker.id == agent_id, Worker.guild_id == guild_id)
                     .values(state="offline")
                 )
-            if joined_agents:
+            if stale_agents:
                 await db.commit()
-            for agent_id in joined_agents:
+            for agent_id in stale_agents:
                 await broadcast(guild_id, {
                     "type": "agent-state",
                     "agentId": agent_id,
