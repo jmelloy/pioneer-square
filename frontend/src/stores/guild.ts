@@ -12,8 +12,21 @@ export const useGuildStore = defineStore('guild', () => {
   const guilds = ref<Guild[]>([])
   const isConnected = ref(false)
   const messages = ref<ChatMessage[]>([])
+  const reconnectAttempt = ref(0)
   let ws: WebSocket | null = null
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let manualClose = false
   const messageHandlers = ref<MessageHandler[]>([])
+
+  const MAX_RETRIES = 10
+  const BASE_DELAY_MS = 1000
+  const MAX_DELAY_MS = 30000
+
+  function _backoffDelay(attempt: number): number {
+    const exp = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt)
+    // Full jitter: random value in [0, exp]
+    return Math.floor(Math.random() * exp)
+  }
 
   function _authHeaders(): Record<string, string> {
     const authStore = useAuthStore()
@@ -70,53 +83,113 @@ export const useGuildStore = defineStore('guild', () => {
     }
   }
 
-  function connectWebSocket(guildId: string, onMessage?: MessageHandler, retryCount = 0): WebSocket {
-    const MAX_RETRIES = 10
+  function connectWebSocket(guildId: string, onMessage?: MessageHandler): WebSocket {
+    manualClose = false
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
     if (ws) {
-      ws.close()
+      try { ws.close() } catch (e) { /* ignore */ }
     }
-    ws = new WebSocket(`ws://localhost:8000/ws/${guildId}`)
-    ws.onopen = () => {
+
+    let socket: WebSocket
+    try {
+      socket = new WebSocket(`ws://localhost:8000/ws/${guildId}`)
+    } catch (e) {
+      console.error('Failed to construct WebSocket', e)
+      _scheduleReconnect(guildId, onMessage)
+      // Return a dummy that callers won't use; the real one will be wired up on retry.
+      return ws as WebSocket
+    }
+    ws = socket
+
+    socket.onopen = () => {
       isConnected.value = true
+      reconnectAttempt.value = 0
     }
-    ws.onmessage = (event) => {
-      const data: WSMessage = JSON.parse(event.data)
-      if (data.type === 'chat') {
-        messages.value.push(data as ChatMessage)
+    socket.onmessage = (event) => {
+      let data: WSMessage
+      try {
+        data = JSON.parse(event.data)
+      } catch (e) {
+        console.warn('Dropping non-JSON WS frame', e)
+        return
       }
-      if (data.type === 'guild-updated') {
-        if (currentGuild.value && currentGuild.value.id === data.id) {
-          currentGuild.value = { ...currentGuild.value, name: data.name }
+      try {
+        if (data.type === 'chat') {
+          messages.value.push(data as ChatMessage)
         }
-        const idx = guilds.value.findIndex(g => g.id === data.id)
-        if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name: data.name }
+        if (data.type === 'guild-updated') {
+          if (currentGuild.value && currentGuild.value.id === data.id) {
+            currentGuild.value = { ...currentGuild.value, name: data.name }
+          }
+          const idx = guilds.value.findIndex(g => g.id === data.id)
+          if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name: data.name }
+        }
+        if (onMessage) onMessage(data)
+        messageHandlers.value.forEach(h => {
+          try { h(data) } catch (err) { console.error('WS message handler error', err) }
+        })
+      } catch (e) {
+        console.error('Error processing WS message', e)
       }
-      if (onMessage) onMessage(data)
-      messageHandlers.value.forEach(h => h(data))
     }
-    ws.onclose = (event) => {
+    socket.onclose = (event) => {
       isConnected.value = false
-      if (!event.wasClean && retryCount < MAX_RETRIES) {
-        setTimeout(() => connectWebSocket(guildId, onMessage, retryCount + 1), 2000)
+      if (manualClose) return
+      if (!event.wasClean) {
+        console.warn(`WebSocket closed (code=${event.code} reason=${event.reason || 'n/a'})`)
       }
+      _scheduleReconnect(guildId, onMessage)
     }
-    ws.onerror = () => {
+    socket.onerror = (event) => {
       isConnected.value = false
+      console.error('WebSocket error', event)
     }
-    return ws
+    return socket
+  }
+
+  function _scheduleReconnect(guildId: string, onMessage?: MessageHandler) {
+    if (manualClose) return
+    if (reconnectAttempt.value >= MAX_RETRIES) {
+      console.error(`WebSocket reconnect gave up after ${MAX_RETRIES} attempts`)
+      return
+    }
+    const delay = _backoffDelay(reconnectAttempt.value)
+    reconnectAttempt.value += 1
+    console.info(`WebSocket reconnect attempt ${reconnectAttempt.value}/${MAX_RETRIES} in ${delay}ms`)
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      connectWebSocket(guildId, onMessage)
+    }, delay)
   }
 
   function disconnectWebSocket() {
+    manualClose = true
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
     if (ws) {
-      ws.close()
+      try { ws.close() } catch (e) { /* ignore */ }
       ws = null
     }
     isConnected.value = false
+    reconnectAttempt.value = 0
   }
 
-  function sendMessage(data: WSMessage) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
+  function sendMessage(data: WSMessage): boolean {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.warn('sendMessage: socket not open, dropping', data.type)
+      return false
+    }
+    try {
       ws.send(JSON.stringify(data))
+      return true
+    } catch (e) {
+      console.error('sendMessage failed', e)
+      return false
     }
   }
 
@@ -132,6 +205,7 @@ export const useGuildStore = defineStore('guild', () => {
     currentGuild,
     guilds,
     isConnected,
+    reconnectAttempt,
     messages,
     loadGuilds,
     createGuild,
