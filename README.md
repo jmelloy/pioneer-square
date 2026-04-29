@@ -16,6 +16,25 @@ A real-time multi-agent workspace with a colorful pixel-art factory floor UI.
 
 ## Setup
 
+### Docker Compose (quickstart)
+
+```bash
+cp .env.example .env
+# fill in GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, ANTHROPIC_API_KEY
+docker compose up --build
+```
+
+Backend: http://localhost:8000 — Frontend: http://localhost:5173.
+SQLite is persisted in the `backend-data` volume.
+
+The worker is opt-in (it needs a `pioneer-worker.toml`):
+
+```bash
+cp worker/pioneer-worker.toml.example worker/pioneer-worker.toml
+# edit guild_id, repos. Use backend_url = "http://backend:8000"
+docker compose --profile worker up --build worker
+```
+
 ### GitHub OAuth App
 
 Pioneer Square uses GitHub OAuth instead of personal access tokens. You need to create a GitHub OAuth App and set the credentials as environment variables before starting the backend.
