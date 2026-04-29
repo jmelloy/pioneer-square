@@ -10,62 +10,87 @@ from typing import Awaitable, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-EmitFn = Callable[[str], Awaitable[None]]
+EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 
 
-def parse_claude_event(event: dict) -> Optional[str]:
-    """Extract a human-readable line from one stream-JSON event."""
+def _summarize_lines(lines: list[str], prefix: str = "  → ") -> str:
+    """Format a list of lines as a 2+ellipsis+1 summary."""
+    if len(lines) <= 4:
+        return "\n".join(f"{prefix}{l}" for l in lines)
+    middle = len(lines) - 3
+    return (
+        f"{prefix}{lines[0]}\n"
+        f"{prefix}{lines[1]}\n"
+        f"{prefix}… ({middle} more lines)\n"
+        f"{prefix}{lines[-1]}"
+    )
+
+
+def parse_claude_event(event: dict) -> list[tuple[str, Optional[dict]]]:
+    """Extract (display_text, detail) pairs from one stream-JSON event.
+
+    detail is sent as a separate tool-detail WS message so the full content
+    is available on click without bloating the terminal-output stream.
+    """
     t = event.get("type")
     if t == "assistant":
-        parts: list[str] = []
+        pairs: list[tuple[str, Optional[dict]]] = []
         for blk in event.get("message", {}).get("content", []):
             btype = blk.get("type")
             if btype == "text":
                 txt = blk.get("text", "").strip()
                 if txt:
-                    parts.append(txt)
+                    pairs.append((txt, None))
             elif btype == "thinking":
                 thinking = blk.get("thinking", "").strip()
                 if thinking:
                     preview = thinking[:100].replace("\n", " ")
-                    parts.append(f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}")
+                    pairs.append((f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}", None))
             elif btype == "tool_use":
                 name = blk.get("name", "")
                 inp = blk.get("input", {})
                 if name == "Bash":
-                    parts.append(f"▶ bash: {inp.get('command', '')[:120]}")
+                    cmd = inp.get("command", "")
+                    cmd_lines = [l for l in cmd.splitlines() if l.strip()]
+                    if len(cmd_lines) <= 1:
+                        summary = f"▶ bash: {cmd[:160]}"
+                    else:
+                        summary = f"▶ bash: {cmd_lines[0][:120]}\n         {cmd_lines[1][:120]}"
+                        if len(cmd_lines) > 2:
+                            summary += f"\n         … ({len(cmd_lines) - 2} more lines)"
                 elif name in ("Read", "Write", "Edit"):
                     fp = inp.get("file_path", inp.get("path", ""))
-                    parts.append(f"▶ {name.lower()}: {fp}")
+                    summary = f"▶ {name.lower()}: {fp}"
                 else:
-                    parts.append(f"▶ {name}: {json.dumps(inp)[:80]}")
-        return "\n".join(parts) or None
+                    summary = f"▶ {name}: {json.dumps(inp)[:80]}"
+                detail = {"toolType": "tool_use", "name": name, "input": inp}
+                pairs.append((summary, detail))
+        return pairs
     if t == "user":
-        parts = []
+        pairs = []
         for blk in event.get("message", {}).get("content", []):
             if blk.get("type") == "tool_result":
                 content = blk.get("content", "")
                 if isinstance(content, list):
                     content = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
                 if isinstance(content, str) and content.strip():
-                    lines = content.strip().split("\n")
-                    preview = lines[0][:120]
-                    if len(lines) > 1:
-                        preview += f" (+{len(lines) - 1} lines)"
-                    parts.append(f"  → {preview}")
-        return "\n".join(parts) or None
+                    lines = content.strip().splitlines()
+                    summary = _summarize_lines(lines)
+                    detail = {"toolType": "tool_result", "output": content}
+                    pairs.append((summary, detail))
+        return pairs
     if t == "result":
         subtype = event.get("subtype", "success")
         turns = event.get("num_turns", 0)
         cost = event.get("cost_usd")
         cost_str = f" (${cost:.4f})" if cost else ""
         if subtype == "success":
-            return f"✓ Done in {turns} turns{cost_str}"
-        return f"✗ {subtype}: {event.get('error', '')}"
+            return [(f"✓ Done in {turns} turns{cost_str}", None)]
+        return [(f"✗ {subtype}: {event.get('error', '')}", None)]
     if t == "system" and event.get("subtype") == "init":
         tools = event.get("tools", [])
-        return f"[claude] tools: {', '.join(tools[:6])}"
-    return None
+        return [(f"[claude] tools: {', '.join(tools[:6])}", None)]
+    return []
 
 
 class ClaudeProcess:
@@ -305,9 +330,8 @@ async def run_claude_auto(
                     logger.info("claude[%d] session_id=%s", proc.pid, sid)
             if event.get("type") == "result":
                 stop_reason = event.get("subtype", "success")
-            text = parse_claude_event(event)
-            if text:
-                await emit(text)
+            for text, detail in parse_claude_event(event):
+                await emit(text, detail)
                 if not text.startswith(("▶", "✓", "✗", "[", "  →")):
                     last_text = text
 

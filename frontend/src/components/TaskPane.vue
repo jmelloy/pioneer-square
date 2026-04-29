@@ -16,9 +16,26 @@
 
     <div class="task-logs" ref="logsEl">
       <div v-if="!logs.length" class="logs-empty">No logs yet — waiting for worker output…</div>
-      <div v-for="(entry, i) in logs" :key="i" class="log-line">
-        <span class="log-ts">{{ formatTs(entry.timestamp) }}</span>
-        <span class="log-text" :class="lineClass(entry.line)">{{ entry.line }}</span>
+      <div v-for="(entry, i) in logs" :key="i" class="log-entry">
+        <div
+          class="log-line"
+          :class="{ 'log-line--expandable': !!entry.detail }"
+          @click="entry.detail && toggleDetail(i)"
+        >
+          <span class="log-ts">{{ formatTs(entry.timestamp) }}</span>
+          <span class="log-text" :class="lineClass(entry.line)">{{ entry.line }}</span>
+          <span v-if="entry.detail" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
+        </div>
+        <div v-if="entry.detail && expandedIdx === i" class="log-detail">
+          <template v-if="entry.detail.toolType === 'tool_use'">
+            <div class="log-detail-label">{{ entry.detail.name }} INPUT</div>
+            <pre class="log-detail-body">{{ formatDetail(entry.detail) }}</pre>
+          </template>
+          <template v-else-if="entry.detail.toolType === 'tool_result'">
+            <div class="log-detail-label">OUTPUT</div>
+            <pre class="log-detail-body">{{ entry.detail.output }}</pre>
+          </template>
+        </div>
       </div>
     </div>
 
@@ -90,6 +107,7 @@ const followupText = ref('')
 const redirectText = ref('')
 const cancelling = ref(false)
 const redirecting = ref(false)
+const expandedIdx = ref(null)
 
 const task = computed(() => tasksStore.tasks.find(t => t.id === props.taskId) || {})
 const logs = computed(() => tasksStore.taskLogs[props.taskId] || [])
@@ -165,6 +183,17 @@ async function sendRedirect() {
   } finally {
     redirecting.value = false
   }
+}
+
+function toggleDetail(i) {
+  expandedIdx.value = expandedIdx.value === i ? null : i
+}
+
+function formatDetail(detail) {
+  if (detail.toolType !== 'tool_use') return ''
+  const inp = detail.input || {}
+  if (detail.name === 'Bash') return inp.command || ''
+  return JSON.stringify(inp, null, 2)
 }
 
 function lineClass(line) {
@@ -315,17 +344,61 @@ function formatTs(iso) {
   text-align: center;
 }
 
+.log-ts {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.log-entry { display: flex; flex-direction: column; }
+
 .log-line {
   display: flex;
   gap: 10px;
   align-items: baseline;
 }
 
-.log-ts {
-  font-size: 9px;
+.log-line--expandable {
+  cursor: pointer;
+  border-radius: 2px;
+}
+.log-line--expandable:hover { background: rgba(255,255,255,0.04); }
+
+.log-expand-icon {
+  font-size: 8px;
   color: var(--color-text-dim);
   flex-shrink: 0;
-  opacity: 0.6;
+  margin-left: auto;
+  opacity: 0.5;
+}
+
+.log-detail {
+  margin: 3px 0 4px 42px;
+  border-left: 2px solid var(--color-brass-dark);
+  padding-left: 10px;
+}
+
+.log-detail-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+.log-detail-body {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+  overflow-y: auto;
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--color-brass-dark);
+  padding: 6px 8px;
 }
 
 .log-text { word-break: break-all; white-space: pre-wrap; }
