@@ -94,7 +94,7 @@ class TaskLog(Base):
     __tablename__ = "task_logs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    task_id = Column(Text, ForeignKey("tasks.id"), nullable=False)
+    task_id = Column(Text, ForeignKey("tasks.id"), nullable=True)
     timestamp = Column(Text, nullable=False)
     line = Column(Text, nullable=False)
     worker_id = Column(Text)

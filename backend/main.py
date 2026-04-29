@@ -1244,21 +1244,22 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     asyncio.create_task(_run_foreman_ai(guild_id, content))
 
             elif msg_type == "terminal-output":
+                msg_agent_id = data.get("agentId")
                 line = data.get("line", "")
                 task_id = data.get("taskId")
                 created_at = datetime.now(timezone.utc).isoformat()
                 # Look up worker_id for this agent to tag logs for cross-filter queries.
                 worker_id_for_log = None
-                if agent_id:
-                    result = await db.execute(select(Agent.worker_id).where(Agent.id == agent_id))
+                if msg_agent_id:
+                    result = await db.execute(select(Agent.worker_id).where(Agent.id == msg_agent_id))
                     worker_id_for_log = result.scalar_one_or_none()
-                if task_id and line:
-                    db.add(TaskLog(task_id=task_id, timestamp=created_at, line=line,
-                                   worker_id=worker_id_for_log, agent_id=agent_id))
+                if line:
+                    db.add(TaskLog(task_id=task_id or None, timestamp=created_at, line=line,
+                                   worker_id=worker_id_for_log, agent_id=msg_agent_id))
                     await db.commit()
                 await broadcast(guild_id, {
                     "type": "terminal-output",
-                    "agentId": agent_id,
+                    "agentId": msg_agent_id,
                     "workerId": worker_id_for_log,
                     "taskId": task_id,
                     "line": line,
@@ -1421,7 +1422,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
 # ---------------------------------------------------------------------------
 
 async def _emit_terminal_line(guild_id: str, agent_id: str, line: str):
-    """Broadcast a terminal output line."""
+    """Broadcast and persist a terminal output line."""
     now = datetime.now(timezone.utc).isoformat()
     await broadcast(guild_id, {
         "type": "terminal-output",
@@ -1429,6 +1430,16 @@ async def _emit_terminal_line(guild_id: str, agent_id: str, line: str):
         "line": line,
         "timestamp": now,
     })
+    if line:
+        db = await get_db()
+        try:
+            result = await db.execute(select(Agent.worker_id).where(Agent.id == agent_id))
+            worker_id_for_log = result.scalar_one_or_none()
+            db.add(TaskLog(task_id=None, timestamp=now, line=line,
+                           worker_id=worker_id_for_log, agent_id=agent_id))
+            await db.commit()
+        finally:
+            await db.close()
 
 
 async def _set_agent_state(guild_id: str, agent_id: str, state: str):
