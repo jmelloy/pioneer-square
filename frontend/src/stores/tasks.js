@@ -27,7 +27,7 @@ const STATE_COLORS = {
 
 export const useTasksStore = defineStore('tasks', () => {
   const tasks = ref([])
-  const taskLogs = ref({})   // task_id -> [{ line, timestamp }]
+  const taskLogs = ref({})   // task_id -> [{ line, timestamp, detail? }]
   const selectedTaskId = ref(null)
   const openedTaskIds = ref([])
 
@@ -45,7 +45,12 @@ export const useTasksStore = defineStore('tasks', () => {
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/logs`)
       if (!res.ok) return []
-      const logs = await res.json()
+      const raw = await res.json()
+      const logs = raw.map(r => ({
+        line: r.line,
+        timestamp: r.timestamp,
+        detail: r.detail || null,
+      }))
       taskLogs.value[taskId] = logs
       return logs
     } catch (e) {
@@ -141,10 +146,10 @@ export const useTasksStore = defineStore('tasks', () => {
       const task = tasks.value.find(t => t.id === data.taskId)
       if (task) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
-      const { taskId, line, timestamp } = data
+      const { taskId, line, timestamp, detail } = data
       if (line) {
         if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
-        taskLogs.value[taskId].push({ line, timestamp })
+        taskLogs.value[taskId].push({ line, timestamp, detail: detail || null })
         if (taskLogs.value[taskId].length > 2000) taskLogs.value[taskId].shift()
       }
     }

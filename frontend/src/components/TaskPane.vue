@@ -16,9 +16,42 @@
 
     <div class="task-logs" ref="logsEl">
       <div v-if="!logs.length" class="logs-empty">No logs yet — waiting for worker output…</div>
-      <div v-for="(entry, i) in logs" :key="i" class="log-line">
-        <span class="log-ts">{{ formatTs(entry.timestamp) }}</span>
-        <span class="log-text" :class="lineClass(entry.line)">{{ entry.line }}</span>
+      <div v-for="(entry, i) in logs" :key="i" class="log-entry">
+        <div
+          class="log-line"
+          :class="{ 'log-line--expandable': !!entry.detail }"
+          @click="entry.detail && toggleDetail(i)"
+        >
+          <span class="log-ts">{{ formatTs(entry.timestamp) }}</span>
+          <span class="log-text" :class="lineClass(entry.line)">{{ entry.line }}</span>
+          <span v-if="entry.detail" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
+        </div>
+        <div v-if="entry.detail && expandedIdx === i" class="log-detail">
+          <template v-if="entry.detail.toolType === 'tool_use'">
+            <template v-if="entry.detail.name === 'Edit'">
+              <div class="log-detail-label">OLD</div>
+              <pre class="log-detail-body log-detail-old">{{ entry.detail.input?.old_string }}</pre>
+              <div class="log-detail-label log-detail-label--new">NEW</div>
+              <pre class="log-detail-body log-detail-new">{{ entry.detail.input?.new_string }}</pre>
+            </template>
+            <template v-else-if="entry.detail.name === 'Write'">
+              <div class="log-detail-label">{{ entry.detail.input?.file_path }}</div>
+              <pre class="log-detail-body">{{ entry.detail.input?.content }}</pre>
+            </template>
+            <template v-else-if="entry.detail.name === 'Bash'">
+              <div class="log-detail-label">COMMAND</div>
+              <pre class="log-detail-body">{{ entry.detail.input?.command }}</pre>
+            </template>
+            <template v-else>
+              <div class="log-detail-label">{{ entry.detail.name }}</div>
+              <pre class="log-detail-body">{{ JSON.stringify(entry.detail.input, null, 2) }}</pre>
+            </template>
+          </template>
+          <template v-else-if="entry.detail.toolType === 'tool_result'">
+            <div class="log-detail-label">OUTPUT</div>
+            <pre class="log-detail-body">{{ entry.detail.output }}</pre>
+          </template>
+        </div>
       </div>
     </div>
 
@@ -90,6 +123,7 @@ const followupText = ref('')
 const redirectText = ref('')
 const cancelling = ref(false)
 const redirecting = ref(false)
+const expandedIdx = ref(null)
 
 const task = computed(() => tasksStore.tasks.find(t => t.id === props.taskId) || {})
 const logs = computed(() => tasksStore.taskLogs[props.taskId] || [])
@@ -165,6 +199,10 @@ async function sendRedirect() {
   } finally {
     redirecting.value = false
   }
+}
+
+function toggleDetail(i) {
+  expandedIdx.value = expandedIdx.value === i ? null : i
 }
 
 function lineClass(line) {
@@ -315,17 +353,74 @@ function formatTs(iso) {
   text-align: center;
 }
 
+.log-ts {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.log-entry { display: flex; flex-direction: column; }
+
 .log-line {
   display: flex;
   gap: 10px;
   align-items: baseline;
 }
 
-.log-ts {
-  font-size: 9px;
+.log-line--expandable {
+  cursor: pointer;
+  border-radius: 2px;
+}
+.log-line--expandable:hover { background: rgba(255,255,255,0.04); }
+
+.log-expand-icon {
+  font-size: 8px;
   color: var(--color-text-dim);
   flex-shrink: 0;
-  opacity: 0.6;
+  margin-left: auto;
+  opacity: 0.5;
+}
+
+.log-detail {
+  margin: 3px 0 4px 42px;
+  border-left: 2px solid var(--color-brass-dark);
+  padding-left: 10px;
+}
+
+.log-detail-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+  margin-top: 6px;
+}
+.log-detail-label:first-child { margin-top: 0; }
+.log-detail-label--new { color: var(--color-green); }
+
+.log-detail-body {
+  margin: 0 0 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--color-brass-dark);
+  padding: 6px 8px;
+}
+.log-detail-old {
+  background: rgba(180,30,30,0.08);
+  border-color: rgba(220,50,50,0.3);
+  color: #c07070;
+}
+.log-detail-new {
+  background: rgba(0,120,60,0.08);
+  border-color: rgba(0,187,100,0.3);
+  color: #70c090;
 }
 
 .log-text { word-break: break-all; white-space: pre-wrap; }

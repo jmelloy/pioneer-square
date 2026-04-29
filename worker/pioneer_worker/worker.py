@@ -105,25 +105,31 @@ class Worker:
     async def _send(self, payload: dict) -> None:
         await self.ws.send(payload)
 
-    async def _emit(self, line: str) -> None:
+    async def _emit(self, line: str, detail: dict | None = None) -> None:
         """Emit a worker-level log line (attributed to slot 0)."""
-        await self._send({
+        msg: dict = {
             "type": "terminal-output",
             "agentId": self.slots[0].agent_id,
             "line": line,
             "timestamp": _now_iso(),
-        })
+        }
+        if detail:
+            msg["detail"] = detail
+        await self._send(msg)
 
     def _task_emit(self, task_id: str, slot: _AgentSlot):
         """Return an emit function scoped to a task and agent slot."""
-        async def _emit_task(line: str) -> None:
-            await self._send({
+        async def _emit_task(line: str, detail: dict | None = None) -> None:
+            msg: dict = {
                 "type": "terminal-output",
                 "agentId": slot.agent_id,
                 "taskId": task_id,
                 "line": line,
                 "timestamp": _now_iso(),
-            })
+            }
+            if detail:
+                msg["detail"] = detail
+            await self._send(msg)
         return _emit_task
 
     async def _set_state(self, state: str, slot: _AgentSlot) -> None:

@@ -1355,6 +1355,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 msg_agent_id = data.get("agentId")
                 line = data.get("line", "")
                 task_id = data.get("taskId")
+                detail = data.get("detail")
                 created_at = datetime.now(timezone.utc).isoformat()
                 # Look up worker_id for this agent to tag logs for cross-filter queries.
                 worker_id_for_log = None
@@ -1363,7 +1364,8 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     worker_id_for_log = result.scalar_one_or_none()
                 if line:
                     db.add(TaskLog(task_id=task_id or None, timestamp=created_at, line=line,
-                                   worker_id=worker_id_for_log, agent_id=msg_agent_id))
+                                   worker_id=worker_id_for_log, agent_id=msg_agent_id,
+                                   data=json.dumps(detail) if detail else None))
                     await db.commit()
                 await broadcast(guild_id, {
                     "type": "terminal-output",
@@ -1371,7 +1373,8 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     "workerId": worker_id_for_log,
                     "taskId": task_id,
                     "line": line,
-                    "timestamp": created_at
+                    "timestamp": created_at,
+                    **({"detail": detail} if detail else {}),
                 })
 
             elif msg_type == "worker-register":
@@ -2000,11 +2003,22 @@ async def get_task_logs(guild_id: str, task_id: str):
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Task not found")
         result = await db.execute(
-            select(TaskLog.timestamp, TaskLog.line, TaskLog.worker_id, TaskLog.agent_id)
+            select(TaskLog.timestamp, TaskLog.line, TaskLog.worker_id,
+                   TaskLog.agent_id, TaskLog.data)
             .where(TaskLog.task_id == task_id)
             .order_by(TaskLog.id.asc())
         )
-        return [dict(r._mapping) for r in result.fetchall()]
+        rows = []
+        for r in result.fetchall():
+            row = dict(r._mapping)
+            raw = row.pop("data", None)
+            if raw:
+                try:
+                    row["detail"] = json.loads(raw)
+                except Exception:
+                    pass
+            rows.append(row)
+        return rows
     finally:
         await db.close()
 
