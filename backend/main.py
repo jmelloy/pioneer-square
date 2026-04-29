@@ -1,9 +1,11 @@
 import asyncio
 import json
+import logging
 import os
 import random
 import secrets
 import string
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -82,6 +84,23 @@ running_processes: Dict[str, asyncio.subprocess.Process] = {}
 
 # Foreman AI conversation history per guild
 foreman_conversations: Dict[str, List[dict]] = {}    # guild_id -> messages list
+
+
+# Foreman logger. Configured with an explicit StreamHandler so output appears
+# regardless of how uvicorn sets up its own logging (uvicorn keeps
+# disable_existing_loggers=False, but does not attach handlers to non-uvicorn
+# loggers, so we attach our own to stderr alongside uvicorn's output).
+# Set PIONEER_LOG_LEVEL=DEBUG for verbose foreman tracing.
+foreman_logger = logging.getLogger("pioneer.foreman")
+if not foreman_logger.handlers:
+    _h = logging.StreamHandler(sys.stderr)
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    foreman_logger.addHandler(_h)
+    foreman_logger.setLevel(os.environ.get("PIONEER_LOG_LEVEL", "INFO").upper())
+    foreman_logger.propagate = False
 
 
 async def init_db():
@@ -500,6 +519,10 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
     for tu in tool_uses:
         inp = tu.input
         result_text = ""
+        foreman_logger.info(
+            "tool_use guild=%s id=%s name=%s input_keys=%s",
+            guild_id, tu.id, tu.name, list(inp.keys()) if isinstance(inp, dict) else type(inp).__name__,
+        )
         db = await get_db()
         try:
             if tu.name == "create_task":
@@ -911,6 +934,39 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
     return results
 
 
+def _strip_orphan_tool_results(history: List[dict]) -> int:
+    """Drop leading messages whose tool_result blocks have no preceding tool_use.
+
+    The Anthropic API rejects a `tool_result` content block as the first
+    message in `messages` (or any tool_result whose tool_use_id isn't from the
+    immediately-preceding assistant message). Aggressive history trimming can
+    sever a tool_use/tool_result pair, leaving an orphan tool_result at index 0
+    on the next call. Walk forward until the first message is safe to send.
+    Returns the number of messages dropped.
+    """
+    dropped = 0
+    while history:
+        first = history[0]
+        if first.get("role") != "user":
+            return dropped
+        content = first.get("content")
+        if isinstance(content, str):
+            return dropped
+        if isinstance(content, list) and content:
+            # Mixed lists are rare; we only drop if every block is a tool_result
+            # (which is exactly how the loop below builds tool-result messages).
+            block_types = {
+                getattr(b, "type", None) if not isinstance(b, dict) else b.get("type")
+                for b in content
+            }
+            if block_types and block_types <= {"tool_result"}:
+                history.pop(0)
+                dropped += 1
+                continue
+        return dropped
+    return dropped
+
+
 async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str = ""):
     """Process a human message (or escalation) through the Claude foreman AI."""
     if not HAS_ANTHROPIC:
@@ -920,7 +976,14 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
             "content": "Foreman AI offline (install `anthropic` package to enable).",
             "createdAt": now,
         })
+        foreman_logger.warning("foreman invoked but anthropic package not installed")
         return
+
+    foreman_logger.info(
+        "invoke guild=%s msg_len=%d history_len=%d extra_ctx=%s",
+        guild_id, len(human_message), len(foreman_conversations.get(guild_id, [])),
+        bool(extra_context),
+    )
 
     # Build live context for the system prompt
     db = await get_db()
@@ -969,6 +1032,12 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
     )
 
     history = foreman_conversations.setdefault(guild_id, [])
+    dropped = _strip_orphan_tool_results(history)
+    if dropped:
+        foreman_logger.warning(
+            "guild=%s dropped %d orphan tool_result message(s) from history before append",
+            guild_id, dropped,
+        )
     history.append({"role": "user", "content": human_message})
 
     client = _anthropic.AsyncAnthropic()
@@ -977,13 +1046,23 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
 
     try:
         text_parts = []
-        for _ in range(6):  # safety cap on tool-call rounds
+        for iteration in range(6):  # safety cap on tool-call rounds
+            foreman_logger.debug(
+                "guild=%s iter=%d sending %d messages",
+                guild_id, iteration, len(history),
+            )
             resp = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
                 system=system,
                 messages=history,
                 tools=FOREMAN_TOOLS,
+            )
+            foreman_logger.info(
+                "guild=%s iter=%d stop=%s in_tok=%s out_tok=%s",
+                guild_id, iteration, resp.stop_reason,
+                getattr(resp.usage, "input_tokens", "?"),
+                getattr(resp.usage, "output_tokens", "?"),
             )
             history.append({"role": "assistant", "content": resp.content})
             text_parts += [b.text for b in resp.content if b.type == "text" and b.text.strip()]
@@ -1001,8 +1080,11 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
             ]
             history.append({"role": "user", "content": trimmed})
 
-        # Trim history
-        foreman_conversations[guild_id] = history[-20:]
+        # Trim history. Cap at 20 messages, then walk forward past any orphan
+        # tool_result blocks the slice may have stranded at the head.
+        trimmed_history = history[-20:]
+        _strip_orphan_tool_results(trimmed_history)
+        foreman_conversations[guild_id] = trimmed_history
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
@@ -1027,6 +1109,26 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
 
     except Exception as exc:
         now = datetime.now(timezone.utc).isoformat()
+        # Summarise message shape so 400s like "tool_result without preceding
+        # tool_use" are diagnosable from logs without leaking full payloads.
+        shape = []
+        for m in history[:6]:
+            content = m.get("content")
+            if isinstance(content, str):
+                shape.append(f"{m.get('role')}:text")
+            elif isinstance(content, list):
+                types = []
+                for b in content:
+                    t = getattr(b, "type", None) if not isinstance(b, dict) else b.get("type")
+                    tid = getattr(b, "tool_use_id", None) if not isinstance(b, dict) else b.get("tool_use_id")
+                    types.append(f"{t}({tid[-6:]})" if tid else str(t))
+                shape.append(f"{m.get('role')}:[{','.join(types)}]")
+            else:
+                shape.append(f"{m.get('role')}:{type(content).__name__}")
+        foreman_logger.exception(
+            "foreman API call failed guild=%s history_len=%d head_shape=%s",
+            guild_id, len(history), shape,
+        )
         await broadcast(guild_id, {
             "type": "chat", "from": "foreman", "to": "user",
             "content": f"Foreman error: {exc}", "createdAt": now,
