@@ -80,6 +80,16 @@ export const useTasksStore = defineStore('tasks', () => {
     return res.json()
   }
 
+  async function redirectTask(guildId, taskId, instructions) {
+    const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/redirect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instructions }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  }
+
   function _upsertTask(data) {
     const idx = tasks.value.findIndex(t => t.id === data.id)
     if (idx >= 0) {
@@ -173,6 +183,7 @@ export const useTasksStore = defineStore('tasks', () => {
     sendFollowup,
     finalizeTask,
     cancelTask,
+    redirectTask,
     handleWebSocketMessage,
     selectTask,
     closeTask,

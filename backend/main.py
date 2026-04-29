@@ -176,6 +176,7 @@ You coordinate worker agents that autonomously clone repos, write code, and open
 - After a worker finishes (task-complete), review the result and decide: send_followup for \
 additional work in the same worktree, or finalize_task when done
 - Message workers mid-task via message_worker for context
+- Redirect running tasks via redirect_task (SIGTERM + resume with full context) to course-correct
 - Cancel tasks that are going wrong or are no longer needed via cancel_task
 - Summarise status and outcomes when asked
 - Escalate to the human only when genuinely stuck
@@ -321,6 +322,27 @@ FOREMAN_TOOLS = [
                 "message": {"type": "string"},
             },
             "required": ["worker_id", "message"],
+        },
+    },
+    {
+        "name": "redirect_task",
+        "description": (
+            "Redirect a running task mid-execution with new instructions. "
+            "Terminates the current Claude subprocess, then immediately resumes it in the same "
+            "session — Claude keeps full context of what it was doing and acts on the new "
+            "instructions instead. For tasks awaiting review, acts as a follow-up. "
+            "Use this to course-correct without losing progress."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID (t-xxxxxx) to redirect."},
+                "instructions": {
+                    "type": "string",
+                    "description": "New instructions. Claude will see its full prior history.",
+                },
+            },
+            "required": ["task_id", "instructions"],
         },
     },
     {
@@ -585,6 +607,39 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                     "message": msg,
                 })
                 result_text = f"Message delivered to {wid}."
+
+            elif tu.name == "redirect_task":
+                task_id = inp["task_id"]
+                instructions = inp["instructions"]
+                result = await db.execute(
+                    select(Task.worker_id, Task.state).where(
+                        Task.id == task_id, Task.guild_id == guild_id
+                    )
+                )
+                row = result.one_or_none()
+                if not row:
+                    result_text = f"Task {task_id} not found."
+                else:
+                    worker_id_val, state = row
+                    if state in ("done", "failed", "cancelled"):
+                        result_text = f"Task {task_id} is {state} — cannot redirect."
+                    else:
+                        await db.execute(
+                            update(Task).where(Task.id == task_id).values(state="working")
+                        )
+                        await db.commit()
+                        await broadcast(guild_id, {
+                            "type": "task-redirect",
+                            "workerId": worker_id_val,
+                            "taskId": task_id,
+                            "instructions": instructions,
+                        })
+                        await broadcast(guild_id, {
+                            "type": "task-update",
+                            "taskId": task_id,
+                            "state": "working",
+                        })
+                        result_text = f"Redirect sent to {worker_id_val} for task {task_id}."
 
             elif tu.name == "cancel_task":
                 task_id = inp["task_id"]
@@ -2069,3 +2124,44 @@ async def cancel_task_endpoint(guild_id: str, task_id: str):
         "finishedAt": finished_at,
     })
     return {"status": "cancelled", "taskId": task_id}
+
+
+class RedirectCreate(BaseModel):
+    instructions: str
+
+
+@app.post("/guilds/{guild_id}/tasks/{task_id}/redirect")
+async def redirect_task_endpoint(guild_id: str, task_id: str, data: RedirectCreate):
+    """Redirect a running task: SIGTERM the Claude subprocess and resume it with new instructions."""
+    instructions = data.instructions.strip()
+    if not instructions:
+        raise HTTPException(status_code=400, detail="instructions required")
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_id == guild_id)
+        )
+        row = result.one_or_none()
+        if not row:
+            raise HTTPException(status_code=404, detail="Task not found")
+        worker_id, state = row
+        if state in ("done", "failed", "cancelled"):
+            raise HTTPException(status_code=409, detail=f"Task is already {state}")
+        await db.execute(
+            update(Task).where(Task.id == task_id).values(state="working")
+        )
+        await db.commit()
+    finally:
+        await db.close()
+    await broadcast(guild_id, {
+        "type": "task-redirect",
+        "workerId": worker_id,
+        "taskId": task_id,
+        "instructions": instructions,
+    })
+    await broadcast(guild_id, {
+        "type": "task-update",
+        "taskId": task_id,
+        "state": "working",
+    })
+    return {"status": "redirected", "taskId": task_id}

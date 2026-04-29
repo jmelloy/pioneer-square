@@ -73,6 +73,7 @@ class ClaudeProcess:
 
     def __init__(self, proc: asyncio.subprocess.Process) -> None:
         self.proc = proc
+        self.session_id: Optional[str] = None  # set once system:init is parsed
 
     async def send_message(self, text: str) -> bool:
         if self.proc.stdin is None or self.proc.stdin.is_closing():
@@ -231,12 +232,16 @@ async def run_claude_auto(
     emit: EmitFn,
     on_proc: Optional[Callable[[ClaudeProcess], None]] = None,
     claude_path: str = "claude",
+    resume_session_id: Optional[str] = None,
 ) -> tuple[bool, str, str]:
     """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text).
 
     stop_reason is the result event subtype: "success", "max_turns",
     "error_during_execution", "interrupted", or "no_events" when the process
     produced no stream-json output at all.
+
+    If *resume_session_id* is given, passes ``--resume <id>`` so Claude continues
+    the previous session with full context (used after a redirect/SIGTERM).
     """
     cmd = [
         claude_path,
@@ -244,8 +249,11 @@ async def run_claude_auto(
         "--verbose",
         "--max-turns", str(max_turns),
         "--dangerously-skip-permissions",
-        "-p", description,
     ]
+    if resume_session_id:
+        cmd += ["--resume", resume_session_id, "-p", description]
+    else:
+        cmd += ["-p", description]
     logger.info("Spawning claude in %s; description=%r", cwd, description)
     logger.info("claude argv: %s", cmd)
     await emit(f"[claude] Starting: {description[:80]}")
@@ -262,8 +270,9 @@ async def run_claude_auto(
             limit=STDOUT_LINE_LIMIT,
         )
         logger.info("claude subprocess started pid=%s", proc.pid)
+        claude_proc = ClaudeProcess(proc)
         if on_proc is not None:
-            on_proc(ClaudeProcess(proc))
+            on_proc(claude_proc)
 
         async def _drain_stderr() -> None:
             async for raw in proc.stderr:  # type: ignore[union-attr]
@@ -289,6 +298,11 @@ async def run_claude_auto(
                 await emit(line_str)
                 continue
             _log_event_full(event, proc.pid, event_count)
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                sid = event.get("session_id")
+                if sid:
+                    claude_proc.session_id = sid
+                    logger.info("claude[%d] session_id=%s", proc.pid, sid)
             if event.get("type") == "result":
                 stop_reason = event.get("subtype", "success")
             text = parse_claude_event(event)
