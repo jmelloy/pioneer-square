@@ -40,6 +40,9 @@ class _AgentSlot:
         self.agent_id = agent_id
         self.current_claude: Optional[claude_runner.ClaudeProcess] = None
         self.current_task_id: Optional[str] = None
+        # Last state we told the backend about; resent on WS reconnect so the
+        # backend (and frontend) don't show the agent stuck offline.
+        self.state: str = "idle"
 
 
 class Worker:
@@ -133,6 +136,7 @@ class Worker:
         return _emit_task
 
     async def _set_state(self, state: str, slot: _AgentSlot) -> None:
+        slot.state = state
         await self._send({
             "type": "agent-state",
             "agentId": slot.agent_id,
@@ -156,6 +160,25 @@ class Worker:
             "workerId": self.cfg.worker_id,
             "repos": self.cfg.repos,
         })
+
+    async def _on_ws_reconnect(self) -> None:
+        """Re-announce ourselves after the WebSocket reconnects.
+
+        The backend marks every joined agent offline when the socket closes, so
+        without this the frontend sees the worker as offline forever even though
+        the worker is back online and listening.
+        """
+        logger.info("WebSocket reconnected — re-sending join and agent states")
+        await self._join()
+        # `join` resets each agent to idle in the backend. Re-send the actual
+        # state so a mid-task reconnect doesn't show us as idle while we work.
+        for slot in self.slots:
+            if slot.state and slot.state != "idle":
+                await self._send({
+                    "type": "agent-state",
+                    "agentId": slot.agent_id,
+                    "state": slot.state,
+                })
 
     async def _task_update(self, task_id: str, **fields: object) -> None:
         await self._send({
@@ -201,6 +224,7 @@ class Worker:
         await self._fetch_github_token_if_needed()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
+        self.ws.on_reconnect = self._on_ws_reconnect
         await self.ws.connect()
         await self._join()
         logger.info(

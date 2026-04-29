@@ -91,3 +91,57 @@ async def test_run_sends_disconnect_before_ws_close():
     )
     assert disconnect_msgs[0]["workerId"] == "w-test01"
     assert close_calls, "ws.close() was never called"
+
+
+async def test_on_ws_reconnect_resends_join_and_register():
+    """After a WS reconnect, the worker must re-announce itself so the backend
+    knows it's online again. Without this the frontend shows the worker offline
+    even though the WebSocket is back up."""
+    cfg = _make_cfg()
+    cfg.max_agents = 2
+    worker = Worker(cfg)
+    sent: list[dict] = []
+    worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
+
+    await worker._on_ws_reconnect()
+
+    join_msgs = [m for m in sent if m.get("type") == "join"]
+    register_msgs = [m for m in sent if m.get("type") == "worker-register"]
+    assert len(join_msgs) == 2, f"Expected one join per slot, got {sent}"
+    assert len(register_msgs) == 1, f"Expected one worker-register, got {sent}"
+    assert {m["agentId"] for m in join_msgs} == {s.agent_id for s in worker.slots}
+
+
+async def test_on_ws_reconnect_resends_non_idle_agent_state():
+    """A reconnect during an active task must restore the slot's actual state
+    so the backend doesn't leave the agent stuck at idle."""
+    cfg = _make_cfg()
+    cfg.max_agents = 2
+    worker = Worker(cfg)
+    worker.slots[0].state = "working"
+    worker.slots[1].state = "idle"
+    sent: list[dict] = []
+    worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
+
+    await worker._on_ws_reconnect()
+
+    state_msgs = [m for m in sent if m.get("type") == "agent-state"]
+    assert len(state_msgs) == 1, (
+        f"Only the non-idle slot should resend agent-state, got: {state_msgs}"
+    )
+    assert state_msgs[0]["agentId"] == worker.slots[0].agent_id
+    assert state_msgs[0]["state"] == "working"
+
+
+async def test_set_state_tracks_state_on_slot():
+    """_set_state must record the current state so reconnect can restore it."""
+    worker = Worker(_make_cfg())
+    worker._send = AsyncMock()
+    slot = worker.slots[0]
+    assert slot.state == "idle"
+
+    await worker._set_state("working", slot)
+    assert slot.state == "working"
+
+    await worker._set_state("awaiting-review", slot)
+    assert slot.state == "awaiting-review"

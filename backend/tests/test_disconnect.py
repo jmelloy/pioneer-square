@@ -135,6 +135,59 @@ def test_worker_disconnect_marks_agent_and_worker_offline(client):
     assert worker_state == "offline", f"worker.state={worker_state!r}, expected 'offline'"
 
 
+def test_reconnect_does_not_get_clobbered_by_old_finally(client):
+    """If a new WebSocket joins for an existing agent before the old WS's
+    teardown finishes, the old WS's cleanup must not mark the freshly-online
+    agent offline. Otherwise the frontend shows the worker offline forever
+    after a reconnect."""
+    test_client, db_path = client
+    guild_id = "gld003"
+    worker_id = "w-rec001"
+    agent_id = "a-rec001"
+
+    _setup_guild_and_worker(db_path, guild_id, worker_id)
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws2:
+        # First connection joins as the agent.
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws1:
+            ws1.send_json({
+                "type": "join",
+                "agentId": agent_id,
+                "agentName": "Test Worker",
+                "agentType": "worker",
+                "workerId": worker_id,
+            })
+            ws1.receive_json()
+            ws2.receive_json()  # observer drains broadcast
+
+            # Simulate a reconnect: a new WS takes over the same agent_id.
+            ws2.send_json({
+                "type": "join",
+                "agentId": agent_id,
+                "agentName": "Test Worker",
+                "agentType": "worker",
+                "workerId": worker_id,
+            })
+            ws2.receive_json()
+            ws1.receive_json()  # ws1 sees the second join broadcast
+
+            # ws1 closes when the with-block exits. Its teardown must NOT
+            # mark the agent offline because ws2 now owns it.
+
+        # After ws1 closes, but ws2 (the new owner) is still connected, the
+        # agent should still be online in the DB.
+        agent_state, worker_state = _get_states(db_path, agent_id, worker_id)
+        assert agent_state != "offline", (
+            f"Old WS's cleanup wrongly marked the reconnected agent offline: "
+            f"agent.state={agent_state!r}"
+        )
+        assert worker_state != "offline", (
+            f"Old WS's cleanup wrongly marked the reconnected worker offline: "
+            f"worker.state={worker_state!r}"
+        )
+
+
+
 def test_worker_disconnect_without_prior_join_is_harmless(client):
     """worker-disconnect with no joined agents must not crash the server.
 
