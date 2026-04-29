@@ -2195,7 +2195,7 @@ async def get_guild_logs(
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Guild not found")
         stmt = select(
-            TaskLog.timestamp, TaskLog.line, TaskLog.worker_id, TaskLog.agent_id, TaskLog.task_id
+            TaskLog.timestamp, TaskLog.line, TaskLog.worker_id, TaskLog.agent_id, TaskLog.task_id, TaskLog.data
         )
         if task_id:
             stmt = stmt.where(TaskLog.task_id == task_id)
@@ -2205,7 +2205,17 @@ async def get_guild_logs(
             stmt = stmt.where(TaskLog.agent_id == agent_id)
         stmt = stmt.order_by(TaskLog.id.asc())
         result = await db.execute(stmt)
-        return [dict(r._mapping) for r in result.fetchall()]
+        rows = []
+        for r in result.fetchall():
+            row = dict(r._mapping)
+            raw = row.pop("data", None)
+            if raw:
+                try:
+                    row["detail"] = json.loads(raw)
+                except Exception:
+                    pass
+            rows.append(row)
+        return rows
     finally:
         await db.close()
 

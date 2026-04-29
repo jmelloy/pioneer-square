@@ -61,20 +61,20 @@ export const useAgentsStore = defineStore('agents', () => {
     if (agent) agent.state = state
   }
 
-  function addLog(agentId, line, timestamp) {
+  function addLog(agentId, line, timestamp, detail) {
     const agent = agents.value.find(a => a.id === agentId)
     if (agent && line) {
       const ts = timestamp || new Date().toISOString()
-      agent.logs.push({ line, timestamp: ts })
+      agent.logs.push({ line, timestamp: ts, detail: detail || null })
       if (agent.logs.length > 500) agent.logs.shift()
     }
   }
 
-  function addWorkerLog(workerId, line, timestamp) {
+  function addWorkerLog(workerId, line, timestamp, detail) {
     if (!line) return
     if (!workerLogs.value[workerId]) workerLogs.value[workerId] = []
     const ts = timestamp || new Date().toISOString()
-    workerLogs.value[workerId].push({ line, timestamp: ts })
+    workerLogs.value[workerId].push({ line, timestamp: ts, detail: detail || null })
     if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
   }
 
@@ -216,8 +216,12 @@ export const useAgentsStore = defineStore('agents', () => {
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?worker_id=${workerId}`)
       if (res.ok) {
-        const logs = await res.json()
-        workerLogs.value[workerId] = logs
+        const raw = await res.json()
+        workerLogs.value[workerId] = raw.map(r => ({
+          line: r.line,
+          timestamp: r.timestamp,
+          detail: r.detail || null,
+        }))
       }
     } catch (e) {
       console.error('Failed to fetch worker logs', e)
@@ -228,7 +232,12 @@ export const useAgentsStore = defineStore('agents', () => {
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?agent_id=${agentId}`)
       if (res.ok) {
-        const historical = await res.json()
+        const raw = await res.json()
+        const historical = raw.map(r => ({
+          line: r.line,
+          timestamp: r.timestamp,
+          detail: r.detail || null,
+        }))
         const agent = agents.value.find(a => a.id === agentId)
         if (agent) {
           const existing = agent.logs
@@ -248,12 +257,12 @@ export const useAgentsStore = defineStore('agents', () => {
       updateAgentState(data.agentId, data.state)
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
-      if (data.agentId) addLog(data.agentId, data.line, data.timestamp)
+      if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)
       // Route to per-worker log buffer; fall back to agent's workerId if backend didn't send it
       const wid = data.workerId || (data.agentId
         ? agents.value.find(a => a.id === data.agentId)?.workerId
         : null)
-      if (wid) addWorkerLog(wid, data.line, data.timestamp)
+      if (wid) addWorkerLog(wid, data.line, data.timestamp, data.detail)
     }
   }
 
