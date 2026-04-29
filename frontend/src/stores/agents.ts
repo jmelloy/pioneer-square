@@ -1,23 +1,54 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
-import { useAuthStore } from './auth.js'
+import { useAuthStore } from './auth'
+import type { Agent, AgentState, LogEntry, Worker, WSMessage } from '../types'
 
 const API_BASE = 'http://localhost:8000'
 
-const STATE_RANK = { working: 0, thinking: 1, busy: 2, error: 3, 'awaiting-review': 4, idle: 5, offline: 6 }
+const STATE_RANK: Record<string, number> = {
+  working: 0,
+  thinking: 1,
+  busy: 2,
+  error: 3,
+  'awaiting-review': 4,
+  idle: 5,
+  offline: 6,
+}
+
+interface RegisterAgentData {
+  agentId: string
+  agentName?: string
+  agentType?: string
+  workerId?: string | null
+  state?: AgentState
+  joinedAt?: string
+}
+
+interface RunAgentOpts {
+  tool: string
+  prompt: string
+  model?: string
+  provider?: string
+}
+
+interface AssignTaskOpts {
+  description: string
+  issueNumber?: number | null
+  issueRepo?: string | null
+}
 
 export const useAgentsStore = defineStore('agents', () => {
-  const agents = ref([])
-  const workerLogs = ref({})       // workerId -> [{line, timestamp}]
-  const selectedWorkerId = ref(null)
-  const openedWorkerIds = ref([])
-  const selectedAgentId = ref(null)
-  const openedAgentIds = ref([])
+  const agents = ref<Agent[]>([])
+  const workerLogs = ref<Record<string, LogEntry[]>>({})
+  const selectedWorkerId = ref<string | null>(null)
+  const openedWorkerIds = ref<string[]>([])
+  const selectedAgentId = ref<string | null>(null)
+  const openedAgentIds = ref<string[]>([])
 
   // Unique workers derived from agent slots
-  const workers = computed(() => {
-    const map = new Map()
+  const workers = computed<Worker[]>(() => {
+    const map = new Map<string, Worker>()
     for (const agent of agents.value) {
       if (!agent.workerId) continue
       if (!map.has(agent.workerId)) {
@@ -27,7 +58,7 @@ export const useAgentsStore = defineStore('agents', () => {
           state: agent.state,
         })
       } else {
-        const w = map.get(agent.workerId)
+        const w = map.get(agent.workerId)!
         if ((STATE_RANK[agent.state] ?? 7) < (STATE_RANK[w.state] ?? 7)) {
           w.state = agent.state
         }
@@ -36,7 +67,7 @@ export const useAgentsStore = defineStore('agents', () => {
     return Array.from(map.values())
   })
 
-  function registerAgent(agentData) {
+  function registerAgent(agentData: RegisterAgentData) {
     if (agentData.agentType === 'foreman') return
     const existing = agents.value.find(a => a.id === agentData.agentId)
     if (existing) {
@@ -56,12 +87,12 @@ export const useAgentsStore = defineStore('agents', () => {
     }
   }
 
-  function updateAgentState(agentId, state) {
+  function updateAgentState(agentId: string, state: AgentState) {
     const agent = agents.value.find(a => a.id === agentId)
     if (agent) agent.state = state
   }
 
-  function addLog(agentId, line, timestamp, detail) {
+  function addLog(agentId: string, line: string, timestamp?: string, detail?: any) {
     const agent = agents.value.find(a => a.id === agentId)
     if (agent && line) {
       const ts = timestamp || new Date().toISOString()
@@ -70,7 +101,7 @@ export const useAgentsStore = defineStore('agents', () => {
     }
   }
 
-  function addWorkerLog(workerId, line, timestamp, detail) {
+  function addWorkerLog(workerId: string, line: string, timestamp?: string, detail?: any) {
     if (!line) return
     if (!workerLogs.value[workerId]) workerLogs.value[workerId] = []
     const ts = timestamp || new Date().toISOString()
@@ -78,33 +109,33 @@ export const useAgentsStore = defineStore('agents', () => {
     if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
   }
 
-  function selectWorker(workerId) {
+  function selectWorker(workerId: string | null) {
     selectedWorkerId.value = workerId
     if (workerId && !openedWorkerIds.value.includes(workerId)) {
       openedWorkerIds.value.push(workerId)
     }
   }
 
-  function closeWorker(workerId) {
+  function closeWorker(workerId: string) {
     const idx = openedWorkerIds.value.indexOf(workerId)
     if (idx !== -1) openedWorkerIds.value.splice(idx, 1)
     if (selectedWorkerId.value === workerId) selectedWorkerId.value = null
   }
 
-  function selectAgent(agentId) {
+  function selectAgent(agentId: string | null) {
     selectedAgentId.value = agentId
     if (agentId && !openedAgentIds.value.includes(agentId)) {
       openedAgentIds.value.push(agentId)
     }
   }
 
-  function closeAgent(agentId) {
+  function closeAgent(agentId: string) {
     const idx = openedAgentIds.value.indexOf(agentId)
     if (idx !== -1) openedAgentIds.value.splice(idx, 1)
     if (selectedAgentId.value === agentId) selectedAgentId.value = null
   }
 
-  function sendMessage(agentId, content) {
+  function sendMessage(agentId: string, content: string) {
     const guildStore = useGuildStore()
     guildStore.sendMessage({
       type: 'chat',
@@ -114,11 +145,11 @@ export const useAgentsStore = defineStore('agents', () => {
     })
   }
 
-  function _authHeaders() {
+  function _authHeaders(): Record<string, string> {
     return useAuthStore().authHeaders()
   }
 
-  async function runAgent(agentId, { tool, prompt, model, provider }) {
+  async function runAgent(agentId: string, { tool, prompt, model, provider }: RunAgentOpts) {
     const guildStore = useGuildStore()
     const guildId = guildStore.currentGuild?.id
     if (!guildId) throw new Error('No active guild')
@@ -135,7 +166,7 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  async function stopAgent(agentId) {
+  async function stopAgent(agentId: string) {
     const guildStore = useGuildStore()
     const guildId = guildStore.currentGuild?.id
     if (!guildId) throw new Error('No active guild')
@@ -151,7 +182,7 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  async function assignTask(workerId, { description, issueNumber, issueRepo }) {
+  async function assignTask(workerId: string, { description, issueNumber, issueRepo }: AssignTaskOpts) {
     const guildStore = useGuildStore()
     const guildId = guildStore.currentGuild?.id
     if (!guildId) throw new Error('No active guild')
@@ -172,7 +203,7 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  async function messageWorker(workerId, message) {
+  async function messageWorker(workerId: string, message: string) {
     const guildStore = useGuildStore()
     const guildId = guildStore.currentGuild?.id
     if (!guildId) throw new Error('No active guild')
@@ -212,12 +243,12 @@ export const useAgentsStore = defineStore('agents', () => {
     openedAgentIds.value = []
   }
 
-  async function fetchWorkerLogs(guildId, workerId) {
+  async function fetchWorkerLogs(guildId: string, workerId: string) {
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?worker_id=${workerId}`)
       if (res.ok) {
         const raw = await res.json()
-        workerLogs.value[workerId] = raw.map(r => ({
+        workerLogs.value[workerId] = raw.map((r: any) => ({
           line: r.line,
           timestamp: r.timestamp,
           detail: r.detail || null,
@@ -228,12 +259,12 @@ export const useAgentsStore = defineStore('agents', () => {
     }
   }
 
-  async function fetchAgentLogs(guildId, agentId) {
+  async function fetchAgentLogs(guildId: string, agentId: string) {
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?agent_id=${agentId}`)
       if (res.ok) {
         const raw = await res.json()
-        const historical = raw.map(r => ({
+        const historical: LogEntry[] = raw.map((r: any) => ({
           line: r.line,
           timestamp: r.timestamp,
           detail: r.detail || null,
@@ -250,9 +281,9 @@ export const useAgentsStore = defineStore('agents', () => {
     }
   }
 
-  function handleWebSocketMessage(data) {
+  function handleWebSocketMessage(data: WSMessage) {
     if (data.type === 'agent-joined') {
-      registerAgent(data)
+      registerAgent(data as RegisterAgentData)
     } else if (data.type === 'agent-state') {
       updateAgentState(data.agentId, data.state)
     } else if (data.type === 'terminal-output') {

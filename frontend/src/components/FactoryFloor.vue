@@ -156,11 +156,15 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
-import { useAgentsStore } from '../stores/agents.js'
-import { useTasksStore } from '../stores/tasks.js'
+import { useAgentsStore } from '../stores/agents'
+import { useTasksStore } from '../stores/tasks'
+import type { Agent, Task } from '../types'
 import AgentAvatar from './AgentAvatar.vue'
+
+interface Position { x: number; y: number }
+interface Station extends Position { task: Task | null }
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
@@ -169,7 +173,7 @@ const agents = computed(() => agentsStore.agents)
 const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
 
 // ── Canvas dimensions ──────────────────────────────────────
-const floorEl = ref(null)
+const floorEl = ref<HTMLElement | null>(null)
 const floorW  = ref(800)
 const floorH  = ref(600)
 
@@ -235,7 +239,7 @@ const POIS = computed(() => [
   { id: 'coffee',  x: coffeePotPos.value.x + 5, y: coffeePotPos.value.y + 30 },
 ])
 
-const visibleStations = computed(() => {
+const visibleStations = computed<Station[]>(() => {
   const active = tasksStore.tasks
     .filter(t => !['done', 'failed'].includes(t.state) && t.worker_id && t.worker_id !== 'foreman')
     .slice(0, 6)
@@ -246,22 +250,22 @@ const visibleStations = computed(() => {
 })
 
 // Reactive per-agent state (bound to template)
-const agentPositions = reactive({})
-const agentWalking   = reactive({})
-const agentDuration  = reactive({}) // CSS transition seconds
+const agentPositions = reactive<Record<string, Position>>({})
+const agentWalking   = reactive<Record<string, boolean>>({})
+const agentDuration  = reactive<Record<string, number>>({}) // CSS transition seconds
 
 // Non-reactive walk queues and timers
-const agentWaypoints = {}
-const agentTimers    = {}
-const prevAtWork     = {}
+const agentWaypoints: Record<string, Position[]> = {}
+const agentTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+const prevAtWork: Record<string, boolean> = {}
 
-function agentPos(id) {
+function agentPos(id: string): Position {
   return agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
 }
 
 // ── Pathfinding helpers ────────────────────────────────────
 
-function getYZone(y) {
+function getYZone(y: number) {
   const r1 = ROW1.value, r2 = ROW2.value
   if (y < r1.yMin) return 'top'
   if (y < r1.yMax) return 'row1'
@@ -270,14 +274,14 @@ function getYZone(y) {
   return 'bot'
 }
 
-function closestGapX(x) {
+function closestGapX(x: number) {
   return GAP_XS.value.reduce((best, gx) => Math.abs(gx - x) < Math.abs(best - x) ? gx : best)
 }
 
 // Returns a list of {x,y} waypoints from (x1,y1) to (x2,y2) that avoid station rows.
 // Within the same clear zone the path is direct (one segment).
 // Cross-zone paths route through the nearest column gap: H → V → H (three straight segments max).
-function computeWaypoints(x1, y1, x2, y2) {
+function computeWaypoints(x1: number, y1: number, x2: number, y2: number): Position[] {
   const sz = getYZone(y1)
   const ez = getYZone(y2)
 
@@ -286,14 +290,14 @@ function computeWaypoints(x1, y1, x2, y2) {
   }
 
   const gx = closestGapX((x1 + x2) / 2)
-  const pts = []
+  const pts: Position[] = []
   if (Math.abs(x1 - gx) > 12) pts.push({ x: gx, y: y1 })
   if (Math.abs(y1 - y2) > 12) pts.push({ x: gx, y: y2 })
   pts.push({ x: x2, y: y2 })
   return pts
 }
 
-function randomInClearZone() {
+function randomInClearZone(): Position {
   const { xMin, xMax, yMin: walkYMin, yMax: walkYMax } = WALK_AREA.value
   const { yMin: r1Min, yMax: r1Max } = ROW1.value
   const { yMin: r2Min, yMax: r2Max } = ROW2.value
@@ -310,20 +314,20 @@ function randomInClearZone() {
   }
 }
 
-function pickDestination() {
+function pickDestination(): Position {
   const pois = POIS.value
   if (Math.random() < 0.38) return pois[Math.floor(Math.random() * pois.length)]
   return randomInClearZone()
 }
 
-function walkDuration(x1, y1, x2, y2) {
+function walkDuration(x1: number, y1: number, x2: number, y2: number) {
   const dist = Math.hypot(x2 - x1, y2 - y1)
   return Math.max(0.65, dist / 130) // 130 px/s, min 0.65 s
 }
 
 // ── Walk step machine ──────────────────────────────────────
 
-function stepAgent(id) {
+function stepAgent(id: string) {
   const queue = agentWaypoints[id]
   if (!queue || queue.length === 0) {
     agentWalking[id] = false
@@ -332,7 +336,7 @@ function stepAgent(id) {
     return
   }
   const cur = agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
-  const next = queue.shift()
+  const next = queue.shift()!
   const dur = walkDuration(cur.x, cur.y, next.x, next.y)
   agentDuration[id] = dur
   agentWalking[id] = true
@@ -340,7 +344,7 @@ function stepAgent(id) {
   agentTimers[id] = setTimeout(() => stepAgent(id), dur * 1000 + 50)
 }
 
-function scheduleWalk(id) {
+function scheduleWalk(id: string) {
   const agent = agents.value.find(a => a.id === id)
   if (!agent || isAgentAtWork(agent)) return
   const cur = agentPositions[id] || randomInClearZone()
@@ -351,17 +355,18 @@ function scheduleWalk(id) {
 
 // ── Agent / station helpers ────────────────────────────────
 
-function stationForAgent(agent) {
+function stationForAgent(agent: Agent) {
   if (!agent.workerId) return null
   return visibleStations.value.find(s => s.task && s.task.worker_id === agent.workerId) || null
 }
 
-function isAgentAtWork(agent) {
+function isAgentAtWork(agent: Agent) {
   return !!stationForAgent(agent) && !['idle', 'offline'].includes(agent.state)
 }
 
-function sendAgentToStation(agent) {
+function sendAgentToStation(agent: Agent) {
   const station = stationForAgent(agent)
+  if (!station) return
   const target = { x: station.x + 25, y: station.y + 90 }
   const cur = agentPositions[agent.id] || randomInClearZone()
   clearTimeout(agentTimers[agent.id])
@@ -369,7 +374,7 @@ function sendAgentToStation(agent) {
   stepAgent(agent.id)
 }
 
-function initAgent(agent) {
+function initAgent(agent: Agent) {
   if (!agentPositions[agent.id]) {
     agentPositions[agent.id] = randomInClearZone()
     agentDuration[agent.id] = 1.5
@@ -434,12 +439,12 @@ const tickerMessages = computed(() => {
   return msgs
 })
 
-function truncate(str, len) {
+function truncate(str?: string, len = 10) {
   if (!str) return ''
   return str.length > len ? str.slice(0, len) + '…' : str
 }
 
-function stateLabel(state) {
+function stateLabel(state: string) {
   return tasksStore.stateLabel(state)
 }
 </script>

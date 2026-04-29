@@ -1,15 +1,16 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import type { AuthUser } from '../types'
 
 const API_BASE = 'http://localhost:8000'
 
 export const useAuthStore = defineStore('auth', () => {
-  const loginToken = ref(localStorage.getItem('auth_token') || '')
-  const user = ref(JSON.parse(localStorage.getItem('auth_user') || 'null'))
+  const loginToken = ref<string>(localStorage.getItem('auth_token') || '')
+  const user = ref<AuthUser | null>(JSON.parse(localStorage.getItem('auth_user') || 'null'))
 
   const isLoggedIn = computed(() => !!loginToken.value && !!user.value)
 
-  function authHeaders() {
+  function authHeaders(): Record<string, string> {
     return loginToken.value
       ? { Authorization: `Bearer ${loginToken.value}` }
       : {}
@@ -27,7 +28,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   // Called on landing page mount when GitHub redirects back with query params.
   // Returns true if callback params were present and processed.
-  function restoreFromCallback(params) {
+  function restoreFromCallback(params: URLSearchParams) {
     const token = params.get('login_token')
     const login = params.get('gh_login')
     const name = params.get('gh_name')

@@ -71,24 +71,24 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
-import { useAgentsStore } from '../stores/agents.js'
-import { useGuildStore } from '../stores/guild.js'
+import { useAgentsStore } from '../stores/agents'
+import { useGuildStore } from '../stores/guild'
 
-const props = defineProps({
-  workerId: { type: String, required: true }
-})
+const props = defineProps<{
+  workerId: string
+}>()
 
 const agentsStore = useAgentsStore()
 const guildStore = useGuildStore()
-const terminalEl = ref(null)
-const expandedIdx = ref(null)
+const terminalEl = ref<HTMLElement | null>(null)
+const expandedIdx = ref<number | null>(null)
 
 const worker = computed(() => agentsStore.workers.find(w => w.id === props.workerId))
 const logs = computed(() => agentsStore.workerLogs[props.workerId] || [])
 
-function toggleDetail(i) {
+function toggleDetail(i: number) {
   expandedIdx.value = expandedIdx.value === i ? null : i
 }
 
@@ -97,17 +97,17 @@ onMounted(async () => {
   if (guildId) await agentsStore.fetchWorkerLogs(guildId, props.workerId)
 })
 
-function padName(name) {
+function padName(name?: string) {
   if (!name) return ''.padEnd(20)
   return name.slice(0, 20).padEnd(20)
 }
 
-function formatTime(isoStr) {
+function formatTime(isoStr?: string) {
   if (!isoStr) return '00:00:00'
   return new Date(isoStr).toLocaleTimeString('en-US', { hour12: false })
 }
 
-function lineClass(line) {
+function lineClass(line: string) {
   if (!line) return ''
   if (line.startsWith('✓')) return 'log-success'
   if (line.startsWith('✗')) return 'log-error'

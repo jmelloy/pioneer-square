@@ -112,14 +112,15 @@
   <GitHubConfigModal v-if="showGitHubModal" @close="showGitHubModal = false" />
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useGuildStore } from '../stores/guild.js'
-import { useGitHubStore } from '../stores/github.js'
-import { useAuthStore } from '../stores/auth.js'
-import { useTasksStore } from '../stores/tasks.js'
-import { useAgentsStore } from '../stores/agents.js'
+import { useGuildStore } from '../stores/guild'
+import { useGitHubStore } from '../stores/github'
+import { useAuthStore } from '../stores/auth'
+import { useTasksStore } from '../stores/tasks'
+import { useAgentsStore } from '../stores/agents'
+import type { Task } from '../types'
 import GitHubConfigModal from './GitHubConfigModal.vue'
 
 const router = useRouter()
@@ -135,7 +136,7 @@ const isConnected = computed(() => guildStore.isConnected)
 
 const renamingGuild = ref(false)
 const renameValue = ref('')
-const renameInput = ref(null)
+const renameInput = ref<HTMLInputElement | null>(null)
 
 async function startRename() {
   if (!currentGuild.value) return
@@ -149,7 +150,7 @@ async function commitRename() {
   if (!renamingGuild.value) return
   renamingGuild.value = false
   const trimmed = renameValue.value.trim()
-  if (trimmed && trimmed !== currentGuild.value?.name) {
+  if (trimmed && currentGuild.value && trimmed !== currentGuild.value.name) {
     try {
       await guildStore.renameGuild(currentGuild.value.id, trimmed)
     } catch (e) {
@@ -170,20 +171,20 @@ const groupedTasks = computed(() => {
   const weekAgo = new Date(today)
   weekAgo.setDate(weekAgo.getDate() - 7)
 
-  const groupMap = new Map()
+  const groupMap = new Map<string, Task[]>()
 
   for (const task of tasksStore.tasks) {
     const d = task.created_at ? new Date(task.created_at) : new Date()
     const taskDay = new Date(d.getFullYear(), d.getMonth(), d.getDate())
 
-    let label
+    let label: string
     if (taskDay >= today) label = 'Today'
     else if (taskDay >= yesterday) label = 'Yesterday'
     else if (taskDay >= weekAgo) label = d.toLocaleDateString('en-US', { weekday: 'long' })
     else label = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
 
     if (!groupMap.has(label)) groupMap.set(label, [])
-    groupMap.get(label).push(task)
+    groupMap.get(label)!.push(task)
   }
 
   return Array.from(groupMap.entries()).map(([label, tasks]) => ({ label, tasks }))
@@ -193,15 +194,15 @@ function goHome() {
   router.push('/')
 }
 
-function openTask(taskId) {
+function openTask(taskId: string) {
   tasksStore.selectTask(taskId)
 }
 
-function agentsForWorker(workerId) {
+function agentsForWorker(workerId: string) {
   return agentsStore.agents.filter(a => a.workerId === workerId)
 }
 
-function currentTaskForWorker(workerId) {
+function currentTaskForWorker(workerId: string) {
   const active = tasksStore.tasks.filter(
     t => t.worker_id === workerId && !['done', 'failed'].includes(t.state)
   )
@@ -209,16 +210,16 @@ function currentTaskForWorker(workerId) {
   return tasksStore.tasks.find(t => t.worker_id === workerId) || null
 }
 
-function openAgentTask(workerId) {
+function openAgentTask(workerId: string) {
   const task = currentTaskForWorker(workerId)
   if (task) tasksStore.selectTask(task.id)
 }
 
-function formatTime(isoStr) {
+function formatTime(isoStr?: string) {
   if (!isoStr) return ''
   const d = new Date(isoStr)
   const now = new Date()
-  const diffMins = Math.floor((now - d) / 60000)
+  const diffMins = Math.floor((now.getTime() - d.getTime()) / 60000)
   if (diffMins < 1) return 'just now'
   if (diffMins < 60) return `${diffMins}m ago`
   const diffHours = Math.floor(diffMins / 60)

@@ -1,9 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import type { LogEntry, Task, TaskState, WSMessage } from '../types'
 
 const API_BASE = 'http://localhost:8000'
 
-const STATE_LABELS = {
+const STATE_LABELS: Record<string, string> = {
   pending: 'pending',
   planning: 'planning',
   working: 'working',
@@ -14,7 +15,7 @@ const STATE_LABELS = {
   cancelled: 'cancelled',
 }
 
-const STATE_COLORS = {
+const STATE_COLORS: Record<string, string> = {
   pending: 'dim',
   planning: 'blue',
   working: 'green',
@@ -26,12 +27,12 @@ const STATE_COLORS = {
 }
 
 export const useTasksStore = defineStore('tasks', () => {
-  const tasks = ref([])
-  const taskLogs = ref({})   // task_id -> [{ line, timestamp, detail? }]
-  const selectedTaskId = ref(null)
-  const openedTaskIds = ref([])
+  const tasks = ref<Task[]>([])
+  const taskLogs = ref<Record<string, LogEntry[]>>({})
+  const selectedTaskId = ref<string | null>(null)
+  const openedTaskIds = ref<string[]>([])
 
-  async function fetchTasks(guildId) {
+  async function fetchTasks(guildId: string) {
     if (!guildId) return
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks`)
@@ -41,12 +42,12 @@ export const useTasksStore = defineStore('tasks', () => {
     }
   }
 
-  async function fetchTaskLogs(guildId, taskId) {
+  async function fetchTaskLogs(guildId: string, taskId: string) {
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/logs`)
       if (!res.ok) return []
       const raw = await res.json()
-      const logs = raw.map(r => ({
+      const logs: LogEntry[] = raw.map((r: any) => ({
         line: r.line,
         timestamp: r.timestamp,
         detail: r.detail || null,
@@ -59,7 +60,7 @@ export const useTasksStore = defineStore('tasks', () => {
     }
   }
 
-  async function sendFollowup(guildId, taskId, instructions) {
+  async function sendFollowup(guildId: string, taskId: string, instructions: string) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/followup`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -69,7 +70,7 @@ export const useTasksStore = defineStore('tasks', () => {
     return res.json()
   }
 
-  async function finalizeTask(guildId, taskId) {
+  async function finalizeTask(guildId: string, taskId: string) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/finalize`, {
       method: 'POST',
     })
@@ -77,7 +78,7 @@ export const useTasksStore = defineStore('tasks', () => {
     return res.json()
   }
 
-  async function cancelTask(guildId, taskId) {
+  async function cancelTask(guildId: string, taskId: string) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/cancel`, {
       method: 'POST',
     })
@@ -85,7 +86,7 @@ export const useTasksStore = defineStore('tasks', () => {
     return res.json()
   }
 
-  async function redirectTask(guildId, taskId, instructions) {
+  async function redirectTask(guildId: string, taskId: string, instructions: string) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/redirect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -95,7 +96,7 @@ export const useTasksStore = defineStore('tasks', () => {
     return res.json()
   }
 
-  function _upsertTask(data) {
+  function _upsertTask(data: Task) {
     const idx = tasks.value.findIndex(t => t.id === data.id)
     if (idx >= 0) {
       Object.assign(tasks.value[idx], data)
@@ -104,7 +105,7 @@ export const useTasksStore = defineStore('tasks', () => {
     }
   }
 
-  function handleWebSocketMessage(data) {
+  function handleWebSocketMessage(data: WSMessage) {
     if (data.type === 'task-created') {
       _upsertTask({
         id: data.taskId,
@@ -155,14 +156,14 @@ export const useTasksStore = defineStore('tasks', () => {
     }
   }
 
-  function selectTask(taskId) {
+  function selectTask(taskId: string | null) {
     selectedTaskId.value = taskId
     if (taskId && !openedTaskIds.value.includes(taskId)) {
       openedTaskIds.value.push(taskId)
     }
   }
 
-  function closeTask(taskId) {
+  function closeTask(taskId: string) {
     const idx = openedTaskIds.value.indexOf(taskId)
     if (idx !== -1) openedTaskIds.value.splice(idx, 1)
     if (selectedTaskId.value === taskId) selectedTaskId.value = null
@@ -175,8 +176,8 @@ export const useTasksStore = defineStore('tasks', () => {
     openedTaskIds.value = []
   }
 
-  function stateLabel(state) { return STATE_LABELS[state] || state }
-  function stateColor(state) { return STATE_COLORS[state] || 'dim' }
+  function stateLabel(state: TaskState | string) { return STATE_LABELS[state] || state }
+  function stateColor(state: TaskState | string) { return STATE_COLORS[state] || 'dim' }
 
   return {
     tasks,

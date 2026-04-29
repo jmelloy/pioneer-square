@@ -119,26 +119,23 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
-import { useAgentsStore } from '../stores/agents.js'
-import { useGuildStore } from '../stores/guild.js'
+import { useAgentsStore } from '../stores/agents'
+import { useGuildStore } from '../stores/guild'
 
-const props = defineProps({
-  agentId: {
-    type: String,
-    required: true
-  }
-})
+const props = defineProps<{
+  agentId: string
+}>()
 
 const agentsStore = useAgentsStore()
 const guildStore = useGuildStore()
-const terminalEl = ref(null)
-const expandedIdx = ref(null)
+const terminalEl = ref<HTMLElement | null>(null)
+const expandedIdx = ref<number | null>(null)
 
 const agent = computed(() => agentsStore.agents.find(a => a.id === props.agentId))
 
-function toggleDetail(i) {
+function toggleDetail(i: number) {
   expandedIdx.value = expandedIdx.value === i ? null : i
 }
 
@@ -161,18 +158,18 @@ const modelPlaceholder = computed(() => {
   return 'model (optional)'
 })
 
-function padName(name) {
+function padName(name?: string) {
   if (!name) return ''.padEnd(20)
   return name.slice(0, 20).padEnd(20)
 }
 
-function formatTime(isoStr) {
+function formatTime(isoStr?: string) {
   if (!isoStr) return '00:00:00'
   const d = new Date(isoStr)
   return d.toLocaleTimeString('en-US', { hour12: false })
 }
 
-function lineClass(line) {
+function lineClass(line: string) {
   if (!line) return ''
   if (line.startsWith('✓')) return 'log-success'
   if (line.startsWith('✗')) return 'log-error'
@@ -193,7 +190,7 @@ async function handleRun() {
       provider: runProvider.value.trim()
     })
     runPrompt.value = ''
-  } catch (e) {
+  } catch (e: any) {
     runError.value = e.message
   }
 }
@@ -202,7 +199,7 @@ async function handleStop() {
   runError.value = ''
   try {
     await agentsStore.stopAgent(props.agentId)
-  } catch (e) {
+  } catch (e: any) {
     runError.value = e.message
   }
 }

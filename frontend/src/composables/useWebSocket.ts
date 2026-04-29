@@ -1,9 +1,9 @@
 import { ref, onUnmounted } from 'vue'
 
-export function useWebSocket(url, onMessage) {
-  const ws = ref(null)
+export function useWebSocket(url: string, onMessage?: (data: any) => void) {
+  const ws = ref<WebSocket | null>(null)
   const isConnected = ref(false)
-  let reconnectTimer = null
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let shouldReconnect = true
 
   function connect() {
@@ -27,7 +27,7 @@ export function useWebSocket(url, onMessage) {
     ws.value.onerror = () => { isConnected.value = false }
   }
 
-  function send(data) {
+  function send(data: any) {
     if (ws.value && ws.value.readyState === WebSocket.OPEN) {
       ws.value.send(JSON.stringify(data))
     }

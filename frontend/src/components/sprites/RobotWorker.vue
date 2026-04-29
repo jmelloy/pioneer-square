@@ -100,11 +100,13 @@
   </svg>
 </template>
 
-<script setup>
-defineProps({
-  state:   { type: String,  required: true },
-  type:    { type: String,  required: true },
-  walking: { type: Boolean, default: false },
+<script setup lang="ts">
+withDefaults(defineProps<{
+  state: string
+  type: string
+  walking?: boolean
+}>(), {
+  walking: false,
 })
 </script>
 

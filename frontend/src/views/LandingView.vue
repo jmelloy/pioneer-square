@@ -125,12 +125,13 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { useGuildStore } from '../stores/guild.js'
-import { useAuthStore } from '../stores/auth.js'
-import { useGitHubStore } from '../stores/github.js'
+import { useGuildStore } from '../stores/guild'
+import { useAuthStore } from '../stores/auth'
+import { useGitHubStore } from '../stores/github'
+import type { Guild } from '../types'
 
 const router = useRouter()
 const guildStore = useGuildStore()
@@ -138,11 +139,11 @@ const authStore = useAuthStore()
 const ghStore = useGitHubStore()
 
 const loading = ref(true)
-const guilds = ref([])
+const guilds = ref<Guild[]>([])
 const showNewModal = ref(false)
 const newGuildName = ref('')
 const creating = ref(false)
-const nameInput = ref(null)
+const nameInput = ref<HTMLInputElement | null>(null)
 const loggingIn = ref(false)
 const loginError = ref('')
 
@@ -161,7 +162,7 @@ onMounted(async () => {
   loading.value = false
 })
 
-function goToSession(id) {
+function goToSession(id: string) {
   router.push(`/${id}`)
 }
 
@@ -170,7 +171,7 @@ async function handleLogin() {
   loginError.value = ''
   try {
     await authStore.loginWithGitHub()
-  } catch (e) {
+  } catch (e: any) {
     loginError.value = e.message
     loggingIn.value = false
   }
@@ -200,11 +201,11 @@ async function createGuild() {
   }
 }
 
-function formatTime(isoStr) {
+function formatTime(isoStr?: string) {
   if (!isoStr) return ''
   const d = new Date(isoStr)
   const now = new Date()
-  const diffMs = now - d
+  const diffMs = now.getTime() - d.getTime()
   const diffMins = Math.floor(diffMs / 60000)
   if (diffMins < 1) return 'just now'
   if (diffMins < 60) return `${diffMins}m ago`
@@ -213,7 +214,7 @@ function formatTime(isoStr) {
   return d.toLocaleDateString()
 }
 
-function sparkleStyle(n) {
+function sparkleStyle(n: number) {
   const seed = n * 137.508
   return {
     left: `${(seed * 7.3) % 100}%`,

@@ -57,10 +57,10 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useGitHubStore } from '../stores/github.js'
-import { useAuthStore } from '../stores/auth.js'
+import { useGitHubStore } from '../stores/github'
+import { useAuthStore } from '../stores/auth'
 
 const emit = defineEmits(['close'])
 const ghStore = useGitHubStore()
@@ -79,11 +79,11 @@ onMounted(async () => {
   }
 })
 
-function isSelected(fullName) {
+function isSelected(fullName: string) {
   return localSelected.value.includes(fullName)
 }
 
-function toggleRepo(fullName) {
+function toggleRepo(fullName: string) {
   const idx = localSelected.value.indexOf(fullName)
   if (idx >= 0) {
     localSelected.value.splice(idx, 1)
