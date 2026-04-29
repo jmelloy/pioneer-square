@@ -194,9 +194,26 @@ For complex work use phases:
   or call finalize_task to mark it complete — don't leave tasks in limbo
 
 ## GitHub access
-You have direct GitHub access via list_github_issues, get_github_issue, and list_github_prs.
-Use these to discover work from issues, understand requirements before assigning tasks,
-and review PRs opened by workers.
+You have direct GitHub access via list_github_issues, get_github_issue, list_github_prs,
+search_github_issues, create_github_issue, and claim_github_issue.
+
+## Issue-first workflow
+Before assigning work that is more than a trivial fix (new features, refactors, multi-file
+changes), use search_github_issues to check whether an issue already exists. If not, create
+one with create_github_issue to track it. Pass issue_number and issue_repo to assign_task so
+the worker's PR references the issue automatically.
+
+## Architecture reviews
+For complex or scope-unclear work, open an architecture-review task before any coding:
+1. create_task(phase='architecture-review'), then assign_task — the worker reads the codebase,
+   estimates effort, writes a technical plan, and lists sub-issues that need to be created
+2. After the review completes, read the task output, create GitHub issues for each sub-task,
+   then assign workers to implement them
+
+## Checking task progress
+Use get_task_status to verify a task is making progress — it returns the current state,
+the active agent and its state, and the last log lines. If a task looks stalled, use
+redirect_task to course-correct or cancel_task if it's going in the wrong direction.
 
 Workers are configured with repos. Prefer workers whose repos cover the task.
 Be concise — one short paragraph maximum unless detail is requested.\
@@ -223,8 +240,8 @@ FOREMAN_TOOLS = [
                 },
                 "phase": {
                     "type": "string",
-                    "enum": ["plan", "execute", "review"],
-                    "description": "Starting phase. Default: execute.",
+                    "enum": ["plan", "execute", "review", "architecture-review"],
+                    "description": "Starting phase. Use 'architecture-review' for complex/unclear scope work. Default: execute.",
                 },
             },
             "required": ["name", "description"],
@@ -269,7 +286,7 @@ FOREMAN_TOOLS = [
                 },
                 "phase": {
                     "type": "string",
-                    "enum": ["plan", "execute", "review", "followup"],
+                    "enum": ["plan", "execute", "review", "followup", "architecture-review"],
                     "description": "Phase of work.",
                 },
                 "issue_number": {"type": "integer", "description": "GitHub issue to close (optional)."},
@@ -413,6 +430,65 @@ FOREMAN_TOOLS = [
                 "issue_number": {"type": "integer"},
             },
             "required": ["repo", "issue_number"],
+        },
+    },
+    {
+        "name": "get_task_status",
+        "description": (
+            "Get the current status of a task: state, phase, assigned worker and active agent state, "
+            "and the last log lines. Use this to verify a task is progressing and to diagnose stalls."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID (t-xxxxxx)."},
+                "log_lines": {
+                    "type": "integer",
+                    "description": "Number of recent log lines to return (default 10, max 50).",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "create_github_issue",
+        "description": (
+            "Create a new GitHub issue to track work before assigning it to a worker. "
+            "Search first with search_github_issues to avoid duplicates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo"},
+                "title": {"type": "string", "description": "Issue title."},
+                "body": {"type": "string", "description": "Issue body in markdown."},
+                "labels": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Label names to apply (labels must already exist in the repo).",
+                },
+            },
+            "required": ["repo", "title", "body"],
+        },
+    },
+    {
+        "name": "search_github_issues",
+        "description": (
+            "Search GitHub issues and PRs by keyword within a repo. "
+            "Call this before create_github_issue to check whether an issue already exists."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo to restrict search to."},
+                "query": {"type": "string", "description": "Search keywords."},
+                "state": {
+                    "type": "string",
+                    "enum": ["open", "closed", "all"],
+                    "description": "Filter by state. Default: open.",
+                },
+            },
+            "required": ["repo", "query"],
         },
     },
 ]
@@ -676,11 +752,55 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                             "finishedAt": finished_at,
                         })
                         result_text = f"Task {task_id} cancelled." + (f" Reason: {reason}" if reason else "")
+
+            elif tu.name == "get_task_status":
+                task_id = inp["task_id"]
+                limit = min(int(inp.get("log_lines", 10)), 50)
+                task_result = await db.execute(
+                    select(Task).where(Task.id == task_id, Task.guild_id == guild_id)
+                )
+                task = task_result.scalar_one_or_none()
+                if not task:
+                    result_text = f"Task {task_id} not found."
+                else:
+                    agent_info = None
+                    if task.worker_id and task.worker_id != "foreman":
+                        agent_result = await db.execute(
+                            select(Agent.id, Agent.state)
+                            .where(Agent.worker_id == task.worker_id, Agent.state != "offline")
+                            .limit(1)
+                        )
+                        agent_row = agent_result.one_or_none()
+                        if agent_row:
+                            agent_info = {"agent_id": agent_row[0], "agent_state": agent_row[1]}
+                    logs_result = await db.execute(
+                        select(TaskLog.timestamp, TaskLog.line)
+                        .where(TaskLog.task_id == task_id)
+                        .order_by(TaskLog.id.desc())
+                        .limit(limit)
+                    )
+                    log_rows = list(reversed(logs_result.fetchall()))
+                    result_text = json.dumps({
+                        "id": task.id,
+                        "name": task.name,
+                        "state": task.state,
+                        "phase": task.phase,
+                        "worker_id": task.worker_id,
+                        "agent": agent_info,
+                        "branch": task.branch,
+                        "pr_url": task.pr_url,
+                        "created_at": task.created_at,
+                        "finished_at": task.finished_at,
+                        "recent_logs": [{"time": r[0], "line": r[1]} for r in log_rows],
+                    })
         finally:
             await db.close()
 
         # GitHub tools — use guild's OAuth token
-        if tu.name in ("list_github_issues", "get_github_issue", "list_github_prs", "claim_github_issue"):
+        if tu.name in (
+            "list_github_issues", "get_github_issue", "list_github_prs",
+            "claim_github_issue", "create_github_issue", "search_github_issues",
+        ):
             creds = await _guild_github_token(guild_id)
             if not creds:
                 result_text = "No GitHub token found for this guild — user must connect GitHub first."
@@ -745,6 +865,42 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
                             {"assignees": [username]},
                         )
                         result_text = f"Issue #{num} in {repo} assigned to {username}."
+
+                    elif tu.name == "create_github_issue":
+                        repo = inp["repo"]
+                        payload: dict = {"title": inp["title"], "body": inp.get("body", "")}
+                        if inp.get("labels"):
+                            payload["labels"] = inp["labels"]
+                        issue = await asyncio.to_thread(
+                            _gh_api_post, f"/repos/{repo}/issues", token, payload
+                        )
+                        result_text = json.dumps({
+                            "number": issue["number"],
+                            "url": issue["html_url"],
+                            "title": issue["title"],
+                        })
+
+                    elif tu.name == "search_github_issues":
+                        repo = inp["repo"]
+                        query = inp["query"]
+                        state = inp.get("state", "open")
+                        state_q = "" if state == "all" else f"+state:{state}"
+                        search_url = (
+                            f"/search/issues?q={urllib.parse.quote(query)}"
+                            f"+repo:{repo}{state_q}&per_page=10&sort=created&order=desc"
+                        )
+                        data = await asyncio.to_thread(_gh_api, search_url, token)
+                        items = data.get("items", []) if isinstance(data, dict) else data
+                        result_text = json.dumps([
+                            {
+                                "number": i["number"],
+                                "title": i["title"],
+                                "state": i["state"],
+                                "url": i["html_url"],
+                                "labels": [l["name"] for l in i.get("labels", [])],
+                            }
+                            for i in items
+                        ])
 
                 except urllib.error.HTTPError as exc:
                     result_text = f"GitHub API error: {exc.code} {exc.reason}"
