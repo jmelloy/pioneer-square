@@ -57,9 +57,9 @@
       </div>
       <template v-for="worker in agentsStore.workers" :key="worker.id">
         <!-- Worker row -->
-        <div class="worker-row" :class="worker.state">
+        <div class="worker-row" :class="worker.state" @click="agentsStore.selectWorker(worker.id)">
           <span class="worker-dot" :class="'wdot-' + worker.state"></span>
-          <span class="worker-row-name">{{ worker.name }}</span>
+          <span class="worker-row-name">{{ worker.id }}</span>
           <span class="worker-row-state">{{ worker.state }}</span>
         </div>
         <!-- Agent rows under this worker -->
@@ -479,6 +479,12 @@ function formatTime(isoStr) {
   padding: 5px 12px;
   background: var(--color-bg-secondary);
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.worker-row:hover {
+  background: rgba(0, 187, 170, 0.08);
 }
 
 .worker-row-name {

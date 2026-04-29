@@ -21,6 +21,18 @@
         <span class="tab-label">{{ agent.name }}</span>
         <span class="tab-close">×</span>
       </button>
+      <!-- Worker tabs — opened from sidebar worker click -->
+      <button
+        v-for="worker in visibleWorkerTabs"
+        :key="'worker-' + worker.id"
+        class="tab worker-tab"
+        :class="{ active: activeTab === 'worker-' + worker.id }"
+        @click="onWorkerTabClick($event, worker.id)"
+      >
+        <span class="state-dot" :class="worker.state"></span>
+        <span class="tab-label">{{ worker.id }}</span>
+        <span class="tab-close">×</span>
+      </button>
       <!-- Task tabs — only shown when explicitly opened -->
       <button
         v-for="task in visibleTaskTabs"
@@ -37,6 +49,7 @@
     <div class="tab-content">
       <FactoryFloor v-if="activeTab === 'factory'" />
       <TerminalPane v-else-if="activeTab.startsWith('agent-')" :agentId="activeTab.slice(6)" />
+      <WorkerTerminalPane v-else-if="activeTab.startsWith('worker-')" :workerId="activeTab.slice(7)" />
       <TaskPane v-else-if="activeTab.startsWith('task-')" :taskId="activeTab.slice(5)" />
     </div>
   </div>
@@ -48,6 +61,7 @@ import { useAgentsStore } from '../stores/agents.js'
 import { useTasksStore } from '../stores/tasks.js'
 import FactoryFloor from './FactoryFloor.vue'
 import TerminalPane from './TerminalPane.vue'
+import WorkerTerminalPane from './WorkerTerminalPane.vue'
 import TaskPane from './TaskPane.vue'
 
 const agentsStore = useAgentsStore()
@@ -57,6 +71,12 @@ const activeTab = ref('factory')
 const visibleAgentTabs = computed(() =>
   agentsStore.openedAgentIds
     .map(id => agentsStore.agents.find(a => a.id === id))
+    .filter(Boolean)
+)
+
+const visibleWorkerTabs = computed(() =>
+  agentsStore.openedWorkerIds
+    .map(id => agentsStore.workers.find(w => w.id === id))
     .filter(Boolean)
 )
 
@@ -70,9 +90,22 @@ watch(() => agentsStore.selectedAgentId, (id) => {
   if (id) activeTab.value = 'agent-' + id
 })
 
+watch(() => agentsStore.selectedWorkerId, (id) => {
+  if (id) activeTab.value = 'worker-' + id
+})
+
 watch(() => tasksStore.selectedTaskId, (id) => {
   if (id) activeTab.value = 'task-' + id
 })
+
+function onWorkerTabClick(event, workerId) {
+  if (event.target.closest('.tab-close')) {
+    agentsStore.closeWorker(workerId)
+    if (activeTab.value === 'worker-' + workerId) activeTab.value = 'factory'
+  } else {
+    activeTab.value = 'worker-' + workerId
+  }
+}
 
 function onAgentTabClick(event, agentId) {
   if (event.target.closest('.tab-close')) {
