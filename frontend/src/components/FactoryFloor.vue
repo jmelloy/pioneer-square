@@ -181,19 +181,19 @@ function updateFloorSize() {
 }
 
 // ── Desk layout ────────────────────────────────────────────
-// 4 columns × 2 rows spread proportionally across the canvas.
+// 3 columns × 2 rows spread proportionally across the canvas.
 // Fixed per-desk jitter (seeded values) gives an organic, stable look.
-const COL_FRACS     = [0.08, 0.30, 0.53, 0.75]
+const COL_FRACS     = [0.10, 0.40, 0.70]
 const ROW_FRACS     = [0.22, 0.60]
-const JITTER        = [[8,-5],[-6,12],[14,-8],[-10,7],[5,10],[-12,-6],[9,15],[-7,-9]]
-const GAP_X_FRACS   = [0.01, 0.22, 0.44, 0.66, 0.90]
+const JITTER        = [[8,-5],[-6,12],[14,-8],[-10,7],[5,10],[-12,-6]]
+const GAP_X_FRACS   = [0.01, 0.25, 0.55, 0.87]
 
 const stationPositions = computed(() => {
   const W = floorW.value, H = floorH.value
   return ROW_FRACS.flatMap((yf, ri) =>
     COL_FRACS.map((xf, ci) => ({
-      x: Math.round(xf * W) + JITTER[ri * 4 + ci][0],
-      y: Math.round(yf * H) + JITTER[ri * 4 + ci][1],
+      x: Math.round(xf * W) + JITTER[ri * 3 + ci][0],
+      y: Math.round(yf * H) + JITTER[ri * 3 + ci][1],
     }))
   )
 })
@@ -221,9 +221,9 @@ const GAP_XS = computed(() =>
   GAP_X_FRACS.map(f => Math.round(f * floorW.value))
 )
 
-// Coffee maker sits beside the rightmost top-row desk (index 3)
+// Coffee maker sits beside the rightmost top-row desk (index 2)
 const coffeePotPos = computed(() => {
-  const s = stationPositions.value[3]
+  const s = stationPositions.value[2]
   return { x: s.x + 108, y: s.y - 5 }
 })
 
@@ -238,7 +238,7 @@ const POIS = computed(() => [
 const visibleStations = computed(() => {
   const active = tasksStore.tasks
     .filter(t => !['done', 'failed'].includes(t.state) && t.worker_id && t.worker_id !== 'foreman')
-    .slice(0, 8)
+    .slice(0, 6)
   return stationPositions.value.map((pos, i) => ({
     ...pos,
     task: active[i] || null,
