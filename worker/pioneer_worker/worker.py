@@ -539,11 +539,14 @@ class Worker:
 
             logger.info("Task %s: final success=%s stop_reason=%s", task_id, success, stop_reason)
 
+            # Push the branch regardless of outcome so partial work is visible
+            # and a follow-up run can build on it.
+            push_ok = await github_pr.push_branch(
+                branch=branch, worktree_path=primary_wt, emit=emit,
+            )
+            pr_url: Optional[str] = None
+
             if success:
-                push_ok = await github_pr.push_branch(
-                    branch=branch, worktree_path=primary_wt, emit=emit,
-                )
-                pr_url: Optional[str] = None
                 if push_ok:
                     pr_url = await github_pr.open_pr(
                         task=task, branch=branch, worktree_path=primary_wt,
@@ -561,107 +564,133 @@ class Worker:
                     "branch": branch,
                     "description": desc,
                     "prUrl": pr_url or "",
+                    "sessionId": resume_session_id or "",
                 })
                 await self._set_state("awaiting-review", slot)
-
-                # ── Followup loop (redirects arriving here use the followup queue) ──
-                followup_q: asyncio.Queue = asyncio.Queue()
-                self._followup_queues[task_id] = followup_q
-                followup_cancelled = False
-                try:
-                    while True:
-                        try:
-                            instructions = await asyncio.wait_for(
-                                followup_q.get(), timeout=300.0
-                            )
-                        except asyncio.TimeoutError:
-                            await emit("[worker] Follow-up window expired — finalizing.")
-                            break
-                        if instructions is _CANCEL_SENTINEL:
-                            await emit("[worker] Task cancelled.")
-                            followup_cancelled = True
-                            break
-                        if instructions is None:
-                            await emit("[worker] Task finalized by foreman.")
-                            break
-
-                        await self._set_state("working", slot)
-                        await self._task_update(task_id, state="working")
-                        await emit(f"[worker] Follow-up: {instructions[:120]}")
-
-                        # Inner redirect loop for followup runs
-                        current_fu_desc = instructions
-                        fu_ok = False
-                        fu_reason = "no_events"
-                        while True:
-                            fu_ok, fu_reason, _ = await claude_runner.run_claude_auto(
-                                current_fu_desc, primary_wt,
-                                max_turns=self.cfg.claude_max_turns,
-                                emit=emit,
-                                on_proc=_on_proc,
-                                claude_path=self.cfg.claude_path,
-                                resume_session_id=resume_session_id,
-                            )
-                            _capture_session_and_clear()
-                            logger.info("Task %s follow-up: ok=%s reason=%s session=%s",
-                                        task_id, fu_ok, fu_reason, resume_session_id)
-
-                            if task_id in self._cancelled_tasks:
-                                followup_cancelled = True
-                                break
-
-                            try:
-                                redir = redirect_q.get_nowait()
-                            except asyncio.QueueEmpty:
-                                redir = None
-
-                            if redir is not None:
-                                await emit(f"[worker] ↩ Redirected during follow-up: {redir[:120]}")
-                                current_fu_desc = redir
-                                continue
-
-                            break
-
-                        if followup_cancelled:
-                            break
-
-                        if fu_ok:
-                            await github_pr.push_branch(
-                                branch=branch, worktree_path=primary_wt, emit=emit,
-                            )
-
-                        await self._send({
-                            "type": "task-followup-done",
-                            "workerId": self.cfg.worker_id,
-                            "taskId": task_id,
-                            "success": fu_ok,
-                            "stopReason": fu_reason,
-                        })
-                        await self._task_update(task_id, state="awaiting-review")
-                        await self._set_state("awaiting-review", slot)
-                finally:
-                    self._followup_queues.pop(task_id, None)
-
-                if followup_cancelled:
-                    await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
-                    await self._set_state("idle", slot)
-                    return
-
-                await self._task_update(task_id, state="done", finishedAt=_now_iso())
-                await self._set_state("idle", slot)
-
             else:
                 logger.warning("Task %s failed: %s", task_id, stop_reason)
-                await self._task_update(task_id, state="failed", finishedAt=_now_iso())
-                await self._set_state("error", slot)
+                # Don't mark finishedAt yet — the foreman may send a follow-up
+                # that resumes the same worktree/session.
+                await self._task_update(
+                    task_id, branch=branch, worktreePath=primary_wt, state="failed",
+                )
                 await self._send({
                     "type": "needs-input",
                     "workerId": self.cfg.worker_id,
                     "taskId": task_id,
                     "description": desc,
+                    "branch": branch,
+                    "sessionId": resume_session_id or "",
                     "stopReason": stop_reason,
                     "lastMessage": last_msg,
                 })
+                await self._set_state("error", slot)
+
+            # ── Follow-up loop — runs after both success and failure so the
+            # foreman can resume the same worktree (with --resume) for a while
+            # before we tear it down. ─────────────────────────────────────────
+            followup_q: asyncio.Queue = asyncio.Queue()
+            self._followup_queues[task_id] = followup_q
+            followup_cancelled = False
+            last_success = success
+            try:
+                while True:
+                    try:
+                        instructions = await asyncio.wait_for(
+                            followup_q.get(), timeout=300.0
+                        )
+                    except asyncio.TimeoutError:
+                        await emit("[worker] Follow-up window expired — finalizing.")
+                        break
+                    if instructions is _CANCEL_SENTINEL:
+                        await emit("[worker] Task cancelled.")
+                        followup_cancelled = True
+                        break
+                    if instructions is None:
+                        await emit("[worker] Task finalized by foreman.")
+                        break
+
+                    await self._set_state("working", slot)
+                    await self._task_update(task_id, state="working")
+                    await emit(f"[worker] Follow-up: {instructions[:120]}")
+
+                    # Inner redirect loop for followup runs
+                    current_fu_desc = instructions
+                    fu_ok = False
+                    fu_reason = "no_events"
+                    while True:
+                        fu_ok, fu_reason, _ = await claude_runner.run_claude_auto(
+                            current_fu_desc, primary_wt,
+                            max_turns=self.cfg.claude_max_turns,
+                            emit=emit,
+                            on_proc=_on_proc,
+                            claude_path=self.cfg.claude_path,
+                            resume_session_id=resume_session_id,
+                        )
+                        _capture_session_and_clear()
+                        logger.info("Task %s follow-up: ok=%s reason=%s session=%s",
+                                    task_id, fu_ok, fu_reason, resume_session_id)
+
+                        if task_id in self._cancelled_tasks:
+                            followup_cancelled = True
+                            break
+
+                        try:
+                            redir = redirect_q.get_nowait()
+                        except asyncio.QueueEmpty:
+                            redir = None
+
+                        if redir is not None:
+                            await emit(f"[worker] ↩ Redirected during follow-up: {redir[:120]}")
+                            current_fu_desc = redir
+                            continue
+
+                        break
+
+                    if followup_cancelled:
+                        break
+
+                    last_success = fu_ok
+
+                    if fu_ok:
+                        await github_pr.push_branch(
+                            branch=branch, worktree_path=primary_wt, emit=emit,
+                        )
+                        # Originally-failed tasks never opened a PR; do it now
+                        # that we have something worth reviewing.
+                        if not pr_url:
+                            pr_url = await github_pr.open_pr(
+                                task=task, branch=branch, worktree_path=primary_wt,
+                                token=token, emit=emit,
+                            )
+
+                    await self._send({
+                        "type": "task-followup-done",
+                        "workerId": self.cfg.worker_id,
+                        "taskId": task_id,
+                        "success": fu_ok,
+                        "stopReason": fu_reason,
+                        "branch": branch,
+                        "sessionId": resume_session_id or "",
+                        "prUrl": pr_url or "",
+                    })
+                    await self._task_update(
+                        task_id, state="awaiting-review" if fu_ok else "failed",
+                    )
+                    await self._set_state(
+                        "awaiting-review" if fu_ok else "error", slot,
+                    )
+            finally:
+                self._followup_queues.pop(task_id, None)
+
+            if followup_cancelled:
+                await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                await self._set_state("idle", slot)
+                return
+
+            final_state = "done" if last_success else "failed"
+            await self._task_update(task_id, state=final_state, finishedAt=_now_iso())
+            await self._set_state("idle", slot)
 
         finally:
             self._redirect_queues.pop(task_id, None)
