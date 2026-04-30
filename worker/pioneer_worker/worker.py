@@ -95,6 +95,86 @@ class Worker:
         except Exception as exc:
             logger.warning("Could not fetch GitHub token: %s", exc)
 
+    async def _check_claude_auth(self) -> None:
+        """Ensure Claude is authenticated. Restores stored credentials or runs login flow."""
+        import base64
+        import io
+        import tarfile
+        from pathlib import Path
+
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            logger.info("ANTHROPIC_API_KEY set — skipping Claude login flow")
+            return
+
+        creds_file = Path.home() / ".claude" / ".credentials.json"
+        if creds_file.exists():
+            logger.info("Claude credentials already present")
+            return
+
+        # Try restoring credentials stored in the backend
+        try:
+            async with await self._http() as client:
+                resp = await client.get(
+                    "/auth/claude/credentials",
+                    params={"guild_id": self.cfg.guild_id},
+                )
+            if resp.status_code == 200:
+                blob = resp.json().get("credentials_blob", "")
+                if blob:
+                    claude_dir = Path.home() / ".claude"
+                    claude_dir.mkdir(parents=True, exist_ok=True)
+                    tar_bytes = base64.b64decode(blob)
+                    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+                        tar.extractall(path=Path.home())
+                    logger.info("Restored Claude credentials from backend")
+                    return
+        except Exception as exc:
+            logger.warning("Could not fetch Claude credentials from backend: %s", exc)
+
+        await self._emit("[auth] No Claude credentials found — starting login...")
+        await self._run_claude_login()
+
+    async def _run_claude_login(self) -> None:
+        """Run `claude login`, stream output to the frontend, then persist credentials."""
+        import base64
+        import io
+        import tarfile
+        from pathlib import Path
+
+        proc = await asyncio.create_subprocess_exec(
+            self.cfg.claude_path, "login",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert proc.stdout is not None
+        async for raw_line in proc.stdout:
+            line = raw_line.decode(errors="replace").rstrip()
+            logger.info("[claude login] %s", line)
+            await self._emit(f"[auth] {line}")
+        await proc.wait()
+
+        claude_dir = Path.home() / ".claude"
+        if not claude_dir.exists():
+            await self._emit("[auth] Login may have failed — ~/.claude not found")
+            return
+
+        try:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+                tar.add(str(claude_dir), arcname=".claude")
+            blob = base64.b64encode(buf.getvalue()).decode()
+            async with await self._http() as client:
+                await client.post(
+                    "/auth/claude/credentials",
+                    json={"guild_id": self.cfg.guild_id, "credentials_blob": blob},
+                )
+            await self._emit("[auth] Credentials saved — future workers will skip login")
+            logger.info("Posted Claude credentials to backend")
+        except Exception as exc:
+            logger.warning("Could not store Claude credentials: %s", exc)
+            await self._emit(f"[auth] Warning: could not store credentials: {exc}")
+
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:
             resp = await client.get(
@@ -231,6 +311,7 @@ class Worker:
             "Joined guild %s — worker_id=%s agents=%d",
             self.cfg.guild_id, self.cfg.worker_id, len(self.slots),
         )
+        await self._check_claude_auth()
         await self._emit("[worker] Online. Watching for tasks.")
         for slot in self.slots:
             await self._set_state("idle", slot)

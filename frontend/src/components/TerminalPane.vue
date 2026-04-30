@@ -32,7 +32,7 @@
           @click="log.detail && toggleDetail(i)"
         >
           <span class="log-time">{{ formatTime(log.timestamp) }}</span>
-          <span class="log-content" :class="lineClass(log.line)">{{ log.line }}</span>
+          <span class="log-content" :class="lineClass(log.line)" v-html="linkify(log.line)"></span>
           <span v-if="log.detail" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
         </div>
         <div v-if="log.detail && expandedIdx === i" class="log-detail">
@@ -167,6 +167,18 @@ function formatTime(isoStr?: string) {
   if (!isoStr) return '00:00:00'
   const d = new Date(isoStr)
   return d.toLocaleTimeString('en-US', { hour12: false })
+}
+
+function linkify(text: string): string {
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+  return escaped.replace(
+    /(https?:\/\/[^\s<>"]+)/g,
+    '<a href="$1" target="_blank" rel="noopener noreferrer" class="terminal-link">$1</a>'
+  )
 }
 
 function lineClass(line: string) {
@@ -379,6 +391,7 @@ watch(logs, async () => {
 .log-content.log-tool    { color: var(--color-amber); }
 .log-content.log-result  { color: var(--color-text-dim); }
 .log-content.log-meta    { color: var(--color-brass-dark); }
+.terminal-link { color: var(--color-teal); text-decoration: underline; cursor: pointer; }
 
 .terminal-prompt {
   margin-top: 8px;
