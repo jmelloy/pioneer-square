@@ -601,6 +601,16 @@ class Worker:
                         )
                     except asyncio.TimeoutError:
                         await emit("[worker] Follow-up window expired — finalizing.")
+                        await self._send({
+                            "type": "task-complete",
+                            "workerId": self.cfg.worker_id,
+                            "taskId": task_id,
+                            "branch": branch,
+                            "description": desc,
+                            "prUrl": pr_url or "",
+                            "sessionId": resume_session_id or "",
+                            "finalizedBy": "timeout",
+                        })
                         break
                     if instructions is _CANCEL_SENTINEL:
                         await emit("[worker] Task cancelled.")

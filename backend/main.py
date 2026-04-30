@@ -1602,6 +1602,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 worker_id_msg = data.get("workerId", "")
                 desc = data.get("description", "")
                 branch = data.get("branch", "")
+                finalized_by = data.get("finalizedBy", "")
                 if task_id:
                     await db.execute(
                         update(Task)
@@ -1611,14 +1612,35 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     await db.commit()
                 await broadcast(guild_id, data, exclude=websocket)
                 if task_id:
-                    asyncio.create_task(_run_foreman_ai(
-                        guild_id,
-                        f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
-                        f"\"{desc[:80]}\" — branch: {branch}. "
-                        "Review this result. Call send_followup if additional work is needed "
-                        "(e.g. update tests, add docs, fix lint errors). "
-                        "Otherwise call finalize_task to mark it complete.",
-                    ))
+                    if finalized_by == "timeout":
+                        finished_at = datetime.now(timezone.utc).isoformat()
+                        await db.execute(
+                            update(Task)
+                            .where(Task.id == task_id)
+                            .values(state="done", finished_at=finished_at)
+                        )
+                        await db.commit()
+                        await broadcast(guild_id, {
+                            "type": "task-update",
+                            "taskId": task_id,
+                            "state": "done",
+                            "finishedAt": finished_at,
+                        })
+                        asyncio.create_task(_run_foreman_ai(
+                            guild_id,
+                            f"[timeout] Follow-up window expired for task {task_id} "
+                            f"(worker {worker_id_msg}). The task has been auto-finalized "
+                            "as done — no foreman action required.",
+                        ))
+                    else:
+                        asyncio.create_task(_run_foreman_ai(
+                            guild_id,
+                            f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
+                            f"\"{desc[:80]}\" — branch: {branch}. "
+                            "Review this result. Call send_followup if additional work is needed "
+                            "(e.g. update tests, add docs, fix lint errors). "
+                            "Otherwise call finalize_task to mark it complete.",
+                        ))
 
             elif msg_type == "task-followup-done":
                 task_id = data.get("taskId")
