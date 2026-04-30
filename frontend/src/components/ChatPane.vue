@@ -7,6 +7,7 @@
           <span class="status-dot" :class="foreman.state"></span>
           {{ foreman.state }}
         </span>
+        <button class="new-convo-btn pixel-btn" @click.stop="startNewConversation" title="New Conversation">🔄 New</button>
         <span class="minimize-btn">{{ minimized ? '▲' : '▼' }}</span>
       </div>
     </div>
@@ -32,6 +33,9 @@
 
       <!-- Chat tab -->
       <template v-if="activeTab === 'chat'">
+        <div v-if="historyIssues.length > 0" class="history-warning">
+          ⚠ Conversation history has errors — consider starting a new conversation.
+        </div>
         <div class="chat-messages" ref="messagesEl">
           <div v-if="messages.length === 0" class="chat-empty">
             Awaiting foreman connection...
@@ -125,9 +129,21 @@ const inputText = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 const issuesEl = ref<HTMLElement | null>(null)
 const activeTab = ref<'chat' | 'issues'>('chat')
+const historyIssues = ref<string[]>([])
 
 const messages = computed(() => guildStore.messages)
 const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
+
+async function checkHistoryHealth() {
+  const result = await guildStore.fetchForemanHealth()
+  historyIssues.value = result?.issues ?? []
+}
+
+async function startNewConversation() {
+  if (!confirm('Start a new conversation? This will clear the current chat history.')) return
+  await guildStore.resetForemanConversation()
+  historyIssues.value = []
+}
 
 // Issue assignment pattern: "Work on issue #N in owner/repo: title"
 const ISSUE_PATTERN = /Work on issue #(\d+) in ([^:]+): "(.+)"/
@@ -214,7 +230,10 @@ function handleTaskEvent(data: WSMessage) {
   }
 }
 
-onMounted(() => guildStore.addMessageHandler(handleTaskEvent))
+onMounted(() => {
+  guildStore.addMessageHandler(handleTaskEvent)
+  checkHistoryHealth()
+})
 onUnmounted(() => guildStore.removeMessageHandler(handleTaskEvent))
 
 async function switchToIssues() {
@@ -624,5 +643,22 @@ watch(messages, async () => {
   margin-left: auto;
   font-size: 9px;
   color: var(--color-text-dim);
+}
+
+.new-convo-btn {
+  font-size: 7px;
+  padding: 3px 7px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.history-warning {
+  background: rgba(255, 204, 0, 0.12);
+  border-bottom: 1px solid rgba(255, 204, 0, 0.4);
+  color: #ffcc00;
+  font-size: 10px;
+  padding: 6px 12px;
+  flex-shrink: 0;
+  line-height: 1.4;
 }
 </style>

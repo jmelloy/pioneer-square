@@ -1394,6 +1394,78 @@ async def get_guild(guild_id: str):
         await db.close()
 
 
+@app.get("/guilds/{guild_id}/foreman/health")
+async def foreman_health(guild_id: str):
+    """Check the structural integrity of the in-memory foreman conversation history."""
+    history = foreman_conversations.get(guild_id, [])
+    issues = []
+    for i, msg in enumerate(history):
+        if msg["role"] != "assistant":
+            continue
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        tool_uses = []
+        for b in content:
+            b_type = getattr(b, "type", None) if not isinstance(b, dict) else b.get("type")
+            if b_type == "tool_use":
+                tool_uses.append(b)
+        if not tool_uses:
+            continue
+        if i + 1 >= len(history):
+            issues.append(f"tool_use block at history[{i}] has no following message")
+            continue
+        next_msg = history[i + 1]
+        if next_msg["role"] != "user":
+            issues.append(f"tool_use block at history[{i}] not followed by user tool_result message")
+            continue
+        next_content = next_msg.get("content", [])
+        if not isinstance(next_content, list):
+            issues.append(f"tool_use block at history[{i}]: following message has non-list content")
+            continue
+        use_ids = {
+            (getattr(b, "id", None) if not isinstance(b, dict) else b.get("id"))
+            for b in tool_uses
+        }
+        result_ids = set()
+        for b in next_content:
+            b_type = getattr(b, "type", None) if not isinstance(b, dict) else b.get("type")
+            if b_type == "tool_result":
+                bid = getattr(b, "tool_use_id", None) if not isinstance(b, dict) else b.get("tool_use_id")
+                if bid:
+                    result_ids.add(bid)
+        missing = use_ids - result_ids - {None}
+        if missing:
+            issues.append(f"tool_use IDs at history[{i}] with no matching tool_result: {missing}")
+    return {"healthy": len(issues) == 0, "issues": issues, "history_length": len(history)}
+
+
+@app.post("/guilds/{guild_id}/foreman/reset")
+async def reset_foreman_conversation(guild_id: str):
+    """Clear the in-memory foreman conversation history and broadcast a system notice."""
+    foreman_conversations.pop(guild_id, None)
+    now = datetime.now(timezone.utc).isoformat()
+    msg_content = "🔄 Foreman conversation history cleared. Starting fresh."
+    await broadcast(guild_id, {
+        "type": "chat", "from": "system", "to": "user",
+        "content": msg_content, "createdAt": now,
+    })
+    db = await get_db()
+    try:
+        db.add(Message(
+            guild_id=guild_id,
+            from_agent="system",
+            to_agent="user",
+            content=msg_content,
+            message_type="chat",
+            created_at=now,
+        ))
+        await db.commit()
+    finally:
+        await db.close()
+    return {"status": "ok"}
+
+
 async def broadcast(guild_id: str, message: dict, exclude: WebSocket = None):
     """Broadcast a message to all connections in a guild."""
     if guild_id not in connections:

@@ -201,6 +201,28 @@ export const useGuildStore = defineStore('guild', () => {
     messageHandlers.value = messageHandlers.value.filter(h => h !== handler)
   }
 
+  async function resetForemanConversation(): Promise<void> {
+    if (!currentGuild.value) return
+    messages.value = []
+    await fetch(`${API_BASE}/guilds/${currentGuild.value.id}/foreman/reset`, {
+      method: 'POST',
+      headers: _authHeaders(),
+    })
+  }
+
+  async function fetchForemanHealth(): Promise<{ healthy: boolean; issues: string[]; history_length: number } | null> {
+    if (!currentGuild.value) return null
+    try {
+      const res = await fetch(`${API_BASE}/guilds/${currentGuild.value.id}/foreman/health`, {
+        headers: _authHeaders(),
+      })
+      if (!res.ok) return null
+      return await res.json()
+    } catch {
+      return null
+    }
+  }
+
   return {
     currentGuild,
     guilds,
@@ -215,6 +237,8 @@ export const useGuildStore = defineStore('guild', () => {
     disconnectWebSocket,
     sendMessage,
     addMessageHandler,
-    removeMessageHandler
+    removeMessageHandler,
+    resetForemanConversation,
+    fetchForemanHealth,
   }
 })
