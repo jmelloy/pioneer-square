@@ -625,4 +625,22 @@ watch(messages, async () => {
   font-size: 9px;
   color: var(--color-text-dim);
 }
+
+@media (max-width: 1024px) {
+  .chat-pane {
+    max-height: 100% !important;
+    border-radius: 0;
+  }
+
+  .chat-messages {
+    min-height: 0;
+    max-height: none;
+    flex: 1;
+  }
+
+  .issues-list {
+    min-height: 0;
+    max-height: none;
+  }
+}
 </style>

@@ -21,7 +21,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, watch, ref } from 'vue'
+import { onMounted, onUnmounted, watch, ref, provide } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
@@ -35,6 +35,7 @@ import ChatPane from '../components/ChatPane.vue'
 const props = defineProps<{ guildId?: string }>()
 
 const activeTab = ref<'tasks' | 'work' | 'chat'>('chat')
+provide('switchMobileTab', (tab: 'tasks' | 'work' | 'chat') => { activeTab.value = tab })
 
 const router = useRouter()
 const guildStore = useGuildStore()
@@ -208,7 +209,8 @@ watch(
     width: 100vw !important;
     min-width: 0 !important;
     max-width: 100vw !important;
-    height: calc(100vh - 52px) !important;
+    height: calc(100dvh - 52px) !important;
+    max-height: calc(100dvh - 52px) !important;
     display: none !important;
   }
 

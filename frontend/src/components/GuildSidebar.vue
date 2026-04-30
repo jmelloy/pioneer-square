@@ -135,7 +135,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
@@ -153,6 +153,8 @@ const ghStore = useGitHubStore()
 const authStore = useAuthStore()
 const tasksStore = useTasksStore()
 const agentsStore = useAgentsStore()
+
+const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
 
 const showGitHubModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
@@ -258,6 +260,7 @@ function goHome() {
 
 function openTask(taskId: string) {
   tasksStore.selectTask(taskId)
+  switchMobileTab('work')
 }
 
 function agentsForWorker(workerId: string) {
