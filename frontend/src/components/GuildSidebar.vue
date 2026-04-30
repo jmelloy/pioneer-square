@@ -50,10 +50,32 @@
     </div>
 
     <!-- Workers/Agents hierarchical section -->
-    <div v-if="agentsStore.workers.length > 0" class="workers-section">
+    <div class="workers-section" :class="{ 'workers-section--empty': agentsStore.workers.length === 0 && !showSpawnForm }">
       <div class="section-header">
         <span class="section-label">Workers</span>
-        <span class="section-count">{{ agentsStore.workers.length }}</span>
+        <span class="section-count" v-if="agentsStore.workers.length > 0">{{ agentsStore.workers.length }}</span>
+        <button class="spawn-btn" @click="toggleSpawnForm" :title="showSpawnForm ? 'Cancel' : 'Launch a new worker container'">
+          {{ showSpawnForm ? '✕' : '+' }}
+        </button>
+      </div>
+
+      <!-- Spawn form -->
+      <div v-if="showSpawnForm" class="spawn-form">
+        <label class="spawn-label">Repos <span class="spawn-hint">(one per line)</span></label>
+        <textarea
+          v-model="spawnRepos"
+          class="spawn-textarea"
+          placeholder="owner/repo"
+          rows="3"
+        />
+        <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
+        <input v-model="spawnName" class="spawn-input" type="text" placeholder="auto-generated" />
+        <div class="spawn-actions">
+          <button class="pixel-btn spawn-launch-btn" :disabled="spawning || !spawnRepos.trim()" @click="launchWorker">
+            {{ spawning ? 'Launching…' : 'Launch' }}
+          </button>
+        </div>
+        <div v-if="spawnError" class="spawn-error">{{ spawnError }}</div>
       </div>
       <template v-for="worker in agentsStore.workers" :key="worker.id">
         <!-- Worker row -->
@@ -123,6 +145,8 @@ import { useAgentsStore } from '../stores/agents'
 import type { Task } from '../types'
 import GitHubConfigModal from './GitHubConfigModal.vue'
 
+const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
+
 const router = useRouter()
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
@@ -133,6 +157,44 @@ const agentsStore = useAgentsStore()
 const showGitHubModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
 const isConnected = computed(() => guildStore.isConnected)
+
+const showSpawnForm = ref(false)
+const spawnRepos = ref('')
+const spawnName = ref('')
+const spawning = ref(false)
+const spawnError = ref('')
+
+function toggleSpawnForm() {
+  showSpawnForm.value = !showSpawnForm.value
+  if (showSpawnForm.value) {
+    spawnRepos.value = ghStore.selectedRepos.join('\n')
+    spawnName.value = ''
+    spawnError.value = ''
+  }
+}
+
+async function launchWorker() {
+  if (!currentGuild.value || !spawnRepos.value.trim()) return
+  spawning.value = true
+  spawnError.value = ''
+  const repos = spawnRepos.value.split('\n').map(r => r.trim()).filter(Boolean)
+  try {
+    const res = await fetch(`${API_BASE}/guilds/${currentGuild.value.id}/spawn-worker`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authStore.authHeaders() },
+      body: JSON.stringify({ repos, name: spawnName.value.trim() || undefined }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }))
+      throw new Error(err.detail || res.statusText)
+    }
+    showSpawnForm.value = false
+  } catch (e: any) {
+    spawnError.value = e.message
+  } finally {
+    spawning.value = false
+  }
+}
 
 const renamingGuild = ref(false)
 const renameValue = ref('')
@@ -441,8 +503,12 @@ function formatTime(isoStr?: string) {
 .workers-section {
   border-top: 2px solid var(--color-brass-dark);
   flex-shrink: 0;
-  max-height: 240px;
+  max-height: 300px;
   overflow-y: auto;
+}
+
+.workers-section--empty {
+  max-height: none;
 }
 
 .section-header {
@@ -470,6 +536,96 @@ function formatTime(isoStr?: string) {
   background: var(--color-bg);
   padding: 1px 5px;
   border-radius: 2px;
+}
+
+.spawn-btn {
+  background: none;
+  border: 1px solid var(--color-teal);
+  color: var(--color-teal);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  opacity: 0.7;
+  transition: opacity 0.12s, background 0.12s;
+}
+
+.spawn-btn:hover {
+  opacity: 1;
+  background: rgba(0, 187, 170, 0.12);
+}
+
+.spawn-form {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-brass-dark);
+  background: var(--color-bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.spawn-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-teal);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.spawn-hint {
+  color: var(--color-text-dim);
+  font-family: var(--font-mono, monospace);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 8px;
+}
+
+.spawn-textarea,
+.spawn-input {
+  background: var(--color-bg);
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  padding: 4px 6px;
+  outline: none;
+  border-radius: 2px;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.spawn-textarea:focus,
+.spawn-input:focus {
+  border-color: var(--color-teal);
+}
+
+.spawn-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 2px;
+}
+
+.spawn-launch-btn {
+  font-size: 7px;
+  padding: 4px 10px;
+}
+
+.spawn-launch-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.spawn-error {
+  font-size: 10px;
+  color: var(--color-red);
+  word-break: break-word;
 }
 
 /* Worker top-level row */

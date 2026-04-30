@@ -2,7 +2,6 @@ services:
   backend:
     build:
       context: ./backend
-    container_name: pioneer-backend
     ports:
       - "8056:8000"
     environment:
@@ -13,16 +12,19 @@ services:
       GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:8000/auth/github/callback}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      WORKER_IMAGE: ${WORKER_IMAGE:-pioneer-square-worker}
+      WORKER_BACKEND_URL: ${WORKER_BACKEND_URL:-http://backend:8000}
     volumes:
       - backend-data:/data
       - ./backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
-    container_name: pioneer-frontend
     ports:
       - "5056:80"
     depends_on:
@@ -32,7 +34,7 @@ services:
   worker:
     build:
       context: ./worker
-    container_name: pioneer-worker
+    image: pioneer-square-worker
     profiles: ["worker"]
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}

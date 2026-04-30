@@ -158,6 +158,10 @@ class WorkerCreate(BaseModel):
     repos: List[str]                  # ["owner/repo", ...]
     github_token: Optional[str] = None
 
+class SpawnWorkerRequest(BaseModel):
+    repos: List[str]
+    name: Optional[str] = None
+
 
 class TaskCreate(BaseModel):
     description: str
@@ -2152,6 +2156,56 @@ async def create_worker(guild_id: str, data: WorkerCreate):
         "joinedAt": created_at,
     })
     return {"id": worker_id, "name": worker_name, "repos": data.repos, "created_at": created_at}
+
+
+@app.post("/guilds/{guild_id}/spawn-worker")
+async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
+    """Start a new worker container via Docker. Requires the Docker socket to be mounted."""
+    try:
+        import docker as docker_sdk
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Docker SDK not installed in backend")
+
+    try:
+        client = docker_sdk.from_env()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Docker socket unavailable: {e}")
+
+    image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
+    backend_url = os.environ.get("WORKER_BACKEND_URL", "http://backend:8000")
+
+    env = {
+        "PIONEER_BACKEND_URL": backend_url,
+        "PIONEER_GUILD_ID": guild_id,
+        "PIONEER_REPOS": ",".join(data.repos),
+        "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
+        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
+    }
+    if data.name:
+        env["PIONEER_WORKER_NAME"] = data.name
+
+    # Join the same Docker network as the backend so the worker can reach it
+    network = None
+    try:
+        me = client.containers.get(os.environ.get("HOSTNAME", ""))
+        network = next(iter(me.attrs["NetworkSettings"]["Networks"].keys()), None)
+    except Exception:
+        pass
+
+    try:
+        run_kwargs: dict = dict(image=image, environment=env, detach=True, remove=True)
+        if network:
+            run_kwargs["network"] = network
+        container = client.containers.run(**run_kwargs)
+    except docker_sdk.errors.ImageNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Worker image '{image}' not found — run: docker compose build worker",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start container: {e}")
+
+    return {"container_id": container.id[:12], "image": image}
 
 
 @app.get("/guilds/{guild_id}/workers")

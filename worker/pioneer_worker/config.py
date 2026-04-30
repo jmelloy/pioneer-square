@@ -112,11 +112,14 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
         path = Path(p)
         return str(path if path.is_absolute() else cfg_dir / path)
 
+    _repos_env = os.environ.get("PIONEER_REPOS", "")
+    _repos_from_env = [r.strip() for r in _repos_env.split(",") if r.strip()] if _repos_env else []
+
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
-        repos=list(overrides.get("repos") or github_block.get("repos") or raw.get("repos") or []),
-        worker_name=overrides.get("worker_name") or raw.get("worker_name"),
+        repos=list(overrides.get("repos") or github_block.get("repos") or raw.get("repos") or _repos_from_env),
+        worker_name=overrides.get("worker_name") or raw.get("worker_name") or os.environ.get("PIONEER_WORKER_NAME"),
         github_token=token,
         repos_dir=os.path.abspath(overrides.get("repos_dir") or paths_block.get("repos_dir", "/tmp/pioneer-repos")),
         work_dir=os.path.abspath(overrides.get("work_dir") or paths_block.get("work_dir", "/tmp/pioneer-work")),

@@ -7,3 +7,4 @@ alembic
 python-multipart
 anthropic
 python-dotenv
+docker
