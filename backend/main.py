@@ -644,7 +644,7 @@ async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
 
             elif tu.name == "assign_task":
                 wid = inp["worker_id"]
-                desc = inp["description"]
+                desc = inp.get("description", "")
                 phase = inp.get("phase", "execute")
                 tool = inp.get("tool", "claude")
                 existing_task_id = inp.get("task_id")
@@ -1061,7 +1061,10 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
             .order_by(Task.created_at.desc())
             .limit(10)
         )
-        task_rows = [dict(r._mapping) for r in task_result.fetchall()]
+        task_rows = [
+            {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
+            for r in task_result.fetchall()
+        ]
     finally:
         await db.close()
 
