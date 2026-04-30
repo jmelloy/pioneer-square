@@ -500,6 +500,30 @@ FOREMAN_TOOLS = [
 ]
 
 
+def _serialize_history_for_debug(history: list) -> list:
+    """Convert in-memory foreman history (may contain SDK objects) to JSON-safe dicts."""
+    out = []
+    for msg in history:
+        role = msg.get("role", "?") if isinstance(msg, dict) else getattr(msg, "role", "?")
+        content = msg.get("content", []) if isinstance(msg, dict) else getattr(msg, "content", [])
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+        elif isinstance(content, list):
+            blocks = []
+            for b in content:
+                if isinstance(b, dict):
+                    blocks.append(b)
+                else:
+                    try:
+                        blocks.append(b.model_dump())
+                    except AttributeError:
+                        blocks.append({"type": str(getattr(b, "type", "unknown")), "raw": str(b)})
+            out.append({"role": role, "content": blocks})
+        else:
+            out.append({"role": role, "content": str(content)})
+    return out
+
+
 def _repair_tool_pairs(messages: list) -> list:
     """
     Ensure every tool_use block in an assistant turn has a matching tool_result
@@ -1089,9 +1113,13 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
             ]
             history.append({"role": "user", "content": trimmed})
 
-        # Trim history, then repair any tool_use/tool_result pairs broken by the slice
-        trimmed_history = history[-20:]
-        foreman_conversations[guild_id] = _repair_tool_pairs(trimmed_history)
+        # Trim history, repair orphaned tool pairs, then drop any leading assistant
+        # turns (which the API forbids as the first message).
+        trimmed_history = history[-10:]
+        repaired = _repair_tool_pairs(trimmed_history)
+        while repaired and repaired[0].get("role") != "user":
+            repaired = repaired[1:]
+        foreman_conversations[guild_id] = repaired
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
@@ -2543,3 +2571,37 @@ async def redirect_task_endpoint(guild_id: str, task_id: str, data: RedirectCrea
         "state": "working",
     })
     return {"status": "redirected", "taskId": task_id}
+
+
+# ---------------------------------------------------------------------------
+# Foreman context endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/guilds/{guild_id}/foreman/context")
+async def get_foreman_context(guild_id: str):
+    """Return the current in-memory foreman conversation context for debugging."""
+    db = await get_db()
+    try:
+        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Guild not found")
+    finally:
+        await db.close()
+    history = foreman_conversations.get(guild_id, [])
+    return {"messages": _serialize_history_for_debug(history), "count": len(history)}
+
+
+@app.post("/guilds/{guild_id}/foreman/clear-context")
+async def clear_foreman_context(guild_id: str):
+    """Reset the in-memory foreman conversation context. Chat history in the DB is preserved."""
+    db = await get_db()
+    try:
+        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Guild not found")
+    finally:
+        await db.close()
+    old_len = len(foreman_conversations.get(guild_id, []))
+    foreman_conversations[guild_id] = []
+    logger.info("Foreman context cleared for guild %s (%d messages removed)", guild_id, old_len)
+    return {"status": "cleared", "removed": old_len}
