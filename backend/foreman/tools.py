@@ -16,7 +16,6 @@ from sqlalchemy import select, update
 from database import get_db
 from events import broadcast, emit_terminal_line
 from models import Agent, GithubToken, Guild, Task, TaskLog, Worker
-from foreman.state import foreman_conversations
 
 FOREMAN_TOOLS = [
     {
@@ -557,13 +556,6 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                         "finishedAt": finished_at,
                     })
                     result_text = f"Task {task_id} finalized."
-                    # Compact all prior tool-result blocks mentioning this task
-                    for msg in foreman_conversations.get(guild_id, []):
-                        if msg["role"] == "user" and isinstance(msg["content"], list):
-                            for block in msg["content"]:
-                                if (block.get("type") == "tool_result"
-                                        and task_id in block.get("content", "")):
-                                    block["content"] = f"[{task_id}: done]"
 
             elif tu.name == "message_worker":
                 wid = inp["worker_id"]

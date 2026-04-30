@@ -36,7 +36,7 @@ except ImportError:
     pass
 
 from events import broadcast, connections, agent_owners, emit_terminal_line
-from foreman import foreman_conversations, maybe_post_plan_comment, run_foreman_ai, serialize_history_for_debug
+from foreman import clear_foreman_history, get_foreman_history, maybe_post_plan_comment, run_foreman_ai
 
 
 logger = logging.getLogger(__name__)
@@ -1561,29 +1561,32 @@ async def redirect_task_endpoint(guild_id: str, task_id: str, data: RedirectCrea
 
 @app.get("/guilds/{guild_id}/foreman/context")
 async def get_foreman_context(guild_id: str):
-    """Return the current in-memory foreman conversation context for debugging."""
+    """Return the stored foreman conversation turns for this guild (debug view)."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
-        if not result.scalar_one_or_none():
+        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
+        row = result.scalar_one_or_none()
+        if row is None:
             raise HTTPException(status_code=404, detail="Guild not found")
+        user_id = row or guild_id
     finally:
         await db.close()
-    history = foreman_conversations.get(guild_id, [])
-    return {"messages": serialize_history_for_debug(history), "count": len(history)}
+    turns = await get_foreman_history(guild_id, user_id)
+    return {"messages": turns, "count": len(turns)}
 
 
 @app.post("/guilds/{guild_id}/foreman/clear-context")
 async def clear_foreman_context(guild_id: str):
-    """Reset the in-memory foreman conversation context. Chat history in the DB is preserved."""
+    """Delete all stored foreman turns for this guild. Chat history in messages table is preserved."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
-        if not result.scalar_one_or_none():
+        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
+        row = result.scalar_one_or_none()
+        if row is None:
             raise HTTPException(status_code=404, detail="Guild not found")
+        user_id = row or guild_id
     finally:
         await db.close()
-    old_len = len(foreman_conversations.get(guild_id, []))
-    foreman_conversations[guild_id] = []
-    logger.info("Foreman context cleared for guild %s (%d messages removed)", guild_id, old_len)
-    return {"status": "cleared", "removed": old_len}
+    removed = await clear_foreman_history(guild_id, user_id)
+    logger.info("Foreman context cleared for guild %s (%d turns removed)", guild_id, removed)
+    return {"status": "cleared", "removed": removed}
