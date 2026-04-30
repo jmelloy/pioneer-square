@@ -230,8 +230,8 @@ function formatTime(isoStr?: string) {
 
 <style scoped>
 .sidebar {
-  width: 220px;
-  min-width: 220px;
+  width: 360px;
+  min-width: 360px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
