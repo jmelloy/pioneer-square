@@ -28,8 +28,8 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text[:40].lower()).strip("-")
+def _slug(text: str, max_len: int = 45) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text[:max_len].lower()).strip("-")
 
 
 _CANCEL_SENTINEL = object()  # placed in followup queue to signal task cancellation
@@ -419,7 +419,8 @@ class Worker:
         await self._set_state("working", slot)
         await self._task_update(task_id, state="working")
 
-        branch = f"claude/{_slug(desc)}-{task_id[:6]}"
+        name = task.get("name") or desc
+        branch = f"claude/{_slug(name)}-{task_id[:6]}"
         work_dir = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id, task_id)
         logger.info("Task %s branch=%s work_dir=%s", task_id, branch, work_dir)
         os.makedirs(work_dir, exist_ok=True)
