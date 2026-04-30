@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal, get_db
-from models import Agent, Guild, GithubToken, Message, Task, TaskLog, UserSession, Worker
+from models import Agent, ClaudeCredentials, Guild, GithubToken, Message, Task, TaskLog, UserSession, Worker
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
 # code reads os.environ, so ANTHROPIC_API_KEY etc. are available.
@@ -161,6 +161,10 @@ class WorkerCreate(BaseModel):
 class SpawnWorkerRequest(BaseModel):
     repos: List[str]
     name: Optional[str] = None
+
+class ClaudeCredentialsRequest(BaseModel):
+    guild_id: str
+    credentials_blob: str  # base64-encoded tar.gz of ~/.claude/
 
 
 class TaskCreate(BaseModel):
@@ -1420,6 +1424,47 @@ async def get_github_token(guild_id: str = Query(...)):
         await db.close()
 
 
+@app.get("/auth/claude/credentials")
+async def get_claude_credentials(guild_id: str = Query(...)):
+    """Return stored Claude credentials blob for a worker. Called by workers on startup."""
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(ClaudeCredentials).where(ClaudeCredentials.guild_id == guild_id)
+        )
+        row = result.scalar_one_or_none()
+        if not row:
+            raise HTTPException(status_code=404, detail="No Claude credentials stored for this guild")
+        return {"credentials_blob": row.credentials_blob}
+    finally:
+        await db.close()
+
+
+@app.post("/auth/claude/credentials")
+async def store_claude_credentials(data: ClaudeCredentialsRequest):
+    """Store Claude credentials blob (called by worker after successful login)."""
+    now = datetime.now(timezone.utc).isoformat()
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(ClaudeCredentials).where(ClaudeCredentials.guild_id == data.guild_id)
+        )
+        row = result.scalar_one_or_none()
+        if row:
+            row.credentials_blob = data.credentials_blob
+            row.updated_at = now
+        else:
+            db.add(ClaudeCredentials(
+                guild_id=data.guild_id,
+                credentials_blob=data.credentials_blob,
+                updated_at=now,
+            ))
+        await db.commit()
+    finally:
+        await db.close()
+    return {"ok": True}
+
+
 @app.get("/auth/me")
 async def get_me(github_user_id: str = Depends(require_user)):
     """Return the currently authenticated user's info."""
@@ -2265,7 +2310,6 @@ async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
         "PIONEER_GUILD_ID": guild_id,
         "PIONEER_REPOS": ",".join(data.repos),
         "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
-        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
     }
     if data.name:
         env["PIONEER_WORKER_NAME"] = data.name

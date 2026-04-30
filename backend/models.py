@@ -100,3 +100,12 @@ class TaskLog(Base):
     worker_id = Column(Text)
     agent_id = Column(Text)
     data = Column(Text)     # JSON: full tool input/output for click-to-expand
+
+
+class ClaudeCredentials(Base):
+    __tablename__ = "claude_credentials"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False, unique=True)
+    credentials_blob = Column(Text, nullable=False)  # base64-encoded tar.gz of ~/.claude/
+    updated_at = Column(Text, nullable=False)
