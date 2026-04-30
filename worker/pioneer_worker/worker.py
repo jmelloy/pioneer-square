@@ -624,7 +624,7 @@ class Worker:
             # Push the branch regardless of outcome so partial work is visible
             # and a follow-up run can build on it.
             push_ok = await github_pr.push_branch(
-                branch=branch, worktree_path=primary_wt, emit=emit,
+                branch=branch, worktree_path=primary_wt, emit=emit, task_id=task_id,
             )
             pr_url: Optional[str] = None
 
@@ -747,7 +747,7 @@ class Worker:
 
                     if fu_ok:
                         await github_pr.push_branch(
-                            branch=branch, worktree_path=primary_wt, emit=emit,
+                            branch=branch, worktree_path=primary_wt, emit=emit, task_id=task_id,
                         )
                         # Originally-failed tasks never opened a PR; do it now
                         # that we have something worth reviewing.

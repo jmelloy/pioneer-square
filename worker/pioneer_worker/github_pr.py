@@ -19,8 +19,18 @@ async def push_branch(
     branch: str,
     worktree_path: str,
     emit: EmitFn,
+    task_id: Optional[str] = None,
 ) -> bool:
     """Push *branch* to origin. Returns True on success."""
+    _, status_out, _ = await git_ops.run_git(["status", "--porcelain"], cwd=worktree_path)
+    if status_out.strip():
+        await emit("[worker] Auto-committing uncommitted changes before push...")
+        await git_ops.run_git(["add", "-A"], cwd=worktree_path)
+        msg = f"chore: auto-commit uncommitted changes before push [task {task_id}]" if task_id else "chore: auto-commit uncommitted changes before push"
+        rc_commit, _, commit_err = await git_ops.run_git(["commit", "-m", msg], cwd=worktree_path)
+        if rc_commit != 0:
+            await emit(f"[worker] ✗ Auto-commit failed: {commit_err.strip()[:120]}")
+
     await emit(f"[worker] Pushing {branch}...")
     rc, _, err = await git_ops.run_git(["push", "-u", "origin", branch], cwd=worktree_path)
     if rc != 0:
