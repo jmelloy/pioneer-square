@@ -4,7 +4,7 @@ services:
       context: ./backend
     container_name: pioneer-backend
     ports:
-      - "8000:8000"
+      - "8002:8000"
     environment:
       DB_PATH: /data/pioneer_square.db
       DATABASE_URL: sqlite+aiosqlite:////data/pioneer_square.db
@@ -24,7 +24,7 @@ services:
       context: ./frontend
     container_name: pioneer-frontend
     ports:
-      - "5173:5173"
+      - "5175:5173"
     volumes:
       - ./frontend:/app
       - frontend-node-modules:/app/node_modules
