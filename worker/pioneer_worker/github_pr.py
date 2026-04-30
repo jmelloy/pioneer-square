@@ -21,6 +21,20 @@ async def push_branch(
     emit: EmitFn,
 ) -> bool:
     """Push *branch* to origin. Returns True on success."""
+    # Stage and commit any uncommitted work so it isn't silently lost on push
+    # (can happen on max-turns, plan-phase completion, or normal task end).
+    rc_status, status_out, _ = await git_ops.run_git(["status", "--porcelain"], cwd=worktree_path)
+    if rc_status == 0 and status_out.strip():
+        await emit("[worker] Uncommitted changes detected — auto-committing before push")
+        await git_ops.run_git(["add", "-A"], cwd=worktree_path)
+        rc_commit, _, commit_err = await git_ops.run_git(
+            ["commit", "-m", "chore: save uncommitted work before push [auto-commit]"],
+            cwd=worktree_path,
+        )
+        if rc_commit != 0:
+            await emit(f"[worker] ✗ Auto-commit failed: {commit_err.strip()[:120]}")
+            return False
+
     await emit(f"[worker] Pushing {branch}...")
     rc, _, err = await git_ops.run_git(["push", "-u", "origin", branch], cwd=worktree_path)
     if rc != 0:
