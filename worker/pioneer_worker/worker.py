@@ -274,6 +274,7 @@ class Worker:
                     "guild_id": self.cfg.guild_id,
                     "description": msg.get("description", ""),
                     "tool": msg.get("tool", "claude"),
+                    "phase": msg.get("phase", "execute"),
                     "issue_number": msg.get("issueNumber"),
                     "issue_repo": msg.get("issueRepo"),
                 })
@@ -548,6 +549,15 @@ class Worker:
             pr_url: Optional[str] = None
 
             if success:
+                if task.get("phase") == "plan" and task.get("issue_number") and task.get("issue_repo") and token:
+                    comment = f"## 🗂 Implementation Plan\n\n{last_msg}"
+                    await github_pr.post_issue_comment(
+                        repo_full=task["issue_repo"],
+                        issue_number=task["issue_number"],
+                        body=comment,
+                        token=token,
+                        emit=emit,
+                    )
                 if push_ok:
                     pr_url = await github_pr.open_pr(
                         task=task, branch=branch, worktree_path=primary_wt,

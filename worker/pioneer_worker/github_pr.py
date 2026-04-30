@@ -85,3 +85,37 @@ async def open_pr(
     except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
         await emit(f"[worker] PR failed: {exc}")
         return None
+
+
+async def post_issue_comment(
+    *,
+    repo_full: str,
+    issue_number: int,
+    body: str,
+    token: str,
+    emit: EmitFn,
+) -> bool:
+    """Post a comment on a GitHub issue. Returns True on success."""
+    payload = json.dumps({"body": body}).encode()
+
+    def _post() -> None:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo_full}/issues/{issue_number}/comments",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+
+    try:
+        await asyncio.to_thread(_post)
+        await emit(f"[worker] ✓ Posted plan to issue #{issue_number}")
+        return True
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+        await emit(f"[worker] Failed to post issue comment: {exc}")
+        return False
