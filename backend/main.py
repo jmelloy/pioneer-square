@@ -1231,6 +1231,47 @@ async def _guild_github_token(guild_id: str) -> Optional[tuple[str, str]]:
         await db.close()
 
 
+async def _maybe_post_plan_comment(guild_id: str, task_id: str, last_text: str) -> None:
+    """Post plan output as a GitHub issue comment when a plan-phase task completes."""
+    try:
+        db = await get_db()
+        try:
+            result = await db.execute(
+                select(Task.phase, Task.issue_number, Task.issue_repo)
+                .where(Task.id == task_id)
+            )
+            row = result.first()
+        finally:
+            await db.close()
+
+        if not row or row.phase != "plan":
+            return
+        issue_number = row.issue_number
+        issue_repo = row.issue_repo
+        if not issue_number or not issue_repo:
+            return
+        if not last_text:
+            logger.warning("plan comment: task %s has no output to post", task_id)
+            return
+
+        creds = await _guild_github_token(guild_id)
+        if not creds:
+            logger.warning("plan comment: no GitHub token for guild %s", guild_id)
+            return
+        token, _ = creds
+
+        body = f"## \U0001f4cb Plan from task `{task_id}`\n\n{last_text}"
+        await asyncio.to_thread(
+            _gh_api_post,
+            f"/repos/{issue_repo}/issues/{issue_number}/comments",
+            token,
+            {"body": body},
+        )
+        logger.info("plan comment posted to %s#%s for task %s", issue_repo, issue_number, task_id)
+    except Exception as exc:
+        logger.warning("plan comment failed for task %s: %s", task_id, exc)
+
+
 # ---------------------------------------------------------------------------
 # Auth dependency
 # ---------------------------------------------------------------------------
@@ -1734,6 +1775,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 desc = data.get("description", "")
                 branch = data.get("branch", "")
                 finalized_by = data.get("finalizedBy", "")
+                last_text = data.get("lastText", "")
                 if task_id:
                     await db.execute(
                         update(Task)
@@ -1742,6 +1784,10 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     )
                     await db.commit()
                 await broadcast(guild_id, data, exclude=websocket)
+                if task_id and not finalized_by:
+                    asyncio.create_task(
+                        _maybe_post_plan_comment(guild_id, task_id, last_text)
+                    )
                 if task_id:
                     if finalized_by == "timeout":
                         finished_at = datetime.now(timezone.utc).isoformat()
