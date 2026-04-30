@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import random
 import secrets
@@ -39,6 +40,9 @@ try:
     HAS_ANTHROPIC = True
 except ImportError:
     HAS_ANTHROPIC = False
+
+
+logger = logging.getLogger(__name__)
 
 
 def _row(obj) -> dict:
@@ -497,6 +501,87 @@ FOREMAN_TOOLS = [
         },
     },
 ]
+
+
+def _repair_tool_pairs(messages: list) -> list:
+    """
+    Ensure every tool_use block in an assistant turn has a matching tool_result
+    in the immediately following user turn.
+
+    When the conversation history is trimmed or otherwise truncated, assistant
+    messages that contain tool_use blocks can lose their paired tool_result
+    responses.  The Anthropic API rejects such histories.  This function does a
+    single forward pass and inserts a synthetic error tool_result for every
+    orphaned tool_use ID, keeping the history self-consistent.
+    """
+    result: list = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+
+        if msg.get("role") != "assistant":
+            result.append(msg)
+            i += 1
+            continue
+
+        content = msg.get("content", [])
+        tool_use_ids: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "tool_use":
+                    tool_use_ids.append(block["id"])
+            elif getattr(block, "type", None) == "tool_use":
+                tool_use_ids.append(block.id)
+
+        result.append(msg)
+        i += 1
+
+        if not tool_use_ids:
+            continue
+
+        next_msg = messages[i] if i < len(messages) else None
+
+        if next_msg is not None and next_msg.get("role") == "user":
+            next_content = next_msg.get("content", [])
+            if isinstance(next_content, list):
+                covered = {
+                    b.get("tool_use_id")
+                    for b in next_content
+                    if isinstance(b, dict) and b.get("type") == "tool_result"
+                }
+            else:
+                covered = set()
+            orphans = [tid for tid in tool_use_ids if tid not in covered]
+        else:
+            orphans = list(tool_use_ids)
+
+        if not orphans:
+            continue
+
+        logger.warning(
+            "Repairing foreman history: inserting synthetic tool_result for "
+            "orphaned tool_use ids %s",
+            orphans,
+        )
+        synthetic = [
+            {
+                "type": "tool_result",
+                "tool_use_id": tid,
+                "content": '{"error": "tool result missing"}',
+            }
+            for tid in orphans
+        ]
+        if next_msg is not None and next_msg.get("role") == "user":
+            # Merge synthetic results into the existing next user message so
+            # there are no consecutive user turns.
+            existing = next_msg.get("content", [])
+            existing_list = existing if isinstance(existing, list) else [{"type": "text", "text": str(existing)}]
+            result.append({"role": "user", "content": synthetic + existing_list})
+            i += 1  # skip the original next_msg; we just replaced it
+        else:
+            result.append({"role": "user", "content": synthetic})
+
+    return result
 
 
 async def _foreman_exec_tools(guild_id: str, tool_uses: list) -> list:
@@ -983,6 +1068,7 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
     try:
         text_parts = []
         for _ in range(6):  # safety cap on tool-call rounds
+            history = _repair_tool_pairs(history)
             resp = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
@@ -1006,8 +1092,9 @@ async def _run_foreman_ai(guild_id: str, human_message: str, extra_context: str 
             ]
             history.append({"role": "user", "content": trimmed})
 
-        # Trim history
-        foreman_conversations[guild_id] = history[-20:]
+        # Trim history, then repair any tool_use/tool_result pairs broken by the slice
+        trimmed_history = history[-20:]
+        foreman_conversations[guild_id] = _repair_tool_pairs(trimmed_history)
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
