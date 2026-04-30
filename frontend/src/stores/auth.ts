@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { AuthUser } from '../types'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
 export const useAuthStore = defineStore('auth', () => {
   const loginToken = ref<string>(localStorage.getItem('auth_token') || '')

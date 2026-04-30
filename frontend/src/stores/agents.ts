@@ -4,7 +4,7 @@ import { useGuildStore } from './guild'
 import { useAuthStore } from './auth'
 import type { Agent, AgentState, LogEntry, Worker, WSMessage } from '../types'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
 const STATE_RANK: Record<string, number> = {
   working: 0,

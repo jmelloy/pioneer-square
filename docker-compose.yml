@@ -24,10 +24,7 @@ services:
       context: ./frontend
     container_name: pioneer-frontend
     ports:
-      - "5175:5173"
-    volumes:
-      - ./frontend:/app
-      - frontend-node-modules:/app/node_modules
+      - "5175:80"
     depends_on:
       - backend
     restart: unless-stopped
@@ -51,6 +48,5 @@ services:
 
 volumes:
   backend-data:
-  frontend-node-modules:
   worker-repos:
   worker-worktrees:

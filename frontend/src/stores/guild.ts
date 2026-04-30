@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { useAuthStore } from './auth'
 import type { ChatMessage, Guild, WSMessage } from '../types'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
 type MessageHandler = (data: WSMessage) => void
 
@@ -95,7 +95,8 @@ export const useGuildStore = defineStore('guild', () => {
 
     let socket: WebSocket
     try {
-      socket = new WebSocket(`ws://localhost:8000/ws/${guildId}`)
+      const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      socket = new WebSocket(`${wsProto}//${window.location.host}/ws/${guildId}`)
     } catch (e) {
       console.error('Failed to construct WebSocket', e)
       _scheduleReconnect(guildId, onMessage)
