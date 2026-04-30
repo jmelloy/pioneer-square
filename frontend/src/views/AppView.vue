@@ -1,13 +1,27 @@
 <template>
-  <div class="app-layout">
+  <div class="app-layout" :data-tab="activeTab">
     <GuildSidebar />
     <MainView />
     <ChatPane />
+    <nav class="mobile-tab-bar">
+      <button class="tab-btn" :class="{ active: activeTab === 'tasks' }" @click="activeTab = 'tasks'">
+        <span class="tab-icon">≡</span>
+        <span class="tab-label">Tasks</span>
+      </button>
+      <button class="tab-btn" :class="{ active: activeTab === 'work' }" @click="activeTab = 'work'">
+        <span class="tab-icon">◈</span>
+        <span class="tab-label">Work</span>
+      </button>
+      <button class="tab-btn" :class="{ active: activeTab === 'chat' }" @click="activeTab = 'chat'">
+        <span class="tab-icon">✉</span>
+        <span class="tab-label">Chat</span>
+      </button>
+    </nav>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, watch } from 'vue'
+import { onMounted, onUnmounted, watch, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
@@ -19,6 +33,8 @@ import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 
 const props = defineProps<{ guildId?: string }>()
+
+const activeTab = ref<'tasks' | 'work' | 'chat'>('chat')
 
 const router = useRouter()
 const guildStore = useGuildStore()
@@ -124,5 +140,80 @@ watch(
   width: 100vw;
   overflow: hidden;
   background: var(--color-bg);
+}
+
+.mobile-tab-bar {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .mobile-tab-bar {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 52px;
+    background: var(--color-bg-secondary);
+    border-top: 2px solid var(--color-brass-dark);
+    z-index: 200;
+  }
+
+  .tab-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    background: none;
+    border: none;
+    border-right: 1px solid var(--color-brass-dark);
+    cursor: pointer;
+    color: var(--color-text-dim);
+    transition: color 0.12s, background 0.12s;
+    padding: 4px 0;
+  }
+
+  .tab-btn:last-child {
+    border-right: none;
+  }
+
+  .tab-btn.active {
+    color: var(--color-brass);
+    background: rgba(232, 170, 0, 0.1);
+  }
+
+  .tab-icon {
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .tab-label {
+    font-family: var(--font-pixel);
+    font-size: 6px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  /* Each pane takes the full screen (minus tab bar) and is hidden unless active */
+  .sidebar,
+  .main-view,
+  .chat-pane {
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 52px;
+    width: 100vw !important;
+    min-width: 0 !important;
+    max-width: 100vw !important;
+    height: calc(100vh - 52px) !important;
+    display: none !important;
+  }
+
+  .app-layout[data-tab="tasks"] .sidebar { display: flex !important; }
+  .app-layout[data-tab="work"]  .main-view { display: flex !important; }
+  .app-layout[data-tab="chat"]  .chat-pane { display: flex !important; }
 }
 </style>
