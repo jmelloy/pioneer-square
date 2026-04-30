@@ -95,6 +95,23 @@ class Worker:
         except Exception as exc:
             logger.warning("Could not fetch GitHub token: %s", exc)
 
+    async def _claude_is_authenticated(self) -> bool:
+        """Return True if `claude auth status` exits 0 (works on macOS keychain and Linux)."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.cfg.claude_path, "auth", "status",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await proc.communicate()
+            result = proc.returncode == 0
+            logger.info("claude auth status rc=%s output=%s", proc.returncode,
+                        stdout.decode(errors="replace").strip()[:200])
+            return result
+        except Exception as exc:
+            logger.warning("claude auth status failed: %s", exc)
+            return False
+
     async def _check_claude_auth(self) -> None:
         """Ensure Claude is authenticated. Restores stored credentials or runs login flow."""
         import base64
@@ -106,8 +123,7 @@ class Worker:
             logger.info("ANTHROPIC_API_KEY set — skipping Claude login flow")
             return
 
-        creds_file = Path.home() / ".claude" / ".credentials.json"
-        if creds_file.exists():
+        if await self._claude_is_authenticated():
             logger.info("Claude credentials already present")
             return
 
@@ -127,7 +143,9 @@ class Worker:
                     with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
                         tar.extractall(path=Path.home())
                     logger.info("Restored Claude credentials from backend")
-                    return
+                    if await self._claude_is_authenticated():
+                        return
+                    logger.warning("Restored credentials blob but auth status still fails")
         except Exception as exc:
             logger.warning("Could not fetch Claude credentials from backend: %s", exc)
 
@@ -135,14 +153,14 @@ class Worker:
         await self._run_claude_login()
 
     async def _run_claude_login(self) -> None:
-        """Run `claude login`, stream output to the frontend, then persist credentials."""
+        """Run `claude auth login`, stream output to the frontend, then persist credentials."""
         import base64
         import io
         import tarfile
         from pathlib import Path
 
         proc = await asyncio.create_subprocess_exec(
-            self.cfg.claude_path, "login",
+            self.cfg.claude_path, "auth", "login",
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -154,11 +172,11 @@ class Worker:
             await self._emit(f"[auth] {line}")
         await proc.wait()
 
-        claude_dir = Path.home() / ".claude"
-        if not claude_dir.exists():
-            await self._emit("[auth] Login may have failed — ~/.claude not found")
+        if not await self._claude_is_authenticated():
+            await self._emit("[auth] Login may have failed — claude auth status returned non-zero")
             return
 
+        claude_dir = Path.home() / ".claude"
         try:
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w:gz") as tar:
