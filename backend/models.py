@@ -37,6 +37,7 @@ class Message(Base):
     content = Column(Text, nullable=False)
     message_type = Column(Text, nullable=False)
     created_at = Column(Text, nullable=False)
+    user_id = Column(Text, nullable=True)  # github_user_id of the sender; NULL for system/worker messages
 
 
 class Worker(Base):
@@ -109,3 +110,18 @@ class ClaudeCredentials(Base):
     guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False, unique=True)
     credentials_blob = Column(Text, nullable=False)  # base64-encoded tar.gz of ~/.claude/
     updated_at = Column(Text, nullable=False)
+
+
+class ForemanTurn(Base):
+    __tablename__ = "foreman_turns"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    guild_id = Column(Text, nullable=False)
+    user_id = Column(Text, nullable=False)
+    role = Column(Text, nullable=False)          # "user" | "assistant"
+    content_json = Column(Text, nullable=False)  # JSON-serialized content blocks
+    # 1 if this "user" turn carries tool_results (not human input); 0 otherwise
+    is_tool_response = Column(Integer, nullable=False, server_default="0")
+    # For tool_result turns: id of the assistant turn whose tool_use blocks this answers
+    parent_id = Column(Integer, ForeignKey("foreman_turns.id"), nullable=True)
+    created_at = Column(Text, nullable=False)

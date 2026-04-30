@@ -4,14 +4,13 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, select
 
 from database import get_db
 from events import broadcast
 from foreman.prompt import build_system_prompt
-from foreman.state import foreman_conversations
 from foreman.tools import FOREMAN_TOOLS, exec_tools
-from models import Message, Task
+from models import ForemanTurn, Guild, Message, Task
 
 try:
     import anthropic as _anthropic
@@ -21,112 +20,118 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-
-def serialize_history_for_debug(history: list) -> list:
-    """Convert in-memory foreman history (may contain SDK objects) to JSON-safe dicts."""
-    out = []
-    for msg in history:
-        role = msg.get("role", "?") if isinstance(msg, dict) else getattr(msg, "role", "?")
-        content = msg.get("content", []) if isinstance(msg, dict) else getattr(msg, "content", [])
-        if isinstance(content, str):
-            out.append({"role": role, "content": content})
-        elif isinstance(content, list):
-            blocks = []
-            for b in content:
-                if isinstance(b, dict):
-                    blocks.append(b)
-                else:
-                    try:
-                        blocks.append(b.model_dump())
-                    except AttributeError:
-                        blocks.append({"type": str(getattr(b, "type", "unknown")), "raw": str(b)})
-            out.append({"role": role, "content": blocks})
-        else:
-            out.append({"role": role, "content": str(content)})
-    return out
+_RESULT_MAX = 400   # chars stored per tool result (keeps DB and context lean)
+_HUMAN_TURN_WINDOW = 5  # how many non-tool-response user turns to include
 
 
-def _repair_tool_pairs(messages: list) -> list:
-    """
-    Ensure every tool_use block in an assistant turn has a matching tool_result
-    in the immediately following user turn.
-
-    When the conversation history is trimmed or otherwise truncated, assistant
-    messages that contain tool_use blocks can lose their paired tool_result
-    responses.  The Anthropic API rejects such histories.  This function does a
-    single forward pass and inserts a synthetic error tool_result for every
-    orphaned tool_use ID, keeping the history self-consistent.
-    """
-    result: list = []
-    i = 0
-    while i < len(messages):
-        msg = messages[i]
-
-        if msg.get("role") != "assistant":
-            result.append(msg)
-            i += 1
-            continue
-
-        content = msg.get("content", [])
-        tool_use_ids: list[str] = []
-        for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "tool_use":
-                    tool_use_ids.append(block["id"])
-            elif getattr(block, "type", None) == "tool_use":
-                tool_use_ids.append(block.id)
-
-        result.append(msg)
-        i += 1
-
-        if not tool_use_ids:
-            continue
-
-        next_msg = messages[i] if i < len(messages) else None
-
-        if next_msg is not None and next_msg.get("role") == "user":
-            next_content = next_msg.get("content", [])
-            if isinstance(next_content, list):
-                covered = {
-                    b.get("tool_use_id")
-                    for b in next_content
-                    if isinstance(b, dict) and b.get("type") == "tool_result"
-                }
+def _serialize_content(content) -> str:
+    """Convert SDK content objects or dicts to a JSON string for DB storage."""
+    if isinstance(content, str):
+        return json.dumps(content)
+    if isinstance(content, list):
+        blocks = []
+        for b in content:
+            if isinstance(b, dict):
+                blocks.append(b)
             else:
-                covered = set()
-            orphans = [tid for tid in tool_use_ids if tid not in covered]
-        else:
-            orphans = list(tool_use_ids)
+                try:
+                    blocks.append(b.model_dump())
+                except AttributeError:
+                    blocks.append({"type": str(getattr(b, "type", "unknown")), "raw": str(b)})
+        return json.dumps(blocks)
+    return json.dumps(str(content))
 
-        if not orphans:
-            continue
 
-        logger.warning(
-            "Repairing foreman history: inserting synthetic tool_result for "
-            "orphaned tool_use ids %s",
-            orphans,
+async def _get_guild_user_id(guild_id: str) -> str | None:
+    db = await get_db()
+    try:
+        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
+        return result.scalar_one_or_none()
+    finally:
+        await db.close()
+
+
+async def _load_history(guild_id: str, user_id: str) -> list[dict]:
+    """Load the last _HUMAN_TURN_WINDOW non-tool-response turns (plus all tool exchange
+    turns between them) as a list of Anthropic-API-compatible message dicts.
+
+    Because the cutoff always lands on a human-initiated user turn, every
+    assistant-turn / tool_result-user-turn pair that follows it is guaranteed to
+    be included intact — no orphaned tool_use blocks, no synthetic repairs needed.
+    """
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(ForemanTurn)
+            .where(ForemanTurn.guild_id == guild_id, ForemanTurn.user_id == user_id)
+            .order_by(ForemanTurn.id)
         )
-        synthetic = [
-            {
-                "type": "tool_result",
-                "tool_use_id": tid,
-                "content": '{"error": "tool result missing"}',
-            }
-            for tid in orphans
-        ]
-        if next_msg is not None and next_msg.get("role") == "user":
-            existing = next_msg.get("content", [])
-            existing_list = existing if isinstance(existing, list) else [{"type": "text", "text": str(existing)}]
-            result.append({"role": "user", "content": synthetic + existing_list})
-            i += 1  # skip the original next_msg; we just replaced it
-        else:
-            result.append({"role": "user", "content": synthetic})
+        turns = result.scalars().all()
+    finally:
+        await db.close()
 
-    return result
+    if not turns:
+        return []
+
+    # Walk backwards: find the index of the 5th-from-last non-tool-response user turn.
+    cutoff = 0
+    human_count = 0
+    for i in range(len(turns) - 1, -1, -1):
+        t = turns[i]
+        if t.role == "user" and not t.is_tool_response:
+            human_count += 1
+            if human_count >= _HUMAN_TURN_WINDOW:
+                cutoff = i
+                break
+
+    messages = [
+        {"role": t.role, "content": json.loads(t.content_json)}
+        for t in turns[cutoff:]
+    ]
+
+    # Anthropic API requires the first message to have role "user"
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+
+    return messages
 
 
-async def run_foreman_ai(guild_id: str, human_message: str, extra_context: str = ""):
-    """Process a human message (or escalation) through the Claude foreman AI."""
+async def _save_turn(
+    guild_id: str,
+    user_id: str,
+    role: str,
+    content,
+    *,
+    is_tool_response: bool = False,
+    parent_id: int | None = None,
+) -> int:
+    """Persist one turn to the DB. Returns the new row's id."""
+    db = await get_db()
+    try:
+        turn = ForemanTurn(
+            guild_id=guild_id,
+            user_id=user_id,
+            role=role,
+            content_json=_serialize_content(content),
+            is_tool_response=1 if is_tool_response else 0,
+            parent_id=parent_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        db.add(turn)
+        await db.commit()
+        await db.refresh(turn)
+        return turn.id
+    finally:
+        await db.close()
+
+
+async def run_foreman_ai(
+    guild_id: str,
+    human_message: str,
+    extra_context: str = "",
+    user_id: str | None = None,
+):
+    """Process a human message (or system escalation) through the Claude foreman AI."""
     if not HAS_ANTHROPIC:
         now = datetime.now(timezone.utc).isoformat()
         await broadcast(guild_id, {
@@ -136,7 +141,11 @@ async def run_foreman_ai(guild_id: str, human_message: str, extra_context: str =
         })
         return
 
+    if not user_id:
+        user_id = await _get_guild_user_id(guild_id) or guild_id
+
     # Build live context for the system prompt
+    from sqlalchemy import text
     db = await get_db()
     try:
         result = await db.execute(
@@ -179,25 +188,29 @@ async def run_foreman_ai(guild_id: str, human_message: str, extra_context: str =
     tasks_block = json.dumps(task_rows[:6], indent=2)
     system = build_system_prompt(workers_block, tasks_block, extra_context)
 
-    history = foreman_conversations.setdefault(guild_id, [])
-    history.append({"role": "user", "content": human_message})
+    # Persist and load the new human turn
+    await _save_turn(guild_id, user_id, "user", human_message)
+    messages = await _load_history(guild_id, user_id)
 
     client = _anthropic.AsyncAnthropic()
-
-    _RESULT_MAX = 400  # chars kept per tool result in history
 
     try:
         text_parts = []
         for _ in range(6):  # safety cap on tool-call rounds
-            history = _repair_tool_pairs(history)
             resp = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
                 system=system,
-                messages=history,
+                messages=messages,
                 tools=FOREMAN_TOOLS,
             )
-            history.append({"role": "assistant", "content": resp.content})
+
+            # Persist assistant turn and append to local messages
+            asst_turn_id = await _save_turn(guild_id, user_id, "assistant", resp.content)
+            messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
+            # Re-parse so messages stays as plain dicts (not SDK objects)
+            messages[-1]["content"] = json.loads(messages[-1]["content"])
+
             text_parts += [b.text for b in resp.content if b.type == "text" and b.text.strip()]
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
@@ -205,21 +218,18 @@ async def run_foreman_ai(guild_id: str, human_message: str, extra_context: str =
                 break  # end_turn — foreman is done
 
             tool_results = await exec_tools(guild_id, tool_uses)
-            # Truncate verbose results (e.g. GitHub JSON) before storing in history
+            # Truncate verbose results before storing
             trimmed = [
                 {**r, "content": r["content"][:_RESULT_MAX] + " …[truncated]"}
                 if len(r.get("content", "")) > _RESULT_MAX else r
                 for r in tool_results
             ]
-            history.append({"role": "user", "content": trimmed})
-
-        # Trim history, repair orphaned tool pairs, then drop any leading assistant
-        # turns (which the API forbids as the first message).
-        trimmed_history = history[-10:]
-        repaired = _repair_tool_pairs(trimmed_history)
-        while repaired and repaired[0].get("role") != "user":
-            repaired = repaired[1:]
-        foreman_conversations[guild_id] = repaired
+            # Persist tool_result turn as a child of the assistant turn
+            await _save_turn(
+                guild_id, user_id, "user", trimmed,
+                is_tool_response=True, parent_id=asst_turn_id,
+            )
+            messages.append({"role": "user", "content": trimmed})
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
@@ -248,3 +258,43 @@ async def run_foreman_ai(guild_id: str, human_message: str, extra_context: str =
             "type": "chat", "from": "foreman", "to": "user",
             "content": f"Foreman error: {exc}", "createdAt": now,
         })
+
+
+async def clear_foreman_history(guild_id: str, user_id: str) -> int:
+    """Delete all stored turns for this guild+user. Returns count removed."""
+    db = await get_db()
+    try:
+        result = await db.execute(
+            delete(ForemanTurn)
+            .where(ForemanTurn.guild_id == guild_id, ForemanTurn.user_id == user_id)
+        )
+        await db.commit()
+        return result.rowcount
+    finally:
+        await db.close()
+
+
+async def get_foreman_history(guild_id: str, user_id: str) -> list[dict]:
+    """Return all stored turns as JSON-safe dicts (for the debug endpoint)."""
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(ForemanTurn)
+            .where(ForemanTurn.guild_id == guild_id, ForemanTurn.user_id == user_id)
+            .order_by(ForemanTurn.id)
+        )
+        turns = result.scalars().all()
+    finally:
+        await db.close()
+
+    return [
+        {
+            "id": t.id,
+            "role": t.role,
+            "is_tool_response": bool(t.is_tool_response),
+            "parent_id": t.parent_id,
+            "content": json.loads(t.content_json),
+            "created_at": t.created_at,
+        }
+        for t in turns
+    ]

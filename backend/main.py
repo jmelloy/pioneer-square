@@ -36,7 +36,7 @@ except ImportError:
     pass
 
 from events import broadcast, connections, agent_owners, emit_terminal_line
-from foreman import foreman_conversations, maybe_post_plan_comment, run_foreman_ai, serialize_history_for_debug
+from foreman import clear_foreman_history, get_foreman_history, maybe_post_plan_comment, run_foreman_ai
 
 
 logger = logging.getLogger(__name__)
@@ -545,6 +545,23 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
     connections[guild_id].append(websocket)
     # Agents that joined via this websocket; marked offline when it disconnects.
     joined_agents: set[str] = set()
+
+    # Identify the browser user from the optional ?token= query param.
+    # Workers don't pass a token; ws_user_id stays None for them.
+    ws_user_id: str | None = None
+    _token = websocket.query_params.get("token")
+    if _token:
+        _auth_db = await get_db()
+        try:
+            _res = await _auth_db.execute(
+                select(UserSession.github_user_id).where(UserSession.token == _token)
+            )
+            ws_user_id = _res.scalar_one_or_none()
+        except Exception:
+            pass
+        finally:
+            await _auth_db.close()
+
     db = await get_db()
     try:
         while True:
@@ -627,6 +644,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     content=content,
                     message_type="chat",
                     created_at=created_at,
+                    user_id=ws_user_id if from_agent == "user" else None,
                 ))
                 await db.commit()
                 await broadcast(guild_id, {
@@ -634,11 +652,13 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     "from": from_agent,
                     "to": to_agent,
                     "content": content,
-                    "createdAt": created_at
+                    "createdAt": created_at,
+                    **({"userId": ws_user_id} if ws_user_id and from_agent == "user" else {}),
                 })
-                # Route human messages addressed to foreman through the AI
+                # Route human messages addressed to foreman through the AI.
+                # Each authenticated user gets their own foreman conversation thread.
                 if from_agent == "user" and to_agent == "foreman" and content:
-                    asyncio.create_task(run_foreman_ai(guild_id, content))
+                    asyncio.create_task(run_foreman_ai(guild_id, content, user_id=ws_user_id))
 
             elif msg_type == "terminal-output":
                 msg_agent_id = data.get("agentId")
@@ -1561,29 +1581,32 @@ async def redirect_task_endpoint(guild_id: str, task_id: str, data: RedirectCrea
 
 @app.get("/guilds/{guild_id}/foreman/context")
 async def get_foreman_context(guild_id: str):
-    """Return the current in-memory foreman conversation context for debugging."""
+    """Return the stored foreman conversation turns for this guild (debug view)."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
-        if not result.scalar_one_or_none():
+        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
+        row = result.scalar_one_or_none()
+        if row is None:
             raise HTTPException(status_code=404, detail="Guild not found")
+        user_id = row or guild_id
     finally:
         await db.close()
-    history = foreman_conversations.get(guild_id, [])
-    return {"messages": serialize_history_for_debug(history), "count": len(history)}
+    turns = await get_foreman_history(guild_id, user_id)
+    return {"messages": turns, "count": len(turns)}
 
 
 @app.post("/guilds/{guild_id}/foreman/clear-context")
 async def clear_foreman_context(guild_id: str):
-    """Reset the in-memory foreman conversation context. Chat history in the DB is preserved."""
+    """Delete all stored foreman turns for this guild. Chat history in messages table is preserved."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
-        if not result.scalar_one_or_none():
+        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
+        row = result.scalar_one_or_none()
+        if row is None:
             raise HTTPException(status_code=404, detail="Guild not found")
+        user_id = row or guild_id
     finally:
         await db.close()
-    old_len = len(foreman_conversations.get(guild_id, []))
-    foreman_conversations[guild_id] = []
-    logger.info("Foreman context cleared for guild %s (%d messages removed)", guild_id, old_len)
-    return {"status": "cleared", "removed": old_len}
+    removed = await clear_foreman_history(guild_id, user_id)
+    logger.info("Foreman context cleared for guild %s (%d turns removed)", guild_id, removed)
+    return {"status": "cleared", "removed": removed}
