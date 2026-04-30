@@ -216,13 +216,6 @@ changes), use search_github_issues to check whether an issue already exists. If 
 one with create_github_issue to track it. Pass issue_number and issue_repo to assign_task so
 the worker's PR references the issue automatically.
 
-## Architecture reviews
-For complex or scope-unclear work, open an architecture-review task before any coding:
-1. create_task(phase='architecture-review'), then assign_task — the worker reads the codebase,
-   estimates effort, writes a technical plan, and lists sub-issues that need to be created
-2. After the review completes, read the task output, create GitHub issues for each sub-task,
-   then assign workers to implement them
-
 ## Checking task progress
 Use get_task_status to verify a task is making progress — it returns the current state,
 the active agent and its state, and the last log lines. If a task looks stalled, use
@@ -253,8 +246,8 @@ FOREMAN_TOOLS = [
                 },
                 "phase": {
                     "type": "string",
-                    "enum": ["plan", "execute", "review", "architecture-review"],
-                    "description": "Starting phase. Use 'architecture-review' for complex/unclear scope work. Default: execute.",
+                    "enum": ["plan", "execute", "review"],
+                    "description": "Starting phase. Default: execute.",
                 },
             },
             "required": ["name", "description"],
@@ -299,7 +292,7 @@ FOREMAN_TOOLS = [
                 },
                 "phase": {
                     "type": "string",
-                    "enum": ["plan", "execute", "review", "followup", "architecture-review"],
+                    "enum": ["plan", "execute", "review", "followup"],
                     "description": "Phase of work.",
                 },
                 "issue_number": {"type": "integer", "description": "GitHub issue to close (optional)."},
