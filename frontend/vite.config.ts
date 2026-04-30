@@ -2,6 +2,9 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import path from 'path'
 
+const backendUrl = process.env.BACKEND_URL ?? 'http://localhost:8000'
+const backendWsUrl = backendUrl.replace(/^http/, 'ws')
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
@@ -16,9 +19,9 @@ export default defineConfig({
     // call /auth, /guilds, /ws against the dev server. In production
     // these are handled by nginx-in-container (see frontend/nginx.conf).
     proxy: {
-      '/auth':   { target: 'http://localhost:8000', changeOrigin: true },
-      '/guilds': { target: 'http://localhost:8000', changeOrigin: true },
-      '/ws':     { target: 'ws://localhost:8000',   ws: true, changeOrigin: true },
+      '/auth':   { target: backendUrl,   changeOrigin: true },
+      '/guilds': { target: backendUrl,   changeOrigin: true },
+      '/ws':     { target: backendWsUrl, ws: true, changeOrigin: true },
     },
   },
   preview: {
