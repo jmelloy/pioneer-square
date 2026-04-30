@@ -14,3 +14,6 @@ venv/
 # Worker runtime state (auto-written next to pioneer-worker.toml)
 pioneer-worker.toml
 pioneer-worker.state.json
+
+# Local compose overrides (copy docker-compose.override.yml.example to customize)
+docker-compose.override.yml
