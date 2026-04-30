@@ -3,7 +3,7 @@
 # To use the production build instead, start with: docker compose -f docker-compose.yml up
 services:
   frontend:
-    image: node:22-slim
+    image: node:24-slim
     working_dir: /app
     volumes:
       - ./frontend:/app
