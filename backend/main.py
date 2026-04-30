@@ -545,6 +545,23 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
     connections[guild_id].append(websocket)
     # Agents that joined via this websocket; marked offline when it disconnects.
     joined_agents: set[str] = set()
+
+    # Identify the browser user from the optional ?token= query param.
+    # Workers don't pass a token; ws_user_id stays None for them.
+    ws_user_id: str | None = None
+    _token = websocket.query_params.get("token")
+    if _token:
+        _auth_db = await get_db()
+        try:
+            _res = await _auth_db.execute(
+                select(UserSession.github_user_id).where(UserSession.token == _token)
+            )
+            ws_user_id = _res.scalar_one_or_none()
+        except Exception:
+            pass
+        finally:
+            await _auth_db.close()
+
     db = await get_db()
     try:
         while True:
@@ -627,6 +644,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     content=content,
                     message_type="chat",
                     created_at=created_at,
+                    user_id=ws_user_id if from_agent == "user" else None,
                 ))
                 await db.commit()
                 await broadcast(guild_id, {
@@ -634,11 +652,13 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     "from": from_agent,
                     "to": to_agent,
                     "content": content,
-                    "createdAt": created_at
+                    "createdAt": created_at,
+                    **({"userId": ws_user_id} if ws_user_id and from_agent == "user" else {}),
                 })
-                # Route human messages addressed to foreman through the AI
+                # Route human messages addressed to foreman through the AI.
+                # Each authenticated user gets their own foreman conversation thread.
                 if from_agent == "user" and to_agent == "foreman" and content:
-                    asyncio.create_task(run_foreman_ai(guild_id, content))
+                    asyncio.create_task(run_foreman_ai(guild_id, content, user_id=ws_user_id))
 
             elif msg_type == "terminal-output":
                 msg_agent_id = data.get("agentId")

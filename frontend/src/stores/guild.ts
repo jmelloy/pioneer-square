@@ -96,7 +96,9 @@ export const useGuildStore = defineStore('guild', () => {
     let socket: WebSocket
     try {
       const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      socket = new WebSocket(`${wsProto}//${window.location.host}/ws/${guildId}`)
+      const authStore = useAuthStore()
+      const tokenParam = authStore.loginToken ? `?token=${encodeURIComponent(authStore.loginToken)}` : ''
+      socket = new WebSocket(`${wsProto}//${window.location.host}/ws/${guildId}${tokenParam}`)
     } catch (e) {
       console.error('Failed to construct WebSocket', e)
       _scheduleReconnect(guildId, onMessage)

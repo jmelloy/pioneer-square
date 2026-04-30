@@ -37,6 +37,7 @@ class Message(Base):
     content = Column(Text, nullable=False)
     message_type = Column(Text, nullable=False)
     created_at = Column(Text, nullable=False)
+    user_id = Column(Text, nullable=True)  # github_user_id of the sender; NULL for system/worker messages
 
 
 class Worker(Base):
