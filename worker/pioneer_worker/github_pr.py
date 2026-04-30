@@ -57,7 +57,7 @@ async def open_pr(
     issue_ref = f"\n\nCloses #{task['issue_number']}" if task.get("issue_number") else ""
     body = f"Automated by Pioneer Square worker agent.{issue_ref}"
     payload = json.dumps({
-        "title": task["description"][:72],
+        "title": (task.get("description") or "")[:72],
         "body": body,
         "head": branch,
         "base": "main",

@@ -411,7 +411,7 @@ class Worker:
     # ------------------------------------------------------------------ Execution
     async def _execute_task(self, task: dict, slot: _AgentSlot) -> None:
         task_id = task["id"]
-        desc = task["description"]
+        desc = task.get("description") or ""
         token = self.cfg.github_token
         repos = self.cfg.repos
 
