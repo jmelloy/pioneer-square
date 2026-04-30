@@ -566,6 +566,7 @@ class Worker:
                     "description": desc,
                     "prUrl": pr_url or "",
                     "sessionId": resume_session_id or "",
+                    "lastText": last_msg,
                 })
                 await self._set_state("awaiting-review", slot)
             else:
