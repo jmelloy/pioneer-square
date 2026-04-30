@@ -43,6 +43,23 @@ export const useAuthStore = defineStore('auth', () => {
     return true
   }
 
+  // Exchange an OAuth code+state with the backend and persist the resulting session.
+  async function exchangeCode(code: string, state: string): Promise<{ gh_token: string } | null> {
+    const res = await fetch(`${API_BASE}/auth/github/exchange`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, state }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.detail || `Auth exchange failed: ${res.status}`)
+    }
+    const data = await res.json()
+    const params = new URLSearchParams(data)
+    restoreFromCallback(params)
+    return data
+  }
+
   async function logout() {
     if (loginToken.value) {
       await fetch(`${API_BASE}/auth/logout`, {
@@ -63,6 +80,7 @@ export const useAuthStore = defineStore('auth', () => {
     authHeaders,
     loginWithGitHub,
     restoreFromCallback,
+    exchangeCode,
     logout,
   }
 })

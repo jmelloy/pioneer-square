@@ -64,7 +64,7 @@ app.add_middleware(
 # GitHub OAuth config (set via environment variables)
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "")
-GITHUB_REDIRECT_URI = os.environ.get("GITHUB_REDIRECT_URI", "http://localhost:8000/auth/github/callback")
+GITHUB_REDIRECT_URI = os.environ.get("GITHUB_REDIRECT_URI", "http://localhost:5173/")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
 # In-memory: short-lived state tokens for OAuth CSRF protection
@@ -1160,9 +1160,8 @@ async def github_login():
     return {"url": f"https://github.com/login/oauth/authorize?{params}"}
 
 
-@app.get("/auth/github/callback")
-async def github_callback(code: str = Query(...), state: str = Query(...)):
-    """Handle the GitHub OAuth callback: store token, issue a login_token, redirect to frontend."""
+async def _gh_create_session(code: str, state: str) -> dict:
+    """Exchange an OAuth code+state for a login session. Returns the session payload dict."""
     if state not in oauth_states:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
     oauth_states.discard(state)
@@ -1213,15 +1212,32 @@ async def github_callback(code: str = Query(...), state: str = Query(...)):
     finally:
         await db.close()
 
-    # Redirect to the frontend landing page with the login_token and GitHub info
-    qs = urllib.parse.urlencode({
+    return {
         "login_token": login_token,
         "gh_token": access_token,
         "gh_user_id": github_user_id,
         "gh_login": github_username,
         "gh_name": user_data.get("name") or "",
         "gh_avatar": user_data.get("avatar_url") or "",
-    })
+    }
+
+
+class CodeExchangeRequest(BaseModel):
+    code: str
+    state: str
+
+
+@app.post("/auth/github/exchange")
+async def github_exchange(body: CodeExchangeRequest):
+    """Exchange a GitHub OAuth code+state for a login session. Called by the frontend."""
+    return await _gh_create_session(body.code, body.state)
+
+
+@app.get("/auth/github/callback")
+async def github_callback(code: str = Query(...), state: str = Query(...)):
+    """Legacy backend OAuth callback — redirects to the frontend with session params in the query string."""
+    payload = await _gh_create_session(code, state)
+    qs = urllib.parse.urlencode(payload)
     return RedirectResponse(url=f"{FRONTEND_URL}/?{qs}")
 
 
