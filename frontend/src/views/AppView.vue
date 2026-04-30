@@ -146,7 +146,7 @@ watch(
   display: none;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1024px) {
   .mobile-tab-bar {
     display: flex;
     position: fixed;
