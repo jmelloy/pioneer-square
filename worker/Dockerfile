@@ -5,20 +5,27 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     DEBIAN_FRONTEND=noninteractive
 
+# Base system tools needed to add external repos
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git \
-        curl \
-        ca-certificates \
-        gnupg \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        git curl ca-certificates gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js 22 (setup script runs its own apt-get update)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update && apt-get install -y --no-install-recommends nodejs gh \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install -g \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# AI coding CLIs — this layer is the one most likely to update
+RUN npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
         @mariozechner/pi-coding-agent
