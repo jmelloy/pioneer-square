@@ -149,7 +149,17 @@ const loginError = ref('')
 
 onMounted(async () => {
   const params = new URLSearchParams(window.location.search)
-  if (params.has('login_token')) {
+  if (params.has('code') && params.has('state')) {
+    // GitHub redirected directly to the frontend with an OAuth code — exchange it.
+    window.history.replaceState({}, '', '/')
+    try {
+      const data = await authStore.exchangeCode(params.get('code')!, params.get('state')!)
+      if (data) ghStore.restoreGitHubToken(new URLSearchParams(data as any))
+    } catch (e: any) {
+      loginError.value = e.message
+    }
+  } else if (params.has('login_token')) {
+    // Legacy: backend callback redirected here with session params in the query string.
     authStore.restoreFromCallback(params)
     ghStore.restoreGitHubToken(params)
     window.history.replaceState({}, '', '/')
