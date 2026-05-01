@@ -56,6 +56,8 @@ npm run format      # prettier --write
 
 Config lives at `ruff.toml` (root) and `frontend/eslint.config.js` + `frontend/.prettierrc.json`. There is no CI wired up yet — these are local guards.
 
+**Always run `ruff check . --fix && ruff format .` from the repo root before committing Python changes.**
+
 ## Architecture
 
 ### Three-process model

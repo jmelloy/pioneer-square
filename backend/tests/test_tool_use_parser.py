@@ -11,7 +11,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from foreman.runner import strip_orphaned_tool_results
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -83,7 +82,9 @@ class TestOrphanedToolResult:
         for m in result:
             content = m.get("content")
             if isinstance(content, list):
-                assert not any(b.get("type") == "tool_result" for b in content if isinstance(b, dict))
+                assert not any(
+                    b.get("type") == "tool_result" for b in content if isinstance(b, dict)
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +152,8 @@ class TestMixedCase:
         # stops there, and the subsequent valid pair survives.
         messages = [
             _user(_tool_result("ORPHAN")),
-            _asst(_text("summary")),          # text-only: removed by start-with-user fix
-            _user_text("please continue"),    # valid plain-text — cascade stops here
+            _asst(_text("summary")),  # text-only: removed by start-with-user fix
+            _user_text("please continue"),  # valid plain-text — cascade stops here
             _asst(_tool_use("VALID")),
             _user(_tool_result("VALID")),
             _asst(_text("done")),

@@ -73,11 +73,11 @@
       <!-- Issues tab -->
       <template v-else-if="activeTab === 'issues'">
         <div class="issues-toolbar">
-          <button class="pixel-btn refresh-btn" @click="refreshIssues" :disabled="ghStore.loading">
+          <button class="pixel-btn refresh-btn" @click="() => refreshIssues()" :disabled="ghStore.loading">
             {{ ghStore.loading ? '...' : '↻' }}
           </button>
           <span class="issues-count">{{ ghStore.issues.length }} open</span>
-          <span class="issues-repos">{{ ghStore.selectedRepos.length }} repo{{ ghStore.selectedRepos.length !== 1 ? 's' : '' }}</span>
+          <span class="issues-repos">{{ guildStore.currentGuild?.primary_repo ?? (ghStore.selectedRepos.length + ' repo' + (ghStore.selectedRepos.length !== 1 ? 's' : '')) }}</span>
         </div>
 
         <div class="issues-list" ref="issuesEl">
@@ -171,6 +171,9 @@ const claudeAuthPending = ref<{ workerId: string; url: string } | null>(null)
 const messagesEl = ref<HTMLElement | null>(null)
 const issuesEl = ref<HTMLElement | null>(null)
 const activeTab = ref<'chat' | 'issues'>('chat')
+
+const ISSUE_REFRESH_MS = 3 * 60 * 1000
+let issueRefreshInterval: ReturnType<typeof setInterval> | null = null
 
 const messages = computed(() => guildStore.messages)
 const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
@@ -314,18 +317,33 @@ onMounted(async () => {
       console.warn('Could not fetch pending auth state', e)
     }
   }
+
+  if (ghStore.isConfigured) {
+    issueRefreshInterval = setInterval(() => refreshIssues(true), ISSUE_REFRESH_MS)
+  }
 })
-onUnmounted(() => guildStore.removeMessageHandler(handleTaskEvent))
+onUnmounted(() => {
+  guildStore.removeMessageHandler(handleTaskEvent)
+  if (issueRefreshInterval !== null) {
+    clearInterval(issueRefreshInterval)
+    issueRefreshInterval = null
+  }
+})
+
+function _primaryRepoList(): string[] | undefined {
+  const repo = guildStore.currentGuild?.primary_repo
+  return repo ? [repo] : undefined
+}
 
 async function switchToIssues() {
   activeTab.value = 'issues'
   if (ghStore.issues.length === 0 && !ghStore.loading) {
-    await ghStore.fetchIssues()
+    await ghStore.fetchIssues(_primaryRepoList())
   }
 }
 
-async function refreshIssues() {
-  await ghStore.fetchIssues()
+async function refreshIssues(silent = false) {
+  await ghStore.fetchIssues(_primaryRepoList(), silent)
 }
 
 function assignIssue(issue: GitHubIssue) {
