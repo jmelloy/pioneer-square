@@ -44,17 +44,21 @@ export const useGuildStore = defineStore('guild', () => {
   }
 
   async function renameGuild(guildId: string, name: string) {
+    return updateGuild(guildId, { name })
+  }
+
+  async function updateGuild(guildId: string, updates: { name?: string; primary_repo?: string | null }) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ name })
+      body: JSON.stringify(updates)
     })
-    if (!res.ok) throw new Error('Failed to rename guild')
+    if (!res.ok) throw new Error('Failed to update guild')
     if (currentGuild.value && currentGuild.value.id === guildId) {
-      currentGuild.value = { ...currentGuild.value, name }
+      currentGuild.value = { ...currentGuild.value, ...updates }
     }
     const idx = guilds.value.findIndex(g => g.id === guildId)
-    if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name }
+    if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], ...updates }
     return await res.json()
   }
 
@@ -213,6 +217,7 @@ export const useGuildStore = defineStore('guild', () => {
     loadGuilds,
     createGuild,
     renameGuild,
+    updateGuild,
     joinGuild,
     connectWebSocket,
     disconnectWebSocket,

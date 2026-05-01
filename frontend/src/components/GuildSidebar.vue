@@ -61,17 +61,31 @@
 
       <!-- Spawn form -->
       <div v-if="showSpawnForm" class="spawn-form">
-        <label class="spawn-label">Repos <span class="spawn-hint">(one per line)</span></label>
-        <textarea
-          v-model="spawnRepos"
-          class="spawn-textarea"
-          placeholder="owner/repo"
-          rows="3"
-        />
+        <label class="spawn-label">Repos</label>
+        <div v-if="loadingRepos" class="spawn-hint-text">Loading repos…</div>
+        <div v-else-if="ghStore.repos.length === 0" class="spawn-hint-text">
+          No repos found — configure GitHub first.
+        </div>
+        <div v-else class="spawn-repo-list">
+          <label
+            v-for="repo in ghStore.repos"
+            :key="repo.full_name"
+            class="spawn-repo-row"
+            :class="{ selected: spawnSelectedRepos.includes(repo.full_name) }"
+          >
+            <input
+              type="checkbox"
+              :checked="spawnSelectedRepos.includes(repo.full_name)"
+              @change="toggleSpawnRepo(repo.full_name)"
+              class="spawn-repo-check"
+            />
+            <span class="spawn-repo-name">{{ repo.full_name }}</span>
+          </label>
+        </div>
         <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
         <input v-model="spawnName" class="spawn-input" type="text" placeholder="auto-generated" />
         <div class="spawn-actions">
-          <button class="pixel-btn spawn-launch-btn" :disabled="spawning || !spawnRepos.trim()" @click="launchWorker">
+          <button class="pixel-btn spawn-launch-btn" :disabled="spawning || spawnSelectedRepos.length === 0" @click="launchWorker">
             {{ spawning ? 'Launching…' : 'Launch' }}
           </button>
         </div>
@@ -124,6 +138,20 @@
         </div>
       </div>
 
+      <div v-if="currentGuild" class="primary-repo-row">
+        <span class="primary-repo-label">PRIMARY REPO</span>
+        <select
+          v-model="primaryRepoValue"
+          class="primary-repo-select"
+          @change="savePrimaryRepo"
+        >
+          <option value="">— none —</option>
+          <option v-for="repo in ghStore.repos" :key="repo.full_name" :value="repo.full_name">
+            {{ repo.full_name }}
+          </option>
+        </select>
+      </div>
+
       <div class="connection-status" :class="{ connected: isConnected }">
         <span class="status-dot"></span>
         {{ isConnected ? 'Connected' : 'Disconnected' }}
@@ -135,7 +163,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, inject } from 'vue'
+import { ref, computed, watch, nextTick, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
@@ -161,30 +189,44 @@ const currentGuild = computed(() => guildStore.currentGuild)
 const isConnected = computed(() => guildStore.isConnected)
 
 const showSpawnForm = ref(false)
-const spawnRepos = ref('')
+const spawnSelectedRepos = ref<string[]>([])
 const spawnName = ref('')
 const spawning = ref(false)
 const spawnError = ref('')
+const loadingRepos = ref(false)
 
-function toggleSpawnForm() {
+async function toggleSpawnForm() {
   showSpawnForm.value = !showSpawnForm.value
   if (showSpawnForm.value) {
-    spawnRepos.value = ghStore.selectedRepos.join('\n')
+    spawnSelectedRepos.value = [...ghStore.selectedRepos]
     spawnName.value = ''
     spawnError.value = ''
+    if (ghStore.repos.length === 0 && ghStore.token) {
+      loadingRepos.value = true
+      await ghStore.fetchRepos()
+      loadingRepos.value = false
+    }
+  }
+}
+
+function toggleSpawnRepo(fullName: string) {
+  const idx = spawnSelectedRepos.value.indexOf(fullName)
+  if (idx >= 0) {
+    spawnSelectedRepos.value.splice(idx, 1)
+  } else {
+    spawnSelectedRepos.value.push(fullName)
   }
 }
 
 async function launchWorker() {
-  if (!currentGuild.value || !spawnRepos.value.trim()) return
+  if (!currentGuild.value || spawnSelectedRepos.value.length === 0) return
   spawning.value = true
   spawnError.value = ''
-  const repos = spawnRepos.value.split('\n').map(r => r.trim()).filter(Boolean)
   try {
     const res = await fetch(`${API_BASE}/guilds/${currentGuild.value.id}/spawn-worker`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authStore.authHeaders() },
-      body: JSON.stringify({ repos, name: spawnName.value.trim() || undefined }),
+      body: JSON.stringify({ repos: spawnSelectedRepos.value, name: spawnName.value.trim() || undefined }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }))
@@ -195,6 +237,23 @@ async function launchWorker() {
     spawnError.value = e.message
   } finally {
     spawning.value = false
+  }
+}
+
+const primaryRepoValue = ref('')
+
+watch(currentGuild, (guild) => {
+  primaryRepoValue.value = guild?.primary_repo ?? ''
+}, { immediate: true })
+
+async function savePrimaryRepo() {
+  if (!currentGuild.value) return
+  try {
+    await guildStore.updateGuild(currentGuild.value.id, {
+      primary_repo: primaryRepoValue.value || null,
+    })
+  } catch (e) {
+    console.error('Failed to save primary repo', e)
   }
 }
 
@@ -629,6 +688,90 @@ function formatTime(isoStr?: string) {
   font-size: 10px;
   color: var(--color-red);
   word-break: break-word;
+}
+
+.spawn-hint-text {
+  font-size: 10px;
+  color: var(--color-text-dim);
+  padding: 4px 0;
+  font-style: italic;
+}
+
+.spawn-repo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 2px;
+  background: var(--color-bg);
+}
+
+.spawn-repo-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.1s;
+}
+
+.spawn-repo-row:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.spawn-repo-row.selected {
+  background: rgba(232, 170, 0, 0.08);
+  border-color: var(--color-brass-dark);
+}
+
+.spawn-repo-check {
+  accent-color: var(--color-brass);
+  width: 12px;
+  height: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.spawn-repo-name {
+  font-size: 10px;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.primary-repo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.primary-repo-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.primary-repo-select {
+  flex: 1;
+  background: var(--color-bg);
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text);
+  font-size: 10px;
+  padding: 3px 5px;
+  outline: none;
+  border-radius: 2px;
+  min-width: 0;
+}
+
+.primary-repo-select:focus {
+  border-color: var(--color-brass);
 }
 
 /* Worker top-level row */

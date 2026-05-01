@@ -176,6 +176,10 @@ async def run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.fetchall()
         ]
+        guild_result = await db.execute(
+            select(Guild.primary_repo).where(Guild.id == guild_id)
+        )
+        primary_repo: str | None = guild_result.scalar_one_or_none()
     finally:
         await db.close()
 
@@ -186,7 +190,7 @@ async def run_foreman_ai(
         indent=2,
     )
     tasks_block = json.dumps(task_rows[:6], indent=2)
-    system = build_system_prompt(workers_block, tasks_block, extra_context)
+    system = build_system_prompt(workers_block, tasks_block, extra_context, primary_repo=primary_repo)
 
     # Persist and load the new human turn
     await _save_turn(guild_id, user_id, "user", human_message)

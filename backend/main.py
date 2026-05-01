@@ -130,7 +130,8 @@ class GuildCreate(BaseModel):
 
 
 class GuildUpdate(BaseModel):
-    name: str
+    name: Optional[str] = None
+    primary_repo: Optional[str] = None
 
 
 class RunAgentRequest(BaseModel):
@@ -497,12 +498,15 @@ async def update_guild(
         guild = result.scalar_one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
-        guild.name = data.name
+        if data.name is not None:
+            guild.name = data.name
+        if "primary_repo" in data.model_fields_set:
+            guild.primary_repo = data.primary_repo
         await db.commit()
     finally:
         await db.close()
-    await broadcast(guild_id, {"type": "guild-updated", "id": guild_id, "name": data.name})
-    return {"id": guild_id, "name": data.name}
+    await broadcast(guild_id, {"type": "guild-updated", "id": guild_id, "name": guild.name, "primary_repo": guild.primary_repo})
+    return {"id": guild_id, "name": guild.name, "primary_repo": guild.primary_repo}
 
 
 @app.get("/guilds/{guild_id}")
