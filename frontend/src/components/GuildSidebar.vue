@@ -20,7 +20,10 @@
           @click="openTask(task.id)"
         >
           <div class="task-top">
-            <span class="task-dot" :class="'dot-' + (task.state || 'pending').replace(/[^a-z]/g, '-')"></span>
+            <span
+              class="task-dot"
+              :class="'dot-' + (task.state || 'pending').replace(/[^a-z]/g, '-')"
+            ></span>
             <span class="task-name">{{ task.name || task.id }}</span>
           </div>
           <div class="task-meta">
@@ -32,11 +35,20 @@
     </div>
 
     <!-- Workers/Agents hierarchical section -->
-    <div class="workers-section" :class="{ 'workers-section--empty': onlineWorkers.length === 0 && !showSpawnForm }">
+    <div
+      class="workers-section"
+      :class="{ 'workers-section--empty': onlineWorkers.length === 0 && !showSpawnForm }"
+    >
       <div class="section-header">
         <span class="section-label">Workers</span>
-        <span class="section-count" v-if="onlineWorkers.length > 0">{{ onlineWorkers.length }}</span>
-        <button class="spawn-btn" @click="toggleSpawnForm" :title="showSpawnForm ? 'Cancel' : 'Launch a new worker container'">
+        <span class="section-count" v-if="onlineWorkers.length > 0">{{
+          onlineWorkers.length
+        }}</span>
+        <button
+          class="spawn-btn"
+          @click="toggleSpawnForm"
+          :title="showSpawnForm ? 'Cancel' : 'Launch a new worker container'"
+        >
           {{ showSpawnForm ? '✕' : '+' }}
         </button>
       </div>
@@ -67,7 +79,11 @@
         <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
         <input v-model="spawnName" class="spawn-input" type="text" placeholder="auto-generated" />
         <div class="spawn-actions">
-          <button class="pixel-btn spawn-launch-btn" :disabled="spawning || spawnSelectedRepos.length === 0" @click="launchWorker">
+          <button
+            class="pixel-btn spawn-launch-btn"
+            :disabled="spawning || spawnSelectedRepos.length === 0"
+            @click="launchWorker"
+          >
             {{ spawning ? 'Launching…' : 'Launch' }}
           </button>
         </div>
@@ -85,21 +101,21 @@
           v-for="agent in agentsForWorker(worker.id)"
           :key="agent.id"
           class="agent-row"
+          :class="{ selected: agentsStore.selectedAgentId === agent.id }"
+          title="Open agent tab"
+          @click.stop="agentsStore.selectAgent(agent.id)"
         >
           <span class="agent-dot" :class="'wdot-' + agent.state"></span>
           <span class="agent-row-name">{{ agent.name }}</span>
           <div class="agent-actions">
             <button
               class="agent-icon-btn"
-              title="Open agent terminal"
-              @click.stop="agentsStore.selectAgent(agent.id)"
-            >🤖</button>
-            <button
-              class="agent-icon-btn"
               :disabled="!currentTaskForWorker(worker.id)"
               :title="currentTaskForWorker(worker.id) ? 'Open current task' : 'No active task'"
               @click.stop="openAgentTask(worker.id)"
-            >📋</button>
+            >
+              📋
+            </button>
           </div>
         </div>
       </template>
@@ -154,7 +170,7 @@ const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {
 const showGitHubModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
 const isConnected = computed(() => guildStore.isConnected)
-const onlineWorkers = computed(() => agentsStore.workers.filter(w => w.state !== 'offline'))
+const onlineWorkers = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline'))
 
 const showSpawnForm = ref(false)
 const spawnSelectedRepos = ref<string[]>([])
@@ -194,7 +210,10 @@ async function launchWorker() {
     const res = await fetch(`${API_BASE}/guilds/${currentGuild.value.id}/spawn-worker`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authStore.authHeaders() },
-      body: JSON.stringify({ repos: spawnSelectedRepos.value, name: spawnName.value.trim() || undefined }),
+      body: JSON.stringify({
+        repos: spawnSelectedRepos.value,
+        name: spawnName.value.trim() || undefined,
+      }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }))
@@ -247,15 +266,15 @@ function openTask(taskId: string) {
 }
 
 function agentsForWorker(workerId: string) {
-  return agentsStore.agents.filter(a => a.workerId === workerId)
+  return agentsStore.agents.filter((a) => a.workerId === workerId)
 }
 
 function currentTaskForWorker(workerId: string) {
   const active = tasksStore.tasks.filter(
-    t => t.worker_id === workerId && !['done', 'failed'].includes(t.state)
+    (t) => t.worker_id === workerId && !['done', 'failed'].includes(t.state),
   )
   if (active.length) return active[0]
-  return tasksStore.tasks.find(t => t.worker_id === workerId) || null
+  return tasksStore.tasks.find((t) => t.worker_id === workerId) || null
 }
 
 function openAgentTask(workerId: string) {
@@ -377,14 +396,34 @@ function formatTime(isoStr?: string) {
   border-radius: 2px;
   flex-shrink: 0;
 }
-.dot-pending { background: var(--color-text-dim); }
-.dot-planning { background: var(--color-blue); }
-.dot-working { background: var(--color-green); animation: pulse 0.5s infinite; }
-.dot-awaiting-review { background: var(--color-amber); animation: pulse 1.5s infinite; }
-.dot-done { background: var(--color-teal); }
-.dot-failed { background: var(--color-red); }
-.dot-follow-up { background: var(--color-orange); animation: pulse 0.8s infinite; }
-.dot-followup { background: var(--color-orange); animation: pulse 0.8s infinite; }
+.dot-pending {
+  background: var(--color-text-dim);
+}
+.dot-planning {
+  background: var(--color-blue);
+}
+.dot-working {
+  background: var(--color-green);
+  animation: pulse 0.5s infinite;
+}
+.dot-awaiting-review {
+  background: var(--color-amber);
+  animation: pulse 1.5s infinite;
+}
+.dot-done {
+  background: var(--color-teal);
+}
+.dot-failed {
+  background: var(--color-red);
+}
+.dot-follow-up {
+  background: var(--color-orange);
+  animation: pulse 0.8s infinite;
+}
+.dot-followup {
+  background: var(--color-orange);
+  animation: pulse 0.8s infinite;
+}
 
 .task-name {
   font-size: 11px;
@@ -470,7 +509,9 @@ function formatTime(isoStr?: string) {
   justify-content: center;
   padding: 0;
   opacity: 0.7;
-  transition: opacity 0.12s, background 0.12s;
+  transition:
+    opacity 0.12s,
+    background 0.12s;
 }
 
 .spawn-btn:hover {
@@ -641,10 +682,17 @@ function formatTime(isoStr?: string) {
   padding: 5px 12px 5px 22px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.02);
   transition: background 0.12s;
+  cursor: pointer;
 }
 
 .agent-row:hover {
   background: rgba(0, 187, 170, 0.06);
+}
+
+.agent-row.selected {
+  background: rgba(0, 187, 170, 0.12);
+  border-left: 3px solid var(--color-teal);
+  padding-left: 19px;
 }
 
 .agent-dot {
@@ -677,7 +725,9 @@ function formatTime(isoStr?: string) {
   padding: 1px 3px;
   border-radius: 2px;
   opacity: 0.6;
-  transition: opacity 0.12s, background 0.12s;
+  transition:
+    opacity 0.12s,
+    background 0.12s;
   line-height: 1;
 }
 
@@ -697,12 +747,27 @@ function formatTime(isoStr?: string) {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.wdot-idle    { background: var(--color-text-dim); }
-.wdot-working { background: var(--color-green); animation: pulse 0.5s infinite; }
-.wdot-thinking { background: var(--color-blue); animation: pulse 1s infinite; }
-.wdot-busy    { background: var(--color-orange); animation: pulse 0.8s infinite; }
-.wdot-error   { background: var(--color-red); }
-.wdot-offline { background: #333; }
+.wdot-idle {
+  background: var(--color-text-dim);
+}
+.wdot-working {
+  background: var(--color-green);
+  animation: pulse 0.5s infinite;
+}
+.wdot-thinking {
+  background: var(--color-blue);
+  animation: pulse 1s infinite;
+}
+.wdot-busy {
+  background: var(--color-orange);
+  animation: pulse 0.8s infinite;
+}
+.wdot-error {
+  background: var(--color-red);
+}
+.wdot-offline {
+  background: #333;
+}
 
 /* ── Footer ── */
 .sidebar-footer {
@@ -780,7 +845,12 @@ function formatTime(isoStr?: string) {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 </style>
