@@ -2,18 +2,19 @@
 
 import json
 import logging
-from datetime import datetime, timezone
-
-from sqlalchemy import delete, select
+from datetime import UTC, datetime
 
 from database import get_db
 from events import broadcast
+from models import ForemanTurn, Guild, Message, Task
+from sqlalchemy import delete, select
+
 from foreman.prompt import build_system_prompt
 from foreman.tools import FOREMAN_TOOLS, exec_tools
-from models import ForemanTurn, Guild, Message, Task
 
 try:
     import anthropic as _anthropic
+
     HAS_ANTHROPIC = True
 except ImportError:
     HAS_ANTHROPIC = False
@@ -21,8 +22,8 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_RESULT_CHARS = 8_000  # ~2 k tokens; cap per-result content before storing/sending
-MAX_HISTORY_MESSAGES = 20      # sliding window cap on messages sent to Anthropic
-_HUMAN_TURN_WINDOW = 5         # how many non-tool-response user turns to load from DB
+MAX_HISTORY_MESSAGES = 20  # sliding window cap on messages sent to Anthropic
+_HUMAN_TURN_WINDOW = 5  # how many non-tool-response user turns to load from DB
 _TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
 _24H_SECS = 86_400
 
@@ -56,9 +57,7 @@ def _summarize_task(task: dict, cutoff_ts: float) -> dict | None:
     finished_at = task.get("finished_at")
     if finished_at:
         try:
-            finished_ts = datetime.fromisoformat(
-                finished_at.replace("Z", "+00:00")
-            ).timestamp()
+            finished_ts = datetime.fromisoformat(finished_at.replace("Z", "+00:00")).timestamp()
             if finished_ts < cutoff_ts:
                 return None  # older than 24 h — drop entirely
         except (ValueError, AttributeError):
@@ -113,7 +112,9 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
     finally:
         await db.close()
 
-    logger.debug("guild=%s _load_history: %d total turns in DB for user=%s", guild_id, len(turns), user_id)
+    logger.debug(
+        "guild=%s _load_history: %d total turns in DB for user=%s", guild_id, len(turns), user_id
+    )
 
     if not turns:
         return []
@@ -129,19 +130,17 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
                 cutoff = i
                 break
 
-    messages = [
-        {"role": t.role, "content": json.loads(t.content_json)}
-        for t in turns[cutoff:]
-    ]
+    messages = [{"role": t.role, "content": json.loads(t.content_json)} for t in turns[cutoff:]]
 
     # Anthropic API requires the first message to have role "user"
     while messages and messages[0]["role"] != "user":
         messages.pop(0)
 
     logger.debug(
-        "guild=%s _load_history: cutoff at turn index %d → %d messages after trim "
-        "(roles: %s)",
-        guild_id, cutoff, len(messages),
+        "guild=%s _load_history: cutoff at turn index %d → %d messages after trim (roles: %s)",
+        guild_id,
+        cutoff,
+        len(messages),
         [m["role"] for m in messages],
     )
     return messages
@@ -166,7 +165,7 @@ async def _save_turn(
             content_json=_serialize_content(content),
             is_tool_response=1 if is_tool_response else 0,
             parent_id=parent_id,
-            created_at=datetime.now(timezone.utc).isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
         )
         db.add(turn)
         await db.commit()
@@ -184,12 +183,17 @@ async def run_foreman_ai(
 ):
     """Process a human message (or system escalation) through the Claude foreman AI."""
     if not HAS_ANTHROPIC:
-        now = datetime.now(timezone.utc).isoformat()
-        await broadcast(guild_id, {
-            "type": "chat", "from": "foreman", "to": "user",
-            "content": "Foreman AI offline (install `anthropic` package to enable).",
-            "createdAt": now,
-        })
+        now = datetime.now(UTC).isoformat()
+        await broadcast(
+            guild_id,
+            {
+                "type": "chat",
+                "from": "foreman",
+                "to": "user",
+                "content": "Foreman AI offline (install `anthropic` package to enable).",
+                "createdAt": now,
+            },
+        )
         return
 
     if not user_id:
@@ -197,6 +201,7 @@ async def run_foreman_ai(
 
     # Build live context for the system prompt
     from sqlalchemy import text
+
     db = await get_db()
     try:
         guild_result = await db.execute(
@@ -224,8 +229,16 @@ async def run_foreman_ai(
         )
         worker_rows = [dict(r._mapping) for r in result.fetchall()]
         task_result = await db.execute(
-            select(Task.id, Task.worker_id, Task.name, Task.description, Task.state,
-                   Task.branch, Task.pr_url, Task.finished_at)
+            select(
+                Task.id,
+                Task.worker_id,
+                Task.name,
+                Task.description,
+                Task.state,
+                Task.branch,
+                Task.pr_url,
+                Task.finished_at,
+            )
             .where(Task.guild_id == guild_id)
             .order_by(Task.created_at.desc())
             .limit(10)
@@ -234,31 +247,40 @@ async def run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.fetchall()
         ]
-        guild_result = await db.execute(
-            select(Guild.primary_repo).where(Guild.id == guild_id)
-        )
+        guild_result = await db.execute(select(Guild.primary_repo).where(Guild.id == guild_id))
         primary_repo: str | None = guild_result.scalar_one_or_none()
     finally:
         await db.close()
 
     workers_block = json.dumps(
-        [{"id": r["id"], "state": r["worker_state"] or "idle",
-          "repos": json.loads(r["repos"] or "[]"),
-          "agent_count": r["agent_count"] or 0} for r in worker_rows],
+        [
+            {
+                "id": r["id"],
+                "state": r["worker_state"] or "idle",
+                "repos": json.loads(r["repos"] or "[]"),
+                "agent_count": r["agent_count"] or 0,
+            }
+            for r in worker_rows
+        ],
         indent=2,
     )
-    cutoff_ts = datetime.now(timezone.utc).timestamp() - _24H_SECS
+    cutoff_ts = datetime.now(UTC).timestamp() - _24H_SECS
     summarized_tasks = [
-        s for row in task_rows
-        if (s := _summarize_task(row, cutoff_ts)) is not None
+        s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
     ]
     tasks_block = json.dumps(summarized_tasks[:6], indent=2)
-    system = build_system_prompt(workers_block, tasks_block, extra_context, primary_repo=primary_repo)
+    system = build_system_prompt(
+        workers_block, tasks_block, extra_context, primary_repo=primary_repo
+    )
 
     logger.info(
         "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
         "system_prompt_chars=%d extra_context_chars=%d",
-        guild_id, len(worker_rows), len(summarized_tasks), len(system), len(extra_context),
+        guild_id,
+        len(worker_rows),
+        len(summarized_tasks),
+        len(system),
+        len(extra_context),
     )
     logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
     logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
@@ -269,7 +291,9 @@ async def run_foreman_ai(
 
     logger.info(
         "guild=%s run_foreman_ai: %d messages loaded from history; human_message_chars=%d",
-        guild_id, len(messages), len(human_message),
+        guild_id,
+        len(messages),
+        len(human_message),
     )
 
     client = _anthropic.AsyncAnthropic()
@@ -280,7 +304,9 @@ async def run_foreman_ai(
             messages = prune_history(messages)
             logger.info(
                 "guild=%s run_foreman_ai round %d: sending %d messages to Claude",
-                guild_id, round_num, len(messages),
+                guild_id,
+                round_num,
+                len(messages),
             )
             resp = await client.messages.create(
                 model="claude-sonnet-4-6",
@@ -291,7 +317,10 @@ async def run_foreman_ai(
             )
             logger.info(
                 "guild=%s run_foreman_ai round %d: stop_reason=%s content_blocks=%d",
-                guild_id, round_num, resp.stop_reason, len(resp.content),
+                guild_id,
+                round_num,
+                resp.stop_reason,
+                len(resp.content),
             )
 
             # Persist assistant turn and append to local messages
@@ -309,50 +338,75 @@ async def run_foreman_ai(
             tool_results = await exec_tools(guild_id, tool_uses)
             # Truncate verbose results before storing/sending
             trimmed = [
-                {**r, "content": truncate_tool_result(r["content"])}
-                if r.get("content") else r
+                {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r
                 for r in tool_results
             ]
             # Persist tool_result turn as a child of the assistant turn
             await _save_turn(
-                guild_id, user_id, "user", trimmed,
-                is_tool_response=True, parent_id=asst_turn_id,
+                guild_id,
+                user_id,
+                "user",
+                trimmed,
+                is_tool_response=True,
+                parent_id=asst_turn_id,
             )
             logger.info(
                 "guild=%s round %d: %d tool call(s) dispatched: %s",
-                guild_id, round_num,
+                guild_id,
+                round_num,
                 len(trimmed),
-                [{"tool_use_id": r["tool_use_id"], "name": r.get("name"), "is_error": r.get("is_error", False)} for r in trimmed],
+                [
+                    {
+                        "tool_use_id": r["tool_use_id"],
+                        "name": r.get("name"),
+                        "is_error": r.get("is_error", False),
+                    }
+                    for r in trimmed
+                ],
             )
             messages.append({"role": "user", "content": trimmed})
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
-            now = datetime.now(timezone.utc).isoformat()
-            await broadcast(guild_id, {
-                "type": "chat", "from": "foreman", "to": "user",
-                "content": response_text, "createdAt": now,
-            })
+            now = datetime.now(UTC).isoformat()
+            await broadcast(
+                guild_id,
+                {
+                    "type": "chat",
+                    "from": "foreman",
+                    "to": "user",
+                    "content": response_text,
+                    "createdAt": now,
+                },
+            )
             db = await get_db()
             try:
-                db.add(Message(
-                    guild_id=guild_id,
-                    from_agent="foreman",
-                    to_agent="user",
-                    content=response_text,
-                    message_type="chat",
-                    created_at=now,
-                ))
+                db.add(
+                    Message(
+                        guild_id=guild_id,
+                        from_agent="foreman",
+                        to_agent="user",
+                        content=response_text,
+                        message_type="chat",
+                        created_at=now,
+                    )
+                )
                 await db.commit()
             finally:
                 await db.close()
 
     except Exception as exc:
-        now = datetime.now(timezone.utc).isoformat()
-        await broadcast(guild_id, {
-            "type": "chat", "from": "foreman", "to": "user",
-            "content": f"Foreman error: {exc}", "createdAt": now,
-        })
+        now = datetime.now(UTC).isoformat()
+        await broadcast(
+            guild_id,
+            {
+                "type": "chat",
+                "from": "foreman",
+                "to": "user",
+                "content": f"Foreman error: {exc}",
+                "createdAt": now,
+            },
+        )
 
 
 async def clear_foreman_history(guild_id: str, user_id: str) -> int:
@@ -360,8 +414,9 @@ async def clear_foreman_history(guild_id: str, user_id: str) -> int:
     db = await get_db()
     try:
         result = await db.execute(
-            delete(ForemanTurn)
-            .where(ForemanTurn.guild_id == guild_id, ForemanTurn.user_id == user_id)
+            delete(ForemanTurn).where(
+                ForemanTurn.guild_id == guild_id, ForemanTurn.user_id == user_id
+            )
         )
         await db.commit()
         return result.rowcount

@@ -9,8 +9,8 @@ success or failure, and that tool_use_id always matches the input id.
 from __future__ import annotations
 
 import asyncio
-import sys
 import os
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -46,15 +46,18 @@ def _mock_session() -> AsyncMock:
 # Structure tests
 # ---------------------------------------------------------------------------
 
+
 def test_exec_tools_result_has_required_keys():
     """Every result block must contain type, tool_use_id, and a string content."""
     from foreman.tools import exec_tools
 
     tu = _mock_tool_use("message_worker", "toolu_abc123", {"worker_id": "w-1", "message": "hello"})
 
-    with patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())), \
-         patch("foreman.tools.broadcast", new=AsyncMock()), \
-         patch("foreman.tools.emit_terminal_line", new=AsyncMock()):
+    with (
+        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools.broadcast", new=AsyncMock()),
+        patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+    ):
         results = _run(exec_tools("guild1", [tu]))
 
     assert len(results) == 1
@@ -71,9 +74,11 @@ def test_exec_tools_tool_use_id_matches_input():
     specific_id = "toolu_specific_xyz_999"
     tu = _mock_tool_use("message_worker", specific_id, {"worker_id": "w-1", "message": "ping"})
 
-    with patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())), \
-         patch("foreman.tools.broadcast", new=AsyncMock()), \
-         patch("foreman.tools.emit_terminal_line", new=AsyncMock()):
+    with (
+        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools.broadcast", new=AsyncMock()),
+        patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+    ):
         results = _run(exec_tools("guild1", [tu]))
 
     assert results[0]["tool_use_id"] == specific_id
@@ -89,8 +94,10 @@ def test_exec_tools_content_is_always_string():
 
     tu = _mock_tool_use("get_task_status", "toolu_str_check", {"task_id": "t-notexist"})
 
-    with patch("foreman.tools.get_db", AsyncMock(return_value=session)), \
-         patch("foreman.tools.broadcast", new=AsyncMock()):
+    with (
+        patch("foreman.tools.get_db", AsyncMock(return_value=session)),
+        patch("foreman.tools.broadcast", new=AsyncMock()),
+    ):
         results = _run(exec_tools("guild1", [tu]))
 
     assert isinstance(results[0]["content"], str)
@@ -102,9 +109,11 @@ def test_exec_tools_no_is_error_on_success():
 
     tu = _mock_tool_use("message_worker", "toolu_ok", {"worker_id": "w-1", "message": "hi"})
 
-    with patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())), \
-         patch("foreman.tools.broadcast", new=AsyncMock()), \
-         patch("foreman.tools.emit_terminal_line", new=AsyncMock()):
+    with (
+        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools.broadcast", new=AsyncMock()),
+        patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+    ):
         results = _run(exec_tools("guild1", [tu]))
 
     r = results[0]
@@ -114,6 +123,7 @@ def test_exec_tools_no_is_error_on_success():
 # ---------------------------------------------------------------------------
 # Error-handling tests
 # ---------------------------------------------------------------------------
+
 
 def test_exec_tools_error_sets_is_error_true():
     """When a tool raises an unexpected exception, the result must set is_error: True."""
@@ -151,11 +161,15 @@ def test_exec_tools_multiple_tools_all_returned():
     from foreman.tools import exec_tools
 
     ids = ["toolu_first", "toolu_second", "toolu_third"]
-    tus = [_mock_tool_use("message_worker", id_, {"worker_id": "w-1", "message": "m"}) for id_ in ids]
+    tus = [
+        _mock_tool_use("message_worker", id_, {"worker_id": "w-1", "message": "m"}) for id_ in ids
+    ]
 
-    with patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())), \
-         patch("foreman.tools.broadcast", new=AsyncMock()), \
-         patch("foreman.tools.emit_terminal_line", new=AsyncMock()):
+    with (
+        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools.broadcast", new=AsyncMock()),
+        patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+    ):
         results = _run(exec_tools("guild1", tus))
 
     assert len(results) == 3
@@ -183,9 +197,11 @@ def test_exec_tools_partial_failure_still_returns_all():
         _mock_tool_use("message_worker", "toolu_ok", {"worker_id": "w-1", "message": "ok"}),
     ]
 
-    with patch("foreman.tools.get_db", side_effect=get_db_side_effect), \
-         patch("foreman.tools.broadcast", new=AsyncMock()), \
-         patch("foreman.tools.emit_terminal_line", new=AsyncMock()):
+    with (
+        patch("foreman.tools.get_db", side_effect=get_db_side_effect),
+        patch("foreman.tools.broadcast", new=AsyncMock()),
+        patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+    ):
         results = _run(exec_tools("guild1", tus))
 
     assert len(results) == 2
@@ -199,9 +215,11 @@ def test_exec_tools_partial_failure_still_returns_all():
 # GitHub error tests
 # ---------------------------------------------------------------------------
 
+
 def test_exec_tools_github_http_error_sets_is_error():
     """GitHub HTTPError must produce is_error: True, not a plain success result."""
     import urllib.error
+
     from foreman.tools import exec_tools
 
     tu = _mock_tool_use("list_github_issues", "toolu_gh_err", {"repo": "owner/repo"})
@@ -214,9 +232,11 @@ def test_exec_tools_github_http_error_sets_is_error():
         fp=None,
     )
 
-    with patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())), \
-         patch("foreman.tools._guild_github_token", AsyncMock(return_value=("tok", "user"))), \
-         patch("foreman.tools._gh_api", side_effect=http_err):
+    with (
+        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools._guild_github_token", AsyncMock(return_value=("tok", "user"))),
+        patch("foreman.tools._gh_api", side_effect=http_err),
+    ):
         results = _run(exec_tools("guild1", [tu]))
 
     r = results[0]

@@ -7,7 +7,7 @@ import json
 import re
 import urllib.error
 import urllib.request
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 from . import git_ops
 
@@ -49,9 +49,9 @@ async def open_pr(
     task: dict,
     branch: str,
     worktree_path: str,
-    token: Optional[str],
+    token: str | None,
     emit: EmitFn,
-) -> Optional[str]:
+) -> str | None:
     """Create a GitHub PR for *branch*. Returns PR URL or None on failure."""
     if not token:
         await emit("[worker] No GitHub token — skipping PR")
@@ -70,12 +70,14 @@ async def open_pr(
 
     issue_ref = f"\n\nCloses #{task['issue_number']}" if task.get("issue_number") else ""
     body = f"Automated by Pioneer Square worker agent.{issue_ref}"
-    payload = json.dumps({
-        "title": (task.get("description") or "")[:72],
-        "body": body,
-        "head": branch,
-        "base": "main",
-    }).encode()
+    payload = json.dumps(
+        {
+            "title": (task.get("description") or "")[:72],
+            "body": body,
+            "head": branch,
+            "base": "main",
+        }
+    ).encode()
 
     def _create_pr() -> dict:
         req = urllib.request.Request(

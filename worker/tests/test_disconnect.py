@@ -12,7 +12,6 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-
 from pioneer_worker.config import Config
 from pioneer_worker.worker import Worker
 

@@ -94,7 +94,7 @@ export const useGuildStore = defineStore('guild', () => {
       reconnectTimer = null
     }
     if (ws) {
-      try { ws.close() } catch (e) { /* ignore */ }
+      try { ws.close() } catch { /* ignore */ }
     }
 
     let socket: WebSocket
@@ -179,7 +179,7 @@ export const useGuildStore = defineStore('guild', () => {
       reconnectTimer = null
     }
     if (ws) {
-      try { ws.close() } catch (e) { /* ignore */ }
+      try { ws.close() } catch { /* ignore */ }
       ws = null
     }
     isConnected.value = false

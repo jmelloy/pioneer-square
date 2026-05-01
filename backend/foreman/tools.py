@@ -8,14 +8,12 @@ import string
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
-from typing import Optional
-
-from sqlalchemy import select, update
+from datetime import UTC, datetime
 
 from database import get_db
 from events import broadcast, emit_terminal_line
 from models import Agent, GithubToken, Guild, Task, TaskLog, Worker
+from sqlalchemy import select, update
 
 FOREMAN_TOOLS = [
     {
@@ -67,7 +65,7 @@ FOREMAN_TOOLS = [
                 "task_id": {
                     "type": "string",
                     "description": "Task ID returned by create_task. When provided, assigns that "
-                                   "existing task to the worker instead of creating a new row.",
+                    "existing task to the worker instead of creating a new row.",
                 },
                 "name": {
                     "type": "string",
@@ -87,8 +85,14 @@ FOREMAN_TOOLS = [
                     "enum": ["plan", "execute", "review", "followup"],
                     "description": "Phase of work.",
                 },
-                "issue_number": {"type": "integer", "description": "GitHub issue to close (optional)."},
-                "issue_repo": {"type": "string", "description": "owner/repo for the issue (optional)."},
+                "issue_number": {
+                    "type": "integer",
+                    "description": "GitHub issue to close (optional).",
+                },
+                "issue_repo": {
+                    "type": "string",
+                    "description": "owner/repo for the issue (optional).",
+                },
             },
             "required": ["worker_id", "description"],
         },
@@ -185,8 +189,15 @@ FOREMAN_TOOLS = [
             "type": "object",
             "properties": {
                 "repo": {"type": "string", "description": "owner/repo, e.g. 'acme/backend'"},
-                "state": {"type": "string", "enum": ["open", "closed", "all"], "description": "Default: open"},
-                "limit": {"type": "integer", "description": "Max issues to return (default 20, max 50)"},
+                "state": {
+                    "type": "string",
+                    "enum": ["open", "closed", "all"],
+                    "description": "Default: open",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max issues to return (default 20, max 50)",
+                },
             },
             "required": ["repo"],
         },
@@ -210,7 +221,11 @@ FOREMAN_TOOLS = [
             "type": "object",
             "properties": {
                 "repo": {"type": "string", "description": "owner/repo"},
-                "state": {"type": "string", "enum": ["open", "closed", "all"], "description": "Default: open"},
+                "state": {
+                    "type": "string",
+                    "enum": ["open", "closed", "all"],
+                    "description": "Default: open",
+                },
             },
             "required": ["repo"],
         },
@@ -296,6 +311,7 @@ FOREMAN_TOOLS = [
 # GitHub API helpers
 # ---------------------------------------------------------------------------
 
+
 def _gh_api(path: str, token: str) -> object:
     """GET a GitHub API path and return parsed JSON."""
     req = urllib.request.Request(
@@ -326,7 +342,7 @@ def _gh_api_post(path: str, token: str, payload: dict, method: str = "POST") -> 
         return json.loads(resp.read())
 
 
-async def _guild_github_token(guild_id: str) -> Optional[tuple[str, str]]:
+async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
     """Return (access_token, github_username) for this guild, or None."""
     db = await get_db()
     try:
@@ -348,8 +364,7 @@ async def maybe_post_plan_comment(guild_id: str, task_id: str, last_text: str) -
         db = await get_db()
         try:
             result = await db.execute(
-                select(Task.phase, Task.issue_number, Task.issue_repo)
-                .where(Task.id == task_id)
+                select(Task.phase, Task.issue_number, Task.issue_repo).where(Task.id == task_id)
             )
             row = result.first()
         finally:
@@ -387,6 +402,7 @@ async def maybe_post_plan_comment(guild_id: str, task_id: str, last_text: str) -
 # Tool executor
 # ---------------------------------------------------------------------------
 
+
 async def exec_tools(guild_id: str, tool_uses: list) -> list:
     """Execute tool calls from the foreman AI and return tool-result blocks."""
     results = []
@@ -401,30 +417,39 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                     name = (inp.get("name") or "")[:80]
                     desc = inp.get("description", name)
                     phase = inp.get("phase", "execute")
-                    task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-                    created_at = datetime.now(timezone.utc).isoformat()
-                    db.add(Task(
-                        id=task_id,
-                        worker_id="foreman",
-                        guild_id=guild_id,
-                        name=name,
-                        description=desc,
-                        tool="claude",
-                        state="pending",
-                        phase=phase,
-                        created_at=created_at,
-                    ))
+                    task_id = "t-" + "".join(
+                        random.choices(string.ascii_lowercase + string.digits, k=6)
+                    )
+                    created_at = datetime.now(UTC).isoformat()
+                    db.add(
+                        Task(
+                            id=task_id,
+                            worker_id="foreman",
+                            guild_id=guild_id,
+                            name=name,
+                            description=desc,
+                            tool="claude",
+                            state="pending",
+                            phase=phase,
+                            created_at=created_at,
+                        )
+                    )
                     await db.commit()
-                    await broadcast(guild_id, {
-                        "type": "task-created",
-                        "taskId": task_id,
-                        "name": name,
-                        "description": desc,
-                        "phase": phase,
-                        "state": "pending",
-                        "createdAt": created_at,
-                    })
-                    result_text = f"Task {task_id} created: '{name}'. Reference this task_id in assign_task."
+                    await broadcast(
+                        guild_id,
+                        {
+                            "type": "task-created",
+                            "taskId": task_id,
+                            "name": name,
+                            "description": desc,
+                            "phase": phase,
+                            "state": "pending",
+                            "createdAt": created_at,
+                        },
+                    )
+                    result_text = (
+                        f"Task {task_id} created: '{name}'. Reference this task_id in assign_task."
+                    )
 
                 elif tu.name == "assign_task":
                     wid = inp["worker_id"]
@@ -464,50 +489,60 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                         )
                         task_name = name_result.scalar_one_or_none() or desc[:60]
                         task_id = existing_task_id
-                        await broadcast(guild_id, {
-                            "type": "task-assigned",
-                            "workerId": wid,
-                            "taskId": task_id,
-                            "name": task_name,
-                            "description": desc,
-                            "tool": tool,
-                            "phase": phase,
-                            "issueNumber": inp.get("issue_number"),
-                            "issueRepo": inp.get("issue_repo"),
-                        })
+                        await broadcast(
+                            guild_id,
+                            {
+                                "type": "task-assigned",
+                                "workerId": wid,
+                                "taskId": task_id,
+                                "name": task_name,
+                                "description": desc,
+                                "tool": tool,
+                                "phase": phase,
+                                "issueNumber": inp.get("issue_number"),
+                                "issueRepo": inp.get("issue_repo"),
+                            },
+                        )
                         result_text = f"Task {task_id} assigned to {wid}."
                     else:
-                        name = (inp.get("name") or desc[:60])
+                        name = inp.get("name") or desc[:60]
                         parent_task_id = inp.get("parent_task_id")
-                        task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-                        created_at = datetime.now(timezone.utc).isoformat()
-                        db.add(Task(
-                            id=task_id,
-                            worker_id=wid,
-                            guild_id=guild_id,
-                            name=name,
-                            description=desc,
-                            tool=tool,
-                            issue_number=inp.get("issue_number"),
-                            issue_repo=inp.get("issue_repo"),
-                            state="pending",
-                            phase=phase,
-                            parent_task_id=parent_task_id,
-                            created_at=created_at,
-                        ))
+                        task_id = "t-" + "".join(
+                            random.choices(string.ascii_lowercase + string.digits, k=6)
+                        )
+                        created_at = datetime.now(UTC).isoformat()
+                        db.add(
+                            Task(
+                                id=task_id,
+                                worker_id=wid,
+                                guild_id=guild_id,
+                                name=name,
+                                description=desc,
+                                tool=tool,
+                                issue_number=inp.get("issue_number"),
+                                issue_repo=inp.get("issue_repo"),
+                                state="pending",
+                                phase=phase,
+                                parent_task_id=parent_task_id,
+                                created_at=created_at,
+                            )
+                        )
                         await db.commit()
-                        await broadcast(guild_id, {
-                            "type": "task-assigned",
-                            "workerId": wid,
-                            "taskId": task_id,
-                            "name": name,
-                            "description": desc,
-                            "tool": tool,
-                            "phase": phase,
-                            "parentTaskId": parent_task_id,
-                            "issueNumber": inp.get("issue_number"),
-                            "issueRepo": inp.get("issue_repo"),
-                        })
+                        await broadcast(
+                            guild_id,
+                            {
+                                "type": "task-assigned",
+                                "workerId": wid,
+                                "taskId": task_id,
+                                "name": name,
+                                "description": desc,
+                                "tool": tool,
+                                "phase": phase,
+                                "parentTaskId": parent_task_id,
+                                "issueNumber": inp.get("issue_number"),
+                                "issueRepo": inp.get("issue_repo"),
+                            },
+                        )
                         result_text = f"Task {task_id} queued for {wid}."
 
                 elif tu.name == "send_followup":
@@ -521,15 +556,20 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                         result_text = f"Task {task_id} not found."
                     else:
                         await db.execute(
-                            update(Task).where(Task.id == task_id).values(state="working", phase="followup")
+                            update(Task)
+                            .where(Task.id == task_id)
+                            .values(state="working", phase="followup")
                         )
                         await db.commit()
-                        await broadcast(guild_id, {
-                            "type": "task-followup",
-                            "workerId": worker_id_val,
-                            "taskId": task_id,
-                            "instructions": instructions,
-                        })
+                        await broadcast(
+                            guild_id,
+                            {
+                                "type": "task-followup",
+                                "workerId": worker_id_val,
+                                "taskId": task_id,
+                                "instructions": instructions,
+                            },
+                        )
                         result_text = f"Follow-up sent to {worker_id_val} for task {task_id}."
 
                 elif tu.name == "finalize_task":
@@ -541,33 +581,44 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                     if not worker_id_val:
                         result_text = f"Task {task_id} not found."
                     else:
-                        finished_at = datetime.now(timezone.utc).isoformat()
+                        finished_at = datetime.now(UTC).isoformat()
                         await db.execute(
-                            update(Task).where(Task.id == task_id).values(state="done", finished_at=finished_at)
+                            update(Task)
+                            .where(Task.id == task_id)
+                            .values(state="done", finished_at=finished_at)
                         )
                         await db.commit()
-                        await broadcast(guild_id, {
-                            "type": "task-finalize",
-                            "workerId": worker_id_val,
-                            "taskId": task_id,
-                        })
-                        await broadcast(guild_id, {
-                            "type": "task-update",
-                            "taskId": task_id,
-                            "state": "done",
-                            "finishedAt": finished_at,
-                        })
+                        await broadcast(
+                            guild_id,
+                            {
+                                "type": "task-finalize",
+                                "workerId": worker_id_val,
+                                "taskId": task_id,
+                            },
+                        )
+                        await broadcast(
+                            guild_id,
+                            {
+                                "type": "task-update",
+                                "taskId": task_id,
+                                "state": "done",
+                                "finishedAt": finished_at,
+                            },
+                        )
                         result_text = f"Task {task_id} finalized."
 
                 elif tu.name == "message_worker":
                     wid = inp["worker_id"]
                     msg = inp["message"]
                     await emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
-                    await broadcast(guild_id, {
-                        "type": "worker-message",
-                        "workerId": wid,
-                        "message": msg,
-                    })
+                    await broadcast(
+                        guild_id,
+                        {
+                            "type": "worker-message",
+                            "workerId": wid,
+                            "message": msg,
+                        },
+                    )
                     result_text = f"Message delivered to {wid}."
 
                 elif tu.name == "redirect_task":
@@ -590,17 +641,23 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                                 update(Task).where(Task.id == task_id).values(state="working")
                             )
                             await db.commit()
-                            await broadcast(guild_id, {
-                                "type": "task-redirect",
-                                "workerId": worker_id_val,
-                                "taskId": task_id,
-                                "instructions": instructions,
-                            })
-                            await broadcast(guild_id, {
-                                "type": "task-update",
-                                "taskId": task_id,
-                                "state": "working",
-                            })
+                            await broadcast(
+                                guild_id,
+                                {
+                                    "type": "task-redirect",
+                                    "workerId": worker_id_val,
+                                    "taskId": task_id,
+                                    "instructions": instructions,
+                                },
+                            )
+                            await broadcast(
+                                guild_id,
+                                {
+                                    "type": "task-update",
+                                    "taskId": task_id,
+                                    "state": "working",
+                                },
+                            )
                             result_text = f"Redirect sent to {worker_id_val} for task {task_id}."
 
                 elif tu.name == "cancel_task":
@@ -619,25 +676,33 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                         if state in ("done", "failed", "cancelled"):
                             result_text = f"Task {task_id} is already {state}."
                         else:
-                            finished_at = datetime.now(timezone.utc).isoformat()
+                            finished_at = datetime.now(UTC).isoformat()
                             await db.execute(
-                                update(Task).where(Task.id == task_id).values(
-                                    state="cancelled", finished_at=finished_at
-                                )
+                                update(Task)
+                                .where(Task.id == task_id)
+                                .values(state="cancelled", finished_at=finished_at)
                             )
                             await db.commit()
-                            await broadcast(guild_id, {
-                                "type": "task-cancel",
-                                "workerId": worker_id_val,
-                                "taskId": task_id,
-                            })
-                            await broadcast(guild_id, {
-                                "type": "task-update",
-                                "taskId": task_id,
-                                "state": "cancelled",
-                                "finishedAt": finished_at,
-                            })
-                            result_text = f"Task {task_id} cancelled." + (f" Reason: {reason}" if reason else "")
+                            await broadcast(
+                                guild_id,
+                                {
+                                    "type": "task-cancel",
+                                    "workerId": worker_id_val,
+                                    "taskId": task_id,
+                                },
+                            )
+                            await broadcast(
+                                guild_id,
+                                {
+                                    "type": "task-update",
+                                    "taskId": task_id,
+                                    "state": "cancelled",
+                                    "finishedAt": finished_at,
+                                },
+                            )
+                            result_text = f"Task {task_id} cancelled." + (
+                                f" Reason: {reason}" if reason else ""
+                            )
 
                 elif tu.name == "get_task_status":
                     task_id = inp["task_id"]
@@ -666,30 +731,38 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                             .limit(limit)
                         )
                         log_rows = list(reversed(logs_result.fetchall()))
-                        result_text = json.dumps({
-                            "id": task.id,
-                            "name": task.name,
-                            "state": task.state,
-                            "phase": task.phase,
-                            "worker_id": task.worker_id,
-                            "agent": agent_info,
-                            "branch": task.branch,
-                            "pr_url": task.pr_url,
-                            "created_at": task.created_at,
-                            "finished_at": task.finished_at,
-                            "recent_logs": [{"time": r[0], "line": r[1]} for r in log_rows],
-                        })
+                        result_text = json.dumps(
+                            {
+                                "id": task.id,
+                                "name": task.name,
+                                "state": task.state,
+                                "phase": task.phase,
+                                "worker_id": task.worker_id,
+                                "agent": agent_info,
+                                "branch": task.branch,
+                                "pr_url": task.pr_url,
+                                "created_at": task.created_at,
+                                "finished_at": task.finished_at,
+                                "recent_logs": [{"time": r[0], "line": r[1]} for r in log_rows],
+                            }
+                        )
             finally:
                 await db.close()
 
             # GitHub tools — use guild's OAuth token
             if tu.name in (
-                "list_github_issues", "get_github_issue", "list_github_prs",
-                "claim_github_issue", "create_github_issue", "search_github_issues",
+                "list_github_issues",
+                "get_github_issue",
+                "list_github_prs",
+                "claim_github_issue",
+                "create_github_issue",
+                "search_github_issues",
             ):
                 creds = await _guild_github_token(guild_id)
                 if not creds:
-                    result_text = "No GitHub token found for this guild — user must connect GitHub first."
+                    result_text = (
+                        "No GitHub token found for this guild — user must connect GitHub first."
+                    )
                     is_error = True
                 else:
                     token, username = creds
@@ -699,35 +772,49 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                             state = inp.get("state", "open")
                             limit = min(int(inp.get("limit", 20)), 50)
                             issues = await asyncio.to_thread(
-                                _gh_api, f"/repos/{repo}/issues?state={state}&per_page={limit}", token
+                                _gh_api,
+                                f"/repos/{repo}/issues?state={state}&per_page={limit}",
+                                token,
                             )
                             trimmed = [
-                                {"number": i["number"], "title": i["title"],
-                                 "state": i["state"], "labels": [l["name"] for l in i.get("labels", [])],
-                                 "assignees": [a["login"] for a in i.get("assignees", [])],
-                                 "created_at": i["created_at"]}
-                                for i in issues if "pull_request" not in i
+                                {
+                                    "number": i["number"],
+                                    "title": i["title"],
+                                    "state": i["state"],
+                                    "labels": [l["name"] for l in i.get("labels", [])],
+                                    "assignees": [a["login"] for a in i.get("assignees", [])],
+                                    "created_at": i["created_at"],
+                                }
+                                for i in issues
+                                if "pull_request" not in i
                             ]
                             result_text = json.dumps(trimmed)
 
                         elif tu.name == "get_github_issue":
                             repo = inp["repo"]
                             num = int(inp["issue_number"])
-                            issue = await asyncio.to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
+                            issue = await asyncio.to_thread(
+                                _gh_api, f"/repos/{repo}/issues/{num}", token
+                            )
                             comments_raw = await asyncio.to_thread(
                                 _gh_api, f"/repos/{repo}/issues/{num}/comments?per_page=20", token
                             )
-                            result_text = json.dumps({
-                                "number": issue["number"],
-                                "title": issue["title"],
-                                "state": issue["state"],
-                                "body": (issue.get("body") or "")[:2000],
-                                "labels": [l["name"] for l in issue.get("labels", [])],
-                                "comments": [
-                                    {"author": c["user"]["login"], "body": (c.get("body") or "")[:500]}
-                                    for c in comments_raw
-                                ],
-                            })
+                            result_text = json.dumps(
+                                {
+                                    "number": issue["number"],
+                                    "title": issue["title"],
+                                    "state": issue["state"],
+                                    "body": (issue.get("body") or "")[:2000],
+                                    "labels": [l["name"] for l in issue.get("labels", [])],
+                                    "comments": [
+                                        {
+                                            "author": c["user"]["login"],
+                                            "body": (c.get("body") or "")[:500],
+                                        }
+                                        for c in comments_raw
+                                    ],
+                                }
+                            )
 
                         elif tu.name == "list_github_prs":
                             repo = inp["repo"]
@@ -735,12 +822,18 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                             prs = await asyncio.to_thread(
                                 _gh_api, f"/repos/{repo}/pulls?state={state}&per_page=20", token
                             )
-                            result_text = json.dumps([
-                                {"number": p["number"], "title": p["title"],
-                                 "state": p["state"], "head": p["head"]["ref"],
-                                 "draft": p.get("draft", False)}
-                                for p in prs
-                            ])
+                            result_text = json.dumps(
+                                [
+                                    {
+                                        "number": p["number"],
+                                        "title": p["title"],
+                                        "state": p["state"],
+                                        "head": p["head"]["ref"],
+                                        "draft": p.get("draft", False),
+                                    }
+                                    for p in prs
+                                ]
+                            )
 
                         elif tu.name == "claim_github_issue":
                             repo = inp["repo"]
@@ -761,11 +854,13 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                             issue = await asyncio.to_thread(
                                 _gh_api_post, f"/repos/{repo}/issues", token, payload
                             )
-                            result_text = json.dumps({
-                                "number": issue["number"],
-                                "url": issue["html_url"],
-                                "title": issue["title"],
-                            })
+                            result_text = json.dumps(
+                                {
+                                    "number": issue["number"],
+                                    "url": issue["html_url"],
+                                    "title": issue["title"],
+                                }
+                            )
 
                         elif tu.name == "search_github_issues":
                             repo = inp["repo"]
@@ -778,16 +873,18 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                             )
                             data = await asyncio.to_thread(_gh_api, search_url, token)
                             items = data.get("items", []) if isinstance(data, dict) else data
-                            result_text = json.dumps([
-                                {
-                                    "number": i["number"],
-                                    "title": i["title"],
-                                    "state": i["state"],
-                                    "url": i["html_url"],
-                                    "labels": [l["name"] for l in i.get("labels", [])],
-                                }
-                                for i in items
-                            ])
+                            result_text = json.dumps(
+                                [
+                                    {
+                                        "number": i["number"],
+                                        "title": i["title"],
+                                        "state": i["state"],
+                                        "url": i["html_url"],
+                                        "labels": [l["name"] for l in i.get("labels", [])],
+                                    }
+                                    for i in items
+                                ]
+                            )
 
                     except urllib.error.HTTPError as exc:
                         result_text = f"GitHub API error: {exc.code} {exc.reason}"

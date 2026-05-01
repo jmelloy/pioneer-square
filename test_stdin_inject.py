@@ -21,10 +21,13 @@ PROMPT = (
 async def main():
     cmd = [
         CLAUDE,
-        "--output-format", "stream-json",
+        "--output-format",
+        "stream-json",
         "--verbose",
-        "--max-turns", "6",
-        "-p", PROMPT,
+        "--max-turns",
+        "6",
+        "-p",
+        PROMPT,
     ]
 
     print("[test] Starting claude at t=0", flush=True)
@@ -57,24 +60,38 @@ async def main():
                 if etype == "assistant":
                     for blk in event.get("message", {}).get("content", []):
                         if blk.get("type") == "text" and blk.get("text", "").strip():
-                            print(f"t={elapsed:.1f}s  [assistant text] {blk['text'][:120]}", flush=True)
+                            print(
+                                f"t={elapsed:.1f}s  [assistant text] {blk['text'][:120]}",
+                                flush=True,
+                            )
                         elif blk.get("type") == "tool_use":
                             inp = blk.get("input", {})
                             cmd_str = inp.get("command", json.dumps(inp)[:80])
-                            print(f"t={elapsed:.1f}s  [tool_use {blk.get('name')}] {cmd_str[:80]}", flush=True)
+                            print(
+                                f"t={elapsed:.1f}s  [tool_use {blk.get('name')}] {cmd_str[:80]}",
+                                flush=True,
+                            )
                 elif etype == "user":
                     for blk in event.get("message", {}).get("content", []):
                         if blk.get("type") == "tool_result":
                             content = blk.get("content", "")
                             if isinstance(content, list):
                                 content = " ".join(b.get("text", "") for b in content)
-                            print(f"t={elapsed:.1f}s  [tool_result] {str(content)[:120]}", flush=True)
+                            print(
+                                f"t={elapsed:.1f}s  [tool_result] {str(content)[:120]}", flush=True
+                            )
                         elif blk.get("type") == "text":
                             txt = blk.get("text", "").strip()
                             if txt:
-                                print(f"t={elapsed:.1f}s  [user text = INJECTED?] {txt[:120]}", flush=True)
+                                print(
+                                    f"t={elapsed:.1f}s  [user text = INJECTED?] {txt[:120]}",
+                                    flush=True,
+                                )
                 elif etype == "result":
-                    print(f"t={elapsed:.1f}s  [RESULT] {event.get('subtype')} turns={event.get('num_turns')}", flush=True)
+                    print(
+                        f"t={elapsed:.1f}s  [RESULT] {event.get('subtype')} turns={event.get('num_turns')}",
+                        flush=True,
+                    )
                 elif etype == "system" and event.get("subtype") == "init":
                     print(f"t={elapsed:.1f}s  [system init]", flush=True)
             except json.JSONDecodeError:

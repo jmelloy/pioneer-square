@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
-import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -13,8 +13,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, make_auth_token
 
 
-def _insert_foreman_turn(db_path: str, guild_id: str, user_id: str, role: str, content: str) -> None:
-    now = datetime.now(timezone.utc).isoformat()
+def _insert_foreman_turn(
+    db_path: str, guild_id: str, user_id: str, role: str, content: str
+) -> None:
+    now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT INTO foreman_turns (guild_id, user_id, role, content_json, is_tool_response, created_at) "
@@ -27,6 +29,7 @@ def _insert_foreman_turn(db_path: str, guild_id: str, user_id: str, role: str, c
 # ---------------------------------------------------------------------------
 # Authentication enforcement
 # ---------------------------------------------------------------------------
+
 
 def test_get_foreman_context_requires_auth(client):
     test_client, db_path = client
@@ -65,6 +68,7 @@ def test_clear_foreman_context_guild_not_found(client):
 # ---------------------------------------------------------------------------
 # Per-user scoping
 # ---------------------------------------------------------------------------
+
 
 def test_get_foreman_context_returns_only_requesting_users_turns(client):
     """Each user only sees their own foreman turns, not other users'."""

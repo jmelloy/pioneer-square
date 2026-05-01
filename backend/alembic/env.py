@@ -4,11 +4,10 @@ import sys
 from logging.config import fileConfig
 from pathlib import Path
 
+from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
-
-from alembic import context
 
 # Ensure the backend package is importable from this file's location.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

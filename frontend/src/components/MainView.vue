@@ -48,9 +48,9 @@
     </div>
     <div class="tab-content">
       <FactoryFloor v-if="activeTab === 'factory'" />
-      <TerminalPane v-else-if="activeTab.startsWith('agent-')" :agentId="activeTab.slice(6)" />
-      <WorkerTerminalPane v-else-if="activeTab.startsWith('worker-')" :workerId="activeTab.slice(7)" />
-      <TaskPane v-else-if="activeTab.startsWith('task-')" :taskId="activeTab.slice(5)" />
+      <TerminalPane v-else-if="activeTab.startsWith('agent-')" :agent-id="activeTab.slice(6)" />
+      <WorkerTerminalPane v-else-if="activeTab.startsWith('worker-')" :worker-id="activeTab.slice(7)" />
+      <TaskPane v-else-if="activeTab.startsWith('task-')" :task-id="activeTab.slice(5)" />
     </div>
   </div>
 </template>

@@ -39,7 +39,9 @@ class Message(Base):
     content = Column(Text, nullable=False)
     message_type = Column(Text, nullable=False)
     created_at = Column(Text, nullable=False)
-    user_id = Column(Text, nullable=True)  # github_user_id of the sender; NULL for system/worker messages
+    user_id = Column(
+        Text, nullable=True
+    )  # github_user_id of the sender; NULL for system/worker messages
 
 
 class Worker(Base):
@@ -102,7 +104,7 @@ class TaskLog(Base):
     line = Column(Text, nullable=False)
     worker_id = Column(Text)
     agent_id = Column(Text)
-    data = Column(Text)     # JSON: full tool input/output for click-to-expand
+    data = Column(Text)  # JSON: full tool input/output for click-to-expand
 
 
 class ClaudeCredentials(Base):
@@ -120,7 +122,7 @@ class ForemanTurn(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     guild_id = Column(Text, nullable=False)
     user_id = Column(Text, nullable=False)
-    role = Column(Text, nullable=False)          # "user" | "assistant"
+    role = Column(Text, nullable=False)  # "user" | "assistant"
     content_json = Column(Text, nullable=False)  # JSON-serialized content blocks
     # 1 if this "user" turn carries tool_results (not human input); 0 otherwise
     is_tool_response = Column(Integer, nullable=False, server_default="0")
