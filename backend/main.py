@@ -521,7 +521,12 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
                 func.count(Agent.id).label("agent_count"),
             )
             .select_from(Guild)
-            .outerjoin(Agent, (Agent.guild_id == Guild.id) & (Agent.type != "foreman"))
+            .outerjoin(
+                Agent,
+                (Agent.guild_id == Guild.id)
+                & (Agent.type != "foreman")
+                & (Agent.state != "offline"),
+            )
             .where(Guild.github_user_id == github_user_id)
             .group_by(Guild.id)
             .order_by(Guild.created_at.desc())
