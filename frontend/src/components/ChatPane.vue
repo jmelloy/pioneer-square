@@ -18,7 +18,9 @@
           class="tab-btn"
           :class="{ active: activeTab === 'chat' }"
           @click.stop="activeTab = 'chat'"
-        >Chat</button>
+        >
+          Chat
+        </button>
         <button
           v-if="ghStore.isConfigured"
           class="tab-btn"
@@ -32,15 +34,15 @@
           class="tab-btn"
           :class="{ active: activeTab === 'debug' }"
           @click.stop="switchToDebug"
-        >Debug</button>
+        >
+          Debug
+        </button>
       </div>
 
       <!-- Chat tab -->
       <template v-if="activeTab === 'chat'">
         <div class="chat-messages" ref="messagesEl">
-          <div v-if="messages.length === 0" class="chat-empty">
-            Awaiting foreman connection...
-          </div>
+          <div v-if="messages.length === 0" class="chat-empty">Awaiting foreman connection...</div>
           <div
             v-for="(msg, i) in messages"
             :key="i"
@@ -48,10 +50,12 @@
             :class="{
               'from-user': msg.from === 'user',
               'from-system': msg.from === 'system',
-              'from-agent': msg.from !== 'user' && msg.from !== 'system'
+              'from-agent': msg.from !== 'user' && msg.from !== 'system',
             }"
           >
-            <span class="msg-from">{{ msg.from === 'user' ? 'YOU' : msg.from === 'system' ? 'SYS' : msg.from }}</span>
+            <span class="msg-from">{{
+              msg.from === 'user' ? 'YOU' : msg.from === 'system' ? 'SYS' : msg.from
+            }}</span>
             <span class="msg-content">{{ msg.content }}</span>
             <a v-if="msg.prUrl" :href="msg.prUrl" target="_blank" rel="noopener" class="pr-link">
               Open PR →
@@ -77,7 +81,11 @@
             {{ ghStore.loading ? '...' : '↻' }}
           </button>
           <span class="issues-count">{{ ghStore.issues.length }} open</span>
-          <span class="issues-repos">{{ ghStore.selectedRepos.length }} repo{{ ghStore.selectedRepos.length !== 1 ? 's' : '' }}</span>
+          <span class="issues-repos"
+            >{{ ghStore.selectedRepos.length }} repo{{
+              ghStore.selectedRepos.length !== 1 ? 's' : ''
+            }}</span
+          >
         </div>
 
         <div class="issues-list" ref="issuesEl">
@@ -104,7 +112,8 @@
                 :key="label.id"
                 class="issue-label"
                 :style="{ borderColor: '#' + label.color, color: '#' + label.color }"
-              >{{ label.name }}</span>
+                >{{ label.name }}</span
+              >
               <span class="issue-age">{{ formatAge(issue.created_at) }}</span>
             </div>
           </div>
@@ -114,7 +123,10 @@
       <!-- Debug tab -->
       <template v-else-if="activeTab === 'debug'">
         <div class="debug-toolbar">
-          <span class="debug-count">{{ debugContext.length }} msg{{ debugContext.length !== 1 ? 's' : '' }} in context</span>
+          <span class="debug-count"
+            >{{ debugContext.length }} msg{{ debugContext.length !== 1 ? 's' : '' }} in
+            context</span
+          >
           <button class="pixel-btn refresh-btn" @click="refreshDebug" :disabled="debugLoading">
             {{ debugLoading ? '...' : '↻' }}
           </button>
@@ -131,9 +143,17 @@
             v-for="(msg, i) in debugContext"
             :key="i"
             class="debug-msg"
-            :class="msg.role === 'assistant' ? 'debug-assistant' : isToolResponseMsg(msg) ? 'debug-tool-response' : 'debug-user'"
+            :class="
+              msg.role === 'assistant'
+                ? 'debug-assistant'
+                : isToolResponseMsg(msg)
+                  ? 'debug-tool-response'
+                  : 'debug-user'
+            "
           >
-            <span class="debug-role">{{ isToolResponseMsg(msg) ? 'TOOL RESPONSE' : msg.role.toUpperCase() }}</span>
+            <span class="debug-role">{{
+              isToolResponseMsg(msg) ? 'TOOL RESPONSE' : msg.role.toUpperCase()
+            }}</span>
             <template v-if="typeof msg.content === 'string'">
               <span class="debug-text">{{ msg.content }}</span>
             </template>
@@ -154,7 +174,11 @@
                 </template>
                 <template v-else-if="block.type === 'tool_result'">
                   <span class="debug-tool-id">id:{{ block.tool_use_id?.slice(-6) }}</span>
-                  <pre class="debug-pre">{{ typeof block.content === 'string' ? block.content : JSON.stringify(block.content) }}</pre>
+                  <pre class="debug-pre">{{
+                    typeof block.content === 'string'
+                      ? block.content
+                      : JSON.stringify(block.content)
+                  }}</pre>
                 </template>
                 <template v-else>
                   <pre class="debug-pre">{{ JSON.stringify(block) }}</pre>
@@ -190,7 +214,11 @@
               @keydown.enter="submitAuthCode"
               autofocus
             />
-            <button class="pixel-btn auth-submit-btn" @click="submitAuthCode" :disabled="!authCodeInput.trim()">
+            <button
+              class="pixel-btn auth-submit-btn"
+              @click="submitAuthCode"
+              :disabled="!authCodeInput.trim()"
+            >
               ↵ Submit
             </button>
           </div>
@@ -229,7 +257,7 @@ const debugLoading = ref(false)
 const debugClearing = ref(false)
 
 const messages = computed(() => guildStore.messages)
-const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
+const foreman = computed(() => agentsStore.agents.find((a) => a.type === 'foreman'))
 
 // Issue assignment pattern: "Work on issue #N in owner/repo: title"
 const ISSUE_PATTERN = /Work on issue #(\d+) in ([^:]+): "(.+)"/
@@ -301,7 +329,9 @@ function submitAuthCode() {
   })
   if (!sent) {
     guildStore.messages.push({
-      type: 'chat', from: 'system', to: 'user',
+      type: 'chat',
+      from: 'system',
+      to: 'user',
       content: '⚠ Connection not ready — please wait a moment and try again.',
       createdAt: new Date().toISOString(),
     })
@@ -315,7 +345,9 @@ function submitAuthCode() {
 function handleTaskEvent(data: WSMessage) {
   if (data.type === 'task-complete') {
     guildStore.messages.push({
-      type: 'chat', from: 'system', to: 'user',
+      type: 'chat',
+      from: 'system',
+      to: 'user',
       content: data.prUrl
         ? `✓ ${data.workerId} done — PR: ${data.prUrl}`
         : `✓ ${data.workerId} finished (no PR)`,
@@ -324,20 +356,26 @@ function handleTaskEvent(data: WSMessage) {
     })
   } else if (data.type === 'needs-input') {
     guildStore.messages.push({
-      type: 'chat', from: 'system', to: 'user',
+      type: 'chat',
+      from: 'system',
+      to: 'user',
       content: `⚠ ${data.workerId} needs attention on: "${data.description}"`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'claude-auth-required') {
     claudeAuthPending.value = { workerId: data.workerId, url: data.url }
     guildStore.messages.push({
-      type: 'chat', from: 'system', to: 'user',
+      type: 'chat',
+      from: 'system',
+      to: 'user',
       content: `⚿ ${data.workerId} needs Claude auth — visit the URL and paste the code below`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'task-assigned') {
     guildStore.messages.push({
-      type: 'chat', from: 'system', to: 'user',
+      type: 'chat',
+      from: 'system',
+      to: 'user',
       content: `→ ${data.workerId} assigned: ${data.description}`,
       createdAt: new Date().toISOString(),
     })
@@ -353,7 +391,7 @@ onMounted(async () => {
   if (guildId && !claudeAuthPending.value) {
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/pending-auth`, {
-        headers: authStore.authHeaders()
+        headers: authStore.authHeaders(),
       })
       if (res.ok) {
         const items: Array<{ workerId: string; url: string }> = await res.json()
@@ -369,7 +407,11 @@ onMounted(async () => {
 onUnmounted(() => guildStore.removeMessageHandler(handleTaskEvent))
 
 function isToolResponseMsg(msg: { role: string; content: unknown }) {
-  return msg.role === 'user' && Array.isArray(msg.content) && (msg.content as { type: string }[]).every(b => b.type === 'tool_result')
+  return (
+    msg.role === 'user' &&
+    Array.isArray(msg.content) &&
+    (msg.content as { type: string }[]).every((b) => b.type === 'tool_result')
+  )
 }
 
 async function switchToDebug() {
@@ -383,7 +425,7 @@ async function refreshDebug() {
   debugLoading.value = true
   try {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/foreman/context`, {
-      headers: authStore.authHeaders()
+      headers: authStore.authHeaders(),
     })
     if (res.ok) {
       const data = await res.json()
@@ -405,7 +447,7 @@ async function clearContext() {
   try {
     await fetch(`${API_BASE}/guilds/${guildId}/foreman/clear-context`, {
       method: 'POST',
-      headers: authStore.authHeaders()
+      headers: authStore.authHeaders(),
     })
     debugContext.value = []
   } catch (e) {
@@ -431,7 +473,7 @@ function assignIssue(issue: GitHubIssue) {
   inputText.value = msg
   activeTab.value = 'chat'
   nextTick(() => {
-    (document.querySelector('.chat-input') as HTMLInputElement | null)?.focus()
+    ;(document.querySelector('.chat-input') as HTMLInputElement | null)?.focus()
   })
 }
 
@@ -449,12 +491,16 @@ function formatAge(isoStr?: string) {
   return `${Math.floor(diffHours / 24)}d`
 }
 
-watch(messages, async () => {
-  await nextTick()
-  if (messagesEl.value) {
-    messagesEl.value.scrollTop = messagesEl.value.scrollHeight
-  }
-}, { deep: true })
+watch(
+  messages,
+  async () => {
+    await nextTick()
+    if (messagesEl.value) {
+      messagesEl.value.scrollTop = messagesEl.value.scrollHeight
+    }
+  },
+  { deep: true },
+)
 </script>
 
 <style scoped>
@@ -517,11 +563,21 @@ watch(messages, async () => {
   display: inline-block;
 }
 
-.status-dot.idle { background: var(--color-text-dim); }
-.status-dot.thinking { background: var(--color-blue); }
-.status-dot.working { background: var(--color-green); }
-.status-dot.busy { background: var(--color-orange); }
-.status-dot.error { background: var(--color-red); }
+.status-dot.idle {
+  background: var(--color-text-dim);
+}
+.status-dot.thinking {
+  background: var(--color-blue);
+}
+.status-dot.working {
+  background: var(--color-green);
+}
+.status-dot.busy {
+  background: var(--color-orange);
+}
+.status-dot.error {
+  background: var(--color-red);
+}
 
 .minimize-btn {
   font-size: 10px;
@@ -895,9 +951,15 @@ watch(messages, async () => {
   margin-bottom: 2px;
 }
 
-.debug-assistant .debug-role { color: var(--color-teal); }
-.debug-user .debug-role { color: var(--color-brass); }
-.debug-tool-response .debug-role { color: #50c878; }
+.debug-assistant .debug-role {
+  color: var(--color-teal);
+}
+.debug-user .debug-role {
+  color: var(--color-brass);
+}
+.debug-tool-response .debug-role {
+  color: #50c878;
+}
 
 .debug-text {
   color: var(--color-text);
@@ -937,8 +999,12 @@ watch(messages, async () => {
   text-transform: uppercase;
 }
 
-.debug-block-tool_use .debug-block-type { color: #ff8c00; }
-.debug-block-tool_result .debug-block-type { color: #50c878; }
+.debug-block-tool_use .debug-block-type {
+  color: #ff8c00;
+}
+.debug-block-tool_result .debug-block-type {
+  color: #50c878;
+}
 
 .debug-tool-name {
   font-weight: bold;
@@ -975,7 +1041,9 @@ watch(messages, async () => {
 .auth-modal {
   background: var(--color-bg-secondary, #1a1a2e);
   border: 3px solid var(--color-red, #c0392b);
-  box-shadow: 0 0 40px rgba(192, 57, 43, 0.4), 0 0 80px rgba(192, 57, 43, 0.15);
+  box-shadow:
+    0 0 40px rgba(192, 57, 43, 0.4),
+    0 0 80px rgba(192, 57, 43, 0.15);
   width: 520px;
   max-width: calc(100vw - 32px);
   display: flex;

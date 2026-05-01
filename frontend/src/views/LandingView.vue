@@ -54,7 +54,9 @@
           <div class="login-card">
             <div class="login-icon">⚙</div>
             <div class="login-title">SIGN IN TO GET STARTED</div>
-            <div class="login-sub">Connect your GitHub account to create guilds and run agents.</div>
+            <div class="login-sub">
+              Connect your GitHub account to create guilds and run agents.
+            </div>
             <button class="pixel-btn login-btn" :disabled="loggingIn" @click="handleLogin">
               {{ loggingIn ? 'Redirecting...' : 'SIGN IN WITH GITHUB' }}
             </button>
@@ -86,7 +88,10 @@
                 <div class="card-top">
                   <span class="card-id">{{ guild.id }}</span>
                   <span class="card-agents">
-                    <span class="agent-dot" :class="guild.agent_count > 0 ? 'active' : 'empty'"></span>
+                    <span
+                      class="agent-dot"
+                      :class="guild.agent_count > 0 ? 'active' : 'empty'"
+                    ></span>
                     {{ guild.agent_count || 0 }} agent{{ guild.agent_count !== 1 ? 's' : '' }}
                   </span>
                 </div>
@@ -97,7 +102,8 @@
             </div>
           </div>
         </template>
-      </div><!-- end main-panel -->
+      </div>
+      <!-- end main-panel -->
     </div>
 
     <!-- New Session Modal -->
@@ -260,7 +266,8 @@ function sparkleStyle(n: number) {
   border: 6px solid var(--color-brass-dark);
   opacity: 0.12;
 }
-.gear::before, .gear::after {
+.gear::before,
+.gear::after {
   content: '';
   position: absolute;
   background: var(--color-brass-dark);
@@ -282,7 +289,12 @@ function sparkleStyle(n: number) {
 
 .pipe {
   position: absolute;
-  background: linear-gradient(180deg, var(--color-brass-dark) 0%, #6b4f00 50%, var(--color-brass-dark) 100%);
+  background: linear-gradient(
+    180deg,
+    var(--color-brass-dark) 0%,
+    #6b4f00 50%,
+    var(--color-brass-dark) 100%
+  );
   opacity: 0.15;
 }
 .pipe-h {
@@ -290,8 +302,12 @@ function sparkleStyle(n: number) {
   left: 0;
   right: 0;
 }
-.pipe-top { top: 0; }
-.pipe-bottom { bottom: 0; }
+.pipe-top {
+  top: 0;
+}
+.pipe-bottom {
+  bottom: 0;
+}
 
 .sparkle {
   position: absolute;
@@ -302,10 +318,21 @@ function sparkleStyle(n: number) {
   animation: twinkle 2s ease-in-out infinite;
 }
 
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 @keyframes twinkle {
-  0%, 100% { opacity: 0.1; transform: scale(1); }
-  50% { opacity: 0.9; transform: scale(1.6); }
+  0%,
+  100% {
+    opacity: 0.1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.6);
+  }
 }
 
 /* ── Content ── */
@@ -404,7 +431,9 @@ function sparkleStyle(n: number) {
   font-family: var(--font-pixel);
   font-size: 22px;
   color: var(--color-brass-light);
-  text-shadow: 0 0 20px rgba(255, 214, 68, 0.5), 0 0 40px rgba(255, 214, 68, 0.2);
+  text-shadow:
+    0 0 20px rgba(255, 214, 68, 0.5),
+    0 0 40px rgba(255, 214, 68, 0.2);
   letter-spacing: 4px;
   margin-bottom: 8px;
 }
@@ -626,8 +655,13 @@ function sparkleStyle(n: number) {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .card-name {

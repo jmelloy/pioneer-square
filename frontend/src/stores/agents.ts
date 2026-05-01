@@ -69,7 +69,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
   function registerAgent(agentData: RegisterAgentData) {
     if (agentData.agentType === 'foreman') return
-    const existing = agents.value.find(a => a.id === agentData.agentId)
+    const existing = agents.value.find((a) => a.id === agentData.agentId)
     if (existing) {
       existing.state = agentData.state || 'idle'
       existing.name = agentData.agentName || existing.name
@@ -82,20 +82,20 @@ export const useAgentsStore = defineStore('agents', () => {
         workerId: agentData.workerId || null,
         state: agentData.state || 'idle',
         logs: [],
-        joinedAt: agentData.joinedAt || new Date().toISOString()
+        joinedAt: agentData.joinedAt || new Date().toISOString(),
       })
     }
   }
 
   function updateAgentState(agentId: string, state: AgentState, activity?: AgentActivity | null) {
-    const agent = agents.value.find(a => a.id === agentId)
+    const agent = agents.value.find((a) => a.id === agentId)
     if (!agent) return
     agent.state = state
     if (activity !== undefined) agent.activity = activity
   }
 
   function addLog(agentId: string, line: string, timestamp?: string, detail?: any) {
-    const agent = agents.value.find(a => a.id === agentId)
+    const agent = agents.value.find((a) => a.id === agentId)
     if (agent && line) {
       const ts = timestamp || new Date().toISOString()
       agent.logs.push({ line, timestamp: ts, detail: detail || null })
@@ -143,7 +143,7 @@ export const useAgentsStore = defineStore('agents', () => {
       type: 'chat',
       from: 'user',
       to: agentId,
-      content
+      content,
     })
   }
 
@@ -159,7 +159,12 @@ export const useAgentsStore = defineStore('agents', () => {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/agents/${agentId}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ tool, prompt, model: model || undefined, provider: provider || undefined })
+      body: JSON.stringify({
+        tool,
+        prompt,
+        model: model || undefined,
+        provider: provider || undefined,
+      }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
@@ -184,7 +189,10 @@ export const useAgentsStore = defineStore('agents', () => {
     return res.json()
   }
 
-  async function assignTask(workerId: string, { description, issueNumber, issueRepo }: AssignTaskOpts) {
+  async function assignTask(
+    workerId: string,
+    { description, issueNumber, issueRepo }: AssignTaskOpts,
+  ) {
     const guildStore = useGuildStore()
     const guildId = guildStore.currentGuild?.id
     if (!guildId) throw new Error('No active guild')
@@ -196,7 +204,7 @@ export const useAgentsStore = defineStore('agents', () => {
         description,
         issue_number: issueNumber || null,
         issue_repo: issueRepo || null,
-      })
+      }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
@@ -213,7 +221,7 @@ export const useAgentsStore = defineStore('agents', () => {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/workers/${workerId}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ message })
+      body: JSON.stringify({ message }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
@@ -223,17 +231,15 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   function firstIdleWorker() {
-    const workerAgents = agents.value.filter(
-      a => a.workerId && a.state !== 'offline'
-    )
+    const workerAgents = agents.value.filter((a) => a.workerId && a.state !== 'offline')
     const idleAgent =
-      workerAgents.find(a => a.state === 'idle') ||
-      workerAgents.find(a => !['working', 'awaiting-review', 'error'].includes(a.state)) ||
+      workerAgents.find((a) => a.state === 'idle') ||
+      workerAgents.find((a) => !['working', 'awaiting-review', 'error'].includes(a.state)) ||
       workerAgents[0]
     if (idleAgent) return { id: idleAgent.workerId, name: idleAgent.name, state: idleAgent.state }
 
-    const legacy = agents.value.filter(a => a.id.startsWith('w-') && a.state !== 'offline')
-    return legacy.find(a => a.state === 'idle') || legacy[0] || null
+    const legacy = agents.value.filter((a) => a.id.startsWith('w-') && a.state !== 'offline')
+    return legacy.find((a) => a.state === 'idle') || legacy[0] || null
   }
 
   function clearAgents() {
@@ -271,7 +277,7 @@ export const useAgentsStore = defineStore('agents', () => {
           timestamp: r.timestamp,
           detail: r.detail || null,
         }))
-        const agent = agents.value.find(a => a.id === agentId)
+        const agent = agents.value.find((a) => a.id === agentId)
         if (agent) {
           const existing = agent.logs
           agent.logs = [...historical, ...existing]
@@ -287,15 +293,18 @@ export const useAgentsStore = defineStore('agents', () => {
     if (data.type === 'agent-joined') {
       registerAgent(data as RegisterAgentData)
     } else if (data.type === 'agent-state') {
-      updateAgentState(data.agentId, data.state,
-        'activity' in data ? (data.activity as AgentActivity | null) : undefined)
+      updateAgentState(
+        data.agentId,
+        data.state,
+        'activity' in data ? (data.activity as AgentActivity | null) : undefined,
+      )
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
       if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)
       // Route to per-worker log buffer; fall back to agent's workerId if backend didn't send it
-      const wid = data.workerId || (data.agentId
-        ? agents.value.find(a => a.id === data.agentId)?.workerId
-        : null)
+      const wid =
+        data.workerId ||
+        (data.agentId ? agents.value.find((a) => a.id === data.agentId)?.workerId : null)
       if (wid) addWorkerLog(wid, data.line, data.timestamp, data.detail)
     }
   }
@@ -325,6 +334,6 @@ export const useAgentsStore = defineStore('agents', () => {
     messageWorker,
     firstIdleWorker,
     clearAgents,
-    handleWebSocketMessage
+    handleWebSocketMessage,
   }
 })

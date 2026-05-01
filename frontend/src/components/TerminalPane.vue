@@ -17,10 +17,12 @@
 
     <div class="terminal-body" ref="terminalEl">
       <div class="terminal-welcome">
-        <pre>╔══════════════════════════════════════╗
+        <pre>
+╔══════════════════════════════════════╗
 ║    PIONEER SQUARE TERMINAL v1.0      ║
 ║    Agent: {{ padName(agent?.name) }}      ║
-╚══════════════════════════════════════╝</pre>
+╚══════════════════════════════════════╝</pre
+        >
       </div>
       <div v-if="logs.length === 0" class="terminal-empty">
         <span class="cursor-blink">_</span> Waiting for output...
@@ -106,13 +108,12 @@
         :disabled="!runPrompt.trim()"
         @click="handleRun"
         title="Run agent"
-      >▶ RUN</button>
-      <button
-        v-else
-        class="stop-btn pixel-btn"
-        @click="handleStop"
-        title="Stop agent"
-      >■ STOP</button>
+      >
+        ▶ RUN
+      </button>
+      <button v-else class="stop-btn pixel-btn" @click="handleStop" title="Stop agent">
+        ■ STOP
+      </button>
     </div>
 
     <div v-if="runError" class="run-error">{{ runError }}</div>
@@ -133,7 +134,7 @@ const guildStore = useGuildStore()
 const terminalEl = ref<HTMLElement | null>(null)
 const expandedIdx = ref<number | null>(null)
 
-const agent = computed(() => agentsStore.agents.find(a => a.id === props.agentId))
+const agent = computed(() => agentsStore.agents.find((a) => a.id === props.agentId))
 
 function toggleDetail(i: number) {
   expandedIdx.value = expandedIdx.value === i ? null : i
@@ -144,7 +145,12 @@ onMounted(async () => {
   if (guildId) await agentsStore.fetchAgentLogs(guildId, props.agentId)
 })
 const logs = computed(() => agent.value?.logs || [])
-const isRunning = computed(() => agent.value?.state === 'working' || agent.value?.state === 'thinking' || agent.value?.state === 'busy')
+const isRunning = computed(
+  () =>
+    agent.value?.state === 'working' ||
+    agent.value?.state === 'thinking' ||
+    agent.value?.state === 'busy',
+)
 
 const runTool = ref('claude')
 const runPrompt = ref('')
@@ -177,7 +183,7 @@ function linkify(text: string): string {
     .replace(/"/g, '&quot;')
   return escaped.replace(
     /(https?:\/\/[^\s<>"]+)/g,
-    '<a href="$1" target="_blank" rel="noopener noreferrer" class="terminal-link">$1</a>'
+    '<a href="$1" target="_blank" rel="noopener noreferrer" class="terminal-link">$1</a>',
   )
 }
 
@@ -199,7 +205,7 @@ async function handleRun() {
       tool: runTool.value,
       prompt: runPrompt.value.trim(),
       model: runModel.value.trim(),
-      provider: runProvider.value.trim()
+      provider: runProvider.value.trim(),
     })
     runPrompt.value = ''
   } catch (e: any) {
@@ -216,12 +222,16 @@ async function handleStop() {
   }
 }
 
-watch(logs, async () => {
-  await nextTick()
-  if (terminalEl.value) {
-    terminalEl.value.scrollTop = terminalEl.value.scrollHeight
-  }
-}, { deep: true })
+watch(
+  logs,
+  async () => {
+    await nextTick()
+    if (terminalEl.value) {
+      terminalEl.value.scrollTop = terminalEl.value.scrollHeight
+    }
+  },
+  { deep: true },
+)
 </script>
 
 <style scoped>
@@ -271,11 +281,26 @@ watch(logs, async () => {
   letter-spacing: 1px;
 }
 
-.agent-state-badge.idle    { background: rgba(154,128,96,0.2); color: var(--color-text-dim); }
-.agent-state-badge.thinking{ background: rgba(68,153,255,0.2); color: var(--color-blue); }
-.agent-state-badge.working { background: rgba(0,255,136,0.2);  color: var(--color-green); }
-.agent-state-badge.busy    { background: rgba(255,136,68,0.2); color: var(--color-orange); }
-.agent-state-badge.error   { background: rgba(255,51,51,0.2);  color: var(--color-red); }
+.agent-state-badge.idle {
+  background: rgba(154, 128, 96, 0.2);
+  color: var(--color-text-dim);
+}
+.agent-state-badge.thinking {
+  background: rgba(68, 153, 255, 0.2);
+  color: var(--color-blue);
+}
+.agent-state-badge.working {
+  background: rgba(0, 255, 136, 0.2);
+  color: var(--color-green);
+}
+.agent-state-badge.busy {
+  background: rgba(255, 136, 68, 0.2);
+  color: var(--color-orange);
+}
+.agent-state-badge.error {
+  background: rgba(255, 51, 51, 0.2);
+  color: var(--color-red);
+}
 
 .live-indicator {
   font-size: 11px;
@@ -287,8 +312,13 @@ watch(logs, async () => {
 }
 
 @keyframes livePulse {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .terminal-body {
@@ -315,7 +345,10 @@ watch(logs, async () => {
   gap: 4px;
 }
 
-.terminal-entry { display: flex; flex-direction: column; }
+.terminal-entry {
+  display: flex;
+  flex-direction: column;
+}
 
 .terminal-line {
   display: flex;
@@ -328,7 +361,9 @@ watch(logs, async () => {
   cursor: pointer;
   border-radius: 2px;
 }
-.terminal-line--expandable:hover { background: rgba(255,255,255,0.04); }
+.terminal-line--expandable:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
 
 .log-expand-icon {
   font-size: 8px;
@@ -352,8 +387,12 @@ watch(logs, async () => {
   margin-bottom: 4px;
   margin-top: 6px;
 }
-.log-detail-label:first-child { margin-top: 0; }
-.log-detail-label--new { color: var(--color-green); }
+.log-detail-label:first-child {
+  margin-top: 0;
+}
+.log-detail-label--new {
+  color: var(--color-green);
+}
 
 .log-detail-body {
   margin: 0 0 2px;
@@ -364,18 +403,18 @@ watch(logs, async () => {
   word-break: break-all;
   max-height: 300px;
   overflow-y: auto;
-  background: rgba(0,0,0,0.3);
+  background: rgba(0, 0, 0, 0.3);
   border: 1px solid #2a1a05;
   padding: 6px 8px;
 }
 .log-detail-old {
-  background: rgba(180,30,30,0.08);
-  border-color: rgba(220,50,50,0.3);
+  background: rgba(180, 30, 30, 0.08);
+  border-color: rgba(220, 50, 50, 0.3);
   color: #c07070;
 }
 .log-detail-new {
-  background: rgba(0,120,60,0.08);
-  border-color: rgba(0,187,100,0.3);
+  background: rgba(0, 120, 60, 0.08);
+  border-color: rgba(0, 187, 100, 0.3);
   color: #70c090;
 }
 
@@ -385,13 +424,30 @@ watch(logs, async () => {
   font-size: 11px;
 }
 
-.log-content         { color: var(--color-green);    word-break: break-all; }
-.log-content.log-success { color: var(--color-teal); }
-.log-content.log-error   { color: var(--color-red);  }
-.log-content.log-tool    { color: var(--color-amber); }
-.log-content.log-result  { color: var(--color-text-dim); }
-.log-content.log-meta    { color: var(--color-brass-dark); }
-.terminal-link { color: var(--color-teal); text-decoration: underline; cursor: pointer; }
+.log-content {
+  color: var(--color-green);
+  word-break: break-all;
+}
+.log-content.log-success {
+  color: var(--color-teal);
+}
+.log-content.log-error {
+  color: var(--color-red);
+}
+.log-content.log-tool {
+  color: var(--color-amber);
+}
+.log-content.log-result {
+  color: var(--color-text-dim);
+}
+.log-content.log-meta {
+  color: var(--color-brass-dark);
+}
+.terminal-link {
+  color: var(--color-teal);
+  text-decoration: underline;
+  cursor: pointer;
+}
 
 .terminal-prompt {
   margin-top: 8px;
@@ -401,10 +457,19 @@ watch(logs, async () => {
   gap: 2px;
 }
 
-.prompt-user   { color: var(--color-green); }
-.prompt-sep    { color: var(--color-text-dim); }
-.prompt-path   { color: var(--color-blue); }
-.prompt-dollar { color: var(--color-text); margin: 0 4px; }
+.prompt-user {
+  color: var(--color-green);
+}
+.prompt-sep {
+  color: var(--color-text-dim);
+}
+.prompt-path {
+  color: var(--color-blue);
+}
+.prompt-dollar {
+  color: var(--color-text);
+  margin: 0 4px;
+}
 
 .cursor-blink {
   color: var(--color-amber);
@@ -412,8 +477,13 @@ watch(logs, async () => {
 }
 
 @keyframes blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }
 
 /* ── Run bar ──────────────────────────────────────────────────── */
@@ -520,8 +590,13 @@ watch(logs, async () => {
 }
 
 @keyframes stopPulse {
-  0%, 100% { box-shadow: 0 0 0 rgba(255,51,51,0); }
-  50%       { box-shadow: 0 0 8px rgba(255,51,51,0.4); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(255, 51, 51, 0);
+  }
+  50% {
+    box-shadow: 0 0 8px rgba(255, 51, 51, 0.4);
+  }
 }
 
 .run-error {

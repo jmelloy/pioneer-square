@@ -12,18 +12,16 @@
         />
       </template>
       <template v-else>
-        <span class="guild-name-text" @click="startRename" title="Click to rename">{{ currentGuild.name }}</span>
+        <span class="guild-name-text" @click="startRename" title="Click to rename">{{
+          currentGuild.name
+        }}</span>
         <button class="rename-btn" @click="startRename" title="Rename guild">✎</button>
       </template>
     </div>
 
     <div v-if="currentGuild" class="primary-repo-bar">
       <span class="primary-repo-bar-label">Primary repo:</span>
-      <select
-        v-model="primaryRepoValue"
-        class="primary-repo-bar-select"
-        @change="savePrimaryRepo"
-      >
+      <select v-model="primaryRepoValue" class="primary-repo-bar-select" @change="savePrimaryRepo">
         <option value="">— select primary repo —</option>
         <option v-for="repo in ghStore.repos" :key="repo.full_name" :value="repo.full_name">
           {{ repo.full_name }}
@@ -55,7 +53,10 @@
           @click="openTask(task.id)"
         >
           <div class="task-top">
-            <span class="task-dot" :class="'dot-' + (task.state || 'pending').replace(/[^a-z]/g, '-')"></span>
+            <span
+              class="task-dot"
+              :class="'dot-' + (task.state || 'pending').replace(/[^a-z]/g, '-')"
+            ></span>
             <span class="task-name">{{ task.name || task.id }}</span>
           </div>
           <div class="task-meta">
@@ -67,11 +68,20 @@
     </div>
 
     <!-- Workers/Agents hierarchical section -->
-    <div class="workers-section" :class="{ 'workers-section--empty': onlineWorkers.length === 0 && !showSpawnForm }">
+    <div
+      class="workers-section"
+      :class="{ 'workers-section--empty': onlineWorkers.length === 0 && !showSpawnForm }"
+    >
       <div class="section-header">
         <span class="section-label">Workers</span>
-        <span class="section-count" v-if="onlineWorkers.length > 0">{{ onlineWorkers.length }}</span>
-        <button class="spawn-btn" @click="toggleSpawnForm" :title="showSpawnForm ? 'Cancel' : 'Launch a new worker container'">
+        <span class="section-count" v-if="onlineWorkers.length > 0">{{
+          onlineWorkers.length
+        }}</span>
+        <button
+          class="spawn-btn"
+          @click="toggleSpawnForm"
+          :title="showSpawnForm ? 'Cancel' : 'Launch a new worker container'"
+        >
           {{ showSpawnForm ? '✕' : '+' }}
         </button>
       </div>
@@ -102,7 +112,11 @@
         <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
         <input v-model="spawnName" class="spawn-input" type="text" placeholder="auto-generated" />
         <div class="spawn-actions">
-          <button class="pixel-btn spawn-launch-btn" :disabled="spawning || spawnSelectedRepos.length === 0" @click="launchWorker">
+          <button
+            class="pixel-btn spawn-launch-btn"
+            :disabled="spawning || spawnSelectedRepos.length === 0"
+            @click="launchWorker"
+          >
             {{ spawning ? 'Launching…' : 'Launch' }}
           </button>
         </div>
@@ -116,11 +130,7 @@
           <span class="worker-row-state">{{ worker.state }}</span>
         </div>
         <!-- Agent rows under this worker -->
-        <div
-          v-for="agent in agentsForWorker(worker.id)"
-          :key="agent.id"
-          class="agent-row"
-        >
+        <div v-for="agent in agentsForWorker(worker.id)" :key="agent.id" class="agent-row">
           <span class="agent-dot" :class="'wdot-' + agent.state"></span>
           <span class="agent-row-name">{{ agent.name }}</span>
           <div class="agent-actions">
@@ -128,28 +138,43 @@
               class="agent-icon-btn"
               title="Open agent terminal"
               @click.stop="agentsStore.selectAgent(agent.id)"
-            >🤖</button>
+            >
+              🤖
+            </button>
             <button
               class="agent-icon-btn"
               :disabled="!currentTaskForWorker(worker.id)"
               :title="currentTaskForWorker(worker.id) ? 'Open current task' : 'No active task'"
               @click.stop="openAgentTask(worker.id)"
-            >📋</button>
+            >
+              📋
+            </button>
           </div>
         </div>
       </template>
     </div>
 
     <div class="sidebar-footer">
-      <div class="gh-block" @click="showGitHubModal = true" :title="authStore.user ? 'GitHub: ' + authStore.user.login : 'Configure GitHub'">
+      <div
+        class="gh-block"
+        @click="showGitHubModal = true"
+        :title="authStore.user ? 'GitHub: ' + authStore.user.login : 'Configure GitHub'"
+      >
         <div class="gh-inner" :class="{ configured: authStore.isLoggedIn }">
-          <img v-if="authStore.isLoggedIn" :src="authStore.user?.avatar_url" class="gh-avatar" alt="gh" />
+          <img
+            v-if="authStore.isLoggedIn"
+            :src="authStore.user?.avatar_url"
+            class="gh-avatar"
+            alt="gh"
+          />
           <span v-else class="gh-icon">⚙</span>
           <div class="gh-text">
             <span v-if="authStore.isLoggedIn" class="gh-login">{{ authStore.user?.login }}</span>
             <span v-else class="gh-setup">Connect GitHub</span>
             <span class="gh-repos" v-if="authStore.isLoggedIn && ghStore.selectedRepos.length > 0">
-              {{ ghStore.selectedRepos.length }} repo{{ ghStore.selectedRepos.length !== 1 ? 's' : '' }}
+              {{ ghStore.selectedRepos.length }} repo{{
+                ghStore.selectedRepos.length !== 1 ? 's' : ''
+              }}
             </span>
           </div>
         </div>
@@ -190,7 +215,7 @@ const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {
 const showGitHubModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
 const isConnected = computed(() => guildStore.isConnected)
-const onlineWorkers = computed(() => agentsStore.workers.filter(w => w.state !== 'offline'))
+const onlineWorkers = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline'))
 
 const showSpawnForm = ref(false)
 const spawnSelectedRepos = ref<string[]>([])
@@ -230,7 +255,10 @@ async function launchWorker() {
     const res = await fetch(`${API_BASE}/guilds/${currentGuild.value.id}/spawn-worker`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authStore.authHeaders() },
-      body: JSON.stringify({ repos: spawnSelectedRepos.value, name: spawnName.value.trim() || undefined }),
+      body: JSON.stringify({
+        repos: spawnSelectedRepos.value,
+        name: spawnName.value.trim() || undefined,
+      }),
     })
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }))
@@ -248,9 +276,13 @@ const primaryRepoValue = ref('')
 const saveStatus = ref('')
 let saveStatusTimer: ReturnType<typeof setTimeout> | null = null
 
-watch(currentGuild, (guild) => {
-  primaryRepoValue.value = guild?.primary_repo ?? ''
-}, { immediate: true })
+watch(
+  currentGuild,
+  (guild) => {
+    primaryRepoValue.value = guild?.primary_repo ?? ''
+  },
+  { immediate: true },
+)
 
 async function savePrimaryRepo() {
   if (!currentGuild.value) return
@@ -264,7 +296,9 @@ async function savePrimaryRepo() {
     saveStatus.value = 'error'
   } finally {
     if (saveStatusTimer) clearTimeout(saveStatusTimer)
-    saveStatusTimer = setTimeout(() => { saveStatus.value = '' }, 2000)
+    saveStatusTimer = setTimeout(() => {
+      saveStatus.value = ''
+    }, 2000)
   }
 }
 
@@ -340,15 +374,15 @@ function openTask(taskId: string) {
 }
 
 function agentsForWorker(workerId: string) {
-  return agentsStore.agents.filter(a => a.workerId === workerId)
+  return agentsStore.agents.filter((a) => a.workerId === workerId)
 }
 
 function currentTaskForWorker(workerId: string) {
   const active = tasksStore.tasks.filter(
-    t => t.worker_id === workerId && !['done', 'failed'].includes(t.state)
+    (t) => t.worker_id === workerId && !['done', 'failed'].includes(t.state),
   )
   if (active.length) return active[0]
-  return tasksStore.tasks.find(t => t.worker_id === workerId) || null
+  return tasksStore.tasks.find((t) => t.worker_id === workerId) || null
 }
 
 function openAgentTask(workerId: string) {
@@ -418,7 +452,9 @@ function formatTime(isoStr?: string) {
   border-radius: 2px;
   line-height: 1;
   opacity: 0.5;
-  transition: opacity 0.12s, background 0.12s;
+  transition:
+    opacity 0.12s,
+    background 0.12s;
   flex-shrink: 0;
 }
 
@@ -539,14 +575,34 @@ function formatTime(isoStr?: string) {
   border-radius: 2px;
   flex-shrink: 0;
 }
-.dot-pending { background: var(--color-text-dim); }
-.dot-planning { background: var(--color-blue); }
-.dot-working { background: var(--color-green); animation: pulse 0.5s infinite; }
-.dot-awaiting-review { background: var(--color-amber); animation: pulse 1.5s infinite; }
-.dot-done { background: var(--color-teal); }
-.dot-failed { background: var(--color-red); }
-.dot-follow-up { background: var(--color-orange); animation: pulse 0.8s infinite; }
-.dot-followup { background: var(--color-orange); animation: pulse 0.8s infinite; }
+.dot-pending {
+  background: var(--color-text-dim);
+}
+.dot-planning {
+  background: var(--color-blue);
+}
+.dot-working {
+  background: var(--color-green);
+  animation: pulse 0.5s infinite;
+}
+.dot-awaiting-review {
+  background: var(--color-amber);
+  animation: pulse 1.5s infinite;
+}
+.dot-done {
+  background: var(--color-teal);
+}
+.dot-failed {
+  background: var(--color-red);
+}
+.dot-follow-up {
+  background: var(--color-orange);
+  animation: pulse 0.8s infinite;
+}
+.dot-followup {
+  background: var(--color-orange);
+  animation: pulse 0.8s infinite;
+}
 
 .task-name {
   font-size: 11px;
@@ -632,7 +688,9 @@ function formatTime(isoStr?: string) {
   justify-content: center;
   padding: 0;
   opacity: 0.7;
-  transition: opacity 0.12s, background 0.12s;
+  transition:
+    opacity 0.12s,
+    background 0.12s;
 }
 
 .spawn-btn:hover {
@@ -804,8 +862,12 @@ function formatTime(isoStr?: string) {
   flex-shrink: 0;
 }
 
-.save-status-saved { color: var(--color-green); }
-.save-status-error { color: var(--color-red); }
+.save-status-saved {
+  color: var(--color-green);
+}
+.save-status-error {
+  color: var(--color-red);
+}
 
 /* Worker top-level row */
 .worker-row {
@@ -886,7 +948,9 @@ function formatTime(isoStr?: string) {
   padding: 1px 3px;
   border-radius: 2px;
   opacity: 0.6;
-  transition: opacity 0.12s, background 0.12s;
+  transition:
+    opacity 0.12s,
+    background 0.12s;
   line-height: 1;
 }
 
@@ -906,12 +970,27 @@ function formatTime(isoStr?: string) {
   border-radius: 50%;
   flex-shrink: 0;
 }
-.wdot-idle    { background: var(--color-text-dim); }
-.wdot-working { background: var(--color-green); animation: pulse 0.5s infinite; }
-.wdot-thinking { background: var(--color-blue); animation: pulse 1s infinite; }
-.wdot-busy    { background: var(--color-orange); animation: pulse 0.8s infinite; }
-.wdot-error   { background: var(--color-red); }
-.wdot-offline { background: #333; }
+.wdot-idle {
+  background: var(--color-text-dim);
+}
+.wdot-working {
+  background: var(--color-green);
+  animation: pulse 0.5s infinite;
+}
+.wdot-thinking {
+  background: var(--color-blue);
+  animation: pulse 1s infinite;
+}
+.wdot-busy {
+  background: var(--color-orange);
+  animation: pulse 0.8s infinite;
+}
+.wdot-error {
+  background: var(--color-red);
+}
+.wdot-offline {
+  background: #333;
+}
 
 /* ── Footer ── */
 .sidebar-footer {
@@ -1014,7 +1093,12 @@ function formatTime(isoStr?: string) {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 </style>

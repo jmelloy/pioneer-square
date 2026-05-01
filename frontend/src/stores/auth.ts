@@ -11,9 +11,7 @@ export const useAuthStore = defineStore('auth', () => {
   const isLoggedIn = computed(() => !!loginToken.value && !!user.value)
 
   function authHeaders(): Record<string, string> {
-    return loginToken.value
-      ? { Authorization: `Bearer ${loginToken.value}` }
-      : {}
+    return loginToken.value ? { Authorization: `Bearer ${loginToken.value}` } : {}
   }
 
   async function loginWithGitHub() {

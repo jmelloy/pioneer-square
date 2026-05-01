@@ -97,7 +97,7 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   function _upsertTask(data: Task) {
-    const idx = tasks.value.findIndex(t => t.id === data.id)
+    const idx = tasks.value.findIndex((t) => t.id === data.id)
     if (idx >= 0) {
       Object.assign(tasks.value[idx], data)
     } else {
@@ -117,7 +117,7 @@ export const useTasksStore = defineStore('tasks', () => {
         created_at: data.createdAt,
       })
     } else if (data.type === 'task-assigned') {
-      const existing = tasks.value.find(t => t.id === data.taskId)
+      const existing = tasks.value.find((t) => t.id === data.taskId)
       _upsertTask({
         id: data.taskId,
         name: data.name || (data.description || '').slice(0, 60),
@@ -129,7 +129,7 @@ export const useTasksStore = defineStore('tasks', () => {
         ...(existing ? {} : { created_at: new Date().toISOString() }),
       })
     } else if (data.type === 'task-update') {
-      const task = tasks.value.find(t => t.id === data.taskId)
+      const task = tasks.value.find((t) => t.id === data.taskId)
       if (task) {
         if (data.state) task.state = data.state
         if (data.branch) task.branch = data.branch
@@ -138,13 +138,13 @@ export const useTasksStore = defineStore('tasks', () => {
         if (data.worktreePath) task.worktree_path = data.worktreePath
       }
     } else if (data.type === 'task-complete') {
-      const task = tasks.value.find(t => t.id === data.taskId)
+      const task = tasks.value.find((t) => t.id === data.taskId)
       if (task) {
         task.state = 'awaiting-review'
         if (data.branch) task.branch = data.branch
       }
     } else if (data.type === 'task-followup-done') {
-      const task = tasks.value.find(t => t.id === data.taskId)
+      const task = tasks.value.find((t) => t.id === data.taskId)
       if (task) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
       const { taskId, line, timestamp, detail } = data
@@ -176,8 +176,12 @@ export const useTasksStore = defineStore('tasks', () => {
     openedTaskIds.value = []
   }
 
-  function stateLabel(state: TaskState | string) { return STATE_LABELS[state] || state }
-  function stateColor(state: TaskState | string) { return STATE_COLORS[state] || 'dim' }
+  function stateLabel(state: TaskState | string) {
+    return STATE_LABELS[state] || state
+  }
+  function stateColor(state: TaskState | string) {
+    return STATE_COLORS[state] || 'dim'
+  }
 
   return {
     tasks,
