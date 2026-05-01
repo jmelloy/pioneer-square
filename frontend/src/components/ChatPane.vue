@@ -40,23 +40,51 @@
             v-for="(msg, i) in messages"
             :key="i"
             class="chat-message"
-            :class="{
-              'from-user': msg.from === 'user',
-              'from-system': msg.from === 'system',
-              'from-agent': msg.from !== 'user' && msg.from !== 'system'
-            }"
+            :class="messageClasses(msg)"
           >
-            <span class="msg-from">{{ msg.from === 'user' ? 'YOU' : msg.from === 'system' ? 'SYS' : msg.from }}</span>
-            <span
-              v-if="msg.from !== 'user' && msg.from !== 'system'"
-              class="msg-content msg-content--markdown"
-              v-html="renderMarkdown(msg.content)"
-            ></span>
-            <span v-else class="msg-content">{{ msg.content }}</span>
-            <a v-if="msg.prUrl" :href="msg.prUrl" target="_blank" rel="noopener" class="pr-link">
-              Open PR →
-            </a>
-            <span class="msg-time">{{ formatTime(msg.createdAt || msg.created_at) }}</span>
+            <div class="msg-header">
+              <span class="msg-from" :class="'msg-from--' + msgSender(msg)">{{ senderLabel(msg) }}</span>
+              <span class="msg-time">{{ formatTime(msg.createdAt || msg.created_at) }}</span>
+            </div>
+
+            <!-- Tool-use block -->
+            <template v-if="isToolUse(msg)">
+              <div class="tool-block tool-block--use">
+                <button class="tool-block-header" @click.stop="toggleTool(i)">
+                  <span class="tool-name">⚙ {{ msg.toolName || msg.content }}</span>
+                  <span class="tool-expand-icon">{{ expandedTool === i ? '▲' : '▼' }}</span>
+                </button>
+                <div v-if="expandedTool === i" class="tool-body">
+                  <pre class="tool-json">{{ JSON.stringify(msg.toolInput, null, 2) }}</pre>
+                </div>
+              </div>
+            </template>
+
+            <!-- Tool-result block -->
+            <template v-else-if="isToolResult(msg)">
+              <div class="tool-block tool-block--result" :class="{ 'tool-block--error': msg.isError }">
+                <button class="tool-block-header" @click.stop="toggleTool(i)">
+                  <span class="tool-name">{{ msg.isError ? '✗ error' : '↩ result' }}</span>
+                  <span class="tool-expand-icon">{{ expandedTool === i ? '▲' : '▼' }}</span>
+                </button>
+                <div v-if="expandedTool === i" class="tool-body">
+                  <pre class="tool-output">{{ msg.toolOutput || msg.content }}</pre>
+                </div>
+              </div>
+            </template>
+
+            <!-- Regular message content -->
+            <template v-else>
+              <span
+                v-if="msgSender(msg) !== 'user' && msgSender(msg) !== 'system'"
+                class="msg-content msg-content--markdown"
+                v-html="renderMarkdown(msg.content)"
+              ></span>
+              <span v-else class="msg-content">{{ msg.content }}</span>
+              <a v-if="msg.prUrl" :href="msg.prUrl" target="_blank" rel="noopener" class="pr-link">
+                Open PR →
+              </a>
+            </template>
           </div>
         </div>
         <div class="chat-input-row">
@@ -155,7 +183,7 @@ import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
 import { useGitHubStore } from '../stores/github'
 import { useAuthStore } from '../stores/auth'
-import type { GitHubIssue, WSMessage } from '../types'
+import type { ChatMessage, GitHubIssue, WSMessage } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
@@ -177,6 +205,42 @@ let issueRefreshInterval: ReturnType<typeof setInterval> | null = null
 
 const messages = computed(() => guildStore.messages)
 const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
+const expandedTool = ref<number | null>(null)
+
+function msgSender(msg: ChatMessage): string {
+  return (msg.from || msg.from_agent || 'unknown') as string
+}
+
+function isToolUse(msg: ChatMessage): boolean {
+  return msg.role === 'tool_use'
+}
+
+function isToolResult(msg: ChatMessage): boolean {
+  return msg.role === 'tool_result'
+}
+
+function messageClasses(msg: ChatMessage) {
+  const sender = msgSender(msg)
+  return {
+    'from-user': sender === 'user',
+    'from-system': sender === 'system',
+    'from-foreman': sender === 'foreman',
+    'from-agent': sender !== 'user' && sender !== 'system',
+    'msg-tool': isToolUse(msg) || isToolResult(msg),
+  }
+}
+
+function senderLabel(msg: ChatMessage): string {
+  const sender = msgSender(msg)
+  if (sender === 'user') return 'YOU'
+  if (sender === 'system') return 'SYS'
+  if (sender === 'foreman') return '⚙ FOREMAN'
+  return sender.toUpperCase()
+}
+
+function toggleTool(i: number) {
+  expandedTool.value = expandedTool.value === i ? null : i
+}
 
 // Issue assignment pattern: "Work on issue #N in owner/repo: title"
 const ISSUE_PATTERN = /Work on issue #(\d+) in ([^:]+): "(.+)"/
@@ -530,52 +594,91 @@ watch(messages, async () => {
 .chat-message {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   padding: 6px 10px;
   border-radius: 2px;
   max-width: 90%;
 }
 
+/* ── User messages: brass/gold, right-aligned ── */
 .chat-message.from-user {
   align-self: flex-end;
-  background: rgba(232, 170, 0, 0.12);
+  background: rgba(232, 170, 0, 0.15);
   border: 1px solid var(--color-brass-dark);
   border-right: 3px solid var(--color-brass);
 }
 
+/* ── Generic agent messages ── */
 .chat-message.from-agent {
   align-self: flex-start;
   background: rgba(0, 187, 170, 0.08);
-  border: 1px solid rgba(0, 187, 170, 0.3);
+  border: 1px solid rgba(0, 187, 170, 0.25);
   border-left: 3px solid var(--color-teal);
+}
+
+/* ── Foreman messages: distinct teal panel ── */
+.chat-message.from-foreman {
+  align-self: flex-start;
+  background: rgba(0, 187, 170, 0.1);
+  border: 1px solid rgba(0, 187, 170, 0.35);
+  border-left: 3px solid var(--color-teal);
+  max-width: 95%;
+}
+
+/* ── Tool-use / tool-result blocks ── */
+.chat-message.msg-tool {
+  align-self: flex-start;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(232, 170, 0, 0.15);
+  border-left: 3px solid var(--color-brass-dark);
+  max-width: 95%;
+  padding: 5px 8px;
+}
+
+/* ── System messages: muted/subdued ── */
+.chat-message.from-system {
+  align-self: center;
+  background: rgba(80, 80, 80, 0.08);
+  border: 1px solid rgba(120, 120, 120, 0.2);
+  max-width: 95%;
+}
+
+/* ── Message header row (sender + time) ── */
+.msg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .msg-from {
   font-family: var(--font-pixel);
   font-size: 6px;
-  color: var(--color-brass);
   letter-spacing: 1px;
+  color: var(--color-brass);
 }
 
-.from-agent .msg-from {
+.msg-from--user {
+  color: var(--color-brass-light);
+}
+
+.msg-from--foreman {
   color: var(--color-teal);
+  background: rgba(0, 187, 170, 0.15);
+  border: 1px solid rgba(0, 187, 170, 0.4);
+  padding: 1px 5px;
+  letter-spacing: 1.5px;
 }
 
-.chat-message.from-system {
-  align-self: center;
-  background: rgba(255, 204, 0, 0.06);
-  border: 1px solid rgba(255, 204, 0, 0.2);
-  border-left: 3px solid var(--color-amber);
-  max-width: 95%;
-}
-
-.from-system .msg-from {
-  color: var(--color-amber);
+.msg-from--system {
+  color: var(--color-text-dim);
+  font-size: 6px;
 }
 
 .from-system .msg-content {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--color-text-dim);
+  font-style: italic;
 }
 
 .pr-link {
@@ -672,7 +775,88 @@ watch(messages, async () => {
 .msg-time {
   font-size: 9px;
   color: var(--color-text-dim);
-  align-self: flex-end;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* ── Tool blocks ── */
+.tool-block {
+  width: 100%;
+}
+
+.tool-block-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+
+.tool-block-header:hover {
+  opacity: 0.85;
+}
+
+.tool-block--use .tool-block-header {
+  color: var(--color-amber);
+}
+
+.tool-block--result .tool-block-header {
+  color: var(--color-teal);
+}
+
+.tool-block--error .tool-block-header {
+  color: var(--color-red);
+}
+
+.tool-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  flex: 1;
+  text-align: left;
+}
+
+.tool-expand-icon {
+  font-size: 7px;
+  color: var(--color-text-dim);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.tool-body {
+  margin-top: 4px;
+  border-left: 2px solid rgba(232, 170, 0, 0.2);
+  padding-left: 8px;
+}
+
+.tool-block--result .tool-body {
+  border-left-color: rgba(0, 187, 170, 0.2);
+}
+
+.tool-json,
+.tool-output {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(42, 26, 5, 0.8);
+  padding: 6px 8px;
+}
+
+.tool-json {
+  color: var(--color-amber);
+}
+
+.tool-output {
+  color: var(--color-text-dim);
 }
 
 .chat-input-row {

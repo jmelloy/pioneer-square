@@ -437,12 +437,48 @@ async def run_foreman_ai(
             if not tool_uses:
                 break  # end_turn — foreman is done
 
+            # Broadcast tool-use events so the frontend chat shows them live
+            _now = datetime.now(UTC).isoformat()
+            for tu in tool_uses:
+                await broadcast(
+                    guild_id,
+                    {
+                        "type": "chat",
+                        "from": "foreman",
+                        "role": "tool_use",
+                        "to": "user",
+                        "content": f"▶ {tu.name}",
+                        "toolName": tu.name,
+                        "toolInput": dict(tu.input) if tu.input else {},
+                        "toolId": tu.id,
+                        "createdAt": _now,
+                    },
+                )
+
             tool_results = await exec_tools(guild_id, tool_uses)
             # Truncate verbose results before storing/sending
             trimmed = [
                 {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r
                 for r in tool_results
             ]
+
+            # Broadcast tool-result events
+            _now = datetime.now(UTC).isoformat()
+            for result in trimmed:
+                await broadcast(
+                    guild_id,
+                    {
+                        "type": "chat",
+                        "from": "foreman",
+                        "role": "tool_result",
+                        "to": "user",
+                        "content": result.get("content", ""),
+                        "toolId": result.get("tool_use_id"),
+                        "toolOutput": result.get("content", ""),
+                        "isError": result.get("is_error", False),
+                        "createdAt": _now,
+                    },
+                )
             # Persist tool_result turn as a child of the assistant turn
             await _save_turn(
                 guild_id,
