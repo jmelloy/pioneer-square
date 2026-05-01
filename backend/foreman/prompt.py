@@ -54,14 +54,16 @@ def build_system_prompt(
     primary_repo: str | None = None,
 ) -> str:
     """Assemble the full system prompt from live worker/task context."""
-    repo_line = (
-        f"\n\nThe guild's primary repository is `{primary_repo}` — Check it first for context."
-        if primary_repo
-        else ""
-    )
-    return (
-        f"{FOREMAN_SYSTEM}{repo_line}\n\n"
-        f"## Current workers\n```json\n{workers_block}\n```\n\n"
-        f"## Recent tasks\n```json\n{tasks_block}\n```"
-        + (f"\n\n## Context\n{extra_context}" if extra_context else "")
-    )
+    parts = [
+        f"{FOREMAN_SYSTEM}\n\n",
+        f"## Current workers\n```json\n{workers_block}\n```\n\n",
+        f"## Recent tasks\n```json\n{tasks_block}\n```",
+    ]
+    if primary_repo:
+        parts.append(
+            f"\n\nThe primary repository for this guild is `{primary_repo}`."
+            " Check it first when searching for issues."
+        )
+    if extra_context:
+        parts.append(f"\n\n## Context\n{extra_context}")
+    return "".join(parts)

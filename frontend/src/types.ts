@@ -67,6 +67,7 @@ export interface Task {
 export interface Guild {
   id: string
   name?: string
+  primary_repo?: string | null
   agents?: Array<{
     id: string
     name: string

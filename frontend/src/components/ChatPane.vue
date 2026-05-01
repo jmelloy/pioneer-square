@@ -59,6 +59,29 @@
             <span class="msg-time">{{ formatTime(msg.createdAt || msg.created_at) }}</span>
           </div>
         </div>
+        <!-- Claude auth code panel — shown when a worker needs auth -->
+        <div v-if="claudeAuthPending" class="auth-panel">
+          <div class="auth-header">⚿ CLAUDE AUTH REQUIRED — {{ claudeAuthPending.workerId }}</div>
+          <div class="auth-url-row">
+            <span class="auth-label">URL:</span>
+            <a :href="claudeAuthPending.url" target="_blank" rel="noopener" class="auth-link">
+              {{ claudeAuthPending.url }}
+            </a>
+          </div>
+          <div class="auth-input-row">
+            <input
+              v-model="authCodeInput"
+              class="auth-input"
+              placeholder="Paste auth code here..."
+              @keydown.enter="submitAuthCode"
+              autofocus
+            />
+            <button class="pixel-btn auth-btn" @click="submitAuthCode" :disabled="!authCodeInput.trim()">
+              ↵ Submit
+            </button>
+          </div>
+        </div>
+
         <div class="chat-input-row">
           <input
             v-model="inputText"
@@ -185,6 +208,8 @@ const authStore = useAuthStore()
 
 const minimized = ref(false)
 const inputText = ref('')
+const authCodeInput = ref('')
+const claudeAuthPending = ref<{ workerId: string; url: string } | null>(null)
 const messagesEl = ref<HTMLElement | null>(null)
 const issuesEl = ref<HTMLElement | null>(null)
 const debugEl = ref<HTMLElement | null>(null)
@@ -256,6 +281,19 @@ async function sendMessage() {
   }
 }
 
+function submitAuthCode() {
+  const pending = claudeAuthPending.value
+  const code = authCodeInput.value.trim()
+  if (!pending || !code) return
+  guildStore.sendMessage({
+    type: 'worker-auth-response',
+    workerId: pending.workerId,
+    code,
+  })
+  claudeAuthPending.value = null
+  authCodeInput.value = ''
+}
+
 // Listen for task lifecycle + escalation broadcasts
 function handleTaskEvent(data: WSMessage) {
   if (data.type === 'task-complete') {
@@ -271,6 +309,13 @@ function handleTaskEvent(data: WSMessage) {
     guildStore.messages.push({
       type: 'chat', from: 'system', to: 'user',
       content: `⚠ ${data.workerId} needs attention on: "${data.description}"`,
+      createdAt: new Date().toISOString(),
+    })
+  } else if (data.type === 'claude-auth-required') {
+    claudeAuthPending.value = { workerId: data.workerId, url: data.url }
+    guildStore.messages.push({
+      type: 'chat', from: 'system', to: 'user',
+      content: `⚿ ${data.workerId} needs Claude auth — visit the URL and paste the code below`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'task-assigned') {
@@ -866,6 +911,91 @@ watch(messages, async () => {
   font-size: 9px;
   max-height: 80px;
   overflow-y: auto;
+}
+
+/* ── Claude auth panel ── */
+.auth-panel {
+  border-top: 2px solid var(--color-red, #c0392b);
+  background: rgba(192, 57, 43, 0.08);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.auth-header {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 1px;
+  color: var(--color-red, #e74c3c);
+  text-shadow: 0 0 6px rgba(231, 76, 60, 0.5);
+}
+
+.auth-url-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 10px;
+}
+
+.auth-label {
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.auth-link {
+  color: var(--color-teal);
+  text-decoration: none;
+  word-break: break-all;
+  line-height: 1.3;
+}
+
+.auth-link:hover {
+  text-decoration: underline;
+}
+
+.auth-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.auth-input {
+  flex: 1;
+  background: var(--color-bg);
+  border: 2px solid var(--color-red, #c0392b);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 8px;
+  outline: none;
+}
+
+.auth-input:focus {
+  border-color: var(--color-red, #e74c3c);
+  box-shadow: 0 0 8px rgba(231, 76, 60, 0.35);
+}
+
+.auth-input::placeholder {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
+.auth-btn {
+  padding: 5px 10px;
+  font-size: 10px;
+  border-color: var(--color-red, #c0392b);
+  color: var(--color-red, #e74c3c);
+}
+
+.auth-btn:hover:not(:disabled) {
+  background: rgba(192, 57, 43, 0.2);
+}
+
+.auth-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
 }
 
 @media (max-width: 1024px) {

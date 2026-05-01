@@ -13,7 +13,7 @@ class Guild(Base):
     created_at = Column(Text, nullable=False)
     name = Column(Text)
     github_user_id = Column(Text)
-    primary_repo = Column(Text)
+    primary_repo = Column(Text, nullable=True)
 
 
 class Agent(Base):
