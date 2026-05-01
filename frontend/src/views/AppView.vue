@@ -1,8 +1,11 @@
 <template>
   <div class="app-layout" :data-tab="activeTab">
-    <GuildSidebar />
-    <MainView />
-    <ChatPane />
+    <TopBar />
+    <div class="app-body">
+      <GuildSidebar />
+      <MainView />
+      <ChatPane />
+    </div>
     <nav class="mobile-tab-bar">
       <button class="tab-btn" :class="{ active: activeTab === 'tasks' }" @click="activeTab = 'tasks'">
         <span class="tab-icon">≡</span>
@@ -31,6 +34,7 @@ import { useTasksStore } from '../stores/tasks'
 import GuildSidebar from '../components/GuildSidebar.vue'
 import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
+import TopBar from '../components/TopBar.vue'
 
 const props = defineProps<{ guildId?: string }>()
 
@@ -137,10 +141,18 @@ watch(
 <style>
 .app-layout {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   width: 100vw;
   overflow: hidden;
   background: var(--color-bg);
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .mobile-tab-bar {
@@ -197,20 +209,20 @@ watch(
     text-transform: uppercase;
   }
 
-  /* Each pane takes the full screen (minus tab bar) and is hidden unless active */
+  /* Each pane takes the full screen (minus top bar + bottom tab bar) and is hidden unless active */
   .sidebar,
   .main-view,
   .chat-pane {
     position: fixed !important;
-    top: 0;
+    top: 44px;
     left: 0;
     right: 0;
     bottom: 52px;
     width: 100vw !important;
     min-width: 0 !important;
     max-width: 100vw !important;
-    height: calc(100dvh - 52px) !important;
-    max-height: calc(100dvh - 52px) !important;
+    height: calc(100dvh - 96px) !important;
+    max-height: calc(100dvh - 96px) !important;
     display: none !important;
   }
 
