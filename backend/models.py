@@ -122,7 +122,7 @@ class ForemanTurn(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     guild_id = Column(Text, nullable=False)
     user_id = Column(Text, nullable=False)
-    role = Column(Text, nullable=False)  # "user" | "assistant"
+    role = Column(Text, nullable=False)  # "user" | "assistant" | "system"
     content_json = Column(Text, nullable=False)  # JSON-serialized content blocks
     # 1 if this "user" turn carries tool_results (not human input); 0 otherwise
     is_tool_response = Column(Integer, nullable=False, server_default="0")
