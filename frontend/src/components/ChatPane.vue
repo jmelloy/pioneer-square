@@ -7,6 +7,7 @@
           <span class="status-dot" :class="foreman.state"></span>
           {{ foreman.state }}
         </span>
+        <span v-if="pollLabel" class="poll-indicator">⏱ {{ pollLabel }}</span>
         <span class="minimize-btn">{{ minimized ? '▲' : '▼' }}</span>
       </div>
     </div>
@@ -203,6 +204,21 @@ const activeTab = ref<'chat' | 'issues'>('chat')
 const ISSUE_REFRESH_MS = 3 * 60 * 1000
 let issueRefreshInterval: ReturnType<typeof setInterval> | null = null
 
+// Poll countdown: epoch ms when next foreman check fires, plus a tick counter
+// to force the computed to re-evaluate every 30 s.
+const nextPollAt = ref<number | null>(null)
+const pollTick = ref(0)
+let pollCountdownTimer: ReturnType<typeof setInterval> | null = null
+
+const pollLabel = computed(() => {
+  void pollTick.value  // subscribe so re-render fires on each tick
+  if (nextPollAt.value === null) return ''
+  const remaining = Math.max(0, Math.ceil((nextPollAt.value - Date.now()) / 1000))
+  if (remaining <= 0) return 'checking...'
+  const mins = Math.ceil(remaining / 60)
+  return `next check in ${mins}m`
+})
+
 const messages = computed(() => guildStore.messages)
 const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
 const expandedTool = ref<number | null>(null)
@@ -357,6 +373,9 @@ function handleTaskEvent(data: WSMessage) {
       content: `→ ${data.workerId} assigned: ${data.description}`,
       createdAt: new Date().toISOString(),
     })
+  } else if (data.type === 'foreman-poll-status') {
+    const secs = typeof data.nextCheckIn === 'number' ? data.nextCheckIn : null
+    nextPollAt.value = secs !== null ? Date.now() + secs * 1000 : null
   }
 }
 
@@ -385,12 +404,18 @@ onMounted(async () => {
   if (ghStore.isConfigured) {
     issueRefreshInterval = setInterval(() => refreshIssues(true), ISSUE_REFRESH_MS)
   }
+  // Increment tick every 30 s to keep the poll countdown label current.
+  pollCountdownTimer = setInterval(() => { pollTick.value++ }, 30_000)
 })
 onUnmounted(() => {
   guildStore.removeMessageHandler(handleTaskEvent)
   if (issueRefreshInterval !== null) {
     clearInterval(issueRefreshInterval)
     issueRefreshInterval = null
+  }
+  if (pollCountdownTimer !== null) {
+    clearInterval(pollCountdownTimer)
+    pollCountdownTimer = null
   }
 })
 
@@ -506,6 +531,13 @@ watch(messages, async () => {
 .status-dot.working { background: var(--color-green); }
 .status-dot.busy { background: var(--color-orange); }
 .status-dot.error { background: var(--color-red); }
+
+.poll-indicator {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  opacity: 0.7;
+  white-space: nowrap;
+}
 
 .minimize-btn {
   font-size: 10px;
