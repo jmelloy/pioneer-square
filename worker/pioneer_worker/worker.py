@@ -43,6 +43,8 @@ class _AgentSlot:
         # Last state we told the backend about; resent on WS reconnect so the
         # backend (and frontend) don't show the agent stuck offline.
         self.state: str = "idle"
+        # Fine-grained activity within the "working" state (reading/editing/etc.)
+        self.activity: Optional[str] = None
 
 
 class Worker:
@@ -261,14 +263,28 @@ class Worker:
             if detail:
                 msg["detail"] = detail
             await self._send(msg)
+            # Emit a granular agent-state update when activity changes
+            if detail:
+                new_activity = detail.get("activity")
+                if new_activity and new_activity != slot.activity:
+                    slot.activity = new_activity
+                    await self._send({
+                        "type": "agent-state",
+                        "agentId": slot.agent_id,
+                        "state": slot.state,
+                        "activity": new_activity,
+                    })
         return _emit_task
 
     async def _set_state(self, state: str, slot: _AgentSlot) -> None:
         slot.state = state
+        if state != "working":
+            slot.activity = None
         await self._send({
             "type": "agent-state",
             "agentId": slot.agent_id,
             "state": state,
+            "activity": slot.activity,
         })
 
     async def _join(self) -> None:

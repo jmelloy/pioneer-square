@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
 import { useAuthStore } from './auth'
-import type { Agent, AgentState, LogEntry, Worker, WSMessage } from '../types'
+import type { Agent, AgentActivity, AgentState, LogEntry, Worker, WSMessage } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
@@ -87,9 +87,11 @@ export const useAgentsStore = defineStore('agents', () => {
     }
   }
 
-  function updateAgentState(agentId: string, state: AgentState) {
+  function updateAgentState(agentId: string, state: AgentState, activity?: AgentActivity | null) {
     const agent = agents.value.find(a => a.id === agentId)
-    if (agent) agent.state = state
+    if (!agent) return
+    agent.state = state
+    if (activity !== undefined) agent.activity = activity
   }
 
   function addLog(agentId: string, line: string, timestamp?: string, detail?: any) {
@@ -285,7 +287,8 @@ export const useAgentsStore = defineStore('agents', () => {
     if (data.type === 'agent-joined') {
       registerAgent(data as RegisterAgentData)
     } else if (data.type === 'agent-state') {
-      updateAgentState(data.agentId, data.state)
+      updateAgentState(data.agentId, data.state,
+        'activity' in data ? (data.activity as AgentActivity | null) : undefined)
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
       if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)

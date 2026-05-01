@@ -7,6 +7,15 @@ export type AgentState =
   | 'offline'
   | 'awaiting-review'
 
+export type AgentActivity =
+  | 'reading'
+  | 'editing'
+  | 'running'
+  | 'searching'
+  | 'fetching'
+  | 'thinking'
+  | 'planning'
+
 export type AgentType = 'foreman' | 'worker' | string
 
 export interface LogDetail {
@@ -29,6 +38,7 @@ export interface Agent {
   type: AgentType
   workerId: string | null
   state: AgentState
+  activity?: AgentActivity | null
   logs: LogEntry[]
   joinedAt: string
 }
