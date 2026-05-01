@@ -53,12 +53,13 @@ export const useGitHubStore = defineStore('github', () => {
     localStorage.setItem('gh_repos', JSON.stringify(repoFullNames))
   }
 
-  async function fetchIssues() {
-    if (!token.value || selectedRepos.value.length === 0) return []
-    loading.value = true
+  async function fetchIssues(repos?: string[], silent = false) {
+    const reposToFetch = repos ?? selectedRepos.value
+    if (!token.value || reposToFetch.length === 0) return []
+    if (!silent) loading.value = true
     try {
       const allIssues = await Promise.all(
-        selectedRepos.value.map(async (repoName) => {
+        reposToFetch.map(async (repoName) => {
           const res = await fetch(
             `${GH_API}/repos/${repoName}/issues?state=open&per_page=30&sort=created&direction=desc`,
             { headers: ghHeaders(token.value) }
@@ -81,7 +82,7 @@ export const useGitHubStore = defineStore('github', () => {
       error.value = e.message
       return []
     } finally {
-      loading.value = false
+      if (!silent) loading.value = false
     }
   }
 
