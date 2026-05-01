@@ -28,11 +28,6 @@
           Issues
           <span v-if="ghStore.issues.length" class="badge">{{ ghStore.issues.length }}</span>
         </button>
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'debug' }"
-          @click.stop="switchToDebug"
-        >Debug</button>
       </div>
 
       <!-- Chat tab -->
@@ -52,7 +47,12 @@
             }"
           >
             <span class="msg-from">{{ msg.from === 'user' ? 'YOU' : msg.from === 'system' ? 'SYS' : msg.from }}</span>
-            <span class="msg-content">{{ msg.content }}</span>
+            <span
+              v-if="msg.from !== 'user' && msg.from !== 'system'"
+              class="msg-content msg-content--markdown"
+              v-html="renderMarkdown(msg.content)"
+            ></span>
+            <span v-else class="msg-content">{{ msg.content }}</span>
             <a v-if="msg.prUrl" :href="msg.prUrl" target="_blank" rel="noopener" class="pr-link">
               Open PR →
             </a>
@@ -111,59 +111,6 @@
         </div>
       </template>
 
-      <!-- Debug tab -->
-      <template v-else-if="activeTab === 'debug'">
-        <div class="debug-toolbar">
-          <span class="debug-count">{{ debugContext.length }} msg{{ debugContext.length !== 1 ? 's' : '' }} in context</span>
-          <button class="pixel-btn refresh-btn" @click="refreshDebug" :disabled="debugLoading">
-            {{ debugLoading ? '...' : '↻' }}
-          </button>
-          <button class="pixel-btn clear-btn" @click="clearContext" :disabled="debugClearing">
-            {{ debugClearing ? '...' : 'CLR CTX' }}
-          </button>
-        </div>
-        <div class="debug-messages" ref="debugEl">
-          <div v-if="debugContext.length === 0 && !debugLoading" class="chat-empty">
-            No context — foreman hasn't run yet.
-          </div>
-          <div v-if="debugLoading" class="chat-empty">Loading...</div>
-          <div
-            v-for="(msg, i) in debugContext"
-            :key="i"
-            class="debug-msg"
-            :class="msg.role === 'assistant' ? 'debug-assistant' : isToolResponseMsg(msg) ? 'debug-tool-response' : 'debug-user'"
-          >
-            <span class="debug-role">{{ isToolResponseMsg(msg) ? 'TOOL RESPONSE' : msg.role.toUpperCase() }}</span>
-            <template v-if="typeof msg.content === 'string'">
-              <span class="debug-text">{{ msg.content }}</span>
-            </template>
-            <template v-else>
-              <div
-                v-for="(block, bi) in msg.content"
-                :key="bi"
-                class="debug-block"
-                :class="`debug-block-${block.type}`"
-              >
-                <span class="debug-block-type">{{ block.type }}</span>
-                <template v-if="block.type === 'text'">
-                  <span class="debug-text">{{ block.text }}</span>
-                </template>
-                <template v-else-if="block.type === 'tool_use'">
-                  <span class="debug-tool-name">{{ block.name }}</span>
-                  <pre class="debug-pre">{{ JSON.stringify(block.input, null, 2) }}</pre>
-                </template>
-                <template v-else-if="block.type === 'tool_result'">
-                  <span class="debug-tool-id">id:{{ block.tool_use_id?.slice(-6) }}</span>
-                  <pre class="debug-pre">{{ typeof block.content === 'string' ? block.content : JSON.stringify(block.content) }}</pre>
-                </template>
-                <template v-else>
-                  <pre class="debug-pre">{{ JSON.stringify(block) }}</pre>
-                </template>
-              </div>
-            </template>
-          </div>
-        </div>
-      </template>
     </div>
   </div>
 
@@ -202,6 +149,8 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
 import { useGitHubStore } from '../stores/github'
@@ -221,12 +170,7 @@ const authCodeInput = ref('')
 const claudeAuthPending = ref<{ workerId: string; url: string } | null>(null)
 const messagesEl = ref<HTMLElement | null>(null)
 const issuesEl = ref<HTMLElement | null>(null)
-const debugEl = ref<HTMLElement | null>(null)
-const activeTab = ref<'chat' | 'issues' | 'debug'>('chat')
-
-const debugContext = ref<any[]>([])
-const debugLoading = ref(false)
-const debugClearing = ref(false)
+const activeTab = ref<'chat' | 'issues'>('chat')
 
 const ISSUE_REFRESH_MS = 3 * 60 * 1000
 let issueRefreshInterval: ReturnType<typeof setInterval> | null = null
@@ -236,6 +180,11 @@ const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'
 
 // Issue assignment pattern: "Work on issue #N in owner/repo: title"
 const ISSUE_PATTERN = /Work on issue #(\d+) in ([^:]+): "(.+)"/
+
+function renderMarkdown(text: string): string {
+  const html = marked.parse(text, { async: false }) as string
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
+}
 
 function toggleMinimize() {
   minimized.value = !minimized.value
@@ -380,53 +329,6 @@ onUnmounted(() => {
     issueRefreshInterval = null
   }
 })
-
-function isToolResponseMsg(msg: { role: string; content: unknown }) {
-  return msg.role === 'user' && Array.isArray(msg.content) && (msg.content as { type: string }[]).every(b => b.type === 'tool_result')
-}
-
-async function switchToDebug() {
-  activeTab.value = 'debug'
-  await refreshDebug()
-}
-
-async function refreshDebug() {
-  const guildId = guildStore.currentGuild?.id
-  if (!guildId) return
-  debugLoading.value = true
-  try {
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/foreman/context`, {
-      headers: authStore.authHeaders()
-    })
-    if (res.ok) {
-      const data = await res.json()
-      debugContext.value = data.messages || []
-    }
-  } catch (e) {
-    console.error('Failed to load foreman context', e)
-  } finally {
-    debugLoading.value = false
-    await nextTick()
-    if (debugEl.value) debugEl.value.scrollTop = debugEl.value.scrollHeight
-  }
-}
-
-async function clearContext() {
-  const guildId = guildStore.currentGuild?.id
-  if (!guildId) return
-  debugClearing.value = true
-  try {
-    await fetch(`${API_BASE}/guilds/${guildId}/foreman/clear-context`, {
-      method: 'POST',
-      headers: authStore.authHeaders()
-    })
-    debugContext.value = []
-  } catch (e) {
-    console.error('Failed to clear foreman context', e)
-  } finally {
-    debugClearing.value = false
-  }
-}
 
 function _primaryRepoList(): string[] | undefined {
   const repo = guildStore.currentGuild?.primary_repo
@@ -700,6 +602,73 @@ watch(messages, async () => {
   word-break: break-word;
 }
 
+.msg-content--markdown :deep(p) {
+  margin: 0 0 6px;
+}
+.msg-content--markdown :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.msg-content--markdown :deep(ul),
+.msg-content--markdown :deep(ol) {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}
+.msg-content--markdown :deep(li) {
+  margin-bottom: 2px;
+}
+.msg-content--markdown :deep(code) {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--color-brass-dark);
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--color-amber);
+}
+.msg-content--markdown :deep(pre) {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--color-brass-dark);
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 4px 0;
+}
+.msg-content--markdown :deep(pre code) {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 10px;
+  color: var(--color-green);
+}
+.msg-content--markdown :deep(h1),
+.msg-content--markdown :deep(h2),
+.msg-content--markdown :deep(h3) {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  letter-spacing: 1px;
+  color: var(--color-teal);
+  margin: 6px 0 4px;
+  text-transform: uppercase;
+}
+.msg-content--markdown :deep(strong) {
+  color: var(--color-amber);
+  font-weight: bold;
+}
+.msg-content--markdown :deep(em) {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+.msg-content--markdown :deep(a) {
+  color: var(--color-teal);
+  text-decoration: underline;
+}
+.msg-content--markdown :deep(blockquote) {
+  border-left: 3px solid var(--color-brass-dark);
+  margin: 4px 0;
+  padding: 2px 8px;
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
 .msg-time {
   font-size: 9px;
   color: var(--color-text-dim);
@@ -842,143 +811,6 @@ watch(messages, async () => {
   color: var(--color-text-dim);
 }
 
-/* ── Debug tab ── */
-.debug-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--color-brass-dark);
-  flex-shrink: 0;
-}
-
-.debug-count {
-  font-size: 10px;
-  color: var(--color-text-dim);
-  flex: 1;
-}
-
-.clear-btn {
-  font-size: 7px;
-  padding: 3px 6px;
-  border-color: var(--color-red, #c0392b);
-  color: var(--color-red, #c0392b);
-}
-
-.clear-btn:hover {
-  background: rgba(192, 57, 43, 0.15);
-}
-
-.debug-messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 180px;
-  max-height: 380px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-
-.debug-msg {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 5px 8px;
-  border-radius: 2px;
-}
-
-.debug-assistant {
-  background: rgba(0, 187, 170, 0.06);
-  border-left: 3px solid var(--color-teal);
-}
-
-.debug-user {
-  background: rgba(232, 170, 0, 0.06);
-  border-left: 3px solid var(--color-brass-dark);
-}
-
-.debug-tool-response {
-  background: rgba(80, 200, 120, 0.06);
-  border-left: 3px solid #50c878;
-}
-
-.debug-role {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
-  color: var(--color-text-dim);
-  margin-bottom: 2px;
-}
-
-.debug-assistant .debug-role { color: var(--color-teal); }
-.debug-user .debug-role { color: var(--color-brass); }
-.debug-tool-response .debug-role { color: #50c878; }
-
-.debug-text {
-  color: var(--color-text);
-  line-height: 1.4;
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-.debug-block {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 3px 5px;
-  border-radius: 2px;
-  margin-top: 2px;
-}
-
-.debug-block-tool_use {
-  background: rgba(255, 140, 0, 0.1);
-  border: 1px solid rgba(255, 140, 0, 0.25);
-}
-
-.debug-block-tool_result {
-  background: rgba(80, 200, 120, 0.07);
-  border: 1px solid rgba(80, 200, 120, 0.2);
-}
-
-.debug-block-text {
-  background: transparent;
-}
-
-.debug-block-type {
-  font-family: var(--font-pixel);
-  font-size: 5px;
-  letter-spacing: 1px;
-  color: var(--color-text-dim);
-  text-transform: uppercase;
-}
-
-.debug-block-tool_use .debug-block-type { color: #ff8c00; }
-.debug-block-tool_result .debug-block-type { color: #50c878; }
-
-.debug-tool-name {
-  font-weight: bold;
-  color: #ff8c00;
-  font-size: 11px;
-}
-
-.debug-tool-id {
-  font-size: 9px;
-  color: #50c878;
-}
-
-.debug-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: var(--color-text-dim);
-  font-size: 9px;
-  max-height: 80px;
-  overflow-y: auto;
-}
-
 /* ── Claude auth modal (teleported to body) ── */
 .auth-modal-overlay {
   position: fixed;
@@ -1112,11 +944,6 @@ watch(messages, async () => {
   }
 
   .issues-list {
-    min-height: 0;
-    max-height: none;
-  }
-
-  .debug-messages {
     min-height: 0;
     max-height: none;
   }

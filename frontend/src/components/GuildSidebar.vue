@@ -122,21 +122,6 @@
     </div>
 
     <div class="sidebar-footer">
-      <button
-        v-if="authStore.isLoggedIn"
-        class="gh-config-btn"
-        @click="showGitHubModal = true"
-        :title="'GitHub: ' + authStore.user?.login"
-      >
-        <span class="gh-icon">⚙</span>
-        <span class="gh-text">
-          Configure GitHub
-          <span v-if="ghStore.selectedRepos.length > 0" class="gh-repos">
-            ({{ ghStore.selectedRepos.length }} repo{{ ghStore.selectedRepos.length !== 1 ? 's' : '' }})
-          </span>
-        </span>
-      </button>
-
       <div class="connection-status" :class="{ connected: isConnected }">
         <span class="status-dot"></span>
         {{ isConnected ? 'Connected' : 'Disconnected' }}
@@ -144,7 +129,6 @@
     </div>
   </aside>
 
-  <GitHubConfigModal v-if="showGitHubModal" @close="showGitHubModal = false" />
 </template>
 
 <script setup lang="ts">
@@ -155,7 +139,6 @@ import { useAuthStore } from '../stores/auth'
 import { useTasksStore } from '../stores/tasks'
 import { useAgentsStore } from '../stores/agents'
 import type { Task } from '../types'
-import GitHubConfigModal from './GitHubConfigModal.vue'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
@@ -167,7 +150,6 @@ const agentsStore = useAgentsStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
 
-const showGitHubModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
 const isConnected = computed(() => guildStore.isConnected)
 const onlineWorkers = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline'))
@@ -778,45 +760,6 @@ function formatTime(isoStr?: string) {
   border-top: 2px solid var(--color-brass-dark);
   background: var(--color-bg-tertiary);
   flex-shrink: 0;
-}
-
-/* ── GitHub config button ── */
-.gh-config-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 9px;
-  background: transparent;
-  border: 1px solid var(--color-brass-dark);
-  border-radius: 2px;
-  cursor: pointer;
-  transition: all 0.15s;
-  width: 100%;
-  text-align: left;
-}
-
-.gh-config-btn:hover {
-  border-color: var(--color-brass);
-  background: rgba(232, 170, 0, 0.06);
-}
-
-.gh-icon {
-  font-size: 14px;
-  color: var(--color-brass-dark);
-  flex-shrink: 0;
-}
-
-.gh-text {
-  font-size: 11px;
-  color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.gh-repos {
-  font-size: 9px;
-  color: var(--color-text-dim);
 }
 
 /* ── Connection status ── */

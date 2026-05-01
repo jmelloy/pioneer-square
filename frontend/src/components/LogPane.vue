@@ -923,7 +923,7 @@ function lineClass(line: string) {
   font-style: italic;
 }
 .terminal-link {
-  color: var(--color-teal);
+  color: var(--color-blue);
   text-decoration: underline;
   cursor: pointer;
 }

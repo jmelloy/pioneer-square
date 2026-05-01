@@ -15,14 +15,25 @@
 
     <div class="top-bar-spacer"></div>
 
-    <div
+    <button
       v-if="authStore.isLoggedIn"
       class="user-pill"
-      :title="'Signed in as ' + authStore.user?.login"
+      :title="'GitHub settings for ' + authStore.user?.login"
+      @click="showGitHubModal = true"
     >
       <img v-if="authStore.user?.avatar_url" :src="authStore.user.avatar_url" class="user-avatar" alt="" />
       <span class="user-login">{{ authStore.user?.login }}</span>
-    </div>
+    </button>
+
+    <button
+      v-if="currentGuild"
+      class="debug-btn"
+      :class="{ active: debugActive }"
+      @click="emit('toggle-debug')"
+      title="Debug: foreman context"
+    >
+      <span class="debug-icon">⌥</span>
+    </button>
 
     <button
       v-if="currentGuild"
@@ -81,6 +92,8 @@
       </div>
     </div>
   </header>
+
+  <GitHubConfigModal v-if="showGitHubModal" @close="showGitHubModal = false" />
 </template>
 
 <script setup lang="ts">
@@ -89,6 +102,10 @@ import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useAuthStore } from '../stores/auth'
+import GitHubConfigModal from './GitHubConfigModal.vue'
+
+defineProps<{ debugActive?: boolean }>()
+const emit = defineEmits<{ 'toggle-debug': [] }>()
 
 const router = useRouter()
 const guildStore = useGuildStore()
@@ -97,6 +114,7 @@ const authStore = useAuthStore()
 
 const currentGuild = computed(() => guildStore.currentGuild)
 
+const showGitHubModal = ref(false)
 const showSettings = ref(false)
 const settingsBtnRef = ref<HTMLElement | null>(null)
 const popoverRef = ref<HTMLElement | null>(null)
@@ -264,6 +282,13 @@ function goHome() {
   border: 1px solid var(--color-brass-dark);
   border-radius: 2px;
   flex-shrink: 0;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.user-pill:hover {
+  border-color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.06);
 }
 
 .user-avatar {
@@ -280,6 +305,34 @@ function goHome() {
   max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.debug-btn {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text-dim);
+  cursor: pointer;
+  width: 30px;
+  height: 30px;
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+.debug-btn:hover,
+.debug-btn.active {
+  border-color: var(--color-teal);
+  background: rgba(0, 187, 170, 0.1);
+  color: var(--color-teal);
+}
+
+.debug-icon {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .settings-btn {
