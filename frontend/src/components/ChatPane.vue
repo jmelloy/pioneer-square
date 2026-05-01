@@ -52,8 +52,8 @@
             <template v-if="isToolUse(msg)">
               <div class="tool-block tool-block--use">
                 <button class="tool-block-header" @click.stop="toggleTool(i)">
-                  <span class="tool-name">⚙ {{ msg.toolName || msg.content }}</span>
-                  <span class="tool-expand-icon">{{ expandedTool === i ? '▲' : '▼' }}</span>
+                  <span class="tool-name">{{ expandedTool === i ? '▼' : '▶' }} tool_use{{ msg.toolName ? ' · ' + msg.toolName : '' }}</span>
+                  <span v-if="expandedTool !== i" class="tool-preview">{{ toolPreview(msg.toolInput ? JSON.stringify(msg.toolInput) : msg.content) }}</span>
                 </button>
                 <div v-if="expandedTool === i" class="tool-body">
                   <pre class="tool-json">{{ JSON.stringify(msg.toolInput, null, 2) }}</pre>
@@ -65,8 +65,8 @@
             <template v-else-if="isToolResult(msg)">
               <div class="tool-block tool-block--result" :class="{ 'tool-block--error': msg.isError }">
                 <button class="tool-block-header" @click.stop="toggleTool(i)">
-                  <span class="tool-name">{{ msg.isError ? '✗ error' : '↩ result' }}</span>
-                  <span class="tool-expand-icon">{{ expandedTool === i ? '▲' : '▼' }}</span>
+                  <span class="tool-name">{{ expandedTool === i ? '▼' : '▶' }}{{ msg.isError ? ' ✗' : '' }} tool_result{{ msg.toolName ? ' · ' + msg.toolName : '' }}</span>
+                  <span v-if="expandedTool !== i" class="tool-preview">{{ toolPreview(msg.toolOutput || msg.content) }}</span>
                 </button>
                 <div v-if="expandedTool === i" class="tool-body">
                   <pre class="tool-output">{{ msg.toolOutput || msg.content }}</pre>
@@ -256,6 +256,12 @@ function senderLabel(msg: ChatMessage): string {
 
 function toggleTool(i: number) {
   expandedTool.value = expandedTool.value === i ? null : i
+}
+
+function toolPreview(text: string | undefined | null): string {
+  if (!text) return ''
+  const s = text.replace(/\s+/g, ' ').trim()
+  return s.length > 60 ? s.slice(0, 60) + '…' : s
 }
 
 // Issue assignment pattern: "Work on issue #N in owner/repo: title"
@@ -857,6 +863,18 @@ watch(messages, async () => {
   color: var(--color-text-dim);
   opacity: 0.6;
   flex-shrink: 0;
+}
+
+.tool-preview {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-dim);
+  opacity: 0.55;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  flex: 1;
+  margin-left: 8px;
 }
 
 .tool-body {
