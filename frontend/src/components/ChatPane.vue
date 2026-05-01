@@ -59,29 +59,6 @@
             <span class="msg-time">{{ formatTime(msg.createdAt || msg.created_at) }}</span>
           </div>
         </div>
-        <!-- Claude auth code panel — shown when a worker needs auth -->
-        <div v-if="claudeAuthPending" class="auth-panel">
-          <div class="auth-header">⚿ CLAUDE AUTH REQUIRED — {{ claudeAuthPending.workerId }}</div>
-          <div class="auth-url-row">
-            <span class="auth-label">URL:</span>
-            <a :href="claudeAuthPending.url" target="_blank" rel="noopener" class="auth-link">
-              {{ claudeAuthPending.url }}
-            </a>
-          </div>
-          <div class="auth-input-row">
-            <input
-              v-model="authCodeInput"
-              class="auth-input"
-              placeholder="Paste auth code here..."
-              @keydown.enter="submitAuthCode"
-              autofocus
-            />
-            <button class="pixel-btn auth-btn" @click="submitAuthCode" :disabled="!authCodeInput.trim()">
-              ↵ Submit
-            </button>
-          </div>
-        </div>
-
         <div class="chat-input-row">
           <input
             v-model="inputText"
@@ -189,6 +166,38 @@
       </template>
     </div>
   </div>
+
+  <!-- Claude auth modal — teleported to body so it overlays the entire UI -->
+  <teleport to="body">
+    <div v-if="claudeAuthPending" class="auth-modal-overlay">
+      <div class="auth-modal">
+        <div class="auth-modal-header">
+          <span class="auth-modal-title">⚿ CLAUDE AUTH REQUIRED</span>
+          <span class="auth-modal-worker">{{ claudeAuthPending.workerId }}</span>
+        </div>
+        <div class="auth-modal-body">
+          <p class="auth-instruction">
+            Visit the URL below to authenticate Claude, then paste the code here.
+          </p>
+          <a :href="claudeAuthPending.url" target="_blank" rel="noopener" class="auth-url-block">
+            {{ claudeAuthPending.url }}
+          </a>
+          <div class="auth-input-row">
+            <input
+              v-model="authCodeInput"
+              class="auth-input"
+              placeholder="Paste auth code here..."
+              @keydown.enter="submitAuthCode"
+              autofocus
+            />
+            <button class="pixel-btn auth-submit-btn" @click="submitAuthCode" :disabled="!authCodeInput.trim()">
+              ↵ Submit
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </teleport>
 </template>
 
 <script setup lang="ts">
@@ -944,68 +953,102 @@ watch(messages, async () => {
   overflow-y: auto;
 }
 
-/* ── Claude auth panel ── */
-.auth-panel {
-  border-top: 2px solid var(--color-red, #c0392b);
-  background: rgba(192, 57, 43, 0.08);
-  padding: 10px 12px;
+/* ── Claude auth modal (teleported to body) ── */
+.auth-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+}
+
+.auth-modal {
+  background: var(--color-bg-secondary, #1a1a2e);
+  border: 3px solid var(--color-red, #c0392b);
+  box-shadow: 0 0 40px rgba(192, 57, 43, 0.4), 0 0 80px rgba(192, 57, 43, 0.15);
+  width: 520px;
+  max-width: calc(100vw - 32px);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  flex-shrink: 0;
 }
 
-.auth-header {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
-  color: var(--color-red, #e74c3c);
-  text-shadow: 0 0 6px rgba(231, 76, 60, 0.5);
-}
-
-.auth-url-row {
+.auth-modal-header {
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  font-size: 10px;
-}
-
-.auth-label {
-  color: var(--color-text-dim);
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: rgba(192, 57, 43, 0.15);
+  border-bottom: 2px solid var(--color-red, #c0392b);
   flex-shrink: 0;
-  margin-top: 1px;
 }
 
-.auth-link {
-  color: var(--color-teal);
-  text-decoration: none;
+.auth-modal-title {
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  color: var(--color-red, #e74c3c);
+  letter-spacing: 2px;
+  text-shadow: 0 0 8px rgba(231, 76, 60, 0.6);
+}
+
+.auth-modal-worker {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-dim);
+}
+
+.auth-modal-body {
+  padding: 20px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-instruction {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text);
+  line-height: 1.5;
+}
+
+.auth-url-block {
+  display: block;
+  background: var(--color-bg, #0d0d1a);
+  border: 1px solid var(--color-border, #333);
+  padding: 8px 10px;
+  color: var(--color-teal, #00bcd4);
+  font-family: var(--font-mono);
+  font-size: 11px;
   word-break: break-all;
-  line-height: 1.3;
+  text-decoration: none;
+  line-height: 1.4;
 }
 
-.auth-link:hover {
+.auth-url-block:hover {
+  border-color: var(--color-teal, #00bcd4);
   text-decoration: underline;
 }
 
 .auth-input-row {
   display: flex;
-  gap: 6px;
+  gap: 8px;
 }
 
 .auth-input {
   flex: 1;
-  background: var(--color-bg);
+  background: var(--color-bg, #0d0d1a);
   border: 2px solid var(--color-red, #c0392b);
   color: var(--color-text);
   font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 5px 8px;
+  font-size: 13px;
+  padding: 7px 10px;
   outline: none;
 }
 
 .auth-input:focus {
   border-color: var(--color-red, #e74c3c);
-  box-shadow: 0 0 8px rgba(231, 76, 60, 0.35);
+  box-shadow: 0 0 10px rgba(231, 76, 60, 0.4);
 }
 
 .auth-input::placeholder {
@@ -1013,18 +1056,19 @@ watch(messages, async () => {
   font-style: italic;
 }
 
-.auth-btn {
-  padding: 5px 10px;
-  font-size: 10px;
+.auth-submit-btn {
+  padding: 7px 14px;
+  font-size: 11px;
   border-color: var(--color-red, #c0392b);
   color: var(--color-red, #e74c3c);
+  white-space: nowrap;
 }
 
-.auth-btn:hover:not(:disabled) {
-  background: rgba(192, 57, 43, 0.2);
+.auth-submit-btn:hover:not(:disabled) {
+  background: rgba(192, 57, 43, 0.25);
 }
 
-.auth-btn:disabled {
+.auth-submit-btn:disabled {
   opacity: 0.4;
   pointer-events: none;
 }
