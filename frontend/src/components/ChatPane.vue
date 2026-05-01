@@ -154,9 +154,9 @@
             v-for="(msg, i) in debugContext"
             :key="i"
             class="debug-msg"
-            :class="msg.role === 'assistant' ? 'debug-assistant' : 'debug-user'"
+            :class="msg.role === 'assistant' ? 'debug-assistant' : isToolResponseMsg(msg) ? 'debug-tool-response' : 'debug-user'"
           >
-            <span class="debug-role">{{ msg.role.toUpperCase() }}</span>
+            <span class="debug-role">{{ isToolResponseMsg(msg) ? 'TOOL RESPONSE' : msg.role.toUpperCase() }}</span>
             <template v-if="typeof msg.content === 'string'">
               <span class="debug-text">{{ msg.content }}</span>
             </template>
@@ -329,6 +329,10 @@ function handleTaskEvent(data: WSMessage) {
 
 onMounted(() => guildStore.addMessageHandler(handleTaskEvent))
 onUnmounted(() => guildStore.removeMessageHandler(handleTaskEvent))
+
+function isToolResponseMsg(msg: { role: string; content: unknown }) {
+  return msg.role === 'user' && Array.isArray(msg.content) && (msg.content as { type: string }[]).every(b => b.type === 'tool_result')
+}
 
 async function switchToDebug() {
   activeTab.value = 'debug'
@@ -840,6 +844,11 @@ watch(messages, async () => {
   border-left: 3px solid var(--color-brass-dark);
 }
 
+.debug-tool-response {
+  background: rgba(80, 200, 120, 0.06);
+  border-left: 3px solid #50c878;
+}
+
 .debug-role {
   font-family: var(--font-pixel);
   font-size: 6px;
@@ -850,6 +859,7 @@ watch(messages, async () => {
 
 .debug-assistant .debug-role { color: var(--color-teal); }
 .debug-user .debug-role { color: var(--color-brass); }
+.debug-tool-response .debug-role { color: #50c878; }
 
 .debug-text {
   color: var(--color-text);
