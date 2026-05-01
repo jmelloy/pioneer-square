@@ -28,8 +28,8 @@ _HUMAN_TURN_WINDOW = 5  # how many non-tool-response user turns to load from DB
 _TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
 _24H_SECS = 86_400
 
-POLL_MIN_SECS = 60      # initial poll interval: 1 minute
-POLL_MAX_SECS = 3600    # maximum poll interval: 60 minutes
+POLL_MIN_SECS = 60  # initial poll interval: 1 minute
+POLL_MAX_SECS = 3600  # maximum poll interval: 60 minutes
 
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
@@ -323,9 +323,7 @@ async def _poll_loop(guild_id: str) -> None:
         )
 
         if active_tasks:
-            task_summary = "; ".join(
-                f"{t['id']} ({t['state']})" for t in active_tasks[:8]
-            )
+            task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks[:8])
             msg = (
                 f"[periodic-check] Automated status poll — {n} non-terminal "
                 f"task(s): {task_summary}. Check whether any are stalled. "
