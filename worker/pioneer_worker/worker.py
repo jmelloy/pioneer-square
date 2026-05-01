@@ -362,6 +362,12 @@ class Worker:
             "Joined guild %s — worker_id=%s agents=%d",
             self.cfg.guild_id, self.cfg.worker_id, len(self.slots),
         )
+        # Hold agents in busy so the foreman won't assign tasks during auth.
+        # _join() registers them as idle; override that before the listener
+        # starts so the backend sees the correct state from the start.
+        for slot in self.slots:
+            await self._set_state("busy", slot)
+
         # Start listener before auth check so it can relay auth codes from the UI
         listener = asyncio.create_task(self._listen())
         await self._check_claude_auth()
