@@ -185,7 +185,7 @@ class Worker:
                         "workerId": self.cfg.worker_id,
                         "url": url,
                     })
-                    await self._emit("[auth] Waiting for auth code — enter it in the FOREMAN COMMS panel...")
+                    await self._emit("[auth] Waiting for auth code — paste it into the auth panel in the UI or type it into the Foreman Comms input...")
                     try:
                         code = await asyncio.wait_for(self._auth_code_queue.get(), timeout=300.0)
                         proc.stdin.write((code.strip() + "\n").encode())

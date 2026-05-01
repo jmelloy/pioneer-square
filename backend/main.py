@@ -169,6 +169,10 @@ class TaskCreate(BaseModel):
 # persists worker/task state and dispatches assignments over WebSocket.
 # ---------------------------------------------------------------------------
 
+# Tracks which worker is waiting for a Claude auth code in each guild.
+# Set when a worker sends claude-auth-required; cleared when the code is delivered.
+pending_claude_auths: Dict[str, str] = {}  # guild_id -> worker_id
+
 
 # ---------------------------------------------------------------------------
 # GitHub OAuth helpers (OAuth flow only — foreman GitHub tools are in foreman/tools.py)
@@ -661,8 +665,18 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 })
                 # Route human messages addressed to foreman through the AI.
                 # Each authenticated user gets their own foreman conversation thread.
+                # Exception: if a worker is waiting for a Claude auth code, treat
+                # the next user message as that code and forward it directly.
                 if from_agent == "user" and to_agent == "foreman" and content:
-                    asyncio.create_task(run_foreman_ai(guild_id, content, user_id=ws_user_id))
+                    pending_worker = pending_claude_auths.pop(guild_id, None)
+                    if pending_worker:
+                        await broadcast(guild_id, {
+                            "type": "worker-auth-response",
+                            "workerId": pending_worker,
+                            "code": content,
+                        })
+                    else:
+                        asyncio.create_task(run_foreman_ai(guild_id, content, user_id=ws_user_id))
 
             elif msg_type == "terminal-output":
                 msg_agent_id = data.get("agentId")
@@ -831,17 +845,25 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 asyncio.create_task(run_foreman_ai(guild_id, escalation))
 
             elif msg_type == "claude-auth-required":
-                # Worker needs Claude authentication; broadcast URL to UI and loop foreman in.
+                # Worker needs Claude authentication; broadcast URL to UI and track pending state.
                 await broadcast(guild_id, data, exclude=websocket)
                 worker_id = data.get("workerId", "a worker")
                 auth_url = data.get("url", "")
+                pending_claude_auths[guild_id] = worker_id
                 asyncio.create_task(run_foreman_ai(
                     guild_id,
                     f"Worker {worker_id} needs Claude authentication. "
                     f"Auth URL: {auth_url}. "
                     "A human must visit this URL, complete authentication, then paste the "
-                    "resulting code into the FOREMAN COMMS panel. The worker is waiting.",
+                    "resulting code into the auth panel that has appeared in the chat UI "
+                    "(or type it into the Foreman Comms input). The worker is waiting.",
                 ))
+
+            elif msg_type == "worker-auth-response":
+                # Auth code submitted via the dedicated auth panel; clear pending state and
+                # forward to all connections so the waiting worker receives it.
+                pending_claude_auths.pop(guild_id, None)
+                await broadcast(guild_id, data)
 
             elif msg_type in ("offer", "answer", "ice-candidate"):
                 # WebRTC signaling - forward to all
