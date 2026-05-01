@@ -527,11 +527,11 @@ class Worker:
     async def _join(self) -> None:
         hostname = socket.gethostname()
         host_prefix = hostname[:3].upper()
+        raw = (self.cfg.worker_id or "")[2:].upper()
+        split = 2 + sum(ord(c) for c in raw) % 3
+        droid = f"{raw[:split]}-{raw[split:]}"
+        name = self.cfg.worker_name or f"{host_prefix}/{droid}"
         for slot in self.slots:
-            raw = slot.agent_id[2:].upper()
-            split = 2 + sum(ord(c) for c in raw) % 3
-            droid = f"{raw[:split]}-{raw[split:]}"
-            name = self.cfg.worker_name or f"{host_prefix}/{droid}"
             await self._send(
                 {
                     "type": "join",
