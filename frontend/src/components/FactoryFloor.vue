@@ -128,6 +128,58 @@
       <div class="poi-label">COFFEE</div>
     </div>
 
+    <!-- Activity points of interest — agents walk here based on what Claude is doing -->
+
+    <!-- Scrying Orb — web search -->
+    <div class="poi activity-poi scrying-orb" :style="`left: ${ACTIVITY_POIS['searching'].x - 18}px; top: ${ACTIVITY_POIS['searching'].y - 40}px`">
+      <div class="orb-glow"></div>
+      <div class="orb-sphere">🔮</div>
+      <div class="orb-base"></div>
+      <div class="poi-label">SCRYING ORB</div>
+    </div>
+
+    <!-- Archive — reading files -->
+    <div class="poi activity-poi archive" :style="`left: ${ACTIVITY_POIS['reading'].x - 24}px; top: ${ACTIVITY_POIS['reading'].y - 36}px`">
+      <div class="archive-shelf">
+        <div class="book b1"></div>
+        <div class="book b2"></div>
+        <div class="book b3"></div>
+        <div class="book b4"></div>
+      </div>
+      <div class="poi-label">ARCHIVE</div>
+    </div>
+
+    <!-- Telegraph — web fetch -->
+    <div class="poi activity-poi telegraph" :style="`left: ${ACTIVITY_POIS['fetching'].x - 18}px; top: ${ACTIVITY_POIS['fetching'].y - 38}px`">
+      <div class="tg-body">
+        <div class="tg-key"></div>
+        <div class="tg-spark" v-for="n in 2" :key="n" :style="`--delay: ${n * 0.5}s`"></div>
+      </div>
+      <div class="tg-wire"></div>
+      <div class="poi-label">TELEGRAPH</div>
+    </div>
+
+    <!-- Think Tank — extended thinking -->
+    <div class="poi activity-poi think-tank" :style="`left: ${ACTIVITY_POIS['thinking'].x - 22}px; top: ${ACTIVITY_POIS['thinking'].y - 44}px`">
+      <div class="tank-vessel">
+        <div class="tank-bubble" v-for="n in 3" :key="n" :style="`--delay: ${n * 0.35}s; --xoff: ${(n - 2) * 5}px`"></div>
+      </div>
+      <div class="tank-gauge"></div>
+      <div class="poi-label">THINK TANK</div>
+    </div>
+
+    <!-- Engine Room marker — running bash -->
+    <div class="poi activity-poi engine-room" :style="`left: ${ACTIVITY_POIS['running'].x - 18}px; top: ${ACTIVITY_POIS['running'].y - 20}px`">
+      <div class="engine-icon">⚙</div>
+      <div class="poi-label">ENGINE</div>
+    </div>
+
+    <!-- The Forge marker — editing/writing code (near furnace) -->
+    <div class="poi activity-poi the-forge" :style="`left: ${ACTIVITY_POIS['editing'].x - 16}px; top: ${ACTIVITY_POIS['editing'].y - 20}px`">
+      <div class="forge-icon">🔥</div>
+      <div class="poi-label">THE FORGE</div>
+    </div>
+
     <!-- Floating agents that walk to their task station or wander when idle -->
     <div
       v-for="agent in agents"
@@ -163,6 +215,8 @@ import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import type { Agent, Task } from '../types'
 import AgentAvatar from './AgentAvatar.vue'
+
+interface ActivityPoi { x: number; y: number; label: string }
 
 interface Position { x: number; y: number }
 interface Station extends Position { task: Task | null }
@@ -248,6 +302,21 @@ const POIS = computed(() => [
   { id: 'coffee',  x: coffeePotPos.value.x + 5, y: coffeePotPos.value.y + 30 },
 ])
 
+// Activity POIs — agents walk here based on what Claude is doing
+const ACTIVITY_POIS = computed<Record<string, ActivityPoi>>(() => {
+  const W = usableW.value + STATION_W
+  const H = floorH.value
+  return {
+    reading:  { x: Math.round(W * 0.30), y: Math.round(H * 0.10), label: 'ARCHIVE' },
+    editing:  { x: Math.round(W * 0.88), y: Math.round(H * 0.12), label: 'THE FORGE' },
+    running:  { x: Math.round(W * 0.80), y: Math.round(H * 0.44), label: 'ENGINE' },
+    searching:{ x: Math.round(W * 0.05), y: Math.round(H * 0.44), label: 'SCRYING ORB' },
+    fetching: { x: Math.round(W * 0.56), y: Math.round(H * 0.09), label: 'TELEGRAPH' },
+    thinking: { x: Math.round(W * 0.50), y: Math.round(H * 0.50), label: 'THINK TANK' },
+    planning: { x: Math.round(W * 0.30), y: Math.round(H * 0.10), label: 'ARCHIVE' },
+  }
+})
+
 const visibleStations = computed<Station[]>(() => {
   const active = tasksStore.tasks
     .filter(t => !['done', 'failed'].includes(t.state) && t.worker_id && t.worker_id !== 'foreman')
@@ -268,7 +337,7 @@ const agentChatting  = reactive<Record<string, boolean>>({})
 const agentWaypoints: Record<string, Position[]> = {}
 const agentTimers: Record<string, ReturnType<typeof setTimeout>> = {}
 const agentDestPoi: Record<string, string | null> = {}
-const prevAtWork: Record<string, boolean> = {}
+const prevActivityKey: Record<string, string> = {}
 
 const SOCIAL_POIS = new Set(['cooler', 'coffee'])
 
@@ -409,10 +478,22 @@ function isAgentAtWork(agent: Agent) {
   return !!stationForAgent(agent) && !['idle', 'offline'].includes(agent.state)
 }
 
-function sendAgentToStation(agent: Agent) {
+// Returns the pixel target an agent should walk to, or null if idle.
+// Activity POI takes priority over work station — the station is the task
+// indicator on the floor, but the POI is where the agent actually stands.
+function targetForAgent(agent: Agent): Position | null {
+  if (!isAgentAtWork(agent)) return null
+  const actPoi = agent.activity ? ACTIVITY_POIS.value[agent.activity] : undefined
+  if (actPoi) return { x: actPoi.x, y: actPoi.y }
   const station = stationForAgent(agent)
-  if (!station) return
-  const target = { x: station.x + 25, y: station.y + 90 }
+  return station ? { x: station.x + 25, y: station.y + 90 } : null
+}
+
+function activityKey(agent: Agent): string {
+  return `${isAgentAtWork(agent)}:${agent.activity ?? 'none'}`
+}
+
+function sendAgentTo(agent: Agent, target: Position) {
   const cur = agentPositions[agent.id] || randomInClearZone()
   clearTimeout(agentTimers[agent.id])
   agentChatting[agent.id] = false
@@ -426,33 +507,38 @@ function initAgent(agent: Agent) {
     agentPositions[agent.id] = randomInClearZone()
     agentDuration[agent.id] = 1.5
   }
-  if (isAgentAtWork(agent)) {
-    sendAgentToStation(agent)
+  const target = targetForAgent(agent)
+  if (target) {
+    sendAgentTo(agent, target)
   } else {
     const delay = 600 + Math.random() * 2000
     agentTimers[agent.id] = setTimeout(() => scheduleWalk(agent.id), delay)
   }
-  prevAtWork[agent.id] = isAgentAtWork(agent)
+  prevActivityKey[agent.id] = activityKey(agent)
 }
 
 function syncPositions() {
   agents.value.forEach(agent => {
-    const atWork = isAgentAtWork(agent)
-    const wasAtWork = prevAtWork[agent.id]
+    const key = activityKey(agent)
+    const prevKey = prevActivityKey[agent.id]
 
     if (!agentPositions[agent.id]) {
       initAgent(agent)
       return
     }
 
-    if (atWork && !wasAtWork) {
-      sendAgentToStation(agent)
-    } else if (!atWork && wasAtWork) {
-      clearTimeout(agentTimers[agent.id])
-      const delay = 400 + Math.random() * 1200
-      agentTimers[agent.id] = setTimeout(() => scheduleWalk(agent.id), delay)
+    if (key !== prevKey) {
+      const target = targetForAgent(agent)
+      if (target) {
+        sendAgentTo(agent, target)
+      } else if (prevKey?.startsWith('true:')) {
+        // was at work, now idle — start wandering
+        clearTimeout(agentTimers[agent.id])
+        const delay = 400 + Math.random() * 1200
+        agentTimers[agent.id] = setTimeout(() => scheduleWalk(agent.id), delay)
+      }
+      prevActivityKey[agent.id] = key
     }
-    prevAtWork[agent.id] = atWork
   })
 }
 
@@ -467,17 +553,20 @@ onUnmounted(() => {
   Object.values(agentTimers).forEach(clearTimeout)
 })
 
-// Watch agent id+state+workerId as a flat string so every agent's state change
-// triggers syncPositions independently, regardless of array-reference stability.
+// Watch id+state+workerId+activity so any change to what an agent is doing
+// triggers syncPositions and moves them to the right POI.
 watch(
-  () => agents.value.map(a => `${a.id}:${a.state}:${a.workerId}`).join(','),
+  () => agents.value.map(a => `${a.id}:${a.state}:${a.workerId}:${a.activity ?? ''}`).join(','),
   syncPositions
 )
 watch(visibleStations, syncPositions)
 
 const tickerMessages = computed(() => {
   const msgs = []
-  agents.value.forEach(a => msgs.push(`${a.name}: ${a.state.toUpperCase()}`))
+  agents.value.forEach(a => {
+    const label = a.activity ? `${a.state.toUpperCase()} [${a.activity}]` : a.state.toUpperCase()
+    msgs.push(`${a.name}: ${label}`)
+  })
   tasksStore.tasks
     .filter(t => !['done', 'failed'].includes(t.state))
     .slice(0, 4)
@@ -1109,6 +1198,190 @@ function stateLabel(state: string) {
 .cm-cup {
   font-size: 14px;
   margin-bottom: -2px;
+}
+
+/* ── Activity POI shared styles ─────────────────────────── */
+.activity-poi {
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* Scrying Orb */
+.scrying-orb {
+  width: 36px;
+}
+.orb-glow {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(136,68,255,0.4) 0%, transparent 70%);
+  animation: orbPulse 2.2s ease-in-out infinite;
+  top: 4px;
+  left: 4px;
+}
+.orb-sphere {
+  font-size: 20px;
+  line-height: 1;
+  filter: drop-shadow(0 0 6px rgba(136,68,255,0.8));
+  animation: orbFloat 3s ease-in-out infinite;
+  position: relative;
+  z-index: 1;
+}
+.orb-base {
+  width: 18px;
+  height: 6px;
+  background: linear-gradient(180deg, var(--color-brass) 0%, var(--color-brass-dark) 100%);
+  border-radius: 2px;
+  margin: 0 auto;
+  border: 1px solid var(--color-copper);
+}
+@keyframes orbPulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.9); }
+  50%       { opacity: 0.8; transform: scale(1.2); }
+}
+@keyframes orbFloat {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-3px); }
+}
+
+/* Archive */
+.archive {
+  width: 48px;
+}
+.archive-shelf {
+  width: 48px;
+  height: 32px;
+  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
+  border: 2px solid var(--color-brass-dark);
+  border-radius: 1px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 2px 3px;
+  box-shadow: 0 0 6px rgba(232,170,0,0.15);
+}
+.book {
+  border-radius: 1px 1px 0 0;
+  border: 1px solid rgba(0,0,0,0.3);
+  flex: 1;
+}
+.book.b1 { height: 22px; background: var(--color-teal);   box-shadow: 0 0 3px var(--color-teal); }
+.book.b2 { height: 18px; background: var(--color-amber);  box-shadow: 0 0 3px var(--color-amber); }
+.book.b3 { height: 26px; background: var(--color-sky);    box-shadow: 0 0 3px var(--color-sky); }
+.book.b4 { height: 20px; background: var(--color-orange); box-shadow: 0 0 3px var(--color-orange); }
+
+/* Telegraph */
+.telegraph {
+  width: 36px;
+}
+.tg-body {
+  width: 36px;
+  height: 28px;
+  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
+  border: 2px solid var(--color-copper);
+  border-radius: 2px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 3px;
+  position: relative;
+  box-shadow: 0 0 6px rgba(68,170,238,0.2);
+}
+.tg-key {
+  width: 14px;
+  height: 5px;
+  background: var(--color-brass-light);
+  border-radius: 2px;
+  border: 1px solid var(--color-brass-dark);
+  animation: keyTap 1.8s ease-in-out infinite;
+}
+@keyframes keyTap {
+  0%, 85%, 100% { transform: translateY(0); }
+  90%            { transform: translateY(2px); }
+}
+.tg-spark {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 4px;
+  height: 4px;
+  background: var(--color-sky);
+  border-radius: 50%;
+  animation: spark 1.8s var(--delay, 0s) ease-out infinite;
+}
+@keyframes spark {
+  0%   { opacity: 0; transform: translate(0, 0) scale(1); }
+  30%  { opacity: 1; transform: translate(3px, -4px) scale(1.4); }
+  100% { opacity: 0; transform: translate(6px, -10px) scale(0.2); }
+}
+.tg-wire {
+  width: 2px;
+  height: 8px;
+  background: var(--color-copper);
+  margin: 0 auto;
+}
+
+/* Think Tank */
+.think-tank {
+  width: 44px;
+}
+.tank-vessel {
+  width: 44px;
+  height: 36px;
+  background: linear-gradient(180deg, rgba(68,153,255,0.12) 0%, rgba(0,0,0,0) 100%);
+  border: 2px solid rgba(68,153,255,0.4);
+  border-radius: 4px 4px 2px 2px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 10px rgba(68,153,255,0.25), inset 0 0 8px rgba(68,153,255,0.1);
+}
+.tank-bubble {
+  position: absolute;
+  bottom: 2px;
+  left: calc(50% + var(--xoff, 0px));
+  width: 6px;
+  height: 6px;
+  background: radial-gradient(circle, rgba(68,153,255,0.7) 0%, transparent 70%);
+  border-radius: 50%;
+  animation: bubbleRise 2.4s var(--delay, 0s) ease-out infinite;
+}
+@keyframes bubbleRise {
+  0%   { transform: translateY(0) scale(0.6); opacity: 0.8; }
+  100% { transform: translateY(-34px) scale(1.8); opacity: 0; }
+}
+.tank-gauge {
+  width: 16px;
+  height: 8px;
+  background: rgba(68,153,255,0.2);
+  border: 1px solid rgba(68,153,255,0.4);
+  border-radius: 1px;
+  margin: 1px auto 0;
+}
+
+/* Engine Room marker */
+.engine-room {
+  width: 36px;
+  text-align: center;
+}
+.engine-icon {
+  font-size: 22px;
+  color: var(--color-gold);
+  animation: gearSpin 4s linear infinite;
+  text-shadow: 0 0 8px var(--color-gold);
+  line-height: 1;
+}
+
+/* The Forge marker */
+.the-forge {
+  width: 32px;
+  text-align: center;
+}
+.forge-icon {
+  font-size: 20px;
+  line-height: 1;
+  animation: flicker 0.4s infinite alternate;
+  filter: drop-shadow(0 0 6px rgba(255,100,0,0.8));
 }
 
 /* Factory info overlay */

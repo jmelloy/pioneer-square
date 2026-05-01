@@ -635,17 +635,22 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             elif msg_type == "agent-state":
                 agent_id = data.get("agentId")
                 state = data.get("state", "idle")
+                activity = data.get("activity")  # fine-grained activity (reading/editing/etc.)
+                update_vals: dict = {"state": state}
+                if activity is not None:
+                    update_vals["activity"] = activity
+                elif state in ("idle", "offline"):
+                    update_vals["activity"] = None
                 await db.execute(
                     update(Agent)
                     .where(Agent.id == agent_id, Agent.guild_id == guild_id)
-                    .values(state=state)
+                    .values(**update_vals)
                 )
                 await db.commit()
-                await broadcast(guild_id, {
-                    "type": "agent-state",
-                    "agentId": agent_id,
-                    "state": state
-                })
+                broadcast_msg: dict = {"type": "agent-state", "agentId": agent_id, "state": state}
+                if "activity" in update_vals:
+                    broadcast_msg["activity"] = update_vals["activity"]
+                await broadcast(guild_id, broadcast_msg)
 
             elif msg_type == "chat":
                 from_agent = data.get("from", "user")
@@ -928,14 +933,14 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
 # ---------------------------------------------------------------------------
 
 async def _set_agent_state(guild_id: str, agent_id: str, state: str):
-    """Broadcast and persist an agent state change."""
-    await broadcast(guild_id, {"type": "agent-state", "agentId": agent_id, "state": state})
+    """Broadcast and persist an agent state change (clears activity)."""
+    await broadcast(guild_id, {"type": "agent-state", "agentId": agent_id, "state": state, "activity": None})
     db = await get_db()
     try:
         await db.execute(
             update(Agent)
             .where(Agent.id == agent_id, Agent.guild_id == guild_id)
-            .values(state=state)
+            .values(state=state, activity=None)
         )
         await db.commit()
     finally:

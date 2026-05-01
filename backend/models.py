@@ -25,6 +25,7 @@ class Agent(Base):
     name = Column(Text, nullable=False)
     type = Column(Text, nullable=False, server_default="worker")
     state = Column(Text, nullable=False, server_default="idle")
+    activity = Column(Text, nullable=True)
     joined_at = Column(Text, nullable=False)
 
 

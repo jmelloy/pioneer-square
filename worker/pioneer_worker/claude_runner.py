@@ -26,11 +26,28 @@ def _summarize_lines(lines: list[str], prefix: str = "  → ") -> str:
     )
 
 
+_TOOL_ACTIVITY: dict[str, str] = {
+    "Bash": "running",
+    "Read": "reading",
+    "Write": "editing",
+    "Edit": "editing",
+    "MultiEdit": "editing",
+    "NotebookEdit": "editing",
+    "WebSearch": "searching",
+    "WebFetch": "fetching",
+    "Agent": "planning",
+    "TodoWrite": "planning",
+    "TodoRead": "reading",
+}
+
+
 def parse_claude_event(event: dict) -> list[tuple[str, Optional[dict]]]:
     """Extract (display_text, detail) pairs from one stream-JSON event.
 
     detail is sent as a separate tool-detail WS message so the full content
     is available on click without bloating the terminal-output stream.
+    The detail dict includes an 'activity' key so the worker can track what
+    Claude is currently doing and send granular agent-state updates.
     """
     t = event.get("type")
     if t == "assistant":
@@ -45,7 +62,10 @@ def parse_claude_event(event: dict) -> list[tuple[str, Optional[dict]]]:
                 thinking = blk.get("thinking", "").strip()
                 if thinking:
                     preview = thinking[:100].replace("\n", " ")
-                    pairs.append((f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}", None))
+                    pairs.append((
+                        f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}",
+                        {"activity": "thinking"},
+                    ))
             elif btype == "tool_use":
                 name = blk.get("name", "")
                 inp = blk.get("input", {})
@@ -63,7 +83,10 @@ def parse_claude_event(event: dict) -> list[tuple[str, Optional[dict]]]:
                     summary = f"▶ {name.lower()}: {fp}"
                 else:
                     summary = f"▶ {name}: {json.dumps(inp)[:80]}"
-                detail = {"toolType": "tool_use", "name": name, "input": inp}
+                detail: dict = {"toolType": "tool_use", "name": name, "input": inp}
+                activity = _TOOL_ACTIVITY.get(name)
+                if activity:
+                    detail["activity"] = activity
                 pairs.append((summary, detail))
         return pairs
     if t == "user":
