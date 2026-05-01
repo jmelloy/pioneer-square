@@ -14,6 +14,7 @@ from typing import Optional
 
 import anyio
 import httpx
+import signal
 
 from . import claude_runner, codex_runner, pi_runner, config as config_mod, git_ops, github_pr
 from .ws_client import WSClient
@@ -34,6 +35,7 @@ def _slug(text: str, max_len: int = 45) -> str:
 
 
 _CANCEL_SENTINEL = object()  # placed in followup queue to signal task cancellation
+_SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during shutdown
 
 
 class _AgentSlot:
@@ -69,6 +71,10 @@ class Worker:
         self.slots: list[_AgentSlot] = [
             _AgentSlot(_gen_id("a-")) for _ in range(cfg.max_agents)
         ]
+        # Set when graceful shutdown is requested (via WS or signal). Idle
+        # agents stop immediately; busy agents finish their current task and
+        # skip the follow-up window.
+        self._shutdown_event = asyncio.Event()
 
     # ------------------------------------------------------------------ HTTP
     async def _http(self) -> httpx.AsyncClient:
@@ -346,6 +352,61 @@ class Worker:
             **fields,
         })
 
+    async def _initiate_shutdown(self, reason: str) -> None:
+        """Begin a graceful shutdown.
+
+        Idle agents wake up and exit; busy agents finish their current claude
+        run and skip the follow-up window. Safe to call multiple times.
+        """
+        if self._shutdown_event.is_set():
+            return
+        self._shutdown_event.set()
+        logger.info("Graceful shutdown initiated: %s", reason)
+        try:
+            await self._emit(
+                f"[worker] Shutdown requested ({reason}). Idle agents stopping; "
+                "busy agents will finish their current task."
+            )
+        except Exception as exc:
+            logger.debug("emit during shutdown failed (ignored): %s", exc)
+        # Wake idle agents waiting on task_queue.get()
+        for _ in self.slots:
+            self.task_queue.put_nowait(_SHUTDOWN_SENTINEL)
+        # Wake any agents currently parked in their follow-up window.
+        for slot in self.slots:
+            tid = slot.current_task_id
+            if not tid:
+                continue
+            q = self._followup_queues.get(tid)
+            if q is not None:
+                try:
+                    q.put_nowait(None)  # None = finalize
+                except asyncio.QueueFull:
+                    pass
+
+    def _install_signal_handlers(self) -> None:
+        """Wire SIGINT/SIGTERM to graceful shutdown. Second signal force-exits."""
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, self._on_signal, sig)
+            except NotImplementedError:
+                logger.debug("Signal handler for %s not available on this platform", sig)
+
+    def _on_signal(self, sig: signal.Signals) -> None:
+        loop = asyncio.get_running_loop()
+        if self._shutdown_event.is_set():
+            # User pressed Ctrl-C twice — fall back to default handler.
+            logger.warning("Received %s during shutdown — forcing exit", sig.name)
+            try:
+                loop.remove_signal_handler(sig)
+            except (NotImplementedError, RuntimeError):
+                pass
+            os.kill(os.getpid(), sig)
+            return
+        logger.info("Received %s — initiating graceful shutdown (signal again to force)", sig.name)
+        loop.create_task(self._initiate_shutdown(f"signal {sig.name}"))
+
     async def _notify_offline(self) -> None:
         """Send an explicit worker-disconnect message before the WebSocket closes.
 
@@ -375,6 +436,8 @@ class Worker:
             self.cfg.max_agents,
             self.cfg.claude_path, self.cfg.codex_path, self.cfg.pi_path,
         )
+
+        self._install_signal_handlers()
 
         await self._register()
         assert self.cfg.worker_id, "worker_id must be set after registration"
@@ -411,7 +474,35 @@ class Worker:
         runners  = [asyncio.create_task(self._agent_loop(slot)) for slot in self.slots]
         puller   = asyncio.create_task(self._idle_puller())
         try:
-            await asyncio.gather(listener, *runners, puller)
+            # Wait for either: all runners exit (graceful shutdown), or the
+            # listener/puller crashes (unexpected).
+            done, _pending = await asyncio.wait(
+                [listener, puller, *runners],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # Surface any non-cancellation exception that fired first.
+            first_exc: BaseException | None = None
+            for t in done:
+                if t.cancelled():
+                    continue
+                exc = t.exception()
+                if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                    first_exc = exc
+                    break
+
+            # Make sure shutdown is signalled so the rest of the loops drain.
+            if not self._shutdown_event.is_set():
+                reason = "task crashed" if first_exc else "task exited"
+                await self._initiate_shutdown(reason)
+
+            # Stop the auxiliary tasks; the agent loops drain themselves.
+            listener.cancel()
+            puller.cancel()
+
+            await asyncio.gather(listener, puller, *runners, return_exceptions=True)
+
+            if first_exc is not None:
+                raise first_exc
         finally:
             with anyio.CancelScope(shield=True):
                 await self._notify_offline()
@@ -526,6 +617,13 @@ class Worker:
                     await q.put(_CANCEL_SENTINEL)
                     logger.info("Signalled followup queue for cancelled task %s", task_id)
 
+            elif mtype == "worker-shutdown":
+                # Targeted at a specific worker, or broadcast (no workerId) to all.
+                target = msg.get("workerId")
+                if target and target != self.cfg.worker_id:
+                    continue
+                await self._initiate_shutdown("worker-shutdown message")
+
             elif mtype == "task-redirect":
                 if msg.get("workerId") != self.cfg.worker_id:
                     continue
@@ -554,8 +652,14 @@ class Worker:
     # ------------------------------------------------------------------ Idle puller
     async def _idle_puller(self) -> None:
         logger.info("Idle puller started (interval=%.1fs)", self.cfg.pull_interval)
-        while True:
-            await asyncio.sleep(self.cfg.pull_interval)
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=self.cfg.pull_interval,
+                )
+                break  # shutdown event fired
+            except asyncio.TimeoutError:
+                pass  # normal interval elapsed
             try:
                 pending = await self._fetch_pending_tasks()
                 new_count = 0
@@ -580,6 +684,9 @@ class Worker:
         logger.info("Agent loop started for %s", slot.agent_id)
         while True:
             task = await self.task_queue.get()
+            if task is _SHUTDOWN_SENTINEL:
+                logger.info("Agent %s: shutdown sentinel received; exiting", slot.agent_id)
+                break
             task_id = task.get("id")
             if task_id in self._cancelled_tasks:
                 logger.info("Skipping cancelled task %s", task_id)
@@ -598,6 +705,11 @@ class Worker:
                 await self._task_update(task["id"], state="failed", finishedAt=_now_iso())
             finally:
                 slot.current_task_id = None
+        try:
+            await self._set_state("offline", slot)
+        except Exception as exc:
+            logger.debug("Failed to send offline state for %s: %s", slot.agent_id, exc)
+        logger.info("Agent loop exited for %s", slot.agent_id)
 
     # ------------------------------------------------------------------ Execution
     async def _execute_task(self, task: dict, slot: _AgentSlot) -> None:
@@ -721,7 +833,7 @@ class Worker:
                 except asyncio.QueueEmpty:
                     redirect_instr = None
 
-                if redirect_instr is not None:
+                if redirect_instr is not None and not self._shutdown_event.is_set():
                     await emit(f"[worker] ↩ Redirected: {redirect_instr[:120]}")
                     current_desc = redirect_instr
                     await self._task_update(task_id, state="working")
@@ -787,7 +899,9 @@ class Worker:
             followup_cancelled = False
             last_success = success
             try:
-                while True:
+                if self._shutdown_event.is_set():
+                    await emit("[worker] Shutdown in progress — skipping follow-up window.")
+                while not self._shutdown_event.is_set():
                     try:
                         instructions = await asyncio.wait_for(
                             followup_q.get(), timeout=300.0
@@ -843,7 +957,7 @@ class Worker:
                         except asyncio.QueueEmpty:
                             redir = None
 
-                        if redir is not None:
+                        if redir is not None and not self._shutdown_event.is_set():
                             await emit(f"[worker] ↩ Redirected during follow-up: {redir[:120]}")
                             current_fu_desc = redir
                             continue
