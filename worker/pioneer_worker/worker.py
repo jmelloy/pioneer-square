@@ -413,15 +413,22 @@ class Worker:
                     continue
                 text = msg.get("message", "")
                 if text:
-                    active = next((s for s in self.slots if s.current_claude), None)
-                    if active:
-                        delivered = await active.current_claude.send_message(text)
-                        if delivered:
-                            await self._emit(f"[worker] Injected: {text[:80]}")
-                        else:
-                            logger.warning("Failed to inject message (stdin closed?)")
+                    # During Claude login the auth queue is open; treat the
+                    # message as the auth code so the foreman can relay it.
+                    if self._auth_code_queue is not None:
+                        await self._auth_code_queue.put(text)
+                        logger.info("Auth code received via worker-message (login flow)")
+                        await self._emit("[worker] Auth code received and forwarded to login flow")
                     else:
-                        logger.debug("worker-message: no claude running; dropping")
+                        active = next((s for s in self.slots if s.current_claude), None)
+                        if active:
+                            delivered = await active.current_claude.send_message(text)
+                            if delivered:
+                                await self._emit(f"[worker] Injected: {text[:80]}")
+                            else:
+                                logger.warning("Failed to inject message (stdin closed?)")
+                        else:
+                            logger.debug("worker-message: no claude running; dropping")
 
             elif mtype == "worker-auth-response":
                 if msg.get("workerId") != self.cfg.worker_id:

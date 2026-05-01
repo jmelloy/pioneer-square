@@ -35,7 +35,7 @@ try:
 except ImportError:
     pass
 
-from events import broadcast, connections, agent_owners, emit_terminal_line
+from events import broadcast, connections, agent_owners, emit_terminal_line, pending_claude_auth
 from foreman import clear_foreman_history, get_foreman_history, maybe_post_plan_comment, run_foreman_ai
 
 
@@ -835,13 +835,24 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 await broadcast(guild_id, data, exclude=websocket)
                 worker_id = data.get("workerId", "a worker")
                 auth_url = data.get("url", "")
+                # Track so new frontend connections can restore the auth panel.
+                pending_claude_auth.setdefault(guild_id, {})[worker_id] = auth_url
                 asyncio.create_task(run_foreman_ai(
                     guild_id,
                     f"Worker {worker_id} needs Claude authentication. "
                     f"Auth URL: {auth_url}. "
                     "A human must visit this URL, complete authentication, then paste the "
-                    "resulting code into the FOREMAN COMMS panel. The worker is waiting.",
+                    "resulting code into the FOREMAN COMMS panel. The worker is waiting. "
+                    "If the human sends a message that looks like an auth code, forward it "
+                    f"immediately to the worker using message_worker(worker_id='{worker_id}', message=<code>).",
                 ))
+
+            elif msg_type == "worker-auth-response":
+                # Human is submitting an auth code; clear pending state and
+                # broadcast to all connections so the waiting worker receives it.
+                worker_id = data.get("workerId", "")
+                pending_claude_auth.get(guild_id, {}).pop(worker_id, None)
+                await broadcast(guild_id, data)
 
             elif msg_type in ("offer", "answer", "ice-candidate"):
                 # WebRTC signaling - forward to all
@@ -1262,6 +1273,17 @@ async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
         raise HTTPException(status_code=500, detail=f"Failed to start container: {e}")
 
     return {"container_id": container.id[:12], "image": image}
+
+
+@app.get("/guilds/{guild_id}/pending-auth")
+async def get_pending_auth(guild_id: str):
+    """Return workers currently waiting for a Claude auth code.
+
+    The frontend calls this on mount so the auth panel is restored after a
+    page refresh even if the original claude-auth-required broadcast was missed.
+    """
+    pending = pending_claude_auth.get(guild_id, {})
+    return [{"workerId": wid, "url": url} for wid, url in pending.items()]
 
 
 @app.get("/guilds/{guild_id}/workers")

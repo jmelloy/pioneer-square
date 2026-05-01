@@ -327,7 +327,28 @@ function handleTaskEvent(data: WSMessage) {
   }
 }
 
-onMounted(() => guildStore.addMessageHandler(handleTaskEvent))
+onMounted(async () => {
+  guildStore.addMessageHandler(handleTaskEvent)
+  // Restore the auth panel if a worker was already waiting when we connected
+  // (handles page-refresh and late-join scenarios where the original
+  // claude-auth-required broadcast was missed).
+  const guildId = guildStore.currentGuild?.id
+  if (guildId && !claudeAuthPending.value) {
+    try {
+      const res = await fetch(`${API_BASE}/guilds/${guildId}/pending-auth`, {
+        headers: authStore.authHeaders()
+      })
+      if (res.ok) {
+        const items: Array<{ workerId: string; url: string }> = await res.json()
+        if (items.length > 0) {
+          claudeAuthPending.value = { workerId: items[0].workerId, url: items[0].url }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not fetch pending auth state', e)
+    }
+  }
+})
 onUnmounted(() => guildStore.removeMessageHandler(handleTaskEvent))
 
 async function switchToDebug() {
