@@ -73,7 +73,7 @@
       <!-- Issues tab -->
       <template v-else-if="activeTab === 'issues'">
         <div class="issues-toolbar">
-          <button class="pixel-btn refresh-btn" @click="refreshIssues" :disabled="ghStore.loading">
+          <button class="pixel-btn refresh-btn" @click="() => refreshIssues()" :disabled="ghStore.loading">
             {{ ghStore.loading ? '...' : '↻' }}
           </button>
           <span class="issues-count">{{ ghStore.issues.length }} open</span>
