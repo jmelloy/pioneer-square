@@ -67,10 +67,10 @@
     </div>
 
     <!-- Workers/Agents hierarchical section -->
-    <div class="workers-section" :class="{ 'workers-section--empty': agentsStore.workers.length === 0 && !showSpawnForm }">
+    <div class="workers-section" :class="{ 'workers-section--empty': onlineWorkers.length === 0 && !showSpawnForm }">
       <div class="section-header">
         <span class="section-label">Workers</span>
-        <span class="section-count" v-if="agentsStore.workers.length > 0">{{ agentsStore.workers.length }}</span>
+        <span class="section-count" v-if="onlineWorkers.length > 0">{{ onlineWorkers.length }}</span>
         <button class="spawn-btn" @click="toggleSpawnForm" :title="showSpawnForm ? 'Cancel' : 'Launch a new worker container'">
           {{ showSpawnForm ? '✕' : '+' }}
         </button>
@@ -108,7 +108,7 @@
         </div>
         <div v-if="spawnError" class="spawn-error">{{ spawnError }}</div>
       </div>
-      <template v-for="worker in agentsStore.workers" :key="worker.id">
+      <template v-for="worker in onlineWorkers" :key="worker.id">
         <!-- Worker row -->
         <div class="worker-row" :class="worker.state" @click="agentsStore.selectWorker(worker.id)">
           <span class="worker-dot" :class="'wdot-' + worker.state"></span>
@@ -190,6 +190,7 @@ const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {
 const showGitHubModal = ref(false)
 const currentGuild = computed(() => guildStore.currentGuild)
 const isConnected = computed(() => guildStore.isConnected)
+const onlineWorkers = computed(() => agentsStore.workers.filter(w => w.state !== 'offline'))
 
 const showSpawnForm = ref(false)
 const spawnSelectedRepos = ref<string[]>([])
