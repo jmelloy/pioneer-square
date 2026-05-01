@@ -7,7 +7,14 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "type-check": "vue-tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint . --fix",
+    "lint:check": "eslint .",
+    "format": "prettier --write \"src/**/*.{ts,js,vue,json,css,md}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,js,vue,json,css,md}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "pinia": "^3.0.4",
@@ -15,11 +22,27 @@
     "vue-router": "^5.0.6"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.6",
+    "@eslint/js": "^10.0.1",
+    "@pinia/testing": "^1.0.3",
     "@types/node": "^22.10.0",
+    "@vitejs/plugin-vue": "^6.0.6",
+    "@vitest/coverage-v8": "^4.1.5",
+    "@vue/eslint-config-prettier": "^10.2.0",
+    "@vue/eslint-config-typescript": "^14.7.0",
+    "@vue/test-utils": "^2.4.10",
+    "eslint": "^10.2.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.5",
+    "eslint-plugin-vue": "^10.9.0",
+    "globals": "^17.5.0",
+    "happy-dom": "^20.9.0",
     "playwright": "^1.59.1",
+    "prettier": "^3.8.3",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8.59.1",
     "vite": "^8.0.10",
+    "vitest": "^4.1.5",
+    "vue-eslint-parser": "^10.4.0",
     "vue-tsc": "^2.1.10"
   }
 }

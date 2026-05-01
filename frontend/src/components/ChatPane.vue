@@ -253,7 +253,7 @@ async function sendMessage() {
   // Auto-assign to first idle worker if the message matches issue pattern
   const match = text.match(ISSUE_PATTERN)
   if (match) {
-    const [, issueNum, repoName, title] = match
+    const [, issueNum, repoName] = match
     const worker = agentsStore.firstIdleWorker()
     if (worker) {
       try {
