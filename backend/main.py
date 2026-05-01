@@ -50,6 +50,17 @@ def _row(obj) -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # Uvicorn sets the root logger to WARNING, so foreman.* logs would be silently
+    # dropped without an explicit handler.  Wire up a StreamHandler on the foreman
+    # package logger so debug output reaches the console regardless of root level.
+    foreman_log = logging.getLogger("foreman")
+    foreman_log.setLevel(logging.DEBUG)
+    if not foreman_log.handlers:
+        _h = logging.StreamHandler()
+        _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+        foreman_log.addHandler(_h)
+    foreman_log.propagate = False
+    foreman_log.info("foreman logger active (level=DEBUG)")
     yield
 
 app = FastAPI(title="Pioneer Square", lifespan=lifespan)

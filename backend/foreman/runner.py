@@ -113,6 +113,8 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
     finally:
         await db.close()
 
+    logger.debug("guild=%s _load_history: %d total turns in DB for user=%s", guild_id, len(turns), user_id)
+
     if not turns:
         return []
 
@@ -136,6 +138,12 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
     while messages and messages[0]["role"] != "user":
         messages.pop(0)
 
+    logger.debug(
+        "guild=%s _load_history: cutoff at turn index %d → %d messages after trim "
+        "(roles: %s)",
+        guild_id, cutoff, len(messages),
+        [m["role"] for m in messages],
+    )
     return messages
 
 
@@ -247,22 +255,43 @@ async def run_foreman_ai(
     tasks_block = json.dumps(summarized_tasks[:6], indent=2)
     system = build_system_prompt(workers_block, tasks_block, extra_context, primary_repo=primary_repo)
 
+    logger.info(
+        "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
+        "system_prompt_chars=%d extra_context_chars=%d",
+        guild_id, len(worker_rows), len(summarized_tasks), len(system), len(extra_context),
+    )
+    logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
+    logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
+
     # Persist and load the new human turn
     await _save_turn(guild_id, user_id, "user", human_message)
     messages = await _load_history(guild_id, user_id)
+
+    logger.info(
+        "guild=%s run_foreman_ai: %d messages loaded from history; human_message_chars=%d",
+        guild_id, len(messages), len(human_message),
+    )
 
     client = _anthropic.AsyncAnthropic()
 
     try:
         text_parts = []
-        for _ in range(6):  # safety cap on tool-call rounds
+        for round_num in range(6):  # safety cap on tool-call rounds
             messages = prune_history(messages)
+            logger.info(
+                "guild=%s run_foreman_ai round %d: sending %d messages to Claude",
+                guild_id, round_num, len(messages),
+            )
             resp = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
                 system=system,
                 messages=messages,
                 tools=FOREMAN_TOOLS,
+            )
+            logger.info(
+                "guild=%s run_foreman_ai round %d: stop_reason=%s content_blocks=%d",
+                guild_id, round_num, resp.stop_reason, len(resp.content),
             )
 
             # Persist assistant turn and append to local messages
@@ -289,11 +318,11 @@ async def run_foreman_ai(
                 guild_id, user_id, "user", trimmed,
                 is_tool_response=True, parent_id=asst_turn_id,
             )
-            logger.debug(
-                "guild=%s appending %d tool_result(s): %s",
-                guild_id,
+            logger.info(
+                "guild=%s round %d: %d tool call(s) dispatched: %s",
+                guild_id, round_num,
                 len(trimmed),
-                [{"tool_use_id": r["tool_use_id"], "is_error": r.get("is_error", False)} for r in trimmed],
+                [{"tool_use_id": r["tool_use_id"], "name": r.get("name"), "is_error": r.get("is_error", False)} for r in trimmed],
             )
             messages.append({"role": "user", "content": trimmed})
 
