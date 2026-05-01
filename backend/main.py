@@ -48,6 +48,7 @@ from foreman import (
     clear_foreman_history,
     get_foreman_history,
     maybe_post_plan_comment,
+    reset_foreman_poll,
     run_foreman_ai,
 )
 
@@ -680,6 +681,8 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     "joinedAt": joined_at,
                 }
                 await broadcast(guild_id, broadcast_msg)
+                if agent_type == "worker":
+                    reset_foreman_poll(guild_id)
 
             elif msg_type == "agent-state":
                 agent_id = data.get("agentId")
@@ -754,6 +757,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         )
                     else:
                         asyncio.create_task(run_foreman_ai(guild_id, content, user_id=ws_user_id))
+                        reset_foreman_poll(guild_id)
 
             elif msg_type == "terminal-output":
                 msg_agent_id = data.get("agentId")
@@ -832,6 +836,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                             "state": "offline",
                         },
                     )
+                reset_foreman_poll(guild_id)
 
             elif msg_type == "task-update":
                 # Worker is reporting a task state change; persist + rebroadcast.
@@ -897,6 +902,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                                 "as done — no foreman action required.",
                             )
                         )
+                        reset_foreman_poll(guild_id)
                     else:
                         asyncio.create_task(
                             run_foreman_ai(
@@ -908,6 +914,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                                 "Otherwise call finalize_task to mark it complete.",
                             )
                         )
+                        reset_foreman_poll(guild_id)
 
             elif msg_type == "task-followup-done":
                 task_id = data.get("taskId")
@@ -926,6 +933,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                             "Decide: call send_followup for more work, or call finalize_task to mark it done.",
                         )
                     )
+                    reset_foreman_poll(guild_id)
 
             elif msg_type == "needs-input":
                 # Worker escalation: broadcast to frontend and loop the foreman in.

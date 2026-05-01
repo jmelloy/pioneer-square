@@ -1,5 +1,6 @@
 """Foreman AI runner: conversation management and main loop."""
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -26,6 +27,12 @@ MAX_HISTORY_MESSAGES = 20  # sliding window cap on messages sent to Anthropic
 _HUMAN_TURN_WINDOW = 5  # how many non-tool-response user turns to load from DB
 _TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
 _24H_SECS = 86_400
+
+POLL_MIN_SECS = 60      # initial poll interval: 1 minute
+POLL_MAX_SECS = 3600    # maximum poll interval: 60 minutes
+
+# Per-guild background poll task registry
+_poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 
 
 def truncate_tool_result(content: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
@@ -272,6 +279,83 @@ async def _save_turn(
         return turn.id
     finally:
         await db.close()
+
+
+async def _poll_loop(guild_id: str) -> None:
+    """Background loop: check non-terminal tasks and call the foreman if any are found.
+
+    Interval doubles each cycle from POLL_MIN_SECS up to POLL_MAX_SECS.
+    Cancelled (via reset_foreman_poll) whenever a significant event arrives.
+    The foreman-poll-status broadcast is sent after each poll so the UI can
+    display the countdown to the *next* check.
+    """
+    interval = POLL_MIN_SECS
+    while True:
+        try:
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+
+        # Bail if this task was superseded by a reset.
+        if asyncio.current_task() is not _poll_tasks.get(guild_id):
+            return
+
+        # Query non-terminal tasks for this guild.
+        db = await get_db()
+        try:
+            result = await db.execute(
+                select(Task.id, Task.state, Task.name).where(
+                    Task.guild_id == guild_id,
+                    ~Task.state.in_(list(_TERMINAL_STATES)),
+                )
+            )
+            active_tasks = [dict(r._mapping) for r in result.fetchall()]
+        finally:
+            await db.close()
+
+        n = len(active_tasks)
+        next_interval = min(interval * 2, POLL_MAX_SECS)
+        logger.debug(
+            "guild=%s polling %d active tasks, next check in %.0fm",
+            guild_id,
+            n,
+            next_interval / 60,
+        )
+
+        if active_tasks:
+            task_summary = "; ".join(
+                f"{t['id']} ({t['state']})" for t in active_tasks[:8]
+            )
+            msg = (
+                f"[periodic-check] Automated status poll — {n} non-terminal "
+                f"task(s): {task_summary}. Check whether any are stalled. "
+                "Use get_task_status to inspect a task if it looks stuck. "
+                "If everything looks healthy, no action is needed."
+            )
+            asyncio.create_task(run_foreman_ai(guild_id, msg))
+
+        # Announce next check interval so the UI can display a countdown.
+        interval = next_interval
+        try:
+            await broadcast(
+                guild_id,
+                {"type": "foreman-poll-status", "nextCheckIn": interval},
+            )
+        except Exception:
+            pass
+
+
+def reset_foreman_poll(guild_id: str) -> None:
+    """Cancel any running poll loop for this guild and start a fresh one at POLL_MIN_SECS.
+
+    Call whenever a significant event occurs (human message, worker state change,
+    task transition) to reset the backoff so the next check happens in 1 minute.
+    """
+    old = _poll_tasks.pop(guild_id, None)
+    if old and not old.done():
+        old.cancel()
+    task = asyncio.create_task(_poll_loop(guild_id))
+    _poll_tasks[guild_id] = task
 
 
 async def run_foreman_ai(
