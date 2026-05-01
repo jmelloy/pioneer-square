@@ -188,6 +188,7 @@ class Worker:
                     await self._emit("[auth] Waiting for auth code — paste it into the auth panel in the UI or type it into the Foreman Comms input...")
                     try:
                         code = await asyncio.wait_for(self._auth_code_queue.get(), timeout=300.0)
+                        await self._emit("[auth] Code received — submitting to Claude CLI...")
                         proc.stdin.write((code.strip() + "\n").encode())
                         await proc.stdin.drain()
                         proc.stdin.close()
