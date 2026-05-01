@@ -1,42 +1,7 @@
 <template>
   <aside class="sidebar panel-bg">
-    <div v-if="currentGuild" class="guild-name-bar">
-      <template v-if="renamingGuild">
-        <input
-          ref="renameInput"
-          v-model="renameValue"
-          class="guild-rename-input"
-          @keydown.enter="commitRename"
-          @keydown.escape="cancelRename"
-          @blur="commitRename"
-        />
-      </template>
-      <template v-else>
-        <span class="guild-name-text" @click="startRename" title="Click to rename">{{ currentGuild.name }}</span>
-        <button class="rename-btn" @click="startRename" title="Rename guild">✎</button>
-      </template>
-    </div>
-
-    <div v-if="currentGuild" class="primary-repo-bar">
-      <span class="primary-repo-bar-label">Primary repo:</span>
-      <select
-        v-model="primaryRepoValue"
-        class="primary-repo-bar-select"
-        @change="savePrimaryRepo"
-      >
-        <option value="">— select primary repo —</option>
-        <option v-for="repo in ghStore.repos" :key="repo.full_name" :value="repo.full_name">
-          {{ repo.full_name }}
-        </option>
-      </select>
-      <span v-if="saveStatus" class="primary-repo-save-status" :class="'save-status-' + saveStatus">
-        {{ saveStatus === 'saved' ? 'Saved' : 'Error' }}
-      </span>
-    </div>
-
     <div class="sidebar-header">
       <span class="sidebar-title">Tasks</span>
-      <button class="pixel-btn new-btn" @click="goHome">⌂ Home</button>
     </div>
 
     <div class="tasks-list">
@@ -141,19 +106,20 @@
     </div>
 
     <div class="sidebar-footer">
-      <div class="gh-block" @click="showGitHubModal = true" :title="authStore.user ? 'GitHub: ' + authStore.user.login : 'Configure GitHub'">
-        <div class="gh-inner" :class="{ configured: authStore.isLoggedIn }">
-          <img v-if="authStore.isLoggedIn" :src="authStore.user?.avatar_url" class="gh-avatar" alt="gh" />
-          <span v-else class="gh-icon">⚙</span>
-          <div class="gh-text">
-            <span v-if="authStore.isLoggedIn" class="gh-login">{{ authStore.user?.login }}</span>
-            <span v-else class="gh-setup">Connect GitHub</span>
-            <span class="gh-repos" v-if="authStore.isLoggedIn && ghStore.selectedRepos.length > 0">
-              {{ ghStore.selectedRepos.length }} repo{{ ghStore.selectedRepos.length !== 1 ? 's' : '' }}
-            </span>
-          </div>
-        </div>
-      </div>
+      <button
+        v-if="authStore.isLoggedIn"
+        class="gh-config-btn"
+        @click="showGitHubModal = true"
+        :title="'GitHub: ' + authStore.user?.login"
+      >
+        <span class="gh-icon">⚙</span>
+        <span class="gh-text">
+          Configure GitHub
+          <span v-if="ghStore.selectedRepos.length > 0" class="gh-repos">
+            ({{ ghStore.selectedRepos.length }} repo{{ ghStore.selectedRepos.length !== 1 ? 's' : '' }})
+          </span>
+        </span>
+      </button>
 
       <div class="connection-status" :class="{ connected: isConnected }">
         <span class="status-dot"></span>
@@ -166,8 +132,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, inject, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, inject, onMounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useAuthStore } from '../stores/auth'
@@ -178,7 +143,6 @@ import GitHubConfigModal from './GitHubConfigModal.vue'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
-const router = useRouter()
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 const authStore = useAuthStore()
@@ -244,64 +208,11 @@ async function launchWorker() {
   }
 }
 
-const primaryRepoValue = ref('')
-const saveStatus = ref('')
-let saveStatusTimer: ReturnType<typeof setTimeout> | null = null
-
-watch(currentGuild, (guild) => {
-  primaryRepoValue.value = guild?.primary_repo ?? ''
-}, { immediate: true })
-
-async function savePrimaryRepo() {
-  if (!currentGuild.value) return
-  try {
-    await guildStore.updateGuild(currentGuild.value.id, {
-      primary_repo: primaryRepoValue.value || null,
-    })
-    saveStatus.value = 'saved'
-  } catch (e) {
-    console.error('Failed to save primary repo', e)
-    saveStatus.value = 'error'
-  } finally {
-    if (saveStatusTimer) clearTimeout(saveStatusTimer)
-    saveStatusTimer = setTimeout(() => { saveStatus.value = '' }, 2000)
-  }
-}
-
 onMounted(async () => {
   if (ghStore.repos.length === 0 && ghStore.token) {
     await ghStore.fetchRepos()
   }
 })
-
-const renamingGuild = ref(false)
-const renameValue = ref('')
-const renameInput = ref<HTMLInputElement | null>(null)
-
-async function startRename() {
-  if (!currentGuild.value) return
-  renameValue.value = currentGuild.value.name || ''
-  renamingGuild.value = true
-  await nextTick()
-  renameInput.value?.select()
-}
-
-async function commitRename() {
-  if (!renamingGuild.value) return
-  renamingGuild.value = false
-  const trimmed = renameValue.value.trim()
-  if (trimmed && currentGuild.value && trimmed !== currentGuild.value.name) {
-    try {
-      await guildStore.renameGuild(currentGuild.value.id, trimmed)
-    } catch (e) {
-      console.error('Failed to rename guild', e)
-    }
-  }
-}
-
-function cancelRename() {
-  renamingGuild.value = false
-}
 
 const groupedTasks = computed(() => {
   const now = new Date()
@@ -329,10 +240,6 @@ const groupedTasks = computed(() => {
 
   return Array.from(groupMap.entries()).map(([label, tasks]) => ({ label, tasks }))
 })
-
-function goHome() {
-  router.push('/')
-}
 
 function openTask(taskId: string) {
   tasksStore.selectTask(taskId)
@@ -378,70 +285,6 @@ function formatTime(isoStr?: string) {
   overflow: hidden;
 }
 
-.guild-name-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px 6px;
-  border-bottom: 1px solid var(--color-brass-dark);
-  background: var(--color-bg);
-  flex-shrink: 0;
-  min-height: 32px;
-}
-
-.guild-name-text {
-  font-family: var(--font-pixel);
-  font-size: 8px;
-  color: var(--color-brass);
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-  text-shadow: 0 0 6px rgba(255, 214, 68, 0.3);
-  transition: color 0.12s;
-}
-
-.guild-name-text:hover {
-  color: var(--color-brass-light);
-}
-
-.rename-btn {
-  background: none;
-  border: none;
-  color: var(--color-brass-dark);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 1px 3px;
-  border-radius: 2px;
-  line-height: 1;
-  opacity: 0.5;
-  transition: opacity 0.12s, background 0.12s;
-  flex-shrink: 0;
-}
-
-.rename-btn:hover {
-  opacity: 1;
-  background: rgba(232, 170, 0, 0.1);
-}
-
-.guild-rename-input {
-  flex: 1;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-brass);
-  color: var(--color-brass-light);
-  font-family: var(--font-pixel);
-  font-size: 8px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  padding: 3px 6px;
-  outline: none;
-  border-radius: 2px;
-  min-width: 0;
-}
-
 .sidebar-header {
   padding: 12px 10px;
   border-bottom: 2px solid var(--color-brass-dark);
@@ -459,11 +302,6 @@ function formatTime(isoStr?: string) {
   letter-spacing: 2px;
   text-transform: uppercase;
   text-shadow: 0 0 6px rgba(255, 214, 68, 0.4);
-}
-
-.new-btn {
-  font-size: 7px;
-  padding: 4px 7px;
 }
 
 /* ── Unified task list ── */
@@ -760,53 +598,6 @@ function formatTime(isoStr?: string) {
   text-overflow: ellipsis;
 }
 
-.primary-repo-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-bottom: 1px solid var(--color-brass-dark);
-  background: var(--color-bg-secondary);
-  flex-shrink: 0;
-  min-height: 26px;
-}
-
-.primary-repo-bar-label {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  color: var(--color-brass-dark);
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.primary-repo-bar-select {
-  flex: 1;
-  background: var(--color-bg);
-  border: 1px solid var(--color-brass-dark);
-  color: var(--color-text);
-  font-size: 9px;
-  padding: 2px 4px;
-  outline: none;
-  border-radius: 2px;
-  min-width: 0;
-}
-
-.primary-repo-bar-select:focus {
-  border-color: var(--color-brass);
-}
-
-.primary-repo-save-status {
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.save-status-saved { color: var(--color-green); }
-.save-status-error { color: var(--color-red); }
-
 /* Worker top-level row */
 .worker-row {
   display: flex;
@@ -924,63 +715,38 @@ function formatTime(isoStr?: string) {
   flex-shrink: 0;
 }
 
-/* ── GitHub block ── */
-.gh-block {
-  cursor: pointer;
-  border: 1px solid var(--color-brass-dark);
-  transition: all 0.15s;
-  border-radius: 2px;
-}
-
-.gh-block:hover {
-  border-color: var(--color-brass);
-  background: rgba(232, 170, 0, 0.06);
-}
-
-.gh-inner {
+/* ── GitHub config button ── */
+.gh-config-btn {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 7px 9px;
+  background: transparent;
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.15s;
+  width: 100%;
+  text-align: left;
 }
 
-.gh-inner.configured {
-  border-left: 3px solid var(--color-teal);
-}
-
-.gh-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 1px solid var(--color-teal);
-  flex-shrink: 0;
+.gh-config-btn:hover {
+  border-color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.06);
 }
 
 .gh-icon {
-  font-size: 16px;
+  font-size: 14px;
   color: var(--color-brass-dark);
   flex-shrink: 0;
 }
 
 .gh-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  overflow: hidden;
-}
-
-.gh-login {
-  font-family: var(--font-pixel);
-  font-size: 7px;
-  color: var(--color-teal);
+  font-size: 11px;
+  color: var(--color-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.gh-setup {
-  font-size: 10px;
-  color: var(--color-text-dim);
 }
 
 .gh-repos {
