@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import re
+import socket
 import string
 from datetime import datetime, timezone
 from typing import Optional
@@ -74,7 +75,7 @@ class Worker:
         async with await self._http() as client:
             resp = await client.post(
                 f"/guilds/{self.cfg.guild_id}/workers",
-                json={"repos": self.cfg.repos, "github_token": None},
+                json={"repos": self.cfg.repos, "github_token": None, "hostname": socket.gethostname()},
             )
             resp.raise_for_status()
             wid = resp.json()["id"]
@@ -291,10 +292,13 @@ class Worker:
         })
 
     async def _join(self) -> None:
+        hostname = socket.gethostname()
+        host_prefix = hostname[:3].upper()
         for slot in self.slots:
             raw = slot.agent_id[2:].upper()
             split = 2 + sum(ord(c) for c in raw) % 3
-            name = self.cfg.worker_name or f"{raw[:split]}-{raw[split:]}"
+            droid = f"{raw[:split]}-{raw[split:]}"
+            name = self.cfg.worker_name or f"{host_prefix}/{droid}"
             await self._send({
                 "type": "join",
                 "agentId": slot.agent_id,

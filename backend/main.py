@@ -130,10 +130,13 @@ def generate_guild_id():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
-def _worker_name(worker_id: str) -> str:
+def _worker_name(worker_id: str, hostname: Optional[str] = None) -> str:
     raw = worker_id[2:].upper()
     split = 2 + sum(ord(c) for c in raw) % 3
-    return f"{raw[:split]}-{raw[split:]}"
+    droid = f"{raw[:split]}-{raw[split:]}"
+    if hostname:
+        return f"{hostname[:3].upper()}/{droid}"
+    return droid
 
 
 class GuildCreate(BaseModel):
@@ -155,6 +158,7 @@ class RunAgentRequest(BaseModel):
 class WorkerCreate(BaseModel):
     repos: List[str]                  # ["owner/repo", ...]
     github_token: Optional[str] = None
+    hostname: Optional[str] = None
 
 class SpawnWorkerRequest(BaseModel):
     repos: List[str]
@@ -1213,7 +1217,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
     using the returned id (see the standalone /worker package)."""
     worker_id   = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     created_at  = datetime.now(timezone.utc).isoformat()
-    worker_name = _worker_name(worker_id)
+    worker_name = _worker_name(worker_id, data.hostname)
 
     db = await get_db()
     try:
