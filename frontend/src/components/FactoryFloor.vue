@@ -169,7 +169,7 @@ interface Station extends Position { task: Task | null }
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
-const agents = computed(() => agentsStore.agents)
+const agents = computed(() => agentsStore.agents.filter(a => a.state !== 'offline'))
 
 const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
 
