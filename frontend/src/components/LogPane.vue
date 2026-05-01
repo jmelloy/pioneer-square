@@ -778,10 +778,7 @@ function lineClass(line: string) {
   font-size: 10px;
   color: var(--color-teal);
   font-family: var(--font-mono);
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  word-break: break-all;
 }
 
 .sub-pr-link {
