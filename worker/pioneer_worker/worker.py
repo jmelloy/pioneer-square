@@ -164,6 +164,7 @@ class Worker:
         from pathlib import Path
 
         self._auth_code_queue = asyncio.Queue()
+        logger.info("Starting claude auth login — auth_code_queue is now open")
         proc = await asyncio.create_subprocess_exec(
             self.cfg.claude_path, "auth", "login",
             stdin=asyncio.subprocess.PIPE,
@@ -190,6 +191,7 @@ class Worker:
                     await self._emit("[auth] Waiting for auth code — paste it into the auth panel in the UI or type it into the Foreman Comms input...")
                     try:
                         code = await asyncio.wait_for(self._auth_code_queue.get(), timeout=300.0)
+                        await self._emit("[auth] Code received — submitting to Claude CLI...")
                         proc.stdin.write((code.strip() + "\n").encode())
                         await proc.stdin.drain()
                         proc.stdin.close()
@@ -203,6 +205,7 @@ class Worker:
             self._auth_code_queue = None
 
         await proc.wait()
+        logger.info("claude auth login exited with rc=%s", proc.returncode)
 
         if not await self._claude_is_authenticated():
             await self._emit("[auth] Login may have failed — claude auth status returned non-zero")
@@ -433,7 +436,7 @@ class Worker:
                     # message as the auth code so the foreman can relay it.
                     if self._auth_code_queue is not None:
                         await self._auth_code_queue.put(text)
-                        logger.info("Auth code received via worker-message (login flow)")
+                        logger.info("Auth code received via worker-message (login flow) len=%d", len(text))
                         await self._emit("[worker] Auth code received and forwarded to login flow")
                     else:
                         active = next((s for s in self.slots if s.current_claude), None)
@@ -447,14 +450,23 @@ class Worker:
                             logger.debug("worker-message: no claude running; dropping")
 
             elif mtype == "worker-auth-response":
-                if msg.get("workerId") != self.cfg.worker_id:
+                msg_worker_id = msg.get("workerId")
+                logger.info("worker-auth-response received: msg_workerId=%s our_workerId=%s code_len=%d queue_open=%s",
+                            msg_worker_id, self.cfg.worker_id,
+                            len(msg.get("code", "")),
+                            self._auth_code_queue is not None)
+                if msg_worker_id != self.cfg.worker_id:
+                    logger.warning("worker-auth-response workerId mismatch — ignoring")
                     continue
                 code = msg.get("code", "")
+                if not code:
+                    logger.warning("worker-auth-response has empty code — ignoring")
+                    continue
                 if self._auth_code_queue is not None:
                     await self._auth_code_queue.put(code)
-                    logger.info("Auth code received from UI")
+                    logger.info("Auth code queued (len=%d)", len(code))
                 else:
-                    logger.warning("worker-auth-response received but no auth in progress")
+                    logger.warning("worker-auth-response received but no auth in progress (queue is None)")
 
             elif mtype == "task-followup":
                 if msg.get("workerId") != self.cfg.worker_id:

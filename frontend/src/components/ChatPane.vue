@@ -294,11 +294,19 @@ function submitAuthCode() {
   const pending = claudeAuthPending.value
   const code = authCodeInput.value.trim()
   if (!pending || !code) return
-  guildStore.sendMessage({
+  const sent = guildStore.sendMessage({
     type: 'worker-auth-response',
     workerId: pending.workerId,
     code,
   })
+  if (!sent) {
+    guildStore.messages.push({
+      type: 'chat', from: 'system', to: 'user',
+      content: '⚠ Connection not ready — please wait a moment and try again.',
+      createdAt: new Date().toISOString(),
+    })
+    return
+  }
   claudeAuthPending.value = null
   authCodeInput.value = ''
 }

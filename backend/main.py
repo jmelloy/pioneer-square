@@ -684,6 +684,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     if pending_workers:
                         pending_worker_id = next(iter(pending_workers))
                         pending_workers.pop(pending_worker_id)
+                        logger.info("chat intercepted as auth code for %s in guild %s code_len=%d", pending_worker_id, guild_id, len(content))
                         await broadcast(guild_id, {
                             "type": "worker-auth-response",
                             "workerId": pending_worker_id,
@@ -860,11 +861,13 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
 
             elif msg_type == "claude-auth-required":
                 # Worker needs Claude authentication; broadcast URL to UI and loop foreman in.
-                await broadcast(guild_id, data, exclude=websocket)
                 worker_id = data.get("workerId", "a worker")
                 auth_url = data.get("url", "")
+                logger.info("claude-auth-required from %s in guild %s url=%s", worker_id, guild_id, auth_url[:80])
+                await broadcast(guild_id, data, exclude=websocket)
                 # Track so new frontend connections can restore the auth panel.
                 pending_claude_auth.setdefault(guild_id, {})[worker_id] = auth_url
+                logger.info("pending_claude_auth now has %d entries for guild %s", len(pending_claude_auth.get(guild_id, {})), guild_id)
                 asyncio.create_task(run_foreman_ai(
                     guild_id,
                     f"Worker {worker_id} needs Claude authentication. "
@@ -878,7 +881,11 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 # Human is submitting an auth code; clear pending state and
                 # broadcast to all connections so the waiting worker receives it.
                 worker_id = data.get("workerId", "")
+                code_len = len(data.get("code", ""))
+                logger.info("worker-auth-response for %s in guild %s code_len=%d", worker_id, guild_id, code_len)
                 pending_claude_auth.get(guild_id, {}).pop(worker_id, None)
+                peer_count = len(connections.get(guild_id, []))
+                logger.info("broadcasting worker-auth-response to %d connections in guild %s", peer_count, guild_id)
                 await broadcast(guild_id, data)
 
             elif msg_type in ("offer", "answer", "ice-candidate"):
