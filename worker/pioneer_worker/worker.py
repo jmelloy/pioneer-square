@@ -30,7 +30,7 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _slug(text: str, max_len: int = 45) -> str:
+def _slug(text: str, max_len: int = 60) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text[:max_len].lower()).strip("-")
 
 
@@ -771,6 +771,7 @@ class Worker:
                         "id": task_id,
                         "worker_id": self.cfg.worker_id,
                         "guild_id": self.cfg.guild_id,
+                        "name": msg.get("name", ""),
                         "description": msg.get("description", ""),
                         "tool": msg.get("tool", "claude"),
                         "issue_number": msg.get("issueNumber"),
@@ -1045,6 +1046,16 @@ class Worker:
         try:
             # ── Main execution with redirect loop ──────────────────────────
             current_desc = desc
+            if tool == "claude":
+                pr_title = (task.get("name") or desc)[:72].replace('"', "'")
+                closes = f" Closes #{task['issue_number']}" if task.get("issue_number") else ""
+                current_desc = (
+                    f"{desc}\n\n"
+                    f"After completing your changes, commit, push, and open a PR:\n"
+                    f'  git add -A && git commit -m "<concise commit message>"\n'
+                    f"  git push origin {branch}\n"
+                    f'  gh pr create --title "{pr_title}" --body "<summary of changes>{closes}"\n'
+                )
             success = False
             stop_reason = "no_events"
             last_msg = ""
@@ -1124,7 +1135,15 @@ class Worker:
             pr_url: str | None = None
 
             if success:
-                if push_ok:
+                existing_pr = await github_pr.find_existing_pr(
+                    branch=branch,
+                    worktree_path=primary_wt,
+                    token=token,
+                )
+                if existing_pr:
+                    pr_url = existing_pr
+                    await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
+                elif push_ok:
                     pr_url = await github_pr.open_pr(
                         task=task,
                         branch=branch,
@@ -1132,7 +1151,7 @@ class Worker:
                         token=token,
                         emit=emit,
                     )
-                logger.info("Task %s: pushed pr_url=%s", task_id, pr_url)
+                logger.info("Task %s: pr_url=%s", task_id, pr_url)
 
                 await self._task_update(
                     task_id,
@@ -1270,13 +1289,22 @@ class Worker:
                         # Originally-failed tasks never opened a PR; do it now
                         # that we have something worth reviewing.
                         if not pr_url:
-                            pr_url = await github_pr.open_pr(
-                                task=task,
+                            existing_pr = await github_pr.find_existing_pr(
                                 branch=branch,
                                 worktree_path=primary_wt,
                                 token=token,
-                                emit=emit,
                             )
+                            if existing_pr:
+                                pr_url = existing_pr
+                                await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
+                            else:
+                                pr_url = await github_pr.open_pr(
+                                    task=task,
+                                    branch=branch,
+                                    worktree_path=primary_wt,
+                                    token=token,
+                                    emit=emit,
+                                )
 
                     await self._send(
                         {

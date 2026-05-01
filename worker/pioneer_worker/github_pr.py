@@ -44,6 +44,47 @@ async def push_branch(
     return True
 
 
+async def find_existing_pr(
+    *,
+    branch: str,
+    worktree_path: str,
+    token: str | None,
+) -> str | None:
+    """Return the HTML URL of an open PR for *branch*, or None."""
+    if not token:
+        return None
+
+    repo_full = None
+    rc, url, _ = await git_ops.run_git(["remote", "get-url", "origin"], cwd=worktree_path)
+    if rc == 0:
+        m = re.search(r"github\.com[:/](.+?/[^/\s]+?)(?:\.git)?$", url.strip())
+        if m:
+            repo_full = m.group(1)
+    if not repo_full:
+        return None
+
+    owner = repo_full.split("/")[0]
+
+    def _list_prs() -> list:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo_full}/pulls?head={owner}:{branch}&state=open",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+
+    try:
+        pulls = await asyncio.to_thread(_list_prs)
+        if pulls:
+            return pulls[0].get("html_url")
+    except Exception:
+        pass
+    return None
+
+
 async def open_pr(
     *,
     task: dict,
@@ -68,11 +109,17 @@ async def open_pr(
         await emit("[worker] Could not determine repo — skipping PR")
         return None
 
-    issue_ref = f"\n\nCloses #{task['issue_number']}" if task.get("issue_number") else ""
-    body = f"Automated by Pioneer Square worker agent.{issue_ref}"
+    task_name = task.get("name") or task.get("description") or ""
+    task_id = task.get("id") or ""
+    closes_line = f"\n\nCloses #{task['issue_number']}" if task.get("issue_number") else ""
+    body = (
+        f"**Task:** {task_name}\n"
+        f"**Task ID:** `{task_id}`\n\n"
+        f"Automated by Pioneer Square worker agent.{closes_line}"
+    )
     payload = json.dumps(
         {
-            "title": (task.get("description") or "")[:72],
+            "title": task_name[:72] or (task.get("description") or "")[:72],
             "body": body,
             "head": branch,
             "base": "main",
