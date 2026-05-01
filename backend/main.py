@@ -830,6 +830,19 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 )
                 asyncio.create_task(run_foreman_ai(guild_id, escalation))
 
+            elif msg_type == "claude-auth-required":
+                # Worker needs Claude authentication; broadcast URL to UI and loop foreman in.
+                await broadcast(guild_id, data, exclude=websocket)
+                worker_id = data.get("workerId", "a worker")
+                auth_url = data.get("url", "")
+                asyncio.create_task(run_foreman_ai(
+                    guild_id,
+                    f"Worker {worker_id} needs Claude authentication. "
+                    f"Auth URL: {auth_url}. "
+                    "A human must visit this URL, complete authentication, then paste the "
+                    "resulting code into the FOREMAN COMMS panel. The worker is waiting.",
+                ))
+
             elif msg_type in ("offer", "answer", "ice-candidate"):
                 # WebRTC signaling - forward to all
                 await broadcast(guild_id, data, exclude=websocket)

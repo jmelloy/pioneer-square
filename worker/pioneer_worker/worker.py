@@ -57,6 +57,8 @@ class Worker:
         self._cancelled_tasks: set[str] = set()
         # Per-task queues for mid-run redirect instructions (SIGTERM + --resume)
         self._redirect_queues: dict[str, asyncio.Queue] = {}
+        # Queue for auth codes received from the UI during claude auth login
+        self._auth_code_queue: asyncio.Queue[str] | None = None
         # One slot per concurrent agent; each gets a stable ID for the guild.
         self.slots: list[_AgentSlot] = [
             _AgentSlot(_gen_id("a-")) for _ in range(cfg.max_agents)
@@ -153,23 +155,51 @@ class Worker:
         await self._run_claude_login()
 
     async def _run_claude_login(self) -> None:
-        """Run `claude auth login`, stream output to the frontend, then persist credentials."""
+        """Run `claude auth login`, surface the URL to the UI, wait for the code, then persist credentials."""
         import base64
         import io
         import tarfile
         from pathlib import Path
 
+        self._auth_code_queue = asyncio.Queue()
         proc = await asyncio.create_subprocess_exec(
             self.cfg.claude_path, "auth", "login",
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
         assert proc.stdout is not None
-        async for raw_line in proc.stdout:
-            line = raw_line.decode(errors="replace").rstrip()
-            logger.info("[claude login] %s", line)
-            await self._emit(f"[auth] {line}")
+        assert proc.stdin is not None
+
+        code_sent = False
+        try:
+            async for raw_line in proc.stdout:
+                line = raw_line.decode(errors="replace").rstrip()
+                logger.info("[claude login] %s", line)
+                await self._emit(f"[auth] {line}")
+
+                if not code_sent and "https://" in line:
+                    url = next((w for w in line.split() if w.startswith("https://")), line.strip())
+                    await self._send({
+                        "type": "claude-auth-required",
+                        "workerId": self.cfg.worker_id,
+                        "url": url,
+                    })
+                    await self._emit("[auth] Waiting for auth code — enter it in the FOREMAN COMMS panel...")
+                    try:
+                        code = await asyncio.wait_for(self._auth_code_queue.get(), timeout=300.0)
+                        proc.stdin.write((code.strip() + "\n").encode())
+                        await proc.stdin.drain()
+                        proc.stdin.close()
+                        code_sent = True
+                    except asyncio.TimeoutError:
+                        await self._emit("[auth] Timed out waiting for auth code — restart the worker to retry")
+                        proc.kill()
+                        await proc.wait()
+                        return
+        finally:
+            self._auth_code_queue = None
+
         await proc.wait()
 
         if not await self._claude_is_authenticated():
@@ -329,6 +359,8 @@ class Worker:
             "Joined guild %s — worker_id=%s agents=%d",
             self.cfg.guild_id, self.cfg.worker_id, len(self.slots),
         )
+        # Start listener before auth check so it can relay auth codes from the UI
+        listener = asyncio.create_task(self._listen())
         await self._check_claude_auth()
         await self._emit("[worker] Online. Watching for tasks.")
         for slot in self.slots:
@@ -341,7 +373,6 @@ class Worker:
             self._known_task_ids.add(task["id"])
             await self.task_queue.put(task)
 
-        listener = asyncio.create_task(self._listen())
         runners  = [asyncio.create_task(self._agent_loop(slot)) for slot in self.slots]
         puller   = asyncio.create_task(self._idle_puller())
         try:
@@ -391,6 +422,16 @@ class Worker:
                             logger.warning("Failed to inject message (stdin closed?)")
                     else:
                         logger.debug("worker-message: no claude running; dropping")
+
+            elif mtype == "worker-auth-response":
+                if msg.get("workerId") != self.cfg.worker_id:
+                    continue
+                code = msg.get("code", "")
+                if self._auth_code_queue is not None:
+                    await self._auth_code_queue.put(code)
+                    logger.info("Auth code received from UI")
+                else:
+                    logger.warning("worker-auth-response received but no auth in progress")
 
             elif mtype == "task-followup":
                 if msg.get("workerId") != self.cfg.worker_id:
