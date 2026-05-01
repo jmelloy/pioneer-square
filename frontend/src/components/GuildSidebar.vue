@@ -17,6 +17,23 @@
       </template>
     </div>
 
+    <div v-if="currentGuild" class="primary-repo-bar">
+      <span class="primary-repo-bar-label">Primary repo:</span>
+      <select
+        v-model="primaryRepoValue"
+        class="primary-repo-bar-select"
+        @change="savePrimaryRepo"
+      >
+        <option value="">— select primary repo —</option>
+        <option v-for="repo in ghStore.repos" :key="repo.full_name" :value="repo.full_name">
+          {{ repo.full_name }}
+        </option>
+      </select>
+      <span v-if="saveStatus" class="primary-repo-save-status" :class="'save-status-' + saveStatus">
+        {{ saveStatus === 'saved' ? 'Saved' : 'Error' }}
+      </span>
+    </div>
+
     <div class="sidebar-header">
       <span class="sidebar-title">Tasks</span>
       <button class="pixel-btn new-btn" @click="goHome">⌂ Home</button>
@@ -138,20 +155,6 @@
         </div>
       </div>
 
-      <div v-if="currentGuild" class="primary-repo-row">
-        <span class="primary-repo-label">PRIMARY REPO</span>
-        <select
-          v-model="primaryRepoValue"
-          class="primary-repo-select"
-          @change="savePrimaryRepo"
-        >
-          <option value="">— none —</option>
-          <option v-for="repo in ghStore.repos" :key="repo.full_name" :value="repo.full_name">
-            {{ repo.full_name }}
-          </option>
-        </select>
-      </div>
-
       <div class="connection-status" :class="{ connected: isConnected }">
         <span class="status-dot"></span>
         {{ isConnected ? 'Connected' : 'Disconnected' }}
@@ -163,7 +166,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, inject } from 'vue'
+import { ref, computed, watch, nextTick, inject, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
@@ -241,6 +244,8 @@ async function launchWorker() {
 }
 
 const primaryRepoValue = ref('')
+const saveStatus = ref('')
+let saveStatusTimer: ReturnType<typeof setTimeout> | null = null
 
 watch(currentGuild, (guild) => {
   primaryRepoValue.value = guild?.primary_repo ?? ''
@@ -252,10 +257,21 @@ async function savePrimaryRepo() {
     await guildStore.updateGuild(currentGuild.value.id, {
       primary_repo: primaryRepoValue.value || null,
     })
+    saveStatus.value = 'saved'
   } catch (e) {
     console.error('Failed to save primary repo', e)
+    saveStatus.value = 'error'
+  } finally {
+    if (saveStatusTimer) clearTimeout(saveStatusTimer)
+    saveStatusTimer = setTimeout(() => { saveStatus.value = '' }, 2000)
   }
 }
+
+onMounted(async () => {
+  if (ghStore.repos.length === 0 && ghStore.token) {
+    await ghStore.fetchRepos()
+  }
+})
 
 const renamingGuild = ref(false)
 const renameValue = ref('')
@@ -743,36 +759,52 @@ function formatTime(isoStr?: string) {
   text-overflow: ellipsis;
 }
 
-.primary-repo-row {
+.primary-repo-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--color-brass-dark);
+  background: var(--color-bg-secondary);
+  flex-shrink: 0;
+  min-height: 26px;
 }
 
-.primary-repo-label {
+.primary-repo-bar-label {
   font-family: var(--font-pixel);
   font-size: 6px;
   color: var(--color-brass-dark);
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
-.primary-repo-select {
+.primary-repo-bar-select {
   flex: 1;
   background: var(--color-bg);
   border: 1px solid var(--color-brass-dark);
   color: var(--color-text);
-  font-size: 10px;
-  padding: 3px 5px;
+  font-size: 9px;
+  padding: 2px 4px;
   outline: none;
   border-radius: 2px;
   min-width: 0;
 }
 
-.primary-repo-select:focus {
+.primary-repo-bar-select:focus {
   border-color: var(--color-brass);
 }
+
+.primary-repo-save-status {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.save-status-saved { color: var(--color-green); }
+.save-status-error { color: var(--color-red); }
 
 /* Worker top-level row */
 .worker-row {
