@@ -126,9 +126,7 @@ def strip_orphaned_tool_results(messages: list[dict]) -> list[dict]:
         content = out[0].get("content")
         if isinstance(content, list):
             new_content = [
-                b
-                for b in content
-                if not (isinstance(b, dict) and b.get("type") == "tool_result")
+                b for b in content if not (isinstance(b, dict) and b.get("type") == "tool_result")
             ]
             if not new_content:
                 out.pop(0)
