@@ -661,8 +661,20 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 })
                 # Route human messages addressed to foreman through the AI.
                 # Each authenticated user gets their own foreman conversation thread.
+                # Exception: if a worker is waiting for a Claude auth code, treat
+                # the next user message as that code and bypass the foreman AI.
                 if from_agent == "user" and to_agent == "foreman" and content:
-                    asyncio.create_task(run_foreman_ai(guild_id, content, user_id=ws_user_id))
+                    pending_workers = pending_claude_auth.get(guild_id, {})
+                    if pending_workers:
+                        pending_worker_id = next(iter(pending_workers))
+                        pending_workers.pop(pending_worker_id)
+                        await broadcast(guild_id, {
+                            "type": "worker-auth-response",
+                            "workerId": pending_worker_id,
+                            "code": content,
+                        })
+                    else:
+                        asyncio.create_task(run_foreman_ai(guild_id, content, user_id=ws_user_id))
 
             elif msg_type == "terminal-output":
                 msg_agent_id = data.get("agentId")
@@ -842,9 +854,8 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     f"Worker {worker_id} needs Claude authentication. "
                     f"Auth URL: {auth_url}. "
                     "A human must visit this URL, complete authentication, then paste the "
-                    "resulting code into the FOREMAN COMMS panel. The worker is waiting. "
-                    "If the human sends a message that looks like an auth code, forward it "
-                    f"immediately to the worker using message_worker(worker_id='{worker_id}', message=<code>).",
+                    "resulting code into the auth panel that has appeared in the chat UI "
+                    "(or type it into the Foreman Comms input). The worker is waiting.",
                 ))
 
             elif msg_type == "worker-auth-response":
