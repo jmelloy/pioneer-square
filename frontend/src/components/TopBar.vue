@@ -15,14 +15,15 @@
 
     <div class="top-bar-spacer"></div>
 
-    <div
+    <button
       v-if="authStore.isLoggedIn"
       class="user-pill"
-      :title="'Signed in as ' + authStore.user?.login"
+      :title="'GitHub settings for ' + authStore.user?.login"
+      @click="showGitHubModal = true"
     >
       <img v-if="authStore.user?.avatar_url" :src="authStore.user.avatar_url" class="user-avatar" alt="" />
       <span class="user-login">{{ authStore.user?.login }}</span>
-    </div>
+    </button>
 
     <button
       v-if="currentGuild"
@@ -81,6 +82,8 @@
       </div>
     </div>
   </header>
+
+  <GitHubConfigModal v-if="showGitHubModal" @close="showGitHubModal = false" />
 </template>
 
 <script setup lang="ts">
@@ -89,6 +92,7 @@ import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useAuthStore } from '../stores/auth'
+import GitHubConfigModal from './GitHubConfigModal.vue'
 
 const router = useRouter()
 const guildStore = useGuildStore()
@@ -97,6 +101,7 @@ const authStore = useAuthStore()
 
 const currentGuild = computed(() => guildStore.currentGuild)
 
+const showGitHubModal = ref(false)
 const showSettings = ref(false)
 const settingsBtnRef = ref<HTMLElement | null>(null)
 const popoverRef = ref<HTMLElement | null>(null)
@@ -264,6 +269,13 @@ function goHome() {
   border: 1px solid var(--color-brass-dark);
   border-radius: 2px;
   flex-shrink: 0;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.user-pill:hover {
+  border-color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.06);
 }
 
 .user-avatar {
