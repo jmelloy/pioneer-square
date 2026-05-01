@@ -223,7 +223,13 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
                 cutoff = i
                 break
 
-    messages = [{"role": t.role, "content": json.loads(t.content_json)} for t in turns[cutoff:]]
+    # Exclude system turns — they are persisted for auditing but must not appear
+    # in the messages array sent to the Anthropic API (system prompt is a top-level param).
+    messages = [
+        {"role": t.role, "content": json.loads(t.content_json)}
+        for t in turns[cutoff:]
+        if t.role != "system"
+    ]
 
     # Anthropic API requires the first message to have role "user"
     while messages and messages[0]["role"] != "user":
@@ -378,6 +384,8 @@ async def run_foreman_ai(
     logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
     logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
 
+    # Persist system prompt for auditing; excluded when rebuilding messages for the API
+    await _save_turn(guild_id, user_id, "system", system)
     # Persist and load the new human turn
     await _save_turn(guild_id, user_id, "user", human_message)
     messages = await _load_history(guild_id, user_id)

@@ -910,6 +910,92 @@ class TestForemanHistory:
         assert not any("Bob" in json.dumps(m) for m in alice_msgs)
         assert not any("Alice" in json.dumps(m) for m in bob_msgs)
 
+    async def test_system_turns_excluded_from_load_history(self, db_session):
+        """System turns must be saved to the DB but never appear in messages returned
+        by _load_history — the Anthropic API requires system as a separate top-level
+        parameter, not a message in the conversation array."""
+        insert_guild(db_session, "g-hist-sys")
+        await _save_turn("g-hist-sys", "u-1", "system", "You are the Foreman AI.")
+        await _save_turn("g-hist-sys", "u-1", "user", "Hello foreman")
+        msgs = await _load_history("g-hist-sys", "u-1")
+        assert all(m["role"] != "system" for m in msgs)
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["content"] == "Hello foreman"
+
+    async def test_system_turns_visible_in_get_foreman_history(self, db_session):
+        """System turns excluded from the API messages list must still be retrievable
+        via get_foreman_history for auditing and debugging."""
+        from foreman.runner import get_foreman_history
+
+        insert_guild(db_session, "g-hist-sys2")
+        await _save_turn("g-hist-sys2", "u-1", "system", "System prompt content")
+        await _save_turn("g-hist-sys2", "u-1", "user", "Human message")
+        history = await get_foreman_history("g-hist-sys2", "u-1")
+        roles = [t["role"] for t in history]
+        assert "system" in roles
+        assert "user" in roles
+        assert len(history) == 2
+
+    async def test_system_turns_not_counted_in_sliding_window(self, db_session):
+        """System turns interspersed with human turns must not affect the 5-turn
+        sliding window — only non-tool-response user turns count."""
+        insert_guild(db_session, "g-hist-sys3")
+        for i in range(7):
+            await _save_turn("g-hist-sys3", "u-1", "system", f"System prompt {i}")
+            await _save_turn("g-hist-sys3", "u-1", "user", f"Human message {i}")
+            await _save_turn("g-hist-sys3", "u-1", "assistant", f"Reply {i}")
+        msgs = await _load_history("g-hist-sys3", "u-1")
+        user_turns = [m for m in msgs if m["role"] == "user"]
+        assert len(user_turns) <= 5
+        assert all(m["role"] != "system" for m in msgs)
+
+    async def test_system_turn_only_returns_empty_history(self, db_session):
+        """If the only saved turn is a system turn, _load_history must return []."""
+        insert_guild(db_session, "g-hist-sys4")
+        await _save_turn("g-hist-sys4", "u-1", "system", "Orphaned system prompt")
+        msgs = await _load_history("g-hist-sys4", "u-1")
+        assert msgs == []
+
+    async def test_tool_use_and_tool_result_saved_and_loaded(self, db_session):
+        """Full tool-use / tool-result round-trip: assistant turn containing a
+        tool_use block paired with a user tool_result turn must survive a DB
+        round-trip and come back with the correct roles and content types."""
+        insert_guild(db_session, "g-hist-toolrt")
+        await _save_turn("g-hist-toolrt", "u-1", "user", "Please create a task")
+        asst_id = await _save_turn(
+            "g-hist-toolrt",
+            "u-1",
+            "assistant",
+            [
+                {"type": "text", "text": "Sure, creating task now."},
+                {"type": "tool_use", "id": "tu-42", "name": "create_task", "input": {"name": "T"}},
+            ],
+        )
+        await _save_turn(
+            "g-hist-toolrt",
+            "u-1",
+            "user",
+            [{"type": "tool_result", "tool_use_id": "tu-42", "content": "Created t-xyz"}],
+            is_tool_response=True,
+            parent_id=asst_id,
+        )
+        msgs = await _load_history("g-hist-toolrt", "u-1")
+        assert len(msgs) == 3
+        assert msgs[0]["role"] == "user"
+        assert msgs[1]["role"] == "assistant"
+        asst_content = msgs[1]["content"]
+        tool_uses = [b for b in asst_content if isinstance(b, dict) and b.get("type") == "tool_use"]
+        assert len(tool_uses) == 1
+        assert tool_uses[0]["id"] == "tu-42"
+        assert msgs[2]["role"] == "user"
+        tool_results = [
+            b for b in msgs[2]["content"] if isinstance(b, dict) and b.get("type") == "tool_result"
+        ]
+        assert len(tool_results) == 1
+        assert tool_results[0]["tool_use_id"] == "tu-42"
+        assert tool_results[0]["content"] == "Created t-xyz"
+
 
 # ---------------------------------------------------------------------------
 # 6. _summarize_task — issue #95
