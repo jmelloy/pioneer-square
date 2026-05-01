@@ -25,7 +25,7 @@ def create_db(db_path: str) -> None:
         engine.dispose()
 
 
-def make_auth_token(db_path: str) -> str:
+def make_auth_token(db_path: str, user_id: str = "gh-user-test", username: str = "testuser") -> str:
     """Insert a test GitHub user + session into *db_path* and return the token."""
     token = "test-session-" + secrets.token_hex(8)
     now = datetime.now(timezone.utc).isoformat()
@@ -34,12 +34,12 @@ def make_auth_token(db_path: str) -> str:
             "INSERT OR IGNORE INTO github_tokens "
             "(github_user_id, github_username, access_token, token_type, scope, "
             "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("gh-user-test", "testuser", "gh_tok_fake", "bearer", "repo", now, now),
+            (user_id, username, "gh_tok_fake", "bearer", "repo", now, now),
         )
         conn.execute(
             "INSERT INTO user_sessions (token, github_user_id, created_at) "
             "VALUES (?, ?, ?)",
-            (token, "gh-user-test", now),
+            (token, user_id, now),
         )
         conn.commit()
     return token

@@ -1657,33 +1657,35 @@ async def redirect_task_endpoint(guild_id: str, task_id: str, data: RedirectCrea
 # ---------------------------------------------------------------------------
 
 @app.get("/guilds/{guild_id}/foreman/context")
-async def get_foreman_context(guild_id: str):
-    """Return the stored foreman conversation turns for this guild (debug view)."""
+async def get_foreman_context(
+    guild_id: str,
+    github_user_id: str = Depends(require_user),
+):
+    """Return the stored foreman conversation turns for this guild+user (debug view)."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
-        row = result.scalar_one_or_none()
-        if row is None:
+        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
+        if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        user_id = row or guild_id
     finally:
         await db.close()
-    turns = await get_foreman_history(guild_id, user_id)
+    turns = await get_foreman_history(guild_id, github_user_id)
     return {"messages": turns, "count": len(turns)}
 
 
 @app.post("/guilds/{guild_id}/foreman/clear-context")
-async def clear_foreman_context(guild_id: str):
-    """Delete all stored foreman turns for this guild. Chat history in messages table is preserved."""
+async def clear_foreman_context(
+    guild_id: str,
+    github_user_id: str = Depends(require_user),
+):
+    """Delete all stored foreman turns for this guild+user. Chat history in messages table is preserved."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
-        row = result.scalar_one_or_none()
-        if row is None:
+        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
+        if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        user_id = row or guild_id
     finally:
         await db.close()
-    removed = await clear_foreman_history(guild_id, user_id)
-    logger.info("Foreman context cleared for guild %s (%d turns removed)", guild_id, removed)
+    removed = await clear_foreman_history(guild_id, github_user_id)
+    logger.info("Foreman context cleared for guild %s user %s (%d turns removed)", guild_id, github_user_id, removed)
     return {"status": "cleared", "removed": removed}
