@@ -27,6 +27,16 @@
 
     <button
       v-if="currentGuild"
+      class="debug-btn"
+      :class="{ active: debugActive }"
+      @click="emit('toggle-debug')"
+      title="Debug: foreman context"
+    >
+      <span class="debug-icon">⌥</span>
+    </button>
+
+    <button
+      v-if="currentGuild"
       class="settings-btn"
       :class="{ active: showSettings }"
       @click="toggleSettings"
@@ -93,6 +103,9 @@ import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useAuthStore } from '../stores/auth'
 import GitHubConfigModal from './GitHubConfigModal.vue'
+
+defineProps<{ debugActive?: boolean }>()
+const emit = defineEmits<{ 'toggle-debug': [] }>()
 
 const router = useRouter()
 const guildStore = useGuildStore()
@@ -292,6 +305,34 @@ function goHome() {
   max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.debug-btn {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text-dim);
+  cursor: pointer;
+  width: 30px;
+  height: 30px;
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+.debug-btn:hover,
+.debug-btn.active {
+  border-color: var(--color-teal);
+  background: rgba(0, 187, 170, 0.1);
+  color: var(--color-teal);
+}
+
+.debug-icon {
+  font-size: 14px;
+  line-height: 1;
 }
 
 .settings-btn {
