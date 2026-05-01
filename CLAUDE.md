@@ -36,7 +36,25 @@ pioneer-worker
 pioneer-worker --log-level DEBUG   # verbose
 ```
 
-There are no automated tests. There is no linter configuration.
+### Tests and lint
+
+```bash
+# Backend (pytest, in backend/)
+python -m pytest                       # 119 tests
+# Worker (pytest, in worker/)
+python -m pytest                       # 49 tests
+# Frontend (Vitest, in frontend/)
+npm test
+npm run type-check
+
+# Lint / format (run from repo root for Python, frontend/ for JS)
+ruff check .                           # backend + worker
+ruff format .
+npm run lint        # eslint --fix
+npm run format      # prettier --write
+```
+
+Config lives at `ruff.toml` (root) and `frontend/eslint.config.js` + `frontend/.prettierrc.json`. There is no CI wired up yet — these are local guards.
 
 ## Architecture
 
@@ -48,9 +66,9 @@ Browser ──WebSocket──► Backend (FastAPI/SQLite)
 Worker ──WebSocket──────────┘
 ```
 
-**Backend** (`backend/main.py`) is a single-file FastAPI app. It is the hub: persists all state in `pioneer_square.db` (SQLite via aiosqlite), holds in-memory WebSocket connections per guild, and runs the Foreman AI inline as `asyncio.create_task` calls.
+**Backend** (`backend/main.py`) is a FastAPI app — still mostly one large file (~1700 lines: routes, WS handlers, OAuth) plus the `backend/foreman/` package (`runner.py`, `tools.py`, `prompt.py`, `state.py`) and `backend/events.py` for WS broadcast helpers. Persists all state in `pioneer_square.db` (SQLite via aiosqlite, schema managed by Alembic in `backend/alembic/versions/`), holds in-memory WebSocket connections per guild, and runs the Foreman AI inline as `asyncio.create_task` calls.
 
-**Frontend** (`frontend/src/`) is Vue 3 + Pinia + Vite. It connects to the backend WebSocket for real-time events and uses REST to fetch initial state. Stores in `src/stores/` mirror backend state; `guild.js` owns the WebSocket connection and fan-out to other stores.
+**Frontend** (`frontend/src/`) is Vue 3 + Pinia + Vite + TypeScript. It connects to the backend WebSocket for real-time events and uses REST to fetch initial state. Stores in `src/stores/` (`*.ts`) mirror backend state; `guild.ts` owns the WebSocket connection and fan-out to other stores.
 
 **Worker** (`worker/pioneer_worker/`) is a standalone Python process. It registers with the backend via REST, then connects via WebSocket and listens for `task-assigned` events. For each task it creates a git worktree, runs `claude --dangerously-skip-permissions --output-format stream-json`, pushes the branch, and opens a GitHub PR. Workers reconnect automatically if the backend restarts.
 
@@ -69,7 +87,7 @@ After a worker sends `task-complete`, the backend triggers the Foreman AI. The f
 
 ### Foreman AI
 
-Defined entirely in `backend/main.py`. Uses `claude-sonnet-4-6` with five tools: `create_task`, `assign_task`, `send_followup`, `finalize_task`, `message_worker`. Conversation history is kept in-memory (`foreman_conversations` dict, trimmed to 40 messages). The foreman is triggered by:
+Lives in `backend/foreman/` (`runner.py` for the Claude SDK loop, `tools.py` for tool definitions, `prompt.py` for the system prompt, `state.py` for in-memory conversation history). Uses `claude-sonnet-4-6` with five tools: `create_task`, `assign_task`, `send_followup`, `finalize_task`, `message_worker`. Conversation history is kept in-memory (trimmed to 40 messages). The foreman is triggered by:
 1. Human chat messages addressed to `foreman`
 2. `task-complete` WS messages from workers
 3. `task-followup-done` WS messages
@@ -96,7 +114,7 @@ All real-time communication is JSON over `ws://localhost:8000/ws/{guild_id}`. Ke
 
 ### Database schema
 
-Tables: `guilds`, `agents`, `workers`, `tasks`, `task_logs`, `github_tokens`, `user_sessions`. All migrations are inline in `init_db()` — `ALTER TABLE ... ADD COLUMN` calls are wrapped in try/except to be idempotent. On every backend startup, all workers and worker agents are reset to `offline`.
+Tables: `guilds`, `agents`, `workers`, `tasks`, `task_logs`, `messages`, `github_tokens`, `claude_credentials`, `user_sessions`. Schema is defined in `backend/models.py` (SQLAlchemy ORM) and migrated by Alembic — see `backend/alembic/versions/`. `init_db()` runs `alembic upgrade head` on startup; pre-Alembic databases are stamped to `head` so the upgrade is a no-op. On every backend startup, all workers and worker agents are reset to `offline`.
 
 ### Worker internals
 
@@ -115,10 +133,10 @@ GitHub OAuth flow: frontend triggers `/auth/github/login` → GitHub redirects t
 
 | Store | Owns |
 |-------|------|
-| `auth.js` | Login token, GitHub user info, OAuth flow |
-| `guild.js` | WebSocket connection, guild list/current guild, message history |
-| `agents.js` | Agent list, agent states, terminal output buffers |
-| `tasks.js` | Task list, task logs (in-memory + fetched), WS event handler |
-| `github.js` | GitHub issue/PR fetching for the UI |
+| `auth.ts` | Login token, GitHub user info, OAuth flow |
+| `guild.ts` | WebSocket connection, guild list/current guild, message history |
+| `agents.ts` | Agent list, agent states, terminal output buffers |
+| `tasks.ts` | Task list, task logs (in-memory + fetched), WS event handler |
+| `github.ts` | GitHub issue/PR fetching for the UI |
 
-`guild.js` is the WS fan-out point — other stores register handlers via `addMessageHandler` and process events they care about.
+`guild.ts` is the WS fan-out point — other stores register handlers via `addMessageHandler` and process events they care about.
