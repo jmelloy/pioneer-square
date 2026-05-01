@@ -34,6 +34,12 @@
       <span v-if="taskCreatedAt" class="sub-time">{{ formatDateTime(taskCreatedAt) }}</span>
     </div>
 
+    <!-- ── Task description (summary) ───────────────────── -->
+    <div v-if="kind === 'task' && taskDescription" class="pane-description">
+      <div class="pane-description-label">TASK</div>
+      <div class="pane-description-body task-description--markdown" v-html="renderMarkdown(taskDescription)"></div>
+    </div>
+
     <!-- ── Logs ───────────────────────────────────────────── -->
     <div class="pane-body" ref="bodyEl">
       <div v-if="logs.length === 0" class="logs-empty">
@@ -225,6 +231,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import { useGuildStore } from '../stores/guild'
@@ -306,6 +314,7 @@ const stateBadgeClass = computed(
 const taskBranch = computed(() => task.value.branch)
 const taskPrUrl = computed(() => task.value.pr_url)
 const taskCreatedAt = computed(() => task.value.created_at)
+const taskDescription = computed(() => task.value.description || '')
 
 const isWorkerTask = computed(() => task.value.worker_id && task.value.worker_id !== 'foreman')
 const canCancel = computed(() => {
@@ -523,6 +532,11 @@ watch(
 )
 
 // ── Helpers ─────────────────────────────────────────────────────────
+function renderMarkdown(text: string): string {
+  const html = marked.parse(text, { async: false }) as string
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
+}
+
 function toggleDetail(i: number) {
   expandedIdx.value = expandedIdx.value === i ? null : i
 }
@@ -797,6 +811,92 @@ function lineClass(line: string) {
   font-size: 10px;
   color: var(--color-text-dim);
   margin-left: auto;
+}
+
+/* ── Task description / summary ──────────────────────────── */
+.pane-description {
+  flex-shrink: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 8px 16px 10px;
+  border-bottom: 1px solid #2a1a05;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.pane-description-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 2px;
+  color: var(--color-brass-dark);
+  margin-bottom: 6px;
+}
+
+.pane-description-body {
+  font-size: 12px;
+  color: var(--color-text);
+  line-height: 1.55;
+}
+
+/* Markdown content inside task description */
+.task-description--markdown :deep(p) {
+  margin: 0 0 6px;
+}
+.task-description--markdown :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.task-description--markdown :deep(ul),
+.task-description--markdown :deep(ol) {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}
+.task-description--markdown :deep(li) {
+  margin: 2px 0;
+}
+.task-description--markdown :deep(code) {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 1px 4px;
+  border-radius: 2px;
+  color: var(--color-teal);
+}
+.task-description--markdown :deep(pre) {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid #2a1a05;
+  padding: 6px 10px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.task-description--markdown :deep(pre code) {
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--color-green);
+}
+.task-description--markdown :deep(strong) {
+  color: var(--color-amber);
+  font-weight: 700;
+}
+.task-description--markdown :deep(em) {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+.task-description--markdown :deep(a) {
+  color: var(--color-teal);
+  text-decoration: underline;
+}
+.task-description--markdown :deep(h1),
+.task-description--markdown :deep(h2),
+.task-description--markdown :deep(h3) {
+  font-family: var(--font-pixel);
+  color: var(--color-brass-light);
+  margin: 8px 0 4px;
+}
+.task-description--markdown :deep(blockquote) {
+  border-left: 3px solid var(--color-brass-dark);
+  margin: 4px 0;
+  padding-left: 10px;
+  color: var(--color-text-dim);
 }
 
 /* ── Body / logs ─────────────────────────────────────────── */
