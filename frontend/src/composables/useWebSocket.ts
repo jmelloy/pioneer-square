@@ -9,7 +9,9 @@ export function useWebSocket(url: string, onMessage?: (data: any) => void) {
   function connect() {
     if (ws.value) ws.value.close()
     ws.value = new WebSocket(url)
-    ws.value.onopen = () => { isConnected.value = true }
+    ws.value.onopen = () => {
+      isConnected.value = true
+    }
     ws.value.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
@@ -24,7 +26,9 @@ export function useWebSocket(url: string, onMessage?: (data: any) => void) {
         reconnectTimer = setTimeout(connect, 2000)
       }
     }
-    ws.value.onerror = () => { isConnected.value = false }
+    ws.value.onerror = () => {
+      isConnected.value = false
+    }
   }
 
   function send(data: any) {

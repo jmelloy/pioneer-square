@@ -9,8 +9,8 @@
 
     <div class="avatar-label">{{ agent.name.slice(0, 8) }}</div>
     <div v-if="agent.state === 'thinking'" class="think-bubble">💭</div>
-    <div v-if="agent.state === 'working'"  class="work-burst">⭐</div>
-    <div v-if="agent.state === 'error'"    class="error-burst">!</div>
+    <div v-if="agent.state === 'working'" class="work-burst">⭐</div>
+    <div v-if="agent.state === 'error'" class="error-burst">!</div>
   </div>
 </template>
 
@@ -19,12 +19,15 @@ import { computed } from 'vue'
 import RobotWorker from './sprites/RobotWorker.vue'
 import type { Agent } from '../types'
 
-const props = withDefaults(defineProps<{
-  agent: Agent
-  walking?: boolean
-}>(), {
-  walking: false,
-})
+const props = withDefaults(
+  defineProps<{
+    agent: Agent
+    walking?: boolean
+  }>(),
+  {
+    walking: false,
+  },
+)
 
 /* Warm SNES/CT palette — gold, teal, orange, sky, red, lime, copper, amber */
 const palette = [
@@ -69,10 +72,18 @@ const agentColorDim = computed(() => {
 }
 
 /* State glows applied to the whole wrapper (sprite + label + bubbles) */
-.avatar-wrapper.thinking { filter: drop-shadow(0 0 6px var(--color-blue,   #44aaee)); }
-.avatar-wrapper.working  { filter: drop-shadow(0 0 6px var(--color-green,  #88dd22)); }
-.avatar-wrapper.busy     { filter: drop-shadow(0 0 6px var(--color-orange, #ff7700)); }
-.avatar-wrapper.error    { filter: drop-shadow(0 0 8px var(--color-red,    #ee3322)); }
+.avatar-wrapper.thinking {
+  filter: drop-shadow(0 0 6px var(--color-blue, #44aaee));
+}
+.avatar-wrapper.working {
+  filter: drop-shadow(0 0 6px var(--color-green, #88dd22));
+}
+.avatar-wrapper.busy {
+  filter: drop-shadow(0 0 6px var(--color-orange, #ff7700));
+}
+.avatar-wrapper.error {
+  filter: drop-shadow(0 0 8px var(--color-red, #ee3322));
+}
 
 .avatar-label {
   font-family: var(--font-pixel);
@@ -116,19 +127,39 @@ const agentColorDim = computed(() => {
 }
 
 @keyframes bubblePop {
-  0%, 100% { opacity: 1;   transform: scale(1)    rotate(-5deg); }
-  50%       { opacity: 0.7; transform: scale(0.85) rotate(5deg); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(-5deg);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(0.85) rotate(5deg);
+  }
 }
 
 @keyframes burstSpin {
-  from { transform: rotate(0deg)   scale(1); }
-  50%  { transform: rotate(180deg) scale(1.2); }
-  to   { transform: rotate(360deg) scale(1); }
+  from {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.2);
+  }
+  to {
+    transform: rotate(360deg) scale(1);
+  }
 }
 
 @keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  25%       { transform: translateX(-3px); }
-  75%       { transform: translateX(3px); }
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
 }
 </style>

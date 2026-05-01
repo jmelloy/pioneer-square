@@ -4,12 +4,16 @@
       <div class="task-title-row">
         <span class="task-phase-badge" :class="task.phase">{{ task.phase || 'execute' }}</span>
         <span class="task-name">{{ task.name || task.description?.slice(0, 60) }}</span>
-        <span class="task-state-badge" :class="stateClass">{{ tasksStore.stateLabel(task.state) }}</span>
+        <span class="task-state-badge" :class="stateClass">{{
+          tasksStore.stateLabel(task.state)
+        }}</span>
       </div>
       <div class="task-meta">
         <span class="task-id">{{ task.id }}</span>
         <span v-if="task.branch" class="task-branch">⌥ {{ task.branch }}</span>
-        <a v-if="task.pr_url" :href="task.pr_url" target="_blank" rel="noopener" class="pr-link">PR →</a>
+        <a v-if="task.pr_url" :href="task.pr_url" target="_blank" rel="noopener" class="pr-link"
+          >PR →</a
+        >
         <span class="task-time">{{ formatTime(task.created_at) }}</span>
       </div>
     </div>
@@ -24,7 +28,9 @@
         >
           <span class="log-ts">{{ formatTs(entry.timestamp) }}</span>
           <span class="log-text" :class="lineClass(entry.line)">{{ entry.line }}</span>
-          <span v-if="entry.detail" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
+          <span v-if="entry.detail" class="log-expand-icon">{{
+            expandedIdx === i ? '▲' : '▼'
+          }}</span>
         </div>
         <div v-if="entry.detail && expandedIdx === i" class="log-detail">
           <template v-if="entry.detail.toolType === 'tool_use'">
@@ -68,7 +74,11 @@
         />
       </div>
       <div class="redirect-actions">
-        <button class="pixel-btn redirect-btn" @click="sendRedirect" :disabled="!redirectText.trim() || redirecting">
+        <button
+          class="pixel-btn redirect-btn"
+          @click="sendRedirect"
+          :disabled="!redirectText.trim() || redirecting"
+        >
           {{ redirecting ? '…' : '↩ Redirect' }}
         </button>
         <button class="pixel-btn cancel-task-btn" @click="cancelTask" :disabled="cancelling">
@@ -97,12 +107,14 @@
         />
       </div>
       <div class="followup-actions">
-        <button class="pixel-btn followup-btn" @click="sendFollowup" :disabled="!followupText.trim()">
+        <button
+          class="pixel-btn followup-btn"
+          @click="sendFollowup"
+          :disabled="!followupText.trim()"
+        >
           ↺ Follow-up
         </button>
-        <button class="pixel-btn finalize-btn" @click="finalizeTask">
-          ✓ Finalize
-        </button>
+        <button class="pixel-btn finalize-btn" @click="finalizeTask">✓ Finalize</button>
       </div>
     </div>
   </div>
@@ -126,10 +138,14 @@ const cancelling = ref(false)
 const redirecting = ref(false)
 const expandedIdx = ref<number | null>(null)
 
-const task = computed<Partial<Task>>(() => tasksStore.tasks.find(t => t.id === props.taskId) || ({} as Partial<Task>))
+const task = computed<Partial<Task>>(
+  () => tasksStore.tasks.find((t) => t.id === props.taskId) || ({} as Partial<Task>),
+)
 const logs = computed(() => tasksStore.taskLogs[props.taskId] || [])
 
-const stateClass = computed(() => `state-${(task.value.state || 'pending').replace(/[^a-z]/g, '-')}`)
+const stateClass = computed(
+  () => `state-${(task.value.state || 'pending').replace(/[^a-z]/g, '-')}`,
+)
 
 const isWorkerTask = computed(() => task.value.worker_id && task.value.worker_id !== 'foreman')
 
@@ -145,10 +161,14 @@ onMounted(async () => {
   }
 })
 
-watch(logs, async () => {
-  await nextTick()
-  if (logsEl.value) logsEl.value.scrollTop = logsEl.value.scrollHeight
-}, { deep: true })
+watch(
+  logs,
+  async () => {
+    await nextTick()
+    if (logsEl.value) logsEl.value.scrollTop = logsEl.value.scrollHeight
+  },
+  { deep: true },
+)
 
 async function sendFollowup() {
   const text = followupText.value.trim()
@@ -162,8 +182,6 @@ async function sendFollowup() {
     console.error('Follow-up failed', e)
   }
 }
-
-
 
 async function finalizeTask() {
   const guildId = guildStore.currentGuild?.id
@@ -221,12 +239,21 @@ function lineClass(line: string) {
 
 function formatTime(iso?: string) {
   if (!iso) return ''
-  return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return new Date(iso).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function formatTs(iso?: string) {
   if (!iso) return ''
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return new Date(iso).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
 }
 </script>
 
@@ -271,10 +298,22 @@ function formatTs(iso?: string) {
   letter-spacing: 1px;
   flex-shrink: 0;
 }
-.task-phase-badge.plan { color: var(--color-blue); border-color: var(--color-blue); }
-.task-phase-badge.execute { color: var(--color-teal); border-color: var(--color-teal); }
-.task-phase-badge.review { color: var(--color-amber); border-color: var(--color-amber); }
-.task-phase-badge.followup { color: var(--color-orange); border-color: var(--color-orange); }
+.task-phase-badge.plan {
+  color: var(--color-blue);
+  border-color: var(--color-blue);
+}
+.task-phase-badge.execute {
+  color: var(--color-teal);
+  border-color: var(--color-teal);
+}
+.task-phase-badge.review {
+  color: var(--color-amber);
+  border-color: var(--color-amber);
+}
+.task-phase-badge.followup {
+  color: var(--color-orange);
+  border-color: var(--color-orange);
+}
 
 .task-state-badge {
   font-family: var(--font-pixel);
@@ -283,18 +322,49 @@ function formatTs(iso?: string) {
   border: 1px solid;
   flex-shrink: 0;
 }
-.state-pending { color: var(--color-text-dim); border-color: var(--color-text-dim); }
-.state-planning { color: var(--color-blue); border-color: var(--color-blue); }
-.state-working { color: var(--color-green); border-color: var(--color-green); animation: statePulse 1s infinite; }
-.state-awaiting-review { color: var(--color-amber); border-color: var(--color-amber); }
-.state-done { color: var(--color-teal); border-color: var(--color-teal); }
-.state-failed { color: var(--color-red); border-color: var(--color-red); }
-.state-cancelled { color: var(--color-red); border-color: var(--color-red); opacity: 0.7; }
-.state-follow-up { color: var(--color-orange); border-color: var(--color-orange); }
+.state-pending {
+  color: var(--color-text-dim);
+  border-color: var(--color-text-dim);
+}
+.state-planning {
+  color: var(--color-blue);
+  border-color: var(--color-blue);
+}
+.state-working {
+  color: var(--color-green);
+  border-color: var(--color-green);
+  animation: statePulse 1s infinite;
+}
+.state-awaiting-review {
+  color: var(--color-amber);
+  border-color: var(--color-amber);
+}
+.state-done {
+  color: var(--color-teal);
+  border-color: var(--color-teal);
+}
+.state-failed {
+  color: var(--color-red);
+  border-color: var(--color-red);
+}
+.state-cancelled {
+  color: var(--color-red);
+  border-color: var(--color-red);
+  opacity: 0.7;
+}
+.state-follow-up {
+  color: var(--color-orange);
+  border-color: var(--color-orange);
+}
 
 @keyframes statePulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .task-meta {
@@ -328,7 +398,9 @@ function formatTs(iso?: string) {
   padding: 2px 6px;
   border: 1px solid var(--color-teal);
 }
-.pr-link:hover { background: rgba(0,187,170,0.15); }
+.pr-link:hover {
+  background: rgba(0, 187, 170, 0.15);
+}
 
 .task-time {
   font-size: 10px;
@@ -363,7 +435,10 @@ function formatTs(iso?: string) {
   opacity: 0.6;
 }
 
-.log-entry { display: flex; flex-direction: column; }
+.log-entry {
+  display: flex;
+  flex-direction: column;
+}
 
 .log-line {
   display: flex;
@@ -375,7 +450,9 @@ function formatTs(iso?: string) {
   cursor: pointer;
   border-radius: 2px;
 }
-.log-line--expandable:hover { background: rgba(255,255,255,0.04); }
+.log-line--expandable:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
 
 .log-expand-icon {
   font-size: 8px;
@@ -399,8 +476,12 @@ function formatTs(iso?: string) {
   margin-bottom: 4px;
   margin-top: 6px;
 }
-.log-detail-label:first-child { margin-top: 0; }
-.log-detail-label--new { color: var(--color-green); }
+.log-detail-label:first-child {
+  margin-top: 0;
+}
+.log-detail-label--new {
+  color: var(--color-green);
+}
 
 .log-detail-body {
   margin: 0 0 2px;
@@ -411,28 +492,44 @@ function formatTs(iso?: string) {
   word-break: break-all;
   max-height: 300px;
   overflow-y: auto;
-  background: rgba(0,0,0,0.2);
+  background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--color-brass-dark);
   padding: 6px 8px;
 }
 .log-detail-old {
-  background: rgba(180,30,30,0.08);
-  border-color: rgba(220,50,50,0.3);
+  background: rgba(180, 30, 30, 0.08);
+  border-color: rgba(220, 50, 50, 0.3);
   color: #c07070;
 }
 .log-detail-new {
-  background: rgba(0,120,60,0.08);
-  border-color: rgba(0,187,100,0.3);
+  background: rgba(0, 120, 60, 0.08);
+  border-color: rgba(0, 187, 100, 0.3);
   color: #70c090;
 }
 
-.log-text { word-break: break-all; white-space: pre-wrap; }
-.log-success { color: var(--color-green); }
-.log-error { color: var(--color-red); }
-.log-worker { color: var(--color-brass); }
-.log-tool { color: var(--color-teal); }
-.log-result { color: var(--color-text-dim); }
-.log-thinking { color: var(--color-blue); font-style: italic; }
+.log-text {
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+.log-success {
+  color: var(--color-green);
+}
+.log-error {
+  color: var(--color-red);
+}
+.log-worker {
+  color: var(--color-brass);
+}
+.log-tool {
+  color: var(--color-teal);
+}
+.log-result {
+  color: var(--color-text-dim);
+}
+.log-thinking {
+  color: var(--color-blue);
+  font-style: italic;
+}
 
 /* ── Redirect panel ── */
 .redirect-panel {
@@ -468,9 +565,12 @@ function formatTs(iso?: string) {
 }
 .redirect-input:focus {
   border-color: var(--color-blue);
-  box-shadow: 0 0 8px rgba(80,120,255,0.2);
+  box-shadow: 0 0 8px rgba(80, 120, 255, 0.2);
 }
-.redirect-input::placeholder { color: var(--color-text-dim); font-style: italic; }
+.redirect-input::placeholder {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
 
 .redirect-actions {
   display: flex;
@@ -478,17 +578,20 @@ function formatTs(iso?: string) {
 }
 
 .redirect-btn {
-  background: linear-gradient(180deg, rgba(80,120,255,0.2) 0%, rgba(50,80,200,0.3) 100%);
+  background: linear-gradient(180deg, rgba(80, 120, 255, 0.2) 0%, rgba(50, 80, 200, 0.3) 100%);
   border-color: var(--color-blue);
   color: var(--color-blue);
   font-size: 8px;
   padding: 5px 12px;
 }
 .redirect-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(80,120,255,0.4) 0%, rgba(60,100,220,0.5) 100%);
-  box-shadow: 0 0 8px rgba(80,120,255,0.3);
+  background: linear-gradient(180deg, rgba(80, 120, 255, 0.4) 0%, rgba(60, 100, 220, 0.5) 100%);
+  box-shadow: 0 0 8px rgba(80, 120, 255, 0.3);
 }
-.redirect-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.redirect-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 
 /* ── Cancel panel ── */
 .cancel-panel {
@@ -500,17 +603,20 @@ function formatTs(iso?: string) {
 }
 
 .cancel-task-btn {
-  background: linear-gradient(180deg, rgba(220,50,50,0.15) 0%, rgba(160,30,30,0.25) 100%);
+  background: linear-gradient(180deg, rgba(220, 50, 50, 0.15) 0%, rgba(160, 30, 30, 0.25) 100%);
   border-color: var(--color-red);
   color: var(--color-red);
   font-size: 8px;
   padding: 4px 10px;
 }
 .cancel-task-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(220,50,50,0.35) 0%, rgba(180,40,40,0.45) 100%);
-  box-shadow: 0 0 8px rgba(220,50,50,0.3);
+  background: linear-gradient(180deg, rgba(220, 50, 50, 0.35) 0%, rgba(180, 40, 40, 0.45) 100%);
+  box-shadow: 0 0 8px rgba(220, 50, 50, 0.3);
 }
-.cancel-task-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.cancel-task-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 
 /* ── Follow-up panel ── */
 .followup-panel {
@@ -546,9 +652,12 @@ function formatTs(iso?: string) {
 }
 .followup-input:focus {
   border-color: var(--color-amber);
-  box-shadow: 0 0 8px rgba(255,204,0,0.2);
+  box-shadow: 0 0 8px rgba(255, 204, 0, 0.2);
 }
-.followup-input::placeholder { color: var(--color-text-dim); font-style: italic; }
+.followup-input::placeholder {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
 
 .followup-actions {
   display: flex;
@@ -556,27 +665,30 @@ function formatTs(iso?: string) {
 }
 
 .followup-btn {
-  background: linear-gradient(180deg, rgba(255,204,0,0.2) 0%, rgba(180,140,0,0.3) 100%);
+  background: linear-gradient(180deg, rgba(255, 204, 0, 0.2) 0%, rgba(180, 140, 0, 0.3) 100%);
   border-color: var(--color-amber);
   color: var(--color-amber);
   font-size: 8px;
   padding: 5px 12px;
 }
 .followup-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(255,204,0,0.4) 0%, rgba(200,160,0,0.5) 100%);
-  box-shadow: 0 0 8px rgba(255,204,0,0.3);
+  background: linear-gradient(180deg, rgba(255, 204, 0, 0.4) 0%, rgba(200, 160, 0, 0.5) 100%);
+  box-shadow: 0 0 8px rgba(255, 204, 0, 0.3);
 }
-.followup-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.followup-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 
 .finalize-btn {
-  background: linear-gradient(180deg, rgba(0,187,170,0.2) 0%, rgba(0,120,110,0.3) 100%);
+  background: linear-gradient(180deg, rgba(0, 187, 170, 0.2) 0%, rgba(0, 120, 110, 0.3) 100%);
   border-color: var(--color-teal);
   color: var(--color-teal);
   font-size: 8px;
   padding: 5px 12px;
 }
 .finalize-btn:hover {
-  background: linear-gradient(180deg, rgba(0,187,170,0.4) 0%, rgba(0,150,140,0.5) 100%);
-  box-shadow: 0 0 8px rgba(0,187,170,0.3);
+  background: linear-gradient(180deg, rgba(0, 187, 170, 0.4) 0%, rgba(0, 150, 140, 0.5) 100%);
+  box-shadow: 0 0 8px rgba(0, 187, 170, 0.3);
 }
 </style>

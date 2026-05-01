@@ -10,7 +10,9 @@
         v-for="n in 14"
         :key="`sp${n}`"
         :style="`left: ${(n * 73 + 11) % 93}%; top: ${(n * 59 + 17) % 80}%; font-size: ${8 + (n % 3) * 3}px; animation-delay: ${((n * 0.37) % 2.8).toFixed(1)}s; animation-duration: ${2.5 + (n % 3) * 0.8}s;`"
-      >{{ ['✦','★','✧','⋆','✩'][n % 5] }}</div>
+      >
+        {{ ['✦', '★', '✧', '⋆', '✩'][n % 5] }}
+      </div>
     </div>
 
     <!-- Ceiling pipes -->
@@ -60,7 +62,14 @@
     <!-- Conveyor belt -->
     <div class="conveyor-belt">
       <div class="belt-track">
-        <div class="belt-item" v-for="(item, n) in beltItems" :key="n" :style="`--offset: ${n * 60}px`">{{ item }}</div>
+        <div
+          class="belt-item"
+          v-for="(item, n) in beltItems"
+          :key="n"
+          :style="`--offset: ${n * 60}px`"
+        >
+          {{ item }}
+        </div>
       </div>
       <div class="belt-roller left"></div>
       <div class="belt-roller right"></div>
@@ -85,7 +94,9 @@
         </div>
         <div class="station-table"></div>
       </div>
-      <div class="station-label">{{ station.task ? truncate(station.task.name, 10) : `WS-${i + 1}` }}</div>
+      <div class="station-label">
+        {{ station.task ? truncate(station.task.name, 10) : `WS-${i + 1}` }}
+      </div>
       <div v-if="station.task" class="task-badge" :class="`state-${station.task.state}`">
         {{ stateLabel(station.task.state) }}
       </div>
@@ -101,7 +112,7 @@
 
     <div class="poi bulletin-board">
       <div class="bb-frame">
-        <div class="bb-pin" v-for="n in 3" :key="n" :style="`left:${8+n*18}px;top:6px`"></div>
+        <div class="bb-pin" v-for="n in 3" :key="n" :style="`left:${8 + n * 18}px;top:6px`"></div>
         <div class="bb-note n1"></div>
         <div class="bb-note n2"></div>
         <div class="bb-note n3"></div>
@@ -114,7 +125,7 @@
       <div class="wc-base">
         <div class="wc-tap"></div>
       </div>
-      <div class="wc-drop" v-for="n in 2" :key="n" :style="`--delay:${n*0.6}s`"></div>
+      <div class="wc-drop" v-for="n in 2" :key="n" :style="`--delay:${n * 0.6}s`"></div>
       <div class="poi-label">H₂O</div>
     </div>
 
@@ -124,14 +135,17 @@
         <div class="cm-spout"></div>
         <div class="cm-cup">☕</div>
       </div>
-      <div class="steam-particle" v-for="n in 2" :key="n" :style="`--delay:${n*0.45}s`"></div>
+      <div class="steam-particle" v-for="n in 2" :key="n" :style="`--delay:${n * 0.45}s`"></div>
       <div class="poi-label">COFFEE</div>
     </div>
 
     <!-- Activity points of interest — agents walk here based on what Claude is doing -->
 
     <!-- Scrying Orb — web search -->
-    <div class="poi activity-poi scrying-orb" :style="`left: ${ACTIVITY_POIS['searching'].x - 18}px; top: ${ACTIVITY_POIS['searching'].y - 40}px`">
+    <div
+      class="poi activity-poi scrying-orb"
+      :style="`left: ${ACTIVITY_POIS['searching'].x - 18}px; top: ${ACTIVITY_POIS['searching'].y - 40}px`"
+    >
       <div class="orb-glow"></div>
       <div class="orb-sphere">🔮</div>
       <div class="orb-base"></div>
@@ -139,7 +153,10 @@
     </div>
 
     <!-- Archive — reading files -->
-    <div class="poi activity-poi archive" :style="`left: ${ACTIVITY_POIS['reading'].x - 24}px; top: ${ACTIVITY_POIS['reading'].y - 36}px`">
+    <div
+      class="poi activity-poi archive"
+      :style="`left: ${ACTIVITY_POIS['reading'].x - 24}px; top: ${ACTIVITY_POIS['reading'].y - 36}px`"
+    >
       <div class="archive-shelf">
         <div class="book b1"></div>
         <div class="book b2"></div>
@@ -150,7 +167,10 @@
     </div>
 
     <!-- Telegraph — web fetch -->
-    <div class="poi activity-poi telegraph" :style="`left: ${ACTIVITY_POIS['fetching'].x - 18}px; top: ${ACTIVITY_POIS['fetching'].y - 38}px`">
+    <div
+      class="poi activity-poi telegraph"
+      :style="`left: ${ACTIVITY_POIS['fetching'].x - 18}px; top: ${ACTIVITY_POIS['fetching'].y - 38}px`"
+    >
       <div class="tg-body">
         <div class="tg-key"></div>
         <div class="tg-spark" v-for="n in 2" :key="n" :style="`--delay: ${n * 0.5}s`"></div>
@@ -160,22 +180,36 @@
     </div>
 
     <!-- Think Tank — extended thinking -->
-    <div class="poi activity-poi think-tank" :style="`left: ${ACTIVITY_POIS['thinking'].x - 22}px; top: ${ACTIVITY_POIS['thinking'].y - 44}px`">
+    <div
+      class="poi activity-poi think-tank"
+      :style="`left: ${ACTIVITY_POIS['thinking'].x - 22}px; top: ${ACTIVITY_POIS['thinking'].y - 44}px`"
+    >
       <div class="tank-vessel">
-        <div class="tank-bubble" v-for="n in 3" :key="n" :style="`--delay: ${n * 0.35}s; --xoff: ${(n - 2) * 5}px`"></div>
+        <div
+          class="tank-bubble"
+          v-for="n in 3"
+          :key="n"
+          :style="`--delay: ${n * 0.35}s; --xoff: ${(n - 2) * 5}px`"
+        ></div>
       </div>
       <div class="tank-gauge"></div>
       <div class="poi-label">THINK TANK</div>
     </div>
 
     <!-- Engine Room marker — running bash -->
-    <div class="poi activity-poi engine-room" :style="`left: ${ACTIVITY_POIS['running'].x - 18}px; top: ${ACTIVITY_POIS['running'].y - 20}px`">
+    <div
+      class="poi activity-poi engine-room"
+      :style="`left: ${ACTIVITY_POIS['running'].x - 18}px; top: ${ACTIVITY_POIS['running'].y - 20}px`"
+    >
       <div class="engine-icon">⚙</div>
       <div class="poi-label">ENGINE</div>
     </div>
 
     <!-- The Forge marker — editing/writing code (near furnace) -->
-    <div class="poi activity-poi the-forge" :style="`left: ${ACTIVITY_POIS['editing'].x - 16}px; top: ${ACTIVITY_POIS['editing'].y - 20}px`">
+    <div
+      class="poi activity-poi the-forge"
+      :style="`left: ${ACTIVITY_POIS['editing'].x - 16}px; top: ${ACTIVITY_POIS['editing'].y - 20}px`"
+    >
       <div class="forge-icon">🔥</div>
       <div class="poi-label">THE FORGE</div>
     </div>
@@ -201,9 +235,7 @@
     <!-- Ticker tape -->
     <div class="ticker-tape">
       <div class="ticker-content">
-        <span v-for="(msg, i) in tickerMessages" :key="i" class="ticker-msg">
-          ⚙ {{ msg }}
-        </span>
+        <span v-for="(msg, i) in tickerMessages" :key="i" class="ticker-msg"> ⚙ {{ msg }} </span>
       </div>
     </div>
   </div>
@@ -216,25 +248,34 @@ import { useTasksStore } from '../stores/tasks'
 import type { Agent, Task } from '../types'
 import AgentAvatar from './AgentAvatar.vue'
 
-interface ActivityPoi { x: number; y: number; label: string }
+interface ActivityPoi {
+  x: number
+  y: number
+  label: string
+}
 
-interface Position { x: number; y: number }
-interface Station extends Position { task: Task | null }
+interface Position {
+  x: number
+  y: number
+}
+interface Station extends Position {
+  task: Task | null
+}
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
-const agents = computed(() => agentsStore.agents.filter(a => a.state !== 'offline'))
+const agents = computed(() => agentsStore.agents.filter((a) => a.state !== 'offline'))
 
 const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
 
 // ── Canvas dimensions ──────────────────────────────────────
 const floorEl = ref<HTMLElement | null>(null)
-const floorW  = ref(800)
-const floorH  = ref(600)
+const floorW = ref(800)
+const floorH = ref(600)
 
 function updateFloorSize() {
   if (floorEl.value) {
-    floorW.value = floorEl.value.clientWidth  || 800
+    floorW.value = floorEl.value.clientWidth || 800
     floorH.value = floorEl.value.clientHeight || 600
   }
 }
@@ -244,24 +285,30 @@ function updateFloorSize() {
 // Usable width excludes the foreman chat pane (fixed 360px on the right)
 // so desks stay clear of its boundary.
 // Fixed per-desk jitter (seeded values) gives an organic, stable look.
-const CHAT_PANE_W   = 360
-const STATION_W     = 100
-const COL_FRACS     = [0.08, 0.42, 0.78]
-const ROW_FRACS     = [0.22, 0.60]
-const JITTER        = [[8,-5],[-6,12],[14,-8],[-10,7],[5,10],[-12,-6]]
-const GAP_X_FRACS   = [0.01, 0.25, 0.55, 0.87]
+const CHAT_PANE_W = 360
+const STATION_W = 100
+const COL_FRACS = [0.08, 0.42, 0.78]
+const ROW_FRACS = [0.22, 0.6]
+const JITTER = [
+  [8, -5],
+  [-6, 12],
+  [14, -8],
+  [-10, 7],
+  [5, 10],
+  [-12, -6],
+]
+const GAP_X_FRACS = [0.01, 0.25, 0.55, 0.87]
 
-const usableW = computed(() =>
-  Math.max(floorW.value - CHAT_PANE_W - STATION_W, 300)
-)
+const usableW = computed(() => Math.max(floorW.value - CHAT_PANE_W - STATION_W, 300))
 
 const stationPositions = computed(() => {
-  const W = usableW.value, H = floorH.value
+  const W = usableW.value,
+    H = floorH.value
   return ROW_FRACS.flatMap((yf, ri) =>
     COL_FRACS.map((xf, ci) => ({
       x: Math.round(xf * W) + JITTER[ri * 3 + ci][0],
       y: Math.round(yf * H) + JITTER[ri * 3 + ci][1],
-    }))
+    })),
   )
 })
 
@@ -284,9 +331,7 @@ const ROW2 = computed(() => ({
 }))
 
 // Clear vertical lanes between desk columns
-const GAP_XS = computed(() =>
-  GAP_X_FRACS.map(f => Math.round(f * usableW.value))
-)
+const GAP_XS = computed(() => GAP_X_FRACS.map((f) => Math.round(f * usableW.value)))
 
 // Coffee maker sits beside the rightmost top-row desk (index 2)
 const coffeePotPos = computed(() => {
@@ -296,10 +341,10 @@ const coffeePotPos = computed(() => {
 
 // Points of interest — idle robots walk here occasionally
 const POIS = computed(() => [
-  { id: 'toolbox', x: 26,  y: 88 },
-  { id: 'board',   x: 318, y: 88 },
-  { id: 'cooler',  x: 26,  y: Math.round(floorH.value * 0.42) },
-  { id: 'coffee',  x: coffeePotPos.value.x + 5, y: coffeePotPos.value.y + 30 },
+  { id: 'toolbox', x: 26, y: 88 },
+  { id: 'board', x: 318, y: 88 },
+  { id: 'cooler', x: 26, y: Math.round(floorH.value * 0.42) },
+  { id: 'coffee', x: coffeePotPos.value.x + 5, y: coffeePotPos.value.y + 30 },
 ])
 
 // Activity POIs — agents walk here based on what Claude is doing
@@ -307,19 +352,21 @@ const ACTIVITY_POIS = computed<Record<string, ActivityPoi>>(() => {
   const W = usableW.value + STATION_W
   const H = floorH.value
   return {
-    reading:  { x: Math.round(W * 0.30), y: Math.round(H * 0.10), label: 'ARCHIVE' },
-    editing:  { x: Math.round(W * 0.88), y: Math.round(H * 0.12), label: 'THE FORGE' },
-    running:  { x: Math.round(W * 0.80), y: Math.round(H * 0.44), label: 'ENGINE' },
-    searching:{ x: Math.round(W * 0.05), y: Math.round(H * 0.44), label: 'SCRYING ORB' },
+    reading: { x: Math.round(W * 0.3), y: Math.round(H * 0.1), label: 'ARCHIVE' },
+    editing: { x: Math.round(W * 0.88), y: Math.round(H * 0.12), label: 'THE FORGE' },
+    running: { x: Math.round(W * 0.8), y: Math.round(H * 0.44), label: 'ENGINE' },
+    searching: { x: Math.round(W * 0.05), y: Math.round(H * 0.44), label: 'SCRYING ORB' },
     fetching: { x: Math.round(W * 0.56), y: Math.round(H * 0.09), label: 'TELEGRAPH' },
-    thinking: { x: Math.round(W * 0.50), y: Math.round(H * 0.50), label: 'THINK TANK' },
-    planning: { x: Math.round(W * 0.30), y: Math.round(H * 0.10), label: 'ARCHIVE' },
+    thinking: { x: Math.round(W * 0.5), y: Math.round(H * 0.5), label: 'THINK TANK' },
+    planning: { x: Math.round(W * 0.3), y: Math.round(H * 0.1), label: 'ARCHIVE' },
   }
 })
 
 const visibleStations = computed<Station[]>(() => {
   const active = tasksStore.tasks
-    .filter(t => !['done', 'failed'].includes(t.state) && t.worker_id && t.worker_id !== 'foreman')
+    .filter(
+      (t) => !['done', 'failed'].includes(t.state) && t.worker_id && t.worker_id !== 'foreman',
+    )
     .slice(0, 6)
   return stationPositions.value.map((pos, i) => ({
     ...pos,
@@ -329,9 +376,9 @@ const visibleStations = computed<Station[]>(() => {
 
 // Reactive per-agent state (bound to template)
 const agentPositions = reactive<Record<string, Position>>({})
-const agentWalking   = reactive<Record<string, boolean>>({})
-const agentDuration  = reactive<Record<string, number>>({}) // CSS transition seconds
-const agentChatting  = reactive<Record<string, boolean>>({})
+const agentWalking = reactive<Record<string, boolean>>({})
+const agentDuration = reactive<Record<string, number>>({}) // CSS transition seconds
+const agentChatting = reactive<Record<string, boolean>>({})
 
 // Non-reactive walk queues and timers
 const agentWaypoints: Record<string, Position[]> = {}
@@ -348,7 +395,8 @@ function agentPos(id: string): Position {
 // ── Pathfinding helpers ────────────────────────────────────
 
 function getYZone(y: number) {
-  const r1 = ROW1.value, r2 = ROW2.value
+  const r1 = ROW1.value,
+    r2 = ROW2.value
   if (y < r1.yMin) return 'top'
   if (y < r1.yMax) return 'row1'
   if (y < r2.yMin) return 'mid'
@@ -357,7 +405,7 @@ function getYZone(y: number) {
 }
 
 function closestGapX(x: number) {
-  return GAP_XS.value.reduce((best, gx) => Math.abs(gx - x) < Math.abs(best - x) ? gx : best)
+  return GAP_XS.value.reduce((best, gx) => (Math.abs(gx - x) < Math.abs(best - x) ? gx : best))
 }
 
 // Returns a list of {x,y} waypoints from (x1,y1) to (x2,y2) that avoid station rows.
@@ -384,10 +432,10 @@ function randomInClearZone(): Position {
   const { yMin: r1Min, yMax: r1Max } = ROW1.value
   const { yMin: r2Min, yMax: r2Max } = ROW2.value
   const zones = [
-    { yMin: walkYMin,  yMax: r1Min - 2 },
+    { yMin: walkYMin, yMax: r1Min - 2 },
     { yMin: r1Max + 2, yMax: r2Min - 2 },
-    { yMin: r2Max + 2, yMax: walkYMax  },
-  ].filter(z => z.yMax > z.yMin + 10)
+    { yMin: r2Max + 2, yMax: walkYMax },
+  ].filter((z) => z.yMax > z.yMin + 10)
   if (zones.length === 0) return { x: (xMin + xMax) / 2, y: (walkYMin + walkYMax) / 2 }
   const z = zones[Math.floor(Math.random() * zones.length)]
   return {
@@ -415,12 +463,13 @@ function walkDuration(x1: number, y1: number, x2: number, y2: number) {
 function tryStartChat(id: string): boolean {
   const myPoi = agentDestPoi[id]
   if (!myPoi || !SOCIAL_POIS.has(myPoi)) return false
-  const partner = agents.value.find(a =>
-    a.id !== id &&
-    agentDestPoi[a.id] === myPoi &&
-    !agentWalking[a.id] &&
-    !agentChatting[a.id] &&
-    !isAgentAtWork(a)
+  const partner = agents.value.find(
+    (a) =>
+      a.id !== id &&
+      agentDestPoi[a.id] === myPoi &&
+      !agentWalking[a.id] &&
+      !agentChatting[a.id] &&
+      !isAgentAtWork(a),
   )
   if (!partner) return false
   const dur = 10000 + Math.random() * 5000 // 10–15s
@@ -447,7 +496,10 @@ function stepAgent(id: string) {
     agentTimers[id] = setTimeout(() => scheduleWalk(id), rest)
     return
   }
-  const cur = agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
+  const cur = agentPositions[id] || {
+    x: Math.round(floorW.value / 2),
+    y: Math.round(floorH.value / 2),
+  }
   const next = queue.shift()!
   const dur = walkDuration(cur.x, cur.y, next.x, next.y)
   agentDuration[id] = dur
@@ -457,7 +509,7 @@ function stepAgent(id: string) {
 }
 
 function scheduleWalk(id: string) {
-  const agent = agents.value.find(a => a.id === id)
+  const agent = agents.value.find((a) => a.id === id)
   if (!agent || isAgentAtWork(agent)) return
   agentChatting[id] = false
   const cur = agentPositions[id] || randomInClearZone()
@@ -471,7 +523,7 @@ function scheduleWalk(id: string) {
 
 function stationForAgent(agent: Agent) {
   if (!agent.workerId) return null
-  return visibleStations.value.find(s => s.task && s.task.worker_id === agent.workerId) || null
+  return visibleStations.value.find((s) => s.task && s.task.worker_id === agent.workerId) || null
 }
 
 function isAgentAtWork(agent: Agent) {
@@ -518,7 +570,7 @@ function initAgent(agent: Agent) {
 }
 
 function syncPositions() {
-  agents.value.forEach(agent => {
+  agents.value.forEach((agent) => {
     const key = activityKey(agent)
     const prevKey = prevActivityKey[agent.id]
 
@@ -556,21 +608,21 @@ onUnmounted(() => {
 // Watch id+state+workerId+activity so any change to what an agent is doing
 // triggers syncPositions and moves them to the right POI.
 watch(
-  () => agents.value.map(a => `${a.id}:${a.state}:${a.workerId}:${a.activity ?? ''}`).join(','),
-  syncPositions
+  () => agents.value.map((a) => `${a.id}:${a.state}:${a.workerId}:${a.activity ?? ''}`).join(','),
+  syncPositions,
 )
 watch(visibleStations, syncPositions)
 
 const tickerMessages = computed(() => {
   const msgs = []
-  agents.value.forEach(a => {
+  agents.value.forEach((a) => {
     const label = a.activity ? `${a.state.toUpperCase()} [${a.activity}]` : a.state.toUpperCase()
     msgs.push(`${a.name}: ${label}`)
   })
   tasksStore.tasks
-    .filter(t => !['done', 'failed'].includes(t.state))
+    .filter((t) => !['done', 'failed'].includes(t.state))
     .slice(0, 4)
-    .forEach(t => msgs.push(`TASK: ${t.name}`))
+    .forEach((t) => msgs.push(`TASK: ${t.name}`))
   if (msgs.length === 0) msgs.push('AWAITING WORKERS', 'SYSTEMS NOMINAL', 'BOILER PRESSURE: 87 PSI')
   return msgs
 })
@@ -618,15 +670,33 @@ function stateLabel(state: string) {
   animation: sparkleFade 2.5s infinite ease-in-out;
 }
 
-.sparkle:nth-child(5n+1) { color: var(--color-gold); }
-.sparkle:nth-child(5n+2) { color: var(--color-teal); }
-.sparkle:nth-child(5n+3) { color: var(--color-amber); }
-.sparkle:nth-child(5n+4) { color: var(--color-cream); }
-.sparkle:nth-child(5n)   { color: var(--color-orange); }
+.sparkle:nth-child(5n + 1) {
+  color: var(--color-gold);
+}
+.sparkle:nth-child(5n + 2) {
+  color: var(--color-teal);
+}
+.sparkle:nth-child(5n + 3) {
+  color: var(--color-amber);
+}
+.sparkle:nth-child(5n + 4) {
+  color: var(--color-cream);
+}
+.sparkle:nth-child(5n) {
+  color: var(--color-orange);
+}
 
 @keyframes sparkleFade {
-  0%, 100% { opacity: 0; transform: scale(0.3) rotate(0deg); }
-  40%, 60%  { opacity: 0.85; transform: scale(1.1) rotate(180deg); }
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0.3) rotate(0deg);
+  }
+  40%,
+  60% {
+    opacity: 0.85;
+    transform: scale(1.1) rotate(180deg);
+  }
 }
 
 /* Pipes — rich warm copper */
@@ -637,27 +707,58 @@ function stateLabel(state: string) {
   box-shadow: 0 0 6px rgba(204, 85, 0, 0.4);
 }
 
-.pipe-h { height: 12px; }
-.pipe-v { width: 12px; }
+.pipe-h {
+  height: 12px;
+}
+.pipe-v {
+  width: 12px;
+}
 
-.pipe1 { top: 20px; left: 0; right: 0; }
-.pipe2 { top: 50px; left: 100px; width: 200px; }
-.pipe3 { top: 0; left: 150px; height: 80px; }
-.pipe4 { top: 0; left: 400px; height: 60px; }
+.pipe1 {
+  top: 20px;
+  left: 0;
+  right: 0;
+}
+.pipe2 {
+  top: 50px;
+  left: 100px;
+  width: 200px;
+}
+.pipe3 {
+  top: 0;
+  left: 150px;
+  height: 80px;
+}
+.pipe4 {
+  top: 0;
+  left: 400px;
+  height: 60px;
+}
 
 /* Pipe joints (bolted flanges) */
 .pipe-joint {
   position: absolute;
   width: 18px;
   height: 18px;
-  background: radial-gradient(circle, var(--color-brass-light) 20%, var(--color-brass) 60%, var(--color-brass-dark) 100%);
+  background: radial-gradient(
+    circle,
+    var(--color-brass-light) 20%,
+    var(--color-brass) 60%,
+    var(--color-brass-dark) 100%
+  );
   border: 2px solid var(--color-brass-dark);
   border-radius: 50%;
   box-shadow: 0 0 5px rgba(232, 170, 0, 0.5);
 }
 
-.j1 { top: 14px; left: 147px; }
-.j2 { top: 14px; left: 397px; }
+.j1 {
+  top: 14px;
+  left: 147px;
+}
+.j2 {
+  top: 14px;
+  left: 397px;
+}
 
 /* Steam vents */
 .steam-vent {
@@ -665,9 +766,18 @@ function stateLabel(state: string) {
   width: 14px;
 }
 
-.vent1 { top: 32px; left: 155px; }
-.vent2 { top: 32px; left: 405px; }
-.vent3 { top: 62px; left: 230px; }
+.vent1 {
+  top: 32px;
+  left: 155px;
+}
+.vent2 {
+  top: 32px;
+  left: 405px;
+}
+.vent3 {
+  top: 62px;
+  left: 230px;
+}
 
 .steam-particle {
   position: absolute;
@@ -679,9 +789,18 @@ function stateLabel(state: string) {
 }
 
 @keyframes steamRise {
-  0%   { transform: translateY(0) scale(0.5); opacity: 0.8; }
-  50%  { transform: translateY(-30px) scale(1.5) translateX(5px); opacity: 0.4; }
-  100% { transform: translateY(-60px) scale(2) translateX(-5px); opacity: 0; }
+  0% {
+    transform: translateY(0) scale(0.5);
+    opacity: 0.8;
+  }
+  50% {
+    transform: translateY(-30px) scale(1.5) translateX(5px);
+    opacity: 0.4;
+  }
+  100% {
+    transform: translateY(-60px) scale(2) translateX(-5px);
+    opacity: 0;
+  }
 }
 
 /* Gears — warm SNES palette, each a distinct color */
@@ -691,19 +810,67 @@ function stateLabel(state: string) {
   line-height: 1;
 }
 
-.gear-large  { font-size: 56px; animation: gearSpin 8s linear infinite; }
-.gear-medium { font-size: 36px; animation: gearSpin 5s linear infinite reverse; }
-.gear-small  { font-size: 22px; animation: gearSpin 3s linear infinite; }
+.gear-large {
+  font-size: 56px;
+  animation: gearSpin 8s linear infinite;
+}
+.gear-medium {
+  font-size: 36px;
+  animation: gearSpin 5s linear infinite reverse;
+}
+.gear-small {
+  font-size: 22px;
+  animation: gearSpin 3s linear infinite;
+}
 
-.g1 { right: 30px;  top: 60px;  color: var(--color-gold);    text-shadow: 0 0 10px var(--color-gold),   0 0 20px rgba(255,214,68,0.4); }
-.g2 { right: 75px;  top: 80px;  color: var(--color-teal);    text-shadow: 0 0 10px var(--color-teal),   0 0 20px rgba(0,187,170,0.4); }
-.g3 { right: 55px;  top: 100px; color: var(--color-orange);  text-shadow: 0 0 10px var(--color-orange), 0 0 20px rgba(255,119,0,0.4); }
-.g4 { left: 620px;  top: 40px;  color: var(--color-sky);     text-shadow: 0 0 10px var(--color-sky),    0 0 20px rgba(68,170,238,0.4); }
-.g5 { left: 650px;  top: 65px;  color: var(--color-amber);   text-shadow: 0 0 10px var(--color-amber),  0 0 20px rgba(255,204,0,0.4); }
+.g1 {
+  right: 30px;
+  top: 60px;
+  color: var(--color-gold);
+  text-shadow:
+    0 0 10px var(--color-gold),
+    0 0 20px rgba(255, 214, 68, 0.4);
+}
+.g2 {
+  right: 75px;
+  top: 80px;
+  color: var(--color-teal);
+  text-shadow:
+    0 0 10px var(--color-teal),
+    0 0 20px rgba(0, 187, 170, 0.4);
+}
+.g3 {
+  right: 55px;
+  top: 100px;
+  color: var(--color-orange);
+  text-shadow:
+    0 0 10px var(--color-orange),
+    0 0 20px rgba(255, 119, 0, 0.4);
+}
+.g4 {
+  left: 620px;
+  top: 40px;
+  color: var(--color-sky);
+  text-shadow:
+    0 0 10px var(--color-sky),
+    0 0 20px rgba(68, 170, 238, 0.4);
+}
+.g5 {
+  left: 650px;
+  top: 65px;
+  color: var(--color-amber);
+  text-shadow:
+    0 0 10px var(--color-amber),
+    0 0 20px rgba(255, 204, 0, 0.4);
+}
 
 @keyframes gearSpin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Furnace */
@@ -724,7 +891,9 @@ function stateLabel(state: string) {
   align-items: center;
   justify-content: space-around;
   padding: 6px;
-  box-shadow: 0 0 14px rgba(204, 85, 0, 0.4), inset 0 0 8px rgba(255, 119, 0, 0.1);
+  box-shadow:
+    0 0 14px rgba(204, 85, 0, 0.4),
+    inset 0 0 8px rgba(255, 119, 0, 0.1);
 }
 
 .furnace-door {
@@ -742,8 +911,14 @@ function stateLabel(state: string) {
 }
 
 @keyframes flicker {
-  from { opacity: 0.85; box-shadow: inset 0 0 8px rgba(255, 80, 0, 0.4); }
-  to   { opacity: 1;    box-shadow: inset 0 0 14px rgba(255, 120, 0, 0.7); }
+  from {
+    opacity: 0.85;
+    box-shadow: inset 0 0 8px rgba(255, 80, 0, 0.4);
+  }
+  to {
+    opacity: 1;
+    box-shadow: inset 0 0 14px rgba(255, 120, 0, 0.7);
+  }
 }
 
 .furnace-gauge {
@@ -770,8 +945,12 @@ function stateLabel(state: string) {
 }
 
 @keyframes needleSpin {
-  from { transform: rotate(-60deg); }
-  to   { transform: rotate(60deg); }
+  from {
+    transform: rotate(-60deg);
+  }
+  to {
+    transform: rotate(60deg);
+  }
 }
 
 .furnace-chimney {
@@ -798,8 +977,14 @@ function stateLabel(state: string) {
 }
 
 @keyframes smokeRise {
-  0%   { transform: translate(-50%, 0) scale(0.5); opacity: 0.8; }
-  100% { transform: translate(calc(-50% + 20px), -50px) scale(3); opacity: 0; }
+  0% {
+    transform: translate(-50%, 0) scale(0.5);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translate(calc(-50% + 20px), -50px) scale(3);
+    opacity: 0;
+  }
 }
 
 .furnace-label {
@@ -846,16 +1031,32 @@ function stateLabel(state: string) {
   animation-delay: calc(var(--offset, 0) * -1ms / 10);
 }
 
-.belt-item:nth-child(6n+1) { filter: drop-shadow(0 0 3px var(--color-gold)); }
-.belt-item:nth-child(6n+2) { filter: drop-shadow(0 0 3px var(--color-teal)); }
-.belt-item:nth-child(6n+3) { filter: drop-shadow(0 0 3px var(--color-amber)); }
-.belt-item:nth-child(6n+4) { filter: drop-shadow(0 0 3px var(--color-sky)); }
-.belt-item:nth-child(6n+5) { filter: drop-shadow(0 0 3px var(--color-orange)); }
-.belt-item:nth-child(6n)   { filter: drop-shadow(0 0 3px var(--color-gold)); }
+.belt-item:nth-child(6n + 1) {
+  filter: drop-shadow(0 0 3px var(--color-gold));
+}
+.belt-item:nth-child(6n + 2) {
+  filter: drop-shadow(0 0 3px var(--color-teal));
+}
+.belt-item:nth-child(6n + 3) {
+  filter: drop-shadow(0 0 3px var(--color-amber));
+}
+.belt-item:nth-child(6n + 4) {
+  filter: drop-shadow(0 0 3px var(--color-sky));
+}
+.belt-item:nth-child(6n + 5) {
+  filter: drop-shadow(0 0 3px var(--color-orange));
+}
+.belt-item:nth-child(6n) {
+  filter: drop-shadow(0 0 3px var(--color-gold));
+}
 
 @keyframes beltMove {
-  from { transform: translateX(120%); }
-  to   { transform: translateX(-100px); }
+  from {
+    transform: translateX(120%);
+  }
+  to {
+    transform: translateX(-100px);
+  }
 }
 
 .belt-roller {
@@ -863,14 +1064,23 @@ function stateLabel(state: string) {
   bottom: 0;
   width: 28px;
   height: 28px;
-  background: radial-gradient(circle, var(--color-copper-light) 20%, var(--color-copper) 55%, var(--color-brass-dark) 100%);
+  background: radial-gradient(
+    circle,
+    var(--color-copper-light) 20%,
+    var(--color-copper) 55%,
+    var(--color-brass-dark) 100%
+  );
   border-radius: 50%;
   border: 3px solid var(--color-brass-dark);
   box-shadow: 0 0 6px rgba(204, 85, 0, 0.5);
 }
 
-.belt-roller.left  { left: -14px; }
-.belt-roller.right { right: -14px; }
+.belt-roller.left {
+  left: -14px;
+}
+.belt-roller.right {
+  right: -14px;
+}
 
 /* Work Stations */
 .work-station {
@@ -923,14 +1133,31 @@ function stateLabel(state: string) {
   border-radius: 1px;
 }
 
-.screen-line:nth-child(1) { background: var(--color-teal); }
-.screen-line:nth-child(2) { background: var(--color-sky); animation-delay: -0.7s; opacity: 0.5; }
-.screen-line:nth-child(3) { background: var(--color-green); animation-delay: -1.4s; opacity: 0.3; width: 60%; }
+.screen-line:nth-child(1) {
+  background: var(--color-teal);
+}
+.screen-line:nth-child(2) {
+  background: var(--color-sky);
+  animation-delay: -0.7s;
+  opacity: 0.5;
+}
+.screen-line:nth-child(3) {
+  background: var(--color-green);
+  animation-delay: -1.4s;
+  opacity: 0.3;
+  width: 60%;
+}
 
 @keyframes screenScroll {
-  0%   { opacity: 0.85; }
-  50%  { opacity: 0.3; }
-  100% { opacity: 0.85; }
+  0% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 0.85;
+  }
 }
 
 .screen-idle {
@@ -947,10 +1174,10 @@ function stateLabel(state: string) {
   border-top: 3px solid var(--color-brass);
 }
 
-.station-agent, .station-empty {
+.station-agent,
+.station-empty {
   margin-top: 2px;
 }
-
 
 .empty-slot {
   width: 30px;
@@ -983,13 +1210,33 @@ function stateLabel(state: string) {
   text-transform: uppercase;
 }
 
-.state-working       { color: var(--color-green);  text-shadow: 0 0 4px var(--color-green); }
-.state-pending       { color: var(--color-text-dim); }
-.state-planning      { color: var(--color-sky);    text-shadow: 0 0 4px var(--color-sky); }
-.state-awaiting-review { color: var(--color-amber); text-shadow: 0 0 4px var(--color-amber); }
-.state-followup      { color: var(--color-orange); text-shadow: 0 0 4px var(--color-orange); }
-.state-failed        { color: var(--color-red);    text-shadow: 0 0 4px var(--color-red); }
-.state-done          { color: var(--color-teal);   text-shadow: 0 0 4px var(--color-teal); }
+.state-working {
+  color: var(--color-green);
+  text-shadow: 0 0 4px var(--color-green);
+}
+.state-pending {
+  color: var(--color-text-dim);
+}
+.state-planning {
+  color: var(--color-sky);
+  text-shadow: 0 0 4px var(--color-sky);
+}
+.state-awaiting-review {
+  color: var(--color-amber);
+  text-shadow: 0 0 4px var(--color-amber);
+}
+.state-followup {
+  color: var(--color-orange);
+  text-shadow: 0 0 4px var(--color-orange);
+}
+.state-failed {
+  color: var(--color-red);
+  text-shadow: 0 0 4px var(--color-red);
+}
+.state-done {
+  color: var(--color-teal);
+  text-shadow: 0 0 4px var(--color-teal);
+}
 
 .work-station.occupied .station-table {
   border-top-color: var(--color-brass-light);
@@ -1000,7 +1247,9 @@ function stateLabel(state: string) {
 .floating-agent {
   position: absolute;
   z-index: 5;
-  transition: left var(--walk-dur, 1.5s) ease-in-out, top var(--walk-dur, 1.5s) ease-in-out;
+  transition:
+    left var(--walk-dur, 1.5s) ease-in-out,
+    top var(--walk-dur, 1.5s) ease-in-out;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1025,8 +1274,15 @@ function stateLabel(state: string) {
 }
 
 @keyframes chatBob {
-  0%, 100% { transform: translateY(0); opacity: 0.9; }
-  50%       { transform: translateY(-2px); opacity: 1; }
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.9;
+  }
+  50% {
+    transform: translateY(-2px);
+    opacity: 1;
+  }
 }
 
 /* ── Points of interest ──────────────────────────────── */
@@ -1043,7 +1299,7 @@ function stateLabel(state: string) {
   color: var(--color-brass-dark);
   letter-spacing: 1px;
   white-space: nowrap;
-  text-shadow: 0 0 4px rgba(232,170,0,0.4);
+  text-shadow: 0 0 4px rgba(232, 170, 0, 0.4);
 }
 
 /* Tool cabinet — top-left */
@@ -1060,7 +1316,7 @@ function stateLabel(state: string) {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  box-shadow: 0 0 6px rgba(204,85,0,0.25);
+  box-shadow: 0 0 6px rgba(204, 85, 0, 0.25);
 }
 .tc-drawer {
   height: 7px;
@@ -1094,7 +1350,7 @@ function stateLabel(state: string) {
   border-radius: 2px;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 0 8px rgba(232,170,0,0.2);
+  box-shadow: 0 0 8px rgba(232, 170, 0, 0.2);
 }
 .bb-pin {
   position: absolute;
@@ -1108,9 +1364,30 @@ function stateLabel(state: string) {
   position: absolute;
   border-radius: 1px;
 }
-.bb-note.n1 { width: 24px; height: 16px; background: #ffe8a0; left: 6px;  top: 14px; transform: rotate(-2deg); }
-.bb-note.n2 { width: 20px; height: 14px; background: #a0f0d0; left: 34px; top: 12px; transform: rotate(3deg); }
-.bb-note.n3 { width: 18px; height: 12px; background: #f0c0a0; left: 20px; top: 28px; transform: rotate(-1deg); }
+.bb-note.n1 {
+  width: 24px;
+  height: 16px;
+  background: #ffe8a0;
+  left: 6px;
+  top: 14px;
+  transform: rotate(-2deg);
+}
+.bb-note.n2 {
+  width: 20px;
+  height: 14px;
+  background: #a0f0d0;
+  left: 34px;
+  top: 12px;
+  transform: rotate(3deg);
+}
+.bb-note.n3 {
+  width: 18px;
+  height: 12px;
+  background: #f0c0a0;
+  left: 20px;
+  top: 28px;
+  transform: rotate(-1deg);
+}
 
 /* Water cooler — mid-left */
 .water-cooler {
@@ -1120,10 +1397,10 @@ function stateLabel(state: string) {
 .wc-bottle {
   width: 22px;
   height: 36px;
-  background: linear-gradient(180deg, rgba(68,170,238,0.4) 0%, rgba(68,170,238,0.15) 100%);
+  background: linear-gradient(180deg, rgba(68, 170, 238, 0.4) 0%, rgba(68, 170, 238, 0.15) 100%);
   border: 2px solid var(--color-sky);
   border-radius: 4px 4px 2px 2px;
-  box-shadow: 0 0 6px rgba(68,170,238,0.3);
+  box-shadow: 0 0 6px rgba(68, 170, 238, 0.3);
 }
 .wc-base {
   width: 30px;
@@ -1156,9 +1433,17 @@ function stateLabel(state: string) {
   opacity: 0.7;
 }
 @keyframes drip {
-  0%   { transform: translateY(-8px); opacity: 0.8; }
-  60%  { opacity: 0.6; }
-  100% { transform: translateY(12px); opacity: 0; }
+  0% {
+    transform: translateY(-8px);
+    opacity: 0.8;
+  }
+  60% {
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(12px);
+    opacity: 0;
+  }
 }
 
 /* Coffee maker — position set dynamically beside the top-right desk */
@@ -1174,7 +1459,7 @@ function stateLabel(state: string) {
   justify-content: flex-end;
   padding-bottom: 4px;
   position: relative;
-  box-shadow: 0 0 8px rgba(204,85,0,0.3);
+  box-shadow: 0 0 8px rgba(204, 85, 0, 0.3);
 }
 .cm-tank {
   position: absolute;
@@ -1182,7 +1467,7 @@ function stateLabel(state: string) {
   left: 6px;
   right: 6px;
   height: 20px;
-  background: linear-gradient(180deg, rgba(68,170,238,0.25), rgba(68,170,238,0.08));
+  background: linear-gradient(180deg, rgba(68, 170, 238, 0.25), rgba(68, 170, 238, 0.08));
   border: 1px solid var(--color-sky);
   border-radius: 2px;
 }
@@ -1215,7 +1500,7 @@ function stateLabel(state: string) {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(136,68,255,0.4) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(136, 68, 255, 0.4) 0%, transparent 70%);
   animation: orbPulse 2.2s ease-in-out infinite;
   top: 4px;
   left: 4px;
@@ -1223,7 +1508,7 @@ function stateLabel(state: string) {
 .orb-sphere {
   font-size: 20px;
   line-height: 1;
-  filter: drop-shadow(0 0 6px rgba(136,68,255,0.8));
+  filter: drop-shadow(0 0 6px rgba(136, 68, 255, 0.8));
   animation: orbFloat 3s ease-in-out infinite;
   position: relative;
   z-index: 1;
@@ -1237,12 +1522,24 @@ function stateLabel(state: string) {
   border: 1px solid var(--color-copper);
 }
 @keyframes orbPulse {
-  0%, 100% { opacity: 0.4; transform: scale(0.9); }
-  50%       { opacity: 0.8; transform: scale(1.2); }
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.2);
+  }
 }
 @keyframes orbFloat {
-  0%, 100% { transform: translateY(0px); }
-  50%       { transform: translateY(-3px); }
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
 }
 
 /* Archive */
@@ -1259,17 +1556,33 @@ function stateLabel(state: string) {
   align-items: flex-end;
   gap: 2px;
   padding: 2px 3px;
-  box-shadow: 0 0 6px rgba(232,170,0,0.15);
+  box-shadow: 0 0 6px rgba(232, 170, 0, 0.15);
 }
 .book {
   border-radius: 1px 1px 0 0;
-  border: 1px solid rgba(0,0,0,0.3);
+  border: 1px solid rgba(0, 0, 0, 0.3);
   flex: 1;
 }
-.book.b1 { height: 22px; background: var(--color-teal);   box-shadow: 0 0 3px var(--color-teal); }
-.book.b2 { height: 18px; background: var(--color-amber);  box-shadow: 0 0 3px var(--color-amber); }
-.book.b3 { height: 26px; background: var(--color-sky);    box-shadow: 0 0 3px var(--color-sky); }
-.book.b4 { height: 20px; background: var(--color-orange); box-shadow: 0 0 3px var(--color-orange); }
+.book.b1 {
+  height: 22px;
+  background: var(--color-teal);
+  box-shadow: 0 0 3px var(--color-teal);
+}
+.book.b2 {
+  height: 18px;
+  background: var(--color-amber);
+  box-shadow: 0 0 3px var(--color-amber);
+}
+.book.b3 {
+  height: 26px;
+  background: var(--color-sky);
+  box-shadow: 0 0 3px var(--color-sky);
+}
+.book.b4 {
+  height: 20px;
+  background: var(--color-orange);
+  box-shadow: 0 0 3px var(--color-orange);
+}
 
 /* Telegraph */
 .telegraph {
@@ -1286,7 +1599,7 @@ function stateLabel(state: string) {
   justify-content: center;
   padding-bottom: 3px;
   position: relative;
-  box-shadow: 0 0 6px rgba(68,170,238,0.2);
+  box-shadow: 0 0 6px rgba(68, 170, 238, 0.2);
 }
 .tg-key {
   width: 14px;
@@ -1297,8 +1610,14 @@ function stateLabel(state: string) {
   animation: keyTap 1.8s ease-in-out infinite;
 }
 @keyframes keyTap {
-  0%, 85%, 100% { transform: translateY(0); }
-  90%            { transform: translateY(2px); }
+  0%,
+  85%,
+  100% {
+    transform: translateY(0);
+  }
+  90% {
+    transform: translateY(2px);
+  }
 }
 .tg-spark {
   position: absolute;
@@ -1311,9 +1630,18 @@ function stateLabel(state: string) {
   animation: spark 1.8s var(--delay, 0s) ease-out infinite;
 }
 @keyframes spark {
-  0%   { opacity: 0; transform: translate(0, 0) scale(1); }
-  30%  { opacity: 1; transform: translate(3px, -4px) scale(1.4); }
-  100% { opacity: 0; transform: translate(6px, -10px) scale(0.2); }
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(1);
+  }
+  30% {
+    opacity: 1;
+    transform: translate(3px, -4px) scale(1.4);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(6px, -10px) scale(0.2);
+  }
 }
 .tg-wire {
   width: 2px;
@@ -1329,12 +1657,14 @@ function stateLabel(state: string) {
 .tank-vessel {
   width: 44px;
   height: 36px;
-  background: linear-gradient(180deg, rgba(68,153,255,0.12) 0%, rgba(0,0,0,0) 100%);
-  border: 2px solid rgba(68,153,255,0.4);
+  background: linear-gradient(180deg, rgba(68, 153, 255, 0.12) 0%, rgba(0, 0, 0, 0) 100%);
+  border: 2px solid rgba(68, 153, 255, 0.4);
   border-radius: 4px 4px 2px 2px;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 0 10px rgba(68,153,255,0.25), inset 0 0 8px rgba(68,153,255,0.1);
+  box-shadow:
+    0 0 10px rgba(68, 153, 255, 0.25),
+    inset 0 0 8px rgba(68, 153, 255, 0.1);
 }
 .tank-bubble {
   position: absolute;
@@ -1342,19 +1672,25 @@ function stateLabel(state: string) {
   left: calc(50% + var(--xoff, 0px));
   width: 6px;
   height: 6px;
-  background: radial-gradient(circle, rgba(68,153,255,0.7) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(68, 153, 255, 0.7) 0%, transparent 70%);
   border-radius: 50%;
   animation: bubbleRise 2.4s var(--delay, 0s) ease-out infinite;
 }
 @keyframes bubbleRise {
-  0%   { transform: translateY(0) scale(0.6); opacity: 0.8; }
-  100% { transform: translateY(-34px) scale(1.8); opacity: 0; }
+  0% {
+    transform: translateY(0) scale(0.6);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translateY(-34px) scale(1.8);
+    opacity: 0;
+  }
 }
 .tank-gauge {
   width: 16px;
   height: 8px;
-  background: rgba(68,153,255,0.2);
-  border: 1px solid rgba(68,153,255,0.4);
+  background: rgba(68, 153, 255, 0.2);
+  border: 1px solid rgba(68, 153, 255, 0.4);
   border-radius: 1px;
   margin: 1px auto 0;
 }
@@ -1381,7 +1717,7 @@ function stateLabel(state: string) {
   font-size: 20px;
   line-height: 1;
   animation: flicker 0.4s infinite alternate;
-  filter: drop-shadow(0 0 6px rgba(255,100,0,0.8));
+  filter: drop-shadow(0 0 6px rgba(255, 100, 0, 0.8));
 }
 
 /* Factory info overlay */
@@ -1397,13 +1733,16 @@ function stateLabel(state: string) {
   border: 1px solid var(--color-brass);
   padding: 4px 14px;
   z-index: 10;
-  box-shadow: 0 0 12px rgba(232, 170, 0, 0.3), inset 0 0 6px rgba(232, 170, 0, 0.06);
+  box-shadow:
+    0 0 12px rgba(232, 170, 0, 0.3),
+    inset 0 0 6px rgba(232, 170, 0, 0.06);
 }
 
 .factory-title {
   font-size: 7px;
   letter-spacing: 2px;
-  background: linear-gradient(90deg,
+  background: linear-gradient(
+    90deg,
     var(--color-amber),
     var(--color-gold),
     var(--color-cream),
@@ -1420,8 +1759,12 @@ function stateLabel(state: string) {
 }
 
 @keyframes goldShimmer {
-  from { background-position: 0% center; }
-  to   { background-position: 250% center; }
+  from {
+    background-position: 0% center;
+  }
+  to {
+    background-position: 250% center;
+  }
 }
 
 .agent-count {
@@ -1458,12 +1801,24 @@ function stateLabel(state: string) {
   text-shadow: 0 0 4px rgba(255, 204, 0, 0.5);
 }
 
-.ticker-msg:nth-child(3n+1) { color: var(--color-amber); }
-.ticker-msg:nth-child(3n+2) { color: var(--color-teal); text-shadow: 0 0 4px rgba(0,187,170,0.5); }
-.ticker-msg:nth-child(3n)   { color: var(--color-gold); text-shadow: 0 0 4px rgba(255,214,68,0.5); }
+.ticker-msg:nth-child(3n + 1) {
+  color: var(--color-amber);
+}
+.ticker-msg:nth-child(3n + 2) {
+  color: var(--color-teal);
+  text-shadow: 0 0 4px rgba(0, 187, 170, 0.5);
+}
+.ticker-msg:nth-child(3n) {
+  color: var(--color-gold);
+  text-shadow: 0 0 4px rgba(255, 214, 68, 0.5);
+}
 
 @keyframes tickerScroll {
-  from { transform: translateX(100vw); }
-  to   { transform: translateX(-100%); }
+  from {
+    transform: translateX(100vw);
+  }
+  to {
+    transform: translateX(-100%);
+  }
 }
 </style>

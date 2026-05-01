@@ -7,7 +7,10 @@
       </div>
       <div class="terminal-meta">
         <span v-if="worker" class="state-badge" :class="worker.state">{{ worker.state }}</span>
-        <span class="live-indicator" :class="{ active: worker && !['idle', 'offline'].includes(worker.state) }">
+        <span
+          class="live-indicator"
+          :class="{ active: worker && !['idle', 'offline'].includes(worker.state) }"
+        >
           {{ worker && !['idle', 'offline'].includes(worker.state) ? '● LIVE' : '○ IDLE' }}
         </span>
       </div>
@@ -15,10 +18,12 @@
 
     <div class="terminal-body" ref="terminalEl">
       <div class="terminal-welcome">
-        <pre>╔══════════════════════════════════════╗
+        <pre>
+╔══════════════════════════════════════╗
 ║    PIONEER SQUARE TERMINAL v1.0      ║
 ║    Worker: {{ padName(worker?.name) }}   ║
-╚══════════════════════════════════════╝</pre>
+╚══════════════════════════════════════╝</pre
+        >
       </div>
       <div v-if="logs.length === 0" class="terminal-empty">
         <span class="cursor-blink">_</span> Waiting for output...
@@ -85,7 +90,7 @@ const guildStore = useGuildStore()
 const terminalEl = ref<HTMLElement | null>(null)
 const expandedIdx = ref<number | null>(null)
 
-const worker = computed(() => agentsStore.workers.find(w => w.id === props.workerId))
+const worker = computed(() => agentsStore.workers.find((w) => w.id === props.workerId))
 const logs = computed(() => agentsStore.workerLogs[props.workerId] || [])
 
 function toggleDetail(i: number) {
@@ -115,10 +120,14 @@ function lineClass(line: string) {
   return ''
 }
 
-watch(logs, async () => {
-  await nextTick()
-  if (terminalEl.value) terminalEl.value.scrollTop = terminalEl.value.scrollHeight
-}, { deep: true })
+watch(
+  logs,
+  async () => {
+    await nextTick()
+    if (terminalEl.value) terminalEl.value.scrollTop = terminalEl.value.scrollHeight
+  },
+  { deep: true },
+)
 </script>
 
 <style scoped>
@@ -149,7 +158,9 @@ watch(logs, async () => {
   font-size: 13px;
 }
 
-.term-icon { color: var(--color-teal); }
+.term-icon {
+  color: var(--color-teal);
+}
 
 .terminal-meta {
   display: flex;
@@ -165,11 +176,26 @@ watch(logs, async () => {
   font-family: var(--font-pixel);
   letter-spacing: 1px;
 }
-.state-badge.idle    { background: rgba(154,128,96,0.2); color: var(--color-text-dim); }
-.state-badge.working { background: rgba(0,255,136,0.2);  color: var(--color-green); }
-.state-badge.busy    { background: rgba(255,136,68,0.2); color: var(--color-orange); }
-.state-badge.error   { background: rgba(255,51,51,0.2);  color: var(--color-red); }
-.state-badge.offline { background: rgba(100,100,100,0.2); color: var(--color-text-dim); }
+.state-badge.idle {
+  background: rgba(154, 128, 96, 0.2);
+  color: var(--color-text-dim);
+}
+.state-badge.working {
+  background: rgba(0, 255, 136, 0.2);
+  color: var(--color-green);
+}
+.state-badge.busy {
+  background: rgba(255, 136, 68, 0.2);
+  color: var(--color-orange);
+}
+.state-badge.error {
+  background: rgba(255, 51, 51, 0.2);
+  color: var(--color-red);
+}
+.state-badge.offline {
+  background: rgba(100, 100, 100, 0.2);
+  color: var(--color-text-dim);
+}
 
 .live-indicator {
   font-size: 11px;
@@ -179,7 +205,15 @@ watch(logs, async () => {
   color: var(--color-teal);
   animation: livePulse 1.5s infinite;
 }
-@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes livePulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
 
 .terminal-body {
   flex: 1;
@@ -205,7 +239,10 @@ watch(logs, async () => {
   gap: 4px;
 }
 
-.terminal-entry { display: flex; flex-direction: column; }
+.terminal-entry {
+  display: flex;
+  flex-direction: column;
+}
 
 .terminal-line {
   display: flex;
@@ -218,7 +255,9 @@ watch(logs, async () => {
   cursor: pointer;
   border-radius: 2px;
 }
-.terminal-line--expandable:hover { background: rgba(255,255,255,0.04); }
+.terminal-line--expandable:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
 
 .log-expand-icon {
   font-size: 8px;
@@ -242,8 +281,12 @@ watch(logs, async () => {
   margin-bottom: 4px;
   margin-top: 6px;
 }
-.log-detail-label:first-child { margin-top: 0; }
-.log-detail-label--new { color: var(--color-green); }
+.log-detail-label:first-child {
+  margin-top: 0;
+}
+.log-detail-label--new {
+  color: var(--color-green);
+}
 
 .log-detail-body {
   margin: 0 0 2px;
@@ -254,18 +297,18 @@ watch(logs, async () => {
   word-break: break-all;
   max-height: 300px;
   overflow-y: auto;
-  background: rgba(0,0,0,0.3);
+  background: rgba(0, 0, 0, 0.3);
   border: 1px solid #2a1a05;
   padding: 6px 8px;
 }
 .log-detail-old {
-  background: rgba(180,30,30,0.08);
-  border-color: rgba(220,50,50,0.3);
+  background: rgba(180, 30, 30, 0.08);
+  border-color: rgba(220, 50, 50, 0.3);
   color: #c07070;
 }
 .log-detail-new {
-  background: rgba(0,120,60,0.08);
-  border-color: rgba(0,187,100,0.3);
+  background: rgba(0, 120, 60, 0.08);
+  border-color: rgba(0, 187, 100, 0.3);
   color: #70c090;
 }
 
@@ -275,10 +318,20 @@ watch(logs, async () => {
   font-size: 11px;
 }
 
-.log-content         { color: var(--color-green); word-break: break-all; white-space: pre-wrap; }
-.log-content.log-success { color: var(--color-teal); }
-.log-content.log-error   { color: var(--color-red); }
-.log-content.log-meta    { color: var(--color-brass-dark); }
+.log-content {
+  color: var(--color-green);
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+.log-content.log-success {
+  color: var(--color-teal);
+}
+.log-content.log-error {
+  color: var(--color-red);
+}
+.log-content.log-meta {
+  color: var(--color-brass-dark);
+}
 
 .terminal-prompt {
   margin-top: 8px;
@@ -287,14 +340,31 @@ watch(logs, async () => {
   align-items: center;
   gap: 2px;
 }
-.prompt-user   { color: var(--color-teal); }
-.prompt-sep    { color: var(--color-text-dim); }
-.prompt-path   { color: var(--color-blue); }
-.prompt-dollar { color: var(--color-text); margin: 0 4px; }
+.prompt-user {
+  color: var(--color-teal);
+}
+.prompt-sep {
+  color: var(--color-text-dim);
+}
+.prompt-path {
+  color: var(--color-blue);
+}
+.prompt-dollar {
+  color: var(--color-text);
+  margin: 0 4px;
+}
 
 .cursor-blink {
   color: var(--color-teal);
   animation: blink 1s step-end infinite;
 }
-@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
 </style>

@@ -36,7 +36,10 @@ export const useGuildStore = defineStore('guild', () => {
   async function loadGuilds() {
     try {
       const res = await fetch(`${API_BASE}/guilds`, { headers: _authHeaders() })
-      if (!res.ok) { guilds.value = []; return }
+      if (!res.ok) {
+        guilds.value = []
+        return
+      }
       guilds.value = await res.json()
     } catch (e) {
       console.error('Failed to load guilds', e)
@@ -47,17 +50,20 @@ export const useGuildStore = defineStore('guild', () => {
     return updateGuild(guildId, { name })
   }
 
-  async function updateGuild(guildId: string, updates: { name?: string; primary_repo?: string | null }) {
+  async function updateGuild(
+    guildId: string,
+    updates: { name?: string; primary_repo?: string | null },
+  ) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify(updates)
+      body: JSON.stringify(updates),
     })
     if (!res.ok) throw new Error('Failed to update guild')
     if (currentGuild.value && currentGuild.value.id === guildId) {
       currentGuild.value = { ...currentGuild.value, ...updates }
     }
-    const idx = guilds.value.findIndex(g => g.id === guildId)
+    const idx = guilds.value.findIndex((g) => g.id === guildId)
     if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], ...updates }
     return await res.json()
   }
@@ -66,7 +72,7 @@ export const useGuildStore = defineStore('guild', () => {
     const res = await fetch(`${API_BASE}/guilds`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name }),
     })
     const guild: Guild = await res.json()
     guilds.value.unshift(guild)
@@ -94,14 +100,20 @@ export const useGuildStore = defineStore('guild', () => {
       reconnectTimer = null
     }
     if (ws) {
-      try { ws.close() } catch { /* ignore */ }
+      try {
+        ws.close()
+      } catch {
+        /* ignore */
+      }
     }
 
     let socket: WebSocket
     try {
       const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const authStore = useAuthStore()
-      const tokenParam = authStore.loginToken ? `?token=${encodeURIComponent(authStore.loginToken)}` : ''
+      const tokenParam = authStore.loginToken
+        ? `?token=${encodeURIComponent(authStore.loginToken)}`
+        : ''
       socket = new WebSocket(`${wsProto}//${window.location.host}/ws/${guildId}${tokenParam}`)
     } catch (e) {
       console.error('Failed to construct WebSocket', e)
@@ -131,12 +143,16 @@ export const useGuildStore = defineStore('guild', () => {
           if (currentGuild.value && currentGuild.value.id === data.id) {
             currentGuild.value = { ...currentGuild.value, name: data.name }
           }
-          const idx = guilds.value.findIndex(g => g.id === data.id)
+          const idx = guilds.value.findIndex((g) => g.id === data.id)
           if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name: data.name }
         }
         if (onMessage) onMessage(data)
-        messageHandlers.value.forEach(h => {
-          try { h(data) } catch (err) { console.error('WS message handler error', err) }
+        messageHandlers.value.forEach((h) => {
+          try {
+            h(data)
+          } catch (err) {
+            console.error('WS message handler error', err)
+          }
         })
       } catch (e) {
         console.error('Error processing WS message', e)
@@ -165,7 +181,9 @@ export const useGuildStore = defineStore('guild', () => {
     }
     const delay = _backoffDelay(reconnectAttempt.value)
     reconnectAttempt.value += 1
-    console.info(`WebSocket reconnect attempt ${reconnectAttempt.value}/${MAX_RETRIES} in ${delay}ms`)
+    console.info(
+      `WebSocket reconnect attempt ${reconnectAttempt.value}/${MAX_RETRIES} in ${delay}ms`,
+    )
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
       connectWebSocket(guildId, onMessage)
@@ -179,7 +197,11 @@ export const useGuildStore = defineStore('guild', () => {
       reconnectTimer = null
     }
     if (ws) {
-      try { ws.close() } catch { /* ignore */ }
+      try {
+        ws.close()
+      } catch {
+        /* ignore */
+      }
       ws = null
     }
     isConnected.value = false
@@ -205,7 +227,7 @@ export const useGuildStore = defineStore('guild', () => {
   }
 
   function removeMessageHandler(handler: MessageHandler) {
-    messageHandlers.value = messageHandlers.value.filter(h => h !== handler)
+    messageHandlers.value = messageHandlers.value.filter((h) => h !== handler)
   }
 
   return {
@@ -223,6 +245,6 @@ export const useGuildStore = defineStore('guild', () => {
     disconnectWebSocket,
     sendMessage,
     addMessageHandler,
-    removeMessageHandler
+    removeMessageHandler,
   }
 })

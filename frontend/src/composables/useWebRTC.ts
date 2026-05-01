@@ -7,7 +7,7 @@ export function useWebRTC(sendSignal: (payload: SignalPayload) => void) {
   const dataChannels = ref<Record<string, RTCDataChannel>>({})
 
   const config: RTCConfiguration = {
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   }
 
   function createPeerConnection(peerId: string) {
@@ -73,6 +73,6 @@ export function useWebRTC(sendSignal: (payload: SignalPayload) => void) {
     handleOffer,
     handleAnswer,
     handleIceCandidate,
-    sendDataChannelMessage
+    sendDataChannelMessage,
   }
 }
