@@ -52,7 +52,12 @@
             }"
           >
             <span class="msg-from">{{ msg.from === 'user' ? 'YOU' : msg.from === 'system' ? 'SYS' : msg.from }}</span>
-            <span class="msg-content">{{ msg.content }}</span>
+            <span
+              v-if="msg.from !== 'user' && msg.from !== 'system'"
+              class="msg-content msg-content--markdown"
+              v-html="renderMarkdown(msg.content)"
+            ></span>
+            <span v-else class="msg-content">{{ msg.content }}</span>
             <a v-if="msg.prUrl" :href="msg.prUrl" target="_blank" rel="noopener" class="pr-link">
               Open PR →
             </a>
@@ -202,6 +207,8 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
 import { useGitHubStore } from '../stores/github'
@@ -233,6 +240,11 @@ const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'
 
 // Issue assignment pattern: "Work on issue #N in owner/repo: title"
 const ISSUE_PATTERN = /Work on issue #(\d+) in ([^:]+): "(.+)"/
+
+function renderMarkdown(text: string): string {
+  const html = marked.parse(text, { async: false }) as string
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
+}
 
 function toggleMinimize() {
   minimized.value = !minimized.value
@@ -680,6 +692,73 @@ watch(messages, async () => {
   color: var(--color-text);
   line-height: 1.4;
   word-break: break-word;
+}
+
+.msg-content--markdown :deep(p) {
+  margin: 0 0 6px;
+}
+.msg-content--markdown :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.msg-content--markdown :deep(ul),
+.msg-content--markdown :deep(ol) {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+}
+.msg-content--markdown :deep(li) {
+  margin-bottom: 2px;
+}
+.msg-content--markdown :deep(code) {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--color-brass-dark);
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--color-amber);
+}
+.msg-content--markdown :deep(pre) {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--color-brass-dark);
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 4px 0;
+}
+.msg-content--markdown :deep(pre code) {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 10px;
+  color: var(--color-green);
+}
+.msg-content--markdown :deep(h1),
+.msg-content--markdown :deep(h2),
+.msg-content--markdown :deep(h3) {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  letter-spacing: 1px;
+  color: var(--color-teal);
+  margin: 6px 0 4px;
+  text-transform: uppercase;
+}
+.msg-content--markdown :deep(strong) {
+  color: var(--color-amber);
+  font-weight: bold;
+}
+.msg-content--markdown :deep(em) {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+.msg-content--markdown :deep(a) {
+  color: var(--color-teal);
+  text-decoration: underline;
+}
+.msg-content--markdown :deep(blockquote) {
+  border-left: 3px solid var(--color-brass-dark);
+  margin: 4px 0;
+  padding: 2px 8px;
+  color: var(--color-text-dim);
+  font-style: italic;
 }
 
 .msg-time {

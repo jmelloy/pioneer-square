@@ -17,6 +17,9 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@types/dompurify": "^3.0.5",
+    "dompurify": "^3.4.2",
+    "marked": "^18.0.3",
     "pinia": "^3.0.4",
     "vue": "^3.5.32",
     "vue-router": "^5.0.6"
