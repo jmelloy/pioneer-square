@@ -1410,18 +1410,32 @@ async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
     if data.name:
         env["PIONEER_WORKER_NAME"] = data.name
 
-    # Join the same Docker network as the backend so the worker can reach it
+    # Join the same Docker network as the backend so the worker can reach it,
+    # and inherit the compose project so `docker compose ps` lists the worker.
     network = None
+    project = os.environ.get("COMPOSE_PROJECT_NAME")
     try:
         me = client.containers.get(os.environ.get("HOSTNAME", ""))
         network = next(iter(me.attrs["NetworkSettings"]["Networks"].keys()), None)
+        if not project:
+            project = me.labels.get("com.docker.compose.project")
     except Exception:
         pass
+
+    labels: dict[str, str] = {}
+    if project:
+        # oneoff=True mirrors `docker compose run`, which keeps compose from
+        # warning about orphan containers on subsequent up/down commands.
+        labels["com.docker.compose.project"] = project
+        labels["com.docker.compose.service"] = "worker"
+        labels["com.docker.compose.oneoff"] = "True"
 
     try:
         run_kwargs: dict = dict(image=image, environment=env, detach=True, remove=True)
         if network:
             run_kwargs["network"] = network
+        if labels:
+            run_kwargs["labels"] = labels
         container = client.containers.run(**run_kwargs)
     except docker_sdk.errors.ImageNotFound:
         raise HTTPException(
