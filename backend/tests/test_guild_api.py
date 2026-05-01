@@ -109,3 +109,67 @@ def test_update_guild_not_found(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 404
+
+
+def test_update_guild_primary_repo(client):
+    test_client, db_path = client
+    token = make_auth_token(db_path)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create_resp = test_client.post("/guilds", json={"name": "Repo Guild"}, headers=headers)
+    guild_id = create_resp.json()["id"]
+
+    patch_resp = test_client.patch(
+        f"/guilds/{guild_id}",
+        json={"primary_repo": "owner/myrepo"},
+        headers=headers,
+    )
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["primary_repo"] == "owner/myrepo"
+
+    get_resp = test_client.get(f"/guilds/{guild_id}")
+    assert get_resp.json()["primary_repo"] == "owner/myrepo"
+
+
+def test_update_guild_clear_primary_repo(client):
+    test_client, db_path = client
+    token = make_auth_token(db_path)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    create_resp = test_client.post("/guilds", json={"name": "Clear Repo Guild"}, headers=headers)
+    guild_id = create_resp.json()["id"]
+
+    test_client.patch(f"/guilds/{guild_id}", json={"primary_repo": "owner/repo"}, headers=headers)
+
+    # Clear by sending null
+    patch_resp = test_client.patch(
+        f"/guilds/{guild_id}",
+        json={"primary_repo": None},
+        headers=headers,
+    )
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["primary_repo"] is None
+
+
+def test_primary_repo_in_foreman_prompt():
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from foreman.prompt import build_system_prompt
+
+    # Primary repo is included when set
+    prompt = build_system_prompt("[]", "[]", primary_repo="jmelloy/pioneer-square")
+    assert "jmelloy/pioneer-square" in prompt
+    assert "primary repository" in prompt.lower()
+
+    # Primary repo line is absent when not set
+    prompt_no_repo = build_system_prompt("[]", "[]")
+    assert "primary repository" not in prompt_no_repo.lower()
+
+    # Primary repo line is absent when explicitly None
+    prompt_none = build_system_prompt("[]", "[]", primary_repo=None)
+    assert "primary repository" not in prompt_none.lower()
+
+    # extra_context still works alongside primary_repo
+    prompt_both = build_system_prompt("[]", "[]", extra_context="some context", primary_repo="o/r")
+    assert "o/r" in prompt_both
+    assert "some context" in prompt_both
