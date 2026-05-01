@@ -263,7 +263,9 @@ class Worker:
 
         # Strip ANSI/CSI escape sequences so we can grep Ink's output. Match
         # the common cursor/SGR/erase forms claude emits.
-        ansi_re = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b\][^\x07\x1b]*[\x07\x1b]")
+        ansi_re = re.compile(
+            rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b\][^\x07\x1b]*[\x07\x1b]"
+        )
 
         def _clean(b: bytes) -> str:
             return ansi_re.sub(b"", b).decode(errors="replace")
@@ -348,9 +350,7 @@ class Worker:
                             return
                         logger.info("Auth login: wrote code + CR (separate writes) to PTY")
                         code_sent = True
-                        post_submit_watchdog = asyncio.create_task(
-                            self._auth_login_watchdog(proc)
-                        )
+                        post_submit_watchdog = asyncio.create_task(self._auth_login_watchdog(proc))
         finally:
             self._auth_code_queue = None
             if post_submit_watchdog is not None and not post_submit_watchdog.done():
