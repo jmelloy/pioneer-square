@@ -25,7 +25,16 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
 from foreman.prompt import FOREMAN_SYSTEM, build_system_prompt
-from foreman.runner import _serialize_content, _load_history, _save_turn
+from foreman.runner import (
+    _serialize_content,
+    _load_history,
+    _save_turn,
+    _summarize_task,
+    truncate_tool_result,
+    prune_history,
+    MAX_TOOL_RESULT_CHARS,
+    MAX_HISTORY_MESSAGES,
+)
 from foreman.tools import exec_tools
 from helpers import create_db, insert_guild
 
@@ -760,3 +769,228 @@ class TestForemanHistory:
         assert all("Bob" in json.dumps(m) for m in bob_msgs)
         assert not any("Bob" in json.dumps(m) for m in alice_msgs)
         assert not any("Alice" in json.dumps(m) for m in bob_msgs)
+
+
+# ---------------------------------------------------------------------------
+# 6. _summarize_task — issue #95
+# ---------------------------------------------------------------------------
+
+class TestSummarizeTask:
+    """Terminal tasks are summarised/excluded; non-terminal tasks are kept in full."""
+
+    _24H = 86_400
+
+    def _now_ts(self):
+        return datetime.now(timezone.utc).timestamp()
+
+    def _cutoff_ts(self):
+        """The cutoff used in production: now minus 24 h."""
+        return self._now_ts() - self._24H
+
+    def _iso(self, delta_secs: float) -> str:
+        """Return an ISO timestamp offset by *delta_secs* from now."""
+        from datetime import timedelta
+        dt = datetime.now(timezone.utc) + timedelta(seconds=delta_secs)
+        return dt.isoformat()
+
+    def test_non_terminal_task_returned_unchanged(self):
+        task = {"id": "t-1", "state": "working", "description": "Do work", "branch": "main"}
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result == task
+
+    def test_pending_task_returned_unchanged(self):
+        task = {"id": "t-2", "state": "pending", "description": "Pending work"}
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result == task
+
+    def test_awaiting_review_task_returned_unchanged(self):
+        task = {"id": "t-3", "state": "awaiting-review", "description": "Review me"}
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result == task
+
+    def test_done_task_within_24h_strips_description(self):
+        task = {
+            "id": "t-4", "state": "done", "description": "Implement OAuth",
+            "branch": "claude/feat", "pr_url": "https://github.com/x/y/pull/42",
+            "finished_at": self._iso(-3600),  # 1 hour ago
+        }
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result is not None
+        assert "description" not in result
+        assert result["id"] == "t-4"
+        assert result["state"] == "done"
+        assert result["branch"] == "claude/feat"
+
+    def test_failed_task_within_24h_strips_description(self):
+        task = {
+            "id": "t-5", "state": "failed", "description": "Big description text",
+            "finished_at": self._iso(-1800),  # 30 min ago
+        }
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result is not None
+        assert "description" not in result
+
+    def test_cancelled_task_within_24h_strips_description(self):
+        task = {
+            "id": "t-6", "state": "cancelled", "description": "Cancelled work",
+            "finished_at": self._iso(-7200),  # 2 hours ago
+        }
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result is not None
+        assert "description" not in result
+
+    def test_done_task_older_than_24h_excluded(self):
+        task = {
+            "id": "t-7", "state": "done", "description": "Old work",
+            "finished_at": self._iso(-(self._24H + 3600)),  # 25 hours ago
+        }
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result is None
+
+    def test_failed_task_older_than_24h_excluded(self):
+        task = {
+            "id": "t-8", "state": "failed", "description": "Old fail",
+            "finished_at": self._iso(-(self._24H * 2)),  # 48 hours ago
+        }
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result is None
+
+    def test_terminal_task_no_finished_at_included(self):
+        """Terminal task with no finished_at cannot be aged out — include it."""
+        task = {"id": "t-9", "state": "done", "description": "Unknown age", "finished_at": None}
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result is not None
+        assert "description" not in result
+
+    def test_terminal_task_invalid_finished_at_included(self):
+        """Malformed finished_at should not cause exclusion."""
+        task = {"id": "t-10", "state": "done", "description": "Bad ts", "finished_at": "not-a-date"}
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result is not None
+        assert "description" not in result
+
+    def test_exactly_24h_plus_1s_boundary_excluded(self):
+        """Tasks finished exactly 24h + 1s ago should be excluded."""
+        task = {
+            "id": "t-11", "state": "done", "description": "Boundary",
+            "finished_at": self._iso(-(self._24H + 1)),  # 24h + 1s ago
+        }
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result is None
+
+    def test_non_terminal_task_keeps_description(self):
+        task = {"id": "t-12", "state": "working", "description": "Active work"}
+        result = _summarize_task(task, self._cutoff_ts())
+        assert result["description"] == "Active work"
+
+
+# ---------------------------------------------------------------------------
+# 7. truncate_tool_result — issue #96
+# ---------------------------------------------------------------------------
+
+class TestTruncateToolResult:
+    def test_short_content_unchanged(self):
+        content = "x" * 100
+        assert truncate_tool_result(content) == content
+
+    def test_content_at_limit_unchanged(self):
+        content = "x" * MAX_TOOL_RESULT_CHARS
+        assert truncate_tool_result(content) == content
+
+    def test_content_over_limit_truncated(self):
+        content = "x" * (MAX_TOOL_RESULT_CHARS + 500)
+        result = truncate_tool_result(content)
+        assert len(result) > MAX_TOOL_RESULT_CHARS  # includes the suffix
+        assert result.startswith("x" * MAX_TOOL_RESULT_CHARS)
+        assert "[truncated:" in result
+        assert "500 chars omitted" in result
+
+    def test_truncation_marker_format(self):
+        content = "a" * (MAX_TOOL_RESULT_CHARS + 1)
+        result = truncate_tool_result(content)
+        assert result.endswith("\n… [truncated: 1 chars omitted]")
+
+    def test_empty_string_unchanged(self):
+        assert truncate_tool_result("") == ""
+
+    def test_custom_max_chars(self):
+        content = "y" * 200
+        result = truncate_tool_result(content, max_chars=100)
+        assert result == "y" * 100 + "\n… [truncated: 100 chars omitted]"
+
+    def test_just_under_limit_unchanged(self):
+        content = "z" * (MAX_TOOL_RESULT_CHARS - 1)
+        assert truncate_tool_result(content) == content
+
+
+# ---------------------------------------------------------------------------
+# 8. prune_history — issue #98
+# ---------------------------------------------------------------------------
+
+class TestPruneHistory:
+    def _make_messages(self, n: int) -> list[dict]:
+        """Return n alternating user/assistant messages, starting with user."""
+        msgs = []
+        for i in range(n):
+            role = "user" if i % 2 == 0 else "assistant"
+            msgs.append({"role": role, "content": f"message {i}"})
+        return msgs
+
+    def test_short_history_unchanged(self):
+        msgs = self._make_messages(10)
+        result = prune_history(msgs)
+        assert result == msgs
+
+    def test_exactly_max_unchanged(self):
+        msgs = self._make_messages(MAX_HISTORY_MESSAGES)
+        result = prune_history(msgs)
+        assert result == msgs
+
+    def test_over_limit_drops_oldest(self):
+        msgs = self._make_messages(MAX_HISTORY_MESSAGES + 4)
+        result = prune_history(msgs)
+        assert len(result) <= MAX_HISTORY_MESSAGES
+
+    def test_over_limit_keeps_newest(self):
+        msgs = self._make_messages(MAX_HISTORY_MESSAGES + 2)
+        result = prune_history(msgs)
+        # Last message should be the last of the original list (or shifted by role fix)
+        original_last = msgs[-1]["content"]
+        assert any(m["content"] == original_last for m in result)
+
+    def test_result_starts_with_user_turn(self):
+        # Build list where pruning to last N would start with assistant
+        msgs = []
+        for i in range(MAX_HISTORY_MESSAGES + 3):
+            msgs.append({"role": "user", "content": f"u{i}"})
+            msgs.append({"role": "assistant", "content": f"a{i}"})
+        # After pruning to MAX_HISTORY_MESSAGES, the first entry might be assistant
+        result = prune_history(msgs)
+        assert result[0]["role"] == "user"
+
+    def test_empty_list_unchanged(self):
+        assert prune_history([]) == []
+
+    def test_single_user_message_unchanged(self):
+        msgs = [{"role": "user", "content": "hello"}]
+        assert prune_history(msgs) == msgs
+
+    def test_custom_max_messages(self):
+        msgs = self._make_messages(10)
+        result = prune_history(msgs, max_messages=4)
+        assert len(result) <= 4
+        assert result[0]["role"] == "user"
+
+    def test_system_prompt_effectively_preserved(self):
+        """Messages within the window are all kept; oldest beyond window are dropped.
+
+        The system prompt is passed as a separate ``system=`` parameter in the
+        Anthropic API call and is never part of the messages list, so it is
+        automatically unaffected by pruning.
+        """
+        msgs = self._make_messages(MAX_HISTORY_MESSAGES + 5)
+        result = prune_history(msgs)
+        # First message in result must be user (API requirement)
+        assert result[0]["role"] == "user"
+        # We kept at most MAX_HISTORY_MESSAGES entries
+        assert len(result) <= MAX_HISTORY_MESSAGES

@@ -20,8 +20,51 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-_RESULT_MAX = 400   # chars stored per tool result (keeps DB and context lean)
-_HUMAN_TURN_WINDOW = 5  # how many non-tool-response user turns to include
+MAX_TOOL_RESULT_CHARS = 8_000  # ~2 k tokens; cap per-result content before storing/sending
+MAX_HISTORY_MESSAGES = 20      # sliding window cap on messages sent to Anthropic
+_HUMAN_TURN_WINDOW = 5         # how many non-tool-response user turns to load from DB
+_TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
+_24H_SECS = 86_400
+
+
+def truncate_tool_result(content: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
+    """Cap a tool result string; append a truncation notice when trimmed."""
+    if len(content) <= max_chars:
+        return content
+    return content[:max_chars] + f"\n… [truncated: {len(content) - max_chars} chars omitted]"
+
+
+def prune_history(messages: list, max_messages: int = MAX_HISTORY_MESSAGES) -> list:
+    """Return at most *max_messages* tail entries, always starting with a user turn."""
+    if len(messages) > max_messages:
+        messages = messages[-max_messages:]
+    while messages and messages[0]["role"] != "user":
+        messages = messages[1:]
+    return messages
+
+
+def _summarize_task(task: dict, cutoff_ts: float) -> dict | None:
+    """Return a (possibly stripped) task dict, or None to exclude it.
+
+    Terminal tasks older than 24 h are dropped; terminal tasks within 24 h lose
+    their ``description`` field to keep context lean.  Non-terminal tasks are
+    returned unchanged.
+    """
+    state = task.get("state", "")
+    if state not in _TERMINAL_STATES:
+        return task
+    finished_at = task.get("finished_at")
+    if finished_at:
+        try:
+            finished_ts = datetime.fromisoformat(
+                finished_at.replace("Z", "+00:00")
+            ).timestamp()
+            if finished_ts < cutoff_ts:
+                return None  # older than 24 h — drop entirely
+        except (ValueError, AttributeError):
+            pass
+    # Within 24 h or undatable: compact summary without description
+    return {k: v for k, v in task.items() if k != "description"}
 
 
 def _serialize_content(content) -> str:
@@ -173,7 +216,8 @@ async def run_foreman_ai(
         )
         worker_rows = [dict(r._mapping) for r in result.fetchall()]
         task_result = await db.execute(
-            select(Task.id, Task.worker_id, Task.description, Task.state, Task.branch, Task.pr_url)
+            select(Task.id, Task.worker_id, Task.name, Task.description, Task.state,
+                   Task.branch, Task.pr_url, Task.finished_at)
             .where(Task.guild_id == guild_id)
             .order_by(Task.created_at.desc())
             .limit(10)
@@ -195,7 +239,12 @@ async def run_foreman_ai(
           "agent_count": r["agent_count"] or 0} for r in worker_rows],
         indent=2,
     )
-    tasks_block = json.dumps(task_rows[:6], indent=2)
+    cutoff_ts = datetime.now(timezone.utc).timestamp() - _24H_SECS
+    summarized_tasks = [
+        s for row in task_rows
+        if (s := _summarize_task(row, cutoff_ts)) is not None
+    ]
+    tasks_block = json.dumps(summarized_tasks[:6], indent=2)
     system = build_system_prompt(workers_block, tasks_block, extra_context, primary_repo=primary_repo)
 
     # Persist and load the new human turn
@@ -207,6 +256,7 @@ async def run_foreman_ai(
     try:
         text_parts = []
         for _ in range(6):  # safety cap on tool-call rounds
+            messages = prune_history(messages)
             resp = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
@@ -228,10 +278,10 @@ async def run_foreman_ai(
                 break  # end_turn — foreman is done
 
             tool_results = await exec_tools(guild_id, tool_uses)
-            # Truncate verbose results before storing
+            # Truncate verbose results before storing/sending
             trimmed = [
-                {**r, "content": r["content"][:_RESULT_MAX] + " …[truncated]"}
-                if len(r.get("content", "")) > _RESULT_MAX else r
+                {**r, "content": truncate_tool_result(r["content"])}
+                if r.get("content") else r
                 for r in tool_results
             ]
             # Persist tool_result turn as a child of the assistant turn
