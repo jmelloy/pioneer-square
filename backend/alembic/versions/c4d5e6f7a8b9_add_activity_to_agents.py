@@ -1,7 +1,7 @@
 """add_activity_to_agents
 
-Revision ID: a1b2c3d4e5f6
-Revises: f3a9c1e7b250
+Revision ID: c4d5e6f7a8b9
+Revises: b2c3d4e5f6a7
 Create Date: 2026-05-01 00:00:00.000000
 
 """
@@ -11,8 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = 'a1b2c3d4e5f6'
-down_revision: Union[str, Sequence[str], None] = 'f3a9c1e7b250'
+revision: str = 'c4d5e6f7a8b9'
+down_revision: Union[str, Sequence[str], None] = 'b2c3d4e5f6a7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
