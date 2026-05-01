@@ -233,6 +233,12 @@ async def run_foreman_ai(
                 guild_id, user_id, "user", trimmed,
                 is_tool_response=True, parent_id=asst_turn_id,
             )
+            logger.debug(
+                "guild=%s appending %d tool_result(s): %s",
+                guild_id,
+                len(trimmed),
+                [{"tool_use_id": r["tool_use_id"], "is_error": r.get("is_error", False)} for r in trimmed],
+            )
             messages.append({"role": "user", "content": trimmed})
 
         response_text = "\n".join(text_parts).strip()
