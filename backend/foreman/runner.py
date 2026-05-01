@@ -148,6 +148,12 @@ async def run_foreman_ai(
     from sqlalchemy import text
     db = await get_db()
     try:
+        guild_result = await db.execute(
+            select(Guild.name, Guild.primary_repo).where(Guild.id == guild_id)
+        )
+        guild_row = guild_result.one_or_none()
+        primary_repo = guild_row.primary_repo if guild_row else None
+
         result = await db.execute(
             text(
                 "SELECT w.id, w.repos, w.state as worker_state,"
@@ -186,7 +192,7 @@ async def run_foreman_ai(
         indent=2,
     )
     tasks_block = json.dumps(task_rows[:6], indent=2)
-    system = build_system_prompt(workers_block, tasks_block, extra_context)
+    system = build_system_prompt(workers_block, tasks_block, extra_context, primary_repo=primary_repo)
 
     # Persist and load the new human turn
     await _save_turn(guild_id, user_id, "user", human_message)

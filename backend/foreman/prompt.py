@@ -47,10 +47,20 @@ Be concise — one short paragraph maximum unless detail is requested.\
 """
 
 
-def build_system_prompt(workers_block: str, tasks_block: str, extra_context: str = "") -> str:
+def build_system_prompt(
+    workers_block: str,
+    tasks_block: str,
+    extra_context: str = "",
+    primary_repo: str | None = None,
+) -> str:
     """Assemble the full system prompt from live worker/task context."""
+    repo_line = (
+        f"\n\nThe guild's primary repository is `{primary_repo}` — Check it first for context."
+        if primary_repo
+        else ""
+    )
     return (
-        f"{FOREMAN_SYSTEM}\n\n"
+        f"{FOREMAN_SYSTEM}{repo_line}\n\n"
         f"## Current workers\n```json\n{workers_block}\n```\n\n"
         f"## Recent tasks\n```json\n{tasks_block}\n```"
         + (f"\n\n## Context\n{extra_context}" if extra_context else "")
