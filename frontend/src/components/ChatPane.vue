@@ -38,38 +38,43 @@
             Awaiting foreman connection...
           </div>
           <div
-            v-for="(msg, i) in messages"
+            v-for="(msg, i) in groupedMessages"
             :key="i"
             class="chat-message"
-            :class="messageClasses(msg)"
+            :class="isToolUseGroup(msg) ? 'from-foreman msg-tool' : messageClasses(msg as ChatMessage)"
           >
             <div class="msg-header">
-              <span class="msg-from" :class="'msg-from--' + msgSender(msg)">{{ senderLabel(msg) }}</span>
-              <span class="msg-time">{{ formatTime(msg.createdAt || msg.created_at) }}</span>
+              <span class="msg-from" :class="'msg-from--' + (isToolUseGroup(msg) ? msg.from : msgSender(msg as ChatMessage))">{{ isToolUseGroup(msg) ? '⚙ FOREMAN' : senderLabel(msg as ChatMessage) }}</span>
+              <span class="msg-time">{{ formatTime(isToolUseGroup(msg) ? (msg.createdAt || msg.created_at) : ((msg as ChatMessage).createdAt || (msg as ChatMessage).created_at)) }}</span>
             </div>
 
-            <!-- Tool-use block -->
-            <template v-if="isToolUse(msg)">
+            <!-- Tool-use group summary -->
+            <template v-if="isToolUseGroup(msg)">
+              <span class="tool-use-summary">{{ msg.tools.length }} tool{{ msg.tools.length !== 1 ? 's' : '' }} called: {{ msg.tools.join(', ') }}</span>
+            </template>
+
+            <!-- Tool-use block (fallback, should be grouped above) -->
+            <template v-else-if="isToolUse(msg as ChatMessage)">
               <div class="tool-block tool-block--use">
                 <button class="tool-block-header" @click.stop="toggleTool(i)">
-                  <span class="tool-name">{{ expandedTool === i ? '▼' : '▶' }} tool_use{{ msg.toolName ? ' · ' + msg.toolName : '' }}</span>
-                  <span v-if="expandedTool !== i" class="tool-preview">{{ toolPreview(msg.toolInput ? JSON.stringify(msg.toolInput) : msg.content) }}</span>
+                  <span class="tool-name">{{ expandedTool === i ? '▼' : '▶' }} tool_use{{ (msg as ChatMessage).toolName ? ' · ' + (msg as ChatMessage).toolName : '' }}</span>
+                  <span v-if="expandedTool !== i" class="tool-preview">{{ toolPreview((msg as ChatMessage).toolInput ? JSON.stringify((msg as ChatMessage).toolInput) : (msg as ChatMessage).content) }}</span>
                 </button>
                 <div v-if="expandedTool === i" class="tool-body">
-                  <pre class="tool-json">{{ JSON.stringify(msg.toolInput, null, 2) }}</pre>
+                  <pre class="tool-json">{{ JSON.stringify((msg as ChatMessage).toolInput, null, 2) }}</pre>
                 </div>
               </div>
             </template>
 
             <!-- Tool-result block -->
-            <template v-else-if="isToolResult(msg)">
-              <div class="tool-block tool-block--result" :class="{ 'tool-block--error': msg.isError }">
+            <template v-else-if="isToolResult(msg as ChatMessage)">
+              <div class="tool-block tool-block--result" :class="{ 'tool-block--error': (msg as ChatMessage).isError }">
                 <button class="tool-block-header" @click.stop="toggleTool(i)">
-                  <span class="tool-name">{{ expandedTool === i ? '▼' : '▶' }}{{ msg.isError ? ' ✗' : '' }} tool_result{{ msg.toolName ? ' · ' + msg.toolName : '' }}</span>
-                  <span v-if="expandedTool !== i" class="tool-preview">{{ toolPreview(msg.toolOutput || msg.content) }}</span>
+                  <span class="tool-name">{{ expandedTool === i ? '▼' : '▶' }}{{ (msg as ChatMessage).isError ? ' ✗' : '' }} tool_result{{ (msg as ChatMessage).toolName ? ' · ' + (msg as ChatMessage).toolName : '' }}</span>
+                  <span v-if="expandedTool !== i" class="tool-preview">{{ toolPreview((msg as ChatMessage).toolOutput || (msg as ChatMessage).content) }}</span>
                 </button>
                 <div v-if="expandedTool === i" class="tool-body">
-                  <pre class="tool-output">{{ msg.toolOutput || msg.content }}</pre>
+                  <pre class="tool-output">{{ (msg as ChatMessage).toolOutput || (msg as ChatMessage).content }}</pre>
                 </div>
               </div>
             </template>
@@ -77,12 +82,12 @@
             <!-- Regular message content -->
             <template v-else>
               <span
-                v-if="msgSender(msg) !== 'user' && msgSender(msg) !== 'system'"
+                v-if="msgSender(msg as ChatMessage) !== 'user' && msgSender(msg as ChatMessage) !== 'system'"
                 class="msg-content msg-content--markdown"
-                v-html="renderMarkdown(msg.content)"
+                v-html="renderMarkdown((msg as ChatMessage).content)"
               ></span>
-              <span v-else class="msg-content">{{ msg.content }}</span>
-              <a v-if="msg.prUrl" :href="msg.prUrl" target="_blank" rel="noopener" class="pr-link">
+              <span v-else class="msg-content">{{ (msg as ChatMessage).content }}</span>
+              <a v-if="(msg as ChatMessage).prUrl" :href="(msg as ChatMessage).prUrl!" target="_blank" rel="noopener" class="pr-link">
                 Open PR →
               </a>
             </template>
@@ -222,6 +227,48 @@ const pollLabel = computed(() => {
 const messages = computed(() => guildStore.messages)
 const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
 const expandedTool = ref<number | null>(null)
+
+interface ToolUseGroup {
+  _isToolUseGroup: true
+  tools: string[]
+  from: string
+  createdAt?: string
+  created_at?: string
+}
+
+type GroupedMessage = ChatMessage | ToolUseGroup
+
+const groupedMessages = computed((): GroupedMessage[] => {
+  const result: GroupedMessage[] = []
+  let i = 0
+  const raw = messages.value
+  while (i < raw.length) {
+    const msg = raw[i]
+    if (msg.role === 'tool_use') {
+      const tools: string[] = []
+      const first = msg
+      while (i < raw.length && raw[i].role === 'tool_use') {
+        tools.push((raw[i].toolName as string | undefined) || 'unknown')
+        i++
+      }
+      result.push({
+        _isToolUseGroup: true,
+        tools,
+        from: (first.from || first.from_agent || 'foreman') as string,
+        createdAt: first.createdAt,
+        created_at: first.created_at,
+      })
+    } else {
+      result.push(msg)
+      i++
+    }
+  }
+  return result
+})
+
+function isToolUseGroup(msg: GroupedMessage): msg is ToolUseGroup {
+  return (msg as ToolUseGroup)._isToolUseGroup === true
+}
 
 function msgSender(msg: ChatMessage): string {
   return (msg.from || msg.from_agent || 'unknown') as string
@@ -863,6 +910,14 @@ watch(messages, async () => {
   color: var(--color-text-dim);
   opacity: 0.6;
   flex-shrink: 0;
+}
+
+.tool-use-summary {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-dim);
+  opacity: 0.6;
+  font-style: italic;
 }
 
 .tool-preview {
