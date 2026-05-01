@@ -22,6 +22,9 @@ connections: Dict[str, List[WebSocket]] = {}
 # Tracks which WebSocket currently owns a given agent_id.
 agent_owners: Dict[str, WebSocket] = {}
 
+# Workers currently waiting for a Claude auth code: guild_id -> {worker_id: url}
+pending_claude_auth: Dict[str, Dict[str, str]] = {}
+
 
 async def broadcast(guild_id: str, message: dict, exclude: Optional[WebSocket] = None):
     """Broadcast a message to all connections in a guild."""
