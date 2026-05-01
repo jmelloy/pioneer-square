@@ -36,6 +36,10 @@ COPY pyproject.toml ./
 COPY pioneer_worker ./pioneer_worker
 RUN pip install -e .
 
-RUN mkdir -p /work/repos /work/worktrees
+RUN useradd --create-home --shell /bin/bash worker \
+    && mkdir -p /work/repos /work/worktrees /config \
+    && chown -R worker:worker /work /config /home/worker
+
+USER worker
 
 CMD ["pioneer-worker", "--config", "/config/pioneer-worker.toml"]
