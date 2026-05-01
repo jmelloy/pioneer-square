@@ -1,7 +1,6 @@
 # Foreman Context Analysis
 
-_Analysed against commit on branch `claude/in-repo-jmelloy-pioneer-square-investigate-t-02fd`  
-Code paths: `backend/foreman/prompt.py`, `backend/foreman/runner.py`, `backend/foreman/tools.py`_
+_Code paths: `backend/foreman/prompt.py`, `backend/foreman/runner.py`, `backend/foreman/tools.py`_
 
 ---
 
@@ -64,6 +63,41 @@ This applies uniformly to all tools. Maximum 400 chars per result regardless of 
 
 In a moderately active guild that has completed several multi-step tasks, **the tasks block alone can exceed the base instructions, workers block, and entire conversation history combined.**
 
+### What the tasks block actually looks like today
+
+A realistic three-task excerpt (abridged here — real descriptions are often 3–5× longer):
+
+```json
+[
+  {
+    "id": "t-abc123",
+    "worker_id": "w-xyz789",
+    "description": "Implement OAuth 2.0 login flow for the GitHub integration. The backend needs a new /auth/github/login endpoint that redirects to GitHub's OAuth page with the correct scopes (read:user, repo). The callback endpoint /auth/github/callback should exchange the code for an access token, store it in the github_tokens table keyed by github_user_id, issue a short-lived login_token, and redirect the frontend to /?login_token=...&github_username=.... The frontend should pick up these params, store them in localStorage, and set the Authorization header on all subsequent REST calls. Make sure to handle the case where the user has already linked GitHub (upsert, not insert).",
+    "state": "done",
+    "branch": "claude/oauth-login-abc123",
+    "pr_url": "https://github.com/acme/backend/pull/42"
+  },
+  {
+    "id": "t-def456",
+    "worker_id": "w-xyz789",
+    "description": "Add a WebSocket heartbeat. Workers should ping every 30 s; the backend should mark workers offline if no ping in 90 s. This prevents zombie workers holding task slots. See the existing _listen() loop in worker.py for where to add the ping task.",
+    "state": "working",
+    "branch": "claude/heartbeat-def456",
+    "pr_url": null
+  },
+  {
+    "id": "t-ghi789",
+    "worker_id": "foreman",
+    "description": "Review the heartbeat PR and check reconnection edge cases.",
+    "state": "pending",
+    "branch": null,
+    "pr_url": null
+  }
+]
+```
+
+This three-task block is ~1,200 chars. Six tasks with verbose descriptions easily reaches 6,000–12,000 chars.
+
 ---
 
 ## 3. Tool result sizing — the 400-char cap is both helpful and limiting
@@ -82,69 +116,146 @@ The 400-char cap keeps stored turns small, but it's a blunt instrument:
 
 For diagnostic tools like `get_task_status`, the 400-char cap can strip most of the log output the foreman needs to diagnose stalls. The JSON envelope (`id`, `name`, `state`, `phase`, timestamps) alone takes ~200 chars, leaving room for only 1–2 short log lines.
 
+### What a clipped get_task_status result looks like today
+
+```
+{"id": "t-def456", "name": "WebSocket heartbeat", "state": "working", "phase": "execute",
+"worker_id": "w-xyz789", "agent": {"agent_id": "a-mn0", "agent_state": "thinking"},
+"branch": "claude/heartbeat-def456", "pr_url": null, "created_at": "2026-04-30T18:00:00Z",
+"finished_at": null, "recent_logs": [{"time": "2026-04-30T18:05:12Z", "line": "Reading work …[truncated]
+```
+
+The foreman sees the task state but none of the actual log lines — exactly what it needs to judge whether the task is progressing.
+
 ---
 
-## 4. Conversation history growth
+## 4. Conversation history — tool call chains for completed tasks
 
-Turns are accumulated indefinitely in the DB. The window query loads _all_ turns to scan backwards; old rows past the window are never deleted. For a long-running guild:
+### What a full task lifecycle looks like in history
 
-- DB rows grow unbounded (no TTL, no periodic cleanup).
-- The load query still fetches all rows for that guild+user, then discards most of them — unnecessary DB I/O as history grows.
-- The 5-turn window is applied uniformly to all invocation types (human messages, automated `task-complete` callbacks, `needs-input` escalations). Automated callbacks don't need full human-turn history.
+A single task that required one follow-up generates roughly this turn sequence:
+
+```
+[1] user:       "implement the heartbeat mechanism"
+[2] assistant:  <tool_use: create_task>  <tool_use: assign_task>
+[3] user:       <tool_result: "Task t-def456 created">  <tool_result: "Task t-def456 assigned to w-xyz789">
+[4] assistant:  "Created and assigned heartbeat task t-def456."
+--- automated callback: task-complete ---
+[5] user:       "task-complete: t-def456 — worker finished"
+[6] assistant:  <tool_use: get_task_status>
+[7] user:       <tool_result: "{id: t-def456, state: awaiting-review, recent_logs: […]}">
+[8] assistant:  <tool_use: send_followup>  (add unit tests)
+[9] user:       <tool_result: "Follow-up sent to w-xyz789 for task t-def456">
+--- automated callback: task-followup-done ---
+[10] user:      "task-followup-done: t-def456"
+[11] assistant: <tool_use: finalize_task>
+[12] user:      <tool_result: "Task t-def456 finalized">
+[13] assistant: "Heartbeat task is complete. PR is at …"
+```
+
+That's 13 turns for one task cycle. With the 5-human-turn window those turns persist in context until five later human interactions push them out. Turns 6–12 (the `get_task_status`, `send_followup`, and `finalize_task` calls and their results) are the most expensive and, once the task is done, convey very little: the final state is already reflected in the task block as `"state": "done"`.
 
 ---
 
 ## 5. Reduction opportunities — ranked by impact
 
-### 5.1 Truncate task descriptions in the system prompt [**Highest impact**]
+### 5.1 Prioritise open/pending tasks; truncate completed ones to a meaningful summary [**Highest impact**]
 
-**Current behaviour:** Full `description` field (unlimited length) for each of the 6 recent tasks.
+**Current behaviour:** 6 most-recent tasks ordered only by `created_at`, all states at equal verbosity. Completed tasks with 1,000-char descriptions sit beside a two-word pending task.
 
-**Proposed:** Truncate descriptions to ~150 chars in the tasks block. Store the full description in the DB (already there — `tasks.description`); the foreman can fetch full detail via `get_task_status` when it needs to act on a specific task.
-
-```python
-# runner.py, when building task_rows
-task_rows = [
-    {
-        **dict(r._mapping),
-        "description": (dict(r._mapping).get("description") or "")[:150],
-    }
-    for r in task_result.fetchall()
-]
-```
-
-**Estimated saving:** 500–5,000 tokens per call depending on task verbosity. **Biggest single lever.**
-
-**Trade-off:** The foreman loses inline context for older tasks; must call `get_task_status` if it needs the full brief. Raise the `get_task_status` tool result cap (see §5.3) in tandem so the foreman can recover it.
-
----
-
-### 5.2 Exclude terminal tasks from the system prompt (or collapse to one line) [**High impact**]
-
-**Current behaviour:** Done, failed, and cancelled tasks appear at the same verbosity as active ones.
-
-**Proposed:** In the tasks query, show only non-terminal tasks at full detail; represent terminal tasks as a compact summary line (or omit them entirely when there are enough active tasks to fill the 6-task limit).
+**Proposed:** Always surface active tasks first (any state that is not `done`/`failed`/`cancelled`). Fill remaining slots with recently-completed tasks, but cap their descriptions at ~200 chars — enough to know what was accomplished without reproducing the full worker brief.
 
 ```python
-# Separate active from terminal; keep up to 6 active, fill remainder with collapsed terminal
+# runner.py — replace the task_rows slice before json.dumps
 active = [t for t in task_rows if t["state"] not in ("done", "failed", "cancelled")]
 terminal = [t for t in task_rows if t["state"] in ("done", "failed", "cancelled")]
 
-collapsed_terminal = [
-    {"id": t["id"], "state": t["state"], "description": t["description"][:60]}
+# Active tasks: truncate description at 500 chars (they're being worked on, context matters)
+active_trimmed = [
+    {**t, "description": t["description"][:500]}
+    for t in active
+]
+# Completed tasks: compact summary — enough to know what was done
+terminal_trimmed = [
+    {
+        "id": t["id"],
+        "state": t["state"],
+        "description": t["description"][:200],
+        "branch": t["branch"],
+        "pr_url": t["pr_url"],
+    }
     for t in terminal
 ]
 
-tasks_block = json.dumps((active + collapsed_terminal)[:6], indent=2)
+tasks_block = json.dumps((active_trimmed + terminal_trimmed)[:6], indent=2)
 ```
 
-**Estimated saving:** In a guild with mostly completed tasks (typical after any non-trivial session) this could halve the tasks block size. Combined with §5.1, the tasks block becomes bounded and predictable.
+**What the same tasks block looks like after:**
 
-**Trade-off:** The foreman has less context on what was already done. Mitigated by the 6-char task IDs in conversation history — completed task IDs are already mentioned in prior turns.
+```json
+[
+  {
+    "id": "t-def456",
+    "worker_id": "w-xyz789",
+    "description": "Add a WebSocket heartbeat. Workers should ping every 30 s; the backend should mark workers offline if no ping in 90 s. This prevents zombie workers holding task slots. See the existing _listen() loop in …",
+    "state": "working",
+    "branch": "claude/heartbeat-def456",
+    "pr_url": null
+  },
+  {
+    "id": "t-ghi789",
+    "worker_id": "foreman",
+    "description": "Review the heartbeat PR and check reconnection edge cases.",
+    "state": "pending",
+    "branch": null,
+    "pr_url": null
+  },
+  {
+    "id": "t-abc123",
+    "state": "done",
+    "description": "Implement OAuth 2.0 login flow for the GitHub integration. The backend needs a new /auth/github/login endpoint that redirects to GitHub's OAuth page with the correct scopes (read:user, repo)…",
+    "branch": "claude/oauth-login-abc123",
+    "pr_url": "https://github.com/acme/backend/pull/42"
+  }
+]
+```
+
+Active tasks come first and retain enough context. The completed task is still recognisable (200 chars covers the goal and approach) but no longer reproduces the full worker brief.
+
+**Estimated saving:** 500–5,000 tokens per call depending on how many completed tasks are in the window. The tasks block goes from unbounded to predictably small. **Biggest single lever.**
+
+**Trade-off:** Active tasks are still capped at 500 chars; the foreman can use `get_task_status` to recover the full description for a specific task. Raise the `get_task_status` cap (§5.3) in tandem.
 
 ---
 
-### 5.3 Per-tool result size caps (raise cap for diagnostic tools) [**Medium impact**]
+### 5.2 Strip intermediate tool results from completed-task history exchanges [**High impact**]
+
+**Current behaviour:** Every `get_task_status`, `send_followup`, and `finalize_task` call — plus their results — is stored in `foreman_turns` and replayed in the context window until pushed out by the 5-human-turn limit.
+
+**Proposed:** When loading history, detect tool-result turns whose `tool_use_id` refers to a tool call made during a task that is now terminal (done/failed/cancelled), and drop them — keeping only the last tool result (typically the `finalize_task` acknowledgement). The final assistant text turn ("Task done, PR at …") is already enough for the foreman to know what happened.
+
+Concretely, after loading history the 13-turn lifecycle from §4 would be collapsed to:
+
+```
+[1] user:       "implement the heartbeat mechanism"
+[4] assistant:  "Created and assigned heartbeat task t-def456."
+[5] user:       "task-complete: t-def456 — worker finished"
+[11] assistant: <tool_use: finalize_task>
+[12] user:      <tool_result: "Task t-def456 finalized">   ← last tool result kept
+[13] assistant: "Heartbeat task is complete. PR is at …"
+```
+
+Turns 2, 3, 6, 7, 8, 9, 10 are dropped — 7 turns saved per completed task cycle.
+
+**Implementation sketch:** In `_load_history()`, after fetching turns, identify the `parent_id` chain for tool-result turns, cross-reference against current task states, and filter out intermediate tool exchanges for terminal tasks. This requires one additional query to fetch current task states for any task IDs mentioned in the turn content.
+
+**Estimated saving:** 7–15 turns per completed task cycle still in the window. For a guild that completed 2–3 tasks within the last 5 human turns: **50–70% reduction in history turn count**.
+
+**Trade-off:** Slightly more complex load logic; some debugging signal is lost (can't reconstruct the full foreman decision path from the stored turns alone). Mitigated by the fact that the raw turns are still in the DB — only the in-context window is pruned.
+
+---
+
+### 5.3 Per-tool result size caps [**Medium impact**]
 
 **Current behaviour:** Flat 400-char cap for all tool results.
 
@@ -152,70 +263,74 @@ tasks_block = json.dumps((active + collapsed_terminal)[:6], indent=2)
 
 | Category | Tools | Suggested cap |
 |---|---|---|
-| Acknowledgement tools | `create_task`, `assign_task`, `finalize_task`, `send_followup`, `message_worker`, `cancel_task`, `redirect_task`, `claim_github_issue` | 200 chars (current is already fine) |
+| Acknowledgement tools | `create_task`, `assign_task`, `finalize_task`, `send_followup`, `message_worker`, `cancel_task`, `redirect_task`, `claim_github_issue` | 200 chars |
 | Diagnostic / status | `get_task_status` | 2,000 chars (needs log lines to be useful) |
 | GitHub read (list) | `list_github_issues`, `list_github_prs`, `search_github_issues` | 1,500 chars |
-| GitHub read (detail) | `get_github_issue` | 2,500 chars (body already capped at 2,000 in the tool; comment list adds ~200) |
-| GitHub write | `create_github_issue` | 300 chars (response is a URL + number) |
-
-Implement as a `_RESULT_MAX_BY_TOOL` dict in `runner.py` and look up the cap before truncating.
-
-**Estimated impact:** Net neutral on average token count (some results get larger, others stay small), but dramatically improves foreman decision quality for diagnostics and GitHub reads — meaning fewer redundant follow-up tool calls, which is a net token saving overall.
-
-**Trade-off:** Slightly more complex truncation logic; stored history turns for diagnostic tools become larger.
-
----
-
-### 5.4 Prune old DB turns (TTL or count-based) [**Low-to-medium impact on DB, negligible on token count**]
-
-**Current behaviour:** `foreman_turns` rows accumulate indefinitely; no cleanup except `clear_foreman_history` (manual).
-
-**Proposed:** Add a periodic or lazy cleanup:
+| GitHub read (detail) | `get_github_issue` | 2,500 chars |
+| GitHub write | `create_github_issue` | 300 chars |
 
 ```python
-# Option A: on each load, delete rows older than the cutoff index
-async def _load_and_prune_history(guild_id, user_id):
-    turns = ...  # existing load
-    if cutoff > 0:
-        old_ids = [t.id for t in turns[:cutoff]]
-        await db.execute(delete(ForemanTurn).where(ForemanTurn.id.in_(old_ids)))
-        await db.commit()
-    return ...
+# runner.py
+_RESULT_MAX_BY_TOOL = {
+    "get_task_status": 2000,
+    "get_github_issue": 2500,
+    "list_github_issues": 1500,
+    "list_github_prs": 1500,
+    "search_github_issues": 1500,
+}
+_RESULT_MAX_DEFAULT = 200
 
-# Option B: background task that deletes foreman_turns older than N days
+trimmed = [
+    {**r, "content": r["content"][:cap] + " …[truncated]"}
+    if len(r.get("content", "")) > (cap := _RESULT_MAX_BY_TOOL.get(r.get("tool_name", ""), _RESULT_MAX_DEFAULT))
+    else r
+    for r in tool_results
+]
 ```
 
-**Estimated saving:** No token saving (window is already applied in Python). Saves DB storage and speeds up the load query as history grows.
+(Note: `tool_use_id` is on the result block but tool name is not — the runner needs to pass the tool name alongside each result, or build a `id→name` map from `tool_uses` before truncating.)
 
-**Trade-off:** Option A (lazy prune) is simple but deletes history that might be useful for debugging. Option B is safer but requires a scheduler.
+**Estimated impact:** Net neutral on average token count (some results get larger, others smaller), but dramatically improves foreman decision quality for diagnostics and GitHub reads — meaning fewer redundant follow-up tool calls, which is a net token saving over the full session.
 
 ---
 
-### 5.5 Use task count as context signal (trim tasks block for automated callbacks) [**Low impact**]
+### 5.4 Prune old DB turns (lazy cleanup) [**Low-to-medium impact on DB**]
+
+**Current behaviour:** `foreman_turns` rows accumulate indefinitely.
+
+**Proposed:** On each `_load_history()` call, after determining the cutoff index, delete rows before it:
+
+```python
+if cutoff > 0:
+    old_ids = [t.id for t in turns[:cutoff]]
+    await db.execute(delete(ForemanTurn).where(ForemanTurn.id.in_(old_ids)))
+    await db.commit()
+```
+
+**Estimated saving:** No token saving (window is already applied in Python). Keeps the DB small and speeds up the load query on long-running guilds.
+
+**Trade-off:** Deletes rows that might be useful for debugging. Consider keeping rows but adding a `pruned` flag, or logging them to a cold-storage table, before deletion.
+
+---
+
+### 5.5 Slim tasks block for automated callbacks [**Low impact**]
 
 **Current behaviour:** All `run_foreman_ai()` callers get the same 6-task block regardless of invocation type.
 
-**Proposed:** For automated callbacks (`task-complete`, `task-followup-done`, `needs-input`) where `extra_context` already contains the relevant task detail, pass only the specific task in question plus a compact summary of other active tasks rather than the full 6-task list.
+**Proposed:** For automated callbacks (`task-complete`, `task-followup-done`, `needs-input`) where `extra_context` already identifies the triggering task, pass that task at full detail and the rest as compact summaries.
 
-```python
-# For automated callbacks, pass only the triggering task at full detail
-tasks_block = json.dumps([relevant_task] + compact_others, indent=2)
-```
-
-**Estimated saving:** 30–60% reduction in tasks block size for automated callbacks. Low implementation risk.
-
-**Trade-off:** The foreman loses full visibility into concurrent tasks during a callback. Usually acceptable since `extra_context` already identifies the task being reviewed.
+**Estimated saving:** 100–500 tokens per automated callback. Low implementation risk; adds branching at the call site.
 
 ---
 
 ## 6. Summary table
 
-| Opportunity | Token saving estimate | Implementation complexity | Risk |
+| Opportunity | Token saving estimate | Complexity | Risk |
 |---|---|---|---|
-| 5.1 Truncate descriptions (150 chars) | 500–5,000 tokens/call | Low — one-liner | Low |
-| 5.2 Collapse terminal tasks | 200–3,000 tokens/call | Low — filter + slice | Low |
-| 5.3 Per-tool result caps | 0 net (quality improvement) | Medium — dict lookup | Low |
-| 5.4 DB turn pruning | 0 tokens (DB only) | Low–Medium | Low |
+| 5.1 Prioritise active tasks; truncate completed to 200 chars | 500–5,000 tokens/call | Low — filter + slice | Low |
+| 5.2 Strip intermediate tool results for completed tasks | 50–70% fewer history turns | Medium — cross-ref task states | Low |
+| 5.3 Per-tool result caps | 0 net (quality improvement) | Medium — dict lookup + name plumbing | Low |
+| 5.4 DB turn pruning | 0 tokens (DB only) | Low | Low |
 | 5.5 Slim tasks for callbacks | 100–500 tokens/call | Medium | Medium |
 
-**Recommended first moves:** Implement §5.1 and §5.2 together — they are independent one-liners in `runner.py`, have no API surface change, and together cap the largest source of unbounded context growth. Then raise the `get_task_status` cap (part of §5.3) so the foreman can retrieve full task detail when it needs it.
+**Recommended first moves:** Implement §5.1 (one-liner filter + truncate) immediately — it is the single highest-impact, lowest-risk change and requires no schema or protocol changes. Follow with §5.2 (history pruning for completed tasks) and §5.3 (raised cap for `get_task_status`) together, since they are complementary: §5.2 removes stale tool exchanges from history while §5.3 ensures the foreman can get full diagnostic output when it needs it.
