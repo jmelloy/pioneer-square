@@ -101,6 +101,7 @@ async def test_on_ws_reconnect_resends_join_and_register():
     cfg = _make_cfg()
     cfg.max_agents = 2
     worker = Worker(cfg)
+    worker._joined = True  # simulate post-auth state
     sent: list[dict] = []
     worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
 
@@ -113,12 +114,25 @@ async def test_on_ws_reconnect_resends_join_and_register():
     assert {m["agentId"] for m in join_msgs} == {s.agent_id for s in worker.slots}
 
 
+async def test_on_ws_reconnect_skips_join_before_auth():
+    """A WS reconnect during the auth window must not register agents early."""
+    worker = Worker(_make_cfg())
+    # _joined defaults to False — auth not yet complete
+    sent: list[dict] = []
+    worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
+
+    await worker._on_ws_reconnect()
+
+    assert sent == [], f"No messages should be sent before auth, got: {sent}"
+
+
 async def test_on_ws_reconnect_resends_non_idle_agent_state():
     """A reconnect during an active task must restore the slot's actual state
     so the backend doesn't leave the agent stuck at idle."""
     cfg = _make_cfg()
     cfg.max_agents = 2
     worker = Worker(cfg)
+    worker._joined = True  # simulate post-auth state
     worker.slots[0].state = "working"
     worker.slots[1].state = "idle"
     sent: list[dict] = []

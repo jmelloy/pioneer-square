@@ -62,6 +62,9 @@ class Worker:
         self._redirect_queues: dict[str, asyncio.Queue] = {}
         # Queue for auth codes received from the UI during claude auth login
         self._auth_code_queue: asyncio.Queue[str] | None = None
+        # Set to True once _join() has been called the first time so that
+        # _on_ws_reconnect doesn't prematurely join before auth completes.
+        self._joined = False
         # One slot per concurrent agent; each gets a stable ID for the guild.
         self.slots: list[_AgentSlot] = [
             _AgentSlot(_gen_id("a-")) for _ in range(cfg.max_agents)
@@ -319,6 +322,10 @@ class Worker:
         without this the frontend sees the worker as offline forever even though
         the worker is back online and listening.
         """
+        if not self._joined:
+            # Auth hasn't completed yet — don't expose agents to the backend.
+            logger.info("WebSocket reconnected during pre-auth phase; skipping join")
+            return
         logger.info("WebSocket reconnected — re-sending join and agent states")
         await self._join()
         # `join` resets each agent to idle in the backend. Re-send the actual
@@ -377,14 +384,19 @@ class Worker:
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         self.ws.on_reconnect = self._on_ws_reconnect
         await self.ws.connect()
+
+        # Start listener before auth so it can relay auth codes from the UI.
+        # _join() is intentionally delayed until after auth — agents must not
+        # be visible to the foreman until Claude is ready to accept tasks.
+        listener = asyncio.create_task(self._listen())
+        await self._check_claude_auth()
+
         await self._join()
+        self._joined = True
         logger.info(
             "Joined guild %s — worker_id=%s agents=%d",
             self.cfg.guild_id, self.cfg.worker_id, len(self.slots),
         )
-        # Start listener before auth check so it can relay auth codes from the UI
-        listener = asyncio.create_task(self._listen())
-        await self._check_claude_auth()
         await self._emit("[worker] Online. Watching for tasks.")
         for slot in self.slots:
             await self._set_state("idle", slot)
