@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ _TOOL_ACTIVITY: dict[str, str] = {
 }
 
 
-def parse_claude_event(event: dict) -> list[tuple[str, Optional[dict]]]:
+def parse_claude_event(event: dict) -> list[tuple[str, dict | None]]:
     """Extract (display_text, detail) pairs from one stream-JSON event.
 
     detail is sent as a separate tool-detail WS message so the full content
@@ -51,7 +51,7 @@ def parse_claude_event(event: dict) -> list[tuple[str, Optional[dict]]]:
     """
     t = event.get("type")
     if t == "assistant":
-        pairs: list[tuple[str, Optional[dict]]] = []
+        pairs: list[tuple[str, dict | None]] = []
         for blk in event.get("message", {}).get("content", []):
             btype = blk.get("type")
             if btype == "text":
@@ -62,10 +62,12 @@ def parse_claude_event(event: dict) -> list[tuple[str, Optional[dict]]]:
                 thinking = blk.get("thinking", "").strip()
                 if thinking:
                     preview = thinking[:100].replace("\n", " ")
-                    pairs.append((
-                        f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}",
-                        {"activity": "thinking"},
-                    ))
+                    pairs.append(
+                        (
+                            f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}",
+                            {"activity": "thinking"},
+                        )
+                    )
             elif btype == "tool_use":
                 name = blk.get("name", "")
                 inp = blk.get("input", {})
@@ -95,7 +97,9 @@ def parse_claude_event(event: dict) -> list[tuple[str, Optional[dict]]]:
             if blk.get("type") == "tool_result":
                 content = blk.get("content", "")
                 if isinstance(content, list):
-                    content = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+                    content = "\n".join(
+                        b.get("text", "") for b in content if b.get("type") == "text"
+                    )
                 if isinstance(content, str) and content.strip():
                     lines = content.strip().splitlines()
                     summary = _summarize_lines(lines)
@@ -121,7 +125,7 @@ class ClaudeProcess:
 
     def __init__(self, proc: asyncio.subprocess.Process) -> None:
         self.proc = proc
-        self.session_id: Optional[str] = None  # set once system:init is parsed
+        self.session_id: str | None = None  # set once system:init is parsed
 
     async def send_message(self, text: str) -> bool:
         if self.proc.stdin is None or self.proc.stdin.is_closing():
@@ -188,23 +192,37 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
             if btype == "text":
                 logger.info(
                     "claude[%d] event#%d assistant.text[%d]:\n%s",
-                    pid, n, i, blk.get("text", ""),
+                    pid,
+                    n,
+                    i,
+                    blk.get("text", ""),
                 )
             elif btype == "tool_use":
                 logger.debug(
                     "claude[%d] event#%d tool_use[%d] name=%s id=%s input=%s",
-                    pid, n, i, blk.get("name", ""), blk.get("id", ""),
+                    pid,
+                    n,
+                    i,
+                    blk.get("name", ""),
+                    blk.get("id", ""),
                     json.dumps(blk.get("input", {}), ensure_ascii=False),
                 )
             elif btype == "thinking":
                 logger.info(
                     "claude[%d] event#%d assistant.thinking[%d]:\n%s",
-                    pid, n, i, blk.get("thinking", ""),
+                    pid,
+                    n,
+                    i,
+                    blk.get("thinking", ""),
                 )
             else:
                 logger.info(
                     "claude[%d] event#%d assistant.block[%d] type=%s: %s",
-                    pid, n, i, btype, json.dumps(blk, ensure_ascii=False),
+                    pid,
+                    n,
+                    i,
+                    btype,
+                    json.dumps(blk, ensure_ascii=False),
                 )
     elif t == "user":
         for i, blk in enumerate(event.get("message", {}).get("content", [])):
@@ -215,28 +233,43 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
                     content = json.dumps(content, ensure_ascii=False)
                 logger.debug(
                     "claude[%d] event#%d tool_result[%d] tool_use_id=%s is_error=%s:\n%s",
-                    pid, n, i, blk.get("tool_use_id", ""),
-                    blk.get("is_error", False), content,
+                    pid,
+                    n,
+                    i,
+                    blk.get("tool_use_id", ""),
+                    blk.get("is_error", False),
+                    content,
                 )
             else:
                 logger.info(
                     "claude[%d] event#%d user.block[%d] type=%s: %s",
-                    pid, n, i, btype, json.dumps(blk, ensure_ascii=False),
+                    pid,
+                    n,
+                    i,
+                    btype,
+                    json.dumps(blk, ensure_ascii=False),
                 )
     elif t == "result":
         logger.info(
             "claude[%d] event#%d result: %s",
-            pid, n, json.dumps(event, ensure_ascii=False),
+            pid,
+            n,
+            json.dumps(event, ensure_ascii=False),
         )
     elif t == "system":
         logger.info(
             "claude[%d] event#%d system: %s",
-            pid, n, json.dumps(event, ensure_ascii=False),
+            pid,
+            n,
+            json.dumps(event, ensure_ascii=False),
         )
     else:
         logger.info(
             "claude[%d] event#%d %s: %s",
-            pid, n, t, json.dumps(event, ensure_ascii=False),
+            pid,
+            n,
+            t,
+            json.dumps(event, ensure_ascii=False),
         )
 
 
@@ -278,9 +311,9 @@ async def run_claude_auto(
     *,
     max_turns: int,
     emit: EmitFn,
-    on_proc: Optional[Callable[[ClaudeProcess], None]] = None,
+    on_proc: Callable[[ClaudeProcess], None] | None = None,
     claude_path: str = "claude",
-    resume_session_id: Optional[str] = None,
+    resume_session_id: str | None = None,
 ) -> tuple[bool, str, str]:
     """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text).
 
@@ -293,9 +326,11 @@ async def run_claude_auto(
     """
     cmd = [
         claude_path,
-        "--output-format", "stream-json",
+        "--output-format",
+        "stream-json",
         "--verbose",
-        "--max-turns", str(max_turns),
+        "--max-turns",
+        str(max_turns),
         "--dangerously-skip-permissions",
     ]
     if resume_session_id:
@@ -336,13 +371,17 @@ async def run_claude_auto(
                 continue
             event_count += 1
             # Always log the full raw line at DEBUG so the wire format is recoverable.
-            logger.debug("claude[%d] stdout#%d (%d bytes): %s",
-                         proc.pid, event_count, len(line_str), line_str)
+            logger.debug(
+                "claude[%d] stdout#%d (%d bytes): %s",
+                proc.pid,
+                event_count,
+                len(line_str),
+                line_str,
+            )
             try:
                 event = json.loads(line_str)
             except json.JSONDecodeError:
-                logger.info("claude[%d] non-JSON stdout#%d: %s",
-                            proc.pid, event_count, line_str)
+                logger.info("claude[%d] non-JSON stdout#%d: %s", proc.pid, event_count, line_str)
                 await emit(line_str)
                 continue
             _log_event_full(event, proc.pid, event_count)
@@ -362,7 +401,10 @@ async def run_claude_auto(
         await stderr_task
         logger.info(
             "claude[%d] exited rc=%s stop_reason=%s after %d stdout event(s)",
-            proc.pid, exit_code, stop_reason, event_count,
+            proc.pid,
+            exit_code,
+            stop_reason,
+            event_count,
         )
         if event_count == 0:
             logger.warning(

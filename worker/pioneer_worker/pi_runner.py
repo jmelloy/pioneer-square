@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[str], Awaitable[None]]
 
 
-def parse_pi_event(event: dict, last_text: str) -> tuple[Optional[str], str]:
+def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, str]:
     """Extract a human-readable line from one pi RPC event.
 
     Returns (display_text_or_None, updated_last_text).
@@ -23,7 +23,7 @@ def parse_pi_event(event: dict, last_text: str) -> tuple[Optional[str], str]:
         for blk in event.get("message", {}).get("content", []):
             if isinstance(blk, dict) and blk.get("type") == "text":
                 full += blk.get("text", "")
-        delta = full[len(last_text):]
+        delta = full[len(last_text) :]
         return (delta if delta.strip() else None), full
     if t == "tool_execution_start":
         ti = event.get("tool", {})

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, make_auth_token
 
@@ -152,7 +154,9 @@ def test_update_guild_clear_primary_repo(client):
 
 
 def test_primary_repo_in_foreman_prompt():
-    import sys, os
+    import os
+    import sys
+
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from foreman.prompt import build_system_prompt
 

@@ -12,7 +12,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,22 +26,22 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module
 from foreman.prompt import FOREMAN_SYSTEM, build_system_prompt
 from foreman.runner import (
-    _serialize_content,
+    MAX_HISTORY_MESSAGES,
+    MAX_TOOL_RESULT_CHARS,
     _load_history,
     _save_turn,
+    _serialize_content,
     _summarize_task,
-    truncate_tool_result,
     prune_history,
-    MAX_TOOL_RESULT_CHARS,
-    MAX_HISTORY_MESSAGES,
+    truncate_tool_result,
 )
 from foreman.tools import exec_tools
 from helpers import create_db, insert_guild
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def db_session(tmp_path, monkeypatch):
@@ -72,7 +72,7 @@ def _fake_tool_use(name: str, inputs: dict, tool_id: str = "tool-abc123") -> Sim
 
 
 def _insert_worker(db_path: str, guild_id: str, worker_id: str) -> None:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at) "
@@ -92,15 +92,25 @@ def _insert_task(
     issue_number: int | None = None,
     issue_repo: str | None = None,
 ) -> None:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO tasks "
             "(id, worker_id, guild_id, description, tool, state, phase, created_at, "
             " issue_number, issue_repo) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (task_id, worker_id, guild_id, "do the thing", "claude", state, phase,
-             now, issue_number, issue_repo),
+            (
+                task_id,
+                worker_id,
+                guild_id,
+                "do the thing",
+                "claude",
+                state,
+                phase,
+                now,
+                issue_number,
+                issue_repo,
+            ),
         )
         conn.commit()
 
@@ -108,6 +118,7 @@ def _insert_task(
 # ---------------------------------------------------------------------------
 # 1. Prompt building
 # ---------------------------------------------------------------------------
+
 
 class TestBuildSystemPrompt:
     def test_contains_base_system_text(self):
@@ -164,6 +175,7 @@ class TestBuildSystemPrompt:
 # 2. _serialize_content (runner helper)
 # ---------------------------------------------------------------------------
 
+
 class TestSerializeContent:
     def test_string_input(self):
         result = _serialize_content("hello")
@@ -200,6 +212,7 @@ class TestSerializeContent:
 # 3. Tool dispatching — correct handler invoked, result format
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.usefixtures("db_session")
 class TestExecToolsDispatching:
     """Each tool name must route to the correct handler and return a tool_result block."""
@@ -207,9 +220,10 @@ class TestExecToolsDispatching:
     async def test_create_task_returns_task_id(self, db_session):
         insert_guild(db_session, "g-create")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-create", [
-                _fake_tool_use("create_task", {"name": "My Task", "description": "Do something"})
-            ])
+            results = await exec_tools(
+                "g-create",
+                [_fake_tool_use("create_task", {"name": "My Task", "description": "Do something"})],
+            )
         assert len(results) == 1
         r = results[0]
         assert r["type"] == "tool_result"
@@ -220,9 +234,9 @@ class TestExecToolsDispatching:
     async def test_create_task_default_phase_is_execute(self, db_session):
         insert_guild(db_session, "g-phase")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-phase", [
-                _fake_tool_use("create_task", {"name": "Task", "description": "Work"})
-            ])
+            results = await exec_tools(
+                "g-phase", [_fake_tool_use("create_task", {"name": "Task", "description": "Work"})]
+            )
         # Task row should have phase=execute (not specified → default)
         task_id = results[0]["content"].split()[1]
         with sqlite3.connect(db_session) as conn:
@@ -232,11 +246,15 @@ class TestExecToolsDispatching:
     async def test_create_task_custom_phase(self, db_session):
         insert_guild(db_session, "g-planphase")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-planphase", [
-                _fake_tool_use("create_task", {
-                    "name": "Plan task", "description": "Plan it", "phase": "plan"
-                })
-            ])
+            results = await exec_tools(
+                "g-planphase",
+                [
+                    _fake_tool_use(
+                        "create_task",
+                        {"name": "Plan task", "description": "Plan it", "phase": "plan"},
+                    )
+                ],
+            )
         task_id = results[0]["content"].split()[1]
         with sqlite3.connect(db_session) as conn:
             row = conn.execute("SELECT phase FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -245,22 +263,33 @@ class TestExecToolsDispatching:
     async def test_assign_task_unknown_worker(self, db_session):
         insert_guild(db_session, "g-assign-bad")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-assign-bad", [
-                _fake_tool_use("assign_task", {
-                    "worker_id": "w-nosuch", "description": "Do work"
-                })
-            ])
+            results = await exec_tools(
+                "g-assign-bad",
+                [
+                    _fake_tool_use(
+                        "assign_task", {"worker_id": "w-nosuch", "description": "Do work"}
+                    )
+                ],
+            )
         assert "not found" in results[0]["content"].lower()
 
     async def test_assign_task_creates_new_task(self, db_session):
         insert_guild(db_session, "g-assign-new")
         _insert_worker(db_session, "g-assign-new", "w-worker1")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-assign-new", [
-                _fake_tool_use("assign_task", {
-                    "worker_id": "w-worker1", "description": "Write tests", "name": "Test task"
-                })
-            ])
+            results = await exec_tools(
+                "g-assign-new",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {
+                            "worker_id": "w-worker1",
+                            "description": "Write tests",
+                            "name": "Test task",
+                        },
+                    )
+                ],
+            )
         assert "queued" in results[0]["content"].lower()
         assert "w-worker1" in results[0]["content"]
 
@@ -269,24 +298,33 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-assign-existing", "w-wkr2")
         _insert_task(db_session, "t-exist1", "g-assign-existing", "w-wkr2", state="pending")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-assign-existing", [
-                _fake_tool_use("assign_task", {
-                    "worker_id": "w-wkr2",
-                    "description": "Updated description",
-                    "task_id": "t-exist1",
-                })
-            ])
+            results = await exec_tools(
+                "g-assign-existing",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {
+                            "worker_id": "w-wkr2",
+                            "description": "Updated description",
+                            "task_id": "t-exist1",
+                        },
+                    )
+                ],
+            )
         assert "assigned" in results[0]["content"].lower()
         assert "t-exist1" in results[0]["content"]
 
     async def test_send_followup_task_not_found(self, db_session):
         insert_guild(db_session, "g-followup-missing")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-followup-missing", [
-                _fake_tool_use("send_followup", {
-                    "task_id": "t-nosuch", "instructions": "Fix it"
-                })
-            ])
+            results = await exec_tools(
+                "g-followup-missing",
+                [
+                    _fake_tool_use(
+                        "send_followup", {"task_id": "t-nosuch", "instructions": "Fix it"}
+                    )
+                ],
+            )
         assert "not found" in results[0]["content"].lower()
 
     async def test_send_followup_broadcasts_and_returns_message(self, db_session):
@@ -294,14 +332,19 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-followup-ok", "w-flwup")
         _insert_task(db_session, "t-flwup1", "g-followup-ok", "w-flwup")
         broadcast_calls = []
+
         async def capture_broadcast(gid, msg):
             broadcast_calls.append(msg)
+
         with patch("foreman.tools.broadcast", side_effect=capture_broadcast):
-            results = await exec_tools("g-followup-ok", [
-                _fake_tool_use("send_followup", {
-                    "task_id": "t-flwup1", "instructions": "Add more tests"
-                })
-            ])
+            results = await exec_tools(
+                "g-followup-ok",
+                [
+                    _fake_tool_use(
+                        "send_followup", {"task_id": "t-flwup1", "instructions": "Add more tests"}
+                    )
+                ],
+            )
         assert "t-flwup1" in results[0]["content"]
         followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
         assert len(followup_msgs) == 1
@@ -310,9 +353,9 @@ class TestExecToolsDispatching:
     async def test_finalize_task_not_found(self, db_session):
         insert_guild(db_session, "g-finalize-missing")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-finalize-missing", [
-                _fake_tool_use("finalize_task", {"task_id": "t-nosuch"})
-            ])
+            results = await exec_tools(
+                "g-finalize-missing", [_fake_tool_use("finalize_task", {"task_id": "t-nosuch"})]
+            )
         assert "not found" in results[0]["content"].lower()
 
     async def test_finalize_task_marks_done(self, db_session):
@@ -320,9 +363,9 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-finalize-ok", "w-fin")
         _insert_task(db_session, "t-fin1", "g-finalize-ok", "w-fin")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-finalize-ok", [
-                _fake_tool_use("finalize_task", {"task_id": "t-fin1"})
-            ])
+            results = await exec_tools(
+                "g-finalize-ok", [_fake_tool_use("finalize_task", {"task_id": "t-fin1"})]
+            )
         assert "finalized" in results[0]["content"].lower()
         with sqlite3.connect(db_session) as conn:
             row = conn.execute("SELECT state FROM tasks WHERE id='t-fin1'").fetchone()
@@ -332,15 +375,22 @@ class TestExecToolsDispatching:
         insert_guild(db_session, "g-msgwkr")
         _insert_worker(db_session, "g-msgwkr", "w-msgwkr")
         broadcast_calls = []
+
         async def capture(gid, msg):
             broadcast_calls.append(msg)
-        with patch("foreman.tools.broadcast", side_effect=capture), \
-             patch("foreman.tools.emit_terminal_line", new_callable=AsyncMock):
-            results = await exec_tools("g-msgwkr", [
-                _fake_tool_use("message_worker", {
-                    "worker_id": "w-msgwkr", "message": "Hello worker"
-                })
-            ])
+
+        with (
+            patch("foreman.tools.broadcast", side_effect=capture),
+            patch("foreman.tools.emit_terminal_line", new_callable=AsyncMock),
+        ):
+            results = await exec_tools(
+                "g-msgwkr",
+                [
+                    _fake_tool_use(
+                        "message_worker", {"worker_id": "w-msgwkr", "message": "Hello worker"}
+                    )
+                ],
+            )
         assert "delivered" in results[0]["content"].lower()
         worker_msgs = [m for m in broadcast_calls if m.get("type") == "worker-message"]
         assert len(worker_msgs) == 1
@@ -349,11 +399,14 @@ class TestExecToolsDispatching:
     async def test_redirect_task_not_found(self, db_session):
         insert_guild(db_session, "g-redirect-missing")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-redirect-missing", [
-                _fake_tool_use("redirect_task", {
-                    "task_id": "t-nosuch", "instructions": "Go different way"
-                })
-            ])
+            results = await exec_tools(
+                "g-redirect-missing",
+                [
+                    _fake_tool_use(
+                        "redirect_task", {"task_id": "t-nosuch", "instructions": "Go different way"}
+                    )
+                ],
+            )
         assert "not found" in results[0]["content"].lower()
 
     async def test_redirect_task_already_done(self, db_session):
@@ -361,11 +414,14 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-redirect-done", "w-redir")
         _insert_task(db_session, "t-done1", "g-redirect-done", "w-redir", state="done")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-redirect-done", [
-                _fake_tool_use("redirect_task", {
-                    "task_id": "t-done1", "instructions": "Try again"
-                })
-            ])
+            results = await exec_tools(
+                "g-redirect-done",
+                [
+                    _fake_tool_use(
+                        "redirect_task", {"task_id": "t-done1", "instructions": "Try again"}
+                    )
+                ],
+            )
         assert "cannot redirect" in results[0]["content"].lower()
 
     async def test_redirect_task_working(self, db_session):
@@ -373,19 +429,22 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-redirect-ok", "w-redir2")
         _insert_task(db_session, "t-wk1", "g-redirect-ok", "w-redir2", state="working")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-redirect-ok", [
-                _fake_tool_use("redirect_task", {
-                    "task_id": "t-wk1", "instructions": "New direction"
-                })
-            ])
+            results = await exec_tools(
+                "g-redirect-ok",
+                [
+                    _fake_tool_use(
+                        "redirect_task", {"task_id": "t-wk1", "instructions": "New direction"}
+                    )
+                ],
+            )
         assert "redirect" in results[0]["content"].lower()
 
     async def test_cancel_task_not_found(self, db_session):
         insert_guild(db_session, "g-cancel-missing")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-cancel-missing", [
-                _fake_tool_use("cancel_task", {"task_id": "t-nosuch"})
-            ])
+            results = await exec_tools(
+                "g-cancel-missing", [_fake_tool_use("cancel_task", {"task_id": "t-nosuch"})]
+            )
         assert "not found" in results[0]["content"].lower()
 
     async def test_cancel_task_already_done(self, db_session):
@@ -393,9 +452,9 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-cancel-done", "w-cancel")
         _insert_task(db_session, "t-cdone", "g-cancel-done", "w-cancel", state="done")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-cancel-done", [
-                _fake_tool_use("cancel_task", {"task_id": "t-cdone"})
-            ])
+            results = await exec_tools(
+                "g-cancel-done", [_fake_tool_use("cancel_task", {"task_id": "t-cdone"})]
+            )
         assert "already" in results[0]["content"].lower()
 
     async def test_cancel_task_pending(self, db_session):
@@ -403,9 +462,14 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-cancel-ok", "w-cancel2")
         _insert_task(db_session, "t-cpend", "g-cancel-ok", "w-cancel2", state="pending")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-cancel-ok", [
-                _fake_tool_use("cancel_task", {"task_id": "t-cpend", "reason": "No longer needed"})
-            ])
+            results = await exec_tools(
+                "g-cancel-ok",
+                [
+                    _fake_tool_use(
+                        "cancel_task", {"task_id": "t-cpend", "reason": "No longer needed"}
+                    )
+                ],
+            )
         assert "cancelled" in results[0]["content"].lower()
         assert "No longer needed" in results[0]["content"]
         with sqlite3.connect(db_session) as conn:
@@ -415,9 +479,9 @@ class TestExecToolsDispatching:
     async def test_get_task_status_not_found(self, db_session):
         insert_guild(db_session, "g-status-missing")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-status-missing", [
-                _fake_tool_use("get_task_status", {"task_id": "t-nosuch"})
-            ])
+            results = await exec_tools(
+                "g-status-missing", [_fake_tool_use("get_task_status", {"task_id": "t-nosuch"})]
+            )
         assert "not found" in results[0]["content"].lower()
 
     async def test_get_task_status_returns_json(self, db_session):
@@ -425,9 +489,9 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-status-ok", "w-status")
         _insert_task(db_session, "t-stat1", "g-status-ok", "w-status", state="working")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-status-ok", [
-                _fake_tool_use("get_task_status", {"task_id": "t-stat1"})
-            ])
+            results = await exec_tools(
+                "g-status-ok", [_fake_tool_use("get_task_status", {"task_id": "t-stat1"})]
+            )
         data = json.loads(results[0]["content"])
         assert data["id"] == "t-stat1"
         assert data["state"] == "working"
@@ -437,9 +501,9 @@ class TestExecToolsDispatching:
         """An unknown tool name should not raise; result content may be empty."""
         insert_guild(db_session, "g-unknown")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-unknown", [
-                _fake_tool_use("totally_unknown_tool", {"foo": "bar"})
-            ])
+            results = await exec_tools(
+                "g-unknown", [_fake_tool_use("totally_unknown_tool", {"foo": "bar"})]
+            )
         assert len(results) == 1
         assert results[0]["type"] == "tool_result"
 
@@ -447,9 +511,10 @@ class TestExecToolsDispatching:
         """Every result block must have type, tool_use_id, and content keys."""
         insert_guild(db_session, "g-struct")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-struct", [
-                _fake_tool_use("finalize_task", {"task_id": "t-nosuch"}, tool_id="tid-99")
-            ])
+            results = await exec_tools(
+                "g-struct",
+                [_fake_tool_use("finalize_task", {"task_id": "t-nosuch"}, tool_id="tid-99")],
+            )
         r = results[0]
         assert r["type"] == "tool_result"
         assert r["tool_use_id"] == "tid-99"
@@ -460,10 +525,13 @@ class TestExecToolsDispatching:
         insert_guild(db_session, "g-multi")
         _insert_worker(db_session, "g-multi", "w-multi")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-multi", [
-                _fake_tool_use("create_task", {"name": "A", "description": "Work A"}, "id-1"),
-                _fake_tool_use("create_task", {"name": "B", "description": "Work B"}, "id-2"),
-            ])
+            results = await exec_tools(
+                "g-multi",
+                [
+                    _fake_tool_use("create_task", {"name": "A", "description": "Work A"}, "id-1"),
+                    _fake_tool_use("create_task", {"name": "B", "description": "Work B"}, "id-2"),
+                ],
+            )
         assert len(results) == 2
         assert results[0]["tool_use_id"] == "id-1"
         assert results[1]["tool_use_id"] == "id-2"
@@ -473,15 +541,21 @@ class TestExecToolsDispatching:
         insert_guild(db_session, "g-inputs")
         _insert_worker(db_session, "g-inputs", "w-inputcheck")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            await exec_tools("g-inputs", [
-                _fake_tool_use("assign_task", {
-                    "worker_id": "w-inputcheck",
-                    "description": "Specific description text",
-                    "name": "Specific name",
-                    "phase": "review",
-                    "tool": "codex",
-                })
-            ])
+            await exec_tools(
+                "g-inputs",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {
+                            "worker_id": "w-inputcheck",
+                            "description": "Specific description text",
+                            "name": "Specific name",
+                            "phase": "review",
+                            "tool": "codex",
+                        },
+                    )
+                ],
+            )
         with sqlite3.connect(db_session) as conn:
             row = conn.execute(
                 "SELECT description, name, phase, tool FROM tasks WHERE worker_id='w-inputcheck'"
@@ -496,29 +570,33 @@ class TestExecToolsDispatching:
 # 4. Tool result handling — serialisation, error capture, edge cases
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.usefixtures("db_session")
 class TestExecToolsResultHandling:
     async def test_result_is_string(self, db_session):
         insert_guild(db_session, "g-res-str")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-res-str", [
-                _fake_tool_use("create_task", {"name": "X", "description": "Y"})
-            ])
+            results = await exec_tools(
+                "g-res-str", [_fake_tool_use("create_task", {"name": "X", "description": "Y"})]
+            )
         assert isinstance(results[0]["content"], str)
 
     async def test_github_no_token_returns_error_string(self, db_session):
         """GitHub tools must return a user-visible error when no token is available."""
         insert_guild(db_session, "g-gh-notoken")
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=None):
-            results = await exec_tools("g-gh-notoken", [
-                _fake_tool_use("list_github_issues", {"repo": "org/repo"})
-            ])
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=None),
+        ):
+            results = await exec_tools(
+                "g-gh-notoken", [_fake_tool_use("list_github_issues", {"repo": "org/repo"})]
+            )
         assert "No GitHub token" in results[0]["content"]
 
     async def test_github_http_error_caught(self, db_session):
         """HTTP errors from GitHub API must be caught and returned as text, not raised."""
         import urllib.error
+
         insert_guild(db_session, "g-gh-httperr")
         http_err = urllib.error.HTTPError(
             url="https://api.github.com/repos/x/y/issues",
@@ -527,24 +605,28 @@ class TestExecToolsResultHandling:
             hdrs=None,  # type: ignore[arg-type]
             fp=None,
         )
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=("tok", "user")), \
-             patch("foreman.tools._gh_api", side_effect=http_err):
-            results = await exec_tools("g-gh-httperr", [
-                _fake_tool_use("list_github_issues", {"repo": "x/y"})
-            ])
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", side_effect=http_err),
+        ):
+            results = await exec_tools(
+                "g-gh-httperr", [_fake_tool_use("list_github_issues", {"repo": "x/y"})]
+            )
         assert "404" in results[0]["content"]
         assert "GitHub API error" in results[0]["content"]
 
     async def test_github_generic_exception_caught(self, db_session):
         """Unexpected exceptions from GitHub calls must be caught, not propagated."""
         insert_guild(db_session, "g-gh-exc")
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=("tok", "user")), \
-             patch("foreman.tools._gh_api", side_effect=RuntimeError("network down")):
-            results = await exec_tools("g-gh-exc", [
-                _fake_tool_use("list_github_issues", {"repo": "x/y"})
-            ])
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", side_effect=RuntimeError("network down")),
+        ):
+            results = await exec_tools(
+                "g-gh-exc", [_fake_tool_use("list_github_issues", {"repo": "x/y"})]
+            )
         assert "GitHub error" in results[0]["content"]
         assert "network down" in results[0]["content"]
 
@@ -552,17 +634,22 @@ class TestExecToolsResultHandling:
         insert_guild(db_session, "g-gh-issues")
         fake_issues = [
             {
-                "number": 1, "title": "Bug A", "state": "open",
-                "labels": [{"name": "bug"}], "assignees": [],
+                "number": 1,
+                "title": "Bug A",
+                "state": "open",
+                "labels": [{"name": "bug"}],
+                "assignees": [],
                 "created_at": "2026-01-01T00:00:00Z",
             }
         ]
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=("tok", "user")), \
-             patch("foreman.tools._gh_api", return_value=fake_issues):
-            results = await exec_tools("g-gh-issues", [
-                _fake_tool_use("list_github_issues", {"repo": "org/repo"})
-            ])
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", return_value=fake_issues),
+        ):
+            results = await exec_tools(
+                "g-gh-issues", [_fake_tool_use("list_github_issues", {"repo": "org/repo"})]
+            )
         parsed = json.loads(results[0]["content"])
         assert len(parsed) == 1
         assert parsed[0]["number"] == 1
@@ -573,20 +660,31 @@ class TestExecToolsResultHandling:
         insert_guild(db_session, "g-gh-pr-filter")
         fake_issues = [
             {
-                "number": 1, "title": "Issue", "state": "open",
-                "labels": [], "assignees": [], "created_at": "2026-01-01T00:00:00Z",
+                "number": 1,
+                "title": "Issue",
+                "state": "open",
+                "labels": [],
+                "assignees": [],
+                "created_at": "2026-01-01T00:00:00Z",
             },
             {
-                "number": 2, "title": "PR", "state": "open", "pull_request": {},
-                "labels": [], "assignees": [], "created_at": "2026-01-01T00:00:00Z",
+                "number": 2,
+                "title": "PR",
+                "state": "open",
+                "pull_request": {},
+                "labels": [],
+                "assignees": [],
+                "created_at": "2026-01-01T00:00:00Z",
             },
         ]
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=("tok", "user")), \
-             patch("foreman.tools._gh_api", return_value=fake_issues):
-            results = await exec_tools("g-gh-pr-filter", [
-                _fake_tool_use("list_github_issues", {"repo": "org/repo"})
-            ])
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", return_value=fake_issues),
+        ):
+            results = await exec_tools(
+                "g-gh-pr-filter", [_fake_tool_use("list_github_issues", {"repo": "org/repo"})]
+            )
         parsed = json.loads(results[0]["content"])
         assert len(parsed) == 1
         assert parsed[0]["number"] == 1
@@ -594,19 +692,23 @@ class TestExecToolsResultHandling:
     async def test_get_github_issue_returns_body_and_comments(self, db_session):
         insert_guild(db_session, "g-gh-issue-detail")
         fake_issue = {
-            "number": 42, "title": "The bug", "state": "open",
-            "body": "It breaks", "labels": [{"name": "critical"}],
+            "number": 42,
+            "title": "The bug",
+            "state": "open",
+            "body": "It breaks",
+            "labels": [{"name": "critical"}],
         }
-        fake_comments = [
-            {"user": {"login": "alice"}, "body": "I see it too"}
-        ]
+        fake_comments = [{"user": {"login": "alice"}, "body": "I see it too"}]
         api_responses = iter([fake_issue, fake_comments])
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=("tok", "user")), \
-             patch("foreman.tools._gh_api", side_effect=lambda *a, **kw: next(api_responses)):
-            results = await exec_tools("g-gh-issue-detail", [
-                _fake_tool_use("get_github_issue", {"repo": "org/repo", "issue_number": 42})
-            ])
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", side_effect=lambda *a, **kw: next(api_responses)),
+        ):
+            results = await exec_tools(
+                "g-gh-issue-detail",
+                [_fake_tool_use("get_github_issue", {"repo": "org/repo", "issue_number": 42})],
+            )
         parsed = json.loads(results[0]["content"])
         assert parsed["number"] == 42
         assert parsed["body"] == "It breaks"
@@ -615,42 +717,61 @@ class TestExecToolsResultHandling:
     async def test_list_github_prs(self, db_session):
         insert_guild(db_session, "g-gh-prs")
         fake_prs = [
-            {"number": 7, "title": "feat: add X", "state": "open",
-             "head": {"ref": "feat/add-x"}, "draft": False}
+            {
+                "number": 7,
+                "title": "feat: add X",
+                "state": "open",
+                "head": {"ref": "feat/add-x"},
+                "draft": False,
+            }
         ]
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=("tok", "user")), \
-             patch("foreman.tools._gh_api", return_value=fake_prs):
-            results = await exec_tools("g-gh-prs", [
-                _fake_tool_use("list_github_prs", {"repo": "org/repo"})
-            ])
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", return_value=fake_prs),
+        ):
+            results = await exec_tools(
+                "g-gh-prs", [_fake_tool_use("list_github_prs", {"repo": "org/repo"})]
+            )
         parsed = json.loads(results[0]["content"])
         assert parsed[0]["number"] == 7
         assert parsed[0]["head"] == "feat/add-x"
 
     async def test_claim_github_issue(self, db_session):
         insert_guild(db_session, "g-gh-claim")
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=("tok", "octouser")), \
-             patch("foreman.tools._gh_api_post", return_value={}):
-            results = await exec_tools("g-gh-claim", [
-                _fake_tool_use("claim_github_issue", {"repo": "org/repo", "issue_number": 99})
-            ])
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "octouser")),
+            patch("foreman.tools._gh_api_post", return_value={}),
+        ):
+            results = await exec_tools(
+                "g-gh-claim",
+                [_fake_tool_use("claim_github_issue", {"repo": "org/repo", "issue_number": 99})],
+            )
         assert "99" in results[0]["content"]
         assert "octouser" in results[0]["content"]
 
     async def test_create_github_issue_returns_number_and_url(self, db_session):
         insert_guild(db_session, "g-gh-createissue")
-        fake_response = {"number": 55, "html_url": "https://github.com/org/repo/issues/55",
-                         "title": "New issue"}
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=("tok", "user")), \
-             patch("foreman.tools._gh_api_post", return_value=fake_response):
-            results = await exec_tools("g-gh-createissue", [
-                _fake_tool_use("create_github_issue", {
-                    "repo": "org/repo", "title": "New issue", "body": "Details here"
-                })
-            ])
+        fake_response = {
+            "number": 55,
+            "html_url": "https://github.com/org/repo/issues/55",
+            "title": "New issue",
+        }
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api_post", return_value=fake_response),
+        ):
+            results = await exec_tools(
+                "g-gh-createissue",
+                [
+                    _fake_tool_use(
+                        "create_github_issue",
+                        {"repo": "org/repo", "title": "New issue", "body": "Details here"},
+                    )
+                ],
+            )
         parsed = json.loads(results[0]["content"])
         assert parsed["number"] == 55
         assert parsed["url"] == "https://github.com/org/repo/issues/55"
@@ -659,18 +780,28 @@ class TestExecToolsResultHandling:
         insert_guild(db_session, "g-gh-search")
         fake_search = {
             "items": [
-                {"number": 3, "title": "Match", "state": "open",
-                 "html_url": "https://github.com/org/repo/issues/3", "labels": []}
+                {
+                    "number": 3,
+                    "title": "Match",
+                    "state": "open",
+                    "html_url": "https://github.com/org/repo/issues/3",
+                    "labels": [],
+                }
             ]
         }
-        with patch("foreman.tools.broadcast", new_callable=AsyncMock), \
-             patch("foreman.tools._guild_github_token", return_value=("tok", "user")), \
-             patch("foreman.tools._gh_api", return_value=fake_search):
-            results = await exec_tools("g-gh-search", [
-                _fake_tool_use("search_github_issues", {
-                    "repo": "org/repo", "query": "match keyword"
-                })
-            ])
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", return_value=fake_search),
+        ):
+            results = await exec_tools(
+                "g-gh-search",
+                [
+                    _fake_tool_use(
+                        "search_github_issues", {"repo": "org/repo", "query": "match keyword"}
+                    )
+                ],
+            )
         parsed = json.loads(results[0]["content"])
         assert parsed[0]["number"] == 3
 
@@ -679,9 +810,7 @@ class TestExecToolsResultHandling:
         insert_guild(db_session, "g-empty-res")
         # unknown tool returns empty content — verify no exception
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-empty-res", [
-                _fake_tool_use("unknown_tool_xyz", {})
-            ])
+            results = await exec_tools("g-empty-res", [_fake_tool_use("unknown_tool_xyz", {})])
         assert results[0]["content"] == ""
 
     async def test_large_result_is_a_string(self, db_session):
@@ -690,7 +819,7 @@ class TestExecToolsResultHandling:
         _insert_worker(db_session, "g-large-res", "w-large")
         _insert_task(db_session, "t-large1", "g-large-res", "w-large")
         # Insert many log lines
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with sqlite3.connect(db_session) as conn:
             for i in range(50):
                 conn.execute(
@@ -699,9 +828,10 @@ class TestExecToolsResultHandling:
                 )
             conn.commit()
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
-            results = await exec_tools("g-large-res", [
-                _fake_tool_use("get_task_status", {"task_id": "t-large1", "log_lines": 50})
-            ])
+            results = await exec_tools(
+                "g-large-res",
+                [_fake_tool_use("get_task_status", {"task_id": "t-large1", "log_lines": 50})],
+            )
         assert isinstance(results[0]["content"], str)
         parsed = json.loads(results[0]["content"])
         assert len(parsed["recent_logs"]) == 50
@@ -710,6 +840,7 @@ class TestExecToolsResultHandling:
 # ---------------------------------------------------------------------------
 # 5. Foreman history (_load_history and _save_turn)
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.usefixtures("db_session")
 class TestForemanHistory:
@@ -748,11 +879,20 @@ class TestForemanHistory:
         """Tool-result user turns must be included alongside the assistant turn that requested them."""
         insert_guild(db_session, "g-hist-tool")
         await _save_turn("g-hist-tool", "u-1", "user", "Do something")
-        asst_id = await _save_turn("g-hist-tool", "u-1", "assistant",
-                                   [{"type": "tool_use", "id": "tu-1", "name": "create_task"}])
-        await _save_turn("g-hist-tool", "u-1", "user",
-                         [{"type": "tool_result", "tool_use_id": "tu-1", "content": "ok"}],
-                         is_tool_response=True, parent_id=asst_id)
+        asst_id = await _save_turn(
+            "g-hist-tool",
+            "u-1",
+            "assistant",
+            [{"type": "tool_use", "id": "tu-1", "name": "create_task"}],
+        )
+        await _save_turn(
+            "g-hist-tool",
+            "u-1",
+            "user",
+            [{"type": "tool_result", "tool_use_id": "tu-1", "content": "ok"}],
+            is_tool_response=True,
+            parent_id=asst_id,
+        )
         msgs = await _load_history("g-hist-tool", "u-1")
         roles = [m["role"] for m in msgs]
         assert "user" in roles
@@ -775,13 +915,14 @@ class TestForemanHistory:
 # 6. _summarize_task — issue #95
 # ---------------------------------------------------------------------------
 
+
 class TestSummarizeTask:
     """Terminal tasks are summarised/excluded; non-terminal tasks are kept in full."""
 
     _24H = 86_400
 
     def _now_ts(self):
-        return datetime.now(timezone.utc).timestamp()
+        return datetime.now(UTC).timestamp()
 
     def _cutoff_ts(self):
         """The cutoff used in production: now minus 24 h."""
@@ -790,7 +931,8 @@ class TestSummarizeTask:
     def _iso(self, delta_secs: float) -> str:
         """Return an ISO timestamp offset by *delta_secs* from now."""
         from datetime import timedelta
-        dt = datetime.now(timezone.utc) + timedelta(seconds=delta_secs)
+
+        dt = datetime.now(UTC) + timedelta(seconds=delta_secs)
         return dt.isoformat()
 
     def test_non_terminal_task_returned_unchanged(self):
@@ -810,8 +952,11 @@ class TestSummarizeTask:
 
     def test_done_task_within_24h_strips_description(self):
         task = {
-            "id": "t-4", "state": "done", "description": "Implement OAuth",
-            "branch": "claude/feat", "pr_url": "https://github.com/x/y/pull/42",
+            "id": "t-4",
+            "state": "done",
+            "description": "Implement OAuth",
+            "branch": "claude/feat",
+            "pr_url": "https://github.com/x/y/pull/42",
             "finished_at": self._iso(-3600),  # 1 hour ago
         }
         result = _summarize_task(task, self._cutoff_ts())
@@ -823,7 +968,9 @@ class TestSummarizeTask:
 
     def test_failed_task_within_24h_strips_description(self):
         task = {
-            "id": "t-5", "state": "failed", "description": "Big description text",
+            "id": "t-5",
+            "state": "failed",
+            "description": "Big description text",
             "finished_at": self._iso(-1800),  # 30 min ago
         }
         result = _summarize_task(task, self._cutoff_ts())
@@ -832,7 +979,9 @@ class TestSummarizeTask:
 
     def test_cancelled_task_within_24h_strips_description(self):
         task = {
-            "id": "t-6", "state": "cancelled", "description": "Cancelled work",
+            "id": "t-6",
+            "state": "cancelled",
+            "description": "Cancelled work",
             "finished_at": self._iso(-7200),  # 2 hours ago
         }
         result = _summarize_task(task, self._cutoff_ts())
@@ -841,7 +990,9 @@ class TestSummarizeTask:
 
     def test_done_task_older_than_24h_excluded(self):
         task = {
-            "id": "t-7", "state": "done", "description": "Old work",
+            "id": "t-7",
+            "state": "done",
+            "description": "Old work",
             "finished_at": self._iso(-(self._24H + 3600)),  # 25 hours ago
         }
         result = _summarize_task(task, self._cutoff_ts())
@@ -849,7 +1000,9 @@ class TestSummarizeTask:
 
     def test_failed_task_older_than_24h_excluded(self):
         task = {
-            "id": "t-8", "state": "failed", "description": "Old fail",
+            "id": "t-8",
+            "state": "failed",
+            "description": "Old fail",
             "finished_at": self._iso(-(self._24H * 2)),  # 48 hours ago
         }
         result = _summarize_task(task, self._cutoff_ts())
@@ -872,7 +1025,9 @@ class TestSummarizeTask:
     def test_exactly_24h_plus_1s_boundary_excluded(self):
         """Tasks finished exactly 24h + 1s ago should be excluded."""
         task = {
-            "id": "t-11", "state": "done", "description": "Boundary",
+            "id": "t-11",
+            "state": "done",
+            "description": "Boundary",
             "finished_at": self._iso(-(self._24H + 1)),  # 24h + 1s ago
         }
         result = _summarize_task(task, self._cutoff_ts())
@@ -887,6 +1042,7 @@ class TestSummarizeTask:
 # ---------------------------------------------------------------------------
 # 7. truncate_tool_result — issue #96
 # ---------------------------------------------------------------------------
+
 
 class TestTruncateToolResult:
     def test_short_content_unchanged(self):
@@ -926,6 +1082,7 @@ class TestTruncateToolResult:
 # ---------------------------------------------------------------------------
 # 8. prune_history — issue #98
 # ---------------------------------------------------------------------------
+
 
 class TestPruneHistory:
     def _make_messages(self, n: int) -> list[dict]:
