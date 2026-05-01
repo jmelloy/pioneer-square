@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import random
-from typing import Awaitable, AsyncIterator, Callable, Optional
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import websockets
 from websockets.protocol import State
@@ -28,7 +28,7 @@ def _is_open(ws) -> bool:
 
 def _backoff_delay(attempt: int, base: float, cap: float) -> float:
     """Exponential backoff with full jitter."""
-    exp = min(cap, base * (2 ** attempt))
+    exp = min(cap, base * (2**attempt))
     return random.uniform(0, exp)
 
 
@@ -50,7 +50,7 @@ class WSClient:
         # Fired after every successful reconnect (not the initial connect).
         # Lets callers re-send join/register/state so the backend treats the
         # worker as online again.
-        self.on_reconnect: Optional[Callable[[], Awaitable[None]]] = None
+        self.on_reconnect: Callable[[], Awaitable[None]] | None = None
         self._has_connected_once = False
 
     async def connect(self):
@@ -79,11 +79,13 @@ class WSClient:
                     self._has_connected_once = True
                     ws = self._ws
                     break
-                except (OSError, websockets.WebSocketException, asyncio.TimeoutError) as exc:
+                except (TimeoutError, OSError, websockets.WebSocketException) as exc:
                     delay = _backoff_delay(attempt, self.base_backoff, self.max_backoff)
                     logger.warning(
                         "WS connect failed (attempt %d): %s — retrying in %.1fs",
-                        attempt + 1, exc, delay,
+                        attempt + 1,
+                        exc,
+                        delay,
                     )
                     await asyncio.sleep(delay)
                     attempt += 1
@@ -107,7 +109,7 @@ class WSClient:
             logger.error("WS send: payload is not JSON-serializable: %s", exc)
             raise
 
-        last_exc: Optional[BaseException] = None
+        last_exc: BaseException | None = None
         for attempt in range(self.send_retries):
             try:
                 ws = await self.connect()
@@ -117,7 +119,10 @@ class WSClient:
                 last_exc = exc
                 logger.warning(
                     "WS send failed (attempt %d/%d, type=%s): %s",
-                    attempt + 1, self.send_retries, payload.get("type"), exc,
+                    attempt + 1,
+                    self.send_retries,
+                    payload.get("type"),
+                    exc,
                 )
                 await self.close()
                 if attempt + 1 < self.send_retries:
@@ -125,7 +130,9 @@ class WSClient:
                     await asyncio.sleep(delay)
         logger.error(
             "WS send giving up after %d attempts (type=%s): %s",
-            self.send_retries, payload.get("type"), last_exc,
+            self.send_retries,
+            payload.get("type"),
+            last_exc,
         )
         if last_exc is not None:
             raise last_exc
@@ -143,10 +150,11 @@ class WSClient:
             except websockets.ConnectionClosed as exc:
                 logger.warning(
                     "WS closed (code=%s reason=%s); reconnecting",
-                    getattr(exc, "code", "?"), getattr(exc, "reason", "") or "n/a",
+                    getattr(exc, "code", "?"),
+                    getattr(exc, "reason", "") or "n/a",
                 )
                 await self.close()
-            except (OSError, asyncio.TimeoutError) as exc:
+            except (TimeoutError, OSError) as exc:
                 logger.warning("WS transport error: %s; reconnecting", exc)
                 await self.close()
                 await asyncio.sleep(_backoff_delay(0, self.base_backoff, self.max_backoff))

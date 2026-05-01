@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import pytest
-
 from pioneer_worker.claude_runner import _summarize_lines, parse_claude_event
-
 
 # ---------------------------------------------------------------------------
 # _summarize_lines
 # ---------------------------------------------------------------------------
+
 
 def test_summarize_short_list_shows_all():
     lines = ["a", "b", "c"]
@@ -44,6 +43,7 @@ def test_summarize_custom_prefix():
 # ---------------------------------------------------------------------------
 # parse_claude_event — assistant messages
 # ---------------------------------------------------------------------------
+
 
 def test_parse_assistant_plain_text():
     event = {
@@ -180,13 +180,12 @@ def test_parse_assistant_multi_block():
 # parse_claude_event — user (tool_result) messages
 # ---------------------------------------------------------------------------
 
+
 def test_parse_user_tool_result_string():
     event = {
         "type": "user",
         "message": {
-            "content": [
-                {"type": "tool_result", "content": "output line 1\noutput line 2"}
-            ]
+            "content": [{"type": "tool_result", "content": "output line 1\noutput line 2"}]
         },
     }
     pairs = parse_claude_event(event)
@@ -225,6 +224,7 @@ def test_parse_user_tool_result_empty_skipped():
 # parse_claude_event — result events
 # ---------------------------------------------------------------------------
 
+
 def test_parse_result_success():
     event = {"type": "result", "subtype": "success", "num_turns": 5}
     pairs = parse_claude_event(event)
@@ -255,6 +255,7 @@ def test_parse_result_error():
 # parse_claude_event — system init
 # ---------------------------------------------------------------------------
 
+
 def test_parse_system_init_lists_tools():
     event = {
         "type": "system",
@@ -276,6 +277,7 @@ def test_parse_system_other_subtype_ignored():
 # ---------------------------------------------------------------------------
 # parse_claude_event — unknown types
 # ---------------------------------------------------------------------------
+
 
 def test_parse_unknown_type_returns_empty():
     assert parse_claude_event({"type": "something_new"}) == []

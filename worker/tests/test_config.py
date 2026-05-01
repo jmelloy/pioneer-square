@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import pytest
-
 from pioneer_worker.config import Config, load
-
 
 # ---------------------------------------------------------------------------
 # Config.http_url property
 # ---------------------------------------------------------------------------
+
 
 def test_http_url_from_ws():
     cfg = Config(backend_url="ws://localhost:8000", guild_id="abc")
@@ -35,6 +34,7 @@ def test_http_url_strips_trailing_slash():
 # Config.ws_url property
 # ---------------------------------------------------------------------------
 
+
 def test_ws_url_appends_guild():
     cfg = Config(backend_url="ws://localhost:8000", guild_id="myguild")
     assert cfg.ws_url == "ws://localhost:8000/ws/myguild"
@@ -54,6 +54,7 @@ def test_ws_url_converts_https_to_wss():
 # load() — error cases
 # ---------------------------------------------------------------------------
 
+
 def test_load_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load(str(tmp_path / "missing.toml"))
@@ -67,6 +68,7 @@ def test_load_missing_file_no_overrides_raises():
 # ---------------------------------------------------------------------------
 # load() — overrides bypass missing file
 # ---------------------------------------------------------------------------
+
 
 def test_load_overrides_no_file(tmp_path):
     cfg = load(
@@ -91,13 +93,11 @@ def test_load_overrides_defaults_preserved(tmp_path):
 # load() — from TOML file
 # ---------------------------------------------------------------------------
 
+
 def test_load_from_toml(tmp_path):
     toml_path = tmp_path / "pioneer-worker.toml"
     toml_path.write_text(
-        'backend_url = "ws://backend:8000"\n'
-        'guild_id = "guild1"\n'
-        '[github]\n'
-        'repos = ["owner/repo"]\n'
+        'backend_url = "ws://backend:8000"\nguild_id = "guild1"\n[github]\nrepos = ["owner/repo"]\n'
     )
     cfg = load(str(toml_path))
     assert cfg.backend_url == "ws://backend:8000"
@@ -107,11 +107,7 @@ def test_load_from_toml(tmp_path):
 
 def test_load_toml_custom_pull_interval(tmp_path):
     toml_path = tmp_path / "pioneer-worker.toml"
-    toml_path.write_text(
-        'backend_url = "ws://x:1"\n'
-        'guild_id = "g"\n'
-        'pull_interval = 60.0\n'
-    )
+    toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\npull_interval = 60.0\n')
     cfg = load(str(toml_path))
     assert cfg.pull_interval == 60.0
 
@@ -119,10 +115,7 @@ def test_load_toml_custom_pull_interval(tmp_path):
 def test_load_toml_github_token_literal(tmp_path):
     toml_path = tmp_path / "pioneer-worker.toml"
     toml_path.write_text(
-        'backend_url = "ws://x:1"\n'
-        'guild_id = "g"\n'
-        '[github]\n'
-        'token = "ghp_literal"\n'
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\ntoken = "ghp_literal"\n'
     )
     cfg = load(str(toml_path))
     assert cfg.github_token == "ghp_literal"
@@ -132,10 +125,7 @@ def test_load_toml_github_token_env_prefix(tmp_path, monkeypatch):
     monkeypatch.setenv("MY_GH_TOKEN", "ghp_from_env")
     toml_path = tmp_path / "pioneer-worker.toml"
     toml_path.write_text(
-        'backend_url = "ws://x:1"\n'
-        'guild_id = "g"\n'
-        '[github]\n'
-        'token = "env:MY_GH_TOKEN"\n'
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\ntoken = "env:MY_GH_TOKEN"\n'
     )
     cfg = load(str(toml_path))
     assert cfg.github_token == "ghp_from_env"
@@ -144,6 +134,7 @@ def test_load_toml_github_token_env_prefix(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # load() — environment variable overrides
 # ---------------------------------------------------------------------------
+
 
 def test_load_env_vars(tmp_path, monkeypatch):
     monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://envhost:9000")
@@ -155,10 +146,7 @@ def test_load_env_vars(tmp_path, monkeypatch):
 
 def test_load_overrides_beat_toml(tmp_path):
     toml_path = tmp_path / "pioneer-worker.toml"
-    toml_path.write_text(
-        'backend_url = "ws://toml:8000"\n'
-        'guild_id = "tomlguild"\n'
-    )
+    toml_path.write_text('backend_url = "ws://toml:8000"\nguild_id = "tomlguild"\n')
     cfg = load(str(toml_path), overrides={"backend_url": "ws://override:1111"})
     assert cfg.backend_url == "ws://override:1111"
     assert cfg.guild_id == "tomlguild"

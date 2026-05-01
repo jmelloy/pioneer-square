@@ -6,18 +6,19 @@ import asyncio
 import logging
 import os
 import time
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[str], Awaitable[None]]
 
 
-async def run_git(args: list[str], cwd: Optional[str] = None) -> tuple[int, str, str]:
+async def run_git(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     logger.debug("git %s (cwd=%s)", " ".join(args), cwd or os.getcwd())
     started = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
-        "git", *args,
+        "git",
+        *args,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -28,14 +29,17 @@ async def run_git(args: list[str], cwd: Optional[str] = None) -> tuple[int, str,
     if rc != 0:
         logger.warning(
             "git %s failed rc=%s in %.2fs: %s",
-            " ".join(args), rc, elapsed, stderr.decode(errors="replace").strip()[:200],
+            " ".join(args),
+            rc,
+            elapsed,
+            stderr.decode(errors="replace").strip()[:200],
         )
     else:
         logger.debug("git %s ok in %.2fs", " ".join(args), elapsed)
     return rc, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
-async def ensure_repo(repos_dir: str, repo_full: str, token: Optional[str] = None) -> Optional[str]:
+async def ensure_repo(repos_dir: str, repo_full: str, token: str | None = None) -> str | None:
     """Clone repo if absent, otherwise fast-forward to origin/HEAD. Returns local path."""
     parts = repo_full.split("/", 1)
     if len(parts) != 2:
@@ -45,7 +49,8 @@ async def ensure_repo(repos_dir: str, repo_full: str, token: Optional[str] = Non
     local_path = os.path.join(repos_dir, owner, name)
 
     remote_url = (
-        f"https://{token}@github.com/{repo_full}.git" if token
+        f"https://{token}@github.com/{repo_full}.git"
+        if token
         else f"https://github.com/{repo_full}.git"
     )
 
@@ -86,7 +91,7 @@ async def remove_worktree(repo_path: str, wt_path: str) -> None:
 async def pull_repos(
     repos_dir: str,
     repos: list[str],
-    token: Optional[str],
+    token: str | None,
     emit: EmitFn,
 ) -> None:
     """Refresh all configured repos; emit progress through *emit*."""

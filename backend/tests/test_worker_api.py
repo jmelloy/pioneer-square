@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import sys, os
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, make_auth_token
-
 
 # ---------------------------------------------------------------------------
 # Workers
 # ---------------------------------------------------------------------------
+
 
 def test_list_workers_empty(client):
     test_client, db_path = client
@@ -56,6 +58,7 @@ def test_create_multiple_workers(client):
 # ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
+
 
 def _create_worker(test_client, guild_id: str) -> str:
     resp = test_client.post(f"/guilds/{guild_id}/workers", json={"repos": []})
@@ -126,10 +129,12 @@ def test_guild_task_list(client):
     w1 = _create_worker(test_client, "guild09")
     w2 = _create_worker(test_client, "guild09")
 
-    test_client.post(f"/guilds/guild09/workers/{w1}/tasks",
-                     json={"description": "Alpha", "tool": "claude"})
-    test_client.post(f"/guilds/guild09/workers/{w2}/tasks",
-                     json={"description": "Beta", "tool": "claude"})
+    test_client.post(
+        f"/guilds/guild09/workers/{w1}/tasks", json={"description": "Alpha", "tool": "claude"}
+    )
+    test_client.post(
+        f"/guilds/guild09/workers/{w2}/tasks", json={"description": "Beta", "tool": "claude"}
+    )
 
     resp = test_client.get("/guilds/guild09/tasks")
     assert resp.status_code == 200

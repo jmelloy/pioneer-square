@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
@@ -28,7 +28,7 @@ def create_db(db_path: str) -> None:
 def make_auth_token(db_path: str, user_id: str = "gh-user-test", username: str = "testuser") -> str:
     """Insert a test GitHub user + session into *db_path* and return the token."""
     token = "test-session-" + secrets.token_hex(8)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO github_tokens "
@@ -37,8 +37,7 @@ def make_auth_token(db_path: str, user_id: str = "gh-user-test", username: str =
             (user_id, username, "gh_tok_fake", "bearer", "repo", now, now),
         )
         conn.execute(
-            "INSERT INTO user_sessions (token, github_user_id, created_at) "
-            "VALUES (?, ?, ?)",
+            "INSERT INTO user_sessions (token, github_user_id, created_at) VALUES (?, ?, ?)",
             (token, user_id, now),
         )
         conn.commit()
@@ -47,7 +46,7 @@ def make_auth_token(db_path: str, user_id: str = "gh-user-test", username: str =
 
 def insert_guild(db_path: str, guild_id: str, name: str = "Test Guild") -> None:
     """Insert a guild row directly into *db_path*."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO guilds (id, created_at, name) VALUES (?, ?, ?)",

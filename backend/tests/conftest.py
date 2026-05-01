@@ -30,7 +30,6 @@ def client(tmp_path, monkeypatch):
     """TestClient backed by a fresh temporary SQLite database."""
     db_path = str(tmp_path / "test.db")
     db_url = f"sqlite+aiosqlite:///{db_path}"
-    sync_url = f"sqlite:///{db_path}"
 
     # Create DB tables synchronously before the TestClient starts.
     # This avoids the asyncio.to_thread(run_migrations) call inside init_db()

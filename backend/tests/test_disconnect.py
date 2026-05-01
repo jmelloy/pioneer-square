@@ -13,9 +13,9 @@ second TestClient tries to start against the same singleton app instance.
 from __future__ import annotations
 
 import os
-import sys
 import sqlite3
-from datetime import datetime, timezone
+import sys
+from datetime import UTC, datetime, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -63,7 +63,7 @@ def client(tmp_path_factory):
 
 def _setup_guild_and_worker(db_path: str, guild_id: str, worker_id: str) -> None:
     """Insert a test guild and worker directly into the DB."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO guilds (id, created_at, name) VALUES (?, ?, ?)",
@@ -81,12 +81,8 @@ def _get_states(db_path: str, agent_id: str, worker_id: str) -> tuple[str, str]:
     """Return (agent_state, worker_state) from the DB."""
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        agent_row = conn.execute(
-            "SELECT state FROM agents WHERE id = ?", (agent_id,)
-        ).fetchone()
-        worker_row = conn.execute(
-            "SELECT state FROM workers WHERE id = ?", (worker_id,)
-        ).fetchone()
+        agent_row = conn.execute("SELECT state FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        worker_row = conn.execute("SELECT state FROM workers WHERE id = ?", (worker_id,)).fetchone()
     return (
         agent_row["state"] if agent_row else None,
         worker_row["state"] if worker_row else None,
@@ -104,22 +100,26 @@ def test_worker_disconnect_marks_agent_and_worker_offline(client):
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
         # Join so the server knows this agent belongs to this connection.
-        ws.send_json({
-            "type": "join",
-            "agentId": agent_id,
-            "agentName": "Test Worker",
-            "agentType": "worker",
-            "workerId": worker_id,
-        })
+        ws.send_json(
+            {
+                "type": "join",
+                "agentId": agent_id,
+                "agentName": "Test Worker",
+                "agentType": "worker",
+                "workerId": worker_id,
+            }
+        )
         joined_msg = ws.receive_json()
         assert joined_msg["type"] == "agent-joined"
         assert joined_msg["agentId"] == agent_id
 
         # Send the graceful disconnect notification.
-        ws.send_json({
-            "type": "worker-disconnect",
-            "workerId": worker_id,
-        })
+        ws.send_json(
+            {
+                "type": "worker-disconnect",
+                "workerId": worker_id,
+            }
+        )
 
         # The server should immediately broadcast an offline state update.
         offline_msg = ws.receive_json()
@@ -150,24 +150,28 @@ def test_reconnect_does_not_get_clobbered_by_old_finally(client):
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws2:
         # First connection joins as the agent.
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws1:
-            ws1.send_json({
-                "type": "join",
-                "agentId": agent_id,
-                "agentName": "Test Worker",
-                "agentType": "worker",
-                "workerId": worker_id,
-            })
+            ws1.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
             ws1.receive_json()
             ws2.receive_json()  # observer drains broadcast
 
             # Simulate a reconnect: a new WS takes over the same agent_id.
-            ws2.send_json({
-                "type": "join",
-                "agentId": agent_id,
-                "agentName": "Test Worker",
-                "agentType": "worker",
-                "workerId": worker_id,
-            })
+            ws2.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
             ws2.receive_json()
             ws1.receive_json()  # ws1 sees the second join broadcast
 
@@ -187,7 +191,6 @@ def test_reconnect_does_not_get_clobbered_by_old_finally(client):
         )
 
 
-
 def test_worker_disconnect_without_prior_join_is_harmless(client):
     """worker-disconnect with no joined agents must not crash the server.
 
@@ -204,7 +207,9 @@ def test_worker_disconnect_without_prior_join_is_harmless(client):
 
     # Should complete without raising any exception.
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
-        ws.send_json({
-            "type": "worker-disconnect",
-            "workerId": worker_id,
-        })
+        ws.send_json(
+            {
+                "type": "worker-disconnect",
+                "workerId": worker_id,
+            }
+        )

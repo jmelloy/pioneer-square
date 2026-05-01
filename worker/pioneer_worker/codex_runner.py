@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[str], Awaitable[None]]
 
 
-def parse_codex_event(event: dict) -> Optional[str]:
+def parse_codex_event(event: dict) -> str | None:
     """Extract a human-readable line from one codex stream-JSON event."""
     t = event.get("type")
     if t == "message" and event.get("role") == "assistant":

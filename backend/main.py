@@ -9,35 +9,47 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
-
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
-from sqlalchemy import delete, func, select, text, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import AsyncSessionLocal, get_db
-from models import Agent, ClaudeCredentials, Guild, GithubToken, Message, Task, TaskLog, UserSession, Worker
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from models import (
+    Agent,
+    ClaudeCredentials,
+    GithubToken,
+    Guild,
+    Message,
+    Task,
+    TaskLog,
+    UserSession,
+    Worker,
+)
+from pydantic import BaseModel
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
 # code reads os.environ, so ANTHROPIC_API_KEY etc. are available.
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
     load_dotenv(Path(__file__).resolve().parent / ".env")
 except ImportError:
     pass
 
-from events import broadcast, connections, agent_owners, emit_terminal_line, pending_claude_auth
-from foreman import clear_foreman_history, get_foreman_history, maybe_post_plan_comment, run_foreman_ai
-
+from events import agent_owners, broadcast, connections, emit_terminal_line, pending_claude_auth
+from foreman import (
+    clear_foreman_history,
+    get_foreman_history,
+    maybe_post_plan_comment,
+    run_foreman_ai,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +75,7 @@ async def lifespan(app: FastAPI):
     foreman_log.info("foreman logger active (level=DEBUG)")
     yield
 
+
 app = FastAPI(title="Pioneer Square", lifespan=lifespan)
 
 app.add_middleware(
@@ -87,25 +100,26 @@ _http_bearer = HTTPBearer(auto_error=False)
 # Running agent subprocesses: agent_id -> asyncio.subprocess.Process
 # Used only by /agents/{id}/run (one-off claude/codex/pi invocations).
 # Worker subprocesses live in the standalone /worker process.
-running_processes: Dict[str, asyncio.subprocess.Process] = {}
+running_processes: dict[str, asyncio.subprocess.Process] = {}
 
 
 async def init_db():
     from alembic import command
     from alembic.config import Config
-    from sqlalchemy import create_engine, inspect, text as sa_text
+    from sqlalchemy import create_engine, inspect
 
     def run_migrations():
         cfg = Config(Path(__file__).resolve().parent / "alembic.ini")
-        db_url = os.environ.get("DATABASE_URL", f"sqlite+aiosqlite:///{os.environ.get('DB_PATH', 'pioneer_square.db')}")
+        db_url = os.environ.get(
+            "DATABASE_URL", f"sqlite+aiosqlite:///{os.environ.get('DB_PATH', 'pioneer_square.db')}"
+        )
         # Need a sync engine for inspection; strip aiosqlite async driver prefix.
         sync_url = db_url.replace("+aiosqlite", "")
         engine = create_engine(sync_url)
         try:
-            with engine.connect() as conn:
-                tables = inspect(engine).get_table_names()
-                has_alembic = "alembic_version" in tables
-                has_data = "guilds" in tables
+            tables = inspect(engine).get_table_names()
+            has_alembic = "alembic_version" in tables
+            has_data = "guilds" in tables
             # Pre-Alembic database: stamp to current head so upgrade is a no-op.
             if has_data and not has_alembic:
                 command.stamp(cfg, "head")
@@ -127,10 +141,10 @@ async def init_db():
 
 
 def generate_guild_id():
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
-def _worker_name(worker_id: str, hostname: Optional[str] = None) -> str:
+def _worker_name(worker_id: str, hostname: str | None = None) -> str:
     raw = worker_id[2:].upper()
     split = 2 + sum(ord(c) for c in raw) % 3
     droid = f"{raw[:split]}-{raw[split:]}"
@@ -140,29 +154,31 @@ def _worker_name(worker_id: str, hostname: Optional[str] = None) -> str:
 
 
 class GuildCreate(BaseModel):
-    name: Optional[str] = None
+    name: str | None = None
 
 
 class GuildUpdate(BaseModel):
-    name: Optional[str] = None
-    primary_repo: Optional[str] = None
+    name: str | None = None
+    primary_repo: str | None = None
 
 
 class RunAgentRequest(BaseModel):
-    tool: str          # "claude" | "codex" | "pi"
+    tool: str  # "claude" | "codex" | "pi"
     prompt: str
-    model: Optional[str] = None
-    provider: Optional[str] = None   # pi only
+    model: str | None = None
+    provider: str | None = None  # pi only
 
 
 class WorkerCreate(BaseModel):
-    repos: List[str]                  # ["owner/repo", ...]
-    github_token: Optional[str] = None
-    hostname: Optional[str] = None
+    repos: list[str]  # ["owner/repo", ...]
+    github_token: str | None = None
+    hostname: str | None = None
+
 
 class SpawnWorkerRequest(BaseModel):
-    repos: List[str]
-    name: Optional[str] = None
+    repos: list[str]
+    name: str | None = None
+
 
 class ClaudeCredentialsRequest(BaseModel):
     guild_id: str
@@ -171,12 +187,12 @@ class ClaudeCredentialsRequest(BaseModel):
 
 class TaskCreate(BaseModel):
     description: str
-    name: Optional[str] = None
-    tool: str = "claude"          # "claude" | "codex" | "pi"
-    issue_number: Optional[int] = None
-    issue_repo: Optional[str] = None
-    parent_task_id: Optional[str] = None
-    phase: Optional[str] = "execute"
+    name: str | None = None
+    tool: str = "claude"  # "claude" | "codex" | "pi"
+    issue_number: int | None = None
+    issue_repo: str | None = None
+    parent_task_id: str | None = None
+    phase: str | None = "execute"
 
 
 # ---------------------------------------------------------------------------
@@ -189,13 +205,16 @@ class TaskCreate(BaseModel):
 # GitHub OAuth helpers (OAuth flow only — foreman GitHub tools are in foreman/tools.py)
 # ---------------------------------------------------------------------------
 
+
 def _gh_exchange_code(code: str) -> dict:
-    payload = urllib.parse.urlencode({
-        "client_id": GITHUB_CLIENT_ID,
-        "client_secret": GITHUB_CLIENT_SECRET,
-        "code": code,
-        "redirect_uri": GITHUB_REDIRECT_URI,
-    }).encode()
+    payload = urllib.parse.urlencode(
+        {
+            "client_id": GITHUB_CLIENT_ID,
+            "client_secret": GITHUB_CLIENT_SECRET,
+            "code": code,
+            "redirect_uri": GITHUB_REDIRECT_URI,
+        }
+    ).encode()
     req = urllib.request.Request(
         "https://github.com/login/oauth/access_token",
         data=payload,
@@ -222,6 +241,7 @@ def _gh_get_user(token: str) -> dict:
 # Auth dependency
 # ---------------------------------------------------------------------------
 
+
 async def require_user(
     credentials: HTTPAuthorizationCredentials = Depends(_http_bearer),
 ) -> str:
@@ -246,19 +266,24 @@ async def require_user(
 # GitHub OAuth endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/auth/github/login")
 async def github_login():
     """Start the GitHub OAuth flow. Returns the authorization URL."""
     if not GITHUB_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="GitHub OAuth not configured (missing GITHUB_CLIENT_ID)")
+        raise HTTPException(
+            status_code=500, detail="GitHub OAuth not configured (missing GITHUB_CLIENT_ID)"
+        )
     state = secrets.token_urlsafe(16)
     oauth_states.add(state)
-    params = urllib.parse.urlencode({
-        "client_id": GITHUB_CLIENT_ID,
-        "redirect_uri": GITHUB_REDIRECT_URI,
-        "scope": "repo read:org project",
-        "state": state,
-    })
+    params = urllib.parse.urlencode(
+        {
+            "client_id": GITHUB_CLIENT_ID,
+            "redirect_uri": GITHUB_REDIRECT_URI,
+            "scope": "repo read:org project",
+            "state": state,
+        }
+    )
     return {"url": f"https://github.com/login/oauth/authorize?{params}"}
 
 
@@ -275,7 +300,9 @@ async def _gh_create_session(code: str, state: str) -> dict:
 
     access_token = token_data.get("access_token")
     if not access_token:
-        raise HTTPException(status_code=502, detail=f"No access_token in GitHub response: {token_data}")
+        raise HTTPException(
+            status_code=502, detail=f"No access_token in GitHub response: {token_data}"
+        )
 
     try:
         user_data = await asyncio.to_thread(_gh_get_user, access_token)
@@ -285,7 +312,7 @@ async def _gh_create_session(code: str, state: str) -> dict:
     github_user_id = str(user_data["id"])
     github_username = user_data.get("login", "")
     login_token = secrets.token_urlsafe(32)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     db = await get_db()
     try:
@@ -348,15 +375,14 @@ async def get_github_token(guild_id: str = Query(...)):
     """Return the stored OAuth token for the guild's linked GitHub user. Used by workers."""
     db = await get_db()
     try:
-        result = await db.execute(
-            select(Guild.github_user_id).where(Guild.id == guild_id)
-        )
+        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
         github_user_id_val = result.scalar_one_or_none()
         if not github_user_id_val:
             raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")
         result = await db.execute(
-            select(GithubToken.access_token, GithubToken.github_username)
-            .where(GithubToken.github_user_id == github_user_id_val)
+            select(GithubToken.access_token, GithubToken.github_username).where(
+                GithubToken.github_user_id == github_user_id_val
+            )
         )
         token_row = result.first()
         if not token_row:
@@ -376,7 +402,9 @@ async def get_claude_credentials(guild_id: str = Query(...)):
         )
         row = result.scalar_one_or_none()
         if not row:
-            raise HTTPException(status_code=404, detail="No Claude credentials stored for this guild")
+            raise HTTPException(
+                status_code=404, detail="No Claude credentials stored for this guild"
+            )
         return {"credentials_blob": row.credentials_blob}
     finally:
         await db.close()
@@ -385,7 +413,7 @@ async def get_claude_credentials(guild_id: str = Query(...)):
 @app.post("/auth/claude/credentials")
 async def store_claude_credentials(data: ClaudeCredentialsRequest):
     """Store Claude credentials blob (called by worker after successful login)."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     db = await get_db()
     try:
         result = await db.execute(
@@ -396,11 +424,13 @@ async def store_claude_credentials(data: ClaudeCredentialsRequest):
             row.credentials_blob = data.credentials_blob
             row.updated_at = now
         else:
-            db.add(ClaudeCredentials(
-                guild_id=data.guild_id,
-                credentials_blob=data.credentials_blob,
-                updated_at=now,
-            ))
+            db.add(
+                ClaudeCredentials(
+                    guild_id=data.guild_id,
+                    credentials_blob=data.credentials_blob,
+                    updated_at=now,
+                )
+            )
         await db.commit()
     finally:
         await db.close()
@@ -448,23 +478,25 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(_http_beare
 
 @app.post("/guilds")
 async def create_guild(
-    data: Optional[GuildCreate] = None,
+    data: GuildCreate | None = None,
     github_user_id: str = Depends(require_user),
 ):
     if data is None:
         data = GuildCreate()
-    created_at = datetime.now(timezone.utc).isoformat()
+    created_at = datetime.now(UTC).isoformat()
     db = await get_db()
     try:
         for _ in range(5):
             guild_id = generate_guild_id()
             try:
-                db.add(Guild(
-                    id=guild_id,
-                    created_at=created_at,
-                    name=data.name or f"Guild {guild_id}",
-                    github_user_id=github_user_id,
-                ))
+                db.add(
+                    Guild(
+                        id=guild_id,
+                        created_at=created_at,
+                        name=data.name or f"Guild {guild_id}",
+                        github_user_id=github_user_id,
+                    )
+                )
                 await db.commit()
                 break
             except IntegrityError:
@@ -520,7 +552,15 @@ async def update_guild(
         await db.commit()
     finally:
         await db.close()
-    await broadcast(guild_id, {"type": "guild-updated", "id": guild_id, "name": guild.name, "primary_repo": guild.primary_repo})
+    await broadcast(
+        guild_id,
+        {
+            "type": "guild-updated",
+            "id": guild_id,
+            "name": guild.name,
+            "primary_repo": guild.primary_repo,
+        },
+    )
     return {"id": guild_id, "name": guild.name, "primary_repo": guild.primary_repo}
 
 
@@ -592,7 +632,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 agent_name = data.get("agentName", "Unknown")
                 agent_type = data.get("agentType", "worker")
                 worker_id = data.get("workerId")
-                joined_at = datetime.now(timezone.utc).isoformat()
+                joined_at = datetime.now(UTC).isoformat()
                 stmt = sqlite_insert(Agent).values(
                     id=agent_id,
                     guild_id=guild_id,
@@ -632,7 +672,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     "agentType": agent_type,
                     "workerId": worker_id,
                     "state": "idle",
-                    "joinedAt": joined_at
+                    "joinedAt": joined_at,
                 }
                 await broadcast(guild_id, broadcast_msg)
 
@@ -660,25 +700,30 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 from_agent = data.get("from", "user")
                 to_agent = data.get("to", "foreman")
                 content = data.get("content", "")
-                created_at = datetime.now(timezone.utc).isoformat()
-                db.add(Message(
-                    guild_id=guild_id,
-                    from_agent=from_agent,
-                    to_agent=to_agent,
-                    content=content,
-                    message_type="chat",
-                    created_at=created_at,
-                    user_id=ws_user_id if from_agent == "user" else None,
-                ))
+                created_at = datetime.now(UTC).isoformat()
+                db.add(
+                    Message(
+                        guild_id=guild_id,
+                        from_agent=from_agent,
+                        to_agent=to_agent,
+                        content=content,
+                        message_type="chat",
+                        created_at=created_at,
+                        user_id=ws_user_id if from_agent == "user" else None,
+                    )
+                )
                 await db.commit()
-                await broadcast(guild_id, {
-                    "type": "chat",
-                    "from": from_agent,
-                    "to": to_agent,
-                    "content": content,
-                    "createdAt": created_at,
-                    **({"userId": ws_user_id} if ws_user_id and from_agent == "user" else {}),
-                })
+                await broadcast(
+                    guild_id,
+                    {
+                        "type": "chat",
+                        "from": from_agent,
+                        "to": to_agent,
+                        "content": content,
+                        "createdAt": created_at,
+                        **({"userId": ws_user_id} if ws_user_id and from_agent == "user" else {}),
+                    },
+                )
                 # Route human messages addressed to foreman through the AI.
                 # Each authenticated user gets their own foreman conversation thread.
                 # Exception: if a worker is waiting for a Claude auth code, treat
@@ -688,12 +733,20 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     if pending_workers:
                         pending_worker_id = next(iter(pending_workers))
                         pending_workers.pop(pending_worker_id)
-                        logger.info("chat intercepted as auth code for %s in guild %s code_len=%d", pending_worker_id, guild_id, len(content))
-                        await broadcast(guild_id, {
-                            "type": "worker-auth-response",
-                            "workerId": pending_worker_id,
-                            "code": content,
-                        })
+                        logger.info(
+                            "chat intercepted as auth code for %s in guild %s code_len=%d",
+                            pending_worker_id,
+                            guild_id,
+                            len(content),
+                        )
+                        await broadcast(
+                            guild_id,
+                            {
+                                "type": "worker-auth-response",
+                                "workerId": pending_worker_id,
+                                "code": content,
+                            },
+                        )
                     else:
                         asyncio.create_task(run_foreman_ai(guild_id, content, user_id=ws_user_id))
 
@@ -702,26 +755,38 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 line = data.get("line", "")
                 task_id = data.get("taskId")
                 detail = data.get("detail")
-                created_at = datetime.now(timezone.utc).isoformat()
+                created_at = datetime.now(UTC).isoformat()
                 # Look up worker_id for this agent to tag logs for cross-filter queries.
                 worker_id_for_log = None
                 if msg_agent_id:
-                    result = await db.execute(select(Agent.worker_id).where(Agent.id == msg_agent_id))
+                    result = await db.execute(
+                        select(Agent.worker_id).where(Agent.id == msg_agent_id)
+                    )
                     worker_id_for_log = result.scalar_one_or_none()
                 if line:
-                    db.add(TaskLog(task_id=task_id or None, timestamp=created_at, line=line,
-                                   worker_id=worker_id_for_log, agent_id=msg_agent_id,
-                                   data=json.dumps(detail) if detail else None))
+                    db.add(
+                        TaskLog(
+                            task_id=task_id or None,
+                            timestamp=created_at,
+                            line=line,
+                            worker_id=worker_id_for_log,
+                            agent_id=msg_agent_id,
+                            data=json.dumps(detail) if detail else None,
+                        )
+                    )
                     await db.commit()
-                await broadcast(guild_id, {
-                    "type": "terminal-output",
-                    "agentId": msg_agent_id,
-                    "workerId": worker_id_for_log,
-                    "taskId": task_id,
-                    "line": line,
-                    "timestamp": created_at,
-                    **({"detail": detail} if detail else {}),
-                })
+                await broadcast(
+                    guild_id,
+                    {
+                        "type": "terminal-output",
+                        "agentId": msg_agent_id,
+                        "workerId": worker_id_for_log,
+                        "taskId": task_id,
+                        "line": line,
+                        "timestamp": created_at,
+                        **({"detail": detail} if detail else {}),
+                    },
+                )
 
             elif msg_type == "worker-register":
                 # A standalone worker process is announcing/refreshing its config.
@@ -754,11 +819,14 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 if joined_agents or worker_id:
                     await db.commit()
                 for agent_id in joined_agents:
-                    await broadcast(guild_id, {
-                        "type": "agent-state",
-                        "agentId": agent_id,
-                        "state": "offline",
-                    })
+                    await broadcast(
+                        guild_id,
+                        {
+                            "type": "agent-state",
+                            "agentId": agent_id,
+                            "state": "offline",
+                        },
+                    )
 
             elif msg_type == "task-update":
                 # Worker is reporting a task state change; persist + rebroadcast.
@@ -797,39 +865,44 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     await db.commit()
                 await broadcast(guild_id, data, exclude=websocket)
                 if task_id and not finalized_by:
-                    asyncio.create_task(
-                        maybe_post_plan_comment(guild_id, task_id, last_text)
-                    )
+                    asyncio.create_task(maybe_post_plan_comment(guild_id, task_id, last_text))
                 if task_id:
                     if finalized_by == "timeout":
-                        finished_at = datetime.now(timezone.utc).isoformat()
+                        finished_at = datetime.now(UTC).isoformat()
                         await db.execute(
                             update(Task)
                             .where(Task.id == task_id)
                             .values(state="done", finished_at=finished_at)
                         )
                         await db.commit()
-                        await broadcast(guild_id, {
-                            "type": "task-update",
-                            "taskId": task_id,
-                            "state": "done",
-                            "finishedAt": finished_at,
-                        })
-                        asyncio.create_task(run_foreman_ai(
+                        await broadcast(
                             guild_id,
-                            f"[timeout] Follow-up window expired for task {task_id} "
-                            f"(worker {worker_id_msg}). The task has been auto-finalized "
-                            "as done — no foreman action required.",
-                        ))
+                            {
+                                "type": "task-update",
+                                "taskId": task_id,
+                                "state": "done",
+                                "finishedAt": finished_at,
+                            },
+                        )
+                        asyncio.create_task(
+                            run_foreman_ai(
+                                guild_id,
+                                f"[timeout] Follow-up window expired for task {task_id} "
+                                f"(worker {worker_id_msg}). The task has been auto-finalized "
+                                "as done — no foreman action required.",
+                            )
+                        )
                     else:
-                        asyncio.create_task(run_foreman_ai(
-                            guild_id,
-                            f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
-                            f"\"{desc[:80]}\" — branch: {branch}. "
-                            "Review this result. Call send_followup if additional work is needed "
-                            "(e.g. update tests, add docs, fix lint errors). "
-                            "Otherwise call finalize_task to mark it complete.",
-                        ))
+                        asyncio.create_task(
+                            run_foreman_ai(
+                                guild_id,
+                                f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
+                                f'"{desc[:80]}" — branch: {branch}. '
+                                "Review this result. Call send_followup if additional work is needed "
+                                "(e.g. update tests, add docs, fix lint errors). "
+                                "Otherwise call finalize_task to mark it complete.",
+                            )
+                        )
 
             elif msg_type == "task-followup-done":
                 task_id = data.get("taskId")
@@ -841,11 +914,13 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     await db.commit()
                 await broadcast(guild_id, data, exclude=websocket)
                 if task_id:
-                    asyncio.create_task(run_foreman_ai(
-                        guild_id,
-                        f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
-                        "Decide: call send_followup for more work, or call finalize_task to mark it done.",
-                    ))
+                    asyncio.create_task(
+                        run_foreman_ai(
+                            guild_id,
+                            f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
+                            "Decide: call send_followup for more work, or call finalize_task to mark it done.",
+                        )
+                    )
 
             elif msg_type == "needs-input":
                 # Worker escalation: broadcast to frontend and loop the foreman in.
@@ -867,29 +942,49 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 # Worker needs Claude authentication; broadcast URL to UI and loop foreman in.
                 worker_id = data.get("workerId", "a worker")
                 auth_url = data.get("url", "")
-                logger.info("claude-auth-required from %s in guild %s url=%s", worker_id, guild_id, auth_url[:80])
+                logger.info(
+                    "claude-auth-required from %s in guild %s url=%s",
+                    worker_id,
+                    guild_id,
+                    auth_url[:80],
+                )
                 await broadcast(guild_id, data, exclude=websocket)
                 # Track so new frontend connections can restore the auth panel.
                 pending_claude_auth.setdefault(guild_id, {})[worker_id] = auth_url
-                logger.info("pending_claude_auth now has %d entries for guild %s", len(pending_claude_auth.get(guild_id, {})), guild_id)
-                asyncio.create_task(run_foreman_ai(
+                logger.info(
+                    "pending_claude_auth now has %d entries for guild %s",
+                    len(pending_claude_auth.get(guild_id, {})),
                     guild_id,
-                    f"Worker {worker_id} needs Claude authentication. "
-                    f"Auth URL: {auth_url}. "
-                    "A human must visit this URL, complete authentication, then paste the "
-                    "resulting code into the auth panel that has appeared in the chat UI "
-                    "(or type it into the Foreman Comms input). The worker is waiting.",
-                ))
+                )
+                asyncio.create_task(
+                    run_foreman_ai(
+                        guild_id,
+                        f"Worker {worker_id} needs Claude authentication. "
+                        f"Auth URL: {auth_url}. "
+                        "A human must visit this URL, complete authentication, then paste the "
+                        "resulting code into the auth panel that has appeared in the chat UI "
+                        "(or type it into the Foreman Comms input). The worker is waiting.",
+                    )
+                )
 
             elif msg_type == "worker-auth-response":
                 # Human is submitting an auth code; clear pending state and
                 # broadcast to all connections so the waiting worker receives it.
                 worker_id = data.get("workerId", "")
                 code_len = len(data.get("code", ""))
-                logger.info("worker-auth-response for %s in guild %s code_len=%d", worker_id, guild_id, code_len)
+                logger.info(
+                    "worker-auth-response for %s in guild %s code_len=%d",
+                    worker_id,
+                    guild_id,
+                    code_len,
+                )
                 pending_claude_auth.get(guild_id, {}).pop(worker_id, None)
                 peer_count = len(connections.get(guild_id, []))
-                logger.info("broadcasting worker-auth-response to %d connections in guild %s", peer_count, guild_id)
+                logger.info(
+                    "broadcasting worker-auth-response to %d connections in guild %s",
+                    peer_count,
+                    guild_id,
+                )
                 await broadcast(guild_id, data)
 
             elif msg_type in ("offer", "answer", "ice-candidate"):
@@ -911,9 +1006,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             # Only mark agents offline if this WS is still the current owner.
             # If a reconnect already produced a newer WS that re-joined the
             # agent, that newer WS owns the agent now and we must not clobber it.
-            stale_agents = [
-                aid for aid in joined_agents if agent_owners.get(aid) is websocket
-            ]
+            stale_agents = [aid for aid in joined_agents if agent_owners.get(aid) is websocket]
             for agent_id in stale_agents:
                 agent_owners.pop(agent_id, None)
                 await db.execute(
@@ -930,11 +1023,14 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             if stale_agents:
                 await db.commit()
             for agent_id in stale_agents:
-                await broadcast(guild_id, {
-                    "type": "agent-state",
-                    "agentId": agent_id,
-                    "state": "offline",
-                })
+                await broadcast(
+                    guild_id,
+                    {
+                        "type": "agent-state",
+                        "agentId": agent_id,
+                        "state": "offline",
+                    },
+                )
         finally:
             await db.close()
 
@@ -943,9 +1039,12 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
 # Agent process management
 # ---------------------------------------------------------------------------
 
+
 async def _set_agent_state(guild_id: str, agent_id: str, state: str):
     """Broadcast and persist an agent state change (clears activity)."""
-    await broadcast(guild_id, {"type": "agent-state", "agentId": agent_id, "state": state, "activity": None})
+    await broadcast(
+        guild_id, {"type": "agent-state", "agentId": agent_id, "state": state, "activity": None}
+    )
     db = await get_db()
     try:
         await db.execute(
@@ -967,7 +1066,16 @@ def _build_command(req: RunAgentRequest) -> tuple[list[str], bool]:
     tool = req.tool.lower()
 
     if tool == "claude":
-        cmd = ["claude", "-p", req.prompt, "--output-format", "stream-json", "--verbose", "--max-turns", "20"]
+        cmd = [
+            "claude",
+            "-p",
+            req.prompt,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--max-turns",
+            "20",
+        ]
         if req.model:
             cmd += ["--model", req.model]
         return cmd, False
@@ -1074,7 +1182,7 @@ async def _stream_agent(guild_id: str, agent_id: str, req: RunAgentRequest):
         await _set_agent_state(guild_id, agent_id, "idle" if exit_code == 0 else "error")
 
 
-def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
+def _parse_event(tool: str, event: dict, pi_last_text: str) -> str | None:
     """Extract a human-readable line from one stream-JSON / RPC event."""
 
     if tool == "claude":
@@ -1109,7 +1217,9 @@ def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
                 if blk.get("type") == "tool_result":
                     content = blk.get("content", "")
                     if isinstance(content, list):
-                        content = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+                        content = "\n".join(
+                            b.get("text", "") for b in content if b.get("type") == "text"
+                        )
                     if isinstance(content, str) and content.strip():
                         lines = content.strip().split("\n")
                         preview = lines[0][:120]
@@ -1151,7 +1261,7 @@ def _parse_event(tool: str, event: dict, pi_last_text: str) -> Optional[str]:
             for blk in event.get("message", {}).get("content", []):
                 if isinstance(blk, dict) and blk.get("type") == "text":
                     full += blk.get("text", "")
-            delta = full[len(pi_last_text):]
+            delta = full[len(pi_last_text) :]
             return delta if delta.strip() else None
         if t == "tool_execution_start":
             ti = event.get("tool", {})
@@ -1211,23 +1321,26 @@ async def stop_agent_run(guild_id: str, agent_id: str):
 # Worker endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.post("/guilds/{guild_id}/workers")
 async def create_worker(guild_id: str, data: WorkerCreate):
     """Register a worker agent. The actual worker process must connect via WebSocket
     using the returned id (see the standalone /worker package)."""
-    worker_id   = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    created_at  = datetime.now(timezone.utc).isoformat()
+    worker_id = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    created_at = datetime.now(UTC).isoformat()
     worker_name = _worker_name(worker_id, data.hostname)
 
     db = await get_db()
     try:
-        db.add(Worker(
-            id=worker_id,
-            guild_id=guild_id,
-            repos=json.dumps(data.repos),
-            state="offline",
-            created_at=created_at,
-        ))
+        db.add(
+            Worker(
+                id=worker_id,
+                guild_id=guild_id,
+                repos=json.dumps(data.repos),
+                state="offline",
+                created_at=created_at,
+            )
+        )
         stmt = sqlite_insert(Agent).values(
             id=worker_id,
             guild_id=guild_id,
@@ -1253,14 +1366,17 @@ async def create_worker(guild_id: str, data: WorkerCreate):
     finally:
         await db.close()
 
-    await broadcast(guild_id, {
-        "type": "agent-joined",
-        "agentId": worker_id,
-        "agentName": worker_name,
-        "agentType": "worker",
-        "state": "offline",
-        "joinedAt": created_at,
-    })
+    await broadcast(
+        guild_id,
+        {
+            "type": "agent-joined",
+            "agentId": worker_id,
+            "agentName": worker_name,
+            "agentType": "worker",
+            "state": "offline",
+            "joinedAt": created_at,
+        },
+    )
     return {"id": worker_id, "name": worker_name, "repos": data.repos, "created_at": created_at}
 
 
@@ -1339,8 +1455,8 @@ async def list_workers(guild_id: str):
 @app.post("/guilds/{guild_id}/workers/{worker_id}/tasks")
 async def assign_task(guild_id: str, worker_id: str, data: TaskCreate):
     """Persist a task and broadcast a task-assigned event for the worker process."""
-    task_id    = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    created_at = datetime.now(timezone.utc).isoformat()
+    task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    created_at = datetime.now(UTC).isoformat()
 
     db = await get_db()
     try:
@@ -1349,37 +1465,42 @@ async def assign_task(guild_id: str, worker_id: str, data: TaskCreate):
         )
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Worker not found")
-        name = (data.name or data.description[:60])
-        db.add(Task(
-            id=task_id,
-            worker_id=worker_id,
-            guild_id=guild_id,
-            name=name,
-            description=data.description,
-            tool=data.tool,
-            issue_number=data.issue_number,
-            issue_repo=data.issue_repo,
-            state="pending",
-            phase=data.phase or "execute",
-            parent_task_id=data.parent_task_id,
-            created_at=created_at,
-        ))
+        name = data.name or data.description[:60]
+        db.add(
+            Task(
+                id=task_id,
+                worker_id=worker_id,
+                guild_id=guild_id,
+                name=name,
+                description=data.description,
+                tool=data.tool,
+                issue_number=data.issue_number,
+                issue_repo=data.issue_repo,
+                state="pending",
+                phase=data.phase or "execute",
+                parent_task_id=data.parent_task_id,
+                created_at=created_at,
+            )
+        )
         await db.commit()
     finally:
         await db.close()
 
-    await broadcast(guild_id, {
-        "type": "task-assigned",
-        "workerId": worker_id,
-        "taskId": task_id,
-        "name": name,
-        "description": data.description,
-        "tool": data.tool,
-        "phase": data.phase or "execute",
-        "parentTaskId": data.parent_task_id,
-        "issueNumber": data.issue_number,
-        "issueRepo": data.issue_repo,
-    })
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-assigned",
+            "workerId": worker_id,
+            "taskId": task_id,
+            "name": name,
+            "description": data.description,
+            "tool": data.tool,
+            "phase": data.phase or "execute",
+            "parentTaskId": data.parent_task_id,
+            "issueNumber": data.issue_number,
+            "issueRepo": data.issue_repo,
+        },
+    )
 
     return {"id": task_id, "worker_id": worker_id, "state": "pending"}
 
@@ -1410,17 +1531,21 @@ async def message_worker(guild_id: str, worker_id: str, data: WorkerMessage):
         raise HTTPException(status_code=400, detail="Empty message")
 
     await emit_terminal_line(guild_id, worker_id, f"[foreman → worker] {text_msg}")
-    await broadcast(guild_id, {
-        "type": "worker-message",
-        "workerId": worker_id,
-        "message": text_msg,
-    })
+    await broadcast(
+        guild_id,
+        {
+            "type": "worker-message",
+            "workerId": worker_id,
+            "message": text_msg,
+        },
+    )
     return {"status": "delivered"}
 
 
 # ---------------------------------------------------------------------------
 # Task endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.get("/guilds/{guild_id}/tasks")
 async def list_guild_tasks(guild_id: str):
@@ -1429,9 +1554,20 @@ async def list_guild_tasks(guild_id: str):
     try:
         result = await db.execute(
             select(
-                Task.id, Task.worker_id, Task.name, Task.description, Task.tool, Task.state,
-                Task.phase, Task.parent_task_id, Task.branch, Task.pr_url,
-                Task.issue_number, Task.issue_repo, Task.created_at, Task.finished_at,
+                Task.id,
+                Task.worker_id,
+                Task.name,
+                Task.description,
+                Task.tool,
+                Task.state,
+                Task.phase,
+                Task.parent_task_id,
+                Task.branch,
+                Task.pr_url,
+                Task.issue_number,
+                Task.issue_repo,
+                Task.created_at,
+                Task.finished_at,
             )
             .where(Task.guild_id == guild_id)
             .order_by(Task.created_at.desc())
@@ -1453,8 +1589,9 @@ async def get_task_logs(guild_id: str, task_id: str):
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Task not found")
         result = await db.execute(
-            select(TaskLog.timestamp, TaskLog.line, TaskLog.worker_id,
-                   TaskLog.agent_id, TaskLog.data)
+            select(
+                TaskLog.timestamp, TaskLog.line, TaskLog.worker_id, TaskLog.agent_id, TaskLog.data
+            )
             .where(TaskLog.task_id == task_id)
             .order_by(TaskLog.id.asc())
         )
@@ -1476,9 +1613,9 @@ async def get_task_logs(guild_id: str, task_id: str):
 @app.get("/guilds/{guild_id}/logs")
 async def get_guild_logs(
     guild_id: str,
-    worker_id: Optional[str] = None,
-    agent_id: Optional[str] = None,
-    task_id: Optional[str] = None,
+    worker_id: str | None = None,
+    agent_id: str | None = None,
+    task_id: str | None = None,
 ):
     """Get task_logs filtered by worker_id, agent_id, or task_id."""
     if not (worker_id or agent_id or task_id):
@@ -1489,7 +1626,12 @@ async def get_guild_logs(
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Guild not found")
         stmt = select(
-            TaskLog.timestamp, TaskLog.line, TaskLog.worker_id, TaskLog.agent_id, TaskLog.task_id, TaskLog.data
+            TaskLog.timestamp,
+            TaskLog.line,
+            TaskLog.worker_id,
+            TaskLog.agent_id,
+            TaskLog.task_id,
+            TaskLog.data,
         )
         if task_id:
             stmt = stmt.where(TaskLog.task_id == task_id)
@@ -1535,12 +1677,15 @@ async def create_task_followup(guild_id: str, task_id: str, data: FollowupCreate
         await db.commit()
     finally:
         await db.close()
-    await broadcast(guild_id, {
-        "type": "task-followup",
-        "workerId": worker_id,
-        "taskId": task_id,
-        "instructions": data.instructions,
-    })
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-followup",
+            "workerId": worker_id,
+            "taskId": task_id,
+            "instructions": data.instructions,
+        },
+    )
     return {"status": "sent", "taskId": task_id}
 
 
@@ -1555,24 +1700,30 @@ async def finalize_task_endpoint(guild_id: str, task_id: str):
         worker_id = result.scalar_one_or_none()
         if not worker_id:
             raise HTTPException(status_code=404, detail="Task not found")
-        finished_at = datetime.now(timezone.utc).isoformat()
+        finished_at = datetime.now(UTC).isoformat()
         await db.execute(
             update(Task).where(Task.id == task_id).values(state="done", finished_at=finished_at)
         )
         await db.commit()
     finally:
         await db.close()
-    await broadcast(guild_id, {
-        "type": "task-finalize",
-        "workerId": worker_id,
-        "taskId": task_id,
-    })
-    await broadcast(guild_id, {
-        "type": "task-update",
-        "taskId": task_id,
-        "state": "done",
-        "finishedAt": finished_at,
-    })
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-finalize",
+            "workerId": worker_id,
+            "taskId": task_id,
+        },
+    )
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-update",
+            "taskId": task_id,
+            "state": "done",
+            "finishedAt": finished_at,
+        },
+    )
     return {"status": "finalized", "taskId": task_id}
 
 
@@ -1590,24 +1741,32 @@ async def cancel_task_endpoint(guild_id: str, task_id: str):
         worker_id, state = row
         if state in ("done", "failed", "cancelled"):
             raise HTTPException(status_code=409, detail=f"Task is already {state}")
-        finished_at = datetime.now(timezone.utc).isoformat()
+        finished_at = datetime.now(UTC).isoformat()
         await db.execute(
-            update(Task).where(Task.id == task_id).values(state="cancelled", finished_at=finished_at)
+            update(Task)
+            .where(Task.id == task_id)
+            .values(state="cancelled", finished_at=finished_at)
         )
         await db.commit()
     finally:
         await db.close()
-    await broadcast(guild_id, {
-        "type": "task-cancel",
-        "workerId": worker_id,
-        "taskId": task_id,
-    })
-    await broadcast(guild_id, {
-        "type": "task-update",
-        "taskId": task_id,
-        "state": "cancelled",
-        "finishedAt": finished_at,
-    })
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-cancel",
+            "workerId": worker_id,
+            "taskId": task_id,
+        },
+    )
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-update",
+            "taskId": task_id,
+            "state": "cancelled",
+            "finishedAt": finished_at,
+        },
+    )
     return {"status": "cancelled", "taskId": task_id}
 
 
@@ -1632,29 +1791,34 @@ async def redirect_task_endpoint(guild_id: str, task_id: str, data: RedirectCrea
         worker_id, state = row
         if state in ("done", "failed", "cancelled"):
             raise HTTPException(status_code=409, detail=f"Task is already {state}")
-        await db.execute(
-            update(Task).where(Task.id == task_id).values(state="working")
-        )
+        await db.execute(update(Task).where(Task.id == task_id).values(state="working"))
         await db.commit()
     finally:
         await db.close()
-    await broadcast(guild_id, {
-        "type": "task-redirect",
-        "workerId": worker_id,
-        "taskId": task_id,
-        "instructions": instructions,
-    })
-    await broadcast(guild_id, {
-        "type": "task-update",
-        "taskId": task_id,
-        "state": "working",
-    })
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-redirect",
+            "workerId": worker_id,
+            "taskId": task_id,
+            "instructions": instructions,
+        },
+    )
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-update",
+            "taskId": task_id,
+            "state": "working",
+        },
+    )
     return {"status": "redirected", "taskId": task_id}
 
 
 # ---------------------------------------------------------------------------
 # Foreman context endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.get("/guilds/{guild_id}/foreman/context")
 async def get_foreman_context(
@@ -1687,5 +1851,10 @@ async def clear_foreman_context(
     finally:
         await db.close()
     removed = await clear_foreman_history(guild_id, github_user_id)
-    logger.info("Foreman context cleared for guild %s user %s (%d turns removed)", guild_id, github_user_id, removed)
+    logger.info(
+        "Foreman context cleared for guild %s user %s (%d turns removed)",
+        guild_id,
+        github_user_id,
+        removed,
+    )
     return {"status": "cleared", "removed": removed}

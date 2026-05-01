@@ -6,17 +6,10 @@ Reads a TOML file (default: ``./pioneer-worker.toml``).
 from __future__ import annotations
 
 import os
-import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse, urlunparse
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover
-    import tomli as tomllib
-
 
 DEFAULT_CONFIG_NAME = "pioneer-worker.toml"
 
@@ -26,9 +19,9 @@ class Config:
     backend_url: str
     guild_id: str
     repos: list[str] = field(default_factory=list)
-    worker_id: Optional[str] = None
-    worker_name: Optional[str] = None
-    github_token: Optional[str] = None
+    worker_id: str | None = None
+    worker_name: str | None = None
+    github_token: str | None = None
     repos_dir: str = "src"
     work_dir: str = "worktrees"
     claude_path: str = "claude"
@@ -56,13 +49,13 @@ class Config:
         return f"{base}/ws/{self.guild_id}"
 
 
-def _resolve_config_path(explicit: Optional[str]) -> Path:
+def _resolve_config_path(explicit: str | None) -> Path:
     if explicit:
         return Path(explicit).resolve()
     return Path.cwd() / DEFAULT_CONFIG_NAME
 
 
-def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) -> Config:
+def load(explicit_path: str | None = None, overrides: dict | None = None) -> Config:
     """Load config from TOML layered with env vars and overrides.
 
     *overrides* keys map directly to Config field names and take highest priority.
@@ -86,10 +79,18 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
                 "or supply --backend-url and --guild-id."
             )
 
-    backend_url = overrides.get("backend_url") or raw.get("backend_url") or os.environ.get("PIONEER_BACKEND_URL")
-    guild_id = overrides.get("guild_id") or raw.get("guild_id") or os.environ.get("PIONEER_GUILD_ID")
+    backend_url = (
+        overrides.get("backend_url")
+        or raw.get("backend_url")
+        or os.environ.get("PIONEER_BACKEND_URL")
+    )
+    guild_id = (
+        overrides.get("guild_id") or raw.get("guild_id") or os.environ.get("PIONEER_GUILD_ID")
+    )
     if not backend_url:
-        raise ValueError("backend_url is required (in config, --backend-url, or PIONEER_BACKEND_URL).")
+        raise ValueError(
+            "backend_url is required (in config, --backend-url, or PIONEER_BACKEND_URL)."
+        )
     if not guild_id:
         raise ValueError("guild_id is required (in config, --guild-id, or PIONEER_GUILD_ID).")
 
@@ -118,16 +119,39 @@ def load(explicit_path: Optional[str] = None, overrides: Optional[dict] = None) 
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
-        repos=list(overrides.get("repos") or github_block.get("repos") or raw.get("repos") or _repos_from_env),
-        worker_name=overrides.get("worker_name") or raw.get("worker_name") or os.environ.get("PIONEER_WORKER_NAME"),
+        repos=list(
+            overrides.get("repos")
+            or github_block.get("repos")
+            or raw.get("repos")
+            or _repos_from_env
+        ),
+        worker_name=overrides.get("worker_name")
+        or raw.get("worker_name")
+        or os.environ.get("PIONEER_WORKER_NAME"),
         github_token=token,
-        repos_dir=os.path.abspath(overrides.get("repos_dir") or paths_block.get("repos_dir", "/tmp/pioneer-repos")),
-        work_dir=os.path.abspath(overrides.get("work_dir") or paths_block.get("work_dir", "/tmp/pioneer-work")),
+        repos_dir=os.path.abspath(
+            overrides.get("repos_dir") or paths_block.get("repos_dir", "/tmp/pioneer-repos")
+        ),
+        work_dir=os.path.abspath(
+            overrides.get("work_dir") or paths_block.get("work_dir", "/tmp/pioneer-work")
+        ),
         claude_path=overrides.get("claude_path") or paths_block.get("claude", "claude"),
         codex_path=overrides.get("codex_path") or paths_block.get("codex", "codex"),
         pi_path=overrides.get("pi_path") or paths_block.get("pi", "pi"),
-        pull_interval=float(overrides.get("pull_interval") if overrides.get("pull_interval") is not None else raw.get("pull_interval", 300.0)),
-        claude_max_turns=int(overrides.get("claude_max_turns") if overrides.get("claude_max_turns") is not None else claude_block.get("max_turns", 50)),
-        max_agents=int(overrides.get("max_agents") if overrides.get("max_agents") is not None else raw.get("max_agents", 4)),
+        pull_interval=float(
+            overrides.get("pull_interval")
+            if overrides.get("pull_interval") is not None
+            else raw.get("pull_interval", 300.0)
+        ),
+        claude_max_turns=int(
+            overrides.get("claude_max_turns")
+            if overrides.get("claude_max_turns") is not None
+            else claude_block.get("max_turns", 50)
+        ),
+        max_agents=int(
+            overrides.get("max_agents")
+            if overrides.get("max_agents") is not None
+            else raw.get("max_agents", 4)
+        ),
         config_path=cfg_path,
     )
