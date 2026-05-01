@@ -44,6 +44,101 @@ def prune_history(messages: list, max_messages: int = MAX_HISTORY_MESSAGES) -> l
     return messages
 
 
+def strip_orphaned_tool_results(messages: list[dict]) -> list[dict]:
+    """Remove any tool_result blocks (and their containing user message if it becomes empty)
+    whose tool_use_id has no matching tool_use block in the immediately-preceding
+    assistant message. Also remove the dangling tool_use blocks from the assistant
+    message that have no corresponding tool_result.
+    Returns a cleaned copy of the messages list.
+    """
+    import copy
+
+    out = copy.deepcopy(messages)
+    i = 0
+    while i < len(out):
+        msg = out[i]
+        content = msg.get("content")
+
+        if msg["role"] == "assistant" and isinstance(content, list):
+            # Collect tool_result IDs from the immediately-following user message.
+            if i + 1 < len(out):
+                nxt = out[i + 1]
+                if nxt["role"] == "user" and isinstance(nxt.get("content"), list):
+                    result_ids = {
+                        b["tool_use_id"]
+                        for b in nxt["content"]
+                        if isinstance(b, dict) and b.get("type") == "tool_result"
+                    }
+                else:
+                    result_ids = set()
+            else:
+                result_ids = set()
+
+            new_content = [
+                b
+                for b in content
+                if not (isinstance(b, dict) and b.get("type") == "tool_use")
+                or b.get("id") in result_ids
+            ]
+            if new_content != content:
+                if not new_content:
+                    out.pop(i)
+                    continue
+                msg["content"] = new_content
+
+        elif msg["role"] == "user" and isinstance(content, list):
+            # Collect tool_use IDs from the immediately-preceding assistant message.
+            if i > 0:
+                prev = out[i - 1]
+                if prev["role"] == "assistant" and isinstance(prev.get("content"), list):
+                    valid_ids = {
+                        b["id"]
+                        for b in prev["content"]
+                        if isinstance(b, dict) and b.get("type") == "tool_use"
+                    }
+                else:
+                    valid_ids = set()
+            else:
+                valid_ids = set()
+
+            new_content = [
+                b
+                for b in content
+                if not (isinstance(b, dict) and b.get("type") == "tool_result")
+                or b.get("tool_use_id") in valid_ids
+            ]
+            if new_content != content:
+                if not new_content:
+                    out.pop(i)
+                    continue
+                msg["content"] = new_content
+
+        i += 1
+
+    # Re-enforce starts-with-user and handle cascading orphans at the head.
+    # Removing a leading orphaned user message exposes a leading assistant; removing
+    # that assistant may expose another user message whose tool_results are now
+    # orphaned (their matching assistant was just dropped). Loop until stable.
+    while out:
+        if out[0]["role"] != "user":
+            out.pop(0)
+            continue
+        content = out[0].get("content")
+        if isinstance(content, list):
+            new_content = [
+                b
+                for b in content
+                if not (isinstance(b, dict) and b.get("type") == "tool_result")
+            ]
+            if not new_content:
+                out.pop(0)
+                continue
+            if new_content != content:
+                out[0]["content"] = new_content
+        break
+    return out
+
+
 def _summarize_task(task: dict, cutoff_ts: float) -> dict | None:
     """Return a (possibly stripped) task dict, or None to exclude it.
 
@@ -302,6 +397,7 @@ async def run_foreman_ai(
         text_parts = []
         for round_num in range(6):  # safety cap on tool-call rounds
             messages = prune_history(messages)
+            messages = strip_orphaned_tool_results(messages)
             logger.info(
                 "guild=%s run_foreman_ai round %d: sending %d messages to Claude",
                 guild_id,
