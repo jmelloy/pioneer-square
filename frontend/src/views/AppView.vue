@@ -1,11 +1,14 @@
 <template>
   <div class="app-layout" :data-tab="activeTab">
-    <TopBar />
+    <TopBar :debug-active="showDebug" @toggle-debug="showDebug = !showDebug" />
     <div class="app-body">
       <GuildSidebar />
       <MainView />
       <ChatPane />
     </div>
+    <teleport to="body">
+      <DebugSidebar v-if="showDebug" @close="showDebug = false" />
+    </teleport>
     <nav class="mobile-tab-bar">
       <button class="tab-btn" :class="{ active: activeTab === 'tasks' }" @click="activeTab = 'tasks'">
         <span class="tab-icon">≡</span>
@@ -35,11 +38,14 @@ import GuildSidebar from '../components/GuildSidebar.vue'
 import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 import TopBar from '../components/TopBar.vue'
+import DebugSidebar from '../components/DebugSidebar.vue'
 
 const props = defineProps<{ guildId?: string }>()
 
 const activeTab = ref<'tasks' | 'work' | 'chat'>('chat')
 provide('switchMobileTab', (tab: 'tasks' | 'work' | 'chat') => { activeTab.value = tab })
+
+const showDebug = ref(false)
 
 const router = useRouter()
 const guildStore = useGuildStore()
