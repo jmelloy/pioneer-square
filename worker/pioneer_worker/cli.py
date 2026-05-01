@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 
 from . import __version__
@@ -59,11 +60,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--claude-max-turns", type=int, help="Max turns for claude runs (default: 50)."
     )
 
+    env_log_level = os.environ.get("PIONEER_WORKER_LOG_LEVEL", "").strip().upper()
+    log_level_choices = ["DEBUG", "INFO", "WARNING", "ERROR"]
+    default_log_level = env_log_level if env_log_level in log_level_choices else "INFO"
     parser.add_argument(
         "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging verbosity (default: INFO).",
+        default=default_log_level,
+        choices=log_level_choices,
+        help="Logging verbosity (default: INFO; can also set PIONEER_WORKER_LOG_LEVEL).",
     )
     parser.add_argument(
         "--version",

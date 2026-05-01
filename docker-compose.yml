@@ -15,11 +15,14 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       WORKER_IMAGE: ${WORKER_IMAGE:-pioneer-square-worker}
       WORKER_BACKEND_URL: ${WORKER_BACKEND_URL:-http://backend:8000}
+      # When set (e.g. DEBUG), backend-spawned worker containers are launched
+      # with PIONEER_WORKER_LOG_LEVEL=<this value>, raising worker verbosity.
+      WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-}
     volumes:
       - backend-data:/data
       - ./backend:/app
       - /var/run/docker.sock:/var/run/docker.sock
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
 
   frontend:
@@ -39,11 +42,16 @@ services:
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-INFO}
     volumes:
       # Provide pioneer-worker.toml at ./worker/pioneer-worker.toml
       - ./worker/pioneer-worker.toml:/config/pioneer-worker.toml:ro
       - worker-repos:/work/repos
       - worker-worktrees:/work/worktrees
+    # Re-declare the entrypoint so we can interpolate WORKER_LOG_LEVEL at compose
+    # time. Run with WORKER_LOG_LEVEL=DEBUG to see verbose worker logs:
+    #   WORKER_LOG_LEVEL=DEBUG docker compose --profile worker up worker
+    command: pioneer-worker --config /config/pioneer-worker.toml --log-level ${WORKER_LOG_LEVEL:-INFO}
     depends_on:
       - backend
     restart: unless-stopped

@@ -137,6 +137,7 @@ class Worker:
         """Ensure Claude is authenticated. Restores stored credentials or runs login flow."""
         import base64
         import io
+        import json
         import tarfile
         from pathlib import Path
 
@@ -144,11 +145,18 @@ class Worker:
             logger.info("ANTHROPIC_API_KEY set — skipping Claude login flow")
             return
 
+        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            logger.info("CLAUDE_CODE_OAUTH_TOKEN already in env — skipping login")
+            return
+
         if await self._claude_is_authenticated():
             logger.info("Claude credentials already present")
             return
 
-        # Try restoring credentials stored in the backend
+        # Try restoring credentials stored in the backend. Two formats are
+        # supported: the new JSON {"oauth_token": "..."} blob produced by
+        # `claude setup-token`, and the legacy base64(tar.gz of ~/.claude)
+        # blob produced by older versions running `claude auth login`.
         try:
             async with await self._http() as client:
                 resp = await client.get(
@@ -158,12 +166,26 @@ class Worker:
             if resp.status_code == 200:
                 blob = resp.json().get("credentials_blob", "")
                 if blob:
-                    claude_dir = Path.home() / ".claude"
-                    claude_dir.mkdir(parents=True, exist_ok=True)
-                    tar_bytes = base64.b64decode(blob)
-                    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
-                        tar.extractall(path=Path.home())
-                    logger.info("Restored Claude credentials from backend")
+                    raw = base64.b64decode(blob)
+                    restored = False
+                    try:
+                        payload = json.loads(raw)
+                        token = payload.get("oauth_token")
+                        if token:
+                            os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
+                            logger.info(
+                                "Restored CLAUDE_CODE_OAUTH_TOKEN from backend (len=%d)",
+                                len(token),
+                            )
+                            restored = True
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass  # fall through to legacy tarball path
+                    if not restored:
+                        claude_dir = Path.home() / ".claude"
+                        claude_dir.mkdir(parents=True, exist_ok=True)
+                        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+                            tar.extractall(path=Path.home())
+                        logger.info("Restored Claude credentials tarball from backend (legacy)")
                     if await self._claude_is_authenticated():
                         return
                     logger.warning("Restored credentials blob but auth status still fails")
@@ -174,84 +196,265 @@ class Worker:
         await self._run_claude_login()
 
     async def _run_claude_login(self) -> None:
-        """Run `claude auth login`, surface the URL to the UI, wait for the code, then persist credentials."""
+        """Drive `claude setup-token` to completion and persist the resulting OAuth token.
+
+        Why ``setup-token`` and not ``claude auth login``: the CLI ``auth login``
+        command has no manual paste path — its only way to receive the auth
+        code is via a localhost HTTP callback fired by the auto-opened browser,
+        which fails in headless containers. ``setup-token`` runs an Ink
+        (React-for-CLI) TUI that *does* prompt with "Paste code here if
+        prompted >" and accepts the code over stdin. The trade-off is scope:
+        the resulting token is ``user:inference`` only (sufficient for running
+        Claude Code tasks, but not for Remote Control / file_upload / mcp).
+
+        Mechanics: Ink mounts only when stdout is a real TTY and reads input
+        only when it has a controlling terminal, so we allocate a PTY pair,
+        plumb it into all three standard streams of the child, and use
+        setsid + TIOCSCTTY in a preexec to make the slave PTY the child's
+        ctty. The auth code must be written in two writes (paste, ~150ms
+        delay, CR alone) — a single ``code\\r`` write doesn't fire onSubmit
+        because Ink batches the CR into the paste event.
+        """
         import base64
-        import io
-        import tarfile
-        from pathlib import Path
+        import fcntl
+        import json
+        import os
+        import pty
+        import re
+        import termios
 
         self._auth_code_queue = asyncio.Queue()
-        logger.info("Starting claude auth login — auth_code_queue is now open")
+        logger.info("Starting claude setup-token — auth_code_queue is now open")
+
+        master_fd, slave_fd = pty.openpty()
+        # Disable input echo so the auth code we write isn't reflected onto
+        # stdout (which would put the secret into our logs).
+        try:
+            attrs = termios.tcgetattr(slave_fd)
+            attrs[3] &= ~termios.ECHO  # lflags
+            termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+        except termios.error as exc:
+            logger.debug("Could not disable PTY echo: %s", exc)
+
+        def _attach_controlling_tty() -> None:
+            os.setsid()
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
         proc = await asyncio.create_subprocess_exec(
             self.cfg.claude_path,
-            "auth",
-            "login",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            "setup-token",
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            preexec_fn=_attach_controlling_tty,
         )
-        assert proc.stdout is not None
-        assert proc.stdin is not None
+        os.close(slave_fd)
+        logger.info(
+            "claude setup-token started pid=%s (PTY mode, master_fd=%d, ctty=slave)",
+            proc.pid,
+            master_fd,
+        )
 
+        loop = asyncio.get_event_loop()
+        reader = asyncio.StreamReader()
+        reader_protocol = asyncio.StreamReaderProtocol(reader)
+        master_pipe = os.fdopen(master_fd, "rb", buffering=0)
+        await loop.connect_read_pipe(lambda: reader_protocol, master_pipe)
+
+        # Strip ANSI/CSI escape sequences so we can grep Ink's output. Match
+        # the common cursor/SGR/erase forms claude emits.
+        ansi_re = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b\][^\x07\x1b]*[\x07\x1b]")
+
+        def _clean(b: bytes) -> str:
+            return ansi_re.sub(b"", b).decode(errors="replace")
+
+        captured = bytearray()  # full raw output for token extraction at end
+        url_seen = False
         code_sent = False
+        post_submit_watchdog: asyncio.Task | None = None
         try:
-            async for raw_line in proc.stdout:
-                line = raw_line.decode(errors="replace").rstrip()
-                logger.info("[claude login] %s", line)
-                await self._emit(f"[auth] {line}")
+            while True:
+                try:
+                    chunk = await reader.read(4096)
+                except Exception as exc:
+                    logger.warning("PTY read error: %s", exc)
+                    break
+                if not chunk:
+                    break
+                captured.extend(chunk)
+                cleaned = _clean(chunk)
+                for line in cleaned.splitlines():
+                    line = line.rstrip()
+                    if line:
+                        logger.info("[claude setup-token] %s", line)
+                        await self._emit(f"[auth] {line}")
 
-                if not code_sent and "https://" in line:
-                    url = next((w for w in line.split() if w.startswith("https://")), line.strip())
-                    await self._send(
-                        {
-                            "type": "claude-auth-required",
-                            "workerId": self.cfg.worker_id,
-                            "url": url,
-                        }
+                # Detect the OAuth URL once it's been emitted. Ink word-wraps
+                # the URL across multiple lines (often after each ~80 chars),
+                # so we strip whitespace from the running buffer first and
+                # then look for the URL ending at the OAuth state parameter.
+                if not url_seen:
+                    full_no_ws = re.sub(r"\s+", "", _clean(bytes(captured)))
+                    m = re.search(
+                        r"https://claude\.com/cai/oauth/authorize\?[A-Za-z0-9=&%_.\-]+state=[A-Za-z0-9_\-]+",
+                        full_no_ws,
                     )
-                    await self._emit(
-                        "[auth] Waiting for auth code — paste it into the auth panel in the UI or type it into the Foreman Comms input..."
-                    )
-                    try:
-                        code = await asyncio.wait_for(self._auth_code_queue.get(), timeout=300.0)
-                        await self._emit("[auth] Code received — submitting to Claude CLI...")
-                        proc.stdin.write((code.strip() + "\n").encode())
-                        await proc.stdin.drain()
-                        proc.stdin.close()
-                        code_sent = True
-                    except TimeoutError:
-                        await self._emit(
-                            "[auth] Timed out waiting for auth code — restart the worker to retry"
+                    if m:
+                        url = m.group(0)
+                        url_seen = True
+                        await self._send(
+                            {
+                                "type": "claude-auth-required",
+                                "workerId": self.cfg.worker_id,
+                                "url": url,
+                            }
                         )
-                        proc.kill()
-                        await proc.wait()
-                        return
+                        await self._emit(
+                            "[auth] Waiting for auth code — paste it into the auth panel in the UI..."
+                        )
+                        logger.info("Auth login: awaiting code from queue (timeout=300s)")
+                        try:
+                            code = await asyncio.wait_for(
+                                self._auth_code_queue.get(), timeout=300.0
+                            )
+                        except TimeoutError:
+                            logger.warning("Auth login: timed out waiting for code from queue")
+                            await self._emit(
+                                "[auth] Timed out waiting for auth code — restart the worker to retry"
+                            )
+                            proc.kill()
+                            await proc.wait()
+                            return
+                        logger.info(
+                            "Auth login: code dequeued (len=%d, pid_alive=%s)",
+                            len(code),
+                            proc.returncode is None,
+                        )
+                        await self._emit("[auth] Code received — submitting to Claude CLI...")
+                        try:
+                            os.write(master_fd, code.strip().encode())
+                            # Ink batches consecutive bytes into one paste
+                            # event; a CR included in the same write is
+                            # swallowed and never fires onSubmit. Sending CR
+                            # in a separate write after a short sleep makes
+                            # Ink treat it as a distinct keypress.
+                            await asyncio.sleep(0.2)
+                            os.write(master_fd, b"\r")
+                        except OSError as exc:
+                            logger.warning("Auth login: PTY write failed: %s", exc)
+                            await self._emit(f"[auth] Failed to send code to Claude: {exc}")
+                            proc.kill()
+                            await proc.wait()
+                            return
+                        logger.info("Auth login: wrote code + CR (separate writes) to PTY")
+                        code_sent = True
+                        post_submit_watchdog = asyncio.create_task(
+                            self._auth_login_watchdog(proc)
+                        )
         finally:
             self._auth_code_queue = None
+            if post_submit_watchdog is not None and not post_submit_watchdog.done():
+                post_submit_watchdog.cancel()
+            try:
+                master_pipe.close()
+            except OSError:
+                pass
 
+        logger.info(
+            "setup-token: PTY EOF reached (code_sent=%s); waiting for claude to exit",
+            code_sent,
+        )
         await proc.wait()
-        logger.info("claude auth login exited with rc=%s", proc.returncode)
+        logger.info("claude setup-token exited with rc=%s", proc.returncode)
 
-        if not await self._claude_is_authenticated():
-            await self._emit("[auth] Login may have failed — claude auth status returned non-zero")
+        # Extract the token from the captured Ink output. After Ink renders
+        # the success view there's a contiguous run of the token characters
+        # near "Store this token securely" / "export CLAUDE_CODE_OAUTH_TOKEN".
+        cleaned_full = _clean(bytes(captured))
+        token = self._extract_oauth_token(cleaned_full)
+        if not token:
+            await self._emit(
+                "[auth] Login finished but could not extract OAuth token from output — please retry"
+            )
+            logger.warning("Could not locate OAuth token in setup-token output")
             return
 
-        claude_dir = Path.home() / ".claude"
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        logger.info("Captured CLAUDE_CODE_OAUTH_TOKEN (len=%d) and set in env", len(token))
+        await self._emit("[auth] Token captured — saving to backend so future workers can reuse it")
+
         try:
-            buf = io.BytesIO()
-            with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-                tar.add(str(claude_dir), arcname=".claude")
-            blob = base64.b64encode(buf.getvalue()).decode()
+            blob = base64.b64encode(json.dumps({"oauth_token": token}).encode()).decode()
             async with await self._http() as client:
                 await client.post(
                     "/auth/claude/credentials",
                     json={"guild_id": self.cfg.guild_id, "credentials_blob": blob},
                 )
-            await self._emit("[auth] Credentials saved — future workers will skip login")
-            logger.info("Posted Claude credentials to backend")
+            await self._emit("[auth] Credentials saved")
+            logger.info("Posted OAuth token to backend credentials store")
         except Exception as exc:
             logger.warning("Could not store Claude credentials: %s", exc)
             await self._emit(f"[auth] Warning: could not store credentials: {exc}")
+
+    @staticmethod
+    def _extract_oauth_token(cleaned_output: str) -> str | None:
+        """Locate the OAuth token in Ink's success-screen output.
+
+        The Ink TUI renders the token amid lots of surrounding text and ASCII
+        art; after stripping ANSI escapes it shows up as a long alphanumeric
+        run (40-100 chars from `[A-Za-z0-9_-]`) somewhere near the marker
+        "Store this token securely" / "Use this token by setting".
+
+        We anchor on those markers and pick the longest token-like run that
+        appears near them.
+        """
+        import re
+
+        text = cleaned_output
+        # Filter out spaces/newlines that Ink injects between glyphs in its
+        # box-layout, which would otherwise split the token character run.
+        compact = re.sub(r"[\s]+", "", text)
+        # The marker text gets compacted too.
+        marker_idx = compact.find("Storethistokensecurely")
+        if marker_idx < 0:
+            marker_idx = compact.find("UsethistokenbysettingexportCLAUDE_CODE_OAUTH_TOKEN")
+        if marker_idx < 0:
+            return None
+        # Search the 400 chars before the marker for the longest token-shaped run.
+        window = compact[max(0, marker_idx - 400) : marker_idx]
+        candidates = re.findall(r"[A-Za-z0-9_\-]{40,200}", window)
+        if not candidates:
+            return None
+        # Prefer the run closest to the marker (latest in the window).
+        return candidates[-1]
+
+    async def _auth_login_watchdog(self, proc: asyncio.subprocess.Process) -> None:
+        """Periodically log that we're still waiting on claude after the code was submitted.
+
+        Helps diagnose hangs where the async-for loop is blocked because claude
+        produced no further output (no newline, no exit) after stdin was sent.
+        """
+        ticks = 0
+        try:
+            while True:
+                await asyncio.sleep(15.0)
+                ticks += 1
+                if proc.returncode is not None:
+                    logger.info(
+                        "Auth login watchdog: claude exited rc=%s (after %ds)",
+                        proc.returncode,
+                        ticks * 15,
+                    )
+                    return
+                logger.warning(
+                    "Auth login watchdog: still waiting on claude stdout %ds after code submission (pid=%s, rc=%s)",
+                    ticks * 15,
+                    proc.pid,
+                    proc.returncode,
+                )
+        except asyncio.CancelledError:
+            logger.debug("Auth login watchdog cancelled")
+            raise
 
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:

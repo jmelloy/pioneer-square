@@ -1409,6 +1409,9 @@ async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
     }
     if data.name:
         env["PIONEER_WORKER_NAME"] = data.name
+    worker_log_level = os.environ.get("WORKER_LOG_LEVEL")
+    if worker_log_level:
+        env["PIONEER_WORKER_LOG_LEVEL"] = worker_log_level
 
     # Join the same Docker network as the backend so the worker can reach it
     network = None
