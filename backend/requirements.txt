@@ -8,3 +8,5 @@ python-multipart
 anthropic
 python-dotenv
 docker
+pytest
+pytest-asyncio

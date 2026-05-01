@@ -148,6 +148,12 @@ async def run_foreman_ai(
     from sqlalchemy import text
     db = await get_db()
     try:
+        guild_result = await db.execute(
+            select(Guild.name, Guild.primary_repo).where(Guild.id == guild_id)
+        )
+        guild_row = guild_result.one_or_none()
+        primary_repo = guild_row.primary_repo if guild_row else None
+
         result = await db.execute(
             text(
                 "SELECT w.id, w.repos, w.state as worker_state,"
