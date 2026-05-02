@@ -48,35 +48,17 @@
               <span class="msg-time">{{ formatTime(isToolUseGroup(msg) ? (msg.createdAt || msg.created_at) : ((msg as ChatMessage).createdAt || (msg as ChatMessage).created_at)) }}</span>
             </div>
 
-            <!-- Tool-use group summary -->
+            <!-- Tool-use group: typing indicator while in-flight, compact summary once complete -->
             <template v-if="isToolUseGroup(msg)">
-              <span class="tool-use-summary">{{ msg.tools.length }} tool{{ msg.tools.length !== 1 ? 's' : '' }} called: {{ msg.tools.join(', ') }}</span>
-            </template>
-
-            <!-- Tool-use block (fallback, should be grouped above) -->
-            <template v-else-if="isToolUse(msg as ChatMessage)">
-              <div class="tool-block tool-block--use">
-                <button class="tool-block-header" @click.stop="toggleTool(i)">
-                  <span class="tool-name">{{ expandedTool === i ? '▼' : '▶' }} tool_use{{ (msg as ChatMessage).toolName ? ' · ' + (msg as ChatMessage).toolName : '' }}</span>
-                  <span v-if="expandedTool !== i" class="tool-preview">{{ toolPreview((msg as ChatMessage).toolInput ? JSON.stringify((msg as ChatMessage).toolInput) : (msg as ChatMessage).content) }}</span>
-                </button>
-                <div v-if="expandedTool === i" class="tool-body">
-                  <pre class="tool-json">{{ JSON.stringify((msg as ChatMessage).toolInput, null, 2) }}</pre>
-                </div>
-              </div>
-            </template>
-
-            <!-- Tool-result block -->
-            <template v-else-if="isToolResult(msg as ChatMessage)">
-              <div class="tool-block tool-block--result" :class="{ 'tool-block--error': (msg as ChatMessage).isError }">
-                <button class="tool-block-header" @click.stop="toggleTool(i)">
-                  <span class="tool-name">{{ expandedTool === i ? '▼' : '▶' }}{{ (msg as ChatMessage).isError ? ' ✗' : '' }} tool_result{{ (msg as ChatMessage).toolName ? ' · ' + (msg as ChatMessage).toolName : '' }}</span>
-                  <span v-if="expandedTool !== i" class="tool-preview">{{ toolPreview((msg as ChatMessage).toolOutput || (msg as ChatMessage).content) }}</span>
-                </button>
-                <div v-if="expandedTool === i" class="tool-body">
-                  <pre class="tool-output">{{ (msg as ChatMessage).toolOutput || (msg as ChatMessage).content }}</pre>
-                </div>
-              </div>
+              <span class="tool-use-summary">
+                <span class="tool-use-label">{{ msg.tools.join(', ') }}</span>
+                <span v-if="msg.pending" class="typing-indicator" aria-label="Tool call in progress">
+                  <span class="typing-dot"></span>
+                  <span class="typing-dot"></span>
+                  <span class="typing-dot"></span>
+                </span>
+                <span v-else class="tool-use-done" aria-label="Tool call complete">✓</span>
+              </span>
             </template>
 
             <!-- Regular message content -->
@@ -226,11 +208,11 @@ const pollLabel = computed(() => {
 
 const messages = computed(() => guildStore.messages)
 const foreman = computed(() => agentsStore.agents.find(a => a.type === 'foreman'))
-const expandedTool = ref<number | null>(null)
 
 interface ToolUseGroup {
   _isToolUseGroup: true
   tools: string[]
+  pending: boolean
   from: string
   createdAt?: string
   created_at?: string
@@ -239,25 +221,42 @@ interface ToolUseGroup {
 type GroupedMessage = ChatMessage | ToolUseGroup
 
 const groupedMessages = computed((): GroupedMessage[] => {
+  const raw = messages.value
+
+  // Tool-result messages aren't rendered directly — their arrival flips the
+  // matching tool-use group from "pending" to "complete" so the typing
+  // indicator disappears without dumping raw output into the chat.
+  const completedToolIds = new Set<string>()
+  for (const msg of raw) {
+    if (msg.role === 'tool_result' && msg.toolId) {
+      completedToolIds.add(msg.toolId as string)
+    }
+  }
+
   const result: GroupedMessage[] = []
   let i = 0
-  const raw = messages.value
   while (i < raw.length) {
     const msg = raw[i]
     if (msg.role === 'tool_use') {
       const tools: string[] = []
+      const toolIds: string[] = []
       const first = msg
       while (i < raw.length && raw[i].role === 'tool_use') {
         tools.push((raw[i].toolName as string | undefined) || 'unknown')
+        toolIds.push((raw[i].toolId as string | undefined) || '')
         i++
       }
+      const pending = toolIds.some(id => !id || !completedToolIds.has(id))
       result.push({
         _isToolUseGroup: true,
         tools,
+        pending,
         from: (first.from || first.from_agent || 'foreman') as string,
         createdAt: first.createdAt,
         created_at: first.created_at,
       })
+    } else if (msg.role === 'tool_result') {
+      i++
     } else {
       result.push(msg)
       i++
@@ -274,14 +273,6 @@ function msgSender(msg: ChatMessage): string {
   return (msg.from || msg.from_agent || 'unknown') as string
 }
 
-function isToolUse(msg: ChatMessage): boolean {
-  return msg.role === 'tool_use'
-}
-
-function isToolResult(msg: ChatMessage): boolean {
-  return msg.role === 'tool_result'
-}
-
 function messageClasses(msg: ChatMessage) {
   const sender = msgSender(msg)
   return {
@@ -289,7 +280,6 @@ function messageClasses(msg: ChatMessage) {
     'from-system': sender === 'system',
     'from-foreman': sender === 'foreman',
     'from-agent': sender !== 'user' && sender !== 'system',
-    'msg-tool': isToolUse(msg) || isToolResult(msg),
   }
 }
 
@@ -299,16 +289,6 @@ function senderLabel(msg: ChatMessage): string {
   if (sender === 'system') return 'SYS'
   if (sender === 'foreman') return '⚙ FOREMAN'
   return sender.toUpperCase()
-}
-
-function toggleTool(i: number) {
-  expandedTool.value = expandedTool.value === i ? null : i
-}
-
-function toolPreview(text: string | undefined | null): string {
-  if (!text) return ''
-  const s = text.replace(/\s+/g, ' ').trim()
-  return s.length > 60 ? s.slice(0, 60) + '…' : s
 }
 
 // Issue assignment pattern: "Work on issue #N in owner/repo: title"
@@ -865,104 +845,63 @@ watch(messages, async () => {
   margin-left: auto;
 }
 
-/* ── Tool blocks ── */
-.tool-block {
-  width: 100%;
-}
-
-.tool-block-header {
+/* ── Tool-use group: name list + typing indicator while in-flight ── */
+.tool-use-summary {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  background: none;
-  border: none;
-  padding: 2px 0;
-  cursor: pointer;
-  text-align: left;
-  color: inherit;
-}
-
-.tool-block-header:hover {
-  opacity: 0.85;
-}
-
-.tool-block--use .tool-block-header {
-  color: var(--color-amber);
-}
-
-.tool-block--result .tool-block-header {
-  color: var(--color-teal);
-}
-
-.tool-block--error .tool-block-header {
-  color: var(--color-red);
-}
-
-.tool-name {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  flex: 1;
-  text-align: left;
-}
-
-.tool-expand-icon {
-  font-size: 7px;
-  color: var(--color-text-dim);
-  opacity: 0.6;
-  flex-shrink: 0;
-}
-
-.tool-use-summary {
+  gap: 8px;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--color-text-dim);
-  opacity: 0.6;
+  opacity: 0.75;
   font-style: italic;
 }
 
-.tool-preview {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--color-text-dim);
-  opacity: 0.55;
+.tool-use-label {
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
-  flex: 1;
-  margin-left: 8px;
+  white-space: nowrap;
+  min-width: 0;
 }
 
-.tool-body {
-  margin-top: 4px;
-  border-left: 2px solid rgba(232, 170, 0, 0.2);
-  padding-left: 8px;
+.tool-use-done {
+  color: var(--color-teal);
+  font-style: normal;
+  flex-shrink: 0;
 }
 
-.tool-block--result .tool-body {
-  border-left-color: rgba(0, 187, 170, 0.2);
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
 }
 
-.tool-json,
-.tool-output {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 200px;
-  overflow-y: auto;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(42, 26, 5, 0.8);
-  padding: 6px 8px;
+.typing-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--color-brass);
+  animation: typing-bounce 1.2s infinite ease-in-out;
 }
 
-.tool-json {
-  color: var(--color-amber);
+.typing-dot:nth-child(2) {
+  animation-delay: 0.2s;
 }
 
-.tool-output {
-  color: var(--color-text-dim);
+.typing-dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes typing-bounce {
+  0%, 60%, 100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
 }
 
 .chat-input-row {
