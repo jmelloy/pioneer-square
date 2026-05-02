@@ -1393,6 +1393,35 @@ async def create_worker(guild_id: str, data: WorkerCreate):
     return {"id": worker_id, "name": worker_name, "repos": data.repos, "created_at": created_at}
 
 
+def _build_spawn_worker_env(
+    *, guild_id: str, repos: list[str], worker_name: str | None, source_env: dict[str, str]
+) -> dict[str, str]:
+    """Build the env dict for a spawned worker container."""
+    env: dict[str, str] = {
+        "PIONEER_BACKEND_URL": source_env.get("WORKER_BACKEND_URL", "http://backend:8000"),
+        "PIONEER_GUILD_ID": guild_id,
+        "PIONEER_REPOS": ",".join(repos),
+    }
+    gh_token = source_env.get("GITHUB_TOKEN", "")
+    if gh_token:
+        # PIONEER_GITHUB_TOKEN feeds the worker config loader; GITHUB_TOKEN is
+        # what gh CLI inside the worker reads when opening PRs.
+        env["PIONEER_GITHUB_TOKEN"] = gh_token
+        env["GITHUB_TOKEN"] = gh_token
+    # CLAUDE_CODE_OAUTH_TOKEN lets the worker skip both the DB credentials
+    # fetch and the interactive `claude setup-token` flow.
+    for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        val = source_env.get(key)
+        if val:
+            env[key] = val
+    if worker_name:
+        env["PIONEER_WORKER_NAME"] = worker_name
+    log_level = source_env.get("WORKER_LOG_LEVEL")
+    if log_level:
+        env["PIONEER_WORKER_LOG_LEVEL"] = log_level
+    return env
+
+
 @app.post("/guilds/{guild_id}/spawn-worker")
 async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
     """Start a new worker container via Docker. Requires the Docker socket to be mounted."""
@@ -1407,24 +1436,12 @@ async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
         raise HTTPException(status_code=503, detail=f"Docker socket unavailable: {e}")
 
     image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
-    backend_url = os.environ.get("WORKER_BACKEND_URL", "http://backend:8000")
-
-    # PIONEER_GITHUB_TOKEN feeds the worker's config loader; GITHUB_TOKEN is
-    # also picked up by the gh CLI inside the worker for PR creation.
-    gh_token = os.environ.get("GITHUB_TOKEN", "")
-    env = {
-        "PIONEER_BACKEND_URL": backend_url,
-        "PIONEER_GUILD_ID": guild_id,
-        "PIONEER_REPOS": ",".join(data.repos),
-        "PIONEER_GITHUB_TOKEN": gh_token,
-        "GITHUB_TOKEN": gh_token,
-        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
-    }
-    if data.name:
-        env["PIONEER_WORKER_NAME"] = data.name
-    worker_log_level = os.environ.get("WORKER_LOG_LEVEL")
-    if worker_log_level:
-        env["PIONEER_WORKER_LOG_LEVEL"] = worker_log_level
+    env = _build_spawn_worker_env(
+        guild_id=guild_id,
+        repos=data.repos,
+        worker_name=data.name,
+        source_env=dict(os.environ),
+    )
 
     # Join the same Docker network as the backend so the worker can reach it,
     # and inherit the compose project so `docker compose ps` lists the worker.

@@ -122,6 +122,74 @@ def test_assign_task_appears_in_list(client):
     assert descriptions == {"Task one", "Task two"}
 
 
+def test_spawn_worker_env_forwards_claude_oauth_token():
+    """CLAUDE_CODE_OAUTH_TOKEN must reach the spawned container so it skips setup-token."""
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=["owner/repo"],
+        worker_name=None,
+        source_env={
+            "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oauth-abc",
+            "ANTHROPIC_API_KEY": "sk-ant-api-xyz",
+        },
+    )
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oauth-abc"
+    assert env["ANTHROPIC_API_KEY"] == "sk-ant-api-xyz"
+    assert env["PIONEER_GUILD_ID"] == "g1"
+    assert env["PIONEER_REPOS"] == "owner/repo"
+
+
+def test_spawn_worker_env_omits_unset_keys():
+    """Empty/unset auth keys must not be passed — the worker checks truthiness."""
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=[],
+        worker_name=None,
+        source_env={"CLAUDE_CODE_OAUTH_TOKEN": "", "GITHUB_TOKEN": ""},
+    )
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "PIONEER_GITHUB_TOKEN" not in env
+
+
+def test_spawn_worker_env_forwards_github_token_under_both_names():
+    """GITHUB_TOKEN goes both as PIONEER_GITHUB_TOKEN (config loader) and GITHUB_TOKEN (gh CLI)."""
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=["o/r"],
+        worker_name=None,
+        source_env={"GITHUB_TOKEN": "ghp_xyz"},
+    )
+    assert env["GITHUB_TOKEN"] == "ghp_xyz"
+    assert env["PIONEER_GITHUB_TOKEN"] == "ghp_xyz"
+
+
+def test_spawn_worker_env_uses_worker_backend_url():
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=[],
+        worker_name=None,
+        source_env={"WORKER_BACKEND_URL": "http://custom-backend:9000"},
+    )
+    assert env["PIONEER_BACKEND_URL"] == "http://custom-backend:9000"
+
+
+def test_spawn_worker_env_default_backend_url():
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(guild_id="g1", repos=[], worker_name=None, source_env={})
+    assert env["PIONEER_BACKEND_URL"] == "http://backend:8000"
+
+
 def test_guild_task_list(client):
     """GET /guilds/{id}/tasks lists tasks across all workers in the guild."""
     test_client, db_path = client

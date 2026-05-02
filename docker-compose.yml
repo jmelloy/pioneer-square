@@ -12,6 +12,9 @@ services:
       GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-http://localhost:8000/auth/github/callback}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Forwarded to spawned worker containers so they skip the interactive
+      # `claude setup-token` flow. Generate one with `claude setup-token`.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       WORKER_IMAGE: ${WORKER_IMAGE:-pioneer-square-worker}
       WORKER_BACKEND_URL: ${WORKER_BACKEND_URL:-http://backend:8000}
@@ -42,6 +45,7 @@ services:
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-INFO}
     volumes:
       # Provide pioneer-worker.toml at ./worker/pioneer-worker.toml
