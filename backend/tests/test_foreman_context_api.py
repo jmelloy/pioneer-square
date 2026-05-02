@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from helpers import insert_guild, make_auth_token
+from helpers import insert_guild, insert_member, make_auth_token
 
 
 def _insert_foreman_turn(
@@ -76,6 +76,8 @@ def test_get_foreman_context_returns_only_requesting_users_turns(client):
     insert_guild(db_path, "g-scope")
     token_a = make_auth_token(db_path, user_id="user-alice", username="alice")
     token_b = make_auth_token(db_path, user_id="user-bob", username="bob")
+    insert_member(db_path, "g-scope", "user-alice", role="member")
+    insert_member(db_path, "g-scope", "user-bob", role="member")
 
     _insert_foreman_turn(db_path, "g-scope", "user-alice", "user", "Hello from Alice")
     _insert_foreman_turn(db_path, "g-scope", "user-bob", "user", "Hello from Bob")
@@ -121,6 +123,8 @@ def test_clear_foreman_context_only_clears_requesting_users_turns(client):
     insert_guild(db_path, "g-clear")
     token_a = make_auth_token(db_path, user_id="user-alice2", username="alice2")
     token_b = make_auth_token(db_path, user_id="user-bob2", username="bob2")
+    insert_member(db_path, "g-clear", "user-alice2", role="member")
+    insert_member(db_path, "g-clear", "user-bob2", role="member")
 
     _insert_foreman_turn(db_path, "g-clear", "user-alice2", "user", "Alice message")
     _insert_foreman_turn(db_path, "g-clear", "user-bob2", "user", "Bob message")

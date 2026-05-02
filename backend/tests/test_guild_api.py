@@ -9,22 +9,47 @@ sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, make_auth_token
 
 
-def test_get_guild_not_found(client):
+def test_get_guild_requires_auth(client):
     test_client, _ = client
-    resp = test_client.get("/guilds/doesnotexist")
-    assert resp.status_code == 404
+    resp = test_client.get("/guilds/anything")
+    assert resp.status_code == 401
+
+
+def test_get_guild_not_found(client):
+    test_client, db_path = client
+    token = make_auth_token(db_path)
+    resp = test_client.get(
+        "/guilds/doesnotexist",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code in (403, 404)
 
 
 def test_get_guild_found(client):
     test_client, db_path = client
     insert_guild(db_path, "abc123", name="My Guild")
-    resp = test_client.get("/guilds/abc123")
+    token = make_auth_token(db_path)
+    resp = test_client.get(
+        "/guilds/abc123",
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == "abc123"
     assert data["name"] == "My Guild"
     assert "agents" in data
     assert "messages" in data
+
+
+def test_get_guild_forbidden_for_non_member(client):
+    test_client, db_path = client
+    insert_guild(db_path, "private01", name="Private")
+    other_token = make_auth_token(db_path, user_id="other-user", username="outsider")
+    resp = test_client.get(
+        "/guilds/private01",
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert resp.status_code == 403
 
 
 def test_create_guild_requires_auth(client):
@@ -98,7 +123,7 @@ def test_update_guild_name(client):
     assert patch_resp.status_code == 200
     assert patch_resp.json()["name"] == "New Name"
 
-    get_resp = test_client.get(f"/guilds/{guild_id}")
+    get_resp = test_client.get(f"/guilds/{guild_id}", headers=headers)
     assert get_resp.json()["name"] == "New Name"
 
 
@@ -110,7 +135,7 @@ def test_update_guild_not_found(client):
         json={"name": "X"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 404
+    assert resp.status_code in (403, 404)
 
 
 def test_update_guild_primary_repo(client):
@@ -129,7 +154,7 @@ def test_update_guild_primary_repo(client):
     assert patch_resp.status_code == 200
     assert patch_resp.json()["primary_repo"] == "owner/myrepo"
 
-    get_resp = test_client.get(f"/guilds/{guild_id}")
+    get_resp = test_client.get(f"/guilds/{guild_id}", headers=headers)
     assert get_resp.json()["primary_repo"] == "owner/myrepo"
 
 

@@ -11,6 +11,10 @@ guild_id = "abc123"
 # Optional human-readable name shown in the UI. Auto-generated if absent.
 # worker_name = "Builder"
 
+# Identity of the human this worker runs on behalf of. Either a numeric
+# GitHub user id (as a string) or a github_login. Also reads WORKER_USER.
+# user = "octocat"
+
 # Pull repos in the background every N seconds while idle.
 pull_interval = 300
 

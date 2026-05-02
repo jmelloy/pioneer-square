@@ -30,6 +30,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Identity
     parser.add_argument("--worker-name", help="Display name for this worker.")
+    parser.add_argument(
+        "--user",
+        help=(
+            "User identity to attribute this worker's actions to "
+            "(numeric GitHub id or login; also reads WORKER_USER env var)."
+        ),
+    )
 
     # GitHub
     parser.add_argument("--github-token", help="GitHub personal access token.")
@@ -92,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             "backend_url": args.backend_url,
             "guild_id": args.guild_id,
             "worker_name": args.worker_name,
+            "user": args.user,
             "github_token": args.github_token,
             "repos": args.repos,
             "repos_dir": args.repos_dir,

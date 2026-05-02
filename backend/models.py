@@ -57,6 +57,9 @@ class Worker(Base):
     state = Column(Text, nullable=False, server_default="idle")
     created_at = Column(Text, nullable=False)
     last_seen = Column(Text, nullable=True)
+    # Identity of the human user this worker process runs on behalf of.
+    # NULL for legacy/unattributed workers.
+    user_id = Column(Text, ForeignKey("users.id"), nullable=True)
 
 
 class Task(Base):
@@ -97,6 +100,32 @@ class UserSession(Base):
 
     token = Column(Text, primary_key=True)
     github_user_id = Column(Text, ForeignKey("github_tokens.github_user_id"), nullable=False)
+    created_at = Column(Text, nullable=False)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    # Canonical user id == GitHub numeric id, kept as Text for FK compatibility
+    # with the existing github_user_id columns (messages.user_id,
+    # guilds.github_user_id, etc).
+    id = Column(Text, primary_key=True)
+    github_id = Column(Text, nullable=False, unique=True)
+    github_login = Column(Text)
+    email = Column(Text)
+    display_name = Column(Text)
+    avatar_url = Column(Text)
+    created_at = Column(Text, nullable=False)
+    updated_at = Column(Text, nullable=False)
+
+
+class GuildMember(Base):
+    __tablename__ = "guild_members"
+
+    guild_id = Column(Text, ForeignKey("guilds.id"), primary_key=True)
+    user_id = Column(Text, ForeignKey("users.id"), primary_key=True)
+    # owner | member | viewer
+    role = Column(Text, nullable=False, server_default="member")
     created_at = Column(Text, nullable=False)
 
 
