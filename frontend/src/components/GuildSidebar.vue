@@ -93,7 +93,7 @@
         <!-- Worker row -->
         <div class="worker-row" :class="worker.state" @click="agentsStore.selectWorker(worker.id)">
           <span class="worker-dot" :class="'wdot-' + worker.state"></span>
-          <span class="worker-row-name">{{ worker.id }}</span>
+          <span class="worker-row-name">{{ worker.name }}</span>
           <span class="worker-row-state">{{ worker.state }}</span>
         </div>
         <!-- Agent rows under this worker -->

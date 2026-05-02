@@ -572,12 +572,18 @@ class Worker:
         split = 2 + sum(ord(c) for c in raw) % 3
         droid = f"{raw[:split]}-{raw[split:]}"
         name = self.cfg.worker_name or f"{host_prefix}/{droid}"
-        for slot in self.slots:
+        # Each slot needs a distinct display name. The frontend derives the
+        # worker name from any agent name by stripping a trailing /N suffix
+        # (see frontend/src/stores/agents.ts), so the convention is
+        # "<worker-name>/<slot-index>".
+        multi_slot = len(self.slots) > 1
+        for idx, slot in enumerate(self.slots, start=1):
+            agent_name = f"{name}/{idx}" if multi_slot else name
             await self._send(
                 {
                     "type": "join",
                     "agentId": slot.agent_id,
-                    "agentName": name,
+                    "agentName": agent_name,
                     "agentType": "worker",
                     "workerId": self.cfg.worker_id,
                 }
