@@ -1,3 +1,15 @@
+# ---- frontend build stage ----
+FROM node:24-slim AS frontend-build
+
+WORKDIR /frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+# ---- backend stage ----
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -10,10 +22,13 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
+COPY backend/requirements.txt ./
 RUN pip install -r requirements.txt
 
-COPY . .
+COPY backend/ ./
+
+# SPA assets served by FastAPI's StaticFiles mount in main.py
+COPY --from=frontend-build /frontend/dist ./static
 
 ENV DB_PATH=/data/pioneer_square.db
 RUN mkdir -p /data
