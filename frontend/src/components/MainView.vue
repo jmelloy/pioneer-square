@@ -30,7 +30,7 @@
         @click="onWorkerTabClick($event, worker.id)"
       >
         <span class="state-dot" :class="worker.state"></span>
-        <span class="tab-label">{{ worker.id }}</span>
+        <span class="tab-label">{{ worker.name }}</span>
         <span class="tab-close">×</span>
       </button>
       <!-- Task tabs — only shown when explicitly opened -->

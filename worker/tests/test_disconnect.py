@@ -113,6 +113,37 @@ async def test_on_ws_reconnect_resends_join_and_register():
     assert {m["agentId"] for m in join_msgs} == {s.agent_id for s in worker.slots}
 
 
+async def test_join_assigns_distinct_names_per_slot():
+    """Each agent slot must get a distinct name so the UI can tell them apart.
+    The frontend strips a trailing /N to derive the worker name, so multi-slot
+    workers must send "<worker-name>/<slot-index>" per slot."""
+    cfg = _make_cfg(worker_name="mybot")
+    cfg.max_agents = 3
+    worker = Worker(cfg)
+    sent: list[dict] = []
+    worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
+
+    await worker._join()
+
+    join_msgs = [m for m in sent if m.get("type") == "join"]
+    names = [m["agentName"] for m in join_msgs]
+    assert names == ["mybot/1", "mybot/2", "mybot/3"], names
+
+
+async def test_join_single_slot_uses_bare_worker_name():
+    """A single-slot worker shouldn't get a noisy /1 suffix."""
+    cfg = _make_cfg(worker_name="solo")
+    cfg.max_agents = 1
+    worker = Worker(cfg)
+    sent: list[dict] = []
+    worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
+
+    await worker._join()
+
+    join_msgs = [m for m in sent if m.get("type") == "join"]
+    assert [m["agentName"] for m in join_msgs] == ["solo"]
+
+
 async def test_on_ws_reconnect_skips_join_before_auth():
     """A WS reconnect during the auth window must not register agents early."""
     worker = Worker(_make_cfg())
