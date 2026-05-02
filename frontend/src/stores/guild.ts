@@ -75,7 +75,7 @@ export const useGuildStore = defineStore('guild', () => {
 
   async function joinGuild(guildId: string): Promise<Guild | null> {
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}`)
+      const res = await fetch(`${API_BASE}/guilds/${guildId}`, { headers: _authHeaders() })
       if (!res.ok) throw new Error('Guild not found')
       const guild: Guild = await res.json()
       currentGuild.value = guild

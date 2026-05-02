@@ -247,7 +247,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
   async function fetchWorkerLogs(guildId: string, workerId: string) {
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?worker_id=${workerId}`)
+      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?worker_id=${workerId}`, { headers: _authHeaders() })
       if (res.ok) {
         const raw = await res.json()
         workerLogs.value[workerId] = raw.map((r: any) => ({
@@ -263,7 +263,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
   async function fetchAgentLogs(guildId: string, agentId: string) {
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?agent_id=${agentId}`)
+      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?agent_id=${agentId}`, { headers: _authHeaders() })
       if (res.ok) {
         const raw = await res.json()
         const historical: LogEntry[] = raw.map((r: any) => ({
