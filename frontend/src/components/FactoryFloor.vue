@@ -1,201 +1,121 @@
 <template>
-  <div class="factory-floor" ref="floorEl">
-    <!-- Background grid -->
+  <div class="factory-floor" ref="floorEl" :class="[`size-${floorSize}`, `density-${rowDensity}`]">
+    <!-- Background atmosphere — pared down -->
     <div class="floor-grid"></div>
 
-    <!-- Warm floating sparkles -->
     <div class="sparkle-field">
       <div
         class="sparkle"
-        v-for="n in 14"
+        v-for="n in 6"
         :key="`sp${n}`"
-        :style="`left: ${(n * 73 + 11) % 93}%; top: ${(n * 59 + 17) % 80}%; font-size: ${8 + (n % 3) * 3}px; animation-delay: ${((n * 0.37) % 2.8).toFixed(1)}s; animation-duration: ${2.5 + (n % 3) * 0.8}s;`"
-      >{{ ['✦','★','✧','⋆','✩'][n % 5] }}</div>
+        :style="`left: ${(n * 79 + 11) % 92}%; top: ${(n * 53 + 9) % 88}%; font-size: ${9 + (n % 2) * 3}px; animation-delay: ${((n * 0.41) % 2.6).toFixed(1)}s; animation-duration: ${3 + (n % 3) * 0.6}s;`"
+      >{{ ['✦','★','✧','⋆'][n % 4] }}</div>
     </div>
 
-    <!-- Ceiling pipes -->
-    <div class="ceiling-pipe pipe-h pipe1"></div>
-    <div class="ceiling-pipe pipe-h pipe2"></div>
-    <div class="ceiling-pipe pipe-v pipe3"></div>
-    <div class="ceiling-pipe pipe-v pipe4"></div>
-
-    <!-- Pipe joints -->
+    <div class="ceiling-pipe"></div>
     <div class="pipe-joint j1"></div>
     <div class="pipe-joint j2"></div>
 
-    <!-- Steam effects -->
     <div class="steam-vent vent1">
-      <div class="steam-particle" v-for="n in 4" :key="n" :style="`--delay: ${n * 0.3}s`"></div>
+      <div class="steam-particle" v-for="n in 3" :key="n" :style="`--delay: ${n * 0.4}s`"></div>
     </div>
     <div class="steam-vent vent2">
-      <div class="steam-particle" v-for="n in 4" :key="n" :style="`--delay: ${n * 0.4}s`"></div>
-    </div>
-    <div class="steam-vent vent3">
       <div class="steam-particle" v-for="n in 3" :key="n" :style="`--delay: ${n * 0.5}s`"></div>
     </div>
 
-    <!-- Gears -->
-    <div class="gear gear-large g1">⚙</div>
-    <div class="gear gear-medium g2">⚙</div>
-    <div class="gear gear-small g3">⚙</div>
-    <div class="gear gear-medium g4">⚙</div>
-    <div class="gear gear-small g5">⚙</div>
+    <div class="ambient-gear g1">⚙</div>
+    <div class="ambient-gear g2">⚙</div>
 
-    <!-- Furnace -->
-    <div class="furnace">
-      <div class="furnace-body">
-        <div class="furnace-door">
-          <div class="furnace-fire">🔥</div>
-        </div>
-        <div class="furnace-gauge">
-          <div class="gauge-needle"></div>
-        </div>
-      </div>
-      <div class="furnace-chimney">
-        <div class="smoke-particle" v-for="n in 5" :key="n" :style="`--delay: ${n * 0.6}s`"></div>
-      </div>
-      <div class="furnace-label">FURNACE</div>
+    <!-- Header -->
+    <div class="factory-info">
+      <span class="factory-title">⚙ PIONEER SQUARE WORKSHOP ⚙</span>
+      <span class="agent-count">Agents: {{ agents.length }}</span>
     </div>
 
-    <!-- Conveyor belt -->
-    <div class="conveyor-belt">
-      <div class="belt-track">
-        <div class="belt-item" v-for="(item, n) in beltItems" :key="n" :style="`--offset: ${n * 60}px`">{{ item }}</div>
-      </div>
-      <div class="belt-roller left"></div>
-      <div class="belt-roller right"></div>
-    </div>
-
-    <!-- Work stations — one per active task -->
-    <div
-      v-for="(station, i) in visibleStations"
-      :key="i"
-      class="work-station"
-      :style="`left: ${station.x}px; top: ${station.y}px`"
-      :class="{ occupied: station.task }"
-    >
-      <div class="station-desk">
-        <div class="station-monitor">
-          <div class="monitor-screen">
-            <div v-if="station.task" class="screen-active">
-              <div class="screen-line" v-for="l in 3" :key="l"></div>
-            </div>
-            <div v-else class="screen-idle">--</div>
+    <!-- Tasks table — each row is a workbench -->
+    <div class="task-table" :style="`top: ${TABLE_TOP}px; left: ${TABLE_LEFT}px; width: ${tableWidth}px;`">
+      <div
+        v-for="row in taskRows"
+        :key="row.task ? row.task.id : `empty-${row.index}`"
+        class="task-row"
+        :class="{ occupied: !!row.task, [`state-${row.task?.state || 'empty'}`]: true }"
+        :style="`height: ${rowHeight}px;`"
+      >
+        <div class="row-header">
+          <div class="row-num">{{ String(row.index + 1).padStart(2, '0') }}</div>
+          <div class="row-title">{{ row.task ? truncate(row.task.name || row.task.id, 28) : '— vacant bench —' }}</div>
+          <div v-if="row.task" class="row-state" :class="`state-${row.task.state}`">
+            {{ stateLabel(row.task.state) }}
           </div>
         </div>
-        <div class="station-table"></div>
+
+        <div class="row-bench">
+          <div class="bench-rail"></div>
+          <div class="bench-bolts">
+            <span class="bolt" v-for="n in 6" :key="n"></span>
+          </div>
+
+          <div
+            v-for="st in STATIONS"
+            :key="st.key"
+            class="bench-station"
+            :class="[`station-${st.key}`, { active: row.activityKey === st.key }]"
+            :style="`left: ${st.frac * 100}%`"
+          >
+            <div class="station-icon">
+              <!-- Archive -->
+              <template v-if="st.component === 'archive'">
+                <span class="mini-book b1"></span>
+                <span class="mini-book b2"></span>
+                <span class="mini-book b3"></span>
+                <span class="mini-book b4"></span>
+              </template>
+              <!-- Scrying orb -->
+              <template v-else-if="st.component === 'orb'">
+                <span class="mini-orb-glow"></span>
+                <span class="mini-orb">🔮</span>
+              </template>
+              <!-- Telegraph -->
+              <template v-else-if="st.component === 'telegraph'">
+                <span class="mini-tg-body">
+                  <span class="mini-tg-key"></span>
+                  <span class="mini-tg-spark"></span>
+                </span>
+              </template>
+              <!-- Think tank -->
+              <template v-else-if="st.component === 'tank'">
+                <span class="mini-tank">
+                  <span class="mini-bubble" v-for="n in 2" :key="n" :style="`--delay: ${n * 0.4}s`"></span>
+                </span>
+              </template>
+              <!-- Engine -->
+              <template v-else-if="st.component === 'engine'">
+                <span class="mini-engine">⚙</span>
+              </template>
+              <!-- Forge -->
+              <template v-else-if="st.component === 'forge'">
+                <span class="mini-forge">🔥</span>
+              </template>
+            </div>
+            <div class="station-label">{{ st.label }}</div>
+          </div>
+        </div>
       </div>
-      <div class="station-label">{{ station.task ? truncate(station.task.name, 10) : `WS-${i + 1}` }}</div>
-      <div v-if="station.task" class="task-badge" :class="`state-${station.task.state}`">
-        {{ stateLabel(station.task.state) }}
-      </div>
     </div>
 
-    <!-- Points of interest -->
-    <div class="poi tool-cabinet">
-      <div class="tc-body">
-        <div class="tc-drawer" v-for="n in 3" :key="n"></div>
-      </div>
-      <div class="poi-label">TOOLS</div>
+    <!-- Break room (idle agents lounge here) -->
+    <div class="break-room" :style="`top: ${breakRoomTop}px; left: ${TABLE_LEFT}px; width: ${tableWidth}px;`">
+      <div class="break-label">⏚ BREAK ROOM ⏚</div>
     </div>
 
-    <div class="poi bulletin-board">
-      <div class="bb-frame">
-        <div class="bb-pin" v-for="n in 3" :key="n" :style="`left:${8+n*18}px;top:6px`"></div>
-        <div class="bb-note n1"></div>
-        <div class="bb-note n2"></div>
-        <div class="bb-note n3"></div>
-      </div>
-      <div class="poi-label">BOARD</div>
-    </div>
-
-    <div class="poi water-cooler">
-      <div class="wc-bottle"></div>
-      <div class="wc-base">
-        <div class="wc-tap"></div>
-      </div>
-      <div class="wc-drop" v-for="n in 2" :key="n" :style="`--delay:${n*0.6}s`"></div>
-      <div class="poi-label">H₂O</div>
-    </div>
-
-    <div class="poi coffee-maker" :style="`left: ${coffeePotPos.x}px; top: ${coffeePotPos.y}px`">
-      <div class="cm-body">
-        <div class="cm-tank"></div>
-        <div class="cm-spout"></div>
-        <div class="cm-cup">☕</div>
-      </div>
-      <div class="steam-particle" v-for="n in 2" :key="n" :style="`--delay:${n*0.45}s`"></div>
-      <div class="poi-label">COFFEE</div>
-    </div>
-
-    <!-- Activity points of interest — agents walk here based on what Claude is doing -->
-
-    <!-- Scrying Orb — web search -->
-    <div class="poi activity-poi scrying-orb" :style="`left: ${ACTIVITY_POIS['searching'].x - 18}px; top: ${ACTIVITY_POIS['searching'].y - 40}px`">
-      <div class="orb-glow"></div>
-      <div class="orb-sphere">🔮</div>
-      <div class="orb-base"></div>
-      <div class="poi-label">SCRYING ORB</div>
-    </div>
-
-    <!-- Archive — reading files -->
-    <div class="poi activity-poi archive" :style="`left: ${ACTIVITY_POIS['reading'].x - 24}px; top: ${ACTIVITY_POIS['reading'].y - 36}px`">
-      <div class="archive-shelf">
-        <div class="book b1"></div>
-        <div class="book b2"></div>
-        <div class="book b3"></div>
-        <div class="book b4"></div>
-      </div>
-      <div class="poi-label">ARCHIVE</div>
-    </div>
-
-    <!-- Telegraph — web fetch -->
-    <div class="poi activity-poi telegraph" :style="`left: ${ACTIVITY_POIS['fetching'].x - 18}px; top: ${ACTIVITY_POIS['fetching'].y - 38}px`">
-      <div class="tg-body">
-        <div class="tg-key"></div>
-        <div class="tg-spark" v-for="n in 2" :key="n" :style="`--delay: ${n * 0.5}s`"></div>
-      </div>
-      <div class="tg-wire"></div>
-      <div class="poi-label">TELEGRAPH</div>
-    </div>
-
-    <!-- Think Tank — extended thinking -->
-    <div class="poi activity-poi think-tank" :style="`left: ${ACTIVITY_POIS['thinking'].x - 22}px; top: ${ACTIVITY_POIS['thinking'].y - 44}px`">
-      <div class="tank-vessel">
-        <div class="tank-bubble" v-for="n in 3" :key="n" :style="`--delay: ${n * 0.35}s; --xoff: ${(n - 2) * 5}px`"></div>
-      </div>
-      <div class="tank-gauge"></div>
-      <div class="poi-label">THINK TANK</div>
-    </div>
-
-    <!-- Engine Room marker — running bash -->
-    <div class="poi activity-poi engine-room" :style="`left: ${ACTIVITY_POIS['running'].x - 18}px; top: ${ACTIVITY_POIS['running'].y - 20}px`">
-      <div class="engine-icon">⚙</div>
-      <div class="poi-label">ENGINE</div>
-    </div>
-
-    <!-- The Forge marker — editing/writing code (near furnace) -->
-    <div class="poi activity-poi the-forge" :style="`left: ${ACTIVITY_POIS['editing'].x - 16}px; top: ${ACTIVITY_POIS['editing'].y - 20}px`">
-      <div class="forge-icon">🔥</div>
-      <div class="poi-label">THE FORGE</div>
-    </div>
-
-    <!-- Floating agents that walk to their task station or wander when idle -->
+    <!-- Agents — single overlay; positioned absolutely over the floor -->
     <div
       v-for="agent in agents"
       :key="agent.id"
       class="floating-agent"
-      :style="`left: ${agentPos(agent.id).x}px; top: ${agentPos(agent.id).y}px; --walk-dur: ${agentDuration[agent.id] || 1.5}s`"
+      :style="`left: ${agentPos(agent.id).x}px; top: ${agentPos(agent.id).y}px; --walk-dur: ${agentDuration[agent.id] || 1.5}s;`"
     >
-      <div v-if="agentChatting[agent.id]" class="chat-bubble">💬</div>
-      <AgentAvatar :agent="agent" :walking="agentWalking[agent.id]" />
-      <div class="agent-nametag">{{ agent.name }}</div>
-    </div>
-
-    <!-- Info overlay -->
-    <div class="factory-info">
-      <span class="factory-title">⚙ PIONEER SQUARE WORKSHOP ⚙</span>
-      <span class="agent-count">Agents: {{ agents.length }}</span>
+      <AgentAvatar :agent="agent" :walking="!!agentWalking[agent.id]" />
     </div>
 
     <!-- Ticker tape -->
@@ -213,339 +133,246 @@
 import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
-import type { Agent, Task } from '../types'
+import type { Agent, AgentActivity, Task } from '../types'
 import AgentAvatar from './AgentAvatar.vue'
 
-interface ActivityPoi { x: number; y: number; label: string }
-
 interface Position { x: number; y: number }
-interface Station extends Position { task: Task | null }
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
 const agents = computed(() => agentsStore.agents.filter(a => a.state !== 'offline'))
 
-const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
+// ── Stations on each bench ─────────────────────────────────
+const STATIONS = [
+  { key: 'reading',   label: 'ARCHIVE',    frac: 0.10, component: 'archive' },
+  { key: 'searching', label: 'SCRYING',    frac: 0.25, component: 'orb' },
+  { key: 'fetching',  label: 'TELEGRAPH',  frac: 0.40, component: 'telegraph' },
+  { key: 'thinking',  label: 'THINK TANK', frac: 0.56, component: 'tank' },
+  { key: 'running',   label: 'ENGINE',     frac: 0.72, component: 'engine' },
+  { key: 'editing',   label: 'FORGE',      frac: 0.88, component: 'forge' },
+] as const
 
-// ── Canvas dimensions ──────────────────────────────────────
+type StationKey = typeof STATIONS[number]['key']
+
+// `planning` shares the archive station with `reading`.
+const ACTIVITY_TO_STATION: Record<AgentActivity, StationKey> = {
+  reading: 'reading',
+  planning: 'reading',
+  searching: 'searching',
+  fetching: 'fetching',
+  thinking: 'thinking',
+  running: 'running',
+  editing: 'editing',
+}
+
+// ── Layout geometry ────────────────────────────────────────
+const CHAT_PANE_W   = 360
+const TABLE_LEFT    = 28
+const TABLE_TOP     = 56
+const ROW_GAP       = 8
+const MAX_ROWS      = 4
+const TICKER_H      = 28
+const BREAK_PAD     = 20
+const BREAK_ROOM_H  = 86
+const ROW_H_MIN     = 70
+const ROW_H_MAX     = 124
+
 const floorEl = ref<HTMLElement | null>(null)
-const floorW  = ref(800)
+const floorW  = ref(900)
 const floorH  = ref(600)
 
 function updateFloorSize() {
   if (floorEl.value) {
-    floorW.value = floorEl.value.clientWidth  || 800
+    floorW.value = floorEl.value.clientWidth  || 900
     floorH.value = floorEl.value.clientHeight || 600
   }
 }
 
-// ── Desk layout ────────────────────────────────────────────
-// 3 columns × 2 rows spread proportionally across the usable canvas.
-// Usable width excludes the foreman chat pane (fixed 360px on the right)
-// so desks stay clear of its boundary.
-// Fixed per-desk jitter (seeded values) gives an organic, stable look.
-const CHAT_PANE_W   = 360
-const STATION_W     = 100
-const COL_FRACS     = [0.08, 0.42, 0.78]
-const ROW_FRACS     = [0.22, 0.60]
-const JITTER        = [[8,-5],[-6,12],[14,-8],[-10,7],[5,10],[-12,-6]]
-const GAP_X_FRACS   = [0.01, 0.25, 0.55, 0.87]
-
-const usableW = computed(() =>
-  Math.max(floorW.value - CHAT_PANE_W - STATION_W, 300)
-)
-
-const stationPositions = computed(() => {
-  const W = usableW.value, H = floorH.value
-  return ROW_FRACS.flatMap((yf, ri) =>
-    COL_FRACS.map((xf, ci) => ({
-      x: Math.round(xf * W) + JITTER[ri * 3 + ci][0],
-      y: Math.round(yf * H) + JITTER[ri * 3 + ci][1],
-    }))
-  )
+// Container-aware size classes — `sm` collapses the chat-pane reservation
+// since the chat pane is hidden on narrow viewports.
+const floorSize = computed<'sm' | 'md' | 'lg'>(() => {
+  if (floorW.value < 720) return 'sm'
+  if (floorW.value < 1100) return 'md'
+  return 'lg'
 })
 
-// ── Walkable region — full canvas minus small margins ──────
-const WALK_AREA = computed(() => ({
-  xMin: 15,
-  xMax: usableW.value + STATION_W - 15,
-  yMin: 72,
-  yMax: floorH.value - 30, // leave room for ticker tape (28px)
-}))
-
-// Horizontal desk bands that agents must route around
-const ROW1 = computed(() => ({
-  yMin: Math.round(ROW_FRACS[0] * floorH.value) - 18,
-  yMax: Math.round(ROW_FRACS[0] * floorH.value) + 82,
-}))
-const ROW2 = computed(() => ({
-  yMin: Math.round(ROW_FRACS[1] * floorH.value) - 18,
-  yMax: Math.round(ROW_FRACS[1] * floorH.value) + 82,
-}))
-
-// Clear vertical lanes between desk columns
-const GAP_XS = computed(() =>
-  GAP_X_FRACS.map(f => Math.round(f * usableW.value))
-)
-
-// Coffee maker sits beside the rightmost top-row desk (index 2)
-const coffeePotPos = computed(() => {
-  const s = stationPositions.value[2]
-  return { x: s.x + 108, y: s.y - 5 }
+const tableWidth = computed(() => {
+  const reservedRight = floorSize.value === 'sm' ? 0 : CHAT_PANE_W
+  return Math.max(floorW.value - reservedRight - TABLE_LEFT * 2, 360)
 })
 
-// Points of interest — idle robots walk here occasionally
-const POIS = computed(() => [
-  { id: 'toolbox', x: 26,  y: 88 },
-  { id: 'board',   x: 318, y: 88 },
-  { id: 'cooler',  x: 26,  y: Math.round(floorH.value * 0.42) },
-  { id: 'coffee',  x: coffeePotPos.value.x + 5, y: coffeePotPos.value.y + 30 },
-])
+const visibleRowCount = computed(() => {
+  const active = activeTasks.value.length
+  return Math.max(2, Math.min(MAX_ROWS, active || 2))
+})
 
-// Activity POIs — agents walk here based on what Claude is doing
-const ACTIVITY_POIS = computed<Record<string, ActivityPoi>>(() => {
-  const W = usableW.value + STATION_W
-  const H = floorH.value
-  return {
-    reading:  { x: Math.round(W * 0.30), y: Math.round(H * 0.10), label: 'ARCHIVE' },
-    editing:  { x: Math.round(W * 0.88), y: Math.round(H * 0.12), label: 'THE FORGE' },
-    running:  { x: Math.round(W * 0.80), y: Math.round(H * 0.44), label: 'ENGINE' },
-    searching:{ x: Math.round(W * 0.05), y: Math.round(H * 0.44), label: 'SCRYING ORB' },
-    fetching: { x: Math.round(W * 0.56), y: Math.round(H * 0.09), label: 'TELEGRAPH' },
-    thinking: { x: Math.round(W * 0.50), y: Math.round(H * 0.50), label: 'THINK TANK' },
-    planning: { x: Math.round(W * 0.30), y: Math.round(H * 0.10), label: 'ARCHIVE' },
+// Row height auto-fits remaining vertical space so 1–4 rows always look
+// well-proportioned without scrolling. Clamped between MIN/MAX.
+const rowHeight = computed(() => {
+  const reserved = TABLE_TOP + BREAK_PAD + BREAK_ROOM_H + TICKER_H + 16
+  const available = Math.max(160, floorH.value - reserved)
+  const n = visibleRowCount.value
+  const candidate = (available - (n - 1) * ROW_GAP) / n
+  return Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, Math.round(candidate)))
+})
+
+// Row density class drives smaller stations / shorter labels when packed.
+const rowDensity = computed<'tall' | 'medium' | 'short'>(() => {
+  const h = rowHeight.value
+  if (h >= 100) return 'tall'
+  if (h >= 82)  return 'medium'
+  return 'short'
+})
+
+const tableHeight = computed(() =>
+  visibleRowCount.value * rowHeight.value + (visibleRowCount.value - 1) * ROW_GAP
+)
+
+const breakRoomTop = computed(() =>
+  TABLE_TOP + tableHeight.value + BREAK_PAD
+)
+
+const breakRoomHeight = computed(() =>
+  Math.max(60, floorH.value - breakRoomTop.value - TICKER_H - 8)
+)
+
+// ── Tasks → rows ───────────────────────────────────────────
+const activeTasks = computed<Task[]>(() =>
+  tasksStore.tasks.filter(t =>
+    !['done', 'failed', 'cancelled'].includes(t.state) &&
+    t.worker_id && t.worker_id !== 'foreman'
+  ).slice(0, MAX_ROWS)
+)
+
+interface TaskRow {
+  index: number
+  task: Task | null
+  agent: Agent | null
+  activityKey: StationKey | null
+}
+
+const taskRows = computed<TaskRow[]>(() => {
+  const tasks = activeTasks.value
+  const rows: TaskRow[] = []
+  for (let i = 0; i < visibleRowCount.value; i++) {
+    const task = tasks[i] || null
+    const agent = task ? agents.value.find(a => a.workerId === task.worker_id) || null : null
+    const activityKey = agent && agent.activity ? ACTIVITY_TO_STATION[agent.activity] : null
+    rows.push({ index: i, task, agent, activityKey })
   }
+  return rows
 })
 
-const visibleStations = computed<Station[]>(() => {
-  const active = tasksStore.tasks
-    .filter(t => !['done', 'failed'].includes(t.state) && t.worker_id && t.worker_id !== 'foreman')
-    .slice(0, 6)
-  return stationPositions.value.map((pos, i) => ({
-    ...pos,
-    task: active[i] || null,
-  }))
-})
+function rowYFor(rowIndex: number) {
+  return TABLE_TOP + rowIndex * (rowHeight.value + ROW_GAP)
+}
 
-// Reactive per-agent state (bound to template)
+function stationPos(rowIndex: number, key: StationKey): Position {
+  const station = STATIONS.find(s => s.key === key)!
+  const x = TABLE_LEFT + station.frac * tableWidth.value
+  const y = rowYFor(rowIndex) + rowHeight.value * 0.30
+  return { x, y }
+}
+
+function rowCenterPos(rowIndex: number): Position {
+  return {
+    x: TABLE_LEFT + tableWidth.value * 0.50,
+    y: rowYFor(rowIndex) + rowHeight.value * 0.30,
+  }
+}
+
+// ── Agent movement ─────────────────────────────────────────
 const agentPositions = reactive<Record<string, Position>>({})
 const agentWalking   = reactive<Record<string, boolean>>({})
-const agentDuration  = reactive<Record<string, number>>({}) // CSS transition seconds
-const agentChatting  = reactive<Record<string, boolean>>({})
-
-// Non-reactive walk queues and timers
-const agentWaypoints: Record<string, Position[]> = {}
+const agentDuration  = reactive<Record<string, number>>({})
 const agentTimers: Record<string, ReturnType<typeof setTimeout>> = {}
-const agentDestPoi: Record<string, string | null> = {}
-const prevActivityKey: Record<string, string> = {}
-
-const SOCIAL_POIS = new Set(['cooler', 'coffee'])
+const prevTargetKey: Record<string, string> = {}
 
 function agentPos(id: string): Position {
-  return agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
+  return agentPositions[id] || { x: TABLE_LEFT + 60, y: TABLE_TOP + rowHeight.value }
 }
 
-// ── Pathfinding helpers ────────────────────────────────────
-
-function getYZone(y: number) {
-  const r1 = ROW1.value, r2 = ROW2.value
-  if (y < r1.yMin) return 'top'
-  if (y < r1.yMax) return 'row1'
-  if (y < r2.yMin) return 'mid'
-  if (y < r2.yMax) return 'row2'
-  return 'bot'
+function rowForAgent(agent: Agent): TaskRow | null {
+  if (!agent.workerId) return null
+  return taskRows.value.find(r => r.task && r.task.worker_id === agent.workerId) || null
 }
 
-function closestGapX(x: number) {
-  return GAP_XS.value.reduce((best, gx) => Math.abs(gx - x) < Math.abs(best - x) ? gx : best)
+function isWorking(agent: Agent) {
+  return !['idle', 'offline'].includes(agent.state)
 }
 
-// Returns a list of {x,y} waypoints from (x1,y1) to (x2,y2) that avoid station rows.
-// Within the same clear zone the path is direct (one segment).
-// Cross-zone paths route through the nearest column gap: H → V → H (three straight segments max).
-function computeWaypoints(x1: number, y1: number, x2: number, y2: number): Position[] {
-  const sz = getYZone(y1)
-  const ez = getYZone(y2)
-
-  if (sz === ez && sz !== 'row1' && sz !== 'row2') {
-    return [{ x: x2, y: y2 }]
+function targetForAgent(agent: Agent): Position {
+  const row = rowForAgent(agent)
+  if (row && isWorking(agent)) {
+    const key = row.activityKey
+    return key ? stationPos(row.index, key) : rowCenterPos(row.index)
   }
-
-  const gx = closestGapX((x1 + x2) / 2)
-  const pts: Position[] = []
-  if (Math.abs(x1 - gx) > 12) pts.push({ x: gx, y: y1 })
-  if (Math.abs(y1 - y2) > 12) pts.push({ x: gx, y: y2 })
-  pts.push({ x: x2, y: y2 })
-  return pts
+  // idle: a roaming spot in the break room
+  return randomBreakRoomPos(agent.id)
 }
 
-function randomInClearZone(): Position {
-  const { xMin, xMax, yMin: walkYMin, yMax: walkYMax } = WALK_AREA.value
-  const { yMin: r1Min, yMax: r1Max } = ROW1.value
-  const { yMin: r2Min, yMax: r2Max } = ROW2.value
-  const zones = [
-    { yMin: walkYMin,  yMax: r1Min - 2 },
-    { yMin: r1Max + 2, yMax: r2Min - 2 },
-    { yMin: r2Max + 2, yMax: walkYMax  },
-  ].filter(z => z.yMax > z.yMin + 10)
-  if (zones.length === 0) return { x: (xMin + xMax) / 2, y: (walkYMin + walkYMax) / 2 }
-  const z = zones[Math.floor(Math.random() * zones.length)]
-  return {
-    x: xMin + Math.random() * (xMax - xMin),
-    y: z.yMin + Math.random() * (z.yMax - z.yMin),
+function targetKey(agent: Agent): string {
+  const row = rowForAgent(agent)
+  if (row && isWorking(agent)) {
+    return `task:${row.task?.id ?? row.index}:${row.activityKey ?? 'center'}`
   }
+  return 'idle'
 }
 
-function pickDestination(): { pos: Position; poiId: string | null } {
-  const pois = POIS.value
-  if (Math.random() < 0.55) {
-    const p = pois[Math.floor(Math.random() * pois.length)]
-    return { pos: { x: p.x, y: p.y }, poiId: p.id }
-  }
-  return { pos: randomInClearZone(), poiId: null }
-}
-
-function walkDuration(x1: number, y1: number, x2: number, y2: number) {
-  const dist = Math.hypot(x2 - x1, y2 - y1)
-  return Math.max(0.65, dist / 130) // 130 px/s, min 0.65 s
-}
-
-// ── Walk step machine ──────────────────────────────────────
-
-function tryStartChat(id: string): boolean {
-  const myPoi = agentDestPoi[id]
-  if (!myPoi || !SOCIAL_POIS.has(myPoi)) return false
-  const partner = agents.value.find(a =>
-    a.id !== id &&
-    agentDestPoi[a.id] === myPoi &&
-    !agentWalking[a.id] &&
-    !agentChatting[a.id] &&
-    !isAgentAtWork(a)
-  )
-  if (!partner) return false
-  const dur = 10000 + Math.random() * 5000 // 10–15s
-  agentChatting[id] = true
-  agentChatting[partner.id] = true
-  clearTimeout(agentTimers[partner.id])
-  agentTimers[id] = setTimeout(() => {
-    agentChatting[id] = false
-    scheduleWalk(id)
-  }, dur)
-  agentTimers[partner.id] = setTimeout(() => {
-    agentChatting[partner.id] = false
-    scheduleWalk(partner.id)
-  }, dur + 250)
-  return true
-}
-
-function stepAgent(id: string) {
-  const queue = agentWaypoints[id]
-  if (!queue || queue.length === 0) {
-    agentWalking[id] = false
-    if (tryStartChat(id)) return
-    const rest = 4000 + Math.random() * 5000 // 4–9s general lingering
-    agentTimers[id] = setTimeout(() => scheduleWalk(id), rest)
-    return
-  }
-  const cur = agentPositions[id] || { x: Math.round(floorW.value / 2), y: Math.round(floorH.value / 2) }
-  const next = queue.shift()!
-  const dur = walkDuration(cur.x, cur.y, next.x, next.y)
+function moveAgent(id: string, target: Position) {
+  const cur = agentPositions[id] || target
+  const dist = Math.hypot(target.x - cur.x, target.y - cur.y)
+  const dur = Math.max(0.6, dist / 120)
   agentDuration[id] = dur
   agentWalking[id] = true
-  agentPositions[id] = next
-  agentTimers[id] = setTimeout(() => stepAgent(id), dur * 1000 + 50)
+  agentPositions[id] = target
+  clearTimeout(agentTimers[id])
+  agentTimers[id] = setTimeout(() => {
+    agentWalking[id] = false
+    const agent = agents.value.find(a => a.id === id)
+    if (agent && !isWorking(agent)) scheduleIdleStroll(id)
+  }, dur * 1000 + 60)
 }
 
-function scheduleWalk(id: string) {
-  const agent = agents.value.find(a => a.id === id)
-  if (!agent || isAgentAtWork(agent)) return
-  agentChatting[id] = false
-  const cur = agentPositions[id] || randomInClearZone()
-  const dest = pickDestination()
-  agentDestPoi[id] = dest.poiId
-  agentWaypoints[id] = computeWaypoints(cur.x, cur.y, dest.pos.x, dest.pos.y)
-  stepAgent(id)
+function scheduleIdleStroll(id: string) {
+  const linger = 3500 + Math.random() * 4000
+  clearTimeout(agentTimers[id])
+  agentTimers[id] = setTimeout(() => {
+    const agent = agents.value.find(a => a.id === id)
+    if (!agent || isWorking(agent)) return
+    moveAgent(id, randomBreakRoomPos(id))
+  }, linger)
 }
 
-// ── Agent / station helpers ────────────────────────────────
-
-function stationForAgent(agent: Agent) {
-  if (!agent.workerId) return null
-  return visibleStations.value.find(s => s.task && s.task.worker_id === agent.workerId) || null
+function randomBreakRoomPos(_id: string): Position {
+  const xMin = TABLE_LEFT + 30
+  const xMax = TABLE_LEFT + tableWidth.value - 30
+  const yMin = breakRoomTop.value + 24
+  const yMax = breakRoomTop.value + Math.max(28, breakRoomHeight.value - 16)
+  return {
+    x: xMin + Math.random() * (xMax - xMin),
+    y: yMin + Math.random() * Math.max(2, yMax - yMin),
+  }
 }
 
-function isAgentAtWork(agent: Agent) {
-  return !!stationForAgent(agent) && !['idle', 'offline'].includes(agent.state)
-}
-
-// Returns the pixel target an agent should walk to, or null if idle.
-// Activity POI takes priority over work station — the station is the task
-// indicator on the floor, but the POI is where the agent actually stands.
-function targetForAgent(agent: Agent): Position | null {
-  if (!isAgentAtWork(agent)) return null
-  const actPoi = agent.activity ? ACTIVITY_POIS.value[agent.activity] : undefined
-  if (actPoi) return { x: actPoi.x, y: actPoi.y }
-  const station = stationForAgent(agent)
-  return station ? { x: station.x + 25, y: station.y + 90 } : null
-}
-
-function activityKey(agent: Agent): string {
-  return `${isAgentAtWork(agent)}:${agent.activity ?? 'none'}`
-}
-
-function sendAgentTo(agent: Agent, target: Position) {
-  const cur = agentPositions[agent.id] || randomInClearZone()
-  clearTimeout(agentTimers[agent.id])
-  agentChatting[agent.id] = false
-  agentDestPoi[agent.id] = null
-  agentWaypoints[agent.id] = computeWaypoints(cur.x, cur.y, target.x, target.y)
-  stepAgent(agent.id)
-}
-
-function initAgent(agent: Agent) {
+function syncAgent(agent: Agent) {
+  const key = targetKey(agent)
+  if (prevTargetKey[agent.id] === key && agentPositions[agent.id]) return
+  prevTargetKey[agent.id] = key
   if (!agentPositions[agent.id]) {
-    agentPositions[agent.id] = randomInClearZone()
-    agentDuration[agent.id] = 1.5
+    agentPositions[agent.id] = randomBreakRoomPos(agent.id)
   }
-  const target = targetForAgent(agent)
-  if (target) {
-    sendAgentTo(agent, target)
-  } else {
-    const delay = 600 + Math.random() * 2000
-    agentTimers[agent.id] = setTimeout(() => scheduleWalk(agent.id), delay)
-  }
-  prevActivityKey[agent.id] = activityKey(agent)
+  moveAgent(agent.id, targetForAgent(agent))
 }
 
-function syncPositions() {
-  agents.value.forEach(agent => {
-    const key = activityKey(agent)
-    const prevKey = prevActivityKey[agent.id]
-
-    if (!agentPositions[agent.id]) {
-      initAgent(agent)
-      return
-    }
-
-    if (key !== prevKey) {
-      const target = targetForAgent(agent)
-      if (target) {
-        sendAgentTo(agent, target)
-      } else if (prevKey?.startsWith('true:')) {
-        // was at work, now idle — start wandering
-        clearTimeout(agentTimers[agent.id])
-        const delay = 400 + Math.random() * 1200
-        agentTimers[agent.id] = setTimeout(() => scheduleWalk(agent.id), delay)
-      }
-      prevActivityKey[agent.id] = key
-    }
-  })
+function syncAll() {
+  agents.value.forEach(syncAgent)
 }
 
 onMounted(() => {
   updateFloorSize()
   window.addEventListener('resize', updateFloorSize)
-  agents.value.forEach(initAgent)
+  syncAll()
 })
 
 onUnmounted(() => {
@@ -553,29 +380,29 @@ onUnmounted(() => {
   Object.values(agentTimers).forEach(clearTimeout)
 })
 
-// Watch id+state+workerId+activity so any change to what an agent is doing
-// triggers syncPositions and moves them to the right POI.
 watch(
   () => agents.value.map(a => `${a.id}:${a.state}:${a.workerId}:${a.activity ?? ''}`).join(','),
-  syncPositions
+  syncAll,
 )
-watch(visibleStations, syncPositions)
+watch(taskRows, syncAll)
+watch([floorW, floorH], syncAll)
 
+// ── Ticker ─────────────────────────────────────────────────
 const tickerMessages = computed(() => {
-  const msgs = []
+  const msgs: string[] = []
   agents.value.forEach(a => {
     const label = a.activity ? `${a.state.toUpperCase()} [${a.activity}]` : a.state.toUpperCase()
     msgs.push(`${a.name}: ${label}`)
   })
   tasksStore.tasks
-    .filter(t => !['done', 'failed'].includes(t.state))
+    .filter(t => !['done', 'failed', 'cancelled'].includes(t.state))
     .slice(0, 4)
-    .forEach(t => msgs.push(`TASK: ${t.name}`))
+    .forEach(t => msgs.push(`TASK: ${t.name || t.id}`))
   if (msgs.length === 0) msgs.push('AWAITING WORKERS', 'SYSTEMS NOMINAL', 'BOILER PRESSURE: 87 PSI')
   return msgs
 })
 
-function truncate(str?: string, len = 10) {
+function truncate(str?: string, len = 28) {
   if (!str) return ''
   return str.length > len ? str.slice(0, len) + '…' : str
 }
@@ -589,802 +416,126 @@ function stateLabel(state: string) {
 .factory-floor {
   width: 100%;
   height: 100%;
-  background: linear-gradient(180deg, #0d0600 0%, #120900 40%, #1c1000 100%);
+  background: linear-gradient(180deg, #0d0600 0%, #120900 50%, #1a0e00 100%);
   position: relative;
   overflow: hidden;
   font-family: var(--font-pixel);
 }
 
-/* Floor grid — warm brass tint */
+/* Floor grid — warm brass tint, softer */
 .floor-grid {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(232, 170, 0, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(232, 170, 0, 0.06) 1px, transparent 1px);
-  background-size: 40px 40px;
+    linear-gradient(rgba(232, 170, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232, 170, 0, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
 }
 
-/* Sparkle field — warm star colors */
+/* Sparkles */
 .sparkle-field {
   position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 1;
 }
-
 .sparkle {
   position: absolute;
-  animation: sparkleFade 2.5s infinite ease-in-out;
+  animation: sparkleFade 3s infinite ease-in-out;
 }
-
-.sparkle:nth-child(5n+1) { color: var(--color-gold); }
-.sparkle:nth-child(5n+2) { color: var(--color-teal); }
-.sparkle:nth-child(5n+3) { color: var(--color-amber); }
-.sparkle:nth-child(5n+4) { color: var(--color-cream); }
-.sparkle:nth-child(5n)   { color: var(--color-orange); }
+.sparkle:nth-child(4n+1) { color: var(--color-gold); }
+.sparkle:nth-child(4n+2) { color: var(--color-teal); }
+.sparkle:nth-child(4n+3) { color: var(--color-amber); }
+.sparkle:nth-child(4n)   { color: var(--color-cream); }
 
 @keyframes sparkleFade {
-  0%, 100% { opacity: 0; transform: scale(0.3) rotate(0deg); }
-  40%, 60%  { opacity: 0.85; transform: scale(1.1) rotate(180deg); }
+  0%, 100% { opacity: 0;    transform: scale(0.3) rotate(0deg); }
+  40%, 60% { opacity: 0.75; transform: scale(1.05) rotate(180deg); }
 }
 
-/* Pipes — rich warm copper */
+/* Ceiling pipe — single horizontal run */
 .ceiling-pipe {
   position: absolute;
-  background: linear-gradient(180deg, #7a3c00 0%, #cc5500 35%, #ee7722 55%, #8a4400 100%);
-  border: 1px solid #7a3c00;
+  top: 18px;
+  left: 0;
+  right: 0;
+  height: 10px;
+  background: linear-gradient(180deg, #6e3500 0%, #b34a00 35%, #d76420 55%, #7a3c00 100%);
+  border-top: 1px solid #5a2a00;
+  border-bottom: 1px solid #5a2a00;
   box-shadow: 0 0 6px rgba(204, 85, 0, 0.4);
+  z-index: 2;
 }
 
-.pipe-h { height: 12px; }
-.pipe-v { width: 12px; }
-
-.pipe1 { top: 20px; left: 0; right: 0; }
-.pipe2 { top: 50px; left: 100px; width: 200px; }
-.pipe3 { top: 0; left: 150px; height: 80px; }
-.pipe4 { top: 0; left: 400px; height: 60px; }
-
-/* Pipe joints (bolted flanges) */
 .pipe-joint {
   position: absolute;
+  top: 14px;
   width: 18px;
   height: 18px;
   background: radial-gradient(circle, var(--color-brass-light) 20%, var(--color-brass) 60%, var(--color-brass-dark) 100%);
   border: 2px solid var(--color-brass-dark);
   border-radius: 50%;
   box-shadow: 0 0 5px rgba(232, 170, 0, 0.5);
+  z-index: 3;
 }
+.j1 { left: 22%; }
+.j2 { left: 64%; }
 
-.j1 { top: 14px; left: 147px; }
-.j2 { top: 14px; left: 397px; }
-
-/* Steam vents */
+/* Two soft steam vents above the pipe */
 .steam-vent {
   position: absolute;
-  width: 14px;
+  width: 12px;
+  z-index: 2;
 }
-
-.vent1 { top: 32px; left: 155px; }
-.vent2 { top: 32px; left: 405px; }
-.vent3 { top: 62px; left: 230px; }
+.vent1 { top: 30px; left: calc(22% + 5px); }
+.vent2 { top: 30px; left: calc(64% + 5px); }
 
 .steam-particle {
   position: absolute;
   width: 8px;
   height: 8px;
-  background: radial-gradient(circle, rgba(255, 232, 176, 0.85) 0%, transparent 70%);
+  background: radial-gradient(circle, rgba(255, 232, 176, 0.7) 0%, transparent 70%);
   border-radius: 50%;
-  animation: steamRise 2s var(--delay, 0s) infinite ease-out;
+  animation: steamRise 2.4s var(--delay, 0s) infinite ease-out;
 }
 
 @keyframes steamRise {
-  0%   { transform: translateY(0) scale(0.5); opacity: 0.8; }
-  50%  { transform: translateY(-30px) scale(1.5) translateX(5px); opacity: 0.4; }
-  100% { transform: translateY(-60px) scale(2) translateX(-5px); opacity: 0; }
+  0%   { transform: translateY(0) scale(0.4); opacity: 0.75; }
+  60%  { transform: translateY(-22px) scale(1.4) translateX(4px); opacity: 0.4; }
+  100% { transform: translateY(-44px) scale(1.9) translateX(-4px); opacity: 0; }
 }
 
-/* Gears — warm SNES palette, each a distinct color */
-.gear {
+/* Two distant ambient gears (chat side) */
+.ambient-gear {
   position: absolute;
   user-select: none;
+  pointer-events: none;
   line-height: 1;
 }
-
-.gear-large  { font-size: 56px; animation: gearSpin 8s linear infinite; }
-.gear-medium { font-size: 36px; animation: gearSpin 5s linear infinite reverse; }
-.gear-small  { font-size: 22px; animation: gearSpin 3s linear infinite; }
-
-.g1 { right: 30px;  top: 60px;  color: var(--color-gold);    text-shadow: 0 0 10px var(--color-gold),   0 0 20px rgba(255,214,68,0.4); }
-.g2 { right: 75px;  top: 80px;  color: var(--color-teal);    text-shadow: 0 0 10px var(--color-teal),   0 0 20px rgba(0,187,170,0.4); }
-.g3 { right: 55px;  top: 100px; color: var(--color-orange);  text-shadow: 0 0 10px var(--color-orange), 0 0 20px rgba(255,119,0,0.4); }
-.g4 { left: 620px;  top: 40px;  color: var(--color-sky);     text-shadow: 0 0 10px var(--color-sky),    0 0 20px rgba(68,170,238,0.4); }
-.g5 { left: 650px;  top: 65px;  color: var(--color-amber);   text-shadow: 0 0 10px var(--color-amber),  0 0 20px rgba(255,204,0,0.4); }
+.ambient-gear.g1 {
+  right: 26px;
+  top: 56px;
+  font-size: 48px;
+  color: var(--color-gold);
+  text-shadow: 0 0 10px var(--color-gold), 0 0 18px rgba(255,214,68,0.35);
+  animation: gearSpin 9s linear infinite;
+}
+.ambient-gear.g2 {
+  right: 70px;
+  top: 90px;
+  font-size: 30px;
+  color: var(--color-teal);
+  text-shadow: 0 0 8px var(--color-teal), 0 0 16px rgba(0,187,170,0.3);
+  animation: gearSpin 5s linear infinite reverse;
+}
 
 @keyframes gearSpin {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
 }
 
-/* Furnace */
-.furnace {
-  position: absolute;
-  right: 120px;
-  top: 60px;
-}
-
-.furnace-body {
-  width: 60px;
-  height: 80px;
-  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
-  border: 3px solid var(--color-copper);
-  border-radius: 4px 4px 0 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-around;
-  padding: 6px;
-  box-shadow: 0 0 14px rgba(204, 85, 0, 0.4), inset 0 0 8px rgba(255, 119, 0, 0.1);
-}
-
-.furnace-door {
-  width: 36px;
-  height: 36px;
-  background: #0d0400;
-  border: 2px solid var(--color-copper-light);
-  border-radius: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  animation: flicker 0.3s infinite alternate;
-  box-shadow: inset 0 0 10px rgba(255, 100, 0, 0.5);
-}
-
-@keyframes flicker {
-  from { opacity: 0.85; box-shadow: inset 0 0 8px rgba(255, 80, 0, 0.4); }
-  to   { opacity: 1;    box-shadow: inset 0 0 14px rgba(255, 120, 0, 0.7); }
-}
-
-.furnace-gauge {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: #0d0400;
-  border: 2px solid var(--color-brass);
-  position: relative;
-  overflow: hidden;
-  box-shadow: 0 0 4px var(--color-brass-dark);
-}
-
-.gauge-needle {
-  position: absolute;
-  left: 50%;
-  bottom: 50%;
-  width: 2px;
-  height: 8px;
-  background: var(--color-red);
-  transform-origin: bottom center;
-  animation: needleSpin 3s ease-in-out infinite alternate;
-  box-shadow: 0 0 4px var(--color-red);
-}
-
-@keyframes needleSpin {
-  from { transform: rotate(-60deg); }
-  to   { transform: rotate(60deg); }
-}
-
-.furnace-chimney {
-  position: absolute;
-  top: -30px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 16px;
-  height: 30px;
-  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
-  border: 2px solid var(--color-copper);
-  border-bottom: none;
-}
-
-.smoke-particle {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  width: 10px;
-  height: 10px;
-  background: radial-gradient(circle, rgba(160, 100, 40, 0.7) 0%, transparent 70%);
-  border-radius: 50%;
-  animation: smokeRise 3s var(--delay, 0s) infinite ease-out;
-}
-
-@keyframes smokeRise {
-  0%   { transform: translate(-50%, 0) scale(0.5); opacity: 0.8; }
-  100% { transform: translate(calc(-50% + 20px), -50px) scale(3); opacity: 0; }
-}
-
-.furnace-label {
-  position: absolute;
-  bottom: -18px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 5px;
-  color: var(--color-copper);
-  white-space: nowrap;
-  letter-spacing: 1px;
-  text-shadow: 0 0 4px var(--color-copper);
-}
-
-/* Conveyor belt */
-.conveyor-belt {
-  position: absolute;
-  bottom: 80px;
-  left: 60px;
-  right: 200px;
-  height: 28px;
-}
-
-.belt-track {
-  width: 100%;
-  height: 18px;
-  background: repeating-linear-gradient(
-    90deg,
-    #2a1800 0px,
-    #2a1800 18px,
-    #3a2200 18px,
-    #3a2200 36px
-  );
-  border: 2px solid var(--color-copper-light);
-  position: relative;
-  overflow: hidden;
-}
-
-.belt-item {
-  position: absolute;
-  font-size: 13px;
-  top: 1px;
-  animation: beltMove 4s linear infinite;
-  animation-delay: calc(var(--offset, 0) * -1ms / 10);
-}
-
-.belt-item:nth-child(6n+1) { filter: drop-shadow(0 0 3px var(--color-gold)); }
-.belt-item:nth-child(6n+2) { filter: drop-shadow(0 0 3px var(--color-teal)); }
-.belt-item:nth-child(6n+3) { filter: drop-shadow(0 0 3px var(--color-amber)); }
-.belt-item:nth-child(6n+4) { filter: drop-shadow(0 0 3px var(--color-sky)); }
-.belt-item:nth-child(6n+5) { filter: drop-shadow(0 0 3px var(--color-orange)); }
-.belt-item:nth-child(6n)   { filter: drop-shadow(0 0 3px var(--color-gold)); }
-
-@keyframes beltMove {
-  from { transform: translateX(120%); }
-  to   { transform: translateX(-100px); }
-}
-
-.belt-roller {
-  position: absolute;
-  bottom: 0;
-  width: 28px;
-  height: 28px;
-  background: radial-gradient(circle, var(--color-copper-light) 20%, var(--color-copper) 55%, var(--color-brass-dark) 100%);
-  border-radius: 50%;
-  border: 3px solid var(--color-brass-dark);
-  box-shadow: 0 0 6px rgba(204, 85, 0, 0.5);
-}
-
-.belt-roller.left  { left: -14px; }
-.belt-roller.right { right: -14px; }
-
-/* Work Stations */
-.work-station {
-  position: absolute;
-  width: 100px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-
-.station-desk {
-  width: 100%;
-  position: relative;
-}
-
-.station-monitor {
-  width: 60px;
-  height: 48px;
-  background: #0d0600;
-  border: 3px solid var(--color-brass-dark);
-  border-radius: 2px;
-  margin: 0 auto;
-  display: flex;
-  align-items: stretch;
-  overflow: hidden;
-}
-
-.monitor-screen {
-  flex: 1;
-  background: #080400;
-  border: 2px solid #1c1000;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.screen-active {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.screen-line {
-  height: 3px;
-  opacity: 0.85;
-  animation: screenScroll 2s infinite linear;
-  border-radius: 1px;
-}
-
-.screen-line:nth-child(1) { background: var(--color-teal); }
-.screen-line:nth-child(2) { background: var(--color-sky); animation-delay: -0.7s; opacity: 0.5; }
-.screen-line:nth-child(3) { background: var(--color-green); animation-delay: -1.4s; opacity: 0.3; width: 60%; }
-
-@keyframes screenScroll {
-  0%   { opacity: 0.85; }
-  50%  { opacity: 0.3; }
-  100% { opacity: 0.85; }
-}
-
-.screen-idle {
-  font-family: var(--font-pixel);
-  font-size: 8px;
-  color: #3a2510;
-}
-
-.station-table {
-  width: 100%;
-  height: 14px;
-  background: linear-gradient(180deg, #5a3818 0%, #3a2010 100%);
-  border: 2px solid var(--color-copper-light);
-  border-top: 3px solid var(--color-brass);
-}
-
-.station-agent, .station-empty {
-  margin-top: 2px;
-}
-
-
-.empty-slot {
-  width: 30px;
-  height: 50px;
-  background: rgba(232, 170, 0, 0.04);
-  border: 1px dashed var(--color-brass-dark);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-dim);
-  font-size: 16px;
-  font-family: var(--font-mono);
-}
-
-.station-label {
-  font-size: 5px;
-  color: var(--color-brass-dark);
-  letter-spacing: 1px;
-  max-width: 100px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.task-badge {
-  font-size: 5px;
-  padding: 1px 4px;
-  border-radius: 2px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-}
-
-.state-working       { color: var(--color-green);  text-shadow: 0 0 4px var(--color-green); }
-.state-pending       { color: var(--color-text-dim); }
-.state-planning      { color: var(--color-sky);    text-shadow: 0 0 4px var(--color-sky); }
-.state-awaiting-review { color: var(--color-amber); text-shadow: 0 0 4px var(--color-amber); }
-.state-followup      { color: var(--color-orange); text-shadow: 0 0 4px var(--color-orange); }
-.state-failed        { color: var(--color-red);    text-shadow: 0 0 4px var(--color-red); }
-.state-done          { color: var(--color-teal);   text-shadow: 0 0 4px var(--color-teal); }
-
-.work-station.occupied .station-table {
-  border-top-color: var(--color-brass-light);
-  background: linear-gradient(180deg, #6a4820 0%, #4a2e12 100%);
-}
-
-/* Floating agents — speed set per-agent via --walk-dur CSS var */
-.floating-agent {
-  position: absolute;
-  z-index: 5;
-  transition: left var(--walk-dur, 1.5s) ease-in-out, top var(--walk-dur, 1.5s) ease-in-out;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  pointer-events: none;
-}
-
-.agent-nametag {
-  font-size: 5px;
-  color: var(--color-brass);
-  margin-top: 2px;
-  white-space: nowrap;
-  text-shadow: 0 0 4px rgba(232, 170, 0, 0.5);
-  letter-spacing: 1px;
-}
-
-.chat-bubble {
-  font-size: 10px;
-  line-height: 1;
-  margin-bottom: 2px;
-  filter: drop-shadow(0 0 3px rgba(255, 214, 68, 0.5));
-  animation: chatBob 1.4s infinite ease-in-out;
-}
-
-@keyframes chatBob {
-  0%, 100% { transform: translateY(0); opacity: 0.9; }
-  50%       { transform: translateY(-2px); opacity: 1; }
-}
-
-/* ── Points of interest ──────────────────────────────── */
-.poi {
-  position: absolute;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  z-index: 3;
-}
-.poi-label {
-  font-size: 5px;
-  color: var(--color-brass-dark);
-  letter-spacing: 1px;
-  white-space: nowrap;
-  text-shadow: 0 0 4px rgba(232,170,0,0.4);
-}
-
-/* Tool cabinet — top-left */
-.tool-cabinet {
-  left: 8px;
-  top: 28px;
-}
-.tc-body {
-  width: 34px;
-  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
-  border: 2px solid var(--color-copper);
-  border-radius: 2px;
-  padding: 3px 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  box-shadow: 0 0 6px rgba(204,85,0,0.25);
-}
-.tc-drawer {
-  height: 7px;
-  background: linear-gradient(90deg, #3a2010, #4a2c18, #3a2010);
-  border: 1px solid var(--color-copper-light);
-  border-radius: 1px;
-  position: relative;
-}
-.tc-drawer::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 6px;
-  height: 2px;
-  background: var(--color-brass);
-  border-radius: 1px;
-}
-
-/* Bulletin board — top-center */
-.bulletin-board {
-  left: 265px;
-  top: 24px;
-}
-.bb-frame {
-  width: 72px;
-  height: 46px;
-  background: #2a1a08;
-  border: 3px solid var(--color-brass-dark);
-  border-radius: 2px;
-  position: relative;
-  overflow: hidden;
-  box-shadow: 0 0 8px rgba(232,170,0,0.2);
-}
-.bb-pin {
-  position: absolute;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--color-red);
-  box-shadow: 0 0 3px var(--color-red);
-}
-.bb-note {
-  position: absolute;
-  border-radius: 1px;
-}
-.bb-note.n1 { width: 24px; height: 16px; background: #ffe8a0; left: 6px;  top: 14px; transform: rotate(-2deg); }
-.bb-note.n2 { width: 20px; height: 14px; background: #a0f0d0; left: 34px; top: 12px; transform: rotate(3deg); }
-.bb-note.n3 { width: 18px; height: 12px; background: #f0c0a0; left: 20px; top: 28px; transform: rotate(-1deg); }
-
-/* Water cooler — mid-left */
-.water-cooler {
-  left: 8px;
-  top: 176px;
-}
-.wc-bottle {
-  width: 22px;
-  height: 36px;
-  background: linear-gradient(180deg, rgba(68,170,238,0.4) 0%, rgba(68,170,238,0.15) 100%);
-  border: 2px solid var(--color-sky);
-  border-radius: 4px 4px 2px 2px;
-  box-shadow: 0 0 6px rgba(68,170,238,0.3);
-}
-.wc-base {
-  width: 30px;
-  height: 20px;
-  background: linear-gradient(180deg, #2a1200, #180900);
-  border: 2px solid var(--color-copper);
-  border-radius: 2px;
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.wc-tap {
-  width: 8px;
-  height: 5px;
-  background: var(--color-brass);
-  border-radius: 0 2px 2px 0;
-  box-shadow: 0 0 3px var(--color-brass-dark);
-}
-.wc-drop {
-  position: absolute;
-  width: 4px;
-  height: 5px;
-  background: var(--color-sky);
-  border-radius: 50% 50% 40% 40%;
-  left: 50%;
-  top: 48px;
-  margin-left: -2px;
-  animation: drip 1.8s var(--delay, 0s) infinite ease-in;
-  opacity: 0.7;
-}
-@keyframes drip {
-  0%   { transform: translateY(-8px); opacity: 0.8; }
-  60%  { opacity: 0.6; }
-  100% { transform: translateY(12px); opacity: 0; }
-}
-
-/* Coffee maker — position set dynamically beside the top-right desk */
-.cm-body {
-  width: 40px;
-  height: 50px;
-  background: linear-gradient(180deg, #1a0e00, #120900);
-  border: 2px solid var(--color-copper);
-  border-radius: 3px 3px 1px 1px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  padding-bottom: 4px;
-  position: relative;
-  box-shadow: 0 0 8px rgba(204,85,0,0.3);
-}
-.cm-tank {
-  position: absolute;
-  top: 4px;
-  left: 6px;
-  right: 6px;
-  height: 20px;
-  background: linear-gradient(180deg, rgba(68,170,238,0.25), rgba(68,170,238,0.08));
-  border: 1px solid var(--color-sky);
-  border-radius: 2px;
-}
-.cm-spout {
-  position: absolute;
-  bottom: 12px;
-  right: -8px;
-  width: 10px;
-  height: 3px;
-  background: var(--color-copper);
-  border-radius: 0 2px 2px 0;
-}
-.cm-cup {
-  font-size: 14px;
-  margin-bottom: -2px;
-}
-
-/* ── Activity POI shared styles ─────────────────────────── */
-.activity-poi {
-  z-index: 4;
-  pointer-events: none;
-}
-
-/* Scrying Orb */
-.scrying-orb {
-  width: 36px;
-}
-.orb-glow {
-  position: absolute;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(136,68,255,0.4) 0%, transparent 70%);
-  animation: orbPulse 2.2s ease-in-out infinite;
-  top: 4px;
-  left: 4px;
-}
-.orb-sphere {
-  font-size: 20px;
-  line-height: 1;
-  filter: drop-shadow(0 0 6px rgba(136,68,255,0.8));
-  animation: orbFloat 3s ease-in-out infinite;
-  position: relative;
-  z-index: 1;
-}
-.orb-base {
-  width: 18px;
-  height: 6px;
-  background: linear-gradient(180deg, var(--color-brass) 0%, var(--color-brass-dark) 100%);
-  border-radius: 2px;
-  margin: 0 auto;
-  border: 1px solid var(--color-copper);
-}
-@keyframes orbPulse {
-  0%, 100% { opacity: 0.4; transform: scale(0.9); }
-  50%       { opacity: 0.8; transform: scale(1.2); }
-}
-@keyframes orbFloat {
-  0%, 100% { transform: translateY(0px); }
-  50%       { transform: translateY(-3px); }
-}
-
-/* Archive */
-.archive {
-  width: 48px;
-}
-.archive-shelf {
-  width: 48px;
-  height: 32px;
-  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
-  border: 2px solid var(--color-brass-dark);
-  border-radius: 1px;
-  display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  padding: 2px 3px;
-  box-shadow: 0 0 6px rgba(232,170,0,0.15);
-}
-.book {
-  border-radius: 1px 1px 0 0;
-  border: 1px solid rgba(0,0,0,0.3);
-  flex: 1;
-}
-.book.b1 { height: 22px; background: var(--color-teal);   box-shadow: 0 0 3px var(--color-teal); }
-.book.b2 { height: 18px; background: var(--color-amber);  box-shadow: 0 0 3px var(--color-amber); }
-.book.b3 { height: 26px; background: var(--color-sky);    box-shadow: 0 0 3px var(--color-sky); }
-.book.b4 { height: 20px; background: var(--color-orange); box-shadow: 0 0 3px var(--color-orange); }
-
-/* Telegraph */
-.telegraph {
-  width: 36px;
-}
-.tg-body {
-  width: 36px;
-  height: 28px;
-  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
-  border: 2px solid var(--color-copper);
-  border-radius: 2px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding-bottom: 3px;
-  position: relative;
-  box-shadow: 0 0 6px rgba(68,170,238,0.2);
-}
-.tg-key {
-  width: 14px;
-  height: 5px;
-  background: var(--color-brass-light);
-  border-radius: 2px;
-  border: 1px solid var(--color-brass-dark);
-  animation: keyTap 1.8s ease-in-out infinite;
-}
-@keyframes keyTap {
-  0%, 85%, 100% { transform: translateY(0); }
-  90%            { transform: translateY(2px); }
-}
-.tg-spark {
-  position: absolute;
-  top: 5px;
-  right: 6px;
-  width: 4px;
-  height: 4px;
-  background: var(--color-sky);
-  border-radius: 50%;
-  animation: spark 1.8s var(--delay, 0s) ease-out infinite;
-}
-@keyframes spark {
-  0%   { opacity: 0; transform: translate(0, 0) scale(1); }
-  30%  { opacity: 1; transform: translate(3px, -4px) scale(1.4); }
-  100% { opacity: 0; transform: translate(6px, -10px) scale(0.2); }
-}
-.tg-wire {
-  width: 2px;
-  height: 8px;
-  background: var(--color-copper);
-  margin: 0 auto;
-}
-
-/* Think Tank */
-.think-tank {
-  width: 44px;
-}
-.tank-vessel {
-  width: 44px;
-  height: 36px;
-  background: linear-gradient(180deg, rgba(68,153,255,0.12) 0%, rgba(0,0,0,0) 100%);
-  border: 2px solid rgba(68,153,255,0.4);
-  border-radius: 4px 4px 2px 2px;
-  position: relative;
-  overflow: hidden;
-  box-shadow: 0 0 10px rgba(68,153,255,0.25), inset 0 0 8px rgba(68,153,255,0.1);
-}
-.tank-bubble {
-  position: absolute;
-  bottom: 2px;
-  left: calc(50% + var(--xoff, 0px));
-  width: 6px;
-  height: 6px;
-  background: radial-gradient(circle, rgba(68,153,255,0.7) 0%, transparent 70%);
-  border-radius: 50%;
-  animation: bubbleRise 2.4s var(--delay, 0s) ease-out infinite;
-}
-@keyframes bubbleRise {
-  0%   { transform: translateY(0) scale(0.6); opacity: 0.8; }
-  100% { transform: translateY(-34px) scale(1.8); opacity: 0; }
-}
-.tank-gauge {
-  width: 16px;
-  height: 8px;
-  background: rgba(68,153,255,0.2);
-  border: 1px solid rgba(68,153,255,0.4);
-  border-radius: 1px;
-  margin: 1px auto 0;
-}
-
-/* Engine Room marker */
-.engine-room {
-  width: 36px;
-  text-align: center;
-}
-.engine-icon {
-  font-size: 22px;
-  color: var(--color-gold);
-  animation: gearSpin 4s linear infinite;
-  text-shadow: 0 0 8px var(--color-gold);
-  line-height: 1;
-}
-
-/* The Forge marker */
-.the-forge {
-  width: 32px;
-  text-align: center;
-}
-.forge-icon {
-  font-size: 20px;
-  line-height: 1;
-  animation: flicker 0.4s infinite alternate;
-  filter: drop-shadow(0 0 6px rgba(255,100,0,0.8));
-}
-
-/* Factory info overlay */
+/* Header overlay */
 .factory-info {
   position: absolute;
   top: 8px;
@@ -1409,8 +560,7 @@ function stateLabel(state: string) {
     var(--color-cream),
     var(--color-teal),
     var(--color-gold),
-    var(--color-amber)
-  );
+    var(--color-amber));
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -1430,7 +580,354 @@ function stateLabel(state: string) {
   text-shadow: 0 0 6px var(--color-teal);
 }
 
-/* Ticker tape */
+/* ── Tasks table ─────────────────────────────────────────── */
+.task-table {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 3;
+}
+
+.task-row {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(36, 18, 4, 0.55) 0%, rgba(20, 10, 2, 0.85) 100%);
+  border: 2px solid var(--color-brass-dark);
+  border-radius: 3px;
+  box-shadow:
+    0 0 12px rgba(232, 170, 0, 0.08),
+    inset 0 0 14px rgba(255, 119, 0, 0.04);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: border-color 0.4s, box-shadow 0.4s;
+}
+
+.task-row.occupied {
+  border-color: var(--color-brass);
+  box-shadow:
+    0 0 14px rgba(232, 170, 0, 0.18),
+    inset 0 0 14px rgba(255, 119, 0, 0.08);
+}
+
+/* State accents on the row */
+.task-row.state-working   { border-color: var(--color-green); box-shadow: 0 0 14px rgba(136,221,34,0.22), inset 0 0 12px rgba(136,221,34,0.05); }
+.task-row.state-planning  { border-color: var(--color-sky);   box-shadow: 0 0 14px rgba(68,170,238,0.22), inset 0 0 12px rgba(68,170,238,0.05); }
+.task-row.state-followup  { border-color: var(--color-orange);box-shadow: 0 0 14px rgba(255,119,0,0.25),  inset 0 0 12px rgba(255,119,0,0.06); }
+.task-row.state-awaiting-review { border-color: var(--color-amber); box-shadow: 0 0 14px rgba(255,204,0,0.25), inset 0 0 12px rgba(255,204,0,0.06); }
+
+.row-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px;
+  background: linear-gradient(90deg, rgba(232,170,0,0.10) 0%, rgba(232,170,0,0.02) 60%, transparent 100%);
+  border-bottom: 1px solid rgba(232, 170, 0, 0.2);
+  font-size: 7px;
+  letter-spacing: 1.5px;
+  flex-shrink: 0;
+  height: 18px;
+}
+
+.row-num {
+  font-family: var(--font-pixel);
+  color: var(--color-brass-dark);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 1px 4px;
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 1px;
+}
+
+.row-title {
+  flex: 1;
+  color: var(--color-cream);
+  text-shadow: 0 0 5px rgba(255,232,176,0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-row:not(.occupied) .row-title {
+  color: var(--color-text-dim);
+  font-style: italic;
+  text-shadow: none;
+}
+
+.row-state {
+  padding: 1px 6px;
+  border-radius: 2px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  font-size: 6px;
+  background: rgba(0,0,0,0.45);
+  border: 1px solid currentColor;
+}
+
+.state-working       { color: var(--color-green);  text-shadow: 0 0 4px var(--color-green); }
+.state-pending       { color: var(--color-text-dim); }
+.state-planning      { color: var(--color-sky);    text-shadow: 0 0 4px var(--color-sky); }
+.state-awaiting-review { color: var(--color-amber); text-shadow: 0 0 4px var(--color-amber); }
+.state-followup      { color: var(--color-orange); text-shadow: 0 0 4px var(--color-orange); }
+.state-failed        { color: var(--color-red);    text-shadow: 0 0 4px var(--color-red); }
+.state-done          { color: var(--color-teal);   text-shadow: 0 0 4px var(--color-teal); }
+
+/* The bench area (where stations live and agents stand) */
+.row-bench {
+  position: relative;
+  flex: 1;
+  background:
+    linear-gradient(180deg,
+      rgba(90, 56, 24, 0.0) 0%,
+      rgba(90, 56, 24, 0.0) 55%,
+      rgba(90, 56, 24, 0.55) 56%,
+      rgba(58, 32, 14, 0.85) 100%);
+}
+
+/* Brass rail along the front of the bench */
+.bench-rail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 14px;
+  height: 4px;
+  background: linear-gradient(180deg, var(--color-brass-light) 0%, var(--color-brass) 50%, var(--color-brass-dark) 100%);
+  box-shadow: 0 0 6px rgba(232, 170, 0, 0.4);
+}
+
+.bench-bolts {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 4px;
+  height: 8px;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 8px;
+  pointer-events: none;
+}
+.bolt {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--color-brass-light) 30%, var(--color-brass-dark) 100%);
+  box-shadow: 0 0 3px rgba(232, 170, 0, 0.5);
+}
+
+/* Stations — pegged into the bench */
+.bench-station {
+  position: absolute;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.55;
+  filter: saturate(0.7);
+  transition: opacity 0.3s, filter 0.3s, transform 0.3s;
+  pointer-events: none;
+}
+.bench-station.active {
+  opacity: 1;
+  filter: saturate(1.15) drop-shadow(0 0 6px rgba(255, 214, 68, 0.45));
+  transform: translateX(-50%) translateY(-2px);
+}
+
+.station-icon {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.station-label {
+  font-size: 4.5px;
+  letter-spacing: 1.2px;
+  color: var(--color-brass-dark);
+  text-shadow: 0 0 3px rgba(232, 170, 0, 0.4);
+  white-space: nowrap;
+}
+.bench-station.active .station-label {
+  color: var(--color-cream);
+  text-shadow: 0 0 4px rgba(255, 232, 176, 0.7);
+}
+
+/* ── Mini POI graphics ───────────────────────────────────── */
+
+/* Archive — stacked colored books */
+.station-archive .station-icon {
+  gap: 1px;
+  align-items: flex-end;
+  justify-content: center;
+}
+.mini-book {
+  display: inline-block;
+  width: 4px;
+  border-radius: 1px 1px 0 0;
+  border: 1px solid rgba(0,0,0,0.4);
+  margin: 0 1px;
+}
+.mini-book.b1 { height: 16px; background: var(--color-teal);   box-shadow: 0 0 3px var(--color-teal); }
+.mini-book.b2 { height: 12px; background: var(--color-amber);  box-shadow: 0 0 3px var(--color-amber); }
+.mini-book.b3 { height: 18px; background: var(--color-sky);    box-shadow: 0 0 3px var(--color-sky); }
+.mini-book.b4 { height: 14px; background: var(--color-orange); box-shadow: 0 0 3px var(--color-orange); }
+
+/* Scrying orb */
+.mini-orb-glow {
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(136,68,255,0.45) 0%, transparent 70%);
+  animation: orbPulse 2.2s ease-in-out infinite;
+}
+.mini-orb {
+  position: relative;
+  font-size: 16px;
+  line-height: 1;
+  filter: drop-shadow(0 0 5px rgba(136,68,255,0.85));
+  animation: orbFloat 3s ease-in-out infinite;
+}
+@keyframes orbPulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50%       { opacity: 0.85; transform: scale(1.1); }
+}
+@keyframes orbFloat {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-2px); }
+}
+
+/* Telegraph */
+.mini-tg-body {
+  position: relative;
+  width: 24px;
+  height: 18px;
+  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
+  border: 1px solid var(--color-copper);
+  border-radius: 2px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 2px;
+}
+.mini-tg-key {
+  width: 10px;
+  height: 4px;
+  background: var(--color-brass-light);
+  border-radius: 2px;
+  border: 1px solid var(--color-brass-dark);
+  animation: keyTap 1.6s ease-in-out infinite;
+}
+@keyframes keyTap {
+  0%, 85%, 100% { transform: translateY(0); }
+  90%            { transform: translateY(2px); }
+}
+.mini-tg-spark {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  width: 3px;
+  height: 3px;
+  background: var(--color-sky);
+  border-radius: 50%;
+  animation: tgSpark 1.6s ease-out infinite;
+}
+@keyframes tgSpark {
+  0%   { opacity: 0; transform: translate(0, 0) scale(1); }
+  30%  { opacity: 1; transform: translate(2px, -3px) scale(1.4); }
+  100% { opacity: 0; transform: translate(5px, -8px) scale(0.2); }
+}
+
+/* Think tank */
+.mini-tank {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  background: linear-gradient(180deg, rgba(68,153,255,0.18) 0%, rgba(0,0,0,0) 100%);
+  border: 1px solid rgba(68,153,255,0.5);
+  border-radius: 3px 3px 1px 1px;
+  overflow: hidden;
+  box-shadow: 0 0 6px rgba(68,153,255,0.3), inset 0 0 5px rgba(68,153,255,0.15);
+}
+.mini-bubble {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  background: radial-gradient(circle, rgba(68,153,255,0.8) 0%, transparent 70%);
+  border-radius: 50%;
+  animation: miniBubble 2.2s var(--delay, 0s) ease-out infinite;
+}
+@keyframes miniBubble {
+  0%   { transform: translate(-50%, 0) scale(0.6); opacity: 0.85; }
+  100% { transform: translate(-50%, -22px) scale(1.6); opacity: 0; }
+}
+
+/* Engine — spinning gear */
+.mini-engine {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--color-gold);
+  text-shadow: 0 0 6px var(--color-gold);
+  animation: gearSpin 4s linear infinite;
+}
+
+/* Forge — flickering flame */
+.mini-forge {
+  font-size: 18px;
+  line-height: 1;
+  filter: drop-shadow(0 0 5px rgba(255,100,0,0.85));
+  animation: forgeFlicker 0.4s infinite alternate;
+}
+@keyframes forgeFlicker {
+  from { opacity: 0.85; transform: scale(0.95); }
+  to   { opacity: 1;    transform: scale(1.05); }
+}
+
+/* ── Break room ─────────────────────────────────────────── */
+.break-room {
+  position: absolute;
+  height: 86px;
+  border-top: 1px dashed rgba(232, 170, 0, 0.25);
+  border-bottom: 1px dashed rgba(232, 170, 0, 0.15);
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(232, 170, 0, 0.03) 0px,
+      rgba(232, 170, 0, 0.03) 8px,
+      transparent 8px,
+      transparent 16px
+    );
+  z-index: 2;
+  pointer-events: none;
+}
+.break-label {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 6px;
+  letter-spacing: 2px;
+  color: var(--color-brass-dark);
+  text-shadow: 0 0 4px rgba(232, 170, 0, 0.4);
+}
+
+/* ── Floating agents ──────────────────────────────────────── */
+.floating-agent {
+  position: absolute;
+  z-index: 6;
+  transform: translate(-50%, -50%);
+  transition: left var(--walk-dur, 1.5s) ease-in-out, top var(--walk-dur, 1.5s) ease-in-out;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+
+/* ── Ticker tape ──────────────────────────────────────────── */
 .ticker-tape {
   position: absolute;
   bottom: 0;
@@ -1442,11 +939,12 @@ function stateLabel(state: string) {
   overflow: hidden;
   display: flex;
   align-items: center;
+  z-index: 8;
 }
 
 .ticker-content {
   display: flex;
-  animation: tickerScroll 20s linear infinite;
+  animation: tickerScroll 22s linear infinite;
   white-space: nowrap;
 }
 
@@ -1457,7 +955,6 @@ function stateLabel(state: string) {
   letter-spacing: 1px;
   text-shadow: 0 0 4px rgba(255, 204, 0, 0.5);
 }
-
 .ticker-msg:nth-child(3n+1) { color: var(--color-amber); }
 .ticker-msg:nth-child(3n+2) { color: var(--color-teal); text-shadow: 0 0 4px rgba(0,187,170,0.5); }
 .ticker-msg:nth-child(3n)   { color: var(--color-gold); text-shadow: 0 0 4px rgba(255,214,68,0.5); }
@@ -1466,4 +963,55 @@ function stateLabel(state: string) {
   from { transform: translateX(100vw); }
   to   { transform: translateX(-100%); }
 }
+
+/* ── Size classes ─────────────────────────────────────────── */
+
+/* Width tiers (`.size-sm` < 720px, `.size-md` < 1100px, `.size-lg` ≥ 1100px).
+   Narrow viewport: tighter title, smaller ambient gears, no chat-pane gutter. */
+.factory-floor.size-sm .factory-title { font-size: 6px; letter-spacing: 1.5px; }
+.factory-floor.size-sm .agent-count   { font-size: 6px; }
+.factory-floor.size-sm .ambient-gear.g1 { font-size: 32px; right: 10px; top: 50px; }
+.factory-floor.size-sm .ambient-gear.g2 { font-size: 22px; right: 36px; top: 76px; }
+.factory-floor.size-sm .row-header     { font-size: 6px; gap: 6px; padding: 3px 6px; }
+.factory-floor.size-sm .row-state      { font-size: 5px; padding: 1px 4px; }
+
+.factory-floor.size-lg .factory-title { font-size: 8px; }
+.factory-floor.size-lg .agent-count   { font-size: 8px; }
+.factory-floor.size-lg .ambient-gear.g1 { font-size: 60px; }
+.factory-floor.size-lg .ambient-gear.g2 { font-size: 38px; }
+
+/* Row density (`.density-tall` ≥ 100px row, `.density-medium` ≥ 82px,
+   `.density-short` < 82px). Smaller stations + hidden labels when packed. */
+.factory-floor.density-tall .station-icon  { width: 32px; height: 32px; }
+.factory-floor.density-tall .mini-engine   { font-size: 26px; }
+.factory-floor.density-tall .mini-forge    { font-size: 22px; }
+.factory-floor.density-tall .mini-orb      { font-size: 20px; }
+.factory-floor.density-tall .mini-tg-body  { width: 28px; height: 22px; }
+.factory-floor.density-tall .mini-tank     { width: 26px; height: 26px; }
+.factory-floor.density-tall .mini-book.b1  { height: 20px; }
+.factory-floor.density-tall .mini-book.b2  { height: 14px; }
+.factory-floor.density-tall .mini-book.b3  { height: 22px; }
+.factory-floor.density-tall .mini-book.b4  { height: 16px; }
+
+.factory-floor.density-medium .station-icon { width: 26px; height: 26px; }
+.factory-floor.density-medium .mini-engine  { font-size: 20px; }
+.factory-floor.density-medium .mini-forge   { font-size: 17px; }
+.factory-floor.density-medium .mini-orb     { font-size: 15px; }
+
+.factory-floor.density-short .station-icon  { width: 20px; height: 20px; }
+.factory-floor.density-short .station-label { display: none; }
+.factory-floor.density-short .mini-engine   { font-size: 16px; }
+.factory-floor.density-short .mini-forge    { font-size: 14px; }
+.factory-floor.density-short .mini-orb      { font-size: 13px; }
+.factory-floor.density-short .mini-tg-body  { width: 18px; height: 14px; }
+.factory-floor.density-short .mini-tank     { width: 18px; height: 18px; }
+.factory-floor.density-short .mini-book     { width: 3px; }
+.factory-floor.density-short .mini-book.b1  { height: 12px; }
+.factory-floor.density-short .mini-book.b2  { height: 9px; }
+.factory-floor.density-short .mini-book.b3  { height: 14px; }
+.factory-floor.density-short .mini-book.b4  { height: 10px; }
+.factory-floor.density-short .bench-station { bottom: 10px; }
+.factory-floor.density-short .bench-rail    { bottom: 8px; }
+.factory-floor.density-short .bench-bolts   { bottom: 1px; height: 6px; }
+.factory-floor.density-short .bolt          { width: 4px; height: 4px; }
 </style>
