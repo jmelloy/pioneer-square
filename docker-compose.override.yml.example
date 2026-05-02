@@ -1,9 +1,14 @@
-# Runs the frontend in Vite dev mode with HMR instead of the nginx production build,
-# and runs the backend with --reload for auto-restart on code changes.
+# Runs the frontend in Vite dev mode with HMR instead of letting the backend serve
+# the prebuilt SPA, and runs the backend with --reload for auto-restart on code changes.
 # Docker Compose loads this file automatically alongside docker-compose.yml.
 # To use the production build instead, start with: docker compose -f docker-compose.yml up
 services:
   backend:
+    # Bind-mount source so --reload picks up edits. The production image bakes
+    # frontend/dist into /app/static; in dev we don't need it because the SPA
+    # is served by the Vite dev server on port 5056.
+    volumes:
+      - ./backend:/app
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   # To run the worker with verbose logging, either set WORKER_LOG_LEVEL=DEBUG
