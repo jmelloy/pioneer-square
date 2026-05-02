@@ -113,6 +113,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     log.info("Config loaded from %s", cfg.config_path)
+
+    if not cfg.repos:
+        msg = (
+            "Worker cannot start: no repos configured. "
+            "Set [github].repos in pioneer-worker.toml, pass --repo OWNER/REPO, "
+            "or set PIONEER_REPOS."
+        )
+        log.error(msg)
+        print(f"error: {msg}", file=sys.stderr)
+        return 2
+
     worker = Worker(cfg)
     try:
         asyncio.run(worker.run())
