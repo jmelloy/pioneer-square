@@ -20,6 +20,49 @@ pip install -e .
 
 This installs the `pioneer-worker` console script.
 
+## Expected toolchain
+
+A worker shells out to a coding agent (`claude`, `codex`, or `pi`), which in
+turn runs whatever the task needs — installing dependencies, running tests,
+linting, building, opening PRs. To keep agents from having to bootstrap a
+language runtime mid-task, every worker host should have the following
+pre-installed and on `PATH`:
+
+**Core**
+
+- `git`, `curl`, `jq`, `make`, `unzip`, `openssh-client`, `ripgrep`
+- A C/C++ toolchain (`build-essential` on Debian — needed to compile native
+  Python wheels and Node addons)
+- [`gh`](https://cli.github.com/) — used by agents to inspect issues and PRs
+
+**Python 3.11+**
+
+- `python3`, `pip`, `venv`
+- [`ruff`](https://docs.astral.sh/ruff/) (lint + format)
+- [`pytest`](https://docs.pytest.org/)
+- [`uv`](https://docs.astral.sh/uv/) (fast resolver/installer used by some repos)
+- [`pipx`](https://pipx.pypa.io/) (sandboxed CLI installs)
+
+**Node.js 24+**
+
+- `node`, `npm`, `npx`
+- `corepack` enabled, so repos pinned to `pnpm`/`yarn` via `packageManager` work
+- The agent CLIs themselves: `@anthropic-ai/claude-code`, `@openai/codex`,
+  `@mariozechner/pi-coding-agent`
+
+**Go 1.23+**
+
+- `go` on `PATH`, with `GOPATH` writable by the worker user
+
+The `worker/Dockerfile` provisions exactly this set, so anything `docker
+compose --profile worker up` builds is already correct. If you run the worker
+directly on a host, install the equivalents through your package manager
+(`apt`, `brew`, etc.) before launching it.
+
+Anything outside this baseline (Rust, Java, Ruby, .NET, Terraform, etc.) is
+expected to be installed on demand by the task itself, or added to the
+Dockerfile in a follow-up PR if it becomes a recurring need.
+
 ## Configure
 
 Copy the example config and edit it:

@@ -5,15 +5,28 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     DEBIAN_FRONTEND=noninteractive
 
-# Base system tools needed to add external repos
+# Baseline system tools coding agents need to build, test, and lint typical
+# full-stack repos. Keep the list focused — only add things an agent would
+# otherwise have to bootstrap mid-task.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl ca-certificates gnupg \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        gnupg \
+        jq \
+        make \
+        openssh-client \
+        ripgrep \
+        unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 22 (setup script runs its own apt-get update)
+# Node.js 24 (setup script runs its own apt-get update). Corepack lets
+# repos pinned to pnpm/yarn via `packageManager` work without extra setup.
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && corepack enable
 
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -23,6 +36,22 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         > /etc/apt/sources.list.d/github-cli.list \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
+
+# Go toolchain — install the official tarball; the Debian package lags upstream.
+ARG GO_VERSION=1.23.4
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
+        | tar -C /usr/local -xz
+ENV GOPATH=/home/worker/go \
+    PATH=/usr/local/go/bin:/home/worker/go/bin:/home/worker/.local/bin:$PATH
+
+# Shared Python tooling: ruff (lint/format), pytest (tests), uv (fast
+# resolver/installer), pipx (sandboxed CLI installs).
+RUN pip install --no-cache-dir \
+        ruff \
+        pytest \
+        uv \
+        pipx
 
 # AI coding CLIs — this layer is the one most likely to update
 RUN npm install -g \
@@ -37,7 +66,7 @@ COPY pioneer_worker ./pioneer_worker
 RUN pip install -e .
 
 RUN useradd --create-home --shell /bin/bash worker \
-    && mkdir -p /work/repos /work/worktrees /config \
+    && mkdir -p /work/repos /work/worktrees /config /home/worker/go \
     && chown -R worker:worker /work /config /home/worker
 
 USER worker
