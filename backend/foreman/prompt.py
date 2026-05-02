@@ -47,6 +47,9 @@ Be concise — one short paragraph maximum unless detail is requested.\
 """
 
 
+_EMPTY_WORKERS_BLOCKS = {"[]", "[\n]"}
+
+
 def build_system_prompt(
     workers_block: str,
     tasks_block: str,
@@ -60,9 +63,17 @@ def build_system_prompt(
         if primary_repo
         else ""
     )
+    if workers_block.strip() in _EMPTY_WORKERS_BLOCKS:
+        workers_section = (
+            "## Current workers\n"
+            "_No workers are currently online. Tell the human that no workers are "
+            "available and wait for one to come online before assigning work._\n\n"
+        )
+    else:
+        workers_section = f"## Current workers\n```json\n{workers_block}\n```\n\n"
     parts = [
         f"{FOREMAN_SYSTEM}{repo_line}\n\n",
-        f"## Current workers\n```json\n{workers_block}\n```\n\n",
+        workers_section,
         f"## Recent tasks\n```json\n{tasks_block}\n```",
     ]
     if extra_context:
