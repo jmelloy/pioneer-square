@@ -22,9 +22,11 @@ from models import (
     ClaudeCredentials,
     GithubToken,
     Guild,
+    GuildMember,
     Message,
     Task,
     TaskLog,
+    User,
     UserSession,
     Worker,
 )
@@ -297,6 +299,10 @@ class WorkerCreate(BaseModel):
     repos: list[str]  # ["owner/repo", ...]
     github_token: str | None = None
     hostname: str | None = None
+    # Either a users.id (numeric GitHub id as text) or a github_login. The
+    # backend resolves it to a User row; mismatches are dropped silently
+    # (workers without a known user run as unattributed).
+    user: str | None = None
 
 
 class SpawnWorkerRequest(BaseModel):
@@ -386,6 +392,66 @@ async def require_user(
         await db.close()
 
 
+async def _ensure_membership(db, guild_id: str, user_id: str) -> str:
+    """Return the role of *user_id* in *guild_id* or raise HTTP 403/404.
+
+    Legacy guilds created before guild_members existed have a ``github_user_id``
+    on the guild row and no member rows; treat that owner as a member so the
+    pre-migration UI keeps working without a manual repair step.
+    """
+    g_res = await db.execute(
+        select(Guild.id, Guild.github_user_id).where(Guild.id == guild_id)
+    )
+    grow = g_res.first()
+    if not grow:
+        raise HTTPException(status_code=404, detail="Guild not found")
+
+    res = await db.execute(
+        select(GuildMember.role).where(
+            GuildMember.guild_id == guild_id, GuildMember.user_id == user_id
+        )
+    )
+    role = res.scalar_one_or_none()
+    if role:
+        return role
+    if grow.github_user_id and grow.github_user_id == user_id:
+        return "owner"
+    raise HTTPException(status_code=403, detail="Not a member of this guild")
+
+
+async def _resolve_user_identifier(db, identifier: str) -> str | None:
+    """Look up a User by either id (numeric github id as text) or github_login.
+
+    Returns the canonical ``users.id`` or ``None`` if no match.
+    """
+    ident = (identifier or "").strip()
+    if not ident:
+        return None
+    res = await db.execute(
+        select(User.id).where((User.id == ident) | (User.github_login == ident))
+    )
+    return res.scalar_one_or_none()
+
+
+def require_member(*allowed_roles: str):
+    """FastAPI dependency factory: caller must be a member (optionally with one of the given roles)."""
+
+    async def _dep(guild_id: str, github_user_id: str = Depends(require_user)) -> str:
+        db = await get_db()
+        try:
+            role = await _ensure_membership(db, guild_id, github_user_id)
+        finally:
+            await db.close()
+        if allowed_roles and role not in allowed_roles:
+            raise HTTPException(
+                status_code=403,
+                detail=f"This action requires one of: {', '.join(allowed_roles)}",
+            )
+        return github_user_id
+
+    return _dep
+
+
 # ---------------------------------------------------------------------------
 # GitHub OAuth endpoints
 # ---------------------------------------------------------------------------
@@ -435,6 +501,9 @@ async def _gh_create_session(code: str, state: str) -> dict:
 
     github_user_id = str(user_data["id"])
     github_username = user_data.get("login", "")
+    display_name = user_data.get("name") or ""
+    avatar_url = user_data.get("avatar_url") or ""
+    email = user_data.get("email") or None
     login_token = secrets.token_urlsafe(32)
     now = datetime.now(UTC).isoformat()
 
@@ -460,6 +529,28 @@ async def _gh_create_session(code: str, state: str) -> dict:
             },
         )
         await db.execute(stmt)
+
+        user_stmt = sqlite_insert(User).values(
+            id=github_user_id,
+            github_id=github_user_id,
+            github_login=github_username,
+            email=email,
+            display_name=display_name or None,
+            avatar_url=avatar_url or None,
+            created_at=now,
+            updated_at=now,
+        )
+        user_stmt = user_stmt.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "github_login": user_stmt.excluded.github_login,
+                "email": user_stmt.excluded.email,
+                "display_name": user_stmt.excluded.display_name,
+                "avatar_url": user_stmt.excluded.avatar_url,
+                "updated_at": user_stmt.excluded.updated_at,
+            },
+        )
+        await db.execute(user_stmt)
         db.add(UserSession(token=login_token, github_user_id=github_user_id, created_at=now))
         await db.commit()
     finally:
@@ -621,6 +712,15 @@ async def create_guild(
                         github_user_id=github_user_id,
                     )
                 )
+                await db.flush()
+                db.add(
+                    GuildMember(
+                        guild_id=guild_id,
+                        user_id=github_user_id,
+                        role="owner",
+                        created_at=created_at,
+                    )
+                )
                 await db.commit()
                 break
             except IntegrityError:
@@ -637,6 +737,8 @@ async def create_guild(
 async def list_guilds(github_user_id: str = Depends(require_user)):
     db = await get_db()
     try:
+        # Union: guilds the user explicitly belongs to, plus legacy guilds
+        # whose github_user_id matches but never got a guild_members row.
         result = await db.execute(
             select(
                 Guild.id,
@@ -646,12 +748,20 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
             )
             .select_from(Guild)
             .outerjoin(
+                GuildMember,
+                (GuildMember.guild_id == Guild.id)
+                & (GuildMember.user_id == github_user_id),
+            )
+            .outerjoin(
                 Agent,
                 (Agent.guild_id == Guild.id)
                 & (Agent.type != "foreman")
                 & (Agent.state != "offline"),
             )
-            .where(Guild.github_user_id == github_user_id)
+            .where(
+                (GuildMember.user_id == github_user_id)
+                | (Guild.github_user_id == github_user_id)
+            )
             .group_by(Guild.id)
             .order_by(Guild.created_at.desc())
         )
@@ -664,13 +774,11 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
 async def update_guild(
     guild_id: str,
     data: GuildUpdate,
-    github_user_id: str = Depends(require_user),
+    github_user_id: str = Depends(require_member("owner")),
 ):
     db = await get_db()
     try:
-        result = await db.execute(
-            select(Guild).where(Guild.id == guild_id, Guild.github_user_id == github_user_id)
-        )
+        result = await db.execute(select(Guild).where(Guild.id == guild_id))
         guild = result.scalar_one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
@@ -694,7 +802,7 @@ async def update_guild(
 
 
 @app.get("/guilds/{guild_id}")
-async def get_guild(guild_id: str):
+async def get_guild(guild_id: str, github_user_id: str = Depends(require_member())):
     db = await get_db()
     try:
         result = await db.execute(select(Guild).where(Guild.id == guild_id))
@@ -1484,6 +1592,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
 
     db = await get_db()
     try:
+        resolved_user_id = await _resolve_user_identifier(db, data.user) if data.user else None
         db.add(
             Worker(
                 id=worker_id,
@@ -1491,6 +1600,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
                 repos=json.dumps(data.repos),
                 state="offline",
                 created_at=created_at,
+                user_id=resolved_user_id,
             )
         )
         stmt = sqlite_insert(Agent).values(
