@@ -432,7 +432,7 @@ async def run_foreman_ai(
             )
             .where(Task.guild_id == guild_id)
             .order_by(Task.created_at.desc())
-            .limit(10)
+            .limit(20)
         )
         task_rows = [
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
@@ -459,7 +459,7 @@ async def run_foreman_ai(
     summarized_tasks = [
         s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
     ]
-    tasks_block = json.dumps(summarized_tasks[:6], indent=2)
+    tasks_block = json.dumps(summarized_tasks[:20], indent=2)
     system = build_system_prompt(
         workers_block, tasks_block, extra_context, primary_repo=primary_repo
     )
