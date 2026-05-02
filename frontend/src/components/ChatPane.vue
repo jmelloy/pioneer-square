@@ -421,9 +421,10 @@ function handleTaskEvent(data: WSMessage) {
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'task-assigned') {
+    const taskName = (data.name || (data.description || '')).slice(0, 60)
     guildStore.messages.push({
       type: 'chat', from: 'system', to: 'user',
-      content: `→ ${data.workerId} assigned: ${data.description}`,
+      content: `→ ${data.workerId} assigned: ${taskName}`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'foreman-poll-status') {
