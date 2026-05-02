@@ -557,6 +557,53 @@ class TestExecToolsDispatching:
             row = conn.execute("SELECT state FROM tasks WHERE id='t-cpend'").fetchone()
         assert row[0] == "cancelled"
 
+    async def test_shutdown_worker_not_found(self, db_session):
+        insert_guild(db_session, "g-sd-missing")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-sd-missing",
+                [_fake_tool_use("shutdown_worker", {"worker_id": "w-nosuch"})],
+            )
+        assert "not found" in results[0]["content"].lower()
+
+    async def test_shutdown_worker_broadcasts_signal(self, db_session):
+        insert_guild(db_session, "g-sd-ok")
+        _insert_worker(db_session, "g-sd-ok", "w-sd")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock) as mock_bcast:
+            results = await exec_tools(
+                "g-sd-ok",
+                [
+                    _fake_tool_use(
+                        "shutdown_worker",
+                        {"worker_id": "w-sd", "reason": "winding down"},
+                    )
+                ],
+            )
+        assert "shutdown signal sent" in results[0]["content"].lower()
+        assert "winding down" in results[0]["content"]
+        # The handler must broadcast a worker-shutdown message targeting the worker.
+        shutdown_calls = [
+            c for c in mock_bcast.await_args_list if c.args[1].get("type") == "worker-shutdown"
+        ]
+        assert len(shutdown_calls) == 1
+        payload = shutdown_calls[0].args[1]
+        assert payload["workerId"] == "w-sd"
+        assert payload.get("reason") == "winding down"
+
+    async def test_shutdown_worker_omits_reason_when_blank(self, db_session):
+        insert_guild(db_session, "g-sd-noreason")
+        _insert_worker(db_session, "g-sd-noreason", "w-sd2")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock) as mock_bcast:
+            await exec_tools(
+                "g-sd-noreason",
+                [_fake_tool_use("shutdown_worker", {"worker_id": "w-sd2"})],
+            )
+        shutdown_calls = [
+            c for c in mock_bcast.await_args_list if c.args[1].get("type") == "worker-shutdown"
+        ]
+        assert len(shutdown_calls) == 1
+        assert "reason" not in shutdown_calls[0].args[1]
+
     async def test_get_task_status_not_found(self, db_session):
         insert_guild(db_session, "g-status-missing")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
