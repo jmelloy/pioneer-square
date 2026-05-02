@@ -1393,10 +1393,42 @@ async def create_worker(guild_id: str, data: WorkerCreate):
     return {"id": worker_id, "name": worker_name, "repos": data.repos, "created_at": created_at}
 
 
+def _decode_claude_oauth_token(blob: str | None) -> str | None:
+    """Extract the OAuth token from a stored claude_credentials blob.
+
+    Only handles the modern ``base64(json({"oauth_token": "..."}))`` format
+    written by `claude setup-token`. The legacy tarball format is meant to be
+    extracted to ~/.claude on disk and can't be reduced to a single env var,
+    so we ignore it here and let the worker handle it via the HTTP fetch path.
+    """
+    if not blob:
+        return None
+    import base64
+    import json
+
+    try:
+        raw = base64.b64decode(blob)
+        payload = json.loads(raw)
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    token = payload.get("oauth_token") if isinstance(payload, dict) else None
+    return token if isinstance(token, str) and token else None
+
+
 def _build_spawn_worker_env(
-    *, guild_id: str, repos: list[str], worker_name: str | None, source_env: dict[str, str]
+    *,
+    guild_id: str,
+    repos: list[str],
+    worker_name: str | None,
+    source_env: dict[str, str],
+    claude_oauth_token: str | None = None,
 ) -> dict[str, str]:
-    """Build the env dict for a spawned worker container."""
+    """Build the env dict for a spawned worker container.
+
+    *claude_oauth_token* (e.g. fetched from the DB) wins over CLAUDE_CODE_OAUTH_TOKEN
+    in *source_env* — the DB blob is the source of truth, refreshed every time a
+    worker completes setup-token, while the host env var can drift stale.
+    """
     env: dict[str, str] = {
         "PIONEER_BACKEND_URL": source_env.get("WORKER_BACKEND_URL", "http://backend:8000"),
         "PIONEER_GUILD_ID": guild_id,
@@ -1408,12 +1440,12 @@ def _build_spawn_worker_env(
         # what gh CLI inside the worker reads when opening PRs.
         env["PIONEER_GITHUB_TOKEN"] = gh_token
         env["GITHUB_TOKEN"] = gh_token
-    # CLAUDE_CODE_OAUTH_TOKEN lets the worker skip both the DB credentials
-    # fetch and the interactive `claude setup-token` flow.
-    for key in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
-        val = source_env.get(key)
-        if val:
-            env[key] = val
+    if api_key := source_env.get("ANTHROPIC_API_KEY"):
+        env["ANTHROPIC_API_KEY"] = api_key
+    # Prefer the DB-stored token; fall back to the host env var.
+    oauth = claude_oauth_token or source_env.get("CLAUDE_CODE_OAUTH_TOKEN") or ""
+    if oauth:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth
     if worker_name:
         env["PIONEER_WORKER_NAME"] = worker_name
     log_level = source_env.get("WORKER_LOG_LEVEL")
@@ -1436,11 +1468,22 @@ async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
         raise HTTPException(status_code=503, detail=f"Docker socket unavailable: {e}")
 
     image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
+
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(ClaudeCredentials.credentials_blob).where(ClaudeCredentials.guild_id == guild_id)
+        )
+        stored_blob = result.scalar_one_or_none()
+    finally:
+        await db.close()
+
     env = _build_spawn_worker_env(
         guild_id=guild_id,
         repos=data.repos,
         worker_name=data.name,
         source_env=dict(os.environ),
+        claude_oauth_token=_decode_claude_oauth_token(stored_blob),
     )
 
     # Join the same Docker network as the backend so the worker can reach it,

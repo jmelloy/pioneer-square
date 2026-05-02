@@ -190,6 +190,69 @@ def test_spawn_worker_env_default_backend_url():
     assert env["PIONEER_BACKEND_URL"] == "http://backend:8000"
 
 
+def test_spawn_worker_env_db_token_beats_host_env():
+    """The DB-stored token wins over the host CLAUDE_CODE_OAUTH_TOKEN."""
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=[],
+        worker_name=None,
+        source_env={"CLAUDE_CODE_OAUTH_TOKEN": "stale-host-token"},
+        claude_oauth_token="fresh-db-token",
+    )
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "fresh-db-token"
+
+
+def test_spawn_worker_env_falls_back_to_host_env_when_db_empty():
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=[],
+        worker_name=None,
+        source_env={"CLAUDE_CODE_OAUTH_TOKEN": "host-token"},
+        claude_oauth_token=None,
+    )
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "host-token"
+
+
+def test_decode_claude_oauth_token_modern_format():
+    """base64(json({'oauth_token': '...'})) is the format setup-token writes."""
+    import base64
+    import json
+
+    from main import _decode_claude_oauth_token
+
+    blob = base64.b64encode(json.dumps({"oauth_token": "sk-ant-oauth-real"}).encode()).decode()
+    assert _decode_claude_oauth_token(blob) == "sk-ant-oauth-real"
+
+
+def test_decode_claude_oauth_token_handles_empty_and_invalid():
+    from main import _decode_claude_oauth_token
+
+    assert _decode_claude_oauth_token(None) is None
+    assert _decode_claude_oauth_token("") is None
+    assert _decode_claude_oauth_token("not-base64!!!") is None
+    # Legacy tarball blob (binary, not JSON) — silently ignored so the worker's
+    # HTTP fetch path can handle it on disk instead.
+    import base64
+
+    not_json = base64.b64encode(b"\x1f\x8b\x08random tar bytes").decode()
+    assert _decode_claude_oauth_token(not_json) is None
+
+
+def test_decode_claude_oauth_token_missing_key():
+    """JSON without oauth_token shouldn't crash."""
+    import base64
+    import json
+
+    from main import _decode_claude_oauth_token
+
+    blob = base64.b64encode(json.dumps({"other_key": "value"}).encode()).decode()
+    assert _decode_claude_oauth_token(blob) is None
+
+
 def test_guild_task_list(client):
     """GET /guilds/{id}/tasks lists tasks across all workers in the guild."""
     test_client, db_path = client
