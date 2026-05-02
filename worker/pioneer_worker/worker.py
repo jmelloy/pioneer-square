@@ -112,26 +112,66 @@ class Worker:
             logger.warning("Could not fetch GitHub token: %s", exc)
 
     async def _claude_is_authenticated(self) -> bool:
-        """Return True if `claude auth status` exits 0 (works on macOS keychain and Linux)."""
+        """Return True if `claude auth status --json` reports loggedIn=true.
+
+        Works on macOS keychain and Linux. The exit code alone is unreliable
+        (the CLI returns 0 even when not logged in, just emits ``loggedIn:
+        false``), so we parse the JSON. A timeout guards against macOS keychain
+        access prompts that can hang the subprocess indefinitely when invoked
+        without a controlling TTY.
+        """
+        import json as _json
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.cfg.claude_path,
                 "auth",
                 "status",
+                "--json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            stdout, _ = await proc.communicate()
-            result = proc.returncode == 0
-            logger.info(
-                "claude auth status rc=%s output=%s",
-                proc.returncode,
-                stdout.decode(errors="replace").strip()[:200],
-            )
-            return result
-        except Exception as exc:
-            logger.warning("claude auth status failed: %s", exc)
+        except FileNotFoundError as exc:
+            logger.warning("claude binary not found at %r: %s", self.cfg.claude_path, exc)
             return False
+        except Exception as exc:
+            logger.warning("claude auth status spawn failed: %s", exc)
+            return False
+
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except TimeoutError:
+            logger.warning(
+                "claude auth status timed out after 10s — keychain prompt? killing pid=%s",
+                proc.pid,
+            )
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            return False
+
+        raw = stdout.decode(errors="replace").strip()
+        logger.info("claude auth status rc=%s output=%s", proc.returncode, raw[:200])
+        if proc.returncode != 0:
+            return False
+        try:
+            parsed = _json.loads(raw)
+        except _json.JSONDecodeError:
+            # Older claude versions returned plain text; fall back to rc=0 == authed.
+            logger.info("claude auth status output is not JSON; treating rc=0 as authed")
+            return True
+        logged_in = bool(parsed.get("loggedIn"))
+        if logged_in:
+            logger.info(
+                "Claude auth detected (method=%s provider=%s)",
+                parsed.get("authMethod"),
+                parsed.get("apiProvider"),
+            )
+        else:
+            logger.info("claude auth status reports loggedIn=false")
+        return logged_in
 
     async def _check_claude_auth(self) -> None:
         """Ensure Claude is authenticated. Restores stored credentials or runs login flow."""
@@ -167,7 +207,6 @@ class Worker:
                 blob = resp.json().get("credentials_blob", "")
                 if blob:
                     raw = base64.b64decode(blob)
-                    restored = False
                     try:
                         payload = json.loads(raw)
                         token = payload.get("oauth_token")
@@ -177,15 +216,17 @@ class Worker:
                                 "Restored CLAUDE_CODE_OAUTH_TOKEN from backend (len=%d)",
                                 len(token),
                             )
-                            restored = True
+                            # The env var is inherited by every spawned claude;
+                            # no need to re-verify with `claude auth status`,
+                            # which can spuriously fail on macOS keychain hosts.
+                            return
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass  # fall through to legacy tarball path
-                    if not restored:
-                        claude_dir = Path.home() / ".claude"
-                        claude_dir.mkdir(parents=True, exist_ok=True)
-                        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-                            tar.extractall(path=Path.home())
-                        logger.info("Restored Claude credentials tarball from backend (legacy)")
+                    claude_dir = Path.home() / ".claude"
+                    claude_dir.mkdir(parents=True, exist_ok=True)
+                    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
+                        tar.extractall(path=Path.home())
+                    logger.info("Restored Claude credentials tarball from backend (legacy)")
                     if await self._claude_is_authenticated():
                         return
                     logger.warning("Restored credentials blob but auth status still fails")
