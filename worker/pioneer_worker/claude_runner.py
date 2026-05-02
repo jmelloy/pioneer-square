@@ -152,34 +152,6 @@ class ClaudeProcess:
 STDOUT_LINE_LIMIT = 16 * 1024 * 1024  # 16 MiB
 
 
-async def _drain_stderr(stream, pid: int) -> int:
-    """Log claude's stderr line-by-line at full length. Returns line count."""
-    n = 0
-    try:
-        while True:
-            try:
-                raw = await stream.readuntil(b"\n")
-            except asyncio.IncompleteReadError as exc:
-                raw = exc.partial
-                if not raw:
-                    break
-            except asyncio.LimitOverrunError as exc:
-                # Line longer than the buffer — pull what we have and keep going.
-                raw = await stream.readexactly(exc.consumed)
-            except (asyncio.CancelledError, ValueError):
-                break
-            line = raw.decode(errors="replace").rstrip("\n")
-            if line:
-                n += 1
-                logger.warning("claude[%d] stderr: %s", pid, line)
-            if not raw:
-                break
-    except Exception as exc:  # pragma: no cover
-        logger.debug("claude[%d] stderr drain error: %s", pid, exc)
-    logger.info("claude[%d] stderr drain finished after %d line(s)", pid, n)
-    return n
-
-
 def _log_event_full(event: dict, pid: int, n: int) -> None:
     """Log the full content of a stream-json event, untruncated."""
     t = event.get("type")
@@ -271,38 +243,6 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
             t,
             json.dumps(event, ensure_ascii=False),
         )
-
-
-async def _iter_stdout_lines(stream):
-    """Yield stdout lines without the 64KiB asyncio default line cap."""
-    while True:
-        try:
-            raw = await stream.readuntil(b"\n")
-        except asyncio.IncompleteReadError as exc:
-            if exc.partial:
-                yield exc.partial
-            return
-        except asyncio.LimitOverrunError as exc:
-            # Line is longer than the StreamReader buffer; pull what's queued and
-            # keep reading more chunks until we see a newline or EOF.
-            chunks = [await stream.readexactly(exc.consumed)]
-            while True:
-                try:
-                    more = await stream.readuntil(b"\n")
-                    chunks.append(more)
-                    break
-                except asyncio.IncompleteReadError as exc2:
-                    if exc2.partial:
-                        chunks.append(exc2.partial)
-                    yield b"".join(chunks)
-                    return
-                except asyncio.LimitOverrunError as exc2:
-                    chunks.append(await stream.readexactly(exc2.consumed))
-            yield b"".join(chunks)
-            continue
-        if not raw:
-            return
-        yield raw
 
 
 async def run_claude_auto(

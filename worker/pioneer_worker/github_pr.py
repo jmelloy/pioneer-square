@@ -85,6 +85,39 @@ async def find_existing_pr(
     return None
 
 
+async def ensure_pr(
+    *,
+    task: dict,
+    branch: str,
+    worktree_path: str,
+    token: str | None,
+    pushed: bool,
+    emit: EmitFn,
+) -> str | None:
+    """Return the URL of an existing open PR for *branch*, or open a new one.
+
+    A new PR is only opened when *pushed* is True — without commits on the
+    remote there is nothing for GitHub to compare and the API would fail.
+    """
+    existing = await find_existing_pr(
+        branch=branch,
+        worktree_path=worktree_path,
+        token=token,
+    )
+    if existing:
+        await emit(f"[worker] ✓ Claude-authored PR: {existing}")
+        return existing
+    if not pushed:
+        return None
+    return await open_pr(
+        task=task,
+        branch=branch,
+        worktree_path=worktree_path,
+        token=token,
+        emit=emit,
+    )
+
+
 async def open_pr(
     *,
     task: dict,

@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import anyio
 import httpx
 
-from . import claude_runner, codex_runner, git_ops, github_pr, pi_runner
+from . import auth, claude_runner, codex_runner, git_ops, github_pr, pi_runner
 from . import config as config_mod
 from .ws_client import WSClient
 
@@ -62,8 +62,6 @@ class Worker:
         self._cancelled_tasks: set[str] = set()
         # Per-task queues for mid-run redirect instructions (SIGTERM + --resume)
         self._redirect_queues: dict[str, asyncio.Queue] = {}
-        # Queue for auth codes received from the UI during claude auth login
-        self._auth_code_queue: asyncio.Queue[str] | None = None
         # Set to True once _join() has been called the first time so that
         # _on_ws_reconnect doesn't prematurely join before auth completes.
         self._joined = False
@@ -73,6 +71,14 @@ class Worker:
         # agents stop immediately; busy agents finish their current task and
         # skip the follow-up window.
         self._shutdown_event = asyncio.Event()
+        self.auth = auth.AuthFlow(
+            claude_path=cfg.claude_path,
+            worker_id_provider=lambda: self.cfg.worker_id,
+            guild_id=cfg.guild_id,
+            http_factory=self._http,
+            send=self._send,
+            emit=self._emit,
+        )
 
     # ------------------------------------------------------------------ HTTP
     async def _http(self) -> httpx.AsyncClient:
@@ -112,390 +118,8 @@ class Worker:
             logger.warning("Could not fetch GitHub token: %s", exc)
 
     async def _claude_is_authenticated(self) -> bool:
-        """Return True if `claude auth status --json` reports loggedIn=true.
-
-        Works on macOS keychain and Linux. The exit code alone is unreliable
-        (the CLI returns 0 even when not logged in, just emits ``loggedIn:
-        false``), so we parse the JSON. A timeout guards against macOS keychain
-        access prompts that can hang the subprocess indefinitely when invoked
-        without a controlling TTY.
-        """
-        import json as _json
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self.cfg.claude_path,
-                "auth",
-                "status",
-                "--json",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        except FileNotFoundError as exc:
-            logger.warning("claude binary not found at %r: %s", self.cfg.claude_path, exc)
-            return False
-        except Exception as exc:
-            logger.warning("claude auth status spawn failed: %s", exc)
-            return False
-
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-        except TimeoutError:
-            logger.warning(
-                "claude auth status timed out after 10s — keychain prompt? killing pid=%s",
-                proc.pid,
-            )
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
-            return False
-
-        raw = stdout.decode(errors="replace").strip()
-        logger.info("claude auth status rc=%s output=%s", proc.returncode, raw[:200])
-        if proc.returncode != 0:
-            return False
-        try:
-            parsed = _json.loads(raw)
-        except _json.JSONDecodeError:
-            # Older claude versions returned plain text; fall back to rc=0 == authed.
-            logger.info("claude auth status output is not JSON; treating rc=0 as authed")
-            return True
-        logged_in = bool(parsed.get("loggedIn"))
-        if logged_in:
-            logger.info(
-                "Claude auth detected (method=%s provider=%s)",
-                parsed.get("authMethod"),
-                parsed.get("apiProvider"),
-            )
-        else:
-            logger.info("claude auth status reports loggedIn=false")
-        return logged_in
-
-    async def _check_claude_auth(self) -> None:
-        """Ensure Claude is authenticated. Restores stored credentials or runs login flow."""
-        import base64
-        import io
-        import json
-        import tarfile
-        from pathlib import Path
-
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            logger.info("ANTHROPIC_API_KEY set — skipping Claude login flow")
-            return
-
-        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-            logger.info("CLAUDE_CODE_OAUTH_TOKEN already in env — skipping login")
-            return
-
-        if await self._claude_is_authenticated():
-            logger.info("Claude credentials already present")
-            return
-
-        # Try restoring credentials stored in the backend. Two formats are
-        # supported: the new JSON {"oauth_token": "..."} blob produced by
-        # `claude setup-token`, and the legacy base64(tar.gz of ~/.claude)
-        # blob produced by older versions running `claude auth login`.
-        try:
-            async with await self._http() as client:
-                resp = await client.get(
-                    "/auth/claude/credentials",
-                    params={"guild_id": self.cfg.guild_id},
-                )
-            if resp.status_code == 200:
-                blob = resp.json().get("credentials_blob", "")
-                if blob:
-                    raw = base64.b64decode(blob)
-                    try:
-                        payload = json.loads(raw)
-                        token = payload.get("oauth_token")
-                        if token:
-                            os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
-                            logger.info(
-                                "Restored CLAUDE_CODE_OAUTH_TOKEN from backend (len=%d)",
-                                len(token),
-                            )
-                            # The env var is inherited by every spawned claude;
-                            # no need to re-verify with `claude auth status`,
-                            # which can spuriously fail on macOS keychain hosts.
-                            return
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        pass  # fall through to legacy tarball path
-                    claude_dir = Path.home() / ".claude"
-                    claude_dir.mkdir(parents=True, exist_ok=True)
-                    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-                        tar.extractall(path=Path.home())
-                    logger.info("Restored Claude credentials tarball from backend (legacy)")
-                    if await self._claude_is_authenticated():
-                        return
-                    logger.warning("Restored credentials blob but auth status still fails")
-        except Exception as exc:
-            logger.warning("Could not fetch Claude credentials from backend: %s", exc)
-
-        await self._emit("[auth] No Claude credentials found — starting login...")
-        await self._run_claude_login()
-
-    async def _run_claude_login(self) -> None:
-        """Drive `claude setup-token` to completion and persist the resulting OAuth token.
-
-        Why ``setup-token`` and not ``claude auth login``: the CLI ``auth login``
-        command has no manual paste path — its only way to receive the auth
-        code is via a localhost HTTP callback fired by the auto-opened browser,
-        which fails in headless containers. ``setup-token`` runs an Ink
-        (React-for-CLI) TUI that *does* prompt with "Paste code here if
-        prompted >" and accepts the code over stdin. The trade-off is scope:
-        the resulting token is ``user:inference`` only (sufficient for running
-        Claude Code tasks, but not for Remote Control / file_upload / mcp).
-
-        Mechanics: Ink mounts only when stdout is a real TTY and reads input
-        only when it has a controlling terminal, so we allocate a PTY pair,
-        plumb it into all three standard streams of the child, and use
-        setsid + TIOCSCTTY in a preexec to make the slave PTY the child's
-        ctty. The auth code must be written in two writes (paste, ~150ms
-        delay, CR alone) — a single ``code\\r`` write doesn't fire onSubmit
-        because Ink batches the CR into the paste event.
-        """
-        import base64
-        import fcntl
-        import json
-        import os
-        import pty
-        import re
-        import termios
-
-        self._auth_code_queue = asyncio.Queue()
-        logger.info("Starting claude setup-token — auth_code_queue is now open")
-
-        master_fd, slave_fd = pty.openpty()
-        # Disable input echo so the auth code we write isn't reflected onto
-        # stdout (which would put the secret into our logs).
-        try:
-            attrs = termios.tcgetattr(slave_fd)
-            attrs[3] &= ~termios.ECHO  # lflags
-            termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
-        except termios.error as exc:
-            logger.debug("Could not disable PTY echo: %s", exc)
-
-        def _attach_controlling_tty() -> None:
-            os.setsid()
-            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-
-        proc = await asyncio.create_subprocess_exec(
-            self.cfg.claude_path,
-            "setup-token",
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            preexec_fn=_attach_controlling_tty,
-        )
-        os.close(slave_fd)
-        logger.info(
-            "claude setup-token started pid=%s (PTY mode, master_fd=%d, ctty=slave)",
-            proc.pid,
-            master_fd,
-        )
-
-        loop = asyncio.get_event_loop()
-        reader = asyncio.StreamReader()
-        reader_protocol = asyncio.StreamReaderProtocol(reader)
-        master_pipe = os.fdopen(master_fd, "rb", buffering=0)
-        await loop.connect_read_pipe(lambda: reader_protocol, master_pipe)
-
-        # Strip ANSI/CSI escape sequences so we can grep Ink's output. Match
-        # the common cursor/SGR/erase forms claude emits.
-        ansi_re = re.compile(
-            rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b\][^\x07\x1b]*[\x07\x1b]"
-        )
-
-        def _clean(b: bytes) -> str:
-            return ansi_re.sub(b"", b).decode(errors="replace")
-
-        captured = bytearray()  # full raw output for token extraction at end
-        url_seen = False
-        code_sent = False
-        post_submit_watchdog: asyncio.Task | None = None
-        try:
-            while True:
-                try:
-                    chunk = await reader.read(4096)
-                except Exception as exc:
-                    logger.warning("PTY read error: %s", exc)
-                    break
-                if not chunk:
-                    break
-                captured.extend(chunk)
-                cleaned = _clean(chunk)
-                for line in cleaned.splitlines():
-                    line = line.rstrip()
-                    if line:
-                        logger.info("[claude setup-token] %s", line)
-                        await self._emit(f"[auth] {line}")
-
-                # Detect the OAuth URL once it's been emitted. Ink word-wraps
-                # the URL across multiple lines (often after each ~80 chars),
-                # so we strip whitespace from the running buffer first and
-                # then look for the URL ending at the OAuth state parameter.
-                if not url_seen:
-                    full_no_ws = re.sub(r"\s+", "", _clean(bytes(captured)))
-                    m = re.search(
-                        r"https://claude\.com/cai/oauth/authorize\?[A-Za-z0-9=&%_.\-]+state=[A-Za-z0-9_\-]+",
-                        full_no_ws,
-                    )
-                    if m:
-                        url = m.group(0)
-                        url_seen = True
-                        await self._send(
-                            {
-                                "type": "claude-auth-required",
-                                "workerId": self.cfg.worker_id,
-                                "url": url,
-                            }
-                        )
-                        await self._emit(
-                            "[auth] Waiting for auth code — paste it into the auth panel in the UI..."
-                        )
-                        logger.info("Auth login: awaiting code from queue (timeout=300s)")
-                        try:
-                            code = await asyncio.wait_for(
-                                self._auth_code_queue.get(), timeout=300.0
-                            )
-                        except TimeoutError:
-                            logger.warning("Auth login: timed out waiting for code from queue")
-                            await self._emit(
-                                "[auth] Timed out waiting for auth code — restart the worker to retry"
-                            )
-                            proc.kill()
-                            await proc.wait()
-                            return
-                        logger.info(
-                            "Auth login: code dequeued (len=%d, pid_alive=%s)",
-                            len(code),
-                            proc.returncode is None,
-                        )
-                        await self._emit("[auth] Code received — submitting to Claude CLI...")
-                        try:
-                            os.write(master_fd, code.strip().encode())
-                            # Ink batches consecutive bytes into one paste
-                            # event; a CR included in the same write is
-                            # swallowed and never fires onSubmit. Sending CR
-                            # in a separate write after a short sleep makes
-                            # Ink treat it as a distinct keypress.
-                            await asyncio.sleep(0.2)
-                            os.write(master_fd, b"\r")
-                        except OSError as exc:
-                            logger.warning("Auth login: PTY write failed: %s", exc)
-                            await self._emit(f"[auth] Failed to send code to Claude: {exc}")
-                            proc.kill()
-                            await proc.wait()
-                            return
-                        logger.info("Auth login: wrote code + CR (separate writes) to PTY")
-                        code_sent = True
-                        post_submit_watchdog = asyncio.create_task(self._auth_login_watchdog(proc))
-        finally:
-            self._auth_code_queue = None
-            if post_submit_watchdog is not None and not post_submit_watchdog.done():
-                post_submit_watchdog.cancel()
-            try:
-                master_pipe.close()
-            except OSError:
-                pass
-
-        logger.info(
-            "setup-token: PTY EOF reached (code_sent=%s); waiting for claude to exit",
-            code_sent,
-        )
-        await proc.wait()
-        logger.info("claude setup-token exited with rc=%s", proc.returncode)
-
-        # Extract the token from the captured Ink output. After Ink renders
-        # the success view there's a contiguous run of the token characters
-        # near "Store this token securely" / "export CLAUDE_CODE_OAUTH_TOKEN".
-        cleaned_full = _clean(bytes(captured))
-        token = self._extract_oauth_token(cleaned_full)
-        if not token:
-            await self._emit(
-                "[auth] Login finished but could not extract OAuth token from output — please retry"
-            )
-            logger.warning("Could not locate OAuth token in setup-token output")
-            return
-
-        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
-        logger.info("Captured CLAUDE_CODE_OAUTH_TOKEN (len=%d) and set in env", len(token))
-        await self._emit("[auth] Token captured — saving to backend so future workers can reuse it")
-
-        try:
-            blob = base64.b64encode(json.dumps({"oauth_token": token}).encode()).decode()
-            async with await self._http() as client:
-                await client.post(
-                    "/auth/claude/credentials",
-                    json={"guild_id": self.cfg.guild_id, "credentials_blob": blob},
-                )
-            await self._emit("[auth] Credentials saved")
-            logger.info("Posted OAuth token to backend credentials store")
-        except Exception as exc:
-            logger.warning("Could not store Claude credentials: %s", exc)
-            await self._emit(f"[auth] Warning: could not store credentials: {exc}")
-
-    @staticmethod
-    def _extract_oauth_token(cleaned_output: str) -> str | None:
-        """Locate the OAuth token in Ink's success-screen output.
-
-        The Ink TUI renders the token amid lots of surrounding text and ASCII
-        art; after stripping ANSI escapes it shows up as a long alphanumeric
-        run (40-100 chars from `[A-Za-z0-9_-]`) somewhere near the marker
-        "Store this token securely" / "Use this token by setting".
-
-        We anchor on those markers and pick the longest token-like run that
-        appears near them.
-        """
-        import re
-
-        text = cleaned_output
-        # Filter out spaces/newlines that Ink injects between glyphs in its
-        # box-layout, which would otherwise split the token character run.
-        compact = re.sub(r"[\s]+", "", text)
-        # The marker text gets compacted too.
-        marker_idx = compact.find("Storethistokensecurely")
-        if marker_idx < 0:
-            marker_idx = compact.find("UsethistokenbysettingexportCLAUDE_CODE_OAUTH_TOKEN")
-        if marker_idx < 0:
-            return None
-        # Search the 400 chars before the marker for the longest token-shaped run.
-        window = compact[max(0, marker_idx - 400) : marker_idx]
-        candidates = re.findall(r"[A-Za-z0-9_\-]{40,200}", window)
-        if not candidates:
-            return None
-        # Prefer the run closest to the marker (latest in the window).
-        return candidates[-1]
-
-    async def _auth_login_watchdog(self, proc: asyncio.subprocess.Process) -> None:
-        """Periodically log that we're still waiting on claude after the code was submitted.
-
-        Helps diagnose hangs where the async-for loop is blocked because claude
-        produced no further output (no newline, no exit) after stdin was sent.
-        """
-        ticks = 0
-        try:
-            while True:
-                await asyncio.sleep(15.0)
-                ticks += 1
-                if proc.returncode is not None:
-                    logger.info(
-                        "Auth login watchdog: claude exited rc=%s (after %ds)",
-                        proc.returncode,
-                        ticks * 15,
-                    )
-                    return
-                logger.warning(
-                    "Auth login watchdog: still waiting on claude stdout %ds after code submission (pid=%s, rc=%s)",
-                    ticks * 15,
-                    proc.pid,
-                    proc.returncode,
-                )
-        except asyncio.CancelledError:
-            logger.debug("Auth login watchdog cancelled")
-            raise
+        """Thin delegate to :func:`auth.is_authenticated` (kept for tests)."""
+        return await auth.is_authenticated(self.cfg.claude_path)
 
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:
@@ -765,7 +389,7 @@ class Worker:
         # _join() is intentionally delayed until after auth — agents must not
         # be visible to the foreman until Claude is ready to accept tasks.
         listener = asyncio.create_task(self._listen())
-        await self._check_claude_auth()
+        await self.auth.check()
 
         await self._join()
         self._joined = True
@@ -865,8 +489,7 @@ class Worker:
                 if text:
                     # During Claude login the auth queue is open; treat the
                     # message as the auth code so the foreman can relay it.
-                    if self._auth_code_queue is not None:
-                        await self._auth_code_queue.put(text)
+                    if await self.auth.deliver_code(text):
                         logger.info(
                             "Auth code received via worker-message (login flow) len=%d", len(text)
                         )
@@ -889,7 +512,7 @@ class Worker:
                     msg_worker_id,
                     self.cfg.worker_id,
                     len(msg.get("code", "")),
-                    self._auth_code_queue is not None,
+                    self.auth.auth_code_queue is not None,
                 )
                 if msg_worker_id != self.cfg.worker_id:
                     logger.warning("worker-auth-response workerId mismatch — ignoring")
@@ -898,8 +521,7 @@ class Worker:
                 if not code:
                     logger.warning("worker-auth-response has empty code — ignoring")
                     continue
-                if self._auth_code_queue is not None:
-                    await self._auth_code_queue.put(code)
+                if await self.auth.deliver_code(code):
                     logger.info("Auth code queued (len=%d)", len(code))
                 else:
                     logger.warning(
@@ -1050,6 +672,51 @@ class Worker:
         logger.info("Agent loop exited for %s", slot.agent_id)
 
     # ------------------------------------------------------------------ Execution
+    async def _run_with_redirects(
+        self,
+        *,
+        task_id: str,
+        initial_desc: str,
+        runner,
+        on_run_done,
+        redirect_q: asyncio.Queue,
+        emit,
+        redirect_prefix: str,
+        on_redirect=None,
+        log_label: str,
+    ) -> tuple[bool, str, str, bool]:
+        """Run *runner*(desc); on a queued redirect, re-run with the new desc.
+
+        Loops until the redirect queue is empty, the task is cancelled, or
+        shutdown is requested. *on_run_done* is invoked after each runner
+        invocation (used to capture the claude session id and clear the slot).
+        Returns ``(success, stop_reason, last_text, cancelled)``.
+        """
+        current = initial_desc
+        while True:
+            success, stop_reason, last_msg = await runner(current)
+            on_run_done()
+            logger.info(
+                "Task %s: %s done success=%s stop=%s",
+                task_id,
+                log_label,
+                success,
+                stop_reason,
+            )
+            if task_id in self._cancelled_tasks:
+                return success, stop_reason, last_msg, True
+            try:
+                redir = redirect_q.get_nowait()
+            except asyncio.QueueEmpty:
+                redir = None
+            if redir is not None and not self._shutdown_event.is_set():
+                await emit(f"{redirect_prefix}: {redir[:120]}")
+                current = redir
+                if on_redirect is not None:
+                    await on_redirect()
+                continue
+            return success, stop_reason, last_msg, False
+
     async def _execute_task(self, task: dict, slot: _AgentSlot) -> None:
         task_id = task["id"]
         desc = task.get("description") or ""
@@ -1135,72 +802,60 @@ class Worker:
                     f"  git push origin {branch}\n"
                     f'  gh pr create --title "{pr_title}" --body "<summary of changes>{closes}"\n'
                 )
-            success = False
-            stop_reason = "no_events"
-            last_msg = ""
 
-            while True:
+            async def _run_primary(d: str) -> tuple[bool, str, str]:
                 if tool == "codex":
                     logger.info("Task %s: launching codex in %s", task_id, primary_wt)
-                    success, stop_reason, last_msg = await codex_runner.run_codex_auto(
-                        current_desc,
+                    return await codex_runner.run_codex_auto(
+                        d,
                         primary_wt,
                         emit=emit,
                         codex_path=self.cfg.codex_path,
                     )
-                elif tool == "pi":
+                if tool == "pi":
                     logger.info("Task %s: launching pi in %s", task_id, primary_wt)
-                    success, stop_reason, last_msg = await pi_runner.run_pi_auto(
-                        current_desc,
+                    return await pi_runner.run_pi_auto(
+                        d,
                         primary_wt,
                         emit=emit,
                         pi_path=self.cfg.pi_path,
                     )
-                else:
-                    logger.info(
-                        "Task %s: launching claude in %s (max_turns=%d, resume=%s)",
-                        task_id,
-                        primary_wt,
-                        self.cfg.claude_max_turns,
-                        resume_session_id,
-                    )
-                    success, stop_reason, last_msg = await claude_runner.run_claude_auto(
-                        current_desc,
-                        primary_wt,
-                        max_turns=self.cfg.claude_max_turns,
-                        emit=emit,
-                        on_proc=_on_proc,
-                        claude_path=self.cfg.claude_path,
-                        resume_session_id=resume_session_id,
-                    )
-
-                _capture_session_and_clear()
                 logger.info(
-                    "Task %s: run done success=%s stop=%s session=%s",
+                    "Task %s: launching claude in %s (max_turns=%d, resume=%s)",
                     task_id,
-                    success,
-                    stop_reason,
+                    primary_wt,
+                    self.cfg.claude_max_turns,
                     resume_session_id,
                 )
+                return await claude_runner.run_claude_auto(
+                    d,
+                    primary_wt,
+                    max_turns=self.cfg.claude_max_turns,
+                    emit=emit,
+                    on_proc=_on_proc,
+                    claude_path=self.cfg.claude_path,
+                    resume_session_id=resume_session_id,
+                )
 
-                if task_id in self._cancelled_tasks:
-                    await emit("[worker] Task cancelled.")
-                    await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
-                    await self._set_state("idle", slot)
-                    return
+            async def _on_primary_redirect() -> None:
+                await self._task_update(task_id, state="working")
 
-                try:
-                    redirect_instr = redirect_q.get_nowait()
-                except asyncio.QueueEmpty:
-                    redirect_instr = None
-
-                if redirect_instr is not None and not self._shutdown_event.is_set():
-                    await emit(f"[worker] ↩ Redirected: {redirect_instr[:120]}")
-                    current_desc = redirect_instr
-                    await self._task_update(task_id, state="working")
-                    continue
-
-                break  # normal exit from redirect loop
+            success, stop_reason, last_msg, cancelled = await self._run_with_redirects(
+                task_id=task_id,
+                initial_desc=current_desc,
+                runner=_run_primary,
+                on_run_done=_capture_session_and_clear,
+                redirect_q=redirect_q,
+                emit=emit,
+                redirect_prefix="[worker] ↩ Redirected",
+                on_redirect=_on_primary_redirect,
+                log_label="run",
+            )
+            if cancelled:
+                await emit("[worker] Task cancelled.")
+                await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                await self._set_state("idle", slot)
+                return
 
             logger.info("Task %s: final success=%s stop_reason=%s", task_id, success, stop_reason)
 
@@ -1214,22 +869,14 @@ class Worker:
             pr_url: str | None = None
 
             if success:
-                existing_pr = await github_pr.find_existing_pr(
+                pr_url = await github_pr.ensure_pr(
+                    task=task,
                     branch=branch,
                     worktree_path=primary_wt,
                     token=token,
+                    pushed=push_ok,
+                    emit=emit,
                 )
-                if existing_pr:
-                    pr_url = existing_pr
-                    await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
-                elif push_ok:
-                    pr_url = await github_pr.open_pr(
-                        task=task,
-                        branch=branch,
-                        worktree_path=primary_wt,
-                        token=token,
-                        emit=emit,
-                    )
                 logger.info("Task %s: pr_url=%s", task_id, pr_url)
 
                 await self._task_update(
@@ -1315,13 +962,9 @@ class Worker:
                     await self._task_update(task_id, state="working")
                     await emit(f"[worker] Follow-up: {instructions[:120]}")
 
-                    # Inner redirect loop for followup runs
-                    current_fu_desc = instructions
-                    fu_ok = False
-                    fu_reason = "no_events"
-                    while True:
-                        fu_ok, fu_reason, _ = await claude_runner.run_claude_auto(
-                            current_fu_desc,
+                    async def _run_followup(d: str) -> tuple[bool, str, str]:
+                        return await claude_runner.run_claude_auto(
+                            d,
                             primary_wt,
                             max_turns=self.cfg.claude_max_turns,
                             emit=emit,
@@ -1329,38 +972,25 @@ class Worker:
                             claude_path=self.cfg.claude_path,
                             resume_session_id=resume_session_id,
                         )
-                        _capture_session_and_clear()
-                        logger.info(
-                            "Task %s follow-up: ok=%s reason=%s session=%s",
-                            task_id,
-                            fu_ok,
-                            fu_reason,
-                            resume_session_id,
-                        )
 
-                        if task_id in self._cancelled_tasks:
-                            followup_cancelled = True
-                            break
-
-                        try:
-                            redir = redirect_q.get_nowait()
-                        except asyncio.QueueEmpty:
-                            redir = None
-
-                        if redir is not None and not self._shutdown_event.is_set():
-                            await emit(f"[worker] ↩ Redirected during follow-up: {redir[:120]}")
-                            current_fu_desc = redir
-                            continue
-
-                        break
-
-                    if followup_cancelled:
+                    fu_ok, fu_reason, _, fu_cancelled = await self._run_with_redirects(
+                        task_id=task_id,
+                        initial_desc=instructions,
+                        runner=_run_followup,
+                        on_run_done=_capture_session_and_clear,
+                        redirect_q=redirect_q,
+                        emit=emit,
+                        redirect_prefix="[worker] ↩ Redirected during follow-up",
+                        log_label="follow-up",
+                    )
+                    if fu_cancelled:
+                        followup_cancelled = True
                         break
 
                     last_success = fu_ok
 
                     if fu_ok:
-                        await github_pr.push_branch(
+                        push_ok = await github_pr.push_branch(
                             branch=branch,
                             worktree_path=primary_wt,
                             emit=emit,
@@ -1368,22 +998,14 @@ class Worker:
                         # Originally-failed tasks never opened a PR; do it now
                         # that we have something worth reviewing.
                         if not pr_url:
-                            existing_pr = await github_pr.find_existing_pr(
+                            pr_url = await github_pr.ensure_pr(
+                                task=task,
                                 branch=branch,
                                 worktree_path=primary_wt,
                                 token=token,
+                                pushed=push_ok,
+                                emit=emit,
                             )
-                            if existing_pr:
-                                pr_url = existing_pr
-                                await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
-                            else:
-                                pr_url = await github_pr.open_pr(
-                                    task=task,
-                                    branch=branch,
-                                    worktree_path=primary_wt,
-                                    token=token,
-                                    emit=emit,
-                                )
 
                     await self._send(
                         {
