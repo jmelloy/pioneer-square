@@ -159,3 +159,59 @@ async def test_set_state_tracks_state_on_slot():
 
     await worker._set_state("awaiting-review", slot)
     assert slot.state == "awaiting-review"
+
+
+async def test_heartbeat_sends_ping_messages(monkeypatch):
+    """The heartbeat task must send periodic ping frames carrying worker_id +
+    slot 0's agent_id so the backend can refresh last_seen."""
+    monkeypatch.setattr(Worker, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    worker = Worker(_make_cfg())
+    sent: list[dict] = []
+    worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
+
+    task = asyncio.create_task(worker._heartbeat())
+    await asyncio.sleep(0.2)
+    worker._shutdown_event.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    pings = [m for m in sent if m.get("type") == "ping"]
+    assert pings, f"Expected at least one ping, got: {sent}"
+    first = pings[0]
+    assert first["workerId"] == "w-test01"
+    assert "timestamp" in first
+    # Heartbeat is a worker-level signal; it must not be tied to any agent slot.
+    assert "agentId" not in first
+
+
+async def test_heartbeat_stops_when_shutdown_signalled():
+    """_heartbeat must exit promptly once the shutdown event fires."""
+    worker = Worker(_make_cfg())
+    worker._send = AsyncMock()
+
+    worker._shutdown_event.set()
+    # Should return without hanging since shutdown is already signalled.
+    await asyncio.wait_for(worker._heartbeat(), timeout=2.0)
+
+
+async def test_heartbeat_swallows_send_failures(monkeypatch):
+    """A transient send failure must not kill the heartbeat loop."""
+    monkeypatch.setattr(Worker, "HEARTBEAT_INTERVAL_SECONDS", 0.02)
+    worker = Worker(_make_cfg())
+    calls = 0
+
+    async def flaky(_payload: dict) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("transient")
+
+    worker._send = flaky
+
+    async def stop_soon() -> None:
+        await asyncio.sleep(0.1)
+        worker._shutdown_event.set()
+
+    asyncio.create_task(stop_soon())
+    # Should not raise even though the first send failed.
+    await asyncio.wait_for(worker._heartbeat(), timeout=2.0)
+    assert calls >= 2, f"Loop should keep going after send failure, got {calls} calls"

@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from database import AsyncSessionLocal, get_db
@@ -60,6 +60,14 @@ def _row(obj) -> dict:
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
 
+# How long an agent/worker can go without sending any WebSocket message before
+# the sweeper marks it offline. Workers send an application-level `ping` every
+# ~25s, so 90s = three missed heartbeats.
+WORKER_OFFLINE_AFTER_SECONDS = float(os.environ.get("WORKER_OFFLINE_AFTER_SECONDS", "90"))
+# How often the sweeper task wakes up to look for stale agents.
+WORKER_SWEEP_INTERVAL_SECONDS = float(os.environ.get("WORKER_SWEEP_INTERVAL_SECONDS", "30"))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -74,7 +82,15 @@ async def lifespan(app: FastAPI):
         foreman_log.addHandler(_h)
     foreman_log.propagate = False
     foreman_log.info("foreman logger active (level=DEBUG)")
-    yield
+    sweeper = asyncio.create_task(_stale_worker_sweeper())
+    try:
+        yield
+    finally:
+        sweeper.cancel()
+        try:
+            await sweeper
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 app = FastAPI(title="Pioneer Square", lifespan=lifespan)
@@ -139,6 +155,113 @@ async def init_db():
             .values(state="offline")
         )
         await db.commit()
+
+
+async def _touch_agent(
+    db, guild_id: str, agent_id: str | None, worker_id: str | None = None
+) -> None:
+    """Refresh ``last_seen`` for the agent (and its worker) so the sweeper
+    knows the connection is still alive. Called for every inbound WS frame.
+
+    If *worker_id* isn't passed we look it up from the agent row so messages
+    that only carry an ``agentId`` (most of them) still keep the worker fresh.
+    Once we know the worker, we also refresh every other agent owned by it —
+    a single worker process owns all its slots over one socket, so any
+    inbound frame proves the whole worker is alive.
+    """
+    if not agent_id and not worker_id:
+        return
+    now = datetime.now(UTC).isoformat()
+    if agent_id and worker_id is None:
+        res = await db.execute(select(Agent.worker_id).where(Agent.id == agent_id))
+        worker_id = res.scalar_one_or_none()
+    if worker_id:
+        await db.execute(
+            update(Worker)
+            .where(Worker.id == worker_id, Worker.guild_id == guild_id)
+            .values(last_seen=now)
+        )
+        await db.execute(
+            update(Agent)
+            .where(Agent.worker_id == worker_id, Agent.guild_id == guild_id)
+            .values(last_seen=now)
+        )
+    elif agent_id:
+        await db.execute(
+            update(Agent)
+            .where(Agent.id == agent_id, Agent.guild_id == guild_id)
+            .values(last_seen=now)
+        )
+    await db.commit()
+
+
+async def _stale_worker_sweeper() -> None:
+    """Background task: mark workers/agents offline if they haven't pinged recently.
+
+    Runs forever (cancelled at app shutdown). The websocket library's own
+    ping/pong catches dead TCP connections, but a worker process could be
+    stuck in a way that still answers protocol pings; the application-level
+    `ping` heartbeat is what this sweeper actually relies on.
+    """
+    logger.info(
+        "Stale-worker sweeper started: threshold=%.1fs interval=%.1fs",
+        WORKER_OFFLINE_AFTER_SECONDS,
+        WORKER_SWEEP_INTERVAL_SECONDS,
+    )
+    while True:
+        try:
+            await asyncio.sleep(WORKER_SWEEP_INTERVAL_SECONDS)
+            await _sweep_stale_workers_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Stale-worker sweeper iteration failed")
+
+
+async def _sweep_stale_workers_once() -> int:
+    """One pass of the stale-worker sweep. Returns the number of agents
+    marked offline. Extracted for direct testing."""
+    cutoff = (datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)).isoformat()
+    async with AsyncSessionLocal() as db:
+        stale_agents = (
+            await db.execute(
+                select(Agent.id, Agent.guild_id, Agent.worker_id)
+                .where(Agent.state != "offline")
+                .where(Agent.last_seen.isnot(None))
+                .where(Agent.last_seen < cutoff)
+            )
+        ).all()
+        if not stale_agents:
+            return 0
+        stale_worker_keys: set[tuple[str, str]] = set()
+        for row in stale_agents:
+            await db.execute(
+                update(Agent)
+                .where(Agent.id == row.id, Agent.guild_id == row.guild_id)
+                .values(state="offline", activity=None)
+            )
+            if row.worker_id:
+                stale_worker_keys.add((row.worker_id, row.guild_id))
+            agent_owners.pop(row.id, None)
+        for worker_id, gid in stale_worker_keys:
+            await db.execute(
+                update(Worker)
+                .where(Worker.id == worker_id, Worker.guild_id == gid)
+                .values(state="offline")
+            )
+        await db.commit()
+    for row in stale_agents:
+        logger.warning(
+            "Marking %s offline: no ping in over %.0fs (guild=%s)",
+            row.id,
+            WORKER_OFFLINE_AFTER_SECONDS,
+            row.guild_id,
+        )
+        await broadcast(
+            row.guild_id,
+            {"type": "agent-state", "agentId": row.id, "state": "offline"},
+        )
+    return len(stale_agents)
 
 
 def generate_guild_id():
@@ -633,6 +756,20 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             data = await websocket.receive_json()
             msg_type = data.get("type")
 
+            # Refresh last_seen for any inbound frame so the sweeper knows
+            # this worker is still alive. Cheap no-op for browser users
+            # (they don't carry an agentId/workerId).
+            await _touch_agent(db, guild_id, data.get("agentId"), data.get("workerId"))
+
+            if msg_type == "ping":
+                # Application-level heartbeat. Workers send this on an idle
+                # timer so quiet workers stay marked online; reply with pong
+                # so the worker can detect a half-open socket too.
+                await websocket.send_json(
+                    {"type": "pong", "timestamp": datetime.now(UTC).isoformat()}
+                )
+                continue
+
             if msg_type == "join":
                 agent_id = data.get("agentId")
                 agent_name = data.get("agentName", "Unknown")
@@ -647,6 +784,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     type=agent_type,
                     state="idle",
                     joined_at=joined_at,
+                    last_seen=joined_at,
                 )
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["id"],
@@ -657,6 +795,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         "type": stmt.excluded.type,
                         "state": stmt.excluded.state,
                         "joined_at": stmt.excluded.joined_at,
+                        "last_seen": stmt.excluded.last_seen,
                     },
                 )
                 await db.execute(stmt)
@@ -665,7 +804,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     await db.execute(
                         update(Worker)
                         .where(Worker.id == worker_id, Worker.guild_id == guild_id)
-                        .values(state="online")
+                        .values(state="online", last_seen=joined_at)
                     )
                 await db.commit()
                 if agent_id:
