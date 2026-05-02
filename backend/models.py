@@ -27,6 +27,10 @@ class Agent(Base):
     state = Column(Text, nullable=False, server_default="idle")
     activity = Column(Text, nullable=True)
     joined_at = Column(Text, nullable=False)
+    # ISO-8601 UTC timestamp of the last message received from this agent over
+    # the WebSocket. Refreshed by every inbound frame (incl. application-level
+    # `ping`); the sweeper marks the agent offline when this gets stale.
+    last_seen = Column(Text, nullable=True)
 
 
 class Message(Base):
@@ -52,6 +56,7 @@ class Worker(Base):
     repos = Column(Text, nullable=False, server_default="[]")
     state = Column(Text, nullable=False, server_default="idle")
     created_at = Column(Text, nullable=False)
+    last_seen = Column(Text, nullable=True)
 
 
 class Task(Base):

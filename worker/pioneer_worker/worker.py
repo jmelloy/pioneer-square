@@ -680,6 +680,38 @@ class Worker:
         logger.info("Received %s — initiating graceful shutdown (signal again to force)", sig.name)
         loop.create_task(self._initiate_shutdown(f"signal {sig.name}"))
 
+    # Interval between application-level pings sent to the backend. Three
+    # missed heartbeats (~75s) is enough to trip the backend's 90s sweeper.
+    HEARTBEAT_INTERVAL_SECONDS: float = 25.0
+
+    async def _heartbeat(self) -> None:
+        """Send an application-level ping to the backend on a steady cadence.
+
+        The websockets library handles transport-level ping/pong on its own,
+        but the backend can't see those frames — its liveness tracking runs
+        on application messages. Without this loop a worker that finishes
+        all its tasks would go silent and the sweeper would mark it offline
+        even though the connection is healthy.
+        """
+        while not self._shutdown_event.is_set():
+            try:
+                await self._send(
+                    {
+                        "type": "ping",
+                        "workerId": self.cfg.worker_id,
+                        "timestamp": _now_iso(),
+                    }
+                )
+            except Exception as exc:
+                logger.debug("Heartbeat send failed (ignored): %s", exc)
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=self.HEARTBEAT_INTERVAL_SECONDS
+                )
+                return  # shutdown event fired
+            except TimeoutError:
+                continue
+
     async def _notify_offline(self) -> None:
         """Send an explicit worker-disconnect message before the WebSocket closes.
 
@@ -756,11 +788,12 @@ class Worker:
 
         runners = [asyncio.create_task(self._agent_loop(slot)) for slot in self.slots]
         puller = asyncio.create_task(self._idle_puller())
+        heartbeat = asyncio.create_task(self._heartbeat())
         try:
-            # Wait for either: all runners exit (graceful shutdown), or the
-            # listener/puller crashes (unexpected).
+            # Wait for either: all runners exit (graceful shutdown), or one of
+            # the auxiliary tasks crashes (unexpected).
             done, _pending = await asyncio.wait(
-                [listener, puller, *runners],
+                [listener, puller, heartbeat, *runners],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             # Surface any non-cancellation exception that fired first.
@@ -781,8 +814,9 @@ class Worker:
             # Stop the auxiliary tasks; the agent loops drain themselves.
             listener.cancel()
             puller.cancel()
+            heartbeat.cancel()
 
-            await asyncio.gather(listener, puller, *runners, return_exceptions=True)
+            await asyncio.gather(listener, puller, heartbeat, *runners, return_exceptions=True)
 
             if first_exc is not None:
                 raise first_exc
@@ -798,6 +832,10 @@ class Worker:
         async for msg in self.ws.messages():
             mtype = msg.get("type")
             logger.debug("WS message: type=%s keys=%s", mtype, list(msg.keys()))
+
+            if mtype == "pong":
+                # Heartbeat reply from the backend; nothing to do.
+                continue
 
             if mtype == "task-assigned":
                 if msg.get("workerId") != self.cfg.worker_id:
