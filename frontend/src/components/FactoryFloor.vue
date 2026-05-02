@@ -1,5 +1,5 @@
 <template>
-  <div class="factory-floor" ref="floorEl">
+  <div class="factory-floor" ref="floorEl" :class="[`size-${floorSize}`, `density-${rowDensity}`]">
     <!-- Background atmosphere — pared down -->
     <div class="floor-grid"></div>
 
@@ -39,7 +39,7 @@
         :key="row.task ? row.task.id : `empty-${row.index}`"
         class="task-row"
         :class="{ occupied: !!row.task, [`state-${row.task?.state || 'empty'}`]: true }"
-        :style="`height: ${ROW_H}px;`"
+        :style="`height: ${rowHeight}px;`"
       >
         <div class="row-header">
           <div class="row-num">{{ String(row.index + 1).padStart(2, '0') }}</div>
@@ -166,14 +166,16 @@ const ACTIVITY_TO_STATION: Record<AgentActivity, StationKey> = {
 }
 
 // ── Layout geometry ────────────────────────────────────────
-const CHAT_PANE_W = 360
-const TABLE_LEFT  = 28
-const TABLE_TOP   = 56
-const ROW_H       = 92
-const ROW_GAP     = 8
-const MAX_ROWS    = 4
-const TICKER_H    = 28
-const BREAK_PAD   = 20
+const CHAT_PANE_W   = 360
+const TABLE_LEFT    = 28
+const TABLE_TOP     = 56
+const ROW_GAP       = 8
+const MAX_ROWS      = 4
+const TICKER_H      = 28
+const BREAK_PAD     = 20
+const BREAK_ROOM_H  = 86
+const ROW_H_MIN     = 70
+const ROW_H_MAX     = 124
 
 const floorEl = ref<HTMLElement | null>(null)
 const floorW  = ref(900)
@@ -186,17 +188,44 @@ function updateFloorSize() {
   }
 }
 
-const tableWidth = computed(() =>
-  Math.max(floorW.value - CHAT_PANE_W - TABLE_LEFT * 2, 420)
-)
+// Container-aware size classes — `sm` collapses the chat-pane reservation
+// since the chat pane is hidden on narrow viewports.
+const floorSize = computed<'sm' | 'md' | 'lg'>(() => {
+  if (floorW.value < 720) return 'sm'
+  if (floorW.value < 1100) return 'md'
+  return 'lg'
+})
+
+const tableWidth = computed(() => {
+  const reservedRight = floorSize.value === 'sm' ? 0 : CHAT_PANE_W
+  return Math.max(floorW.value - reservedRight - TABLE_LEFT * 2, 360)
+})
 
 const visibleRowCount = computed(() => {
   const active = activeTasks.value.length
   return Math.max(2, Math.min(MAX_ROWS, active || 2))
 })
 
+// Row height auto-fits remaining vertical space so 1–4 rows always look
+// well-proportioned without scrolling. Clamped between MIN/MAX.
+const rowHeight = computed(() => {
+  const reserved = TABLE_TOP + BREAK_PAD + BREAK_ROOM_H + TICKER_H + 16
+  const available = Math.max(160, floorH.value - reserved)
+  const n = visibleRowCount.value
+  const candidate = (available - (n - 1) * ROW_GAP) / n
+  return Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, Math.round(candidate)))
+})
+
+// Row density class drives smaller stations / shorter labels when packed.
+const rowDensity = computed<'tall' | 'medium' | 'short'>(() => {
+  const h = rowHeight.value
+  if (h >= 100) return 'tall'
+  if (h >= 82)  return 'medium'
+  return 'short'
+})
+
 const tableHeight = computed(() =>
-  visibleRowCount.value * ROW_H + (visibleRowCount.value - 1) * ROW_GAP
+  visibleRowCount.value * rowHeight.value + (visibleRowCount.value - 1) * ROW_GAP
 )
 
 const breakRoomTop = computed(() =>
@@ -235,21 +264,20 @@ const taskRows = computed<TaskRow[]>(() => {
 })
 
 function rowYFor(rowIndex: number) {
-  return TABLE_TOP + rowIndex * (ROW_H + ROW_GAP)
+  return TABLE_TOP + rowIndex * (rowHeight.value + ROW_GAP)
 }
 
-// Agent stands on the bench surface (top quarter of row + small lift).
 function stationPos(rowIndex: number, key: StationKey): Position {
   const station = STATIONS.find(s => s.key === key)!
   const x = TABLE_LEFT + station.frac * tableWidth.value
-  const y = rowYFor(rowIndex) + ROW_H * 0.30
+  const y = rowYFor(rowIndex) + rowHeight.value * 0.30
   return { x, y }
 }
 
 function rowCenterPos(rowIndex: number): Position {
   return {
     x: TABLE_LEFT + tableWidth.value * 0.50,
-    y: rowYFor(rowIndex) + ROW_H * 0.30,
+    y: rowYFor(rowIndex) + rowHeight.value * 0.30,
   }
 }
 
@@ -261,7 +289,7 @@ const agentTimers: Record<string, ReturnType<typeof setTimeout>> = {}
 const prevTargetKey: Record<string, string> = {}
 
 function agentPos(id: string): Position {
-  return agentPositions[id] || { x: TABLE_LEFT + 60, y: TABLE_TOP + ROW_H }
+  return agentPositions[id] || { x: TABLE_LEFT + 60, y: TABLE_TOP + rowHeight.value }
 }
 
 function rowForAgent(agent: Agent): TaskRow | null {
@@ -935,4 +963,55 @@ function stateLabel(state: string) {
   from { transform: translateX(100vw); }
   to   { transform: translateX(-100%); }
 }
+
+/* ── Size classes ─────────────────────────────────────────── */
+
+/* Width tiers (`.size-sm` < 720px, `.size-md` < 1100px, `.size-lg` ≥ 1100px).
+   Narrow viewport: tighter title, smaller ambient gears, no chat-pane gutter. */
+.factory-floor.size-sm .factory-title { font-size: 6px; letter-spacing: 1.5px; }
+.factory-floor.size-sm .agent-count   { font-size: 6px; }
+.factory-floor.size-sm .ambient-gear.g1 { font-size: 32px; right: 10px; top: 50px; }
+.factory-floor.size-sm .ambient-gear.g2 { font-size: 22px; right: 36px; top: 76px; }
+.factory-floor.size-sm .row-header     { font-size: 6px; gap: 6px; padding: 3px 6px; }
+.factory-floor.size-sm .row-state      { font-size: 5px; padding: 1px 4px; }
+
+.factory-floor.size-lg .factory-title { font-size: 8px; }
+.factory-floor.size-lg .agent-count   { font-size: 8px; }
+.factory-floor.size-lg .ambient-gear.g1 { font-size: 60px; }
+.factory-floor.size-lg .ambient-gear.g2 { font-size: 38px; }
+
+/* Row density (`.density-tall` ≥ 100px row, `.density-medium` ≥ 82px,
+   `.density-short` < 82px). Smaller stations + hidden labels when packed. */
+.factory-floor.density-tall .station-icon  { width: 32px; height: 32px; }
+.factory-floor.density-tall .mini-engine   { font-size: 26px; }
+.factory-floor.density-tall .mini-forge    { font-size: 22px; }
+.factory-floor.density-tall .mini-orb      { font-size: 20px; }
+.factory-floor.density-tall .mini-tg-body  { width: 28px; height: 22px; }
+.factory-floor.density-tall .mini-tank     { width: 26px; height: 26px; }
+.factory-floor.density-tall .mini-book.b1  { height: 20px; }
+.factory-floor.density-tall .mini-book.b2  { height: 14px; }
+.factory-floor.density-tall .mini-book.b3  { height: 22px; }
+.factory-floor.density-tall .mini-book.b4  { height: 16px; }
+
+.factory-floor.density-medium .station-icon { width: 26px; height: 26px; }
+.factory-floor.density-medium .mini-engine  { font-size: 20px; }
+.factory-floor.density-medium .mini-forge   { font-size: 17px; }
+.factory-floor.density-medium .mini-orb     { font-size: 15px; }
+
+.factory-floor.density-short .station-icon  { width: 20px; height: 20px; }
+.factory-floor.density-short .station-label { display: none; }
+.factory-floor.density-short .mini-engine   { font-size: 16px; }
+.factory-floor.density-short .mini-forge    { font-size: 14px; }
+.factory-floor.density-short .mini-orb      { font-size: 13px; }
+.factory-floor.density-short .mini-tg-body  { width: 18px; height: 14px; }
+.factory-floor.density-short .mini-tank     { width: 18px; height: 18px; }
+.factory-floor.density-short .mini-book     { width: 3px; }
+.factory-floor.density-short .mini-book.b1  { height: 12px; }
+.factory-floor.density-short .mini-book.b2  { height: 9px; }
+.factory-floor.density-short .mini-book.b3  { height: 14px; }
+.factory-floor.density-short .mini-book.b4  { height: 10px; }
+.factory-floor.density-short .bench-station { bottom: 10px; }
+.factory-floor.density-short .bench-rail    { bottom: 8px; }
+.factory-floor.density-short .bench-bolts   { bottom: 1px; height: 6px; }
+.factory-floor.density-short .bolt          { width: 4px; height: 4px; }
 </style>
