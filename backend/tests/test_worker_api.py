@@ -8,6 +8,12 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, make_auth_token
 
+
+def _auth(db_path: str) -> dict:
+    """Helper: return Authorization header for the default test user."""
+    return {"Authorization": f"Bearer {make_auth_token(db_path)}"}
+
+
 # ---------------------------------------------------------------------------
 # Workers
 # ---------------------------------------------------------------------------
@@ -16,7 +22,7 @@ from helpers import insert_guild, make_auth_token
 def test_list_workers_empty(client):
     test_client, db_path = client
     insert_guild(db_path, "guild01")
-    resp = test_client.get("/guilds/guild01/workers")
+    resp = test_client.get("/guilds/guild01/workers", headers=_auth(db_path))
     assert resp.status_code == 200
     assert resp.json() == []
 
@@ -39,7 +45,7 @@ def test_create_worker_appears_in_list(client):
     test_client, db_path = client
     insert_guild(db_path, "guild03")
     test_client.post("/guilds/guild03/workers", json={"repos": ["org/backend"]})
-    resp = test_client.get("/guilds/guild03/workers")
+    resp = test_client.get("/guilds/guild03/workers", headers=_auth(db_path))
     assert resp.status_code == 200
     workers = resp.json()
     assert len(workers) == 1
@@ -51,8 +57,35 @@ def test_create_multiple_workers(client):
     insert_guild(db_path, "guild04")
     test_client.post("/guilds/guild04/workers", json={"repos": []})
     test_client.post("/guilds/guild04/workers", json={"repos": ["x/y"]})
-    resp = test_client.get("/guilds/guild04/workers")
+    resp = test_client.get("/guilds/guild04/workers", headers=_auth(db_path))
     assert len(resp.json()) == 2
+
+
+def test_create_worker_attributes_to_user(client):
+    """Worker registration with `user` resolves to a users.id and stores it on workers.user_id."""
+    import sqlite3
+
+    from helpers import insert_member
+
+    test_client, db_path = client
+    insert_guild(db_path, "guildusr")
+    insert_member(db_path, "guildusr", "user-bob", role="member")
+    # Bob's users row was created by insert_member; reference by login should also work.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE users SET github_login = ? WHERE id = ?",
+            ("bobby", "user-bob"),
+        )
+        conn.commit()
+    resp = test_client.post(
+        "/guilds/guildusr/workers",
+        json={"repos": [], "user": "bobby"},
+    )
+    assert resp.status_code == 200
+    worker_id = resp.json()["id"]
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT user_id FROM workers WHERE id = ?", (worker_id,)).fetchone()
+    assert row[0] == "user-bob"
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +113,7 @@ def test_assign_task_unknown_worker(client):
     resp = test_client.post(
         "/guilds/guild06/workers/w-nosuch/tasks",
         json={"description": "do something", "tool": "claude"},
+        headers=_auth(db_path),
     )
     assert resp.status_code == 404
 
@@ -92,6 +126,7 @@ def test_assign_task_returns_pending(client):
     resp = test_client.post(
         f"/guilds/guild07/workers/{worker_id}/tasks",
         json={"description": "Write a hello-world script", "tool": "claude"},
+        headers=_auth(db_path),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -104,14 +139,17 @@ def test_assign_task_appears_in_list(client):
     test_client, db_path = client
     insert_guild(db_path, "guild08")
     worker_id = _create_worker(test_client, "guild08")
+    headers = _auth(db_path)
 
     test_client.post(
         f"/guilds/guild08/workers/{worker_id}/tasks",
         json={"description": "Task one", "tool": "claude"},
+        headers=headers,
     )
     test_client.post(
         f"/guilds/guild08/workers/{worker_id}/tasks",
         json={"description": "Task two", "tool": "codex"},
+        headers=headers,
     )
 
     resp = test_client.get(f"/guilds/guild08/workers/{worker_id}/tasks")
@@ -268,15 +306,20 @@ def test_guild_task_list(client):
     insert_guild(db_path, "guild09")
     w1 = _create_worker(test_client, "guild09")
     w2 = _create_worker(test_client, "guild09")
+    headers = _auth(db_path)
 
     test_client.post(
-        f"/guilds/guild09/workers/{w1}/tasks", json={"description": "Alpha", "tool": "claude"}
+        f"/guilds/guild09/workers/{w1}/tasks",
+        json={"description": "Alpha", "tool": "claude"},
+        headers=headers,
     )
     test_client.post(
-        f"/guilds/guild09/workers/{w2}/tasks", json={"description": "Beta", "tool": "claude"}
+        f"/guilds/guild09/workers/{w2}/tasks",
+        json={"description": "Beta", "tool": "claude"},
+        headers=headers,
     )
 
-    resp = test_client.get("/guilds/guild09/tasks")
+    resp = test_client.get("/guilds/guild09/tasks", headers=headers)
     assert resp.status_code == 200
     descriptions = {t["description"] for t in resp.json()}
     assert "Alpha" in descriptions

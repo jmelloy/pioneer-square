@@ -9,7 +9,7 @@ Backfill notes:
 - Every existing guild with ``github_user_id`` set gets an ``owner`` membership.
 
 Revision ID: f4a5b6c7d8e9
-Revises: e3f4a5b6c7d8
+Revises: d5e6f7a8b9c0
 Create Date: 2026-05-02 00:00:00.000000
 
 """
@@ -20,7 +20,7 @@ from alembic import op
 
 
 revision: str = "f4a5b6c7d8e9"
-down_revision: Union[str, Sequence[str], None] = "e3f4a5b6c7d8"
+down_revision: Union[str, Sequence[str], None] = "d5e6f7a8b9c0"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

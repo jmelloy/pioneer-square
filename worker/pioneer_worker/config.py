@@ -22,6 +22,10 @@ class Config:
     worker_id: str | None = None
     worker_name: str | None = None
     github_token: str | None = None
+    # Identity of the human this worker runs on behalf of.
+    # Either a numeric GitHub user id (text) or a github_login.
+    # The backend resolves it to a users.id row and stores workers.user_id.
+    user: str | None = None
     repos_dir: str = "src"
     work_dir: str = "worktrees"
     claude_path: str = "claude"
@@ -130,6 +134,10 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         worker_name=overrides.get("worker_name")
         or raw.get("worker_name")
         or os.environ.get("PIONEER_WORKER_NAME"),
+        user=overrides.get("user")
+        or raw.get("user")
+        or os.environ.get("WORKER_USER")
+        or os.environ.get("PIONEER_WORKER_USER"),
         github_token=token,
         repos_dir=os.path.abspath(
             overrides.get("repos_dir") or paths_block.get("repos_dir", "/tmp/pioneer-repos")

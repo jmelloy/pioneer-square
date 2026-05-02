@@ -86,12 +86,18 @@ class Worker:
                     "repos": self.cfg.repos,
                     "github_token": None,
                     "hostname": socket.gethostname(),
+                    "user": self.cfg.user,
                 },
             )
             resp.raise_for_status()
             wid = resp.json()["id"]
         self.cfg.worker_id = wid
-        logger.info("Registered as worker %s (%d agents)", wid, len(self.slots))
+        logger.info(
+            "Registered as worker %s (%d agents) user=%s",
+            wid,
+            len(self.slots),
+            self.cfg.user or "<unattributed>",
+        )
 
     async def _fetch_github_token_if_needed(self) -> None:
         if self.cfg.github_token:
@@ -593,6 +599,7 @@ class Worker:
                 "type": "worker-register",
                 "workerId": self.cfg.worker_id,
                 "repos": self.cfg.repos,
+                **({"user": self.cfg.user} if self.cfg.user else {}),
             }
         )
 

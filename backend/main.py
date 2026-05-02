@@ -399,9 +399,7 @@ async def _ensure_membership(db, guild_id: str, user_id: str) -> str:
     on the guild row and no member rows; treat that owner as a member so the
     pre-migration UI keeps working without a manual repair step.
     """
-    g_res = await db.execute(
-        select(Guild.id, Guild.github_user_id).where(Guild.id == guild_id)
-    )
+    g_res = await db.execute(select(Guild.id, Guild.github_user_id).where(Guild.id == guild_id))
     grow = g_res.first()
     if not grow:
         raise HTTPException(status_code=404, detail="Guild not found")
@@ -427,9 +425,7 @@ async def _resolve_user_identifier(db, identifier: str) -> str | None:
     ident = (identifier or "").strip()
     if not ident:
         return None
-    res = await db.execute(
-        select(User.id).where((User.id == ident) | (User.github_login == ident))
-    )
+    res = await db.execute(select(User.id).where((User.id == ident) | (User.github_login == ident)))
     return res.scalar_one_or_none()
 
 
@@ -676,6 +672,57 @@ async def get_me(github_user_id: str = Depends(require_user)):
         await db.close()
 
 
+@app.get("/api/me")
+async def api_me(github_user_id: str = Depends(require_user)):
+    """Return the current user's profile + their guild memberships.
+
+    Includes legacy guilds owned via ``guilds.github_user_id`` even when no
+    ``guild_members`` row exists, so the UI never sees a logged-in owner with
+    zero guilds just because their backfill row is missing.
+    """
+    db = await get_db()
+    try:
+        u_res = await db.execute(select(User).where(User.id == github_user_id))
+        user = u_res.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        explicit = await db.execute(
+            select(GuildMember.guild_id, GuildMember.role, Guild.name)
+            .join(Guild, Guild.id == GuildMember.guild_id)
+            .where(GuildMember.user_id == github_user_id)
+        )
+        memberships = {
+            row.guild_id: {
+                "guild_id": row.guild_id,
+                "guild_name": row.name,
+                "role": row.role,
+            }
+            for row in explicit.fetchall()
+        }
+        legacy = await db.execute(
+            select(Guild.id, Guild.name).where(Guild.github_user_id == github_user_id)
+        )
+        for row in legacy.fetchall():
+            memberships.setdefault(
+                row.id,
+                {"guild_id": row.id, "guild_name": row.name, "role": "owner"},
+            )
+        return {
+            "user": {
+                "id": user.id,
+                "github_id": user.github_id,
+                "github_login": user.github_login,
+                "email": user.email,
+                "display_name": user.display_name,
+                "avatar_url": user.avatar_url,
+            },
+            "memberships": list(memberships.values()),
+        }
+    finally:
+        await db.close()
+
+
 @app.delete("/auth/logout")
 async def logout(credentials: HTTPAuthorizationCredentials = Depends(_http_bearer)):
     """Invalidate the current login_token."""
@@ -749,8 +796,7 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
             .select_from(Guild)
             .outerjoin(
                 GuildMember,
-                (GuildMember.guild_id == Guild.id)
-                & (GuildMember.user_id == github_user_id),
+                (GuildMember.guild_id == Guild.id) & (GuildMember.user_id == github_user_id),
             )
             .outerjoin(
                 Agent,
@@ -759,8 +805,7 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
                 & (Agent.state != "offline"),
             )
             .where(
-                (GuildMember.user_id == github_user_id)
-                | (Guild.github_user_id == github_user_id)
+                (GuildMember.user_id == github_user_id) | (Guild.github_user_id == github_user_id)
             )
             .group_by(Guild.id)
             .order_by(Guild.created_at.desc())
@@ -829,6 +874,163 @@ async def get_guild(guild_id: str, github_user_id: str = Depends(require_member(
             "agents": [_row(a) for a in agents],
             "messages": [_row(m) for m in reversed(messages)],
         }
+    finally:
+        await db.close()
+
+
+class MemberCreate(BaseModel):
+    # Either a users.id (numeric GitHub id as text) or a github_login.
+    user: str
+    role: str = "member"  # owner | member | viewer
+
+
+class MemberUpdate(BaseModel):
+    role: str  # owner | member | viewer
+
+
+_VALID_ROLES = {"owner", "member", "viewer"}
+
+
+@app.get("/api/guilds/{guild_id}/members")
+async def list_guild_members(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+):
+    """List members of a guild (caller must be a member)."""
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(
+                GuildMember.user_id,
+                GuildMember.role,
+                GuildMember.created_at,
+                User.github_login,
+                User.display_name,
+                User.avatar_url,
+            )
+            .outerjoin(User, User.id == GuildMember.user_id)
+            .where(GuildMember.guild_id == guild_id)
+            .order_by(GuildMember.created_at.asc())
+        )
+        return [dict(r._mapping) for r in result.fetchall()]
+    finally:
+        await db.close()
+
+
+@app.post("/api/guilds/{guild_id}/members")
+async def add_guild_member(
+    guild_id: str,
+    data: MemberCreate,
+    github_user_id: str = Depends(require_member("owner")),
+):
+    """Add a member to a guild by users.id or github_login (owner only)."""
+    if data.role not in _VALID_ROLES:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid role; must be one of {sorted(_VALID_ROLES)}"
+        )
+    db = await get_db()
+    try:
+        target_id = await _resolve_user_identifier(db, data.user)
+        if not target_id:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"User '{data.user}' not found. They must log in to Pioneer Square once "
+                    "before they can be added."
+                ),
+            )
+        now = datetime.now(UTC).isoformat()
+        stmt = sqlite_insert(GuildMember).values(
+            guild_id=guild_id,
+            user_id=target_id,
+            role=data.role,
+            created_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["guild_id", "user_id"],
+            set_={"role": stmt.excluded.role},
+        )
+        await db.execute(stmt)
+        await db.commit()
+        return {"guild_id": guild_id, "user_id": target_id, "role": data.role}
+    finally:
+        await db.close()
+
+
+@app.patch("/api/guilds/{guild_id}/members/{user_id}")
+async def update_guild_member(
+    guild_id: str,
+    user_id: str,
+    data: MemberUpdate,
+    github_user_id: str = Depends(require_member("owner")),
+):
+    """Change a member's role (owner only)."""
+    if data.role not in _VALID_ROLES:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid role; must be one of {sorted(_VALID_ROLES)}"
+        )
+    db = await get_db()
+    try:
+        res = await db.execute(
+            select(GuildMember).where(
+                GuildMember.guild_id == guild_id, GuildMember.user_id == user_id
+            )
+        )
+        member = res.scalar_one_or_none()
+        if not member:
+            raise HTTPException(status_code=404, detail="Member not found")
+        # Don't let the last owner demote themselves and lock the guild.
+        if member.role == "owner" and data.role != "owner":
+            owner_count = await db.execute(
+                select(func.count())
+                .select_from(GuildMember)
+                .where(GuildMember.guild_id == guild_id, GuildMember.role == "owner")
+            )
+            if (owner_count.scalar() or 0) <= 1:
+                raise HTTPException(
+                    status_code=400, detail="Cannot demote the last owner of a guild"
+                )
+        member.role = data.role
+        await db.commit()
+        return {"guild_id": guild_id, "user_id": user_id, "role": data.role}
+    finally:
+        await db.close()
+
+
+@app.delete("/api/guilds/{guild_id}/members/{user_id}")
+async def remove_guild_member(
+    guild_id: str,
+    user_id: str,
+    github_user_id: str = Depends(require_member("owner")),
+):
+    """Remove a member from a guild (owner only)."""
+    db = await get_db()
+    try:
+        res = await db.execute(
+            select(GuildMember).where(
+                GuildMember.guild_id == guild_id, GuildMember.user_id == user_id
+            )
+        )
+        member = res.scalar_one_or_none()
+        if not member:
+            raise HTTPException(status_code=404, detail="Member not found")
+        if member.role == "owner":
+            owner_count = await db.execute(
+                select(func.count())
+                .select_from(GuildMember)
+                .where(GuildMember.guild_id == guild_id, GuildMember.role == "owner")
+            )
+            if (owner_count.scalar() or 0) <= 1:
+                raise HTTPException(
+                    status_code=400, detail="Cannot remove the last owner of a guild"
+                )
+        await db.execute(
+            delete(GuildMember).where(
+                GuildMember.guild_id == guild_id, GuildMember.user_id == user_id
+            )
+        )
+        await db.commit()
+        return {"status": "removed", "user_id": user_id}
     finally:
         await db.close()
 
@@ -1048,11 +1250,17 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 # A standalone worker process is announcing/refreshing its config.
                 worker_id = data.get("workerId")
                 repos = data.get("repos") or []
+                user_ident = data.get("user")
                 if worker_id:
+                    update_vals: dict = {"repos": json.dumps(repos)}
+                    if user_ident:
+                        resolved = await _resolve_user_identifier(db, user_ident)
+                        if resolved:
+                            update_vals["user_id"] = resolved
                     await db.execute(
                         update(Worker)
                         .where(Worker.id == worker_id, Worker.guild_id == guild_id)
-                        .values(repos=json.dumps(repos))
+                        .values(**update_vals)
                     )
                     await db.commit()
 
@@ -1551,7 +1759,12 @@ def _parse_event(tool: str, event: dict, pi_last_text: str) -> str | None:
 
 
 @app.post("/guilds/{guild_id}/agents/{agent_id}/run")
-async def start_agent_run(guild_id: str, agent_id: str, req: RunAgentRequest):
+async def start_agent_run(
+    guild_id: str,
+    agent_id: str,
+    req: RunAgentRequest,
+    github_user_id: str = Depends(require_member()),
+):
     """Spawn an AI coding agent subprocess and stream its output over WebSocket."""
     old = running_processes.get(agent_id)
     if old:
@@ -1565,7 +1778,11 @@ async def start_agent_run(guild_id: str, agent_id: str, req: RunAgentRequest):
 
 
 @app.delete("/guilds/{guild_id}/agents/{agent_id}/run")
-async def stop_agent_run(guild_id: str, agent_id: str):
+async def stop_agent_run(
+    guild_id: str,
+    agent_id: str,
+    github_user_id: str = Depends(require_member()),
+):
     """Terminate a running agent subprocess."""
     proc = running_processes.get(agent_id)
     if not proc:
@@ -1703,7 +1920,11 @@ def _build_spawn_worker_env(
 
 
 @app.post("/guilds/{guild_id}/spawn-worker")
-async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
+async def spawn_worker_container(
+    guild_id: str,
+    data: SpawnWorkerRequest,
+    github_user_id: str = Depends(require_member()),
+):
     """Start a new worker container via Docker. Requires the Docker socket to be mounted."""
     try:
         import docker as docker_sdk
@@ -1773,7 +1994,10 @@ async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
 
 
 @app.get("/guilds/{guild_id}/pending-auth")
-async def get_pending_auth(guild_id: str):
+async def get_pending_auth(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+):
     """Return workers currently waiting for a Claude auth code.
 
     The frontend calls this on mount so the auth panel is restored after a
@@ -1784,7 +2008,10 @@ async def get_pending_auth(guild_id: str):
 
 
 @app.get("/guilds/{guild_id}/workers")
-async def list_workers(guild_id: str):
+async def list_workers(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+):
     db = await get_db()
     try:
         result = await db.execute(
@@ -1796,7 +2023,12 @@ async def list_workers(guild_id: str):
 
 
 @app.post("/guilds/{guild_id}/workers/{worker_id}/tasks")
-async def assign_task(guild_id: str, worker_id: str, data: TaskCreate):
+async def assign_task(
+    guild_id: str,
+    worker_id: str,
+    data: TaskCreate,
+    github_user_id: str = Depends(require_member()),
+):
     """Persist a task and broadcast a task-assigned event for the worker process."""
     task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     created_at = datetime.now(UTC).isoformat()
@@ -1867,7 +2099,12 @@ class WorkerMessage(BaseModel):
 
 
 @app.post("/guilds/{guild_id}/workers/{worker_id}/message")
-async def message_worker(guild_id: str, worker_id: str, data: WorkerMessage):
+async def message_worker(
+    guild_id: str,
+    worker_id: str,
+    data: WorkerMessage,
+    github_user_id: str = Depends(require_member()),
+):
     """Forward a message to a worker process via its guild WebSocket."""
     text_msg = data.message.strip()
     if not text_msg:
@@ -1891,7 +2128,10 @@ async def message_worker(guild_id: str, worker_id: str, data: WorkerMessage):
 
 
 @app.get("/guilds/{guild_id}/tasks")
-async def list_guild_tasks(guild_id: str):
+async def list_guild_tasks(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+):
     """List all tasks for a guild, most recent first."""
     db = await get_db()
     try:
@@ -1922,7 +2162,11 @@ async def list_guild_tasks(guild_id: str):
 
 
 @app.get("/guilds/{guild_id}/tasks/{task_id}/logs")
-async def get_task_logs(guild_id: str, task_id: str):
+async def get_task_logs(
+    guild_id: str,
+    task_id: str,
+    github_user_id: str = Depends(require_member()),
+):
     """Get all saved log lines for a task."""
     db = await get_db()
     try:
@@ -1959,6 +2203,7 @@ async def get_guild_logs(
     worker_id: str | None = None,
     agent_id: str | None = None,
     task_id: str | None = None,
+    github_user_id: str = Depends(require_member()),
 ):
     """Get task_logs filtered by worker_id, agent_id, or task_id."""
     if not (worker_id or agent_id or task_id):
@@ -2004,7 +2249,12 @@ class FollowupCreate(BaseModel):
 
 
 @app.post("/guilds/{guild_id}/tasks/{task_id}/followup")
-async def create_task_followup(guild_id: str, task_id: str, data: FollowupCreate):
+async def create_task_followup(
+    guild_id: str,
+    task_id: str,
+    data: FollowupCreate,
+    github_user_id: str = Depends(require_member()),
+):
     """Send follow-up instructions to a worker — executed in the same worktree/branch."""
     db = await get_db()
     try:
@@ -2033,7 +2283,11 @@ async def create_task_followup(guild_id: str, task_id: str, data: FollowupCreate
 
 
 @app.post("/guilds/{guild_id}/tasks/{task_id}/finalize")
-async def finalize_task_endpoint(guild_id: str, task_id: str):
+async def finalize_task_endpoint(
+    guild_id: str,
+    task_id: str,
+    github_user_id: str = Depends(require_member()),
+):
     """Signal a worker to finalize a task — no more follow-ups."""
     db = await get_db()
     try:
@@ -2071,7 +2325,11 @@ async def finalize_task_endpoint(guild_id: str, task_id: str):
 
 
 @app.post("/guilds/{guild_id}/tasks/{task_id}/cancel")
-async def cancel_task_endpoint(guild_id: str, task_id: str):
+async def cancel_task_endpoint(
+    guild_id: str,
+    task_id: str,
+    github_user_id: str = Depends(require_member()),
+):
     """Cancel a running or pending task — terminates the worker's Claude subprocess."""
     db = await get_db()
     try:
@@ -2118,7 +2376,12 @@ class RedirectCreate(BaseModel):
 
 
 @app.post("/guilds/{guild_id}/tasks/{task_id}/redirect")
-async def redirect_task_endpoint(guild_id: str, task_id: str, data: RedirectCreate):
+async def redirect_task_endpoint(
+    guild_id: str,
+    task_id: str,
+    data: RedirectCreate,
+    github_user_id: str = Depends(require_member()),
+):
     """Redirect a running task: SIGTERM the Claude subprocess and resume it with new instructions."""
     instructions = data.instructions.strip()
     if not instructions:
@@ -2166,7 +2429,7 @@ async def redirect_task_endpoint(guild_id: str, task_id: str, data: RedirectCrea
 @app.get("/guilds/{guild_id}/foreman/context")
 async def get_foreman_context(
     guild_id: str,
-    github_user_id: str = Depends(require_user),
+    github_user_id: str = Depends(require_member()),
 ):
     """Return the stored foreman conversation turns for this guild+user (debug view)."""
     db = await get_db()
@@ -2183,7 +2446,7 @@ async def get_foreman_context(
 @app.post("/guilds/{guild_id}/foreman/clear-context")
 async def clear_foreman_context(
     guild_id: str,
-    github_user_id: str = Depends(require_user),
+    github_user_id: str = Depends(require_member()),
 ):
     """Delete all stored foreman turns for this guild+user. Chat history in messages table is preserved."""
     db = await get_db()
