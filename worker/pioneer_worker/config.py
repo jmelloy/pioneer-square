@@ -104,7 +104,9 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         if isinstance(token, str) and token.startswith("env:"):
             token = os.environ.get(token[4:].strip()) or None
         elif token is None:
-            token = os.environ.get("PIONEER_GITHUB_TOKEN")
+            # GITHUB_TOKEN fallback supports backend-spawned containers, which
+            # mount no TOML and inherit the var verbatim from the backend env.
+            token = os.environ.get("PIONEER_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
 
     cfg_dir = cfg_path.parent
 

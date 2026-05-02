@@ -158,3 +158,46 @@ def test_load_overrides_beat_env(tmp_path, monkeypatch):
     toml_path.write_text('backend_url = "ws://toml:1"\nguild_id = "g"\n')
     cfg = load(str(toml_path), overrides={"backend_url": "ws://override:2"})
     assert cfg.backend_url == "ws://override:2"
+
+
+# ---------------------------------------------------------------------------
+# load() — github token env var fallbacks (used by spawn-worker docker path)
+# ---------------------------------------------------------------------------
+
+
+def test_load_github_token_from_pioneer_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("PIONEER_GITHUB_TOKEN", "ghp_pioneer")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.github_token == "ghp_pioneer"
+
+
+def test_load_github_token_from_github_token_env(tmp_path, monkeypatch):
+    """Backend-spawned containers set GITHUB_TOKEN (no TOML mounted)."""
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.delenv("PIONEER_GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_github")
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.github_token == "ghp_github"
+
+
+def test_load_github_token_pioneer_beats_github(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("PIONEER_GITHUB_TOKEN", "ghp_pioneer")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_github")
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.github_token == "ghp_pioneer"
+
+
+def test_load_github_token_empty_pioneer_falls_through(tmp_path, monkeypatch):
+    """Empty PIONEER_GITHUB_TOKEN should not mask GITHUB_TOKEN."""
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("PIONEER_GITHUB_TOKEN", "")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_github")
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.github_token == "ghp_github"

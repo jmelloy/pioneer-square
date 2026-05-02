@@ -1409,11 +1409,16 @@ async def spawn_worker_container(guild_id: str, data: SpawnWorkerRequest):
     image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
     backend_url = os.environ.get("WORKER_BACKEND_URL", "http://backend:8000")
 
+    # PIONEER_GITHUB_TOKEN feeds the worker's config loader; GITHUB_TOKEN is
+    # also picked up by the gh CLI inside the worker for PR creation.
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
     env = {
         "PIONEER_BACKEND_URL": backend_url,
         "PIONEER_GUILD_ID": guild_id,
         "PIONEER_REPOS": ",".join(data.repos),
-        "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
+        "PIONEER_GITHUB_TOKEN": gh_token,
+        "GITHUB_TOKEN": gh_token,
+        "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
     }
     if data.name:
         env["PIONEER_WORKER_NAME"] = data.name
