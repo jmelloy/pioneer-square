@@ -181,6 +181,30 @@ FOREMAN_TOOLS = [
         },
     },
     {
+        "name": "shutdown_worker",
+        "description": (
+            "Send a shutdown signal to a worker agent, causing it to gracefully stop. "
+            "Idle agents exit immediately; busy agents finish their current task and skip "
+            "the follow-up window. The worker process disconnects and transitions to offline. "
+            "Use when a worker is misbehaving, the operator is winding down, or a host needs "
+            "to be freed up — prefer cancel_task for stopping a single bad task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "worker_id": {
+                    "type": "string",
+                    "description": "Worker agent ID (e.g. w-abc123).",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason for shutdown.",
+                },
+            },
+            "required": ["worker_id"],
+        },
+    },
+    {
         "name": "list_github_issues",
         "description": (
             "List GitHub issues for a repo. Use this to discover work that needs to be done."
@@ -703,6 +727,23 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                             result_text = f"Task {task_id} cancelled." + (
                                 f" Reason: {reason}" if reason else ""
                             )
+
+                elif tu.name == "shutdown_worker":
+                    wid = inp["worker_id"]
+                    reason = inp.get("reason", "")
+                    worker_result = await db.execute(
+                        select(Worker.id).where(Worker.id == wid, Worker.guild_id == guild_id)
+                    )
+                    if worker_result.scalar_one_or_none() is None:
+                        result_text = f"Worker {wid} not found."
+                    else:
+                        message: dict = {"type": "worker-shutdown", "workerId": wid}
+                        if reason:
+                            message["reason"] = reason
+                        await broadcast(guild_id, message)
+                        result_text = f"Shutdown signal sent to {wid}." + (
+                            f" Reason: {reason}" if reason else ""
+                        )
 
                 elif tu.name == "get_task_status":
                     task_id = inp["task_id"]
