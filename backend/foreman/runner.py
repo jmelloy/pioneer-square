@@ -356,6 +356,35 @@ def reset_foreman_poll(guild_id: str) -> None:
     _poll_tasks[guild_id] = task
 
 
+async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
+    """Return workers visible to the Foreman: only those whose ``state == 'online'``.
+
+    Offline workers can't accept task assignments, so listing them in the system
+    prompt just invites bad routing decisions. Orphan agents (no ``worker_id``)
+    that are non-offline are still surfaced for legacy compatibility.
+    """
+    from sqlalchemy import text
+
+    result = await db.execute(
+        text(
+            "SELECT w.id, w.repos, w.state as worker_state,"
+            " COUNT(a.id) as agent_count,"
+            " GROUP_CONCAT(a.id || ':' || a.state) as agents"
+            " FROM workers w"
+            " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
+            " WHERE w.guild_id = :guild_id AND w.state = 'online'"
+            " GROUP BY w.id"
+            " UNION ALL"
+            " SELECT a.id, '[]', a.state, 1, a.id || ':' || a.state"
+            " FROM agents a"
+            " WHERE a.guild_id = :guild_id AND a.type = 'worker'"
+            " AND a.worker_id IS NULL AND a.state != 'offline'"
+        ),
+        {"guild_id": guild_id},
+    )
+    return [dict(r._mapping) for r in result.fetchall()]
+
+
 async def run_foreman_ai(
     guild_id: str,
     human_message: str,
@@ -381,8 +410,6 @@ async def run_foreman_ai(
         user_id = await _get_guild_user_id(guild_id) or guild_id
 
     # Build live context for the system prompt
-    from sqlalchemy import text
-
     db = await get_db()
     try:
         guild_result = await db.execute(
@@ -391,24 +418,7 @@ async def run_foreman_ai(
         guild_row = guild_result.one_or_none()
         primary_repo = guild_row.primary_repo if guild_row else None
 
-        result = await db.execute(
-            text(
-                "SELECT w.id, w.repos, w.state as worker_state,"
-                " COUNT(a.id) as agent_count,"
-                " GROUP_CONCAT(a.id || ':' || a.state) as agents"
-                " FROM workers w"
-                " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
-                " WHERE w.guild_id = :guild_id"
-                " GROUP BY w.id"
-                " UNION ALL"
-                " SELECT a.id, '[]', a.state, 1, a.id || ':' || a.state"
-                " FROM agents a"
-                " WHERE a.guild_id = :guild_id AND a.type = 'worker'"
-                " AND a.worker_id IS NULL AND a.state != 'offline'"
-            ),
-            {"guild_id": guild_id},
-        )
-        worker_rows = [dict(r._mapping) for r in result.fetchall()]
+        worker_rows = await _fetch_online_workers(db, guild_id)
         task_result = await db.execute(
             select(
                 Task.id,

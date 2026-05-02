@@ -170,6 +170,87 @@ class TestBuildSystemPrompt:
         prompt = build_system_prompt('["w1"]', '["t1"]')
         assert prompt.startswith(FOREMAN_SYSTEM)
 
+    def test_empty_workers_renders_no_workers_message(self):
+        prompt = build_system_prompt("[]", "[]")
+        assert "## Current workers" in prompt
+        assert "No workers are currently online" in prompt
+        # Should not render an empty JSON code block when there are no workers
+        assert "```json\n[]\n```" not in prompt.split("## Recent tasks", 1)[0]
+
+    def test_pretty_printed_empty_workers_renders_no_workers_message(self):
+        # json.dumps([], indent=2) produces "[]" but be defensive about whitespace
+        prompt = build_system_prompt("[\n]", "[]")
+        assert "No workers are currently online" in prompt
+
+    def test_non_empty_workers_renders_json_block(self):
+        workers = '[{"id": "w-abc", "state": "online"}]'
+        prompt = build_system_prompt(workers, "[]")
+        assert workers in prompt
+        assert "No workers are currently online" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# 1b. _fetch_online_workers (filters workers by state=='online')
+# ---------------------------------------------------------------------------
+
+
+def _insert_worker_with_state(db_path: str, guild_id: str, worker_id: str, state: str) -> None:
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (worker_id, guild_id, "[]", state, now),
+        )
+        conn.commit()
+
+
+class TestFetchOnlineWorkers:
+    @pytest.mark.asyncio
+    async def test_excludes_offline_workers(self, db_session):
+        from foreman.runner import _fetch_online_workers
+
+        guild_id = "g-fetch1"
+        insert_guild(db_session, guild_id)
+        _insert_worker_with_state(db_session, guild_id, "w-online1", "online")
+        _insert_worker_with_state(db_session, guild_id, "w-offline1", "offline")
+        _insert_worker_with_state(db_session, guild_id, "w-idle1", "idle")
+
+        async with database_module.AsyncSessionLocal() as db:
+            rows = await _fetch_online_workers(db, guild_id)
+
+        ids = {row["id"] for row in rows}
+        assert ids == {"w-online1"}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_online_workers(self, db_session):
+        from foreman.runner import _fetch_online_workers
+
+        guild_id = "g-fetch2"
+        insert_guild(db_session, guild_id)
+        _insert_worker_with_state(db_session, guild_id, "w-offline2", "offline")
+
+        async with database_module.AsyncSessionLocal() as db:
+            rows = await _fetch_online_workers(db, guild_id)
+
+        assert rows == []
+
+    @pytest.mark.asyncio
+    async def test_scopes_to_guild(self, db_session):
+        from foreman.runner import _fetch_online_workers
+
+        guild_a = "g-fetch3a"
+        guild_b = "g-fetch3b"
+        insert_guild(db_session, guild_a)
+        insert_guild(db_session, guild_b)
+        _insert_worker_with_state(db_session, guild_a, "w-a", "online")
+        _insert_worker_with_state(db_session, guild_b, "w-b", "online")
+
+        async with database_module.AsyncSessionLocal() as db:
+            rows = await _fetch_online_workers(db, guild_a)
+
+        assert {row["id"] for row in rows} == {"w-a"}
+
 
 # ---------------------------------------------------------------------------
 # 2. _serialize_content (runner helper)
