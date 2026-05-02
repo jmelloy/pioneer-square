@@ -1440,9 +1440,8 @@ def _build_spawn_worker_env(
         # what gh CLI inside the worker reads when opening PRs.
         env["PIONEER_GITHUB_TOKEN"] = gh_token
         env["GITHUB_TOKEN"] = gh_token
-    if api_key := source_env.get("ANTHROPIC_API_KEY"):
-        env["ANTHROPIC_API_KEY"] = api_key
-    # Prefer the DB-stored token; fall back to the host env var.
+    # ANTHROPIC_API_KEY is intentionally NOT forwarded — that's the foreman's
+    # API auth. Workers run the claude CLI under the user's OAuth subscription.
     oauth = claude_oauth_token or source_env.get("CLAUDE_CODE_OAUTH_TOKEN") or ""
     if oauth:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth

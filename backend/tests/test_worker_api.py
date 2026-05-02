@@ -130,15 +130,24 @@ def test_spawn_worker_env_forwards_claude_oauth_token():
         guild_id="g1",
         repos=["owner/repo"],
         worker_name=None,
-        source_env={
-            "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oauth-abc",
-            "ANTHROPIC_API_KEY": "sk-ant-api-xyz",
-        },
+        source_env={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oauth-abc"},
     )
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oauth-abc"
-    assert env["ANTHROPIC_API_KEY"] == "sk-ant-api-xyz"
     assert env["PIONEER_GUILD_ID"] == "g1"
     assert env["PIONEER_REPOS"] == "owner/repo"
+
+
+def test_spawn_worker_env_does_not_forward_anthropic_api_key():
+    """ANTHROPIC_API_KEY is foreman-only; workers use OAuth."""
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=[],
+        worker_name=None,
+        source_env={"ANTHROPIC_API_KEY": "sk-ant-api-xyz"},
+    )
+    assert "ANTHROPIC_API_KEY" not in env
 
 
 def test_spawn_worker_env_omits_unset_keys():
