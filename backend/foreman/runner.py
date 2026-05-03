@@ -9,6 +9,7 @@ from database import get_db
 from events import broadcast
 from models import ForemanTurn, Guild, Message, Task, live_tasks_filter
 from sqlalchemy import delete, select
+from util.tasks import spawn
 
 from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
 from foreman.tools import FOREMAN_TOOLS, exec_tools
@@ -359,48 +360,49 @@ async def _poll_loop(guild_id: str) -> None:
         if asyncio.current_task() is not _poll_tasks.get(guild_id):
             return
 
-        # Query non-terminal tasks for this guild.
-        db = await get_db()
         try:
-            result = await db.execute(
-                select(Task.id, Task.state, Task.name).where(
-                    Task.guild_id == guild_id,
-                    ~Task.state.in_(list(_TERMINAL_STATES)),
-                    live_tasks_filter(),
+            db = await get_db()
+            try:
+                result = await db.execute(
+                    select(Task.id, Task.state, Task.name).where(
+                        Task.guild_id == guild_id,
+                        ~Task.state.in_(list(_TERMINAL_STATES)),
+                        live_tasks_filter(),
+                    )
                 )
+                active_tasks = [dict(r._mapping) for r in result.fetchall()]
+            finally:
+                await db.close()
+
+            n = len(active_tasks)
+            next_interval = min(interval * 2, POLL_MAX_SECS)
+            logger.debug(
+                "guild=%s polling %d active tasks, next check in %.0fm",
+                guild_id,
+                n,
+                next_interval / 60,
             )
-            active_tasks = [dict(r._mapping) for r in result.fetchall()]
-        finally:
-            await db.close()
 
-        n = len(active_tasks)
-        next_interval = min(interval * 2, POLL_MAX_SECS)
-        logger.debug(
-            "guild=%s polling %d active tasks, next check in %.0fm",
-            guild_id,
-            n,
-            next_interval / 60,
-        )
+            if active_tasks:
+                task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks[:8])
+                msg = (
+                    f"[periodic-check] Automated status poll — {n} non-terminal "
+                    f"task(s): {task_summary}. Check whether any are stalled. "
+                    "Use get_task_status to inspect a task if it looks stuck. "
+                    "If everything looks healthy, no action is needed."
+                )
+                spawn(run_foreman_ai(guild_id, msg), name=f"foreman.poll:{guild_id}")
 
-        if active_tasks:
-            task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks[:8])
-            msg = (
-                f"[periodic-check] Automated status poll — {n} non-terminal "
-                f"task(s): {task_summary}. Check whether any are stalled. "
-                "Use get_task_status to inspect a task if it looks stuck. "
-                "If everything looks healthy, no action is needed."
-            )
-            asyncio.create_task(run_foreman_ai(guild_id, msg))
-
-        # Announce next check interval so the UI can display a countdown.
-        interval = next_interval
-        try:
+            # Announce next check interval so the UI can display a countdown.
+            interval = next_interval
             await broadcast(
                 guild_id,
                 {"type": "foreman-poll-status", "nextCheckIn": interval},
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass
+            logger.exception("guild=%s _poll_loop iteration failed", guild_id)
 
 
 def reset_foreman_poll(guild_id: str) -> None:
@@ -412,7 +414,7 @@ def reset_foreman_poll(guild_id: str) -> None:
     old = _poll_tasks.pop(guild_id, None)
     if old and not old.done():
         old.cancel()
-    task = asyncio.create_task(_poll_loop(guild_id))
+    task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
     _poll_tasks[guild_id] = task
 
 

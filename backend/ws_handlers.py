@@ -12,13 +12,13 @@ land tests + future logic.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from events import (
+    agent_owner_lock,
     agent_owners,
     broadcast,
     connections,
@@ -29,6 +29,7 @@ from foreman import maybe_post_plan_comment, reset_foreman_poll, run_foreman_ai
 from models import Agent, Message, Task, TaskLog, User, Worker
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from util.tasks import spawn
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,11 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     await ctx.db.commit()
     if agent_id:
         ctx.joined_agents.add(agent_id)
-        agent_owners[agent_id] = ctx.websocket
+        # Take the per-guild ownership lock so a concurrent disconnect-cleanup
+        # for the previous socket can't read a stale ``agent_owners`` entry,
+        # decide it owns the agent, and stamp the just-joined agent offline.
+        async with agent_owner_lock(ctx.guild_id):
+            agent_owners[agent_id] = ctx.websocket
     await broadcast(
         ctx.guild_id,
         {
@@ -229,7 +234,10 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
             },
         )
     else:
-        asyncio.create_task(run_foreman_ai(ctx.guild_id, content, user_id=ctx.ws_user_id))
+        spawn(
+            run_foreman_ai(ctx.guild_id, content, user_id=ctx.ws_user_id),
+            name=f"foreman.chat:{ctx.guild_id}",
+        )
         reset_foreman_poll(ctx.guild_id)
 
 
@@ -348,7 +356,10 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if task_id and not finalized_by:
-        asyncio.create_task(maybe_post_plan_comment(ctx.guild_id, task_id, last_text))
+        spawn(
+            maybe_post_plan_comment(ctx.guild_id, task_id, last_text),
+            name=f"foreman.plan-comment:{task_id}",
+        )
     if not task_id:
         return
 
@@ -368,17 +379,18 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
                 "finishedAt": finished_at,
             },
         )
-        asyncio.create_task(
+        spawn(
             run_foreman_ai(
                 ctx.guild_id,
                 f"[timeout] Follow-up window expired for task {task_id} "
                 f"(worker {worker_id_msg}). The task has been auto-finalized "
                 "as done — no foreman action required.",
                 user_id=task_uid,
-            )
+            ),
+            name=f"foreman.task-timeout:{task_id}",
         )
     else:
-        asyncio.create_task(
+        spawn(
             run_foreman_ai(
                 ctx.guild_id,
                 f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
@@ -387,7 +399,8 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
                 "(e.g. update tests, add docs, fix lint errors). "
                 "Otherwise call finalize_task to mark it complete.",
                 user_id=task_uid,
-            )
+            ),
+            name=f"foreman.task-complete:{task_id}",
         )
     reset_foreman_poll(ctx.guild_id)
 
@@ -402,13 +415,14 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     if not task_id:
         return
     task_uid = await _task_user_id(ctx.db, task_id)
-    asyncio.create_task(
+    spawn(
         run_foreman_ai(
             ctx.guild_id,
             f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
             "Decide: call send_followup for more work, or call finalize_task to mark it done.",
             user_id=task_uid,
-        )
+        ),
+        name=f"foreman.followup-done:{task_id}",
     )
     reset_foreman_poll(ctx.guild_id)
 
@@ -426,7 +440,10 @@ async def handle_needs_input(ctx: WSContext, data: dict) -> None:
         f"Stop reason: {stop_reason}" + (f"\nLast message: {last_msg}" if last_msg else "")
     )
     task_uid = await _task_user_id(ctx.db, task_id) if task_id else None
-    asyncio.create_task(run_foreman_ai(ctx.guild_id, escalation, user_id=task_uid))
+    spawn(
+        run_foreman_ai(ctx.guild_id, escalation, user_id=task_uid),
+        name=f"foreman.needs-input:{task_id or 'unknown'}",
+    )
 
 
 async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
@@ -445,7 +462,7 @@ async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
         len(pending_claude_auth.get(ctx.guild_id, {})),
         ctx.guild_id,
     )
-    asyncio.create_task(
+    spawn(
         run_foreman_ai(
             ctx.guild_id,
             f"Worker {worker_id} needs Claude authentication. "
@@ -453,7 +470,8 @@ async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
             "A human must visit this URL, complete authentication, then paste the "
             "resulting code into the auth panel that has appeared in the chat UI "
             "(or type it into the Foreman Comms input). The worker is waiting.",
-        )
+        ),
+        name=f"foreman.claude-auth:{worker_id}",
     )
 
 
