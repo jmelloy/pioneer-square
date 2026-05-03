@@ -29,6 +29,7 @@ from models import (
     User,
     UserSession,
     Worker,
+    live_tasks_filter,
 )
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
@@ -2086,7 +2087,11 @@ async def list_tasks(guild_id: str, worker_id: str):
     try:
         result = await db.execute(
             select(Task)
-            .where(Task.worker_id == worker_id, Task.guild_id == guild_id)
+            .where(
+                Task.worker_id == worker_id,
+                Task.guild_id == guild_id,
+                live_tasks_filter(),
+            )
             .order_by(Task.created_at.desc())
         )
         return [_row(t) for t in result.scalars().all()]
@@ -2151,8 +2156,9 @@ async def list_guild_tasks(
                 Task.issue_repo,
                 Task.created_at,
                 Task.finished_at,
+                Task.deleted_at,
             )
-            .where(Task.guild_id == guild_id)
+            .where(Task.guild_id == guild_id, live_tasks_filter())
             .order_by(Task.created_at.desc())
             .limit(100)
         )
@@ -2171,7 +2177,11 @@ async def get_task_logs(
     db = await get_db()
     try:
         result = await db.execute(
-            select(Task.id).where(Task.id == task_id, Task.guild_id == guild_id)
+            select(Task.id).where(
+                Task.id == task_id,
+                Task.guild_id == guild_id,
+                live_tasks_filter(),
+            )
         )
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Task not found")
@@ -2282,13 +2292,56 @@ async def create_task_followup(
     return {"status": "sent", "taskId": task_id}
 
 
+# Default soft-delete window for finalized tasks when the caller does not
+# specify one. 3 days lets the operator review recent work in the UI before
+# it disappears.
+DEFAULT_FINALIZE_TTL = timedelta(days=3)
+
+
+class FinalizeBody(BaseModel):
+    # Optional ISO-8601 timestamp at which to soft-delete this task.
+    deleted_at: str | None = None
+    # Optional convenience: seconds from now until soft-delete. If both fields
+    # are set, deleted_at wins.
+    expires_in_seconds: int | None = None
+
+
+def _resolve_finalize_deleted_at(body: FinalizeBody | None) -> str:
+    """Return an ISO-8601 UTC timestamp for the task's soft-delete instant.
+
+    Honours an explicit ``deleted_at`` first, then ``expires_in_seconds``,
+    and otherwise falls back to ``now + DEFAULT_FINALIZE_TTL``.
+    """
+    if body and body.deleted_at:
+        try:
+            parsed = datetime.fromisoformat(body.deleted_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid deleted_at: {exc}"
+            ) from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).isoformat()
+    if body and body.expires_in_seconds is not None:
+        if body.expires_in_seconds < 0:
+            raise HTTPException(status_code=400, detail="expires_in_seconds must be >= 0")
+        return (datetime.now(UTC) + timedelta(seconds=body.expires_in_seconds)).isoformat()
+    return (datetime.now(UTC) + DEFAULT_FINALIZE_TTL).isoformat()
+
+
 @app.post("/guilds/{guild_id}/tasks/{task_id}/finalize")
 async def finalize_task_endpoint(
     guild_id: str,
     task_id: str,
+    body: FinalizeBody | None = None,
     github_user_id: str = Depends(require_member()),
 ):
-    """Signal a worker to finalize a task — no more follow-ups."""
+    """Signal a worker to finalize a task — no more follow-ups.
+
+    The optional body may carry ``deleted_at`` (ISO-8601) or
+    ``expires_in_seconds`` to set the task's soft-delete window. If neither is
+    set, the task is soft-deleted ``DEFAULT_FINALIZE_TTL`` from now.
+    """
     db = await get_db()
     try:
         result = await db.execute(
@@ -2298,8 +2351,11 @@ async def finalize_task_endpoint(
         if not worker_id:
             raise HTTPException(status_code=404, detail="Task not found")
         finished_at = datetime.now(UTC).isoformat()
+        deleted_at = _resolve_finalize_deleted_at(body)
         await db.execute(
-            update(Task).where(Task.id == task_id).values(state="done", finished_at=finished_at)
+            update(Task)
+            .where(Task.id == task_id)
+            .values(state="done", finished_at=finished_at, deleted_at=deleted_at)
         )
         await db.commit()
     finally:
@@ -2319,9 +2375,10 @@ async def finalize_task_endpoint(
             "taskId": task_id,
             "state": "done",
             "finishedAt": finished_at,
+            "deletedAt": deleted_at,
         },
     )
-    return {"status": "finalized", "taskId": task_id}
+    return {"status": "finalized", "taskId": task_id, "deletedAt": deleted_at}
 
 
 @app.post("/guilds/{guild_id}/tasks/{task_id}/cancel")

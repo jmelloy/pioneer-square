@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from database import get_db
 from events import broadcast
-from models import ForemanTurn, Guild, Message, Task
+from models import ForemanTurn, Guild, Message, Task, live_tasks_filter
 from sqlalchemy import delete, select
 
 from foreman.prompt import build_system_prompt
@@ -307,6 +307,7 @@ async def _poll_loop(guild_id: str) -> None:
                 select(Task.id, Task.state, Task.name).where(
                     Task.guild_id == guild_id,
                     ~Task.state.in_(list(_TERMINAL_STATES)),
+                    live_tasks_filter(),
                 )
             )
             active_tasks = [dict(r._mapping) for r in result.fetchall()]
@@ -430,7 +431,7 @@ async def run_foreman_ai(
                 Task.pr_url,
                 Task.finished_at,
             )
-            .where(Task.guild_id == guild_id)
+            .where(Task.guild_id == guild_id, live_tasks_filter())
             .order_by(Task.created_at.desc())
             .limit(10)
         )
