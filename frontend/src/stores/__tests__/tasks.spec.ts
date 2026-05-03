@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useTasksStore } from '../tasks'
 
@@ -150,6 +150,115 @@ describe('useTasksStore', () => {
     it('is a no-op for unrelated message types', () => {
       const store = useTasksStore()
       store.handleWebSocketMessage({ type: 'agent-state', state: 'idle' })
+      expect(store.tasks).toHaveLength(0)
+    })
+  })
+
+  describe('soft-delete (deletedAt)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('stores deletedAt from task-update and drops the row when the timer fires', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'working' })
+
+      const future = new Date(Date.now() + 60_000).toISOString()
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        state: 'done',
+        deletedAt: future,
+      })
+      expect(store.tasks[0].deleted_at).toBe(future)
+      expect(store.tasks).toHaveLength(1)
+
+      vi.advanceTimersByTime(60_001)
+      expect(store.tasks).toHaveLength(0)
+    })
+
+    it('drops a task immediately when deletedAt is already in the past', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'done' })
+
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        deletedAt: new Date(Date.now() - 1000).toISOString(),
+      })
+      expect(store.tasks).toHaveLength(0)
+    })
+
+    it('liveTasks excludes rows whose deleted_at has passed even before the timer fires', () => {
+      const store = useTasksStore()
+      const past = new Date(Date.now() - 5_000).toISOString()
+      const future = new Date(Date.now() + 5_000).toISOString()
+      // Push directly (bypass the WS handler that would also schedule removal).
+      store.tasks.push({ id: 't-live', state: 'done' })
+      store.tasks.push({ id: 't-future', state: 'done', deleted_at: future })
+      store.tasks.push({ id: 't-past', state: 'done', deleted_at: past })
+
+      const ids = store.liveTasks.map(t => t.id)
+      expect(ids).toContain('t-live')
+      expect(ids).toContain('t-future')
+      expect(ids).not.toContain('t-past')
+    })
+
+    it('clearTasks cancels pending expiry timers', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'done' })
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        deletedAt: new Date(Date.now() + 30_000).toISOString(),
+      })
+
+      store.clearTasks()
+      // If the timer were still live, advancing past it would throw because
+      // _removeTask would mutate cleared state — instead we just assert the
+      // store stays empty after the original window elapses.
+      vi.advanceTimersByTime(60_000)
+      expect(store.tasks).toEqual([])
+    })
+
+    it('reschedules when deletedAt changes on a subsequent task-update', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'done' })
+
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        deletedAt: new Date(Date.now() + 1_000).toISOString(),
+      })
+      // Replace with a much later expiry before the first one fires.
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        deletedAt: new Date(Date.now() + 60_000).toISOString(),
+      })
+
+      vi.advanceTimersByTime(2_000)
+      expect(store.tasks).toHaveLength(1)
+      vi.advanceTimersByTime(60_000)
+      expect(store.tasks).toHaveLength(0)
+    })
+
+    it('fetchTasks schedules expiry for rows whose deleted_at is in the future', async () => {
+      const store = useTasksStore()
+      const future = new Date(Date.now() + 1_000).toISOString()
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve([{ id: 't-1', state: 'done', deleted_at: future }]),
+        }),
+      )
+      await store.fetchTasks('g-1')
+      expect(store.tasks).toHaveLength(1)
+      vi.advanceTimersByTime(2_000)
       expect(store.tasks).toHaveLength(0)
     })
   })
