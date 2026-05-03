@@ -149,7 +149,8 @@ describe('useTasksStore', () => {
 
     it('is a no-op for unrelated message types', () => {
       const store = useTasksStore()
-      store.handleWebSocketMessage({ type: 'agent-state', state: 'idle' })
+      // Partial payload — handler should ignore unrelated types regardless of shape.
+      store.handleWebSocketMessage({ type: 'agent-state', agentId: 'a-1', state: 'idle' })
       expect(store.tasks).toHaveLength(0)
     })
   })

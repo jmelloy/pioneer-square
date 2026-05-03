@@ -11,9 +11,19 @@ function ghHeaders(token: string): Record<string, string> {
   }
 }
 
+function _readStoredRepos(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem('gh_repos') || '[]')
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    localStorage.removeItem('gh_repos')
+    return []
+  }
+}
+
 export const useGitHubStore = defineStore('github', () => {
   const token = ref<string>(localStorage.getItem('gh_token') || '')
-  const selectedRepos = ref<string[]>(JSON.parse(localStorage.getItem('gh_repos') || '[]'))
+  const selectedRepos = ref<string[]>(_readStoredRepos())
   const repos = ref<GitHubRepo[]>([])
   const issues = ref<GitHubIssue[]>([])
   const loading = ref(false)

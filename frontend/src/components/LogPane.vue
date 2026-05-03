@@ -236,8 +236,9 @@ import DOMPurify from 'dompurify'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import { useGuildStore } from '../stores/guild'
-import { useAuthStore } from '../stores/auth'
-import type { LogEntry, Task, WSMessage } from '../types'
+import { api } from '../utils/api'
+import { formatClock } from '../utils/format'
+import type { LogEntry, Task, WSInbound } from '../types'
 
 type PaneKind = 'agent' | 'worker' | 'task'
 
@@ -246,12 +247,9 @@ const props = defineProps<{
   id: string
 }>()
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
-
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
 const guildStore = useGuildStore()
-const authStore = useAuthStore()
 
 const bodyEl = ref<HTMLElement | null>(null)
 const expandedIdx = ref<number | null>(null)
@@ -402,11 +400,7 @@ async function fetchPendingAuth() {
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
   try {
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/pending-auth`, {
-      headers: authStore.authHeaders(),
-    })
-    if (!res.ok) return
-    const items: Array<{ workerId: string; url: string }> = await res.json()
+    const items = await api<Array<{ workerId: string; url: string }>>(`/guilds/${guildId}/pending-auth`)
     const match = items.find((i) => i.workerId === props.id)
     pendingAuthUrl.value = match?.url ?? null
   } catch {
@@ -414,7 +408,7 @@ async function fetchPendingAuth() {
   }
 }
 
-function handleAuthEvent(data: WSMessage) {
+function handleAuthEvent(data: WSInbound) {
   if (props.kind !== 'worker') return
   if (data.type === 'claude-auth-required' && data.workerId === props.id) {
     pendingAuthUrl.value = data.url
@@ -541,10 +535,7 @@ function toggleDetail(i: number) {
   expandedIdx.value = expandedIdx.value === i ? null : i
 }
 
-function formatTime(iso?: string) {
-  if (!iso) return '00:00:00'
-  return new Date(iso).toLocaleTimeString('en-US', { hour12: false })
-}
+const formatTime = (iso?: string) => formatClock(iso, true)
 
 function formatDateTime(iso?: string) {
   if (!iso) return ''

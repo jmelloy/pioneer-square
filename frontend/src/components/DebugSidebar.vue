@@ -63,14 +63,11 @@
 <script setup lang="ts">
 import { ref, nextTick, onMounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
-import { useAuthStore } from '../stores/auth'
-
-const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
+import { api } from '../utils/api'
 
 const emit = defineEmits<{ close: [] }>()
 
 const guildStore = useGuildStore()
-const authStore = useAuthStore()
 
 const debugContext = ref<any[]>([])
 const debugLoading = ref(false)
@@ -86,13 +83,8 @@ async function refreshDebug() {
   if (!guildId) return
   debugLoading.value = true
   try {
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/foreman/context`, {
-      headers: authStore.authHeaders()
-    })
-    if (res.ok) {
-      const data = await res.json()
-      debugContext.value = data.messages || []
-    }
+    const data = await api<{ messages?: unknown[] }>(`/guilds/${guildId}/foreman/context`)
+    debugContext.value = data?.messages || []
   } catch (e) {
     console.error('Failed to load foreman context', e)
   } finally {
@@ -107,10 +99,7 @@ async function clearContext() {
   if (!guildId) return
   debugClearing.value = true
   try {
-    await fetch(`${API_BASE}/guilds/${guildId}/foreman/clear-context`, {
-      method: 'POST',
-      headers: authStore.authHeaders()
-    })
+    await api(`/guilds/${guildId}/foreman/clear-context`, { method: 'POST' })
     debugContext.value = []
   } catch (e) {
     console.error('Failed to clear foreman context', e)
