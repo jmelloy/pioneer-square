@@ -224,7 +224,7 @@ describe('useTasksStore', () => {
       const store = useTasksStore()
       await store.fetchTasks('g-1')
       expect(store.tasks).toEqual(fakeTasks)
-      expect(fetch).toHaveBeenCalledWith('/guilds/g-1/tasks')
+      expect(fetch).toHaveBeenCalledWith('/guilds/g-1/tasks', expect.objectContaining({ headers: expect.any(Object) }))
     })
 
     it('fetchTasks short-circuits on empty guildId', async () => {
@@ -261,12 +261,12 @@ describe('useTasksStore', () => {
       await store.finalizeTask('g-1', 't-1')
       await store.cancelTask('g-1', 't-1')
 
-      expect(fetchMock).toHaveBeenNthCalledWith(1, '/guilds/g-1/tasks/t-1/finalize', {
+      expect(fetchMock).toHaveBeenNthCalledWith(1, '/guilds/g-1/tasks/t-1/finalize', expect.objectContaining({
         method: 'POST',
-      })
-      expect(fetchMock).toHaveBeenNthCalledWith(2, '/guilds/g-1/tasks/t-1/cancel', {
+      }))
+      expect(fetchMock).toHaveBeenNthCalledWith(2, '/guilds/g-1/tasks/t-1/cancel', expect.objectContaining({
         method: 'POST',
-      })
+      }))
     })
 
     it('throws when the API returns non-2xx', async () => {

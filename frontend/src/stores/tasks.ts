@@ -1,8 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { useAuthStore } from './auth'
 import type { LogEntry, Task, TaskState, WSMessage } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
+
+function _authHeaders(): Record<string, string> {
+  return useAuthStore().authHeaders()
+}
 
 const STATE_LABELS: Record<string, string> = {
   pending: 'pending',
@@ -35,7 +40,7 @@ export const useTasksStore = defineStore('tasks', () => {
   async function fetchTasks(guildId: string) {
     if (!guildId) return
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks`)
+      const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks`, { headers: _authHeaders() })
       if (res.ok) tasks.value = await res.json()
     } catch (e) {
       console.error('Failed to fetch tasks', e)
@@ -44,7 +49,7 @@ export const useTasksStore = defineStore('tasks', () => {
 
   async function fetchTaskLogs(guildId: string, taskId: string) {
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/logs`)
+      const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/logs`, { headers: _authHeaders() })
       if (!res.ok) return []
       const raw = await res.json()
       const logs: LogEntry[] = raw.map((r: any) => ({
@@ -63,7 +68,7 @@ export const useTasksStore = defineStore('tasks', () => {
   async function sendFollowup(guildId: string, taskId: string, instructions: string) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/followup`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ instructions }),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -73,6 +78,7 @@ export const useTasksStore = defineStore('tasks', () => {
   async function finalizeTask(guildId: string, taskId: string) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/finalize`, {
       method: 'POST',
+      headers: _authHeaders(),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return res.json()
@@ -81,6 +87,7 @@ export const useTasksStore = defineStore('tasks', () => {
   async function cancelTask(guildId: string, taskId: string) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/cancel`, {
       method: 'POST',
+      headers: _authHeaders(),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return res.json()
@@ -89,7 +96,7 @@ export const useTasksStore = defineStore('tasks', () => {
   async function redirectTask(guildId: string, taskId: string, instructions: string) {
     const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/redirect`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
       body: JSON.stringify({ instructions }),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
