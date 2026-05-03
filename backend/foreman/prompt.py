@@ -63,19 +63,26 @@ Be concise — one short paragraph maximum unless detail is requested.\
 _EMPTY_WORKERS_BLOCKS = {"[]", "[\n]"}
 
 
-def build_system_prompt(
+def _build_system_parts(
     workers_block: str,
     tasks_block: str,
-    extra_context: str = "",
-    primary_repo: str | None = None,
-) -> str:
-    """Assemble the full system prompt from live worker/task context."""
+    extra_context: str,
+    primary_repo: str | None,
+) -> tuple[str, str]:
+    """Split the system prompt into (stable_prefix, volatile_suffix).
+
+    The stable prefix is identical across calls for a given guild and is the
+    cache-control breakpoint. The volatile suffix carries live worker/task
+    state and per-call context.
+    """
     repo_line = (
         f"\n\nThe primary repository for this guild is `{primary_repo}`."
         " Check it first when searching for issues."
         if primary_repo
         else ""
     )
+    stable = f"{FOREMAN_SYSTEM}{repo_line}\n\n"
+
     if workers_block.strip() in _EMPTY_WORKERS_BLOCKS:
         workers_section = (
             "## Current workers\n"
@@ -84,11 +91,39 @@ def build_system_prompt(
         )
     else:
         workers_section = f"## Current workers\n```json\n{workers_block}\n```\n\n"
-    parts = [
-        f"{FOREMAN_SYSTEM}{repo_line}\n\n",
-        workers_section,
-        f"## Recent tasks\n```json\n{tasks_block}\n```",
-    ]
+
+    volatile = f"{workers_section}## Recent tasks\n```json\n{tasks_block}\n```"
     if extra_context:
-        parts.append(f"\n\n## Context\n{extra_context}")
-    return "".join(parts)
+        volatile += f"\n\n## Context\n{extra_context}"
+    return stable, volatile
+
+
+def build_system_prompt(
+    workers_block: str,
+    tasks_block: str,
+    extra_context: str = "",
+    primary_repo: str | None = None,
+) -> str:
+    """Assemble the full system prompt from live worker/task context."""
+    stable, volatile = _build_system_parts(workers_block, tasks_block, extra_context, primary_repo)
+    return stable + volatile
+
+
+def build_system_blocks(
+    workers_block: str,
+    tasks_block: str,
+    extra_context: str = "",
+    primary_repo: str | None = None,
+) -> list[dict]:
+    """Return the system prompt as cache-controlled text blocks.
+
+    The stable prefix (constants + per-guild repo line) carries an ephemeral
+    cache_control breakpoint so it — and the tools rendered before it —
+    cache across calls. The volatile suffix (workers/tasks/extra_context)
+    follows uncached.
+    """
+    stable, volatile = _build_system_parts(workers_block, tasks_block, extra_context, primary_repo)
+    return [
+        {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": volatile},
+    ]
