@@ -55,6 +55,11 @@ the active agent and its state, and the last log lines. If a task looks stalled,
 redirect_task to course-correct or cancel_task if it's going in the wrong direction.
 If an entire worker is wedged or no longer needed, use shutdown_worker to stop the process.
 
+## Live state
+Each user turn is preceded by a `<state>` block containing the current online workers
+and recent tasks. Treat it as an operational briefing, not part of the human's message.
+The state reflects the moment this turn was sent — earlier turns saw earlier state.
+
 Workers are configured with repos. Prefer workers whose repos cover the task.
 Be concise — one short paragraph maximum unless detail is requested.\
 """
@@ -63,26 +68,39 @@ Be concise — one short paragraph maximum unless detail is requested.\
 _EMPTY_WORKERS_BLOCKS = {"[]", "[\n]"}
 
 
-def _build_system_parts(
-    workers_block: str,
-    tasks_block: str,
-    extra_context: str,
-    primary_repo: str | None,
-) -> tuple[str, str]:
-    """Split the system prompt into (stable_prefix, volatile_suffix).
-
-    The stable prefix is identical across calls for a given guild and is the
-    cache-control breakpoint. The volatile suffix carries live worker/task
-    state and per-call context.
-    """
+def _stable_system_text(primary_repo: str | None) -> str:
+    """The cacheable persona prefix. Stable per guild."""
     repo_line = (
         f"\n\nThe primary repository for this guild is `{primary_repo}`."
         " Check it first when searching for issues."
         if primary_repo
         else ""
     )
-    stable = f"{FOREMAN_SYSTEM}{repo_line}\n\n"
+    return f"{FOREMAN_SYSTEM}{repo_line}"
 
+
+def build_system_blocks(primary_repo: str | None = None) -> list[dict]:
+    """Return the system prompt as a single cache-controlled block.
+
+    Persona + per-guild repo line only. Live state (workers/tasks/extra_context)
+    is injected into the user turn via build_state_preamble — keeping system
+    100% cacheable across calls.
+    """
+    return [
+        {
+            "type": "text",
+            "text": _stable_system_text(primary_repo),
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def build_state_preamble(
+    workers_block: str,
+    tasks_block: str,
+    extra_context: str = "",
+) -> str:
+    """Render the live operational state to inject into the current user turn."""
     if workers_block.strip() in _EMPTY_WORKERS_BLOCKS:
         workers_section = (
             "## Current workers\n"
@@ -92,10 +110,10 @@ def _build_system_parts(
     else:
         workers_section = f"## Current workers\n```json\n{workers_block}\n```\n\n"
 
-    volatile = f"{workers_section}## Recent tasks\n```json\n{tasks_block}\n```"
+    body = f"{workers_section}## Recent tasks\n```json\n{tasks_block}\n```"
     if extra_context:
-        volatile += f"\n\n## Context\n{extra_context}"
-    return stable, volatile
+        body += f"\n\n## Context\n{extra_context}"
+    return f"<state>\n{body}\n</state>"
 
 
 def build_system_prompt(
@@ -104,26 +122,12 @@ def build_system_prompt(
     extra_context: str = "",
     primary_repo: str | None = None,
 ) -> str:
-    """Assemble the full system prompt from live worker/task context."""
-    stable, volatile = _build_system_parts(workers_block, tasks_block, extra_context, primary_repo)
-    return stable + volatile
+    """Render the legacy single-string system prompt.
 
-
-def build_system_blocks(
-    workers_block: str,
-    tasks_block: str,
-    extra_context: str = "",
-    primary_repo: str | None = None,
-) -> list[dict]:
-    """Return the system prompt as cache-controlled text blocks.
-
-    The stable prefix (constants + per-guild repo line) carries an ephemeral
-    cache_control breakpoint so it — and the tools rendered before it —
-    cache across calls. The volatile suffix (workers/tasks/extra_context)
-    follows uncached.
+    Production callers use build_system_blocks + build_state_preamble; this
+    helper is kept for the audit-log persistence path and for tests.
     """
-    stable, volatile = _build_system_parts(workers_block, tasks_block, extra_context, primary_repo)
-    return [
-        {"type": "text", "text": stable, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": volatile},
-    ]
+    return (
+        f"{_stable_system_text(primary_repo)}\n\n"
+        f"{build_state_preamble(workers_block, tasks_block, extra_context)}"
+    )

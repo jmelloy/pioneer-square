@@ -10,7 +10,7 @@ from events import broadcast
 from models import ForemanTurn, Guild, Message, Task, live_tasks_filter
 from sqlalchemy import delete, select
 
-from foreman.prompt import build_system_blocks, build_system_prompt
+from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
 from foreman.tools import FOREMAN_TOOLS, exec_tools
 
 try:
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_RESULT_CHARS = 8_000  # ~2 k tokens; cap per-result content before storing/sending
 MAX_HISTORY_MESSAGES = 20  # sliding window cap on messages sent to Anthropic
+MAX_FOREMAN_ROUNDS = 6  # safety cap on tool-call rounds per invocation
 _HUMAN_TURN_WINDOW = 5  # how many non-tool-response user turns to load from DB
 _TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
 _24H_SECS = 86_400
@@ -33,6 +34,64 @@ POLL_MAX_SECS = 3600  # maximum poll interval: 60 minutes
 
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
+
+# Module-level client — reused across calls so the underlying httpx connection
+# pool isn't thrown away every invocation. Lazily initialised so import works
+# without an API key.
+_anthropic_client: "_anthropic.AsyncAnthropic | None" = None
+
+
+def _get_anthropic_client() -> "_anthropic.AsyncAnthropic":
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = _anthropic.AsyncAnthropic()
+    return _anthropic_client
+
+
+def _inject_state_preamble(messages: list[dict], state_preamble: str) -> None:
+    """Prepend the live-state block to the last user turn (in place).
+
+    Called after history is loaded so the current human turn carries the latest
+    workers/tasks snapshot without persisting that snapshot to the DB.
+    """
+    if not messages or messages[-1]["role"] != "user":
+        return
+    last = messages[-1]
+    content = last["content"]
+    state_block = {"type": "text", "text": state_preamble}
+    if isinstance(content, str):
+        last["content"] = [state_block, {"type": "text", "text": content}]
+    elif isinstance(content, list):
+        last["content"] = [state_block, *content]
+
+
+def _stamp_message_cache_breakpoint(messages: list[dict]) -> None:
+    """Move the messages-level cache breakpoint to the last block of the last turn.
+
+    Clears any prior message-level cache_control first so we never accumulate
+    past the 4-breakpoint API cap (1 used by the system block). Earlier cached
+    prefixes remain readable via the API's 20-block lookback.
+    """
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
+    if not messages:
+        return
+    last = messages[-1]
+    content = last.get("content")
+    if isinstance(content, str):
+        last["content"] = [
+            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+        ]
+        return
+    if isinstance(content, list):
+        for block in reversed(content):
+            if isinstance(block, dict):
+                block["cache_control"] = {"type": "ephemeral"}
+                return
 
 
 def truncate_tool_result(content: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
@@ -461,28 +520,29 @@ async def run_foreman_ai(
         s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
     ]
     tasks_block = json.dumps(summarized_tasks[:6], indent=2)
-    system = build_system_prompt(
-        workers_block, tasks_block, extra_context, primary_repo=primary_repo
-    )
-    system_blocks = build_system_blocks(
+    system_blocks = build_system_blocks(primary_repo=primary_repo)
+    state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
+    # Legacy single-string render — persisted for audit only, not sent to the API.
+    audit_system = build_system_prompt(
         workers_block, tasks_block, extra_context, primary_repo=primary_repo
     )
 
     logger.info(
         "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
-        "system_prompt_chars=%d extra_context_chars=%d",
+        "system_chars=%d state_chars=%d extra_context_chars=%d",
         guild_id,
         len(worker_rows),
         len(summarized_tasks),
-        len(system),
+        len(system_blocks[0]["text"]),
+        len(state_preamble),
         len(extra_context),
     )
     logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
     logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
 
-    # Persist system prompt for auditing; excluded when rebuilding messages for the API
-    await _save_turn(guild_id, user_id, "system", system)
-    # Persist and load the new human turn
+    # Persist the rendered prompt + human turn for auditing; the API receives
+    # `system_blocks` (cacheable) and the state preamble injected at send time.
+    await _save_turn(guild_id, user_id, "system", audit_system)
     await _save_turn(guild_id, user_id, "user", human_message)
     messages = await _load_history(guild_id, user_id)
 
@@ -493,13 +553,18 @@ async def run_foreman_ai(
         len(human_message),
     )
 
-    client = _anthropic.AsyncAnthropic()
+    # Inject live state into the just-loaded current human turn so it travels
+    # with this call only — the DB still holds just the human's literal text.
+    _inject_state_preamble(messages, state_preamble)
+
+    client = _get_anthropic_client()
 
     try:
         text_parts = []
-        for round_num in range(6):  # safety cap on tool-call rounds
+        for round_num in range(MAX_FOREMAN_ROUNDS):
             messages = prune_history(messages)
             messages = strip_orphaned_tool_results(messages)
+            _stamp_message_cache_breakpoint(messages)
             logger.info(
                 "guild=%s run_foreman_ai round %d: sending %d messages to Claude",
                 guild_id,
@@ -605,6 +670,42 @@ async def run_foreman_ai(
                 ],
             )
             messages.append({"role": "user", "content": trimmed})
+        else:
+            # Loop exhausted: round MAX_FOREMAN_ROUNDS-1 returned tool_uses and
+            # we just executed them, but have no rounds left to send results
+            # back. Force a final tool-free wrap-up so the conversation ends
+            # cleanly (no orphaned tool_use, no consecutive user turns) and
+            # the human gets a summary of what the foreman accomplished.
+            logger.warning(
+                "guild=%s run_foreman_ai: hit %d-round safety cap, forcing wrap-up",
+                guild_id,
+                MAX_FOREMAN_ROUNDS,
+            )
+            messages = prune_history(messages)
+            messages = strip_orphaned_tool_results(messages)
+            _stamp_message_cache_breakpoint(messages)
+            wrap_resp = await client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                system=system_blocks,
+                messages=messages,
+                tools=FOREMAN_TOOLS,
+                tool_choice={"type": "none"},
+            )
+            wrap_usage = wrap_resp.usage
+            logger.info(
+                "guild=%s run_foreman_ai wrap-up: stop_reason=%s "
+                "input=%d cache_read=%d cache_write=%d output=%d",
+                guild_id,
+                wrap_resp.stop_reason,
+                getattr(wrap_usage, "input_tokens", 0) or 0,
+                getattr(wrap_usage, "cache_read_input_tokens", 0) or 0,
+                getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0,
+                getattr(wrap_usage, "output_tokens", 0) or 0,
+            )
+            await _save_turn(guild_id, user_id, "assistant", wrap_resp.content)
+            text_parts += [b.text for b in wrap_resp.content if b.type == "text" and b.text.strip()]
+            text_parts.append(f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_")
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
