@@ -1,0 +1,339 @@
+"""Worker registration, container spawn, task assignment, and worker messaging.
+
+Note: a ``Worker`` row is the persistent identity for one running worker
+process; an ``Agent`` row is its live WebSocket presence (mirrored 1:1 by
+``id``). Creating a worker also writes the matching Agent so the foreman can
+list it immediately, even before the worker process connects.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import random
+import secrets
+import string
+from datetime import UTC, datetime
+
+from auth_deps import require_member
+from database import get_db
+from events import broadcast, emit_terminal_line, pending_claude_auth
+from fastapi import APIRouter, Depends, HTTPException
+from models import Agent, ClaudeCredentials, Task, Worker, live_tasks_filter
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from utils import (
+    build_spawn_worker_env,
+    decode_claude_oauth_token,
+    row_to_dict,
+    worker_display_name,
+)
+from ws_handlers import _resolve_user_identifier
+
+router = APIRouter()
+
+
+class WorkerCreate(BaseModel):
+    repos: list[str]  # ["owner/repo", ...]
+    github_token: str | None = None
+    hostname: str | None = None
+    # Either a users.id (numeric GitHub id as text) or a github_login. The
+    # backend resolves it to a User row; mismatches are dropped silently
+    # (workers without a known user run as unattributed).
+    user: str | None = None
+
+
+class SpawnWorkerRequest(BaseModel):
+    repos: list[str]
+    name: str | None = None
+
+
+class TaskCreate(BaseModel):
+    description: str
+    name: str | None = None
+    tool: str = "claude"  # "claude" | "codex" | "pi"
+    issue_number: int | None = None
+    issue_repo: str | None = None
+    parent_task_id: str | None = None
+    phase: str | None = "execute"
+
+
+class WorkerMessage(BaseModel):
+    message: str
+
+
+@router.post("/guilds/{guild_id}/workers")
+async def create_worker(guild_id: str, data: WorkerCreate):
+    """Register a worker agent. The actual worker process must connect via WebSocket
+    using the returned id (see the standalone /worker package).
+
+    The response includes an ``auth_token`` the worker must present as a Bearer
+    credential when fetching guild secrets (Claude/GitHub creds). The token is
+    only returned here — there is no read-after-create endpoint by design, so
+    losing it means re-registering."""
+    worker_id = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    created_at = datetime.now(UTC).isoformat()
+    worker_name = worker_display_name(worker_id, data.hostname)
+    auth_token = secrets.token_urlsafe(32)
+
+    db = await get_db()
+    try:
+        resolved_user_id = await _resolve_user_identifier(db, data.user) if data.user else None
+        db.add(
+            Worker(
+                id=worker_id,
+                guild_id=guild_id,
+                repos=json.dumps(data.repos),
+                state="offline",
+                created_at=created_at,
+                user_id=resolved_user_id,
+                auth_token=auth_token,
+            )
+        )
+        stmt = sqlite_insert(Agent).values(
+            id=worker_id,
+            guild_id=guild_id,
+            worker_id=worker_id,
+            name=worker_name,
+            type="worker",
+            state="offline",
+            joined_at=created_at,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "guild_id": stmt.excluded.guild_id,
+                "worker_id": stmt.excluded.worker_id,
+                "name": stmt.excluded.name,
+                "type": stmt.excluded.type,
+                "state": stmt.excluded.state,
+                "joined_at": stmt.excluded.joined_at,
+            },
+        )
+        await db.execute(stmt)
+        await db.commit()
+    finally:
+        await db.close()
+
+    await broadcast(
+        guild_id,
+        {
+            "type": "agent-joined",
+            "agentId": worker_id,
+            "agentName": worker_name,
+            "agentType": "worker",
+            "state": "offline",
+            "joinedAt": created_at,
+        },
+    )
+    return {
+        "id": worker_id,
+        "name": worker_name,
+        "repos": data.repos,
+        "created_at": created_at,
+        "auth_token": auth_token,
+    }
+
+
+@router.post("/guilds/{guild_id}/spawn-worker")
+async def spawn_worker_container(
+    guild_id: str,
+    data: SpawnWorkerRequest,
+    github_user_id: str = Depends(require_member()),
+):
+    """Start a new worker container via Docker. Requires the Docker socket to be mounted."""
+    try:
+        import docker as docker_sdk
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Docker SDK not installed in backend")
+
+    try:
+        client = docker_sdk.from_env()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Docker socket unavailable: {e}")
+
+    image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
+
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(ClaudeCredentials.credentials_blob).where(ClaudeCredentials.guild_id == guild_id)
+        )
+        stored_blob = result.scalar_one_or_none()
+    finally:
+        await db.close()
+
+    env = build_spawn_worker_env(
+        guild_id=guild_id,
+        repos=data.repos,
+        worker_name=data.name,
+        source_env=dict(os.environ),
+        claude_oauth_token=decode_claude_oauth_token(stored_blob),
+    )
+
+    # Join the same Docker network as the backend so the worker can reach it,
+    # and inherit the compose project so `docker compose ps` lists the worker.
+    network = None
+    project = os.environ.get("COMPOSE_PROJECT_NAME")
+    try:
+        me = client.containers.get(os.environ.get("HOSTNAME", ""))
+        network = next(iter(me.attrs["NetworkSettings"]["Networks"].keys()), None)
+        if not project:
+            project = me.labels.get("com.docker.compose.project")
+    except Exception:
+        pass
+
+    labels: dict[str, str] = {}
+    if project:
+        # oneoff=True mirrors `docker compose run`, which keeps compose from
+        # warning about orphan containers on subsequent up/down commands.
+        labels["com.docker.compose.project"] = project
+        labels["com.docker.compose.service"] = "worker"
+        labels["com.docker.compose.oneoff"] = "True"
+
+    try:
+        run_kwargs: dict = dict(image=image, environment=env, detach=True, remove=True)
+        if network:
+            run_kwargs["network"] = network
+        if labels:
+            run_kwargs["labels"] = labels
+        container = client.containers.run(**run_kwargs)
+    except docker_sdk.errors.ImageNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Worker image '{image}' not found — run: docker compose build worker",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start container: {e}")
+
+    return {"container_id": container.id[:12], "image": image}
+
+
+@router.get("/guilds/{guild_id}/pending-auth")
+async def get_pending_auth(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+):
+    """Return workers currently waiting for a Claude auth code.
+
+    The frontend calls this on mount so the auth panel is restored after a
+    page refresh even if the original claude-auth-required broadcast was missed.
+    """
+    pending = pending_claude_auth.get(guild_id, {})
+    return [{"workerId": wid, "url": url} for wid, url in pending.items()]
+
+
+@router.get("/guilds/{guild_id}/workers")
+async def list_workers(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+):
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(Worker).where(Worker.guild_id == guild_id).order_by(Worker.created_at.desc())
+        )
+        return [row_to_dict(w) for w in result.scalars().all()]
+    finally:
+        await db.close()
+
+
+@router.post("/guilds/{guild_id}/workers/{worker_id}/tasks")
+async def assign_task(
+    guild_id: str,
+    worker_id: str,
+    data: TaskCreate,
+    github_user_id: str = Depends(require_member()),
+):
+    """Persist a task and broadcast a task-assigned event for the worker process."""
+    task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    created_at = datetime.now(UTC).isoformat()
+
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(Worker.id).where(Worker.id == worker_id, Worker.guild_id == guild_id)
+        )
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Worker not found")
+        name = data.name or data.description[:60]
+        db.add(
+            Task(
+                id=task_id,
+                worker_id=worker_id,
+                guild_id=guild_id,
+                name=name,
+                description=data.description,
+                tool=data.tool,
+                issue_number=data.issue_number,
+                issue_repo=data.issue_repo,
+                state="pending",
+                phase=data.phase or "execute",
+                parent_task_id=data.parent_task_id,
+                created_at=created_at,
+            )
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-assigned",
+            "workerId": worker_id,
+            "taskId": task_id,
+            "name": name,
+            "description": data.description,
+            "tool": data.tool,
+            "phase": data.phase or "execute",
+            "parentTaskId": data.parent_task_id,
+            "issueNumber": data.issue_number,
+            "issueRepo": data.issue_repo,
+        },
+    )
+
+    return {"id": task_id, "worker_id": worker_id, "state": "pending"}
+
+
+@router.get("/guilds/{guild_id}/workers/{worker_id}/tasks")
+async def list_tasks(guild_id: str, worker_id: str):
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(Task)
+            .where(
+                Task.worker_id == worker_id,
+                Task.guild_id == guild_id,
+                live_tasks_filter(),
+            )
+            .order_by(Task.created_at.desc())
+        )
+        return [row_to_dict(t) for t in result.scalars().all()]
+    finally:
+        await db.close()
+
+
+@router.post("/guilds/{guild_id}/workers/{worker_id}/message")
+async def message_worker(
+    guild_id: str,
+    worker_id: str,
+    data: WorkerMessage,
+    github_user_id: str = Depends(require_member()),
+):
+    """Forward a message to a worker process via its guild WebSocket."""
+    text_msg = data.message.strip()
+    if not text_msg:
+        raise HTTPException(status_code=400, detail="Empty message")
+
+    await emit_terminal_line(guild_id, worker_id, f"[foreman → worker] {text_msg}")
+    await broadcast(
+        guild_id,
+        {
+            "type": "worker-message",
+            "workerId": worker_id,
+            "message": text_msg,
+        },
+    )
+    return {"status": "delivered"}

@@ -1,0 +1,329 @@
+"""Guild + guild-membership routes.
+
+Owns ``/guilds`` (create/list) and ``/guilds/{id}`` (read/update), plus the
+``/api/guilds/{id}/members`` CRUD surface.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from auth_deps import require_member, require_user
+from database import get_db
+from events import broadcast
+from fastapi import APIRouter, Depends, HTTPException
+from models import Agent, Guild, GuildMember, Message, User
+from pydantic import BaseModel
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
+from utils import generate_guild_id, row_to_dict
+from ws_handlers import _resolve_user_identifier
+
+router = APIRouter()
+
+
+_VALID_ROLES = {"owner", "member", "viewer"}
+
+
+class GuildCreate(BaseModel):
+    name: str | None = None
+
+
+class GuildUpdate(BaseModel):
+    name: str | None = None
+    primary_repo: str | None = None
+
+
+class MemberCreate(BaseModel):
+    # Either a users.id (numeric GitHub id as text) or a github_login.
+    user: str
+    role: str = "member"  # owner | member | viewer
+
+
+class MemberUpdate(BaseModel):
+    role: str  # owner | member | viewer
+
+
+@router.post("/guilds")
+async def create_guild(
+    data: GuildCreate | None = None,
+    github_user_id: str = Depends(require_user),
+):
+    if data is None:
+        data = GuildCreate()
+    created_at = datetime.now(UTC).isoformat()
+    db = await get_db()
+    try:
+        for _ in range(5):
+            guild_id = generate_guild_id()
+            try:
+                db.add(
+                    Guild(
+                        id=guild_id,
+                        created_at=created_at,
+                        name=data.name or f"Guild {guild_id}",
+                        github_user_id=github_user_id,
+                    )
+                )
+                await db.flush()
+                db.add(
+                    GuildMember(
+                        guild_id=guild_id,
+                        user_id=github_user_id,
+                        role="owner",
+                        created_at=created_at,
+                    )
+                )
+                await db.commit()
+                break
+            except IntegrityError:
+                await db.rollback()
+                continue
+        else:
+            raise HTTPException(status_code=500, detail="Could not generate unique guild ID")
+    finally:
+        await db.close()
+    return {"id": guild_id, "created_at": created_at, "name": data.name or f"Guild {guild_id}"}
+
+
+@router.get("/guilds")
+async def list_guilds(github_user_id: str = Depends(require_user)):
+    db = await get_db()
+    try:
+        # Union: guilds the user explicitly belongs to, plus legacy guilds
+        # whose github_user_id matches but never got a guild_members row.
+        result = await db.execute(
+            select(
+                Guild.id,
+                Guild.created_at,
+                Guild.name,
+                func.count(Agent.id).label("agent_count"),
+            )
+            .select_from(Guild)
+            .outerjoin(
+                GuildMember,
+                (GuildMember.guild_id == Guild.id) & (GuildMember.user_id == github_user_id),
+            )
+            .outerjoin(
+                Agent,
+                (Agent.guild_id == Guild.id)
+                & (Agent.type != "foreman")
+                & (Agent.state != "offline"),
+            )
+            .where(
+                (GuildMember.user_id == github_user_id) | (Guild.github_user_id == github_user_id)
+            )
+            .group_by(Guild.id)
+            .order_by(Guild.created_at.desc())
+        )
+        return [dict(r._mapping) for r in result.fetchall()]
+    finally:
+        await db.close()
+
+
+@router.patch("/guilds/{guild_id}")
+async def update_guild(
+    guild_id: str,
+    data: GuildUpdate,
+    github_user_id: str = Depends(require_member("owner")),
+):
+    db = await get_db()
+    try:
+        result = await db.execute(select(Guild).where(Guild.id == guild_id))
+        guild = result.scalar_one_or_none()
+        if not guild:
+            raise HTTPException(status_code=404, detail="Guild not found")
+        if data.name is not None:
+            guild.name = data.name
+        if "primary_repo" in data.model_fields_set:
+            guild.primary_repo = data.primary_repo
+        await db.commit()
+    finally:
+        await db.close()
+    await broadcast(
+        guild_id,
+        {
+            "type": "guild-updated",
+            "id": guild_id,
+            "name": guild.name,
+            "primary_repo": guild.primary_repo,
+        },
+    )
+    return {"id": guild_id, "name": guild.name, "primary_repo": guild.primary_repo}
+
+
+@router.get("/guilds/{guild_id}")
+async def get_guild(guild_id: str, github_user_id: str = Depends(require_member())):
+    db = await get_db()
+    try:
+        result = await db.execute(select(Guild).where(Guild.id == guild_id))
+        guild = result.scalar_one_or_none()
+        if not guild:
+            raise HTTPException(status_code=404, detail="Guild not found")
+        result = await db.execute(
+            select(Agent).where(
+                Agent.guild_id == guild_id,
+                Agent.state != "offline",
+                Agent.type != "foreman",
+            )
+        )
+        agents = result.scalars().all()
+        result = await db.execute(
+            select(Message)
+            .where(Message.guild_id == guild_id)
+            .order_by(Message.created_at.desc())
+            .limit(100)
+        )
+        messages = result.scalars().all()
+        return {
+            **row_to_dict(guild),
+            "agents": [row_to_dict(a) for a in agents],
+            "messages": [row_to_dict(m) for m in reversed(messages)],
+        }
+    finally:
+        await db.close()
+
+
+@router.get("/api/guilds/{guild_id}/members")
+async def list_guild_members(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+):
+    """List members of a guild (caller must be a member)."""
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(
+                GuildMember.user_id,
+                GuildMember.role,
+                GuildMember.created_at,
+                User.github_login,
+                User.display_name,
+                User.avatar_url,
+            )
+            .outerjoin(User, User.id == GuildMember.user_id)
+            .where(GuildMember.guild_id == guild_id)
+            .order_by(GuildMember.created_at.asc())
+        )
+        return [dict(r._mapping) for r in result.fetchall()]
+    finally:
+        await db.close()
+
+
+@router.post("/api/guilds/{guild_id}/members")
+async def add_guild_member(
+    guild_id: str,
+    data: MemberCreate,
+    github_user_id: str = Depends(require_member("owner")),
+):
+    """Add a member to a guild by users.id or github_login (owner only)."""
+    if data.role not in _VALID_ROLES:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid role; must be one of {sorted(_VALID_ROLES)}"
+        )
+    db = await get_db()
+    try:
+        target_id = await _resolve_user_identifier(db, data.user)
+        if not target_id:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"User '{data.user}' not found. They must log in to Pioneer Square once "
+                    "before they can be added."
+                ),
+            )
+        now = datetime.now(UTC).isoformat()
+        stmt = sqlite_insert(GuildMember).values(
+            guild_id=guild_id,
+            user_id=target_id,
+            role=data.role,
+            created_at=now,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["guild_id", "user_id"],
+            set_={"role": stmt.excluded.role},
+        )
+        await db.execute(stmt)
+        await db.commit()
+        return {"guild_id": guild_id, "user_id": target_id, "role": data.role}
+    finally:
+        await db.close()
+
+
+@router.patch("/api/guilds/{guild_id}/members/{user_id}")
+async def update_guild_member(
+    guild_id: str,
+    user_id: str,
+    data: MemberUpdate,
+    github_user_id: str = Depends(require_member("owner")),
+):
+    """Change a member's role (owner only)."""
+    if data.role not in _VALID_ROLES:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid role; must be one of {sorted(_VALID_ROLES)}"
+        )
+    db = await get_db()
+    try:
+        res = await db.execute(
+            select(GuildMember).where(
+                GuildMember.guild_id == guild_id, GuildMember.user_id == user_id
+            )
+        )
+        member = res.scalar_one_or_none()
+        if not member:
+            raise HTTPException(status_code=404, detail="Member not found")
+        # Don't let the last owner demote themselves and lock the guild.
+        if member.role == "owner" and data.role != "owner":
+            owner_count = await db.execute(
+                select(func.count())
+                .select_from(GuildMember)
+                .where(GuildMember.guild_id == guild_id, GuildMember.role == "owner")
+            )
+            if (owner_count.scalar() or 0) <= 1:
+                raise HTTPException(
+                    status_code=400, detail="Cannot demote the last owner of a guild"
+                )
+        member.role = data.role
+        await db.commit()
+        return {"guild_id": guild_id, "user_id": user_id, "role": data.role}
+    finally:
+        await db.close()
+
+
+@router.delete("/api/guilds/{guild_id}/members/{user_id}")
+async def remove_guild_member(
+    guild_id: str,
+    user_id: str,
+    github_user_id: str = Depends(require_member("owner")),
+):
+    """Remove a member from a guild (owner only)."""
+    db = await get_db()
+    try:
+        res = await db.execute(
+            select(GuildMember).where(
+                GuildMember.guild_id == guild_id, GuildMember.user_id == user_id
+            )
+        )
+        member = res.scalar_one_or_none()
+        if not member:
+            raise HTTPException(status_code=404, detail="Member not found")
+        if member.role == "owner":
+            owner_count = await db.execute(
+                select(func.count())
+                .select_from(GuildMember)
+                .where(GuildMember.guild_id == guild_id, GuildMember.role == "owner")
+            )
+            if (owner_count.scalar() or 0) <= 1:
+                raise HTTPException(
+                    status_code=400, detail="Cannot remove the last owner of a guild"
+                )
+        await db.execute(
+            delete(GuildMember).where(
+                GuildMember.guild_id == guild_id, GuildMember.user_id == user_id
+            )
+        )
+        await db.commit()
+        return {"status": "removed", "user_id": user_id}
+    finally:
+        await db.close()

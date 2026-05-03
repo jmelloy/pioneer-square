@@ -81,7 +81,7 @@ def test_resolve_finalize_default_window(monkeypatch):
         def now(cls, tz=None):
             return fixed
 
-    monkeypatch.setattr("main.datetime", _FixedDT)
+    monkeypatch.setattr("routes.tasks.datetime", _FixedDT)
     out = _resolve_finalize_deleted_at(None)
     assert datetime.fromisoformat(out) == fixed + DEFAULT_FINALIZE_TTL
 
@@ -96,7 +96,7 @@ def test_resolve_finalize_explicit_seconds(monkeypatch):
         def now(cls, tz=None):
             return fixed
 
-    monkeypatch.setattr("main.datetime", _FixedDT)
+    monkeypatch.setattr("routes.tasks.datetime", _FixedDT)
     out = _resolve_finalize_deleted_at(FinalizeBody(expires_in_seconds=1200))
     assert datetime.fromisoformat(out) == fixed + timedelta(seconds=1200)
 
