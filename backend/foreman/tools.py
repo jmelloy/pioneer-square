@@ -8,12 +8,46 @@ import string
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from events import broadcast, emit_terminal_line
 from models import Agent, GithubToken, Guild, Task, TaskLog, Worker
 from sqlalchemy import select, update
+
+# Default soft-delete window (seconds) when finalize_task is called without
+# an explicit expiry. Mirrors backend.main.DEFAULT_FINALIZE_TTL.
+DEFAULT_FINALIZE_TTL_SECONDS = 3 * 24 * 60 * 60  # 3 days
+
+
+def _resolve_finalize_deleted_at(inp: dict) -> tuple[str, str | None]:
+    """Compute the soft-delete instant for a finalize_task tool call.
+
+    Returns ``(deleted_at_iso, error)`` — error is non-None when the inputs
+    were malformed. Honours an explicit ``deleted_at`` first, then
+    ``expires_in_seconds``, otherwise falls back to the default 3-day window.
+    """
+    raw = inp.get("deleted_at")
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError as exc:
+            return "", f"Invalid deleted_at: {exc}"
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC).isoformat(), None
+    seconds = inp.get("expires_in_seconds")
+    if seconds is not None:
+        try:
+            secs = int(seconds)
+        except (TypeError, ValueError):
+            return "", f"Invalid expires_in_seconds: {seconds!r}"
+        if secs < 0:
+            return "", "expires_in_seconds must be ≥ 0"
+        return (datetime.now(UTC) + timedelta(seconds=secs)).isoformat(), None
+    default = datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS)
+    return default.isoformat(), None
+
 
 FOREMAN_TOOLS = [
     {
@@ -121,12 +155,34 @@ FOREMAN_TOOLS = [
         "name": "finalize_task",
         "description": (
             "Mark a task complete with no further follow-up needed. "
-            "Call after reviewing a completed task when no additional work is required."
+            "Call after reviewing a completed task when no additional work is required. "
+            "Tasks are soft-deleted after their expiry window so the table doesn't "
+            "accumulate cruft. Pick the window by task type:\n"
+            "  • Ephemeral tasks (periodic-check, status-poll, automated health "
+            "checks): expires_in_seconds = 1200 (20 minutes)\n"
+            "  • Code tasks (execute / review / followup phases): omit the field "
+            "to use the default 3 days, or pass expires_in_seconds = 259200\n"
+            "  • Error / failed tasks: expires_in_seconds = 86400 (1 day)\n"
+            "Pass deleted_at instead if you need an exact ISO-8601 timestamp."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to finalize."},
+                "expires_in_seconds": {
+                    "type": "integer",
+                    "description": (
+                        "Seconds from now until the task is soft-deleted. "
+                        "Defaults to 259200 (3 days) when omitted."
+                    ),
+                },
+                "deleted_at": {
+                    "type": "string",
+                    "description": (
+                        "ISO-8601 UTC timestamp at which the task is soft-deleted. "
+                        "Takes precedence over expires_in_seconds when both are set."
+                    ),
+                },
             },
             "required": ["task_id"],
         },
@@ -598,38 +654,52 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
 
                 elif tu.name == "finalize_task":
                     task_id = inp["task_id"]
-                    result = await db.execute(
-                        select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_id)
-                    )
-                    worker_id_val = result.scalar_one_or_none()
-                    if not worker_id_val:
-                        result_text = f"Task {task_id} not found."
+                    deleted_at, err = _resolve_finalize_deleted_at(inp)
+                    if err:
+                        result_text = err
+                        is_error = True
                     else:
-                        finished_at = datetime.now(UTC).isoformat()
-                        await db.execute(
-                            update(Task)
-                            .where(Task.id == task_id)
-                            .values(state="done", finished_at=finished_at)
+                        result = await db.execute(
+                            select(Task.worker_id).where(
+                                Task.id == task_id, Task.guild_id == guild_id
+                            )
                         )
-                        await db.commit()
-                        await broadcast(
-                            guild_id,
-                            {
-                                "type": "task-finalize",
-                                "workerId": worker_id_val,
-                                "taskId": task_id,
-                            },
-                        )
-                        await broadcast(
-                            guild_id,
-                            {
-                                "type": "task-update",
-                                "taskId": task_id,
-                                "state": "done",
-                                "finishedAt": finished_at,
-                            },
-                        )
-                        result_text = f"Task {task_id} finalized."
+                        worker_id_val = result.scalar_one_or_none()
+                        if not worker_id_val:
+                            result_text = f"Task {task_id} not found."
+                        else:
+                            finished_at = datetime.now(UTC).isoformat()
+                            await db.execute(
+                                update(Task)
+                                .where(Task.id == task_id)
+                                .values(
+                                    state="done",
+                                    finished_at=finished_at,
+                                    deleted_at=deleted_at,
+                                )
+                            )
+                            await db.commit()
+                            await broadcast(
+                                guild_id,
+                                {
+                                    "type": "task-finalize",
+                                    "workerId": worker_id_val,
+                                    "taskId": task_id,
+                                },
+                            )
+                            await broadcast(
+                                guild_id,
+                                {
+                                    "type": "task-update",
+                                    "taskId": task_id,
+                                    "state": "done",
+                                    "finishedAt": finished_at,
+                                    "deletedAt": deleted_at,
+                                },
+                            )
+                            result_text = (
+                                f"Task {task_id} finalized; soft-delete at {deleted_at}."
+                            )
 
                 elif tu.name == "message_worker":
                     wid = inp["worker_id"]

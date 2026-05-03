@@ -29,6 +29,16 @@ For complex work use phases:
 - After task-complete: call send_followup for further work (update tests, fix lint, add docs),
   or call finalize_task to mark it complete — don't leave tasks in limbo
 
+## Finalize expiry windows
+Every finalize_task call sets a soft-delete window via expires_in_seconds so the
+task table doesn't accumulate cruft. Pick the window by task type:
+- **Ephemeral tasks** (periodic-check, status-poll, automated health checks):
+  expires_in_seconds = 1200 (20 minutes)
+- **Code tasks** (execute / review / followup phases): omit the field to use
+  the default 3 days, or pass expires_in_seconds = 259200
+- **Error / failed tasks**: expires_in_seconds = 86400 (1 day)
+Pass deleted_at instead if you need an exact ISO-8601 timestamp.
+
 ## GitHub access
 You have direct GitHub access via list_github_issues, get_github_issue, list_github_prs,
 search_github_issues, create_github_issue, and claim_github_issue.
