@@ -10,7 +10,7 @@ from events import broadcast
 from models import ForemanTurn, Guild, Message, Task, live_tasks_filter
 from sqlalchemy import delete, select
 
-from foreman.prompt import build_system_prompt
+from foreman.prompt import build_system_blocks, build_system_prompt
 from foreman.tools import FOREMAN_TOOLS, exec_tools
 
 try:
@@ -464,6 +464,9 @@ async def run_foreman_ai(
     system = build_system_prompt(
         workers_block, tasks_block, extra_context, primary_repo=primary_repo
     )
+    system_blocks = build_system_blocks(
+        workers_block, tasks_block, extra_context, primary_repo=primary_repo
+    )
 
     logger.info(
         "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
@@ -506,16 +509,22 @@ async def run_foreman_ai(
             resp = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
-                system=system,
+                system=system_blocks,
                 messages=messages,
                 tools=FOREMAN_TOOLS,
             )
+            usage = resp.usage
             logger.info(
-                "guild=%s run_foreman_ai round %d: stop_reason=%s content_blocks=%d",
+                "guild=%s run_foreman_ai round %d: stop_reason=%s content_blocks=%d "
+                "input=%d cache_read=%d cache_write=%d output=%d",
                 guild_id,
                 round_num,
                 resp.stop_reason,
                 len(resp.content),
+                getattr(usage, "input_tokens", 0) or 0,
+                getattr(usage, "cache_read_input_tokens", 0) or 0,
+                getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                getattr(usage, "output_tokens", 0) or 0,
             )
 
             # Persist assistant turn and append to local messages
