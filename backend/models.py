@@ -74,6 +74,11 @@ class Worker(Base):
     # Identity of the human user this worker process runs on behalf of.
     # NULL for legacy/unattributed workers.
     user_id = Column(Text, ForeignKey("users.id"), nullable=True)
+    # Bearer token issued at registration; required for fetching guild secrets
+    # (Claude credentials, GitHub token) over REST. NULL on legacy rows that
+    # predate the auth requirement — those workers must re-register to get a
+    # token before they can fetch credentials.
+    auth_token = Column(Text, nullable=True)
 
 
 class Task(Base):
@@ -98,6 +103,10 @@ class Task(Base):
     # ISO-8601 UTC timestamp at which this task is considered soft-deleted.
     # NULL = live; once `now() > deleted_at`, list/get queries hide the row.
     deleted_at = Column(Text, nullable=True)
+    # github_user_id of the human who initiated this task. Used to route
+    # worker-driven foreman events (task-complete, etc.) back to the originator's
+    # foreman thread in multi-user guilds. NULL on legacy/system tasks.
+    user_id = Column(Text, nullable=True)
 
 
 class GithubToken(Base):

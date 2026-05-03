@@ -46,14 +46,13 @@ try:
 except ImportError:
     pass
 
+import ws_handlers
 from events import agent_owners, broadcast, connections, emit_terminal_line, pending_claude_auth
 from foreman import (
     clear_foreman_history,
     get_foreman_history,
-    maybe_post_plan_comment,
-    reset_foreman_poll,
-    run_foreman_ai,
 )
+from ws_handlers import _resolve_user_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -418,18 +417,6 @@ async def _ensure_membership(db, guild_id: str, user_id: str) -> str:
     raise HTTPException(status_code=403, detail="Not a member of this guild")
 
 
-async def _resolve_user_identifier(db, identifier: str) -> str | None:
-    """Look up a User by either id (numeric github id as text) or github_login.
-
-    Returns the canonical ``users.id`` or ``None`` if no match.
-    """
-    ident = (identifier or "").strip()
-    if not ident:
-        return None
-    res = await db.execute(select(User.id).where((User.id == ident) | (User.github_login == ident)))
-    return res.scalar_one_or_none()
-
-
 def require_member(*allowed_roles: str):
     """FastAPI dependency factory: caller must be a member (optionally with one of the given roles)."""
 
@@ -447,6 +434,49 @@ def require_member(*allowed_roles: str):
         return github_user_id
 
     return _dep
+
+
+async def _authorize_worker_or_member(guild_id: str, token: str | None) -> str:
+    """Validate *token* against worker auth_tokens or member login_tokens.
+
+    Returns ``"worker:<worker_id>"`` or ``"user:<github_user_id>"`` so callers
+    can audit-log the principal. Raises 401/403/404 (matching require_member's
+    contract) on failure.
+    """
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    db = await get_db()
+    try:
+        worker_res = await db.execute(
+            select(Worker.id).where(Worker.guild_id == guild_id, Worker.auth_token == token)
+        )
+        worker_id = worker_res.scalar_one_or_none()
+        if worker_id:
+            return f"worker:{worker_id}"
+
+        user_res = await db.execute(
+            select(UserSession.github_user_id).where(UserSession.token == token)
+        )
+        github_user_id = user_res.scalar_one_or_none()
+        if not github_user_id:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        await _ensure_membership(db, guild_id, github_user_id)
+        return f"user:{github_user_id}"
+    finally:
+        await db.close()
+
+
+async def require_worker_or_member(
+    guild_id: str = Query(...),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_http_bearer),
+) -> str:
+    """Dependency for query-string endpoints that fetch guild secrets.
+
+    Accepts either a worker auth_token (issued at registration) or a member
+    login_token. Returns the principal string; see ``_authorize_worker_or_member``.
+    """
+    token = credentials.credentials if credentials else None
+    return await _authorize_worker_or_member(guild_id, token)
 
 
 # ---------------------------------------------------------------------------
@@ -583,8 +613,14 @@ async def github_callback(code: str = Query(...), state: str = Query(...)):
 
 
 @app.get("/auth/github/token")
-async def get_github_token(guild_id: str = Query(...)):
-    """Return the stored OAuth token for the guild's linked GitHub user. Used by workers."""
+async def get_github_token(
+    guild_id: str = Query(...),
+    _principal: str = Depends(require_worker_or_member),
+):
+    """Return the stored OAuth token for the guild's linked GitHub user. Used by workers.
+
+    Requires a worker auth_token (from registration) or a member login_token.
+    Without auth, anyone knowing a guild_id could exfiltrate the GitHub token."""
     db = await get_db()
     try:
         result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
@@ -605,8 +641,14 @@ async def get_github_token(guild_id: str = Query(...)):
 
 
 @app.get("/auth/claude/credentials")
-async def get_claude_credentials(guild_id: str = Query(...)):
-    """Return stored Claude credentials blob for a worker. Called by workers on startup."""
+async def get_claude_credentials(
+    guild_id: str = Query(...),
+    _principal: str = Depends(require_worker_or_member),
+):
+    """Return stored Claude credentials blob for a worker. Called by workers on startup.
+
+    Requires a worker auth_token (from registration) or a member login_token —
+    these credentials are sensitive and must not be readable by guild_id alone."""
     db = await get_db()
     try:
         result = await db.execute(
@@ -623,8 +665,16 @@ async def get_claude_credentials(guild_id: str = Query(...)):
 
 
 @app.post("/auth/claude/credentials")
-async def store_claude_credentials(data: ClaudeCredentialsRequest):
-    """Store Claude credentials blob (called by worker after successful login)."""
+async def store_claude_credentials(
+    data: ClaudeCredentialsRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_http_bearer),
+):
+    """Store Claude credentials blob (called by worker after successful login).
+
+    Requires a worker auth_token or member login_token for ``data.guild_id``.
+    Without this check, anyone could overwrite a guild's Claude credentials."""
+    token = credentials.credentials if credentials else None
+    await _authorize_worker_or_member(data.guild_id, token)
     now = datetime.now(UTC).isoformat()
     db = await get_db()
     try:
@@ -1042,8 +1092,6 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
     if guild_id not in connections:
         connections[guild_id] = []
     connections[guild_id].append(websocket)
-    # Agents that joined via this websocket; marked offline when it disconnects.
-    joined_agents: set[str] = set()
 
     # Identify the browser user from the optional ?token= query param.
     # Workers don't pass a token; ws_user_id stays None for them.
@@ -1062,407 +1110,20 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             await _auth_db.close()
 
     db = await get_db()
+    ctx = ws_handlers.WSContext(
+        websocket=websocket, guild_id=guild_id, db=db, ws_user_id=ws_user_id
+    )
+    joined_agents = ctx.joined_agents  # alias for the disconnect cleanup below
     try:
         while True:
             data = await websocket.receive_json()
-            msg_type = data.get("type")
 
             # Refresh last_seen for any inbound frame so the sweeper knows
             # this worker is still alive. Cheap no-op for browser users
             # (they don't carry an agentId/workerId).
             await _touch_agent(db, guild_id, data.get("agentId"), data.get("workerId"))
 
-            if msg_type == "ping":
-                # Application-level heartbeat. Workers send this on an idle
-                # timer so quiet workers stay marked online; reply with pong
-                # so the worker can detect a half-open socket too.
-                await websocket.send_json(
-                    {"type": "pong", "timestamp": datetime.now(UTC).isoformat()}
-                )
-                continue
-
-            if msg_type == "join":
-                agent_id = data.get("agentId")
-                agent_name = data.get("agentName", "Unknown")
-                agent_type = data.get("agentType", "worker")
-                worker_id = data.get("workerId")
-                joined_at = datetime.now(UTC).isoformat()
-                stmt = sqlite_insert(Agent).values(
-                    id=agent_id,
-                    guild_id=guild_id,
-                    worker_id=worker_id,
-                    name=agent_name,
-                    type=agent_type,
-                    state="idle",
-                    joined_at=joined_at,
-                    last_seen=joined_at,
-                )
-                stmt = stmt.on_conflict_do_update(
-                    index_elements=["id"],
-                    set_={
-                        "guild_id": stmt.excluded.guild_id,
-                        "worker_id": stmt.excluded.worker_id,
-                        "name": stmt.excluded.name,
-                        "type": stmt.excluded.type,
-                        "state": stmt.excluded.state,
-                        "joined_at": stmt.excluded.joined_at,
-                        "last_seen": stmt.excluded.last_seen,
-                    },
-                )
-                await db.execute(stmt)
-                # Mark worker online when it (re)connects.
-                if agent_type == "worker" and worker_id:
-                    await db.execute(
-                        update(Worker)
-                        .where(Worker.id == worker_id, Worker.guild_id == guild_id)
-                        .values(state="online", last_seen=joined_at)
-                    )
-                await db.commit()
-                if agent_id:
-                    joined_agents.add(agent_id)
-                    agent_owners[agent_id] = websocket
-                broadcast_msg = {
-                    "type": "agent-joined",
-                    "agentId": agent_id,
-                    "agentName": agent_name,
-                    "agentType": agent_type,
-                    "workerId": worker_id,
-                    "state": "idle",
-                    "joinedAt": joined_at,
-                }
-                await broadcast(guild_id, broadcast_msg)
-                if agent_type == "worker":
-                    reset_foreman_poll(guild_id)
-
-            elif msg_type == "agent-state":
-                agent_id = data.get("agentId")
-                state = data.get("state", "idle")
-                activity = data.get("activity")  # fine-grained activity (reading/editing/etc.)
-                update_vals: dict = {"state": state}
-                if activity is not None:
-                    update_vals["activity"] = activity
-                elif state in ("idle", "offline"):
-                    update_vals["activity"] = None
-                await db.execute(
-                    update(Agent)
-                    .where(Agent.id == agent_id, Agent.guild_id == guild_id)
-                    .values(**update_vals)
-                )
-                await db.commit()
-                broadcast_msg: dict = {"type": "agent-state", "agentId": agent_id, "state": state}
-                if "activity" in update_vals:
-                    broadcast_msg["activity"] = update_vals["activity"]
-                await broadcast(guild_id, broadcast_msg)
-
-            elif msg_type == "chat":
-                from_agent = data.get("from", "user")
-                to_agent = data.get("to", "foreman")
-                content = data.get("content", "")
-                created_at = datetime.now(UTC).isoformat()
-                db.add(
-                    Message(
-                        guild_id=guild_id,
-                        from_agent=from_agent,
-                        to_agent=to_agent,
-                        content=content,
-                        message_type="chat",
-                        created_at=created_at,
-                        user_id=ws_user_id if from_agent == "user" else None,
-                    )
-                )
-                await db.commit()
-                await broadcast(
-                    guild_id,
-                    {
-                        "type": "chat",
-                        "from": from_agent,
-                        "to": to_agent,
-                        "content": content,
-                        "createdAt": created_at,
-                        **({"userId": ws_user_id} if ws_user_id and from_agent == "user" else {}),
-                    },
-                )
-                # Route human messages addressed to foreman through the AI.
-                # Each authenticated user gets their own foreman conversation thread.
-                # Exception: if a worker is waiting for a Claude auth code, treat
-                # the next user message as that code and bypass the foreman AI.
-                if from_agent == "user" and to_agent == "foreman" and content:
-                    pending_workers = pending_claude_auth.get(guild_id, {})
-                    if pending_workers:
-                        pending_worker_id = next(iter(pending_workers))
-                        pending_workers.pop(pending_worker_id)
-                        logger.info(
-                            "chat intercepted as auth code for %s in guild %s code_len=%d",
-                            pending_worker_id,
-                            guild_id,
-                            len(content),
-                        )
-                        await broadcast(
-                            guild_id,
-                            {
-                                "type": "worker-auth-response",
-                                "workerId": pending_worker_id,
-                                "code": content,
-                            },
-                        )
-                    else:
-                        asyncio.create_task(run_foreman_ai(guild_id, content, user_id=ws_user_id))
-                        reset_foreman_poll(guild_id)
-
-            elif msg_type == "terminal-output":
-                msg_agent_id = data.get("agentId")
-                line = data.get("line", "")
-                task_id = data.get("taskId")
-                detail = data.get("detail")
-                created_at = datetime.now(UTC).isoformat()
-                # Look up worker_id for this agent to tag logs for cross-filter queries.
-                worker_id_for_log = None
-                if msg_agent_id:
-                    result = await db.execute(
-                        select(Agent.worker_id).where(Agent.id == msg_agent_id)
-                    )
-                    worker_id_for_log = result.scalar_one_or_none()
-                if line:
-                    db.add(
-                        TaskLog(
-                            task_id=task_id or None,
-                            timestamp=created_at,
-                            line=line,
-                            worker_id=worker_id_for_log,
-                            agent_id=msg_agent_id,
-                            data=json.dumps(detail) if detail else None,
-                        )
-                    )
-                    await db.commit()
-                await broadcast(
-                    guild_id,
-                    {
-                        "type": "terminal-output",
-                        "agentId": msg_agent_id,
-                        "workerId": worker_id_for_log,
-                        "taskId": task_id,
-                        "line": line,
-                        "timestamp": created_at,
-                        **({"detail": detail} if detail else {}),
-                    },
-                )
-
-            elif msg_type == "worker-register":
-                # A standalone worker process is announcing/refreshing its config.
-                worker_id = data.get("workerId")
-                repos = data.get("repos") or []
-                user_ident = data.get("user")
-                if worker_id:
-                    update_vals: dict = {"repos": json.dumps(repos)}
-                    if user_ident:
-                        resolved = await _resolve_user_identifier(db, user_ident)
-                        if resolved:
-                            update_vals["user_id"] = resolved
-                    await db.execute(
-                        update(Worker)
-                        .where(Worker.id == worker_id, Worker.guild_id == guild_id)
-                        .values(**update_vals)
-                    )
-                    await db.commit()
-
-            elif msg_type == "worker-disconnect":
-                # Worker is shutting down gracefully; mark agents and worker offline now
-                # rather than waiting for the WebSocket to close.
-                worker_id = data.get("workerId")
-                for agent_id in joined_agents:
-                    await db.execute(
-                        update(Agent)
-                        .where(Agent.id == agent_id, Agent.guild_id == guild_id)
-                        .values(state="offline")
-                    )
-                if worker_id:
-                    await db.execute(
-                        update(Worker)
-                        .where(Worker.id == worker_id, Worker.guild_id == guild_id)
-                        .values(state="offline")
-                    )
-                if joined_agents or worker_id:
-                    await db.commit()
-                for agent_id in joined_agents:
-                    await broadcast(
-                        guild_id,
-                        {
-                            "type": "agent-state",
-                            "agentId": agent_id,
-                            "state": "offline",
-                        },
-                    )
-                reset_foreman_poll(guild_id)
-
-            elif msg_type == "task-update":
-                # Worker is reporting a task state change; persist + rebroadcast.
-                task_id = data.get("taskId")
-                if task_id:
-                    update_values: dict = {}
-                    for src, col in (
-                        ("state", "state"),
-                        ("branch", "branch"),
-                        ("worktreePath", "worktree_path"),
-                        ("prUrl", "pr_url"),
-                        ("finishedAt", "finished_at"),
-                    ):
-                        if src in data:
-                            update_values[col] = data[src]
-                    if update_values:
-                        await db.execute(
-                            update(Task).where(Task.id == task_id).values(**update_values)
-                        )
-                        await db.commit()
-                    await broadcast(guild_id, data, exclude=websocket)
-
-            elif msg_type == "task-complete":
-                task_id = data.get("taskId")
-                worker_id_msg = data.get("workerId", "")
-                desc = data.get("description", "")
-                branch = data.get("branch", "")
-                finalized_by = data.get("finalizedBy", "")
-                last_text = data.get("lastText", "")
-                if task_id:
-                    await db.execute(
-                        update(Task)
-                        .where(Task.id == task_id, Task.state == "working")
-                        .values(state="awaiting-review")
-                    )
-                    await db.commit()
-                await broadcast(guild_id, data, exclude=websocket)
-                if task_id and not finalized_by:
-                    asyncio.create_task(maybe_post_plan_comment(guild_id, task_id, last_text))
-                if task_id:
-                    if finalized_by == "timeout":
-                        finished_at = datetime.now(UTC).isoformat()
-                        await db.execute(
-                            update(Task)
-                            .where(Task.id == task_id)
-                            .values(state="done", finished_at=finished_at)
-                        )
-                        await db.commit()
-                        await broadcast(
-                            guild_id,
-                            {
-                                "type": "task-update",
-                                "taskId": task_id,
-                                "state": "done",
-                                "finishedAt": finished_at,
-                            },
-                        )
-                        asyncio.create_task(
-                            run_foreman_ai(
-                                guild_id,
-                                f"[timeout] Follow-up window expired for task {task_id} "
-                                f"(worker {worker_id_msg}). The task has been auto-finalized "
-                                "as done — no foreman action required.",
-                            )
-                        )
-                        reset_foreman_poll(guild_id)
-                    else:
-                        asyncio.create_task(
-                            run_foreman_ai(
-                                guild_id,
-                                f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
-                                f'"{desc[:80]}" — branch: {branch}. '
-                                "Review this result. Call send_followup if additional work is needed "
-                                "(e.g. update tests, add docs, fix lint errors). "
-                                "Otherwise call finalize_task to mark it complete.",
-                            )
-                        )
-                        reset_foreman_poll(guild_id)
-
-            elif msg_type == "task-followup-done":
-                task_id = data.get("taskId")
-                worker_id_msg = data.get("workerId", "")
-                if task_id:
-                    await db.execute(
-                        update(Task).where(Task.id == task_id).values(state="awaiting-review")
-                    )
-                    await db.commit()
-                await broadcast(guild_id, data, exclude=websocket)
-                if task_id:
-                    asyncio.create_task(
-                        run_foreman_ai(
-                            guild_id,
-                            f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
-                            "Decide: call send_followup for more work, or call finalize_task to mark it done.",
-                        )
-                    )
-                    reset_foreman_poll(guild_id)
-
-            elif msg_type == "needs-input":
-                # Worker escalation: broadcast to frontend and loop the foreman in.
-                await broadcast(guild_id, data, exclude=websocket)
-                wid = data.get("workerId", "a worker")
-                task_id = data.get("taskId", "")
-                description = data.get("description", "")
-                stop_reason = data.get("stopReason", "")
-                last_msg = data.get("lastMessage", "")
-                escalation = (
-                    f"Worker {wid} could not complete task {task_id} and needs your help.\n"
-                    f"Task: {description}\n"
-                    f"Stop reason: {stop_reason}"
-                    + (f"\nLast message: {last_msg}" if last_msg else "")
-                )
-                asyncio.create_task(run_foreman_ai(guild_id, escalation))
-
-            elif msg_type == "claude-auth-required":
-                # Worker needs Claude authentication; broadcast URL to UI and loop foreman in.
-                worker_id = data.get("workerId", "a worker")
-                auth_url = data.get("url", "")
-                logger.info(
-                    "claude-auth-required from %s in guild %s url=%s",
-                    worker_id,
-                    guild_id,
-                    auth_url[:80],
-                )
-                await broadcast(guild_id, data, exclude=websocket)
-                # Track so new frontend connections can restore the auth panel.
-                pending_claude_auth.setdefault(guild_id, {})[worker_id] = auth_url
-                logger.info(
-                    "pending_claude_auth now has %d entries for guild %s",
-                    len(pending_claude_auth.get(guild_id, {})),
-                    guild_id,
-                )
-                asyncio.create_task(
-                    run_foreman_ai(
-                        guild_id,
-                        f"Worker {worker_id} needs Claude authentication. "
-                        f"Auth URL: {auth_url}. "
-                        "A human must visit this URL, complete authentication, then paste the "
-                        "resulting code into the auth panel that has appeared in the chat UI "
-                        "(or type it into the Foreman Comms input). The worker is waiting.",
-                    )
-                )
-
-            elif msg_type == "worker-auth-response":
-                # Human is submitting an auth code; clear pending state and
-                # broadcast to all connections so the waiting worker receives it.
-                worker_id = data.get("workerId", "")
-                code_len = len(data.get("code", ""))
-                logger.info(
-                    "worker-auth-response for %s in guild %s code_len=%d",
-                    worker_id,
-                    guild_id,
-                    code_len,
-                )
-                pending_claude_auth.get(guild_id, {}).pop(worker_id, None)
-                peer_count = len(connections.get(guild_id, []))
-                logger.info(
-                    "broadcasting worker-auth-response to %d connections in guild %s",
-                    peer_count,
-                    guild_id,
-                )
-                await broadcast(guild_id, data)
-
-            elif msg_type in ("offer", "answer", "ice-candidate"):
-                # WebRTC signaling - forward to all
-                await broadcast(guild_id, data, exclude=websocket)
-
-            else:
-                # Generic broadcast
-                await broadcast(guild_id, data)
+            await ws_handlers.dispatch(ctx, data)
 
     except WebSocketDisconnect:
         if guild_id in connections and websocket in connections[guild_id]:
@@ -1803,10 +1464,16 @@ async def stop_agent_run(
 @app.post("/guilds/{guild_id}/workers")
 async def create_worker(guild_id: str, data: WorkerCreate):
     """Register a worker agent. The actual worker process must connect via WebSocket
-    using the returned id (see the standalone /worker package)."""
+    using the returned id (see the standalone /worker package).
+
+    The response includes an ``auth_token`` the worker must present as a Bearer
+    credential when fetching guild secrets (Claude/GitHub creds). The token is
+    only returned here — there is no read-after-create endpoint by design, so
+    losing it means re-registering."""
     worker_id = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     created_at = datetime.now(UTC).isoformat()
     worker_name = _worker_name(worker_id, data.hostname)
+    auth_token = secrets.token_urlsafe(32)
 
     db = await get_db()
     try:
@@ -1819,6 +1486,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
                 state="offline",
                 created_at=created_at,
                 user_id=resolved_user_id,
+                auth_token=auth_token,
             )
         )
         stmt = sqlite_insert(Agent).values(
@@ -1857,7 +1525,13 @@ async def create_worker(guild_id: str, data: WorkerCreate):
             "joinedAt": created_at,
         },
     )
-    return {"id": worker_id, "name": worker_name, "repos": data.repos, "created_at": created_at}
+    return {
+        "id": worker_id,
+        "name": worker_name,
+        "repos": data.repos,
+        "created_at": created_at,
+        "auth_token": auth_token,
+    }
 
 
 def _decode_claude_oauth_token(blob: str | None) -> str | None:

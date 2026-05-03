@@ -324,6 +324,43 @@ class TestExecToolsDispatching:
             row = conn.execute("SELECT phase FROM tasks WHERE id=?", (task_id,)).fetchone()
         assert row[0] == "execute"
 
+    async def test_create_task_stamps_user_id(self, db_session):
+        """Tasks created via the foreman remember which user initiated them so
+        worker callbacks can later route the conversation back to the right
+        user thread instead of always falling through to the guild owner."""
+        insert_guild(db_session, "g-stamp")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-stamp",
+                [_fake_tool_use("create_task", {"name": "Owned", "description": "task"})],
+                user_id="gh-user-42",
+            )
+        task_id = results[0]["content"].split()[1]
+        with sqlite3.connect(db_session) as conn:
+            row = conn.execute("SELECT user_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+        assert row[0] == "gh-user-42"
+
+    async def test_assign_task_new_stamps_user_id(self, db_session):
+        insert_guild(db_session, "g-stamp-assign")
+        _insert_worker(db_session, "g-stamp-assign", "w-stamp1")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-stamp-assign",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-stamp1", "description": "do it"},
+                    )
+                ],
+                user_id="gh-user-99",
+            )
+        # exec_tools returns "Task t-XXXXXX queued for w-stamp1." — extract the id.
+        content = results[0]["content"]
+        task_id = next(tok for tok in content.split() if tok.startswith("t-"))
+        with sqlite3.connect(db_session) as conn:
+            row = conn.execute("SELECT user_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+        assert row[0] == "gh-user-99"
+
     async def test_create_task_custom_phase(self, db_session):
         insert_guild(db_session, "g-planphase")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
