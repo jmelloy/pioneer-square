@@ -75,8 +75,14 @@ class Worker:
         self._shutdown_event = asyncio.Event()
 
     # ------------------------------------------------------------------ HTTP
-    async def _http(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=self.cfg.http_url, timeout=30.0)
+    async def _http(self, *, authed: bool = False) -> httpx.AsyncClient:
+        """Return an httpx client. With ``authed=True`` the worker's bearer
+        token is attached so secret-fetching endpoints (claude creds, github
+        token) accept the request — those routes reject anonymous callers."""
+        headers = {}
+        if authed and self.cfg.auth_token:
+            headers["Authorization"] = f"Bearer {self.cfg.auth_token}"
+        return httpx.AsyncClient(base_url=self.cfg.http_url, timeout=30.0, headers=headers)
 
     async def _register(self) -> None:
         async with await self._http() as client:
@@ -90,8 +96,16 @@ class Worker:
                 },
             )
             resp.raise_for_status()
-            wid = resp.json()["id"]
+            payload = resp.json()
+            wid = payload["id"]
+            self.cfg.auth_token = payload.get("auth_token")
         self.cfg.worker_id = wid
+        if not self.cfg.auth_token:
+            logger.warning(
+                "Registration response did not include auth_token — "
+                "secret-fetching endpoints will reject this worker. "
+                "Backend may need an upgrade."
+            )
         logger.info(
             "Registered as worker %s (%d agents) user=%s",
             wid,
@@ -103,7 +117,7 @@ class Worker:
         if self.cfg.github_token:
             return
         try:
-            async with await self._http() as client:
+            async with await self._http(authed=True) as client:
                 resp = await client.get(
                     "/auth/github/token",
                     params={"guild_id": self.cfg.guild_id},
@@ -204,7 +218,7 @@ class Worker:
         # `claude setup-token`, and the legacy base64(tar.gz of ~/.claude)
         # blob produced by older versions running `claude auth login`.
         try:
-            async with await self._http() as client:
+            async with await self._http(authed=True) as client:
                 resp = await client.get(
                     "/auth/claude/credentials",
                     params={"guild_id": self.cfg.guild_id},
@@ -432,7 +446,7 @@ class Worker:
 
         try:
             blob = base64.b64encode(json.dumps({"oauth_token": token}).encode()).decode()
-            async with await self._http() as client:
+            async with await self._http(authed=True) as client:
                 await client.post(
                     "/auth/claude/credentials",
                     json={"guild_id": self.cfg.guild_id, "credentials_blob": blob},
@@ -842,9 +856,19 @@ class Worker:
     # ------------------------------------------------------------------ Listener
     async def _listen(self) -> None:
         logger.info("Listener started")
+        # Message types safe to process before _join() completes — auth-related
+        # messages flow during the pre-join window (claude setup-token), and
+        # heartbeats are protocol-level. Everything else (task assignments,
+        # follow-ups, redirects, etc.) must wait until we've actually joined,
+        # otherwise we'd start work before the backend sees us online.
+        _PRE_JOIN_ALLOWED = {"pong", "worker-message", "worker-auth-response"}
         async for msg in self.ws.messages():
             mtype = msg.get("type")
             logger.debug("WS message: type=%s keys=%s", mtype, list(msg.keys()))
+
+            if not self._joined and mtype not in _PRE_JOIN_ALLOWED:
+                logger.debug("Dropping %s message received before join", mtype)
+                continue
 
             if mtype == "pong":
                 # Heartbeat reply from the backend; nothing to do.

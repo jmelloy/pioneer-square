@@ -1,0 +1,184 @@
+"""Tests for the auth gates on /auth/claude/credentials and /auth/github/token.
+
+These endpoints used to be unauthenticated — anyone with a guild_id could
+exfiltrate or overwrite stored Claude OAuth credentials and the guild's
+GitHub token. The fix introduces a worker auth_token (issued at registration)
+plus a member-login fallback. These tests pin that contract.
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+import sys
+from datetime import UTC, datetime
+
+sys.path.insert(0, os.path.dirname(__file__))
+from helpers import insert_guild, make_auth_token
+
+
+def _register_worker(test_client, guild_id: str) -> dict:
+    resp = test_client.post(
+        f"/guilds/{guild_id}/workers",
+        json={"repos": ["owner/repo"]},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _seed_claude_credentials(db_path: str, guild_id: str, blob: str = "BLOB") -> None:
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO claude_credentials (guild_id, credentials_blob, updated_at) "
+            "VALUES (?, ?, ?)",
+            (guild_id, blob, now),
+        )
+        conn.commit()
+
+
+def _seed_github_token(db_path: str, user_id: str = "gh-user-test") -> None:
+    """The default test user already has a github_tokens row via make_auth_token —
+    this is a no-op that just ensures it's there for clarity."""
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM github_tokens WHERE github_user_id = ?", (user_id,)
+        ).fetchone()
+        if row:
+            return
+        now = datetime.now(UTC).isoformat()
+        conn.execute(
+            "INSERT INTO github_tokens "
+            "(github_user_id, github_username, access_token, token_type, scope, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, "tester", "gh_tok", "bearer", "repo", now, now),
+        )
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# /auth/claude/credentials GET
+# ---------------------------------------------------------------------------
+
+
+def test_get_claude_credentials_requires_auth(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g-claude")
+    _seed_claude_credentials(db_path, "g-claude")
+    resp = test_client.get("/auth/claude/credentials", params={"guild_id": "g-claude"})
+    assert resp.status_code == 401
+
+
+def test_get_claude_credentials_rejects_random_token(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g-claude")
+    _seed_claude_credentials(db_path, "g-claude")
+    resp = test_client.get(
+        "/auth/claude/credentials",
+        params={"guild_id": "g-claude"},
+        headers={"Authorization": "Bearer not-a-real-token"},
+    )
+    assert resp.status_code == 401
+
+
+def test_get_claude_credentials_accepts_worker_token(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g-claude")
+    _seed_claude_credentials(db_path, "g-claude", blob="THE_BLOB")
+    worker = _register_worker(test_client, "g-claude")
+    auth_token = worker["auth_token"]
+    assert auth_token, "registration response must include auth_token"
+    resp = test_client.get(
+        "/auth/claude/credentials",
+        params={"guild_id": "g-claude"},
+        headers={"Authorization": f"Bearer {auth_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["credentials_blob"] == "THE_BLOB"
+
+
+def test_get_claude_credentials_accepts_member_login_token(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g-claude")
+    _seed_claude_credentials(db_path, "g-claude", blob="THE_BLOB")
+    login_token = make_auth_token(db_path)
+    resp = test_client.get(
+        "/auth/claude/credentials",
+        params={"guild_id": "g-claude"},
+        headers={"Authorization": f"Bearer {login_token}"},
+    )
+    assert resp.status_code == 200
+
+
+def test_get_claude_credentials_rejects_worker_token_for_other_guild(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g-mine")
+    insert_guild(db_path, "g-other")
+    _seed_claude_credentials(db_path, "g-other", blob="SECRET")
+    worker = _register_worker(test_client, "g-mine")
+    resp = test_client.get(
+        "/auth/claude/credentials",
+        params={"guild_id": "g-other"},
+        headers={"Authorization": f"Bearer {worker['auth_token']}"},
+    )
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# /auth/claude/credentials POST
+# ---------------------------------------------------------------------------
+
+
+def test_post_claude_credentials_requires_auth(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g-write")
+    resp = test_client.post(
+        "/auth/claude/credentials",
+        json={"guild_id": "g-write", "credentials_blob": "NEW"},
+    )
+    assert resp.status_code == 401
+
+
+def test_post_claude_credentials_accepts_worker_token(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g-write")
+    worker = _register_worker(test_client, "g-write")
+    resp = test_client.post(
+        "/auth/claude/credentials",
+        json={"guild_id": "g-write", "credentials_blob": "NEW"},
+        headers={"Authorization": f"Bearer {worker['auth_token']}"},
+    )
+    assert resp.status_code == 200
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT credentials_blob FROM claude_credentials WHERE guild_id = ?",
+            ("g-write",),
+        ).fetchone()
+    assert row[0] == "NEW"
+
+
+# ---------------------------------------------------------------------------
+# /auth/github/token GET
+# ---------------------------------------------------------------------------
+
+
+def test_get_github_token_requires_auth(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g-gh")
+    _seed_github_token(db_path)
+    resp = test_client.get("/auth/github/token", params={"guild_id": "g-gh"})
+    assert resp.status_code == 401
+
+
+def test_get_github_token_accepts_worker_token(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g-gh")
+    _seed_github_token(db_path)
+    worker = _register_worker(test_client, "g-gh")
+    resp = test_client.get(
+        "/auth/github/token",
+        params={"guild_id": "g-gh"},
+        headers={"Authorization": f"Bearer {worker['auth_token']}"},
+    )
+    assert resp.status_code == 200
+    assert "access_token" in resp.json()

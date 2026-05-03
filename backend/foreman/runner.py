@@ -622,7 +622,7 @@ async def run_foreman_ai(
                     },
                 )
 
-            tool_results = await exec_tools(guild_id, tool_uses)
+            tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
             # Truncate verbose results before storing/sending
             trimmed = [
                 {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r

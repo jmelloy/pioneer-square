@@ -21,6 +21,10 @@ class Config:
     repos: list[str] = field(default_factory=list)
     worker_id: str | None = None
     worker_name: str | None = None
+    # Bearer token issued by the backend at registration; required for fetching
+    # guild secrets (Claude credentials, GitHub token). Populated by Worker.run
+    # after _register and held in memory only.
+    auth_token: str | None = None
     github_token: str | None = None
     # Identity of the human this worker runs on behalf of.
     # Either a numeric GitHub user id (text) or a github_login.
