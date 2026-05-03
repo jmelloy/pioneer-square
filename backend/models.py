@@ -1,9 +1,23 @@
-from sqlalchemy import Column, ForeignKey, Integer, Text
+from datetime import UTC, datetime
+
+from sqlalchemy import Column, ForeignKey, Integer, Text, or_
 from sqlalchemy.orm import DeclarativeBase
 
 
 class Base(DeclarativeBase):
     pass
+
+
+def live_tasks_filter(now: str | None = None):
+    """SQL clause matching tasks that have not been soft-deleted.
+
+    A task is "live" when ``deleted_at`` is NULL or set to a future timestamp.
+    *now* defaults to the current UTC time as an ISO-8601 string; pass an
+    explicit value to make a query reproducible in tests.
+    """
+    if now is None:
+        now = datetime.now(UTC).isoformat()
+    return or_(Task.deleted_at.is_(None), Task.deleted_at > now)
 
 
 class Guild(Base):
@@ -81,6 +95,9 @@ class Task(Base):
     name = Column(Text)
     parent_task_id = Column(Text)
     phase = Column(Text, server_default="execute")
+    # ISO-8601 UTC timestamp at which this task is considered soft-deleted.
+    # NULL = live; once `now() > deleted_at`, list/get queries hide the row.
+    deleted_at = Column(Text, nullable=True)
 
 
 class GithubToken(Base):
