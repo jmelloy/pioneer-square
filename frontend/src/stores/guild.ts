@@ -1,11 +1,10 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useAuthStore } from './auth'
-import type { ChatMessage, Guild, WSMessage } from '../types'
+import { api } from '../utils/api'
+import type { ChatMessage, Guild, WSInbound, WSOutbound } from '../types'
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
-
-type MessageHandler = (data: WSMessage) => void
+type MessageHandler = (data: WSInbound) => void
 
 export const useGuildStore = defineStore('guild', () => {
   const currentGuild = ref<Guild | null>(null)
@@ -28,18 +27,12 @@ export const useGuildStore = defineStore('guild', () => {
     return Math.floor(Math.random() * exp)
   }
 
-  function _authHeaders(): Record<string, string> {
-    const authStore = useAuthStore()
-    return authStore.authHeaders()
-  }
-
   async function loadGuilds() {
     try {
-      const res = await fetch(`${API_BASE}/guilds`, { headers: _authHeaders() })
-      if (!res.ok) { guilds.value = []; return }
-      guilds.value = await res.json()
+      guilds.value = await api<Guild[]>('/guilds')
     } catch (e) {
       console.error('Failed to load guilds', e)
+      guilds.value = []
     }
   }
 
@@ -48,36 +41,24 @@ export const useGuildStore = defineStore('guild', () => {
   }
 
   async function updateGuild(guildId: string, updates: { name?: string; primary_repo?: string | null }) {
-    const res = await fetch(`${API_BASE}/guilds/${guildId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify(updates)
-    })
-    if (!res.ok) throw new Error('Failed to update guild')
+    const result = await api<Guild>(`/guilds/${guildId}`, { method: 'PATCH', json: updates })
     if (currentGuild.value && currentGuild.value.id === guildId) {
       currentGuild.value = { ...currentGuild.value, ...updates }
     }
     const idx = guilds.value.findIndex(g => g.id === guildId)
     if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], ...updates }
-    return await res.json()
+    return result
   }
 
   async function createGuild(name?: string) {
-    const res = await fetch(`${API_BASE}/guilds`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ name })
-    })
-    const guild: Guild = await res.json()
+    const guild = await api<Guild>('/guilds', { method: 'POST', json: { name } })
     guilds.value.unshift(guild)
     return guild
   }
 
   async function joinGuild(guildId: string): Promise<Guild | null> {
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}`, { headers: _authHeaders() })
-      if (!res.ok) throw new Error('Guild not found')
-      const guild: Guild = await res.json()
+      const guild = await api<Guild>(`/guilds/${guildId}`)
       currentGuild.value = guild
       messages.value = guild.messages || []
       return guild
@@ -116,9 +97,9 @@ export const useGuildStore = defineStore('guild', () => {
       reconnectAttempt.value = 0
     }
     socket.onmessage = (event) => {
-      let data: WSMessage
+      let data: WSInbound
       try {
-        data = JSON.parse(event.data)
+        data = JSON.parse(event.data) as WSInbound
       } catch (e) {
         console.warn('Dropping non-JSON WS frame', e)
         return
@@ -186,7 +167,7 @@ export const useGuildStore = defineStore('guild', () => {
     reconnectAttempt.value = 0
   }
 
-  function sendMessage(data: WSMessage): boolean {
+  function sendMessage(data: WSOutbound): boolean {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       console.warn('sendMessage: socket not open, dropping', data.type)
       return false

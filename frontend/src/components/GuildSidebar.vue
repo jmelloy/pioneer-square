@@ -135,16 +135,14 @@
 import { ref, computed, inject, onMounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
-import { useAuthStore } from '../stores/auth'
 import { useTasksStore } from '../stores/tasks'
 import { useAgentsStore } from '../stores/agents'
+import { api } from '../utils/api'
+import { formatRelative } from '../utils/format'
 import type { Task } from '../types'
-
-const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
-const authStore = useAuthStore()
 const tasksStore = useTasksStore()
 const agentsStore = useAgentsStore()
 
@@ -189,21 +187,16 @@ async function launchWorker() {
   spawning.value = true
   spawnError.value = ''
   try {
-    const res = await fetch(`${API_BASE}/guilds/${currentGuild.value.id}/spawn-worker`, {
+    await api(`/guilds/${currentGuild.value.id}/spawn-worker`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authStore.authHeaders() },
-      body: JSON.stringify({
+      json: {
         repos: spawnSelectedRepos.value,
         name: spawnName.value.trim() || undefined,
-      }),
+      },
     })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }))
-      throw new Error(err.detail || res.statusText)
-    }
     showSpawnForm.value = false
-  } catch (e: any) {
-    spawnError.value = e.message
+  } catch (e: unknown) {
+    spawnError.value = e instanceof Error ? e.message : String(e)
   } finally {
     spawning.value = false
   }
@@ -264,17 +257,7 @@ function openAgentTask(workerId: string) {
   if (task) tasksStore.selectTask(task.id)
 }
 
-function formatTime(isoStr?: string) {
-  if (!isoStr) return ''
-  const d = new Date(isoStr)
-  const now = new Date()
-  const diffMins = Math.floor((now.getTime() - d.getTime()) / 60000)
-  if (diffMins < 1) return 'just now'
-  if (diffMins < 60) return `${diffMins}m ago`
-  const diffHours = Math.floor(diffMins / 60)
-  if (diffHours < 24) return `${diffHours}h ago`
-  return d.toLocaleDateString()
-}
+const formatTime = formatRelative
 </script>
 
 <style scoped>

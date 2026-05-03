@@ -1,17 +1,11 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { useAuthStore } from './auth'
-import type { LogEntry, Task, TaskState, WSMessage } from '../types'
+import { api } from '../utils/api'
+import type { LogEntry, Task, TaskState, WSInbound } from '../types'
 
 // Cap on setTimeout delay to avoid the 32-bit overflow that fires the timer
 // immediately on long horizons (e.g. a 3-day finalize window).
 const MAX_TIMEOUT_MS = 2_147_483_647
-
-const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
-
-function _authHeaders(): Record<string, string> {
-  return useAuthStore().authHeaders()
-}
 
 const STATE_LABELS: Record<string, string> = {
   pending: 'pending',
@@ -76,12 +70,9 @@ export const useTasksStore = defineStore('tasks', () => {
   async function fetchTasks(guildId: string) {
     if (!guildId) return
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks`, { headers: _authHeaders() })
-      if (res.ok) {
-        tasks.value = await res.json()
-        for (const t of tasks.value) {
-          if (t.deleted_at) _scheduleExpiry(t.id, t.deleted_at)
-        }
+      tasks.value = await api<Task[]>(`/guilds/${guildId}/tasks`)
+      for (const t of tasks.value) {
+        if (t.deleted_at) _scheduleExpiry(t.id, t.deleted_at)
       }
     } catch (e) {
       console.error('Failed to fetch tasks', e)
@@ -90,13 +81,13 @@ export const useTasksStore = defineStore('tasks', () => {
 
   async function fetchTaskLogs(guildId: string, taskId: string) {
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/logs`, { headers: _authHeaders() })
-      if (!res.ok) return []
-      const raw = await res.json()
-      const logs: LogEntry[] = raw.map((r: any) => ({
+      const raw = await api<Array<{ line: string; timestamp: string; detail?: unknown }>>(
+        `/guilds/${guildId}/tasks/${taskId}/logs`,
+      )
+      const logs: LogEntry[] = raw.map((r) => ({
         line: r.line,
         timestamp: r.timestamp,
-        detail: r.detail || null,
+        detail: (r.detail as LogEntry['detail']) || null,
       }))
       taskLogs.value[taskId] = logs
       return logs
@@ -107,41 +98,19 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function sendFollowup(guildId: string, taskId: string, instructions: string) {
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/followup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ instructions }),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
+    return api(`/guilds/${guildId}/tasks/${taskId}/followup`, { method: 'POST', json: { instructions } })
   }
 
   async function finalizeTask(guildId: string, taskId: string) {
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/finalize`, {
-      method: 'POST',
-      headers: _authHeaders(),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
+    return api(`/guilds/${guildId}/tasks/${taskId}/finalize`, { method: 'POST' })
   }
 
   async function cancelTask(guildId: string, taskId: string) {
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/cancel`, {
-      method: 'POST',
-      headers: _authHeaders(),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
+    return api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
   }
 
   async function redirectTask(guildId: string, taskId: string, instructions: string) {
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks/${taskId}/redirect`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ instructions }),
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
+    return api(`/guilds/${guildId}/tasks/${taskId}/redirect`, { method: 'POST', json: { instructions } })
   }
 
   function _upsertTask(data: Task) {
@@ -153,7 +122,7 @@ export const useTasksStore = defineStore('tasks', () => {
     }
   }
 
-  function handleWebSocketMessage(data: WSMessage) {
+  function handleWebSocketMessage(data: WSInbound) {
     if (data.type === 'task-created') {
       _upsertTask({
         id: data.taskId,

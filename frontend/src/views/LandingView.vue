@@ -131,6 +131,7 @@ import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useAuthStore } from '../stores/auth'
 import { useGitHubStore } from '../stores/github'
+import { formatRelative } from '../utils/format'
 import type { Guild } from '../types'
 
 const router = useRouter()
@@ -211,18 +212,7 @@ async function createGuild() {
   }
 }
 
-function formatTime(isoStr?: string) {
-  if (!isoStr) return ''
-  const d = new Date(isoStr)
-  const now = new Date()
-  const diffMs = now.getTime() - d.getTime()
-  const diffMins = Math.floor(diffMs / 60000)
-  if (diffMins < 1) return 'just now'
-  if (diffMins < 60) return `${diffMins}m ago`
-  const diffHours = Math.floor(diffMins / 60)
-  if (diffHours < 24) return `${diffHours}h ago`
-  return d.toLocaleDateString()
-}
+const formatTime = formatRelative
 
 function sparkleStyle(n: number) {
   const seed = n * 137.508

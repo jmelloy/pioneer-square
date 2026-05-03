@@ -4,9 +4,19 @@ import type { AuthUser } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
+// Corrupt JSON in localStorage shouldn't crash the app at module load.
+function _readStoredUser(): AuthUser | null {
+  try {
+    return JSON.parse(localStorage.getItem('auth_user') || 'null')
+  } catch {
+    localStorage.removeItem('auth_user')
+    return null
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const loginToken = ref<string>(localStorage.getItem('auth_token') || '')
-  const user = ref<AuthUser | null>(JSON.parse(localStorage.getItem('auth_user') || 'null'))
+  const user = ref<AuthUser | null>(_readStoredUser())
 
   const isLoggedIn = computed(() => !!loginToken.value && !!user.value)
 

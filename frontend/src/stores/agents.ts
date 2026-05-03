@@ -1,10 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
-import { useAuthStore } from './auth'
-import type { Agent, AgentActivity, AgentState, LogEntry, Worker, WSMessage } from '../types'
-
-const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
+import { api } from '../utils/api'
+import type { Agent, AgentActivity, AgentState, LogEntry, Worker, WSInbound } from '../types'
 
 const STATE_RANK: Record<string, number> = {
   working: 0,
@@ -147,79 +145,40 @@ export const useAgentsStore = defineStore('agents', () => {
     })
   }
 
-  function _authHeaders(): Record<string, string> {
-    return useAuthStore().authHeaders()
+  function _currentGuildId(): string {
+    const guildId = useGuildStore().currentGuild?.id
+    if (!guildId) throw new Error('No active guild')
+    return guildId
   }
 
   async function runAgent(agentId: string, { tool, prompt, model, provider }: RunAgentOpts) {
-    const guildStore = useGuildStore()
-    const guildId = guildStore.currentGuild?.id
-    if (!guildId) throw new Error('No active guild')
-
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/agents/${agentId}/run`, {
+    const guildId = _currentGuildId()
+    return api(`/guilds/${guildId}/agents/${agentId}/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ tool, prompt, model: model || undefined, provider: provider || undefined })
+      json: { tool, prompt, model: model || undefined, provider: provider || undefined },
     })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.detail || `HTTP ${res.status}`)
-    }
-    return res.json()
   }
 
   async function stopAgent(agentId: string) {
-    const guildStore = useGuildStore()
-    const guildId = guildStore.currentGuild?.id
-    if (!guildId) throw new Error('No active guild')
-
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/agents/${agentId}/run`, {
-      method: 'DELETE',
-      headers: _authHeaders(),
-    })
-    if (!res.ok && res.status !== 404) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.detail || `HTTP ${res.status}`)
-    }
-    return res.json()
+    const guildId = _currentGuildId()
+    return api(`/guilds/${guildId}/agents/${agentId}/run`, { method: 'DELETE', okStatuses: [404] })
   }
 
   async function assignTask(workerId: string, { description, issueNumber, issueRepo }: AssignTaskOpts) {
-    const guildStore = useGuildStore()
-    const guildId = guildStore.currentGuild?.id
-    if (!guildId) throw new Error('No active guild')
-
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers/${workerId}/tasks`, {
+    const guildId = _currentGuildId()
+    return api(`/guilds/${guildId}/workers/${workerId}/tasks`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({
+      json: {
         description,
         issue_number: issueNumber || null,
         issue_repo: issueRepo || null,
-      })
+      },
     })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.detail || `HTTP ${res.status}`)
-    }
-    return res.json()
   }
 
   async function messageWorker(workerId: string, message: string) {
-    const guildStore = useGuildStore()
-    const guildId = guildStore.currentGuild?.id
-    if (!guildId) throw new Error('No active guild')
-
-    const res = await fetch(`${API_BASE}/guilds/${guildId}/workers/${workerId}/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ..._authHeaders() },
-      body: JSON.stringify({ message })
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.detail || `HTTP ${res.status}`)
-    }
-    return res.json()
+    const guildId = _currentGuildId()
+    return api(`/guilds/${guildId}/workers/${workerId}/message`, { method: 'POST', json: { message } })
   }
 
   function firstIdleWorker() {
@@ -245,17 +204,17 @@ export const useAgentsStore = defineStore('agents', () => {
     openedAgentIds.value = []
   }
 
+  type RawLog = { line: string; timestamp: string; detail?: unknown }
+  const _toLogEntry = (r: RawLog): LogEntry => ({
+    line: r.line,
+    timestamp: r.timestamp,
+    detail: (r.detail as LogEntry['detail']) || null,
+  })
+
   async function fetchWorkerLogs(guildId: string, workerId: string) {
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?worker_id=${workerId}`, { headers: _authHeaders() })
-      if (res.ok) {
-        const raw = await res.json()
-        workerLogs.value[workerId] = raw.map((r: any) => ({
-          line: r.line,
-          timestamp: r.timestamp,
-          detail: r.detail || null,
-        }))
-      }
+      const raw = await api<RawLog[]>(`/guilds/${guildId}/logs?worker_id=${workerId}`)
+      workerLogs.value[workerId] = raw.map(_toLogEntry)
     } catch (e) {
       console.error('Failed to fetch worker logs', e)
     }
@@ -263,32 +222,23 @@ export const useAgentsStore = defineStore('agents', () => {
 
   async function fetchAgentLogs(guildId: string, agentId: string) {
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}/logs?agent_id=${agentId}`, { headers: _authHeaders() })
-      if (res.ok) {
-        const raw = await res.json()
-        const historical: LogEntry[] = raw.map((r: any) => ({
-          line: r.line,
-          timestamp: r.timestamp,
-          detail: r.detail || null,
-        }))
-        const agent = agents.value.find(a => a.id === agentId)
-        if (agent) {
-          const existing = agent.logs
-          agent.logs = [...historical, ...existing]
-          if (agent.logs.length > 2000) agent.logs = agent.logs.slice(-2000)
-        }
+      const raw = await api<RawLog[]>(`/guilds/${guildId}/logs?agent_id=${agentId}`)
+      const historical = raw.map(_toLogEntry)
+      const agent = agents.value.find(a => a.id === agentId)
+      if (agent) {
+        agent.logs = [...historical, ...agent.logs]
+        if (agent.logs.length > 2000) agent.logs = agent.logs.slice(-2000)
       }
     } catch (e) {
       console.error('Failed to fetch agent logs', e)
     }
   }
 
-  function handleWebSocketMessage(data: WSMessage) {
+  function handleWebSocketMessage(data: WSInbound) {
     if (data.type === 'agent-joined') {
-      registerAgent(data as RegisterAgentData)
+      registerAgent(data)
     } else if (data.type === 'agent-state') {
-      updateAgentState(data.agentId, data.state,
-        'activity' in data ? (data.activity as AgentActivity | null) : undefined)
+      updateAgentState(data.agentId, data.state, data.activity ?? undefined)
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
       if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)

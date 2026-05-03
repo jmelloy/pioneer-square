@@ -170,15 +170,13 @@ import DOMPurify from 'dompurify'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
 import { useGitHubStore } from '../stores/github'
-import { useAuthStore } from '../stores/auth'
-import type { ChatMessage, GitHubIssue, WSMessage } from '../types'
-
-const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
+import { api } from '../utils/api'
+import { formatClock, formatAge } from '../utils/format'
+import type { ChatMessage, GitHubIssue, WSInbound } from '../types'
 
 const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
 const ghStore = useGitHubStore()
-const authStore = useAuthStore()
 
 const minimized = ref(false)
 const inputText = ref('')
@@ -377,7 +375,7 @@ function submitAuthCode() {
 }
 
 // Listen for task lifecycle + escalation broadcasts
-function handleTaskEvent(data: WSMessage) {
+function handleTaskEvent(data: WSInbound) {
   if (data.type === 'task-complete') {
     guildStore.messages.push({
       type: 'chat', from: 'system', to: 'user',
@@ -421,14 +419,9 @@ onMounted(async () => {
   const guildId = guildStore.currentGuild?.id
   if (guildId && !claudeAuthPending.value) {
     try {
-      const res = await fetch(`${API_BASE}/guilds/${guildId}/pending-auth`, {
-        headers: authStore.authHeaders()
-      })
-      if (res.ok) {
-        const items: Array<{ workerId: string; url: string }> = await res.json()
-        if (items.length > 0) {
-          claudeAuthPending.value = { workerId: items[0].workerId, url: items[0].url }
-        }
+      const items = await api<Array<{ workerId: string; url: string }>>(`/guilds/${guildId}/pending-auth`)
+      if (items.length > 0) {
+        claudeAuthPending.value = { workerId: items[0].workerId, url: items[0].url }
       }
     } catch (e) {
       console.warn('Could not fetch pending auth state', e)
@@ -478,19 +471,7 @@ function assignIssue(issue: GitHubIssue) {
   })
 }
 
-function formatTime(isoStr?: string) {
-  if (!isoStr) return ''
-  return new Date(isoStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
-
-function formatAge(isoStr?: string) {
-  if (!isoStr) return ''
-  const diffMins = Math.floor((Date.now() - new Date(isoStr).getTime()) / 60000)
-  if (diffMins < 60) return `${diffMins}m`
-  const diffHours = Math.floor(diffMins / 60)
-  if (diffHours < 24) return `${diffHours}h`
-  return `${Math.floor(diffHours / 24)}d`
-}
+const formatTime = (iso?: string) => formatClock(iso)
 
 watch(messages, async () => {
   await nextTick()
