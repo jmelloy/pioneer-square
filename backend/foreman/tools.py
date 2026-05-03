@@ -697,9 +697,7 @@ async def exec_tools(guild_id: str, tool_uses: list) -> list:
                                     "deletedAt": deleted_at,
                                 },
                             )
-                            result_text = (
-                                f"Task {task_id} finalized; soft-delete at {deleted_at}."
-                            )
+                            result_text = f"Task {task_id} finalized; soft-delete at {deleted_at}."
 
                 elif tu.name == "message_worker":
                     wid = inp["worker_id"]

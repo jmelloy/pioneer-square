@@ -2316,9 +2316,7 @@ def _resolve_finalize_deleted_at(body: FinalizeBody | None) -> str:
         try:
             parsed = datetime.fromisoformat(body.deleted_at.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise HTTPException(
-                status_code=400, detail=f"Invalid deleted_at: {exc}"
-            ) from exc
+            raise HTTPException(status_code=400, detail=f"Invalid deleted_at: {exc}") from exc
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC).isoformat()

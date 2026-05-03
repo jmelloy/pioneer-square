@@ -127,7 +127,6 @@ def test_resolve_finalize_deleted_at_z_suffix():
 
 def test_resolve_finalize_invalid_deleted_at_raises():
     from fastapi import HTTPException
-
     from main import FinalizeBody, _resolve_finalize_deleted_at
 
     with pytest.raises(HTTPException) as excinfo:
@@ -137,7 +136,6 @@ def test_resolve_finalize_invalid_deleted_at_raises():
 
 def test_resolve_finalize_negative_seconds_raises():
     from fastapi import HTTPException
-
     from main import FinalizeBody, _resolve_finalize_deleted_at
 
     with pytest.raises(HTTPException) as excinfo:
@@ -218,9 +216,7 @@ def test_finalize_endpoint_default_sets_three_day_window(client):
     task_id = _create_task(test_client, "gsd04", worker_id, "task", db_path)
 
     before = datetime.now(UTC)
-    resp = test_client.post(
-        f"/guilds/gsd04/tasks/{task_id}/finalize", headers=_auth(db_path)
-    )
+    resp = test_client.post(f"/guilds/gsd04/tasks/{task_id}/finalize", headers=_auth(db_path))
     assert resp.status_code == 200, resp.text
     deleted_at = resp.json()["deletedAt"]
     parsed = datetime.fromisoformat(deleted_at)

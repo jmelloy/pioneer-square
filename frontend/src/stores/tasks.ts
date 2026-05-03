@@ -1,7 +1,11 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useAuthStore } from './auth'
 import type { LogEntry, Task, TaskState, WSMessage } from '../types'
+
+// Cap on setTimeout delay to avoid the 32-bit overflow that fires the timer
+// immediately on long horizons (e.g. a 3-day finalize window).
+const MAX_TIMEOUT_MS = 2_147_483_647
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
@@ -37,11 +41,48 @@ export const useTasksStore = defineStore('tasks', () => {
   const selectedTaskId = ref<string | null>(null)
   const openedTaskIds = ref<string[]>([])
 
+  // Per-task timers that drop the row when its soft-delete window elapses.
+  const _expiryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  function _removeTask(taskId: string) {
+    const idx = tasks.value.findIndex(t => t.id === taskId)
+    if (idx >= 0) tasks.value.splice(idx, 1)
+    delete taskLogs.value[taskId]
+    closeTask(taskId)
+    const timer = _expiryTimers.get(taskId)
+    if (timer) {
+      clearTimeout(timer)
+      _expiryTimers.delete(taskId)
+    }
+  }
+
+  function _scheduleExpiry(taskId: string, deletedAt: string | null | undefined) {
+    const existing = _expiryTimers.get(taskId)
+    if (existing) {
+      clearTimeout(existing)
+      _expiryTimers.delete(taskId)
+    }
+    if (!deletedAt) return
+    const delay = new Date(deletedAt).getTime() - Date.now()
+    if (Number.isNaN(delay)) return
+    if (delay <= 0) {
+      _removeTask(taskId)
+      return
+    }
+    const timer = setTimeout(() => _removeTask(taskId), Math.min(delay, MAX_TIMEOUT_MS))
+    _expiryTimers.set(taskId, timer)
+  }
+
   async function fetchTasks(guildId: string) {
     if (!guildId) return
     try {
       const res = await fetch(`${API_BASE}/guilds/${guildId}/tasks`, { headers: _authHeaders() })
-      if (res.ok) tasks.value = await res.json()
+      if (res.ok) {
+        tasks.value = await res.json()
+        for (const t of tasks.value) {
+          if (t.deleted_at) _scheduleExpiry(t.id, t.deleted_at)
+        }
+      }
     } catch (e) {
       console.error('Failed to fetch tasks', e)
     }
@@ -143,6 +184,10 @@ export const useTasksStore = defineStore('tasks', () => {
         if (data.prUrl) task.pr_url = data.prUrl
         if (data.finishedAt) task.finished_at = data.finishedAt
         if (data.worktreePath) task.worktree_path = data.worktreePath
+        if (data.deletedAt !== undefined) {
+          task.deleted_at = data.deletedAt
+          _scheduleExpiry(task.id, data.deletedAt)
+        }
       }
     } else if (data.type === 'task-complete') {
       const task = tasks.value.find(t => t.id === data.taskId)
@@ -181,13 +226,28 @@ export const useTasksStore = defineStore('tasks', () => {
     taskLogs.value = {}
     selectedTaskId.value = null
     openedTaskIds.value = []
+    for (const timer of _expiryTimers.values()) clearTimeout(timer)
+    _expiryTimers.clear()
   }
+
+  // Tasks whose soft-delete window has not yet elapsed. Components that filter
+  // for display should prefer this over `tasks` so a row disappears the moment
+  // its `deleted_at` passes, even before the per-task timer fires.
+  const liveTasks = computed(() => {
+    const now = Date.now()
+    return tasks.value.filter(t => {
+      if (!t.deleted_at) return true
+      const ts = new Date(t.deleted_at).getTime()
+      return Number.isNaN(ts) || ts > now
+    })
+  })
 
   function stateLabel(state: TaskState | string) { return STATE_LABELS[state] || state }
   function stateColor(state: TaskState | string) { return STATE_COLORS[state] || 'dim' }
 
   return {
     tasks,
+    liveTasks,
     taskLogs,
     selectedTaskId,
     openedTaskIds,
