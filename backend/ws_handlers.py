@@ -154,6 +154,37 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     )
     if agent_type == "worker":
         reset_foreman_poll(ctx.guild_id)
+        # Replay any pending tasks already assigned to this worker so they
+        # aren't lost if the backend sent task-assigned while the socket was
+        # down. The worker's HTTP _fetch_pending_tasks() covers the same gap,
+        # but this server-push path is faster (no polling interval required).
+        if worker_id:
+            result = await ctx.db.execute(
+                select(Task).where(
+                    Task.guild_id == ctx.guild_id,
+                    Task.worker_id == worker_id,
+                    Task.state.in_(["pending", "working"]),
+                )
+            )
+            pending_tasks = result.scalars().all()
+            for pt in pending_tasks:
+                logger.info(
+                    "join: replaying task-assigned for pending task %s to worker %s",
+                    pt.id,
+                    worker_id,
+                )
+                await ctx.websocket.send_json(
+                    {
+                        "type": "task-assigned",
+                        "workerId": worker_id,
+                        "taskId": pt.id,
+                        "name": pt.name or "",
+                        "description": pt.description or "",
+                        "tool": pt.tool or "claude",
+                        "issueNumber": pt.issue_number,
+                        "issueRepo": pt.issue_repo,
+                    }
+                )
 
 
 async def handle_agent_state(ctx: WSContext, data: dict) -> None:

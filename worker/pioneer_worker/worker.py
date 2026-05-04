@@ -591,19 +591,15 @@ class Worker:
         raw = (self.cfg.worker_id or "")[2:].upper()
         split = 2 + sum(ord(c) for c in raw) % 3
         droid = f"{raw[:split]}-{raw[split:]}"
-        name = self.cfg.worker_name or f"{host_prefix}/{droid}"
-        # Each slot needs a distinct display name. The frontend derives the
-        # worker name from any agent name by stripping a trailing /N suffix
-        # (see frontend/src/stores/agents.ts), so the convention is
-        # "<worker-name>/<slot-index>".
-        multi_slot = len(self.slots) > 1
+        worker_name = self.cfg.worker_name or f"{host_prefix}/{droid}"
+        
         for idx, slot in enumerate(self.slots, start=1):
-            agent_name = f"{name}/{idx}" if multi_slot else name
+            agent_split = split = 2 + sum(ord(c) for c in slot.agent_id) % 3
             await self._send(
                 {
                     "type": "join",
                     "agentId": slot.agent_id,
-                    "agentName": agent_name,
+                    "agentName": f"{slot.agent_id[2:][:agent_split]}-{slot.agent_id[2:][agent_split:]}",
                     "agentType": "worker",
                     "workerId": self.cfg.worker_id,
                 }
@@ -641,6 +637,17 @@ class Worker:
                         "state": slot.state,
                     }
                 )
+        # Re-fetch any tasks that were assigned while the WS was down; without
+        # this they'd be missed until the idle puller fires (up to 300s later).
+        try:
+            missed = await self._fetch_pending_tasks()
+            for task in missed:
+                if task["id"] not in self._known_task_ids:
+                    logger.info("Reconnect: queuing missed task %s", task["id"])
+                    self._known_task_ids.add(task["id"])
+                    await self.task_queue.put(task)
+        except Exception as exc:
+            logger.warning("Reconnect: pending-task fetch failed: %s", exc)
 
     async def _task_update(self, task_id: str, **fields: object) -> None:
         await self._send(
