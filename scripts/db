@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Connect to the live Pioneer Square backend SQLite DB inside docker.
+#
+# Execs sqlite3 inside the running `backend` compose service against
+# /data/pioneer_square.db (the backend-data volume). Requires the backend
+# container to be running and the image to include sqlite3 (see
+# backend/Dockerfile).
+#
+# Usage:
+#   scripts/db                               # interactive sqlite3 shell
+#   scripts/db -c "select count(*) from tasks;"
+#   scripts/db --readonly -c "select * from workers;"
+#   scripts/db --service some-other-name     # exec into a different service
+#   scripts/db --db /path/inside/container.db
+#
+# Pass --local to point at a host-side file instead of the docker container
+# (uses duckdb with the sqlite extension if available, otherwise sqlite3).
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+mode="docker"
+service="backend"
+db_path="/data/pioneer_square.db"
+readonly_mode=0
+sql=""
+local_driver="duckdb"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --local) mode="local"; db_path="${PIONEER_DB:-$repo_root/pioneer_square.db}"; shift ;;
+        --sqlite) local_driver="sqlite3"; shift ;;
+        --duckdb) local_driver="duckdb"; shift ;;
+        --service) service="$2"; shift 2 ;;
+        --readonly|-r) readonly_mode=1; shift ;;
+        --db) db_path="$2"; shift 2 ;;
+        -c|--cmd) sql="$2"; shift 2 ;;
+        -h|--help)
+            sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *)
+            echo "unknown arg: $1" >&2
+            exit 2 ;;
+    esac
+done
+
+if [[ "$mode" == "docker" ]]; then
+    if ! docker compose ps --status running --services 2>/dev/null | grep -qx "$service"; then
+        echo "compose service '$service' is not running; start it with 'docker compose up -d $service'" >&2
+        exit 1
+    fi
+
+    if ! docker compose exec -T "$service" sh -c 'command -v sqlite3 >/dev/null 2>&1'; then
+        echo "sqlite3 is not installed in the '$service' image; rebuild with 'docker compose build $service'" >&2
+        exit 1
+    fi
+
+    args=(sqlite3)
+    [[ $readonly_mode -eq 1 ]] && args+=(-readonly)
+    args+=(-header -column "$db_path")
+
+    if [[ -n "$sql" ]]; then
+        exec docker compose exec -T "$service" "${args[@]}" "$sql"
+    else
+        exec docker compose exec "$service" "${args[@]}"
+    fi
+fi
+
+# --- local mode ---------------------------------------------------------------
+
+if [[ ! -f "$db_path" ]]; then
+    echo "db not found: $db_path" >&2
+    exit 1
+fi
+
+if [[ "$local_driver" == "sqlite3" ]]; then
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        echo "sqlite3 not installed" >&2
+        exit 1
+    fi
+    args=()
+    [[ $readonly_mode -eq 1 ]] && args+=(-readonly)
+    args+=(-header -column "$db_path")
+    if [[ -n "$sql" ]]; then
+        exec sqlite3 "${args[@]}" "$sql"
+    else
+        exec sqlite3 "${args[@]}"
+    fi
+fi
+
+if ! command -v duckdb >/dev/null 2>&1; then
+    echo "duckdb not installed" >&2
+    exit 1
+fi
+
+attach_opts="TYPE sqlite"
+[[ $readonly_mode -eq 1 ]] && attach_opts="$attach_opts, READ_ONLY"
+
+# Escape single quotes in the path for the SQL literal.
+db_lit="${db_path//\'/\'\'}"
+
+prelude="INSTALL sqlite; LOAD sqlite; ATTACH '$db_lit' AS db ($attach_opts); USE db;"
+
+if [[ -n "$sql" ]]; then
+    exec duckdb -c "$prelude $sql"
+else
+    exec duckdb -cmd "$prelude"
+fi
