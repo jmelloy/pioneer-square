@@ -38,9 +38,18 @@ _CANCEL_SENTINEL = object()  # placed in followup queue to signal task cancellat
 _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during shutdown
 
 
-class _AgentSlot:
+class Agent:
+    """Stable identity for a running agent (persists across task boundaries)."""
+
+    def __init__(self, agent_id: str, agent_name: str | None = None) -> None:
+        # Uppercase droid-style IDs (e.g. a-xyz789 → A-XYZ789, w-abc123 → W-ABC123)
+        self.agent_id = agent_id.upper()
+        self.agent_name: str = agent_name or self.agent_id
+
+
+class _AgentSlot(Agent):
     def __init__(self, agent_id: str) -> None:
-        self.agent_id = agent_id
+        super().__init__(agent_id)
         self.current_claude: claude_runner.ClaudeProcess | None = None
         self.current_task_id: str | None = None
         # Last state we told the backend about; resent on WS reconnect so the
@@ -67,6 +76,9 @@ class Worker:
         # Set to True once _join() has been called the first time so that
         # _on_ws_reconnect doesn't prematurely join before auth completes.
         self._joined = False
+        # Uppercase any pre-configured worker ID to match the droid-name convention.
+        if cfg.worker_id:
+            cfg.worker_id = cfg.worker_id.upper()
         # One slot per concurrent agent; each gets a stable ID for the guild.
         self.slots: list[_AgentSlot] = [_AgentSlot(_gen_id("a-")) for _ in range(cfg.max_agents)]
         # Set when graceful shutdown is requested (via WS or signal). Idle
@@ -99,7 +111,7 @@ class Worker:
             payload = resp.json()
             wid = payload["id"]
             self.cfg.auth_token = payload.get("auth_token")
-        self.cfg.worker_id = wid
+        self.cfg.worker_id = wid.upper()
         if not self.cfg.auth_token:
             logger.warning(
                 "Registration response did not include auth_token — "
@@ -592,14 +604,16 @@ class Worker:
         split = 2 + sum(ord(c) for c in raw) % 3
         droid = f"{raw[:split]}-{raw[split:]}"
         worker_name = self.cfg.worker_name or f"{host_prefix}/{droid}"
-        
+        multi = len(self.slots) > 1
+
         for idx, slot in enumerate(self.slots, start=1):
-            agent_split = split = 2 + sum(ord(c) for c in slot.agent_id) % 3
+            agent_name = f"{worker_name}/{idx}" if multi else worker_name
+            slot.agent_name = agent_name
             await self._send(
                 {
                     "type": "join",
                     "agentId": slot.agent_id,
-                    "agentName": f"{slot.agent_id[2:][:agent_split]}-{slot.agent_id[2:][agent_split:]}",
+                    "agentName": agent_name,
                     "agentType": "worker",
                     "workerId": self.cfg.worker_id,
                 }

@@ -37,7 +37,7 @@ async def test_notify_offline_sends_worker_disconnect():
 
     disconnect_msgs = [m for m in sent if m.get("type") == "worker-disconnect"]
     assert len(disconnect_msgs) == 1, f"Expected one worker-disconnect, got: {sent}"
-    assert disconnect_msgs[0]["workerId"] == "w-test01"
+    assert disconnect_msgs[0]["workerId"] == "W-TEST01"
 
 
 async def test_notify_offline_swallows_send_errors():
@@ -89,7 +89,7 @@ async def test_run_sends_disconnect_before_ws_close():
     assert disconnect_msgs, (
         f"worker-disconnect not found in sent messages: {[m.get('type') for m in sent]}"
     )
-    assert disconnect_msgs[0]["workerId"] == "w-test01"
+    assert disconnect_msgs[0]["workerId"] == "W-TEST01"
     assert close_calls, "ws.close() was never called"
 
 
@@ -208,7 +208,7 @@ async def test_heartbeat_sends_ping_messages(monkeypatch):
     pings = [m for m in sent if m.get("type") == "ping"]
     assert pings, f"Expected at least one ping, got: {sent}"
     first = pings[0]
-    assert first["workerId"] == "w-test01"
+    assert first["workerId"] == "W-TEST01"
     assert "timestamp" in first
     # Heartbeat is a worker-level signal; it must not be tied to any agent slot.
     assert "agentId" not in first
