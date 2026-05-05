@@ -32,14 +32,14 @@
     </button>
   </div>
 
-  <!-- Task: follow-up panel -->
-  <div v-if="taskState === 'awaiting-review'" class="followup-panel">
-    <div class="followup-header">FOREMAN FOLLOW-UP</div>
+  <!-- Task: follow-up panel — visible for awaiting-review and terminal states -->
+  <div v-if="showFollowupPanel" class="followup-panel">
+    <div class="followup-header">{{ followupPanelHeader }}</div>
     <div class="followup-row">
       <textarea
         v-model="followupText"
         class="followup-input"
-        placeholder="Additional instructions (e.g. 'update tests', 'add docstrings')…"
+        :placeholder="followupPlaceholder"
         rows="2"
         @keydown.ctrl.enter="sendFollowupAction"
       />
@@ -52,7 +52,13 @@
       >
         ↺ Follow-up
       </button>
-      <button class="pixel-btn finalize-btn" @click="finalizeTaskAction">✓ Finalize</button>
+      <button
+        v-if="taskState === 'awaiting-review'"
+        class="pixel-btn finalize-btn"
+        @click="finalizeTaskAction"
+      >
+        ✓ Finalize
+      </button>
     </div>
   </div>
 </template>
@@ -72,6 +78,26 @@ const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
 
 const isWorkerTask = computed(() => props.workerId && props.workerId !== 'foreman')
+
+const _TERMINAL_STATES = new Set(['done', 'failed', 'cancelled'])
+
+const isTerminalState = computed(() => _TERMINAL_STATES.has(props.taskState || ''))
+
+const showFollowupPanel = computed(
+  () =>
+    isWorkerTask.value &&
+    (props.taskState === 'awaiting-review' || isTerminalState.value),
+)
+
+const followupPanelHeader = computed(() =>
+  isTerminalState.value ? 'SEND TO FOREMAN' : 'FOREMAN FOLLOW-UP',
+)
+
+const followupPlaceholder = computed(() =>
+  isTerminalState.value
+    ? 'Request additional work on this branch — foreman will re-assign it…'
+    : "Additional instructions (e.g. 'update tests', 'add docstrings')…",
+)
 
 const canCancel = computed(() => {
   const s = props.taskState
