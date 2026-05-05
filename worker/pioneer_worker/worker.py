@@ -592,7 +592,7 @@ class Worker:
         split = 2 + sum(ord(c) for c in raw) % 3
         droid = f"{raw[:split]}-{raw[split:]}"
         worker_name = self.cfg.worker_name or f"{host_prefix}/{droid}"
-        
+
         for idx, slot in enumerate(self.slots, start=1):
             agent_split = split = 2 + sum(ord(c) for c in slot.agent_id) % 3
             await self._send(
