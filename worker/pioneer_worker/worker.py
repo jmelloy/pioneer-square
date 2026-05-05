@@ -30,7 +30,7 @@ def _droid_name(id: str) -> str:
     """Generate a droid-style designation like R2-D2 or BB-8, seeded from id."""
 
     split = 2 + sum(ord(c) for c in id) % 3
-    return f"{id[2:][:split]}-{id[2:][split:]}"
+    return f"{id[2:][:split]}-{id[2:][split:]}".upper()
 
 
 def _now_iso() -> str:
