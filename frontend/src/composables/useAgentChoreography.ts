@@ -10,6 +10,7 @@ export interface ChoreographyRow {
   index: number
   task: Task | null
   activityKey: string | null
+  agentId: string | null
 }
 
 export interface ChoreographyOptions {
@@ -52,13 +53,27 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     }
   }
 
-  function randomBreakRoomPos(): Position {
+  // Distribute idle agents into per-slot lanes so they don't pile up in one corner.
+  function randomBreakRoomPos(agentId?: string): Position {
     const xMin = opts.tableLeft + 30
     const xMax = opts.tableLeft + opts.tableWidth.value - 30
     const yMin = opts.breakRoomTop.value + 24
     const yMax = opts.breakRoomTop.value + Math.max(28, opts.breakRoomHeight.value - 16)
+    let x: number
+    if (agentId !== undefined) {
+      const idx = opts.agents.value.findIndex((a) => a.id === agentId)
+      const total = Math.max(opts.agents.value.length, 1)
+      if (idx >= 0 && total > 1) {
+        const lane = (idx + 0.5 + (Math.random() - 0.5) * 0.6) / total
+        x = xMin + Math.max(0, Math.min(1, lane)) * (xMax - xMin)
+      } else {
+        x = xMin + Math.random() * (xMax - xMin)
+      }
+    } else {
+      x = xMin + Math.random() * (xMax - xMin)
+    }
     return {
-      x: xMin + Math.random() * (xMax - xMin),
+      x,
       y: yMin + Math.random() * Math.max(2, yMax - yMin),
     }
   }
@@ -98,20 +113,32 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     return positions[id] || { x: opts.tableLeft + 60, y: opts.tableTop + opts.rowHeight.value }
   }
 
+  // Match by agentId so each robot goes to its own table, not all to the same one.
   function rowForAgent(agent: Agent): ChoreographyRow | null {
-    if (!agent.workerId) return null
-    return opts.taskRows.value.find((r) => r.task && r.task.worker_id === agent.workerId) || null
+    return opts.taskRows.value.find((r) => r.agentId === agent.id) ?? null
   }
 
   function isWorking(agent: Agent) {
     return !['idle', 'offline'].includes(agent.state)
   }
 
+  // Small golden-angle spiral offset per slot index prevents robots from stacking
+  // exactly on top of each other when they share a workbench position.
+  function slotJitter(agentId: string): Position {
+    const idx = opts.agents.value.findIndex((a) => a.id === agentId)
+    if (idx <= 0) return { x: 0, y: 0 }
+    const angle = (idx * 137.508 * Math.PI) / 180
+    const r = Math.min(idx * 5, 16)
+    return { x: Math.cos(angle) * r, y: Math.sin(angle) * r }
+  }
+
   function targetForAgent(agent: Agent): Position {
     const row = rowForAgent(agent)
+    const jitter = slotJitter(agent.id)
     if (row && isWorking(agent)) {
       const key = row.activityKey
-      return key ? stationPos(row.index, key) : rowCenterPos(row.index)
+      const base = key ? stationPos(row.index, key) : rowCenterPos(row.index)
+      return { x: base.x + jitter.x, y: base.y + jitter.y }
     }
     return pickWanderPos(agent.id)
   }

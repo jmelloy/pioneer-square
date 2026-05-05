@@ -28,8 +28,8 @@ def worker_display_name(worker_id: str, hostname: str | None = None) -> str:
     split = 2 + sum(ord(c) for c in raw) % 3
     droid = f"{raw[:split]}-{raw[split:]}"
     if hostname:
-        return f"{hostname[:3].upper()}/{droid}"
-    return droid
+        return f"{hostname[:3].upper()}/{droid}".upper()
+    return droid.upper()
 
 
 def decode_claude_oauth_token(blob: str | None) -> str | None:

@@ -647,18 +647,33 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 task_id = inp["task_id"]
                 instructions = inp["instructions"]
                 result = await db.execute(
-                    select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_id)
+                    select(Task.worker_id, Task.state).where(
+                        Task.id == task_id, Task.guild_id == guild_id
+                    )
                 )
-                worker_id_val = result.scalar_one_or_none()
-                if not worker_id_val:
+                row = result.one_or_none()
+                if not row:
                     result_text = f"Task {task_id} not found."
                 else:
-                    await db.execute(
-                        update(Task)
-                        .where(Task.id == task_id)
-                        .values(state="working", phase="followup")
-                    )
+                    worker_id_val, prior_state = row
+                    update_vals: dict = {"state": "working", "phase": "followup"}
+                    if prior_state in ("done", "failed", "cancelled"):
+                        # Re-opening a terminal task: clear soft-delete fields so it
+                        # reappears in the live task list and isn't auto-purged.
+                        update_vals["deleted_at"] = None
+                        update_vals["finished_at"] = None
+                    await db.execute(update(Task).where(Task.id == task_id).values(**update_vals))
                     await db.commit()
+                    await broadcast(
+                        guild_id,
+                        {
+                            "type": "task-update",
+                            "taskId": task_id,
+                            "state": "working",
+                            "deletedAt": None,
+                            "finishedAt": None,
+                        },
+                    )
                     await broadcast(
                         guild_id,
                         {
