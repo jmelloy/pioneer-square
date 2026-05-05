@@ -26,18 +26,19 @@ def _gen_id(prefix: str) -> str:
     return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
-def _droid_name() -> str:
-    """Generate a random droid-style designation like R2-D2 or BB-8."""
+def _droid_name(id: str) -> str:
+    """Generate a droid-style designation like R2-D2 or BB-8, seeded from id."""
+    rng = random.Random(id)
     L = string.ascii_uppercase
     D = string.digits
-    p1 = random.choice(
-        [lambda: random.choice(L) + random.choice(D), lambda: random.choice(L) + random.choice(L)]
+    p1 = rng.choice(
+        [lambda: rng.choice(L) + rng.choice(D), lambda: rng.choice(L) + rng.choice(L)]
     )()
-    p2 = random.choice(
+    p2 = rng.choice(
         [
-            lambda: random.choice(L) + random.choice(D),
-            lambda: random.choice(L) + random.choice(L),
-            lambda: random.choice(D),
+            lambda: rng.choice(L) + rng.choice(D),
+            lambda: rng.choice(L) + rng.choice(L),
+            lambda: rng.choice(D),
         ]
     )()
     return f"{p1}-{p2}"
@@ -58,7 +59,7 @@ _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during
 class _AgentSlot:
     def __init__(self, *, id: str | None = None, name: str | None = None) -> None:
         self.id: str = id if id is not None else _gen_id("a-")
-        self.name: str = name if name is not None else _droid_name()
+        self.name: str = name if name is not None else _droid_name(self.id)
         self.current_claude: claude_runner.ClaudeProcess | None = None
         self.current_task_id: str | None = None
         # Last state we told the backend about; resent on WS reconnect so the

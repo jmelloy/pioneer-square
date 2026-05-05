@@ -76,3 +76,17 @@ def test_default_state_is_idle():
     assert slot.state == "idle"
     assert slot.current_task_id is None
     assert slot.activity is None
+
+
+def test_droid_name_is_deterministic_for_same_id():
+    """The same id must always produce the same droid name."""
+    slot_a = _AgentSlot(id="a-abc123")
+    slot_b = _AgentSlot(id="a-abc123")
+    assert slot_a.name == slot_b.name
+
+
+def test_droid_name_differs_for_different_ids():
+    """Two distinct ids must produce different droid names (with overwhelming probability)."""
+    slot_a = _AgentSlot(id="a-abc123")
+    slot_b = _AgentSlot(id="a-xyz999")
+    assert slot_a.name != slot_b.name
