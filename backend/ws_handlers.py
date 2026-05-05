@@ -140,24 +140,15 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         # decide it owns the agent, and stamp the just-joined agent offline.
         async with agent_owner_lock(ctx.guild_id):
             agent_owners[agent_id] = ctx.websocket
-    await broadcast(
-        ctx.guild_id,
-        {
-            "type": "agent-joined",
-            "agentId": agent_id,
-            "agentName": agent_name,
-            "agentType": agent_type,
-            "workerId": worker_id,
-            "state": "idle",
-            "joinedAt": joined_at,
-        },
-    )
     if agent_type == "worker":
         reset_foreman_poll(ctx.guild_id)
         # Replay any pending tasks already assigned to this worker so they
         # aren't lost if the backend sent task-assigned while the socket was
         # down. The worker's HTTP _fetch_pending_tasks() covers the same gap,
         # but this server-push path is faster (no polling interval required).
+        # Done before the agent-joined broadcast so all DB work finishes before
+        # observers see the join event; this prevents anyio cancel-scope races
+        # in tests where a peer WS closes on receiving the broadcast.
         if worker_id:
             result = await ctx.db.execute(
                 select(Task).where(
@@ -185,6 +176,18 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                         "issueRepo": pt.issue_repo,
                     }
                 )
+    await broadcast(
+        ctx.guild_id,
+        {
+            "type": "agent-joined",
+            "agentId": agent_id,
+            "agentName": agent_name,
+            "agentType": agent_type,
+            "workerId": worker_id,
+            "state": "idle",
+            "joinedAt": joined_at,
+        },
+    )
 
 
 async def handle_agent_state(ctx: WSContext, data: dict) -> None:

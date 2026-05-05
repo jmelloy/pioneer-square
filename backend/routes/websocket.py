@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+import anyio
 import ws_handlers
 from database import get_db
 from events import agent_owner_lock, agent_owners, broadcast, connections
@@ -106,36 +107,45 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         if guild_id in connections and websocket in connections[guild_id]:
             connections[guild_id].remove(websocket)
     finally:
-        try:
-            # Only mark agents offline if this WS is still the current owner.
-            # The per-guild lock pairs with handle_join's ownership write so a
-            # reconnect's just-installed agent can't be stamped offline by the
-            # previous socket's cleanup running concurrently.
-            async with agent_owner_lock(guild_id):
-                stale_agents = [aid for aid in joined_agents if agent_owners.get(aid) is websocket]
+        # Shield the cleanup from anyio cancel-scope cancellation so that
+        # db operations and db.close() always run to completion.  Without
+        # the shield, a cancelled cancel scope (e.g. TestClient teardown)
+        # raises Cancelled inside the aiosqlite layer, which then propagates
+        # as an unhandled exception from this task and causes the anyio task
+        # group to cancel sibling connections.
+        with anyio.CancelScope(shield=True):
+            try:
+                # Only mark agents offline if this WS is still the current owner.
+                # The per-guild lock pairs with handle_join's ownership write so a
+                # reconnect's just-installed agent can't be stamped offline by the
+                # previous socket's cleanup running concurrently.
+                async with agent_owner_lock(guild_id):
+                    stale_agents = [
+                        aid for aid in joined_agents if agent_owners.get(aid) is websocket
+                    ]
+                    for agent_id in stale_agents:
+                        agent_owners.pop(agent_id, None)
+                        await db.execute(
+                            update(Agent)
+                            .where(Agent.id == agent_id, Agent.guild_id == guild_id)
+                            .values(state="offline")
+                        )
+                        # Mirror into workers table so foreman sees the worker as offline.
+                        await db.execute(
+                            update(Worker)
+                            .where(Worker.id == agent_id, Worker.guild_id == guild_id)
+                            .values(state="offline")
+                        )
+                    if stale_agents:
+                        await db.commit()
                 for agent_id in stale_agents:
-                    agent_owners.pop(agent_id, None)
-                    await db.execute(
-                        update(Agent)
-                        .where(Agent.id == agent_id, Agent.guild_id == guild_id)
-                        .values(state="offline")
+                    await broadcast(
+                        guild_id,
+                        {
+                            "type": "agent-state",
+                            "agentId": agent_id,
+                            "state": "offline",
+                        },
                     )
-                    # Mirror into workers table so foreman sees the worker as offline.
-                    await db.execute(
-                        update(Worker)
-                        .where(Worker.id == agent_id, Worker.guild_id == guild_id)
-                        .values(state="offline")
-                    )
-                if stale_agents:
-                    await db.commit()
-            for agent_id in stale_agents:
-                await broadcast(
-                    guild_id,
-                    {
-                        "type": "agent-state",
-                        "agentId": agent_id,
-                        "state": "offline",
-                    },
-                )
-        finally:
-            await db.close()
+            finally:
+                await db.close()
