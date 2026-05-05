@@ -28,20 +28,9 @@ def _gen_id(prefix: str) -> str:
 
 def _droid_name(id: str) -> str:
     """Generate a droid-style designation like R2-D2 or BB-8, seeded from id."""
-    rng = random.Random(id)
-    L = string.ascii_uppercase
-    D = string.digits
-    p1 = rng.choice(
-        [lambda: rng.choice(L) + rng.choice(D), lambda: rng.choice(L) + rng.choice(L)]
-    )()
-    p2 = rng.choice(
-        [
-            lambda: rng.choice(L) + rng.choice(D),
-            lambda: rng.choice(L) + rng.choice(L),
-            lambda: rng.choice(D),
-        ]
-    )()
-    return f"{p1}-{p2}"
+
+    split = 2 + sum(ord(c) for c in id) % 3
+    return f"{id[2:][:split]}-{id[2:][split:]}"
 
 
 def _now_iso() -> str:
@@ -56,7 +45,7 @@ _CANCEL_SENTINEL = object()  # placed in followup queue to signal task cancellat
 _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during shutdown
 
 
-class _AgentSlot:
+class Agent:
     def __init__(self, *, id: str | None = None, name: str | None = None) -> None:
         self.id: str = id if id is not None else _gen_id("a-")
         self.name: str = name if name is not None else _droid_name(self.id)
@@ -91,15 +80,7 @@ class Worker:
         # _on_ws_reconnect doesn't prematurely join before auth completes.
         self._joined = False
 
-        # One slot per concurrent agent; each gets a stable ID and name for the guild.
-        def _slot_name(idx: int) -> str | None:
-            if not cfg.worker_name:
-                return None
-            return cfg.worker_name if cfg.max_agents == 1 else f"{cfg.worker_name}/{idx}"
-
-        self.slots: list[_AgentSlot] = [
-            _AgentSlot(name=_slot_name(i)) for i in range(1, cfg.max_agents + 1)
-        ]
+        self.slots: list[Agent] = [Agent() for i in range(cfg.max_agents)]
         # Set when graceful shutdown is requested (via WS or signal). Idle
         # agents stop immediately; busy agents finish their current task and
         # skip the follow-up window.
@@ -573,7 +554,7 @@ class Worker:
             msg["detail"] = detail
         await self._send(msg)
 
-    def _task_emit(self, task_id: str, slot: _AgentSlot):
+    def _task_emit(self, task_id: str, slot: Agent):
         """Return an emit function scoped to a task and agent slot."""
 
         async def _emit_task(line: str, detail: dict | None = None) -> None:
@@ -603,7 +584,7 @@ class Worker:
 
         return _emit_task
 
-    async def _set_state(self, state: str, slot: _AgentSlot) -> None:
+    async def _set_state(self, state: str, slot: Agent) -> None:
         slot.state = state
         if state != "working":
             slot.activity = None
@@ -734,7 +715,10 @@ class Worker:
                 pass
             os.kill(os.getpid(), sig)
             return
-        logger.info("Received %s — initiating graceful shutdown (signal again to force)", sig.name)
+        logger.info(
+            "Received %s — initiating graceful shutdown (signal again to force)",
+            sig.name,
+        )
         loop.create_task(self._initiate_shutdown(f"signal {sig.name}"))
 
     # Interval between application-level pings sent to the backend. Three
@@ -910,7 +894,11 @@ class Worker:
                 task_id = msg.get("taskId")
                 if not task_id or task_id in self._known_task_ids:
                     continue
-                logger.info("Task assigned: %s — %s", task_id, (msg.get("description") or "")[:80])
+                logger.info(
+                    "Task assigned: %s — %s",
+                    task_id,
+                    (msg.get("description") or "")[:80],
+                )
                 self._known_task_ids.add(task_id)
                 await self.task_queue.put(
                     {
@@ -935,7 +923,8 @@ class Worker:
                     if self._auth_code_queue is not None:
                         await self._auth_code_queue.put(text)
                         logger.info(
-                            "Auth code received via worker-message (login flow) len=%d", len(text)
+                            "Auth code received via worker-message (login flow) len=%d",
+                            len(text),
                         )
                         await self._emit("[worker] Auth code received and forwarded to login flow")
                     else:
@@ -984,7 +973,8 @@ class Worker:
                     logger.info("Follow-up queued for task %s: %s", task_id, instructions[:80])
                 else:
                     logger.warning(
-                        "task-followup for %s but no queue (task may have ended)", task_id
+                        "task-followup for %s but no queue (task may have ended)",
+                        task_id,
                     )
 
             elif mtype == "task-finalize":
@@ -1048,7 +1038,8 @@ class Worker:
                         logger.info("Redirect queued as followup for task %s", task_id)
                     else:
                         logger.warning(
-                            "task-redirect for %s: no active subprocess or followup queue", task_id
+                            "task-redirect for %s: no active subprocess or followup queue",
+                            task_id,
                         )
 
     # ------------------------------------------------------------------ Idle puller
@@ -1079,11 +1070,14 @@ class Worker:
             all_idle = all(s.current_claude is None for s in self.slots)
             if self.task_queue.empty() and all_idle and self.cfg.repos:
                 await git_ops.pull_repos(
-                    self.cfg.repos_dir, self.cfg.repos, self.cfg.github_token, self._emit
+                    self.cfg.repos_dir,
+                    self.cfg.repos,
+                    self.cfg.github_token,
+                    self._emit,
                 )
 
     # ------------------------------------------------------------------ Agent loop
-    async def _agent_loop(self, slot: _AgentSlot) -> None:
+    async def _agent_loop(self, slot: Agent) -> None:
         logger.info("Agent loop started for %s", slot.agent_id)
         while True:
             task = await self.task_queue.get()
@@ -1117,7 +1111,7 @@ class Worker:
         logger.info("Agent loop exited for %s", slot.agent_id)
 
     # ------------------------------------------------------------------ Execution
-    async def _execute_task(self, task: dict, slot: _AgentSlot) -> None:
+    async def _execute_task(self, task: dict, slot: Agent) -> None:
         task_id = task["id"]
         desc = task.get("description") or ""
         token = self.cfg.github_token
@@ -1269,7 +1263,12 @@ class Worker:
 
                 break  # normal exit from redirect loop
 
-            logger.info("Task %s: final success=%s stop_reason=%s", task_id, success, stop_reason)
+            logger.info(
+                "Task %s: final success=%s stop_reason=%s",
+                task_id,
+                success,
+                stop_reason,
+            )
 
             # Push the branch regardless of outcome so partial work is visible
             # and a follow-up run can build on it.
