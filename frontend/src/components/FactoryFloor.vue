@@ -183,7 +183,12 @@ const taskRows = computed(() => {
 const choreography = useAgentChoreography({
   agents,
   taskRows: computed(() =>
-    taskRows.value.map((r) => ({ index: r.index, task: r.task, activityKey: r.activityKey })),
+    taskRows.value.map((r) => ({
+      index: r.index,
+      task: r.task,
+      activityKey: r.activityKey,
+      agentId: r.agent?.id ?? null,
+    })),
   ),
   rowHeight,
   tableWidth,
