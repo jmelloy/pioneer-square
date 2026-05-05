@@ -15,7 +15,10 @@ export interface ApiOptions extends Omit<RequestInit, 'body'> {
 }
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
     super(message)
   }
 }
@@ -35,7 +38,11 @@ export async function api<T = unknown>(path: string, opts: ApiOptions = {}): Pro
   const res = await fetch(`${API_BASE}${path}`, init)
   if (!res.ok && !okStatuses?.includes(res.status)) {
     let detail: { detail?: string } | null = null
-    try { detail = await res.json() } catch { /* body may be empty or non-JSON */ }
+    try {
+      detail = await res.json()
+    } catch {
+      /* body may be empty or non-JSON */
+    }
     throw new ApiError(detail?.detail ?? `HTTP ${res.status}`, res.status)
   }
   try {

@@ -39,7 +39,9 @@ class FakeWebSocket {
   }
 
   simulateMessage(data: any) {
-    this.onmessage?.({ data: typeof data === 'string' ? data : JSON.stringify(data) } as MessageEvent)
+    this.onmessage?.({
+      data: typeof data === 'string' ? data : JSON.stringify(data),
+    } as MessageEvent)
   }
 
   simulateClose(opts: { wasClean?: boolean; code?: number; reason?: string } = {}) {
@@ -117,7 +119,10 @@ describe('useGuildStore', () => {
     it('updates currentGuild and guilds list on guild-updated', () => {
       const store = useGuildStore()
       store.currentGuild = { id: 'g-1', name: 'old' }
-      store.guilds = [{ id: 'g-1', name: 'old' }, { id: 'g-2', name: 'other' }]
+      store.guilds = [
+        { id: 'g-1', name: 'old' },
+        { id: 'g-2', name: 'other' },
+      ]
 
       store.connectWebSocket('g-1')
       const ws = FakeWebSocket.instances[0]

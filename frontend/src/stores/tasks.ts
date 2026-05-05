@@ -39,7 +39,7 @@ export const useTasksStore = defineStore('tasks', () => {
   const _expiryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   function _removeTask(taskId: string) {
-    const idx = tasks.value.findIndex(t => t.id === taskId)
+    const idx = tasks.value.findIndex((t) => t.id === taskId)
     if (idx >= 0) tasks.value.splice(idx, 1)
     delete taskLogs.value[taskId]
     closeTask(taskId)
@@ -98,7 +98,10 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function sendFollowup(guildId: string, taskId: string, instructions: string) {
-    return api(`/guilds/${guildId}/tasks/${taskId}/followup`, { method: 'POST', json: { instructions } })
+    return api(`/guilds/${guildId}/tasks/${taskId}/followup`, {
+      method: 'POST',
+      json: { instructions },
+    })
   }
 
   async function finalizeTask(guildId: string, taskId: string) {
@@ -110,11 +113,14 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function redirectTask(guildId: string, taskId: string, instructions: string) {
-    return api(`/guilds/${guildId}/tasks/${taskId}/redirect`, { method: 'POST', json: { instructions } })
+    return api(`/guilds/${guildId}/tasks/${taskId}/redirect`, {
+      method: 'POST',
+      json: { instructions },
+    })
   }
 
   function _upsertTask(data: Task) {
-    const idx = tasks.value.findIndex(t => t.id === data.id)
+    const idx = tasks.value.findIndex((t) => t.id === data.id)
     if (idx >= 0) {
       Object.assign(tasks.value[idx], data)
     } else {
@@ -134,7 +140,7 @@ export const useTasksStore = defineStore('tasks', () => {
         created_at: data.createdAt,
       })
     } else if (data.type === 'task-assigned') {
-      const existing = tasks.value.find(t => t.id === data.taskId)
+      const existing = tasks.value.find((t) => t.id === data.taskId)
       _upsertTask({
         id: data.taskId,
         name: data.name || (data.description || '').slice(0, 60),
@@ -146,7 +152,7 @@ export const useTasksStore = defineStore('tasks', () => {
         ...(existing ? {} : { created_at: new Date().toISOString() }),
       })
     } else if (data.type === 'task-update') {
-      const task = tasks.value.find(t => t.id === data.taskId)
+      const task = tasks.value.find((t) => t.id === data.taskId)
       if (task) {
         if (data.state) task.state = data.state
         if (data.branch) task.branch = data.branch
@@ -159,13 +165,13 @@ export const useTasksStore = defineStore('tasks', () => {
         }
       }
     } else if (data.type === 'task-complete') {
-      const task = tasks.value.find(t => t.id === data.taskId)
+      const task = tasks.value.find((t) => t.id === data.taskId)
       if (task) {
         task.state = 'awaiting-review'
         if (data.branch) task.branch = data.branch
       }
     } else if (data.type === 'task-followup-done') {
-      const task = tasks.value.find(t => t.id === data.taskId)
+      const task = tasks.value.find((t) => t.id === data.taskId)
       if (task) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
       const { taskId, line, timestamp, detail } = data
@@ -204,15 +210,19 @@ export const useTasksStore = defineStore('tasks', () => {
   // its `deleted_at` passes, even before the per-task timer fires.
   const liveTasks = computed(() => {
     const now = Date.now()
-    return tasks.value.filter(t => {
+    return tasks.value.filter((t) => {
       if (!t.deleted_at) return true
       const ts = new Date(t.deleted_at).getTime()
       return Number.isNaN(ts) || ts > now
     })
   })
 
-  function stateLabel(state: TaskState | string) { return STATE_LABELS[state] || state }
-  function stateColor(state: TaskState | string) { return STATE_COLORS[state] || 'dim' }
+  function stateLabel(state: TaskState | string) {
+    return STATE_LABELS[state] || state
+  }
+  function stateColor(state: TaskState | string) {
+    return STATE_COLORS[state] || 'dim'
+  }
 
   return {
     tasks,

@@ -6,7 +6,9 @@
     </button>
 
     <div class="guild-block" v-if="currentGuild">
-      <span class="guild-name" :title="currentGuild.name">{{ currentGuild.name || 'Unnamed Guild' }}</span>
+      <span class="guild-name" :title="currentGuild.name">{{
+        currentGuild.name || 'Unnamed Guild'
+      }}</span>
       <span class="guild-id">#{{ currentGuild.id }}</span>
     </div>
     <div class="guild-block guild-block--empty" v-else>
@@ -21,7 +23,12 @@
       :title="'GitHub settings for ' + authStore.user?.login"
       @click="showGitHubModal = true"
     >
-      <img v-if="authStore.user?.avatar_url" :src="authStore.user.avatar_url" class="user-avatar" alt="" />
+      <img
+        v-if="authStore.user?.avatar_url"
+        :src="authStore.user.avatar_url"
+        class="user-avatar"
+        alt=""
+      />
       <span class="user-login">{{ authStore.user?.login }}</span>
     </button>
 
@@ -126,10 +133,14 @@ const repoStatus = ref<'' | 'saved' | 'error'>('')
 let renameStatusTimer: ReturnType<typeof setTimeout> | null = null
 let repoStatusTimer: ReturnType<typeof setTimeout> | null = null
 
-watch(currentGuild, (guild) => {
-  renameValue.value = guild?.name ?? ''
-  primaryRepoValue.value = guild?.primary_repo ?? ''
-}, { immediate: true })
+watch(
+  currentGuild,
+  (guild) => {
+    renameValue.value = guild?.name ?? ''
+    primaryRepoValue.value = guild?.primary_repo ?? ''
+  },
+  { immediate: true },
+)
 
 async function toggleSettings() {
   showSettings.value = !showSettings.value
@@ -176,7 +187,9 @@ async function commitRename() {
     renameStatus.value = 'error'
   } finally {
     if (renameStatusTimer) clearTimeout(renameStatusTimer)
-    renameStatusTimer = setTimeout(() => { renameStatus.value = '' }, 2000)
+    renameStatusTimer = setTimeout(() => {
+      renameStatus.value = ''
+    }, 2000)
   }
 }
 
@@ -192,7 +205,9 @@ async function savePrimaryRepo() {
     repoStatus.value = 'error'
   } finally {
     if (repoStatusTimer) clearTimeout(repoStatusTimer)
-    repoStatusTimer = setTimeout(() => { repoStatus.value = '' }, 2000)
+    repoStatusTimer = setTimeout(() => {
+      repoStatus.value = ''
+    }, 2000)
   }
   await nextTick()
 }
@@ -283,7 +298,9 @@ function goHome() {
   border-radius: 2px;
   flex-shrink: 0;
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
 }
 
 .user-pill:hover {
@@ -320,7 +337,10 @@ function goHome() {
   justify-content: center;
   padding: 0;
   flex-shrink: 0;
-  transition: border-color 0.12s, background 0.12s, color 0.12s;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    color 0.12s;
 }
 
 .debug-btn:hover,
@@ -348,7 +368,10 @@ function goHome() {
   justify-content: center;
   padding: 0;
   flex-shrink: 0;
-  transition: border-color 0.12s, background 0.12s, color 0.12s;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    color 0.12s;
 }
 
 .settings-btn:hover,
@@ -370,7 +393,9 @@ function goHome() {
   width: 320px;
   background: var(--color-bg-secondary);
   border: 2px solid var(--color-brass);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5), 0 0 16px rgba(232, 170, 0, 0.15);
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.5),
+    0 0 16px rgba(232, 170, 0, 0.15);
   z-index: 250;
   display: flex;
   flex-direction: column;
@@ -444,8 +469,12 @@ function goHome() {
   flex-shrink: 0;
 }
 
-.save-status-saved { color: var(--color-green); }
-.save-status-error { color: var(--color-red); }
+.save-status-saved {
+  color: var(--color-green);
+}
+.save-status-error {
+  color: var(--color-red);
+}
 
 .settings-meta {
   flex-direction: row;

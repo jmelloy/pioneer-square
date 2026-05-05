@@ -18,11 +18,7 @@
     <SpawnWorkerForm v-if="showSpawnForm" @launched="showSpawnForm = false" />
 
     <template v-for="worker in onlineWorkers" :key="worker.id">
-      <div
-        class="worker-row"
-        :class="worker.state"
-        @click="agentsStore.selectWorker(worker.id)"
-      >
+      <div class="worker-row" :class="worker.state" @click="agentsStore.selectWorker(worker.id)">
         <span class="worker-dot" :class="'wdot-' + worker.state"></span>
         <span class="worker-row-name">{{ worker.name }}</span>
         <span class="worker-row-state">{{ worker.state }}</span>
@@ -41,9 +37,7 @@
           <button
             class="agent-icon-btn"
             :disabled="!currentTaskForWorker(worker.id)"
-            :title="
-              currentTaskForWorker(worker.id) ? 'Open current task' : 'No active task'
-            "
+            :title="currentTaskForWorker(worker.id) ? 'Open current task' : 'No active task'"
             @click.stop="openAgentTask(worker.id)"
           >
             📋
