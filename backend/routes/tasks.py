@@ -14,9 +14,11 @@ from auth_deps import require_member
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
+from foreman import run_foreman_ai
 from models import Guild, Task, TaskLog, live_tasks_filter
 from pydantic import BaseModel
 from sqlalchemy import select, update
+from util.tasks import spawn
 
 router = APIRouter()
 
@@ -186,6 +188,9 @@ async def get_guild_logs(
         await db.close()
 
 
+_TERMINAL_TASK_STATES = frozenset({"done", "failed", "cancelled"})
+
+
 @router.post("/guilds/{guild_id}/tasks/{task_id}/followup")
 async def create_task_followup(
     guild_id: str,
@@ -193,15 +198,44 @@ async def create_task_followup(
     data: FollowupCreate,
     github_user_id: str = Depends(require_member()),
 ):
-    """Send follow-up instructions to a worker — executed in the same worktree/branch."""
+    """Send follow-up instructions.
+
+    Active tasks (awaiting-review): dispatched directly to the worker in the same worktree.
+    Terminal tasks (done/failed/cancelled): routed to the foreman AI which will re-assign
+    work on the same branch using send_followup or assign_task with phase=followup.
+    """
     db = await get_db()
     try:
         result = await db.execute(
-            select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_id)
+            select(Task.worker_id, Task.state, Task.branch).where(
+                Task.id == task_id, Task.guild_id == guild_id
+            )
         )
-        worker_id = result.scalar_one_or_none()
-        if not worker_id:
+        row = result.one_or_none()
+        if not row:
             raise HTTPException(status_code=404, detail="Task not found")
+        worker_id, state, branch = row
+    finally:
+        await db.close()
+
+    if state in _TERMINAL_TASK_STATES:
+        branch_ctx = f" on branch `{branch}`" if branch else ""
+        spawn(
+            run_foreman_ai(
+                guild_id,
+                f"[user-followup] User requested follow-up on task {task_id}{branch_ctx} "
+                f'(currently {state}): "{data.instructions}". '
+                "Use send_followup to re-run work in the same worktree on the same branch. "
+                "If the task's original worker is no longer available, use assign_task with "
+                "phase=followup so another worker continues on the same branch.",
+                user_id=github_user_id,
+            ),
+            name=f"foreman.user-followup:{task_id}",
+        )
+        return {"status": "queued_for_foreman", "taskId": task_id}
+
+    db = await get_db()
+    try:
         await db.execute(
             update(Task).where(Task.id == task_id).values(state="working", phase="followup")
         )
