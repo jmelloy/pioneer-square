@@ -31,6 +31,42 @@
       :style="`top: ${breakRoomTop}px; left: ${TABLE_LEFT}px; width: ${tableWidth}px;`"
     >
       <div class="break-label">⏚ BREAK ROOM ⏚</div>
+
+      <!-- Couch — left wall -->
+      <div class="br-couch">
+        <div class="couch-back"></div>
+        <div class="couch-seat">
+          <div class="couch-arm couch-arm-l"></div>
+          <div class="couch-arm couch-arm-r"></div>
+        </div>
+      </div>
+
+      <!-- Three tables -->
+      <div class="br-table br-table-1">
+        <div class="br-table-top"></div>
+        <div class="br-table-legs"><span></span><span></span></div>
+      </div>
+      <div class="br-table br-table-2">
+        <div class="br-table-top"></div>
+        <div class="br-table-legs"><span></span><span></span></div>
+      </div>
+      <div class="br-table br-table-3">
+        <div class="br-table-top"></div>
+        <div class="br-table-legs"><span></span><span></span></div>
+      </div>
+
+      <!-- Water cooler -->
+      <div class="br-cooler">
+        <div class="cooler-jug"></div>
+        <div class="cooler-body"><div class="cooler-spigot"></div></div>
+      </div>
+
+      <!-- Bulletin board — right wall -->
+      <div class="br-board">
+        <div class="board-pin pin-a"></div>
+        <div class="board-pin pin-b"></div>
+        <div class="board-pin pin-c"></div>
+      </div>
     </div>
 
     <!-- Agents — single overlay; positioned absolutely over the floor -->
@@ -95,7 +131,7 @@ const ROW_GAP = 8
 const MAX_ROWS = 4
 const TICKER_H = 28
 const BREAK_PAD = 20
-const BREAK_ROOM_H = 86
+const BREAK_ROOM_H = 68
 const ROW_H_MIN = 70
 const ROW_H_MAX = 124
 
@@ -296,7 +332,7 @@ function stateLabel(state: string) {
 /* ── Break room ─────────────────────────────────────────── */
 .break-room {
   position: absolute;
-  height: 86px;
+  height: 68px;
   border-top: 1px dashed rgba(232, 170, 0, 0.25);
   border-bottom: 1px dashed rgba(232, 170, 0, 0.15);
   background: repeating-linear-gradient(
@@ -318,6 +354,155 @@ function stateLabel(state: string) {
   letter-spacing: 2px;
   color: var(--color-brass-dark);
   text-shadow: 0 0 4px rgba(232, 170, 0, 0.4);
+}
+
+/* ── Break room furniture ─────────────────────────────────── */
+.br-couch {
+  position: absolute;
+  left: 4%;
+  bottom: 6px;
+  pointer-events: none;
+}
+.couch-back {
+  width: 34px;
+  height: 7px;
+  background: linear-gradient(180deg, #5c3010 0%, #3a1a08 100%);
+  border: 1px solid var(--color-copper);
+  border-radius: 2px 2px 0 0;
+}
+.couch-seat {
+  position: relative;
+  width: 36px;
+  height: 9px;
+  background: linear-gradient(180deg, #6a3818 0%, #3e1c0a 100%);
+  border: 1px solid var(--color-copper);
+  border-top: none;
+  border-radius: 0 0 2px 2px;
+}
+.couch-arm {
+  position: absolute;
+  top: -7px;
+  width: 5px;
+  height: 16px;
+  background: linear-gradient(180deg, #5c3010 0%, #3a1a08 100%);
+  border: 1px solid var(--color-copper);
+  border-radius: 2px;
+}
+.couch-arm-l {
+  left: -4px;
+}
+.couch-arm-r {
+  right: -4px;
+}
+
+.br-table {
+  position: absolute;
+  bottom: 6px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.br-table-top {
+  width: 20px;
+  height: 4px;
+  background: linear-gradient(180deg, var(--color-brass-light) 0%, var(--color-brass-dark) 100%);
+  border: 1px solid var(--color-brass);
+  border-radius: 1px;
+  box-shadow: 0 0 4px rgba(232, 170, 0, 0.3);
+}
+.br-table-legs {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+.br-table-legs span {
+  width: 2px;
+  height: 9px;
+  background: linear-gradient(180deg, var(--color-brass-dark) 0%, #5a3800 100%);
+}
+.br-table-1 {
+  left: 22%;
+}
+.br-table-2 {
+  left: 40%;
+}
+.br-table-3 {
+  left: 58%;
+}
+
+.br-cooler {
+  position: absolute;
+  left: 76%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.cooler-jug {
+  width: 8px;
+  height: 10px;
+  background: radial-gradient(
+    circle at 35% 30%,
+    rgba(140, 210, 255, 0.95) 0%,
+    rgba(30, 100, 200, 0.8) 70%
+  );
+  border: 1px solid rgba(68, 153, 255, 0.7);
+  border-radius: 3px 3px 4px 4px;
+  margin: 0 auto;
+  box-shadow: 0 0 5px rgba(68, 153, 255, 0.6);
+}
+.cooler-body {
+  position: relative;
+  width: 12px;
+  height: 14px;
+  background: linear-gradient(180deg, #1a1f2e 0%, #0d1018 100%);
+  border: 1px solid rgba(68, 153, 255, 0.4);
+  border-radius: 1px;
+}
+.cooler-spigot {
+  position: absolute;
+  bottom: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 3px;
+  background: var(--color-sky);
+  border-radius: 1px;
+  box-shadow: 0 0 3px var(--color-sky);
+}
+
+.br-board {
+  position: absolute;
+  right: 3%;
+  top: 14px;
+  pointer-events: none;
+  width: 28px;
+  height: 24px;
+  background: linear-gradient(180deg, #5c3a10 0%, #3c2208 100%);
+  border: 1px solid var(--color-copper);
+  border-radius: 1px;
+  box-shadow: 0 0 5px rgba(204, 85, 0, 0.3);
+}
+.board-pin {
+  position: absolute;
+  top: 4px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+}
+.pin-a {
+  left: 4px;
+  background: var(--color-teal);
+  box-shadow: 0 0 3px var(--color-teal);
+}
+.pin-b {
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-amber);
+  box-shadow: 0 0 3px var(--color-amber);
+}
+.pin-c {
+  right: 4px;
+  background: var(--color-red);
+  box-shadow: 0 0 3px var(--color-red);
 }
 
 /* ── Floating agents ──────────────────────────────────────── */
