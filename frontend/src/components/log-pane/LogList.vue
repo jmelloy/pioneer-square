@@ -10,7 +10,11 @@
         @click="log.detail && toggleDetail(i)"
       >
         <span class="log-time">{{ formatTime(log.timestamp) }}</span>
-        <span class="log-text" :class="lineClass(log.line)" v-html="linkify(log.line)"></span>
+        <span
+          class="log-text"
+          :class="[lineClass(log.line), { 'log-text--markdown': isMarkdownLine(log.line) }]"
+          v-html="renderLine(log.line)"
+        ></span>
         <span v-if="log.detail" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
       </div>
       <div v-if="log.detail && expandedIdx === i" class="log-detail">
@@ -45,6 +49,8 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { formatClock } from '../../utils/format'
 import type { LogEntry } from '../../types'
 
@@ -69,6 +75,20 @@ function linkify(text: string): string {
     /(https?:\/\/[^\s<>"]+)/g,
     '<a href="$1" target="_blank" rel="noopener noreferrer" class="terminal-link">$1</a>',
   )
+}
+
+function isMarkdownLine(line: string): boolean {
+  return line.startsWith('[thinking]') || line.startsWith('[claude]')
+}
+
+function renderMarkdown(text: string): string {
+  const html = marked.parse(text, { async: false }) as string
+  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
+}
+
+function renderLine(line: string): string {
+  if (isMarkdownLine(line)) return renderMarkdown(line)
+  return linkify(line)
 }
 
 function lineClass(line: string) {
@@ -223,6 +243,77 @@ watch(
   color: var(--color-blue);
   font-style: italic;
 }
+
+.log-text--markdown {
+  white-space: normal;
+}
+.log-text--markdown :deep(p) {
+  margin: 0 0 4px;
+}
+.log-text--markdown :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.log-text--markdown :deep(ul),
+.log-text--markdown :deep(ol) {
+  margin: 4px 0 4px;
+  padding-left: 18px;
+}
+.log-text--markdown :deep(li) {
+  margin-bottom: 2px;
+}
+.log-text--markdown :deep(code) {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--color-brass-dark);
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--color-amber);
+}
+.log-text--markdown :deep(pre) {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--color-brass-dark);
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 4px 0;
+}
+.log-text--markdown :deep(pre code) {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 10px;
+  color: var(--color-green);
+}
+.log-text--markdown :deep(h1),
+.log-text--markdown :deep(h2),
+.log-text--markdown :deep(h3) {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  letter-spacing: 1px;
+  color: var(--color-teal);
+  margin: 6px 0 4px;
+  text-transform: uppercase;
+}
+.log-text--markdown :deep(strong) {
+  color: var(--color-amber);
+  font-weight: bold;
+}
+.log-text--markdown :deep(em) {
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+.log-text--markdown :deep(a) {
+  color: var(--color-teal);
+  text-decoration: underline;
+}
+.log-text--markdown :deep(blockquote) {
+  border-left: 3px solid var(--color-brass-dark);
+  margin: 4px 0;
+  padding: 2px 8px;
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
 .terminal-link {
   color: var(--color-blue);
   text-decoration: underline;
