@@ -586,13 +586,18 @@ class Worker:
         )
 
     async def _join(self) -> None:
-        for _idx, slot in enumerate(self.slots, start=1):
-            agent_split = 2 + sum(ord(c) for c in slot.agent_id) % 3
+        multi = len(self.slots) > 1
+        for idx, slot in enumerate(self.slots, start=1):
+            if self.cfg.worker_name:
+                agent_name = f"{self.cfg.worker_name}/{idx}" if multi else self.cfg.worker_name
+            else:
+                agent_split = 2 + sum(ord(c) for c in slot.agent_id) % 3
+                agent_name = f"{slot.agent_id[2:][:agent_split]}-{slot.agent_id[2:][agent_split:]}"
             await self._send(
                 {
                     "type": "join",
                     "agentId": slot.agent_id,
-                    "agentName": f"{slot.agent_id[2:][:agent_split]}-{slot.agent_id[2:][agent_split:]}",
+                    "agentName": agent_name,
                     "agentType": "worker",
                     "workerId": self.cfg.worker_id,
                 }
