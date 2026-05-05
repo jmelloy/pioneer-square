@@ -83,7 +83,12 @@ function lineClass(line: string) {
   return ''
 }
 
-defineExpose({ bodyEl, reset: () => { expandedIdx.value = null } })
+defineExpose({
+  bodyEl,
+  reset: () => {
+    expandedIdx.value = null
+  },
+})
 
 watch(
   () => props.logs,

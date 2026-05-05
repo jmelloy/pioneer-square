@@ -38,11 +38,9 @@
       v-for="agent in agents"
       :key="agent.id"
       class="floating-agent"
-      :style="
-        `left: ${choreography.getPos(agent.id).x}px; top: ${
-          choreography.getPos(agent.id).y
-        }px; --walk-dur: ${choreography.duration[agent.id] || 1.5}s;`
-      "
+      :style="`left: ${choreography.getPos(agent.id).x}px; top: ${
+        choreography.getPos(agent.id).y
+      }px; --walk-dur: ${choreography.duration[agent.id] || 1.5}s;`"
     >
       <AgentAvatar :agent="agent" :walking="!!choreography.walking[agent.id]" />
     </div>
@@ -180,7 +178,9 @@ const taskRows = computed(() => {
 
 const choreography = useAgentChoreography({
   agents,
-  taskRows: computed(() => taskRows.value.map((r) => ({ index: r.index, task: r.task, activityKey: r.activityKey }))),
+  taskRows: computed(() =>
+    taskRows.value.map((r) => ({ index: r.index, task: r.task, activityKey: r.activityKey })),
+  ),
   rowHeight,
   tableWidth,
   breakRoomTop,

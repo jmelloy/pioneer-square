@@ -67,9 +67,7 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
 
   function rowForAgent(agent: Agent): ChoreographyRow | null {
     if (!agent.workerId) return null
-    return (
-      opts.taskRows.value.find((r) => r.task && r.task.worker_id === agent.workerId) || null
-    )
+    return opts.taskRows.value.find((r) => r.task && r.task.worker_id === agent.workerId) || null
   }
 
   function isWorking(agent: Agent) {
@@ -101,11 +99,14 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     walking[id] = true
     positions[id] = target
     clearTimeout(timers[id])
-    timers[id] = setTimeout(() => {
-      walking[id] = false
-      const agent = opts.agents.value.find((a) => a.id === id)
-      if (agent && !isWorking(agent)) scheduleIdleStroll(id)
-    }, dur * 1000 + 60)
+    timers[id] = setTimeout(
+      () => {
+        walking[id] = false
+        const agent = opts.agents.value.find((a) => a.id === id)
+        if (agent && !isWorking(agent)) scheduleIdleStroll(id)
+      },
+      dur * 1000 + 60,
+    )
   }
 
   function scheduleIdleStroll(id: string) {
@@ -134,7 +135,9 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
 
   watch(
     () =>
-      opts.agents.value.map((a) => `${a.id}:${a.state}:${a.workerId}:${a.activity ?? ''}`).join(','),
+      opts.agents.value
+        .map((a) => `${a.id}:${a.state}:${a.workerId}:${a.activity ?? ''}`)
+        .join(','),
     syncAll,
   )
   watch(opts.taskRows, syncAll)

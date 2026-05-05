@@ -5,13 +5,16 @@
 </template>
 
 <script setup lang="ts">
-withDefaults(defineProps<{
-  direction?: 'row' | 'column'
-  borderWidth?: number
-}>(), {
-  direction: 'column',
-  borderWidth: 36,
-})
+withDefaults(
+  defineProps<{
+    direction?: 'row' | 'column'
+    borderWidth?: number
+  }>(),
+  {
+    direction: 'column',
+    borderWidth: 36,
+  },
+)
 </script>
 
 <style scoped>
