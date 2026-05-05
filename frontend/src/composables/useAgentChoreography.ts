@@ -32,6 +32,8 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
   const duration = reactive<Record<string, number>>({})
   const timers: Record<string, ReturnType<typeof setTimeout>> = {}
   const prevTargetKey: Record<string, string> = {}
+  // Tracks each robot's current destination for collision avoidance
+  const reservedPos: Record<string, Position> = {}
 
   function rowYFor(rowIndex: number) {
     return opts.tableTop + rowIndex * (opts.rowHeight.value + opts.rowGap)
@@ -76,6 +78,37 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     }
   }
 
+  // Pick a random position near any of the available table rows
+  function randomTableWanderPos(): Position {
+    const rows = opts.taskRows.value
+    if (rows.length === 0) return randomBreakRoomPos()
+    const row = rows[Math.floor(Math.random() * rows.length)]
+    const xMin = opts.tableLeft + 40
+    const xMax = opts.tableLeft + opts.tableWidth.value - 40
+    return {
+      x: xMin + Math.random() * (xMax - xMin),
+      y: rowYFor(row.index) + opts.rowHeight.value * 0.5,
+    }
+  }
+
+  // Returns true if candidate is within minDist of any other robot's reserved destination
+  function isCrowded(candidate: Position, excludeId: string, minDist = 36): boolean {
+    return Object.entries(reservedPos).some(
+      ([id, pos]) =>
+        id !== excludeId && Math.hypot(candidate.x - pos.x, candidate.y - pos.y) < minDist,
+    )
+  }
+
+  // Pick a wander position spread across all tables, avoiding other robots' destinations
+  function pickWanderPos(agentId: string): Position {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      // 60% chance to wander to a random table row, 40% to the break room
+      const candidate = Math.random() < 0.6 ? randomTableWanderPos() : randomBreakRoomPos()
+      if (!isCrowded(candidate, agentId)) return candidate
+    }
+    return randomBreakRoomPos()
+  }
+
   function getPos(id: string): Position {
     return positions[id] || { x: opts.tableLeft + 60, y: opts.tableTop + opts.rowHeight.value }
   }
@@ -107,8 +140,7 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
       const base = key ? stationPos(row.index, key) : rowCenterPos(row.index)
       return { x: base.x + jitter.x, y: base.y + jitter.y }
     }
-    const base = randomBreakRoomPos(agent.id)
-    return { x: base.x + jitter.x, y: base.y + jitter.y }
+    return pickWanderPos(agent.id)
   }
 
   function targetKey(agent: Agent): string {
@@ -120,6 +152,7 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
   }
 
   function moveAgent(id: string, target: Position) {
+    reservedPos[id] = target
     const cur = positions[id] || target
     const dist = Math.hypot(target.x - cur.x, target.y - cur.y)
     const dur = Math.max(0.6, dist / 120)
@@ -143,7 +176,7 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     timers[id] = setTimeout(() => {
       const agent = opts.agents.value.find((a) => a.id === id)
       if (!agent || isWorking(agent)) return
-      moveAgent(id, targetForAgent(agent))
+      moveAgent(id, pickWanderPos(id))
     }, linger)
   }
 
@@ -152,7 +185,7 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     if (prevTargetKey[agent.id] === key && positions[agent.id]) return
     prevTargetKey[agent.id] = key
     if (!positions[agent.id]) {
-      positions[agent.id] = randomBreakRoomPos(agent.id)
+      positions[agent.id] = pickWanderPos(agent.id)
     }
     moveAgent(agent.id, targetForAgent(agent))
   }
