@@ -12,14 +12,15 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Ensure the backend package is importable from this file's location.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from models import Base  # noqa: E402
+import models  # noqa: F401 — side-effect: registers all SQLModel table classes into SQLModel.metadata
+from sqlmodel import SQLModel
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
+target_metadata = SQLModel.metadata
 
 # Allow DATABASE_URL env var to override alembic.ini for testing / CI.
 _db_url = os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url")

@@ -20,9 +20,9 @@ from database import get_db
 from events import broadcast, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, ClaudeCredentials, Task, Worker, live_tasks_filter
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlmodel import SQLModel
 from utils import (
     build_spawn_worker_env,
     decode_claude_oauth_token,
@@ -34,7 +34,7 @@ from ws_handlers import _resolve_user_identifier
 router = APIRouter()
 
 
-class WorkerCreate(BaseModel):
+class WorkerCreate(SQLModel):
     repos: list[str]  # ["owner/repo", ...]
     github_token: str | None = None
     hostname: str | None = None
@@ -44,12 +44,12 @@ class WorkerCreate(BaseModel):
     user: str | None = None
 
 
-class SpawnWorkerRequest(BaseModel):
+class SpawnWorkerRequest(SQLModel):
     repos: list[str]
     name: str | None = None
 
 
-class TaskCreate(BaseModel):
+class TaskCreate(SQLModel):
     description: str
     name: str | None = None
     tool: str = "claude"  # "claude" | "codex" | "pi"
@@ -59,7 +59,7 @@ class TaskCreate(BaseModel):
     phase: str | None = "execute"
 
 
-class WorkerMessage(BaseModel):
+class WorkerMessage(SQLModel):
     message: str
 
 

@@ -3,6 +3,7 @@ uvicorn[standard]
 websockets
 aiosqlite
 sqlalchemy[asyncio]
+sqlmodel
 alembic
 python-multipart
 anthropic

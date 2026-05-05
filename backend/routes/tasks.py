@@ -15,8 +15,8 @@ from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
 from models import Guild, Task, TaskLog, live_tasks_filter
-from pydantic import BaseModel
 from sqlalchemy import select, update
+from sqlmodel import SQLModel
 
 router = APIRouter()
 
@@ -27,11 +27,11 @@ router = APIRouter()
 DEFAULT_FINALIZE_TTL = timedelta(days=3)
 
 
-class FollowupCreate(BaseModel):
+class FollowupCreate(SQLModel):
     instructions: str
 
 
-class FinalizeBody(BaseModel):
+class FinalizeBody(SQLModel):
     # Optional ISO-8601 timestamp at which to soft-delete this task.
     deleted_at: str | None = None
     # Optional convenience: seconds from now until soft-delete. If both fields
@@ -39,7 +39,7 @@ class FinalizeBody(BaseModel):
     expires_in_seconds: int | None = None
 
 
-class RedirectCreate(BaseModel):
+class RedirectCreate(SQLModel):
     instructions: str
 
 

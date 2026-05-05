@@ -13,10 +13,10 @@ from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User
-from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
+from sqlmodel import SQLModel
 from utils import generate_guild_id, row_to_dict
 from ws_handlers import _resolve_user_identifier
 
@@ -26,22 +26,22 @@ router = APIRouter()
 _VALID_ROLES = {"owner", "member", "viewer"}
 
 
-class GuildCreate(BaseModel):
+class GuildCreate(SQLModel):
     name: str | None = None
 
 
-class GuildUpdate(BaseModel):
+class GuildUpdate(SQLModel):
     name: str | None = None
     primary_repo: str | None = None
 
 
-class MemberCreate(BaseModel):
+class MemberCreate(SQLModel):
     # Either a users.id (numeric GitHub id as text) or a github_login.
     user: str
     role: str = "member"  # owner | member | viewer
 
 
-class MemberUpdate(BaseModel):
+class MemberUpdate(SQLModel):
     role: str  # owner | member | viewer
 
 

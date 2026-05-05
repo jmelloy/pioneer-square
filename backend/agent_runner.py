@@ -13,15 +13,15 @@ import json
 from database import get_db
 from events import broadcast, emit_terminal_line
 from models import Agent
-from pydantic import BaseModel
 from sqlalchemy import update
+from sqlmodel import SQLModel
 
 # Running agent subprocesses: agent_id -> Process. Separate from the worker
 # subprocess registry because workers run out-of-process.
 running_processes: dict[str, asyncio.subprocess.Process] = {}
 
 
-class RunAgentRequest(BaseModel):
+class RunAgentRequest(SQLModel):
     tool: str  # "claude" | "codex" | "pi"
     prompt: str
     model: str | None = None

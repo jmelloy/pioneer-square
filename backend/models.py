@@ -1,191 +1,166 @@
+from __future__ import annotations
+
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, ForeignKey, Integer, Text, or_
-from sqlalchemy.orm import DeclarativeBase
-
-
-class Base(DeclarativeBase):
-    pass
+from sqlalchemy import Column, ForeignKey, Index, Integer, Text, or_
+from sqlmodel import Field, SQLModel
 
 
 def live_tasks_filter(now: str | None = None):
-    """SQL clause matching tasks that have not been soft-deleted.
-
-    A task is "live" when ``deleted_at`` is NULL or set to a future timestamp.
-    *now* defaults to the current UTC time as an ISO-8601 string; pass an
-    explicit value to make a query reproducible in tests.
-    """
     if now is None:
         now = datetime.now(UTC).isoformat()
     return or_(Task.deleted_at.is_(None), Task.deleted_at > now)
 
 
-class Guild(Base):
+class Guild(SQLModel, table=True):
     __tablename__ = "guilds"
 
-    id = Column(Text, primary_key=True)
-    created_at = Column(Text, nullable=False)
-    name = Column(Text)
-    github_user_id = Column(Text)
-    primary_repo = Column(Text, nullable=True)
+    id: str = Field(primary_key=True)
+    created_at: str
+    name: str | None = None
+    github_user_id: str | None = None
+    primary_repo: str | None = None
 
 
-class Agent(Base):
+class Agent(SQLModel, table=True):
     __tablename__ = "agents"
 
-    id = Column(Text, primary_key=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False)
-    worker_id = Column(Text, ForeignKey("workers.id"))
-    name = Column(Text, nullable=False)
-    type = Column(Text, nullable=False, server_default="worker")
-    state = Column(Text, nullable=False, server_default="idle")
-    activity = Column(Text, nullable=True)
-    joined_at = Column(Text, nullable=False)
-    # ISO-8601 UTC timestamp of the last message received from this agent over
-    # the WebSocket. Refreshed by every inbound frame (incl. application-level
-    # `ping`); the sweeper marks the agent offline when this gets stale.
-    last_seen = Column(Text, nullable=True)
+    id: str = Field(primary_key=True)
+    guild_id: str = Field(foreign_key="guilds.id")
+    worker_id: str | None = Field(default=None, foreign_key="workers.id")
+    name: str
+    type: str = Field(sa_column=Column(Text, server_default="worker", nullable=False))
+    state: str = Field(sa_column=Column(Text, server_default="idle", nullable=False))
+    activity: str | None = None
+    joined_at: str
+    last_seen: str | None = None
 
 
-class Message(Base):
-    __tablename__ = "messages"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False)
-    from_agent = Column(Text)
-    to_agent = Column(Text)
-    content = Column(Text, nullable=False)
-    message_type = Column(Text, nullable=False)
-    created_at = Column(Text, nullable=False)
-    user_id = Column(
-        Text, nullable=True
-    )  # github_user_id of the sender; NULL for system/worker messages
-
-
-class Worker(Base):
+class Worker(SQLModel, table=True):
     __tablename__ = "workers"
 
-    id = Column(Text, primary_key=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False)
-    repos = Column(Text, nullable=False, server_default="[]")
-    state = Column(Text, nullable=False, server_default="idle")
-    created_at = Column(Text, nullable=False)
-    last_seen = Column(Text, nullable=True)
-    # Identity of the human user this worker process runs on behalf of.
-    # NULL for legacy/unattributed workers.
-    user_id = Column(Text, ForeignKey("users.id"), nullable=True)
-    # Bearer token issued at registration; required for fetching guild secrets
-    # (Claude credentials, GitHub token) over REST. NULL on legacy rows that
-    # predate the auth requirement — those workers must re-register to get a
-    # token before they can fetch credentials.
-    auth_token = Column(Text, nullable=True)
+    id: str = Field(primary_key=True)
+    guild_id: str = Field(foreign_key="guilds.id")
+    repos: str = Field(sa_column=Column(Text, server_default="[]", nullable=False))
+    state: str = Field(sa_column=Column(Text, server_default="idle", nullable=False))
+    created_at: str
+    last_seen: str | None = None
+    user_id: str | None = Field(default=None, foreign_key="users.id")
+    auth_token: str | None = None
 
 
-class Task(Base):
+class Task(SQLModel, table=True):
     __tablename__ = "tasks"
 
-    id = Column(Text, primary_key=True)
-    worker_id = Column(Text, ForeignKey("workers.id"), nullable=False)
-    guild_id = Column(Text, nullable=False)
-    description = Column(Text, nullable=False)
-    tool = Column(Text, nullable=False, server_default="claude")
-    issue_number = Column(Integer)
-    issue_repo = Column(Text)
-    state = Column(Text, nullable=False, server_default="pending")
-    branch = Column(Text)
-    worktree_path = Column(Text)
-    pr_url = Column(Text)
-    created_at = Column(Text, nullable=False)
-    finished_at = Column(Text)
-    name = Column(Text)
-    parent_task_id = Column(Text)
-    phase = Column(Text, server_default="execute")
-    # ISO-8601 UTC timestamp at which this task is considered soft-deleted.
-    # NULL = live; once `now() > deleted_at`, list/get queries hide the row.
-    deleted_at = Column(Text, nullable=True)
-    # github_user_id of the human who initiated this task. Used to route
-    # worker-driven foreman events (task-complete, etc.) back to the originator's
-    # foreman thread in multi-user guilds. NULL on legacy/system tasks.
-    user_id = Column(Text, nullable=True)
+    id: str = Field(primary_key=True)
+    worker_id: str = Field(foreign_key="workers.id")
+    guild_id: str
+    description: str
+    tool: str = Field(sa_column=Column(Text, server_default="claude", nullable=False))
+    issue_number: int | None = None
+    issue_repo: str | None = None
+    state: str = Field(sa_column=Column(Text, server_default="pending", nullable=False))
+    branch: str | None = None
+    worktree_path: str | None = None
+    pr_url: str | None = None
+    created_at: str
+    finished_at: str | None = None
+    name: str | None = None
+    parent_task_id: str | None = None
+    phase: str | None = Field(
+        default=None, sa_column=Column(Text, server_default="execute", nullable=True)
+    )
+    deleted_at: str | None = None
+    user_id: str | None = None
 
 
-class GithubToken(Base):
+class Message(SQLModel, table=True):
+    __tablename__ = "messages"
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: str = Field(foreign_key="guilds.id")
+    from_agent: str | None = None
+    to_agent: str | None = None
+    content: str
+    message_type: str
+    created_at: str
+    user_id: str | None = None
+
+
+class GithubToken(SQLModel, table=True):
     __tablename__ = "github_tokens"
 
-    github_user_id = Column(Text, primary_key=True)
-    github_username = Column(Text)
-    access_token = Column(Text, nullable=False)
-    token_type = Column(Text, nullable=False, server_default="bearer")
-    scope = Column(Text)
-    created_at = Column(Text, nullable=False)
-    updated_at = Column(Text, nullable=False)
+    github_user_id: str = Field(primary_key=True)
+    github_username: str | None = None
+    access_token: str
+    token_type: str = Field(sa_column=Column(Text, server_default="bearer", nullable=False))
+    scope: str | None = None
+    created_at: str
+    updated_at: str
 
 
-class UserSession(Base):
+class UserSession(SQLModel, table=True):
     __tablename__ = "user_sessions"
 
-    token = Column(Text, primary_key=True)
-    github_user_id = Column(Text, ForeignKey("github_tokens.github_user_id"), nullable=False)
-    created_at = Column(Text, nullable=False)
+    token: str = Field(primary_key=True)
+    github_user_id: str = Field(foreign_key="github_tokens.github_user_id")
+    created_at: str
 
 
-class User(Base):
+class User(SQLModel, table=True):
     __tablename__ = "users"
 
-    # Canonical user id == GitHub numeric id, kept as Text for FK compatibility
-    # with the existing github_user_id columns (messages.user_id,
-    # guilds.github_user_id, etc).
-    id = Column(Text, primary_key=True)
-    github_id = Column(Text, nullable=False, unique=True)
-    github_login = Column(Text)
-    email = Column(Text)
-    display_name = Column(Text)
-    avatar_url = Column(Text)
-    created_at = Column(Text, nullable=False)
-    updated_at = Column(Text, nullable=False)
+    id: str = Field(primary_key=True)
+    github_id: str = Field(sa_column=Column(Text, nullable=False, unique=True))
+    github_login: str | None = None
+    email: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
+    created_at: str
+    updated_at: str
 
 
-class GuildMember(Base):
+class GuildMember(SQLModel, table=True):
     __tablename__ = "guild_members"
 
-    guild_id = Column(Text, ForeignKey("guilds.id"), primary_key=True)
-    user_id = Column(Text, ForeignKey("users.id"), primary_key=True)
-    # owner | member | viewer
-    role = Column(Text, nullable=False, server_default="member")
-    created_at = Column(Text, nullable=False)
+    guild_id: str = Field(primary_key=True, foreign_key="guilds.id")
+    user_id: str = Field(primary_key=True, foreign_key="users.id")
+    role: str = Field(sa_column=Column(Text, server_default="member", nullable=False))
+    created_at: str
 
 
-class TaskLog(Base):
+class TaskLog(SQLModel, table=True):
     __tablename__ = "task_logs"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    task_id = Column(Text, ForeignKey("tasks.id"), nullable=True)
-    timestamp = Column(Text, nullable=False)
-    line = Column(Text, nullable=False)
-    worker_id = Column(Text)
-    agent_id = Column(Text)
-    data = Column(Text)  # JSON: full tool input/output for click-to-expand
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: str | None = Field(default=None, foreign_key="tasks.id")
+    timestamp: str
+    line: str
+    worker_id: str | None = None
+    agent_id: str | None = None
+    data: str | None = None
 
 
-class ClaudeCredentials(Base):
+class ClaudeCredentials(SQLModel, table=True):
     __tablename__ = "claude_credentials"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False, unique=True)
-    credentials_blob = Column(Text, nullable=False)  # base64-encoded tar.gz of ~/.claude/
-    updated_at = Column(Text, nullable=False)
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: str = Field(
+        sa_column=Column(Text, ForeignKey("guilds.id"), nullable=False, unique=True)
+    )
+    credentials_blob: str
+    updated_at: str
 
 
-class ForemanTurn(Base):
+class ForemanTurn(SQLModel, table=True):
     __tablename__ = "foreman_turns"
+    __table_args__ = (Index("ix_foreman_turns_guild_user", "guild_id", "user_id"),)
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    guild_id = Column(Text, nullable=False)
-    user_id = Column(Text, nullable=False)
-    role = Column(Text, nullable=False)  # "user" | "assistant" | "system"
-    content_json = Column(Text, nullable=False)  # JSON-serialized content blocks
-    # 1 if this "user" turn carries tool_results (not human input); 0 otherwise
-    is_tool_response = Column(Integer, nullable=False, server_default="0")
-    # For tool_result turns: id of the assistant turn whose tool_use blocks this answers
-    parent_id = Column(Integer, ForeignKey("foreman_turns.id"), nullable=True)
-    created_at = Column(Text, nullable=False)
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: str
+    user_id: str
+    role: str
+    content_json: str
+    is_tool_response: int = Field(sa_column=Column(Integer, server_default="0", nullable=False))
+    parent_id: int | None = Field(default=None, foreign_key="foreman_turns.id")
+    created_at: str

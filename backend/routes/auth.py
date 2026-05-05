@@ -28,18 +28,18 @@ from models import (
     UserSession,
 )
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, make_authorize_url
-from pydantic import BaseModel
 from sqlalchemy import delete, select
+from sqlmodel import SQLModel
 
 router = APIRouter()
 
 
-class CodeExchangeRequest(BaseModel):
+class CodeExchangeRequest(SQLModel):
     code: str
     state: str
 
 
-class ClaudeCredentialsRequest(BaseModel):
+class ClaudeCredentialsRequest(SQLModel):
     guild_id: str
     credentials_blob: str  # base64-encoded tar.gz of ~/.claude/
 
