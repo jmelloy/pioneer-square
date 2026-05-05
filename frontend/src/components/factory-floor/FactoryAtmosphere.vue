@@ -6,15 +6,14 @@
       class="sparkle"
       v-for="n in 6"
       :key="`sp${n}`"
-      :style="
-        `left: ${(n * 79 + 11) % 92}%; top: ${(n * 53 + 9) % 88}%; font-size: ${
-          9 + (n % 2) * 3
-        }px; animation-delay: ${((n * 0.41) % 2.6).toFixed(1)}s; animation-duration: ${
-          3 + (n % 3) * 0.6
-        }s;`
-      "
-      >{{ ['✦', '★', '✧', '⋆'][n % 4] }}</div
+      :style="`left: ${(n * 79 + 11) % 92}%; top: ${(n * 53 + 9) % 88}%; font-size: ${
+        9 + (n % 2) * 3
+      }px; animation-delay: ${((n * 0.41) % 2.6).toFixed(1)}s; animation-duration: ${
+        3 + (n % 3) * 0.6
+      }s;`"
     >
+      {{ ['✦', '★', '✧', '⋆'][n % 4] }}
+    </div>
   </div>
 
   <div class="ceiling-pipe"></div>

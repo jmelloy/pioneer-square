@@ -9,14 +9,21 @@
       </template>
     </PaneHeader>
 
-    <TaskHeader
-      v-if="kind === 'task'"
-      :task-id="task.id"
-      :task-branch="task.branch"
-      :task-pr-url="task.pr_url"
-      :task-created-at="task.created_at"
-      :task-description="task.description"
-    />
+    <template v-if="kind === 'task'">
+      <div class="info-pane-toggle" @click="toggleInfoPane">
+        <span class="info-toggle-label">INFO</span>
+        <span class="info-toggle-chevron" :class="{ 'chevron-expanded': !infoCollapsed }">▼</span>
+      </div>
+      <div v-show="!infoCollapsed" class="info-pane-content">
+        <TaskHeader
+          :task-id="task.id"
+          :task-branch="task.branch"
+          :task-pr-url="task.pr_url"
+          :task-created-at="task.created_at"
+          :task-description="task.description"
+        />
+      </div>
+    </template>
 
     <LogList ref="logListRef" :logs="logs" />
 
@@ -43,6 +50,14 @@ import AgentActions from './log-pane/AgentActions.vue'
 import WorkerActions from './log-pane/WorkerActions.vue'
 import TaskHeader from './log-pane/TaskHeader.vue'
 import TaskActions from './log-pane/TaskActions.vue'
+
+const TASK_INFO_STORAGE_KEY = 'taskInfoPaneCollapsed'
+const infoCollapsed = ref(localStorage.getItem(TASK_INFO_STORAGE_KEY) === 'true')
+
+function toggleInfoPane() {
+  infoCollapsed.value = !infoCollapsed.value
+  localStorage.setItem(TASK_INFO_STORAGE_KEY, String(infoCollapsed.value))
+}
 
 type PaneKind = 'agent' | 'worker' | 'task'
 
@@ -171,6 +186,45 @@ watch(
   50% {
     opacity: 0.4;
   }
+}
+
+.info-pane-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 16px;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-brass-dark);
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.info-pane-toggle:hover {
+  background: rgba(232, 170, 0, 0.08);
+}
+
+.info-toggle-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 2px;
+  color: var(--color-brass-dark);
+}
+
+.info-toggle-chevron {
+  font-size: 8px;
+  color: var(--color-brass-dark);
+  transition: transform 0.2s ease;
+  display: inline-block;
+  transform: rotate(-90deg);
+}
+
+.info-toggle-chevron.chevron-expanded {
+  transform: rotate(0deg);
+}
+
+.info-pane-content {
+  flex-shrink: 0;
 }
 
 /* Task header badges */

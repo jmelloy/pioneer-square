@@ -44,9 +44,12 @@ export const useGitHubStore = defineStore('github', () => {
     if (!token.value) return []
     loading.value = true
     try {
-      const res = await fetch(`${GH_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`, {
-        headers: ghHeaders(token.value),
-      })
+      const res = await fetch(
+        `${GH_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`,
+        {
+          headers: ghHeaders(token.value),
+        },
+      )
       if (!res.ok) throw new Error(`GitHub error ${res.status}`)
       repos.value = await res.json()
       return repos.value
@@ -72,20 +75,35 @@ export const useGitHubStore = defineStore('github', () => {
         reposToFetch.map(async (repoName) => {
           const res = await fetch(
             `${GH_API}/repos/${repoName}/issues?state=open&per_page=30&sort=created&direction=desc`,
-            { headers: ghHeaders(token.value) }
+            { headers: ghHeaders(token.value) },
           )
           if (!res.ok) return [] as GitHubIssue[]
           const data = await res.json()
           return data
             .filter((i: any) => !i.pull_request)
             .map((i: any) => ({ ...i, repo: repoName })) as GitHubIssue[]
-        })
+        }),
       )
       issues.value = allIssues.flat().sort((a, b) => {
-        const priorityLabels = ['priority: high', 'high priority', 'priority:high', 'p0', 'p1', 'urgent', 'critical']
-        const aPriority = a.labels.some(l => priorityLabels.includes(l.name.toLowerCase())) ? 0 : 1
-        const bPriority = b.labels.some(l => priorityLabels.includes(l.name.toLowerCase())) ? 0 : 1
-        return aPriority - bPriority || (new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        const priorityLabels = [
+          'priority: high',
+          'high priority',
+          'priority:high',
+          'p0',
+          'p1',
+          'urgent',
+          'critical',
+        ]
+        const aPriority = a.labels.some((l) => priorityLabels.includes(l.name.toLowerCase()))
+          ? 0
+          : 1
+        const bPriority = b.labels.some((l) => priorityLabels.includes(l.name.toLowerCase()))
+          ? 0
+          : 1
+        return (
+          aPriority - bPriority ||
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        )
       })
       return issues.value
     } catch (e: any) {

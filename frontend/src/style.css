@@ -55,7 +55,8 @@
   box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
   height: 100%;
   background: var(--color-bg);
   color: var(--color-text);
@@ -124,7 +125,9 @@ html, body {
 
 .pixel-btn:hover {
   background: linear-gradient(180deg, #ffe880 0%, var(--color-brass) 100%);
-  box-shadow: 0 0 10px var(--color-brass-light), 0 0 20px rgba(255, 214, 68, 0.3);
+  box-shadow:
+    0 0 10px var(--color-brass-light),
+    0 0 20px rgba(255, 214, 68, 0.3);
   transform: translateY(-1px);
 }
 

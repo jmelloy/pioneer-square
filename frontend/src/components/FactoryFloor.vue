@@ -28,9 +28,15 @@
     <!-- Break room (idle agents lounge here) -->
     <div
       class="break-room"
-      :style="`top: ${breakRoomTop}px; left: ${TABLE_LEFT}px; width: ${tableWidth}px;`"
+      :style="`top: ${breakRoomTop}px; left: ${TABLE_LEFT}px; width: ${tableWidth}px; height: ${BREAK_ROOM_H}px;`"
     >
       <div class="break-label">⏚ BREAK ROOM ⏚</div>
+      <div class="br-furniture br-bulletin">📋 BOARD</div>
+      <div class="br-furniture br-watercooler">💧 H₂O</div>
+      <div class="br-furniture br-couch">🛋 COUCH</div>
+      <div class="br-furniture br-table br-table-1">TABLE</div>
+      <div class="br-furniture br-table br-table-2">TABLE</div>
+      <div class="br-furniture br-table br-table-3">TABLE</div>
     </div>
 
     <!-- Agents — single overlay; positioned absolutely over the floor -->
@@ -38,11 +44,9 @@
       v-for="agent in agents"
       :key="agent.id"
       class="floating-agent"
-      :style="
-        `left: ${choreography.getPos(agent.id).x}px; top: ${
-          choreography.getPos(agent.id).y
-        }px; --walk-dur: ${choreography.duration[agent.id] || 1.5}s;`
-      "
+      :style="`left: ${choreography.getPos(agent.id).x}px; top: ${
+        choreography.getPos(agent.id).y
+      }px; --walk-dur: ${choreography.duration[agent.id] || 1.5}s;`"
     >
       <AgentAvatar :agent="agent" :walking="!!choreography.walking[agent.id]" />
     </div>
@@ -97,7 +101,7 @@ const ROW_GAP = 8
 const MAX_ROWS = 4
 const TICKER_H = 28
 const BREAK_PAD = 20
-const BREAK_ROOM_H = 86
+const BREAK_ROOM_H = 64
 const ROW_H_MIN = 70
 const ROW_H_MAX = 124
 
@@ -149,9 +153,7 @@ const tableHeight = computed(
 
 const breakRoomTop = computed(() => TABLE_TOP + tableHeight.value + BREAK_PAD)
 
-const breakRoomHeight = computed(() =>
-  Math.max(60, floorH.value - breakRoomTop.value - TICKER_H - 8),
-)
+const breakRoomHeight = computed(() => BREAK_ROOM_H)
 
 // ── Tasks → rows ───────────────────────────────────────────
 const activeTasks = computed<Task[]>(() =>
@@ -180,7 +182,14 @@ const taskRows = computed(() => {
 
 const choreography = useAgentChoreography({
   agents,
-  taskRows: computed(() => taskRows.value.map((r) => ({ index: r.index, task: r.task, activityKey: r.activityKey }))),
+  taskRows: computed(() =>
+    taskRows.value.map((r) => ({
+      index: r.index,
+      task: r.task,
+      activityKey: r.activityKey,
+      agentId: r.agent?.id ?? null,
+    })),
+  ),
   rowHeight,
   tableWidth,
   breakRoomTop,
@@ -296,7 +305,6 @@ function stateLabel(state: string) {
 /* ── Break room ─────────────────────────────────────────── */
 .break-room {
   position: absolute;
-  height: 86px;
   border-top: 1px dashed rgba(232, 170, 0, 0.25);
   border-bottom: 1px dashed rgba(232, 170, 0, 0.15);
   background: repeating-linear-gradient(
@@ -319,6 +327,52 @@ function stateLabel(state: string) {
   color: var(--color-brass-dark);
   text-shadow: 0 0 4px rgba(232, 170, 0, 0.4);
 }
+
+/* Break room furniture */
+.br-furniture {
+  position: absolute;
+  background: rgba(12, 7, 0, 0.85);
+  border: 1px solid rgba(200, 140, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 6px;
+  letter-spacing: 1px;
+  color: var(--color-brass-dark);
+  gap: 2px;
+  white-space: nowrap;
+}
+.br-bulletin {
+  left: 2%;
+  top: 17px;
+  width: 42px;
+  height: 22px;
+  border-left: 2px solid rgba(232, 170, 0, 0.55);
+}
+.br-watercooler {
+  right: 2%;
+  top: 17px;
+  width: 36px;
+  height: 22px;
+}
+.br-couch {
+  left: 18%;
+  bottom: 5px;
+  width: 58px;
+  height: 16px;
+  font-size: 11px;
+  background: rgba(60, 30, 0, 0.7);
+  border-color: rgba(160, 90, 0, 0.5);
+  gap: 3px;
+}
+.br-table {
+  top: 17px;
+  width: 42px;
+  height: 18px;
+}
+.br-table-1 { left: 33%; }
+.br-table-2 { left: 49%; }
+.br-table-3 { left: 65%; }
 
 /* ── Floating agents ──────────────────────────────────────── */
 .floating-agent {

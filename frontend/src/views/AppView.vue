@@ -10,7 +10,11 @@
       <DebugSidebar v-if="showDebug" @close="showDebug = false" />
     </teleport>
     <nav class="mobile-tab-bar">
-      <button class="tab-btn" :class="{ active: activeTab === 'tasks' }" @click="activeTab = 'tasks'">
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'tasks' }"
+        @click="activeTab = 'tasks'"
+      >
         <span class="tab-icon">≡</span>
         <span class="tab-label">Tasks</span>
       </button>
@@ -43,7 +47,9 @@ import DebugSidebar from '../components/DebugSidebar.vue'
 const props = defineProps<{ guildId?: string }>()
 
 const activeTab = ref<'tasks' | 'work' | 'chat'>('chat')
-provide('switchMobileTab', (tab: 'tasks' | 'work' | 'chat') => { activeTab.value = tab })
+provide('switchMobileTab', (tab: 'tasks' | 'work' | 'chat') => {
+  activeTab.value = tab
+})
 
 const showDebug = ref(false)
 
@@ -85,15 +91,17 @@ async function initGuild(guildId: string) {
 
   if (guild.agents) {
     guild.agents
-      .filter(a => a.state !== 'offline')
-      .forEach(a => agentsStore.registerAgent({
-        agentId: a.id,
-        agentName: a.name,
-        agentType: a.type,
-        workerId: a.worker_id || null,
-        state: a.state,
-        joinedAt: a.joined_at,
-      }))
+      .filter((a) => a.state !== 'offline')
+      .forEach((a) =>
+        agentsStore.registerAgent({
+          agentId: a.id,
+          agentName: a.name,
+          agentType: a.type,
+          workerId: a.worker_id || null,
+          state: a.state,
+          joinedAt: a.joined_at,
+        }),
+      )
   }
 
   const clientId = getClientId()
@@ -129,18 +137,22 @@ onUnmounted(() => {
   document.title = 'Pioneer Square'
 })
 
-watch(() => props.guildId, async (newId) => {
-  if (newId) {
-    await initGuild(newId)
-  }
-}, { immediate: true })
+watch(
+  () => props.guildId,
+  async (newId) => {
+    if (newId) {
+      await initGuild(newId)
+    }
+  },
+  { immediate: true },
+)
 
 watch(
   () => guildStore.currentGuild?.name,
   (name) => {
     document.title = name ? `${name} — Pioneer Square` : 'Pioneer Square'
   },
-  { immediate: true }
+  { immediate: true },
 )
 </script>
 
@@ -190,7 +202,9 @@ watch(
     border-right: 1px solid var(--color-brass-dark);
     cursor: pointer;
     color: var(--color-text-dim);
-    transition: color 0.12s, background 0.12s;
+    transition:
+      color 0.12s,
+      background 0.12s;
     padding: 4px 0;
   }
 
@@ -232,8 +246,14 @@ watch(
     display: none !important;
   }
 
-  .app-layout[data-tab="tasks"] .sidebar { display: flex !important; }
-  .app-layout[data-tab="work"]  .main-view { display: flex !important; }
-  .app-layout[data-tab="chat"]  .chat-pane { display: flex !important; }
+  .app-layout[data-tab='tasks'] .sidebar {
+    display: flex !important;
+  }
+  .app-layout[data-tab='work'] .main-view {
+    display: flex !important;
+  }
+  .app-layout[data-tab='chat'] .chat-pane {
+    display: flex !important;
+  }
 }
 </style>
