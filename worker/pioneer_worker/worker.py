@@ -26,6 +26,23 @@ def _gen_id(prefix: str) -> str:
     return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
 
+def _droid_name() -> str:
+    """Generate a random droid-style designation like R2-D2 or BB-8."""
+    L = string.ascii_uppercase
+    D = string.digits
+    p1 = random.choice(
+        [lambda: random.choice(L) + random.choice(D), lambda: random.choice(L) + random.choice(L)]
+    )()
+    p2 = random.choice(
+        [
+            lambda: random.choice(L) + random.choice(D),
+            lambda: random.choice(L) + random.choice(L),
+            lambda: random.choice(D),
+        ]
+    )()
+    return f"{p1}-{p2}"
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -39,8 +56,9 @@ _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during
 
 
 class _AgentSlot:
-    def __init__(self, agent_id: str) -> None:
-        self.agent_id = agent_id
+    def __init__(self, *, id: str | None = None, name: str | None = None) -> None:
+        self.id: str = id if id is not None else _gen_id("a-")
+        self.name: str = name if name is not None else _droid_name()
         self.current_claude: claude_runner.ClaudeProcess | None = None
         self.current_task_id: str | None = None
         # Last state we told the backend about; resent on WS reconnect so the
@@ -48,6 +66,10 @@ class _AgentSlot:
         self.state: str = "idle"
         # Fine-grained activity within the "working" state (reading/editing/etc.)
         self.activity: str | None = None
+
+    @property
+    def agent_id(self) -> str:
+        return self.id
 
 
 class Worker:
@@ -67,8 +89,16 @@ class Worker:
         # Set to True once _join() has been called the first time so that
         # _on_ws_reconnect doesn't prematurely join before auth completes.
         self._joined = False
-        # One slot per concurrent agent; each gets a stable ID for the guild.
-        self.slots: list[_AgentSlot] = [_AgentSlot(_gen_id("a-")) for _ in range(cfg.max_agents)]
+
+        # One slot per concurrent agent; each gets a stable ID and name for the guild.
+        def _slot_name(idx: int) -> str | None:
+            if not cfg.worker_name:
+                return None
+            return cfg.worker_name if cfg.max_agents == 1 else f"{cfg.worker_name}/{idx}"
+
+        self.slots: list[_AgentSlot] = [
+            _AgentSlot(name=_slot_name(i)) for i in range(1, cfg.max_agents + 1)
+        ]
         # Set when graceful shutdown is requested (via WS or signal). Idle
         # agents stop immediately; busy agents finish their current task and
         # skip the follow-up window.
@@ -586,13 +616,12 @@ class Worker:
         )
 
     async def _join(self) -> None:
-        for _idx, slot in enumerate(self.slots, start=1):
-            agent_split = 2 + sum(ord(c) for c in slot.agent_id) % 3
+        for slot in self.slots:
             await self._send(
                 {
                     "type": "join",
-                    "agentId": slot.agent_id,
-                    "agentName": f"{slot.agent_id[2:][:agent_split]}-{slot.agent_id[2:][agent_split:]}",
+                    "agentId": slot.id,
+                    "agentName": slot.name,
                     "agentType": "worker",
                     "workerId": self.cfg.worker_id,
                 }
