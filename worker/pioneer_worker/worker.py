@@ -1017,9 +1017,20 @@ class Worker:
                         await fq.put(instructions)
                         logger.info("Redirect queued as followup for task %s", task_id)
                     else:
-                        logger.warning(
-                            "task-redirect for %s: no active subprocess or followup queue", task_id
-                        )
+                        # Followup window not yet open (post-subprocess, pre-followup-setup):
+                        # buffer in redirect_q so the followup window can drain it on open.
+                        rq = self._redirect_queues.get(task_id)
+                        if rq is not None:
+                            await rq.put(instructions)
+                            logger.info(
+                                "task-redirect for %s: buffered (followup window not yet open)",
+                                task_id,
+                            )
+                        else:
+                            logger.warning(
+                                "task-redirect for %s: task already finalized, redirect dropped",
+                                task_id,
+                            )
 
     # ------------------------------------------------------------------ Idle puller
     async def _idle_puller(self) -> None:
@@ -1317,6 +1328,15 @@ class Worker:
             # before we tear it down. ─────────────────────────────────────────
             followup_q: asyncio.Queue = asyncio.Queue()
             self._followup_queues[task_id] = followup_q
+            # Drain any redirect instructions that arrived between subprocess exit
+            # and followup-window open (buffered in redirect_q by the listener).
+            while not redirect_q.empty():
+                try:
+                    buffered = redirect_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                await followup_q.put(buffered)
+                logger.info("Task %s: replaying buffered redirect as first followup", task_id)
             followup_cancelled = False
             last_success = success
             try:
