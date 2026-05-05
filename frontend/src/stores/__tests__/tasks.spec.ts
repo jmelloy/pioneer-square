@@ -202,7 +202,7 @@ describe('useTasksStore', () => {
       store.tasks.push({ id: 't-future', state: 'done', deleted_at: future })
       store.tasks.push({ id: 't-past', state: 'done', deleted_at: past })
 
-      const ids = store.liveTasks.map(t => t.id)
+      const ids = store.liveTasks.map((t) => t.id)
       expect(ids).toContain('t-live')
       expect(ids).toContain('t-future')
       expect(ids).not.toContain('t-past')
@@ -334,7 +334,10 @@ describe('useTasksStore', () => {
       const store = useTasksStore()
       await store.fetchTasks('g-1')
       expect(store.tasks).toEqual(fakeTasks)
-      expect(fetch).toHaveBeenCalledWith('/guilds/g-1/tasks', expect.objectContaining({ headers: expect.any(Object) }))
+      expect(fetch).toHaveBeenCalledWith(
+        '/guilds/g-1/tasks',
+        expect.objectContaining({ headers: expect.any(Object) }),
+      )
     })
 
     it('fetchTasks short-circuits on empty guildId', async () => {
@@ -371,12 +374,20 @@ describe('useTasksStore', () => {
       await store.finalizeTask('g-1', 't-1')
       await store.cancelTask('g-1', 't-1')
 
-      expect(fetchMock).toHaveBeenNthCalledWith(1, '/guilds/g-1/tasks/t-1/finalize', expect.objectContaining({
-        method: 'POST',
-      }))
-      expect(fetchMock).toHaveBeenNthCalledWith(2, '/guilds/g-1/tasks/t-1/cancel', expect.objectContaining({
-        method: 'POST',
-      }))
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1,
+        '/guilds/g-1/tasks/t-1/finalize',
+        expect.objectContaining({
+          method: 'POST',
+        }),
+      )
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2,
+        '/guilds/g-1/tasks/t-1/cancel',
+        expect.objectContaining({
+          method: 'POST',
+        }),
+      )
     })
 
     it('throws when the API returns non-2xx', async () => {

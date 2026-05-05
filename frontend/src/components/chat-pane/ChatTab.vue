@@ -5,17 +5,12 @@
       v-for="(msg, i) in groupedMessages"
       :key="i"
       class="chat-message"
-      :class="
-        isToolUseGroup(msg) ? 'from-foreman msg-tool' : messageClasses(msg as ChatMessage)
-      "
+      :class="isToolUseGroup(msg) ? 'from-foreman msg-tool' : messageClasses(msg as ChatMessage)"
     >
       <div class="msg-header">
         <span
           class="msg-from"
-          :class="
-            'msg-from--' +
-            (isToolUseGroup(msg) ? msg.from : msgSender(msg as ChatMessage))
-          "
+          :class="'msg-from--' + (isToolUseGroup(msg) ? msg.from : msgSender(msg as ChatMessage))"
           >{{ isToolUseGroup(msg) ? '⚙ FOREMAN' : senderLabel(msg as ChatMessage) }}</span
         >
         <span class="msg-time">{{

@@ -4,7 +4,10 @@
       <div class="debug-sidebar-header">
         <span class="debug-sidebar-title">⚙ FOREMAN DEBUG</span>
         <div class="debug-sidebar-actions">
-          <span class="debug-count">{{ debugContext.length }} msg{{ debugContext.length !== 1 ? 's' : '' }} in context</span>
+          <span class="debug-count"
+            >{{ debugContext.length }} msg{{ debugContext.length !== 1 ? 's' : '' }} in
+            context</span
+          >
           <button class="pixel-btn refresh-btn" @click="refreshDebug" :disabled="debugLoading">
             {{ debugLoading ? '...' : '↻' }}
           </button>
@@ -24,9 +27,17 @@
           v-for="(msg, i) in debugContext"
           :key="i"
           class="debug-msg"
-          :class="msg.role === 'assistant' ? 'debug-assistant' : isToolResponseMsg(msg) ? 'debug-tool-response' : 'debug-user'"
+          :class="
+            msg.role === 'assistant'
+              ? 'debug-assistant'
+              : isToolResponseMsg(msg)
+                ? 'debug-tool-response'
+                : 'debug-user'
+          "
         >
-          <span class="debug-role">{{ isToolResponseMsg(msg) ? 'TOOL RESPONSE' : msg.role.toUpperCase() }}</span>
+          <span class="debug-role">{{
+            isToolResponseMsg(msg) ? 'TOOL RESPONSE' : msg.role.toUpperCase()
+          }}</span>
           <template v-if="typeof msg.content === 'string'">
             <span class="debug-text">{{ msg.content }}</span>
           </template>
@@ -47,7 +58,9 @@
               </template>
               <template v-else-if="block.type === 'tool_result'">
                 <span class="debug-tool-id">id:{{ block.tool_use_id?.slice(-6) }}</span>
-                <pre class="debug-pre">{{ typeof block.content === 'string' ? block.content : JSON.stringify(block.content) }}</pre>
+                <pre class="debug-pre">{{
+                  typeof block.content === 'string' ? block.content : JSON.stringify(block.content)
+                }}</pre>
               </template>
               <template v-else>
                 <pre class="debug-pre">{{ JSON.stringify(block) }}</pre>
@@ -75,7 +88,11 @@ const debugClearing = ref(false)
 const debugEl = ref<HTMLElement | null>(null)
 
 function isToolResponseMsg(msg: { role: string; content: unknown }) {
-  return msg.role === 'user' && Array.isArray(msg.content) && (msg.content as { type: string }[]).every(b => b.type === 'tool_result')
+  return (
+    msg.role === 'user' &&
+    Array.isArray(msg.content) &&
+    (msg.content as { type: string }[]).every((b) => b.type === 'tool_result')
+  )
 }
 
 async function refreshDebug() {
@@ -202,7 +219,9 @@ onMounted(() => refreshDebug())
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  transition: border-color 0.12s, color 0.12s;
+  transition:
+    border-color 0.12s,
+    color 0.12s;
 }
 
 .close-btn:hover {
@@ -260,9 +279,15 @@ onMounted(() => refreshDebug())
   margin-bottom: 2px;
 }
 
-.debug-assistant .debug-role { color: var(--color-teal); }
-.debug-user .debug-role { color: var(--color-brass); }
-.debug-tool-response .debug-role { color: #50c878; }
+.debug-assistant .debug-role {
+  color: var(--color-teal);
+}
+.debug-user .debug-role {
+  color: var(--color-brass);
+}
+.debug-tool-response .debug-role {
+  color: #50c878;
+}
 
 .debug-text {
   color: var(--color-text);
@@ -298,8 +323,12 @@ onMounted(() => refreshDebug())
   text-transform: uppercase;
 }
 
-.debug-block-tool_use .debug-block-type { color: #ff8c00; }
-.debug-block-tool_result .debug-block-type { color: #50c878; }
+.debug-block-tool_use .debug-block-type {
+  color: #ff8c00;
+}
+.debug-block-tool_result .debug-block-type {
+  color: #50c878;
+}
 
 .debug-tool-name {
   font-weight: bold;
