@@ -379,7 +379,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
     worker_id_msg = data.get("workerId", "")
     desc = data.get("description", "")
     branch = data.get("branch", "")
-    finalized_by = data.get("finalizedBy", "")
+    pr_url = data.get("prUrl", "")
     last_text = data.get("lastText", "")
     if task_id:
         await ctx.db.execute(
@@ -389,7 +389,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         )
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
-    if task_id and not finalized_by:
+    if task_id:
         spawn(
             maybe_post_plan_comment(ctx.guild_id, task_id, last_text),
             name=f"foreman.plan-comment:{task_id}",
@@ -398,44 +398,23 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         return
 
     task_uid = await _task_user_id(ctx.db, task_id)
-    if finalized_by == "timeout":
-        finished_at = datetime.now(UTC).isoformat()
-        await ctx.db.execute(
-            update(Task).where(Task.id == task_id).values(state="done", finished_at=finished_at)
-        )
-        await ctx.db.commit()
-        await broadcast(
+    pr_line = f" PR: {pr_url}." if pr_url else ""
+    spawn(
+        run_foreman_ai(
             ctx.guild_id,
-            {
-                "type": "task-update",
-                "taskId": task_id,
-                "state": "done",
-                "finishedAt": finished_at,
-            },
-        )
-        spawn(
-            run_foreman_ai(
-                ctx.guild_id,
-                f"[timeout] Follow-up window expired for task {task_id} "
-                f"(worker {worker_id_msg}). The task has been auto-finalized "
-                "as done — no foreman action required.",
-                user_id=task_uid,
-            ),
-            name=f"foreman.task-timeout:{task_id}",
-        )
-    else:
-        spawn(
-            run_foreman_ai(
-                ctx.guild_id,
-                f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
-                f'"{desc[:80]}" — branch: {branch}. '
-                "Review this result. Call send_followup if additional work is needed "
-                "(e.g. update tests, add docs, fix lint errors). "
-                "Otherwise call finalize_task to mark it complete.",
-                user_id=task_uid,
-            ),
-            name=f"foreman.task-complete:{task_id}",
-        )
+            f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
+            f'"{desc[:80]}" — branch: {branch}.{pr_line} '
+            "The worker has returned to its idle pool; the task is parked in "
+            "awaiting-review for human review. "
+            "Default behaviour: leave PR-bearing tasks open so reviewers can "
+            "comment — call send_followup if a comment or CI failure asks for "
+            "an iteration on the same branch (any idle worker can pick it up). "
+            "Only call finalize_task when the work is genuinely closed (PR "
+            "merged, task abandoned, or it was an ephemeral/automation task).",
+            user_id=task_uid,
+        ),
+        name=f"foreman.task-complete:{task_id}",
+    )
     reset_foreman_poll(ctx.guild_id)
 
 

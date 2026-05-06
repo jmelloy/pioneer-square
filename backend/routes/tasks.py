@@ -188,9 +188,6 @@ async def get_guild_logs(
         await db.close()
 
 
-_TERMINAL_TASK_STATES = frozenset({"done", "failed", "cancelled"})
-
-
 @router.post("/guilds/{guild_id}/tasks/{task_id}/followup")
 async def create_task_followup(
     guild_id: str,
@@ -198,11 +195,13 @@ async def create_task_followup(
     data: FollowupCreate,
     github_user_id: str = Depends(require_member()),
 ):
-    """Send follow-up instructions.
+    """Route a user-supplied follow-up to the foreman.
 
-    Active tasks (awaiting-review): dispatched directly to the worker in the same worktree.
-    Terminal tasks (done/failed/cancelled): routed to the foreman AI which will re-assign
-    work on the same branch using send_followup or assign_task with phase=followup.
+    Workers no longer hold tasks open for follow-ups — the foreman owns task
+    lifecycle and decides which idle worker resumes the branch (the original
+    worker reuses its worktree if it's still idle; otherwise any idle worker
+    pulls the branch from GitHub). All follow-ups go through the foreman so
+    the same routing logic applies in every case.
     """
     db = await get_db()
     try:
@@ -214,44 +213,24 @@ async def create_task_followup(
         row = result.one_or_none()
         if not row:
             raise HTTPException(status_code=404, detail="Task not found")
-        worker_id, state, branch = row
+        _worker_id, state, branch = row
     finally:
         await db.close()
 
-    if state in _TERMINAL_TASK_STATES:
-        branch_ctx = f" on branch `{branch}`" if branch else ""
-        spawn(
-            run_foreman_ai(
-                guild_id,
-                f"[user-followup] User requested follow-up on task {task_id}{branch_ctx} "
-                f'(currently {state}): "{data.instructions}". '
-                "Use send_followup to re-run work in the same worktree on the same branch. "
-                "If the task's original worker is no longer available, use assign_task with "
-                "phase=followup so another worker continues on the same branch.",
-                user_id=github_user_id,
-            ),
-            name=f"foreman.user-followup:{task_id}",
-        )
-        return {"status": "queued_for_foreman", "taskId": task_id}
-
-    db = await get_db()
-    try:
-        await db.execute(
-            update(Task).where(Task.id == task_id).values(state="working", phase="followup")
-        )
-        await db.commit()
-    finally:
-        await db.close()
-    await broadcast(
-        guild_id,
-        {
-            "type": "task-followup",
-            "workerId": worker_id,
-            "taskId": task_id,
-            "instructions": data.instructions,
-        },
+    branch_ctx = f" on branch `{branch}`" if branch else ""
+    spawn(
+        run_foreman_ai(
+            guild_id,
+            f"[user-followup] User requested follow-up on task {task_id}{branch_ctx} "
+            f'(currently {state}): "{data.instructions}". '
+            "Call send_followup to dispatch this work — it will pick the "
+            "original worker if idle, otherwise any idle worker pulls the "
+            "branch from GitHub.",
+            user_id=github_user_id,
+        ),
+        name=f"foreman.user-followup:{task_id}",
     )
-    return {"status": "sent", "taskId": task_id}
+    return {"status": "queued_for_foreman", "taskId": task_id}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/finalize")

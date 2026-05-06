@@ -134,10 +134,16 @@ FOREMAN_TOOLS = [
     {
         "name": "send_followup",
         "description": (
-            "Send follow-up instructions to a worker for a task that just completed. "
-            "The worker executes these in the same git worktree on the same branch — "
-            "ideal for 'update tests', 'fix type errors', 'add docs', etc. "
-            "Call after receiving a task-complete notification."
+            "Continue work on an existing task's branch. The worker executes the "
+            "follow-up instructions on the same branch (and same worktree if the "
+            "original worker is still idle and within the 24h cleanup window) — "
+            "ideal for CI fixes, lint, test fixes, doc additions, or reviewer "
+            "comments. Worker selection: by default the original worker is "
+            "preferred when idle (free worktree reuse); when it's busy or "
+            "offline, any idle worker in the guild picks up the branch from "
+            "GitHub. Pass preferred_worker_id to force a specific worker. "
+            "Call this in response to task-complete, task-followup-done, "
+            "user comments on a parked PR task, or CI failures."
         ),
         "input_schema": {
             "type": "object",
@@ -145,7 +151,14 @@ FOREMAN_TOOLS = [
                 "task_id": {"type": "string", "description": "Task ID (t-xxxxxx)."},
                 "instructions": {
                     "type": "string",
-                    "description": "Follow-up instructions to execute in the existing worktree.",
+                    "description": "Follow-up instructions to execute on the existing branch.",
+                },
+                "preferred_worker_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional: prefer this worker if idle. Defaults to the "
+                        "task's current worker_id."
+                    ),
                 },
             },
             "required": ["task_id", "instructions"],
@@ -437,6 +450,51 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
         await db.close()
 
 
+async def _select_followup_worker(
+    db,
+    *,
+    guild_id: str,
+    original_worker_id: str | None,
+    preferred_worker_id: str | None = None,
+) -> str | None:
+    """Pick a worker to continue a task's branch.
+
+    Order of preference:
+      1. ``preferred_worker_id`` if it has at least one idle agent in the guild
+      2. ``original_worker_id`` if it has at least one idle agent (worktree
+         likely still on disk for free reuse)
+      3. Any other worker in the guild with an idle agent
+
+    Returns the chosen worker_id, or None if no idle worker is available.
+    """
+
+    async def _idle(worker_id: str) -> bool:
+        if not worker_id or worker_id == "foreman":
+            return False
+        result = await db.execute(
+            select(Agent.id).where(Agent.worker_id == worker_id, Agent.state == "idle").limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    if preferred_worker_id and await _idle(preferred_worker_id):
+        return preferred_worker_id
+    if original_worker_id and await _idle(original_worker_id):
+        return original_worker_id
+    # Fallback: any other idle agent in the guild. Pick the worker_id of the
+    # first idle agent we find — repos are configured per-worker, but for now
+    # the foreman trusts that a guild's workers cover the same repo set.
+    result = await db.execute(
+        select(Agent.worker_id)
+        .where(
+            Agent.guild_id == guild_id,
+            Agent.state == "idle",
+            Agent.worker_id.is_not(None),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def maybe_post_plan_comment(guild_id: str, task_id: str, last_text: str) -> None:
     """Post plan output as a GitHub issue comment when a plan-phase task completes."""
     logger = logging.getLogger(__name__)
@@ -646,44 +704,107 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             elif tu.name == "send_followup":
                 task_id = inp["task_id"]
                 instructions = inp["instructions"]
+                preferred_worker_id = inp.get("preferred_worker_id")
                 result = await db.execute(
-                    select(Task.worker_id, Task.state).where(
-                        Task.id == task_id, Task.guild_id == guild_id
-                    )
+                    select(
+                        Task.worker_id,
+                        Task.state,
+                        Task.branch,
+                        Task.description,
+                        Task.name,
+                        Task.tool,
+                        Task.issue_number,
+                        Task.issue_repo,
+                    ).where(Task.id == task_id, Task.guild_id == guild_id)
                 )
                 row = result.one_or_none()
                 if not row:
                     result_text = f"Task {task_id} not found."
                 else:
-                    worker_id_val, prior_state = row
-                    update_vals: dict = {"state": "working", "phase": "followup"}
-                    if prior_state in ("done", "failed", "cancelled"):
-                        # Re-opening a terminal task: clear soft-delete fields so it
-                        # reappears in the live task list and isn't auto-purged.
-                        update_vals["deleted_at"] = None
-                        update_vals["finished_at"] = None
-                    await db.execute(update(Task).where(Task.id == task_id).values(**update_vals))
-                    await db.commit()
-                    await broadcast(
-                        guild_id,
-                        {
-                            "type": "task-update",
-                            "taskId": task_id,
+                    (
+                        original_worker_id,
+                        prior_state,
+                        branch,
+                        task_desc,
+                        task_name,
+                        task_tool,
+                        task_issue_number,
+                        task_issue_repo,
+                    ) = row
+                    target_worker_id = await _select_followup_worker(
+                        db,
+                        guild_id=guild_id,
+                        original_worker_id=original_worker_id,
+                        preferred_worker_id=preferred_worker_id,
+                    )
+                    if not target_worker_id:
+                        result_text = (
+                            f"No idle worker available to continue task {task_id} on branch "
+                            f"{branch or '<unknown>'}. Wait for one to come online or shut "
+                            "down a busy worker before retrying."
+                        )
+                        is_error = True
+                    elif not branch:
+                        result_text = (
+                            f"Task {task_id} has no branch recorded — can't dispatch a "
+                            "follow-up. The task may have failed before its first push."
+                        )
+                        is_error = True
+                    else:
+                        update_vals: dict = {
                             "state": "working",
-                            "deletedAt": None,
-                            "finishedAt": None,
-                        },
-                    )
-                    await broadcast(
-                        guild_id,
-                        {
-                            "type": "task-followup",
-                            "workerId": worker_id_val,
-                            "taskId": task_id,
-                            "instructions": instructions,
-                        },
-                    )
-                    result_text = f"Follow-up sent to {worker_id_val} for task {task_id}."
+                            "phase": "followup",
+                            "worker_id": target_worker_id,
+                        }
+                        if prior_state in ("done", "failed", "cancelled"):
+                            # Re-opening a terminal task: clear soft-delete fields so it
+                            # reappears in the live task list and isn't auto-purged.
+                            update_vals["deleted_at"] = None
+                            update_vals["finished_at"] = None
+                        await db.execute(
+                            update(Task).where(Task.id == task_id).values(**update_vals)
+                        )
+                        await db.commit()
+                        await broadcast(
+                            guild_id,
+                            {
+                                "type": "task-update",
+                                "taskId": task_id,
+                                "state": "working",
+                                "workerId": target_worker_id,
+                                "deletedAt": None,
+                                "finishedAt": None,
+                            },
+                        )
+                        await broadcast(
+                            guild_id,
+                            {
+                                "type": "task-followup",
+                                "workerId": target_worker_id,
+                                "taskId": task_id,
+                                "name": task_name or "",
+                                "description": task_desc or "",
+                                "tool": task_tool or "claude",
+                                "branch": branch,
+                                "instructions": instructions,
+                                "issueNumber": task_issue_number,
+                                "issueRepo": task_issue_repo,
+                            },
+                        )
+                        if (
+                            target_worker_id != original_worker_id
+                            and original_worker_id
+                            and original_worker_id != "foreman"
+                        ):
+                            result_text = (
+                                f"Follow-up reassigned from {original_worker_id} "
+                                f"to {target_worker_id} (task {task_id} on branch {branch})."
+                            )
+                        else:
+                            result_text = (
+                                f"Follow-up sent to {target_worker_id} for task {task_id} "
+                                f"on branch {branch}."
+                            )
 
             elif tu.name == "finalize_task":
                 task_id = inp["task_id"]

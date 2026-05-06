@@ -91,14 +91,15 @@ def _insert_task(
     phase: str = "execute",
     issue_number: int | None = None,
     issue_repo: str | None = None,
+    branch: str | None = "claude/test-branch-abc123",
 ) -> None:
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO tasks "
             "(id, worker_id, guild_id, description, tool, state, phase, created_at, "
-            " issue_number, issue_repo) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " issue_number, issue_repo, branch) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 worker_id,
@@ -110,7 +111,27 @@ def _insert_task(
                 now,
                 issue_number,
                 issue_repo,
+                branch,
             ),
+        )
+        conn.commit()
+
+
+def _insert_agent(
+    db_path: str,
+    guild_id: str,
+    worker_id: str,
+    agent_id: str = "a-test01",
+    state: str = "idle",
+) -> None:
+    """Add a worker-attached agent (defaults to idle) so send_followup has a target."""
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO agents "
+            "(id, guild_id, worker_id, name, type, state, joined_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (agent_id, guild_id, worker_id, agent_id.upper(), "worker", state, now),
         )
         conn.commit()
 
@@ -448,6 +469,7 @@ class TestExecToolsDispatching:
     async def test_send_followup_broadcasts_and_returns_message(self, db_session):
         insert_guild(db_session, "g-followup-ok")
         _insert_worker(db_session, "g-followup-ok", "w-flwup")
+        _insert_agent(db_session, "g-followup-ok", "w-flwup", "a-flwup1")
         _insert_task(db_session, "t-flwup1", "g-followup-ok", "w-flwup")
         broadcast_calls = []
 
@@ -467,6 +489,66 @@ class TestExecToolsDispatching:
         followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
         assert len(followup_msgs) == 1
         assert followup_msgs[0]["instructions"] == "Add more tests"
+        assert followup_msgs[0]["branch"] == "claude/test-branch-abc123"
+        assert followup_msgs[0]["workerId"] == "w-flwup"
+
+    async def test_send_followup_falls_back_to_any_idle_worker(self, db_session):
+        """When the original worker has no idle agent, send_followup picks
+        any other idle worker in the guild (and updates task.worker_id)."""
+        insert_guild(db_session, "g-followup-fallback")
+        _insert_worker(db_session, "g-followup-fallback", "w-orig")
+        _insert_worker(db_session, "g-followup-fallback", "w-other")
+        # Original worker has only a busy agent; the fallback worker is idle.
+        _insert_agent(db_session, "g-followup-fallback", "w-orig", "a-orig", state="working")
+        _insert_agent(db_session, "g-followup-fallback", "w-other", "a-other", state="idle")
+        _insert_task(db_session, "t-flwup-fb", "g-followup-fallback", "w-orig")
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-followup-fallback",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {"task_id": "t-flwup-fb", "instructions": "Continue"},
+                    )
+                ],
+            )
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 1
+        assert followup_msgs[0]["workerId"] == "w-other"
+        assert "reassigned" in results[0]["content"].lower()
+        with sqlite3.connect(db_session) as conn:
+            row = conn.execute("SELECT worker_id FROM tasks WHERE id='t-flwup-fb'").fetchone()
+        assert row[0] == "w-other"
+
+    async def test_send_followup_errors_when_no_idle_worker(self, db_session):
+        insert_guild(db_session, "g-followup-noidle")
+        _insert_worker(db_session, "g-followup-noidle", "w-busy")
+        _insert_agent(db_session, "g-followup-noidle", "w-busy", "a-busy", state="working")
+        _insert_task(db_session, "t-noidle", "g-followup-noidle", "w-busy")
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-followup-noidle",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {"task_id": "t-noidle", "instructions": "go"},
+                    )
+                ],
+            )
+        assert "no idle worker" in results[0]["content"].lower()
+        assert results[0].get("is_error") is True
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 0
 
     async def test_finalize_task_not_found(self, db_session):
         insert_guild(db_session, "g-finalize-missing")
