@@ -1,0 +1,17 @@
+.git/
+.github/
+.venv/
+venv/
+node_modules/
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+**/.env
+**/*.db
+**/*.sqlite
+backend/tests/
+worker/
+frontend/dist/
+frontend/build/

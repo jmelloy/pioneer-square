@@ -22,8 +22,10 @@ from database import AsyncSessionLocal
 from events import agent_owners, broadcast
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from models import Agent, Worker
 from sqlalchemy import select, update
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from util.tasks import spawn
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -233,3 +235,26 @@ from routes.tasks import (  # noqa: E402,F401
 )
 from utils import build_spawn_worker_env as _build_spawn_worker_env  # noqa: E402,F401
 from utils import decode_claude_oauth_token as _decode_claude_oauth_token  # noqa: E402,F401
+
+# ---------------------------------------------------------------------------
+# Static SPA assets. The frontend is built into ./static by the Dockerfile and
+# served from the same origin so VITE_API_BASE='' and the WebSocket's
+# window.location.host both resolve to this backend.
+# ---------------------------------------------------------------------------
+
+
+class _SPAStaticFiles(StaticFiles):
+    """StaticFiles that falls back to index.html for unknown paths (SPA routing)."""
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404 and path != "index.html":
+                return await super().get_response("index.html", scope)
+            raise
+
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/", _SPAStaticFiles(directory=_STATIC_DIR, html=True), name="spa")

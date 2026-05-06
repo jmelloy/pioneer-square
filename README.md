@@ -24,8 +24,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Backend: http://localhost:8000 — Frontend: http://localhost:5173.
-SQLite is persisted in the `backend-data` volume.
+App (backend + SPA): http://localhost:8056. SQLite is persisted in the `backend-data` volume.
 
 The worker is opt-in (it needs a `pioneer-worker.toml`):
 
