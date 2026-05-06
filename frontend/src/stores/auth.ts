@@ -24,8 +24,9 @@ export const useAuthStore = defineStore('auth', () => {
     return loginToken.value ? { Authorization: `Bearer ${loginToken.value}` } : {}
   }
 
-  async function loginWithGitHub() {
-    const res = await fetch(`${API_BASE}/auth/github/login`)
+  async function loginWithGitHub(returnTo: string = window.location.origin) {
+    const qs = new URLSearchParams({ return_to: returnTo })
+    const res = await fetch(`${API_BASE}/auth/github/login?${qs}`)
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       throw new Error(body.detail || `Server error ${res.status}`)

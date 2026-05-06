@@ -102,6 +102,32 @@ onMounted(async () => {
     authStore.restoreFromCallback(params)
     ghStore.restoreGitHubToken(params)
     window.history.replaceState({}, '', '/')
+  } else if (params.has('to')) {
+    // Subdomain bridge: a guild subdomain redirected here to get the session token.
+    const targetOrigin = params.get('to')!
+    window.history.replaceState({}, '', '/')
+    if (authStore.isLoggedIn && authStore.loginToken) {
+      const bp = new URLSearchParams()
+      bp.set('login_token', authStore.loginToken)
+      if (authStore.user) {
+        bp.set('gh_login', authStore.user.login)
+        if (authStore.user.name) bp.set('gh_name', authStore.user.name)
+        if (authStore.user.avatar_url) bp.set('gh_avatar', authStore.user.avatar_url)
+        if (authStore.user.id) bp.set('gh_user_id', String(authStore.user.id))
+      }
+      window.location.href = `${targetOrigin}/?${bp}`
+      return
+    } else {
+      // Not logged in — kick off OAuth and come back to the target subdomain.
+      loggingIn.value = true
+      try {
+        await authStore.loginWithGitHub(targetOrigin)
+      } catch (e: unknown) {
+        loginError.value = e instanceof Error ? e.message : String(e)
+        loggingIn.value = false
+      }
+      return
+    }
   }
 
   if (authStore.isLoggedIn) {

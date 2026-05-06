@@ -20,7 +20,7 @@ from pathlib import Path
 
 from database import AsyncSessionLocal
 from events import agent_owners, broadcast
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from models import Agent, Worker
@@ -198,6 +198,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _wellknown_middleware(request: Request, call_next):
+    # Starlette's StaticFiles returns 403 for dotfile paths, intercepting
+    # /.well-known/ before the route handler fires. Handle it here first.
+    if request.url.path.startswith("/.well-known/"):
+        from routes.wellknown import jwks
+
+        return await jwks(request)
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------

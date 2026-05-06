@@ -35,7 +35,36 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
 
 # Short-lived state tokens for OAuth CSRF protection. In-memory only; will be
 # lost on backend restart. See CODE_REVIEW.md H2 for the planned DB persistence.
-oauth_states: set[str] = set()
+# Maps state token → return_to origin (None = default FRONTEND_URL).
+oauth_states: dict[str, str | None] = {}
+
+
+def _is_allowed_return_to(url: str) -> bool:
+    """Validate that return_to is one of our own origins."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = parsed.hostname or ""
+        if not hostname:
+            return False
+        frontend_parsed = urllib.parse.urlparse(FRONTEND_URL)
+        frontend_host = frontend_parsed.hostname or ""
+        if hostname == frontend_host:
+            return True
+        if frontend_host and hostname.endswith("." + frontend_host):
+            return True
+        # Always allow localhost and its subdomains (local dev).
+        if hostname == "localhost" or hostname.endswith(".localhost"):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def get_return_to(state: str) -> str | None:
+    """Peek at the return_to origin stored with a state token (without removing it)."""
+    return oauth_states.get(state)
 
 
 # ---------------------------------------------------------------------------
@@ -79,10 +108,10 @@ def _gh_get_user(token: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def make_authorize_url() -> str:
+def make_authorize_url(return_to: str | None = None) -> str:
     """Return the GitHub authorize URL with a fresh state token registered."""
     state = secrets.token_urlsafe(16)
-    oauth_states.add(state)
+    oauth_states[state] = return_to if return_to and _is_allowed_return_to(return_to) else None
     params = urllib.parse.urlencode(
         {
             "client_id": GITHUB_CLIENT_ID,
@@ -103,7 +132,7 @@ async def create_session(code: str, state: str) -> dict:
     """
     if state not in oauth_states:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
-    oauth_states.discard(state)
+    oauth_states.pop(state)
 
     try:
         token_data = await asyncio.to_thread(_gh_exchange_code, code)
