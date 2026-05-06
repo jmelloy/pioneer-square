@@ -136,22 +136,59 @@ class Worker:
         )
 
     async def _fetch_github_token_if_needed(self) -> None:
-        if self.cfg.github_token:
-            return
+        if not self.cfg.github_token:
+            try:
+                async with await self._http(authed=True) as client:
+                    resp = await client.get(
+                        "/auth/github/token",
+                        params={"guild_id": self.cfg.guild_id},
+                    )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self.cfg.github_token = data.get("access_token")
+                    logger.info("Fetched GitHub token for user %s", data.get("username"))
+                else:
+                    logger.warning("No GitHub token from backend (status %d)", resp.status_code)
+            except Exception as exc:
+                logger.warning("Could not fetch GitHub token: %s", exc)
+
+        if self.cfg.github_token and not os.environ.get("GITHUB_TOKEN"):
+            os.environ["GITHUB_TOKEN"] = self.cfg.github_token
+            logger.info("GITHUB_TOKEN set in environment for gh CLI and subprocesses")
+
+    async def _check_gh_auth(self) -> None:
+        """Run `gh auth status` and log the result as a startup health check."""
         try:
-            async with await self._http(authed=True) as client:
-                resp = await client.get(
-                    "/auth/github/token",
-                    params={"guild_id": self.cfg.guild_id},
-                )
-            if resp.status_code == 200:
-                data = resp.json()
-                self.cfg.github_token = data.get("access_token")
-                logger.info("Fetched GitHub token for user %s", data.get("username"))
-            else:
-                logger.warning("No GitHub token from backend (status %d)", resp.status_code)
+            proc = await asyncio.create_subprocess_exec(
+                "gh",
+                "auth",
+                "status",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except FileNotFoundError:
+            logger.warning("gh CLI not found — PR creation via gh will not work")
+            return
         except Exception as exc:
-            logger.warning("Could not fetch GitHub token: %s", exc)
+            logger.warning("gh auth status spawn failed: %s", exc)
+            return
+
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        except TimeoutError:
+            logger.warning("gh auth status timed out after 10s")
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            return
+
+        output = stdout.decode(errors="replace").strip()
+        if proc.returncode == 0:
+            logger.info("gh auth status: authenticated\n%s", output)
+        else:
+            logger.warning("gh auth status: NOT authenticated (rc=%d)\n%s", proc.returncode, output)
 
     async def _claude_is_authenticated(self) -> bool:
         """Return True if `claude auth status --json` reports loggedIn=true.
@@ -820,6 +857,7 @@ class Worker:
         assert self.cfg.worker_id, "worker_id must be set after registration"
 
         await self._fetch_github_token_if_needed()
+        await self._check_gh_auth()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         self.ws.on_reconnect = self._on_ws_reconnect
