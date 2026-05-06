@@ -210,8 +210,8 @@ from routes import foreman as _foreman_routes  # noqa: E402
 from routes import guilds as _guilds_routes  # noqa: E402
 from routes import tasks as _tasks_routes  # noqa: E402
 from routes import webhooks as _webhooks_routes  # noqa: E402
-from routes import wellknown as _wellknown_routes  # noqa: E402
 from routes import websocket as _ws_routes  # noqa: E402
+from routes import wellknown as _wellknown_routes  # noqa: E402
 from routes import workers as _workers_routes  # noqa: E402
 
 app.include_router(_wellknown_routes.router)
