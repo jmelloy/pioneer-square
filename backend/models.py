@@ -185,6 +185,22 @@ class ClaudeCredentials(Base):
     updated_at = Column(Text, nullable=False)
 
 
+class GuildKey(Base):
+    __tablename__ = "guild_keys"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False, unique=True)
+    key_id = Column(Text, nullable=False)  # "kid" in JWK
+    public_key_pem = Column(Text, nullable=False)
+    private_key_pem = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False)
+    # When set, served verbatim at /.well-known/jwks.json instead of the
+    # auto-generated key. Stored as JSON text ({"keys": [...]}).
+    custom_jwks = Column(Text, nullable=True)
+    # Private key in JWK format for backend signing; never served publicly.
+    private_key_jwk = Column(Text, nullable=True)
+
+
 class ForemanTurn(Base):
     __tablename__ = "foreman_turns"
 
