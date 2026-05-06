@@ -77,7 +77,13 @@ function linkify(text: string): string {
 }
 
 function isMarkdownLine(line: string): boolean {
-  return line.startsWith('[thinking]') || line.startsWith('[claude]')
+  if (!line) return false
+  // Tool/metadata prefixes are plain text; everything else (including Claude's output) is markdown
+  if (line.startsWith('▶') || line.startsWith('✓') || line.startsWith('✗') || line.startsWith('  →'))
+    return false
+  if (line.startsWith('[') && !line.startsWith('[thinking]') && !line.startsWith('[claude]'))
+    return false
+  return true
 }
 
 
