@@ -52,6 +52,25 @@ def test_create_worker_appears_in_list(client):
     assert workers[0]["guild_id"] == "guild03"
 
 
+def test_create_worker_does_not_insert_agent_row(client):
+    """Worker registration must not create a phantom agent row (issue #264).
+
+    Agent rows are created only when the worker process sends a ``join``
+    message over WebSocket, not during REST-based registration.
+    """
+    import sqlite3
+
+    test_client, db_path = client
+    insert_guild(db_path, "guild03b")
+    resp = test_client.post("/guilds/guild03b/workers", json={"repos": []})
+    assert resp.status_code == 200
+    worker_id = resp.json()["id"]
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT id FROM agents WHERE id = ?", (worker_id,)).fetchone()
+    assert row is None, f"create_worker must not insert an agent row, but found: {row}"
+
+
 def test_create_multiple_workers(client):
     test_client, db_path = client
     insert_guild(db_path, "guild04")
