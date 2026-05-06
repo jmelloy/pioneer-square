@@ -6,8 +6,10 @@ verifies the HMAC-SHA256 signature against the guild's stored secret,
 persists the event (idempotent on the X-GitHub-Delivery header), and
 broadcasts a ``github-event`` WS message to the guild.
 
-Foreman dispatch (Phase 2) will be wired on top of the persisted row — the
-goal of this file is just to land the receiver and its persistence story.
+When the event is linked to a known task and clears the noise filters
+(see ``_should_dispatch_to_foreman``), the receiver also schedules a
+``run_foreman_ai`` invocation with a structured summary so the foreman
+can decide whether to send_followup, finalize, or no-op.
 """
 
 from __future__ import annotations
@@ -21,10 +23,12 @@ from datetime import UTC, datetime
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, HTTPException, Request, Response
+from foreman import reset_foreman_poll, run_foreman_ai
 from models import GithubEvent, Guild, Task
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
+from util.tasks import spawn
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,12 @@ router = APIRouter()
 # review-comment diff hunks can balloon — 64 KB is a safe upper bound that
 # keeps the row size manageable while preserving enough for foreman context.
 _MAX_PAYLOAD_BYTES = 64 * 1024
+
+# Event types that are *expected* to come from bots (``[bot]`` suffix in
+# sender.login). For these the bot filter is bypassed because bots drive
+# most CI/automation traffic — filtering them out would silence the very
+# events we want to react to.
+_BOT_OK_EVENTS = frozenset({"check_run", "check_suite", "status"})
 
 
 def _verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
@@ -78,12 +88,16 @@ def _extract_pr_info(payload: dict) -> tuple[int | None, str | None, str | None]
     return None, None, repo
 
 
-async def _find_task_id(db, guild_id: str, repo: str | None, pr_number: int | None) -> str | None:
-    """Match a webhook to one of this guild's tasks by (repo, pr_number)."""
+async def _find_task(db, guild_id: str, repo: str | None, pr_number: int | None):
+    """Match a webhook to one of this guild's tasks by (repo, pr_number).
+
+    Returns the task row (id + user_id) or ``None``. The user_id is needed so
+    foreman dispatch routes back to the user who originally created the task.
+    """
     if not repo or pr_number is None:
         return None
     res = await db.execute(
-        select(Task.id)
+        select(Task.id, Task.user_id)
         .where(
             Task.guild_id == guild_id,
             Task.pr_repo == repo,
@@ -92,7 +106,128 @@ async def _find_task_id(db, guild_id: str, repo: str | None, pr_number: int | No
         .order_by(Task.created_at.desc())
         .limit(1)
     )
-    return res.scalar_one_or_none()
+    return res.first()
+
+
+def _should_dispatch_to_foreman(
+    event_type: str,
+    action: str | None,
+    payload: dict,
+    sender_login: str | None,
+    task_id: str | None,
+) -> tuple[bool, str]:
+    """Decide whether this webhook should wake the foreman.
+
+    Returns ``(dispatch, reason)``. *reason* is the skip reason when
+    ``dispatch`` is False, or an empty string otherwise — useful for
+    log lines and tests.
+
+    Filtering rules (see docs/github-pr-subscriptions.md §4):
+    - No matching task ⇒ skip (foreman has no context)
+    - ``[bot]`` senders on non-CI events ⇒ skip (Dependabot opening PRs etc)
+    - ``check_run`` events with ``status != "completed"`` ⇒ skip (pending runs are noisy)
+    """
+    if not task_id:
+        return False, "no-matching-task"
+    if sender_login and sender_login.endswith("[bot]") and event_type not in _BOT_OK_EVENTS:
+        return False, "bot-non-ci-sender"
+    if event_type in {"check_run", "check_suite"}:
+        node = payload.get(event_type) or {}
+        status = node.get("status") if isinstance(node, dict) else None
+        if status and status != "completed":
+            return False, f"check-status-{status}"
+        # Skip neutral / skipped conclusions — only success/failure/cancelled
+        # are actionable signals for the foreman.
+        conclusion = node.get("conclusion") if isinstance(node, dict) else None
+        if conclusion in {"neutral", "skipped"}:
+            return False, f"check-conclusion-{conclusion}"
+    return True, ""
+
+
+def _build_foreman_summary(
+    event_type: str,
+    action: str | None,
+    payload: dict,
+    repo: str | None,
+    pr_number: int | None,
+    task_id: str,
+    sender_login: str | None,
+) -> str:
+    """Render a structured ``[github-event]`` message for the foreman.
+
+    The format is intentionally compact and includes the task id + PR
+    coordinates first so the foreman can immediately route to send_followup
+    / finalize_task without a get_task_status round-trip for trivial cases.
+    """
+    header = (
+        f"[github-event] {event_type}"
+        + (f"/{action}" if action else "")
+        + f" on {repo}#{pr_number} (task {task_id})"
+    )
+    sender_line = f" by @{sender_login}" if sender_login else ""
+
+    detail = ""
+    if event_type == "pull_request" and action in {"closed", "reopened"}:
+        pr = payload.get("pull_request") or {}
+        merged = pr.get("merged")
+        if action == "closed" and merged:
+            detail = (
+                "PR was merged. Call finalize_task — "
+                "the work has landed and no follow-up is needed."
+            )
+        elif action == "closed":
+            detail = (
+                "PR was closed without merging. Investigate why "
+                "(check_pr_status, get_task_status), then either send_followup "
+                "to address the rejection or finalize_task if the work is being abandoned."
+            )
+        else:
+            detail = (
+                "PR was reopened — no immediate action required unless prior work needs revisiting."
+            )
+    elif event_type == "pull_request_review" and action == "submitted":
+        review = payload.get("review") or {}
+        state = review.get("state")
+        body = (review.get("body") or "")[:400]
+        detail = f"Review state: {state}." + (f"\nReview body:\n{body}" if body else "")
+        if state == "changes_requested":
+            detail += "\nCall send_followup with the requested changes."
+        elif state == "approved":
+            detail += (
+                "\nReview is approved — wait for merge before finalizing, "
+                "or finalize now if the workflow auto-merges."
+            )
+    elif event_type == "pull_request_review_comment" and action == "created":
+        comment = payload.get("comment") or {}
+        path = comment.get("path", "")
+        body = (comment.get("body") or "")[:400]
+        detail = f"Inline comment on `{path}`:\n{body}\nDecide whether send_followup is warranted."
+    elif event_type == "issue_comment" and action == "created":
+        comment = payload.get("comment") or {}
+        body = (comment.get("body") or "")[:400]
+        detail = (
+            f"PR comment:\n{body}\n"
+            "If this is a request for changes, send_followup; otherwise no action."
+        )
+    elif event_type in {"check_run", "check_suite"}:
+        node = payload.get(event_type) or {}
+        name = node.get("name") or node.get("app", {}).get("slug") or "check"
+        conclusion = node.get("conclusion")
+        summary = (node.get("output") or {}).get("summary") or ""
+        detail = f"{name}: {conclusion}." + (f"\nSummary: {summary[:400]}" if summary else "")
+        if conclusion == "failure":
+            detail += (
+                "\nCI failed — call send_followup with concrete instructions to fix the failure."
+            )
+        elif conclusion == "success":
+            detail += "\nCI passed — if all required checks have completed, you can finalize_task."
+    elif event_type == "status":
+        state = payload.get("state")
+        context = payload.get("context") or "status"
+        description = payload.get("description") or ""
+        detail = f"{context}: {state}.{(' ' + description) if description else ''}"
+
+    return f"{header}{sender_line}\n{detail}".strip() if detail else f"{header}{sender_line}"
 
 
 @router.post("/webhooks/github/{guild_id}")
@@ -143,7 +278,9 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         sender = payload.get("sender") or {}
         sender_login = sender.get("login") if isinstance(sender, dict) else None
 
-        task_id = await _find_task_id(db, guild_id, repo, pr_number)
+        task_row = await _find_task(db, guild_id, repo, pr_number)
+        task_id = task_row.id if task_row else None
+        task_user_id = task_row.user_id if task_row else None
 
         # Trim the persisted payload so a runaway diff hunk can't balloon the DB.
         body_text = body.decode("utf-8", errors="replace")
@@ -215,4 +352,26 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
             "sender": sender_login,
         },
     )
+
+    dispatch, skip_reason = _should_dispatch_to_foreman(
+        event_type, action, payload, sender_login, task_id
+    )
+    if dispatch:
+        summary = _build_foreman_summary(
+            event_type, action, payload, repo, pr_number, task_id, sender_login
+        )
+        spawn(
+            run_foreman_ai(guild_id, summary, user_id=task_user_id),
+            name=f"foreman.github-event:{delivery_id}",
+        )
+        reset_foreman_poll(guild_id)
+    else:
+        logger.info(
+            "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",
+            guild_id,
+            delivery_id,
+            event_type,
+            skip_reason,
+        )
+
     return Response(status_code=202)

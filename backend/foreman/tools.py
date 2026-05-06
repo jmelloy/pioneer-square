@@ -365,6 +365,24 @@ FOREMAN_TOOLS = [
         },
     },
     {
+        "name": "get_pr_status",
+        "description": (
+            "Fetch the live status of a single pull request: merged/closed/open state, "
+            "submitted reviews, and the latest check-run conclusions for the head SHA. "
+            "Use this to interpret a `[github-event]` message that doesn't carry enough "
+            "context, or when deciding whether all required checks have completed before "
+            "finalizing a task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo"},
+                "pr_number": {"type": "integer", "description": "Pull request number."},
+            },
+            "required": ["repo", "pr_number"],
+        },
+    },
+    {
         "name": "search_github_issues",
         "description": (
             "Search GitHub issues and PRs by keyword within a repo. "
@@ -897,6 +915,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             "claim_github_issue",
             "create_github_issue",
             "search_github_issues",
+            "get_pr_status",
         ):
             creds = await _guild_github_token(guild_id)
             if not creds:
@@ -999,6 +1018,56 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 "number": issue["number"],
                                 "url": issue["html_url"],
                                 "title": issue["title"],
+                            }
+                        )
+
+                    elif tu.name == "get_pr_status":
+                        repo = inp["repo"]
+                        num = int(inp["pr_number"])
+                        pr = await asyncio.to_thread(_gh_api, f"/repos/{repo}/pulls/{num}", token)
+                        reviews_raw = await asyncio.to_thread(
+                            _gh_api,
+                            f"/repos/{repo}/pulls/{num}/reviews?per_page=20",
+                            token,
+                        )
+                        head_sha = (pr.get("head") or {}).get("sha")
+                        check_runs: list = []
+                        if head_sha:
+                            crs = await asyncio.to_thread(
+                                _gh_api,
+                                f"/repos/{repo}/commits/{head_sha}/check-runs?per_page=30",
+                                token,
+                            )
+                            if isinstance(crs, dict):
+                                check_runs = crs.get("check_runs", []) or []
+                        result_text = json.dumps(
+                            {
+                                "number": pr["number"],
+                                "state": pr["state"],
+                                "merged": pr.get("merged", False),
+                                "mergeable": pr.get("mergeable"),
+                                "draft": pr.get("draft", False),
+                                "head_sha": head_sha,
+                                "reviews": [
+                                    {
+                                        "user": (r.get("user") or {}).get("login"),
+                                        "state": r.get("state"),
+                                        "body": (r.get("body") or "")[:300],
+                                        "submitted_at": r.get("submitted_at"),
+                                    }
+                                    for r in reviews_raw
+                                ],
+                                "checks": [
+                                    {
+                                        "name": cr.get("name"),
+                                        "status": cr.get("status"),
+                                        "conclusion": cr.get("conclusion"),
+                                        "summary": ((cr.get("output") or {}).get("summary") or "")[
+                                            :300
+                                        ],
+                                    }
+                                    for cr in check_runs
+                                ],
                             }
                         )
 
