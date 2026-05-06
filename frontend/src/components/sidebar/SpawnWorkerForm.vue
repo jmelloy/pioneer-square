@@ -6,20 +6,35 @@
       No repos found — configure GitHub first.
     </div>
     <div v-else class="spawn-repo-list">
-      <label
-        v-for="repo in ghStore.repos"
-        :key="repo.full_name"
-        class="spawn-repo-row"
-        :class="{ selected: selectedRepos.includes(repo.full_name) }"
-      >
-        <input
-          type="checkbox"
-          :checked="selectedRepos.includes(repo.full_name)"
-          @change="toggleRepo(repo.full_name)"
-          class="spawn-repo-check"
-        />
-        <span class="spawn-repo-name">{{ repo.full_name }}</span>
-      </label>
+      <template v-for="group in groupedRepos" :key="group.owner">
+        <label
+          class="spawn-repo-row spawn-org-row"
+          :class="{ selected: orgAllSelected(group.owner) }"
+        >
+          <input
+            type="checkbox"
+            :ref="(el) => setOrgCheckboxRef(el as HTMLInputElement | null, group.owner)"
+            :checked="orgAllSelected(group.owner)"
+            @change="toggleOrg(group.owner)"
+            class="spawn-repo-check"
+          />
+          <span class="spawn-repo-name spawn-org-name">{{ group.owner }}</span>
+        </label>
+        <label
+          v-for="repo in group.repos"
+          :key="repo.full_name"
+          class="spawn-repo-row spawn-repo-indent"
+          :class="{ selected: selectedRepos.includes(repo.full_name) }"
+        >
+          <input
+            type="checkbox"
+            :checked="selectedRepos.includes(repo.full_name)"
+            @change="toggleRepo(repo.full_name)"
+            class="spawn-repo-check"
+          />
+          <span class="spawn-repo-name">{{ repo.full_name.split('/')[1] }}</span>
+        </label>
+      </template>
     </div>
     <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
     <input v-model="name" class="spawn-input" type="text" placeholder="auto-generated" />
@@ -37,10 +52,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useGitHubStore } from '../../stores/github'
 import { api } from '../../utils/api'
+import { groupAndSortRepos } from '../../utils/repoGroups'
 
 const emit = defineEmits<{ (e: 'launched'): void }>()
 
@@ -52,6 +68,8 @@ const name = ref('')
 const spawning = ref(false)
 const error = ref('')
 const loadingRepos = ref(false)
+
+const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
 
 onMounted(async () => {
   selectedRepos.value = [...ghStore.selectedRepos]
@@ -68,6 +86,36 @@ function toggleRepo(fullName: string) {
     selectedRepos.value.splice(idx, 1)
   } else {
     selectedRepos.value.push(fullName)
+  }
+}
+
+function orgAllSelected(owner: string): boolean {
+  const repos = groupedRepos.value.find(g => g.owner === owner)?.repos ?? []
+  return repos.length > 0 && repos.every(r => selectedRepos.value.includes(r.full_name))
+}
+
+function orgSomeSelected(owner: string): boolean {
+  const repos = groupedRepos.value.find(g => g.owner === owner)?.repos ?? []
+  return repos.some(r => selectedRepos.value.includes(r.full_name))
+}
+
+function toggleOrg(owner: string) {
+  const repos = groupedRepos.value.find(g => g.owner === owner)?.repos ?? []
+  if (orgAllSelected(owner)) {
+    const names = new Set(repos.map(r => r.full_name))
+    selectedRepos.value = selectedRepos.value.filter(n => !names.has(n))
+  } else {
+    for (const repo of repos) {
+      if (!selectedRepos.value.includes(repo.full_name)) {
+        selectedRepos.value.push(repo.full_name)
+      }
+    }
+  }
+}
+
+function setOrgCheckboxRef(el: HTMLInputElement | null, owner: string) {
+  if (el) {
+    el.indeterminate = orgSomeSelected(owner) && !orgAllSelected(owner)
   }
 }
 
@@ -193,6 +241,26 @@ async function launch() {
 .spawn-repo-row.selected {
   background: rgba(232, 170, 0, 0.08);
   border-color: var(--color-brass-dark);
+}
+
+.spawn-org-row {
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-brass-dark);
+}
+
+.spawn-org-row.selected {
+  background: rgba(232, 170, 0, 0.12);
+}
+
+.spawn-org-name {
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  color: var(--color-teal);
+  letter-spacing: 0.5px;
+}
+
+.spawn-repo-indent {
+  padding-left: 22px;
 }
 
 .spawn-repo-check {
