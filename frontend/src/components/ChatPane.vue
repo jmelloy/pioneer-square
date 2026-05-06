@@ -13,27 +13,7 @@
     </div>
 
     <div v-if="!minimized" class="chat-body">
-      <div class="tab-bar">
-        <button
-          class="tab-btn"
-          :class="{ active: activeTab === 'chat' }"
-          @click.stop="activeTab = 'chat'"
-        >
-          Chat
-        </button>
-        <button
-          v-if="ghStore.isConfigured"
-          class="tab-btn"
-          :class="{ active: activeTab === 'issues' }"
-          @click.stop="activeTab = 'issues'"
-        >
-          Issues
-          <span v-if="ghStore.issues.length" class="badge">{{ ghStore.issues.length }}</span>
-        </button>
-      </div>
-
-      <ChatTab v-show="activeTab === 'chat'" ref="chatTabRef" />
-      <IssuesTab v-if="activeTab === 'issues'" @select-issue="onSelectIssue" />
+      <ChatTab ref="chatTabRef" />
     </div>
   </div>
 
@@ -44,19 +24,15 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
-import { useGitHubStore } from '../stores/github'
 import { api } from '../utils/api'
 import type { GitHubIssue, WSInbound } from '../types'
 import ChatTab from './chat-pane/ChatTab.vue'
-import IssuesTab from './chat-pane/IssuesTab.vue'
 import ClaudeAuthModal from './chat-pane/ClaudeAuthModal.vue'
 
 const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
-const ghStore = useGitHubStore()
 
 const minimized = ref(false)
-const activeTab = ref<'chat' | 'issues'>('chat')
 const chatTabRef = ref<InstanceType<typeof ChatTab> | null>(null)
 const claudeAuthPending = ref<{ workerId: string; url: string } | null>(null)
 
@@ -81,12 +57,13 @@ function toggleMinimize() {
   minimized.value = !minimized.value
 }
 
-function onSelectIssue(issue: GitHubIssue) {
+function selectIssue(issue: GitHubIssue) {
   const msg = `Work on issue #${issue.number} in ${issue.repo}: "${issue.title}"`
-  activeTab.value = 'chat'
   chatTabRef.value?.setInput(msg)
   chatTabRef.value?.focusInput()
 }
+
+defineExpose({ selectIssue })
 
 function onSubmitAuth({ workerId, code }: { workerId: string; code: string }) {
   const sent = guildStore.sendMessage({
@@ -280,55 +257,6 @@ onUnmounted(() => {
   min-height: 0;
 }
 
-.tab-bar {
-  display: flex;
-  border-bottom: 2px solid var(--color-brass-dark);
-  flex-shrink: 0;
-}
-
-.tab-btn {
-  flex: 1;
-  background: var(--color-bg-tertiary);
-  border: none;
-  border-right: 1px solid var(--color-brass-dark);
-  color: var(--color-text-dim);
-  font-family: var(--font-pixel);
-  font-size: 6px;
-  letter-spacing: 1px;
-  padding: 7px 10px;
-  cursor: pointer;
-  transition: all 0.15s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-}
-
-.tab-btn:last-child {
-  border-right: none;
-}
-
-.tab-btn:hover {
-  background: rgba(232, 170, 0, 0.08);
-  color: var(--color-text);
-}
-
-.tab-btn.active {
-  background: var(--color-bg-secondary);
-  color: var(--color-brass-light);
-  border-bottom: 2px solid var(--color-brass);
-  margin-bottom: -2px;
-}
-
-.badge {
-  background: var(--color-teal);
-  color: var(--color-bg);
-  border-radius: 2px;
-  font-size: 6px;
-  padding: 1px 4px;
-  min-width: 14px;
-  text-align: center;
-}
 
 @media (max-width: 1024px) {
   .chat-pane {

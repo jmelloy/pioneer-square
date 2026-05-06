@@ -1,12 +1,40 @@
 <template>
   <aside class="sidebar panel-bg">
-    <div class="sidebar-header">
-      <span class="sidebar-title">Tasks</span>
+    <div class="tab-bar">
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'tasks' }"
+        @click="activeTab = 'tasks'"
+      >
+        <span class="tab-label">Tasks</span>
+      </button>
+      <button
+        class="tab-btn"
+        :class="{ active: activeTab === 'workers' }"
+        @click="activeTab = 'workers'"
+      >
+        <span class="tab-label">Workers</span>
+        <span v-if="workerCount" class="tab-count">{{ workerCount }}</span>
+      </button>
+      <button
+        v-if="ghStore.isConfigured"
+        class="tab-btn"
+        :class="{ active: activeTab === 'issues' }"
+        @click="activeTab = 'issues'"
+      >
+        <span class="tab-label">Issues</span>
+        <span v-if="ghStore.issues.length" class="tab-count">{{ ghStore.issues.length }}</span>
+      </button>
     </div>
 
-    <TaskList @open-task="onOpenTask" />
-
-    <WorkerList />
+    <div class="tab-content">
+      <TaskList v-if="activeTab === 'tasks'" @open-task="onOpenTask" />
+      <WorkerList v-if="activeTab === 'workers'" />
+      <IssuesTab
+        v-if="activeTab === 'issues' && ghStore.isConfigured"
+        @select-issue="onSelectIssue"
+      />
+    </div>
 
     <div class="sidebar-footer">
       <div class="connection-status" :class="{ connected: isConnected }">
@@ -18,20 +46,27 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useTasksStore } from '../stores/tasks'
+import { useAgentsStore } from '../stores/agents'
 import TaskList from './sidebar/TaskList.vue'
 import WorkerList from './sidebar/WorkerList.vue'
+import IssuesTab from './chat-pane/IssuesTab.vue'
+import type { GitHubIssue } from '../types'
 
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 const tasksStore = useTasksStore()
+const agentsStore = useAgentsStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
+const selectIssue = inject<(issue: GitHubIssue) => void>('selectIssue', () => {})
 
 const isConnected = computed(() => guildStore.isConnected)
+const workerCount = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline').length)
+const activeTab = ref<'tasks' | 'workers' | 'issues'>('tasks')
 
 onMounted(async () => {
   if (ghStore.repos.length === 0 && ghStore.token) {
@@ -42,6 +77,11 @@ onMounted(async () => {
 function onOpenTask(taskId: string) {
   tasksStore.selectTask(taskId)
   switchMobileTab('work')
+}
+
+function onSelectIssue(issue: GitHubIssue) {
+  switchMobileTab('chat')
+  selectIssue(issue)
 }
 </script>
 
@@ -54,23 +94,78 @@ function onOpenTask(taskId: string) {
   overflow: hidden;
 }
 
-.sidebar-header {
-  padding: 12px 10px;
-  border-bottom: 2px solid var(--color-brass-dark);
+.tab-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  border-bottom: 2px solid var(--color-brass-dark);
   background: var(--color-bg-tertiary);
   flex-shrink: 0;
 }
 
-.sidebar-title {
-  font-family: var(--font-pixel);
-  font-size: 7px;
+.tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 8px 4px 7px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  cursor: pointer;
+  color: var(--color-text-dim);
+  transition:
+    color 0.12s,
+    background 0.12s;
+}
+
+.tab-btn:hover {
+  color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.06);
+}
+
+.tab-btn.active {
   color: var(--color-brass-light);
-  letter-spacing: 2px;
+  border-bottom-color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.08);
+}
+
+.tab-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 1.5px;
   text-transform: uppercase;
-  text-shadow: 0 0 6px rgba(255, 214, 68, 0.4);
+}
+
+.tab-count {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  background: var(--color-bg);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.tab-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* WorkerList: remove its top border and let it fill the tab */
+.tab-content :deep(.workers-section) {
+  border-top: none;
+  flex: 1;
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* IssuesTab list: fill remaining space, no fixed height constraints */
+.tab-content :deep(.issues-list) {
+  min-height: 0;
+  max-height: none;
+  flex: 1;
 }
 
 .sidebar-footer {
