@@ -27,7 +27,7 @@ from models import (
     User,
     UserSession,
 )
-from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, make_authorize_url
+from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
@@ -45,13 +45,17 @@ class ClaudeCredentialsRequest(BaseModel):
 
 
 @router.get("/auth/github/login")
-async def github_login():
-    """Start the GitHub OAuth flow. Returns the authorization URL."""
+async def github_login(return_to: str | None = Query(None)):
+    """Start the GitHub OAuth flow. Returns the authorization URL.
+
+    ``return_to`` is an optional origin URL (e.g. a guild subdomain) to redirect
+    back to after the OAuth callback, instead of the default FRONTEND_URL.
+    """
     if not GITHUB_CLIENT_ID:
         raise HTTPException(
             status_code=500, detail="GitHub OAuth not configured (missing GITHUB_CLIENT_ID)"
         )
-    return {"url": make_authorize_url()}
+    return {"url": make_authorize_url(return_to)}
 
 
 @router.post("/auth/github/exchange")
@@ -63,9 +67,11 @@ async def github_exchange(body: CodeExchangeRequest):
 @router.get("/auth/github/callback")
 async def github_callback(code: str = Query(...), state: str = Query(...)):
     """Legacy backend OAuth callback — redirects to the frontend with session params in the query string."""
+    return_to = get_return_to(state)  # peek before create_session pops the state
     payload = await create_session(code, state)
     qs = urllib.parse.urlencode(payload)
-    return RedirectResponse(url=f"{FRONTEND_URL}/?{qs}")
+    base = (return_to or FRONTEND_URL).rstrip("/")
+    return RedirectResponse(url=f"{base}/?{qs}")
 
 
 @router.get("/auth/github/token")

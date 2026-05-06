@@ -33,6 +33,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, watch, ref, provide } from 'vue'
 import { useRouter } from 'vue-router'
+import { getRootOrigin } from '../router'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
 import { useAuthStore } from '../stores/auth'
@@ -75,7 +76,14 @@ function getClientId() {
 
 async function initGuild(guildId: string) {
   if (!authStore.isLoggedIn) {
-    router.replace('/')
+    // On a subdomain, redirect to the root domain bridge so it can pass
+    // the session token back via ?login_token= query param.
+    const rootOrigin = getRootOrigin()
+    if (rootOrigin) {
+      window.location.href = `${rootOrigin}/?to=${encodeURIComponent(window.location.origin)}`
+    } else {
+      router.replace('/')
+    }
     return
   }
   if (!guildId) {
@@ -131,6 +139,17 @@ async function initGuild(guildId: string) {
     if (reposToFetch || ghStore.selectedRepos.length > 0) {
       ghStore.fetchIssues(reposToFetch)
     }
+  }
+}
+
+// Restore session from OAuth callback params synchronously — must happen before
+// the immediate watch below so initGuild's isLoggedIn check sees the token.
+{
+  const _p = new URLSearchParams(window.location.search)
+  if (_p.has('login_token')) {
+    authStore.restoreFromCallback(_p)
+    ghStore.restoreGitHubToken(_p)
+    window.history.replaceState({}, '', window.location.pathname)
   }
 }
 
