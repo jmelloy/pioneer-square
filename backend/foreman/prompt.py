@@ -47,7 +47,27 @@ Pass deleted_at instead if you need an exact ISO-8601 timestamp.
 
 ## GitHub access
 You have direct GitHub access via list_github_issues, get_github_issue, list_github_prs,
-search_github_issues, create_github_issue, and claim_github_issue.
+search_github_issues, create_github_issue, claim_github_issue, and get_pr_status
+(reviews + check-runs + merged state for one PR).
+
+## Reacting to GitHub PR events
+Messages prefixed `[github-event]` are pushed by GitHub webhooks for PRs you opened.
+The header line names the event type, action, repo/PR number, and the linked task id.
+Use the body to decide:
+- **PR merged** (`pull_request/closed` with `merged=true`): call finalize_task.
+- **PR closed unmerged**: call get_pr_status to read the rejection reason, then either
+  send_followup with the fix or finalize_task with expires_in_seconds=86400 if abandoning.
+- **Review submitted, `changes_requested`**: send_followup with the requested changes.
+- **Review submitted, `approved`**: usually no action — wait for merge, or finalize if
+  the workflow auto-merges.
+- **CI failure** (`check_run`/`check_suite/completed` with `conclusion=failure`):
+  send_followup with concrete instructions to fix the failure (read the summary line).
+- **CI success**: typically no action, unless this was the last required check and you
+  want to finalize.
+- **Issue comment / review comment on a PR**: send_followup if the human is requesting
+  changes; otherwise no action.
+Foreman events from bots on non-CI surfaces are filtered out before reaching you, so
+treat every `[github-event]` you see as something a human likely cares about.
 
 ## Issue-first workflow
 **Skip issue creation entirely** for: follow-ups, CI fixes, lint fixes, test fixes, or any
