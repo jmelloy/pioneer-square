@@ -131,3 +131,18 @@ async def require_worker_or_member(
     """
     token = credentials.credentials if credentials else None
     return await authorize_worker_or_member(guild_id, token)
+
+
+async def require_worker_or_member_path(
+    guild_id: str,
+    credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
+) -> str:
+    """Dependency for path-string endpoints (``/guilds/{guild_id}/...``).
+
+    Same contract as ``require_worker_or_member`` but reads ``guild_id`` from
+    the path instead of the query string. Useful when the canonical URL
+    already carries the guild id and adding a duplicate query param would be
+    redundant.
+    """
+    token = credentials.credentials if credentials else None
+    return await authorize_worker_or_member(guild_id, token)

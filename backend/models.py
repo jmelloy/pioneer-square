@@ -28,6 +28,10 @@ class Guild(Base):
     name = Column(Text)
     github_user_id = Column(Text)
     primary_repo = Column(Text, nullable=True)
+    # HMAC-SHA256 shared secret used to verify GitHub webhook deliveries for
+    # this guild. NULL until an owner first requests one via the
+    # webhook-secret endpoint.
+    webhook_secret = Column(Text, nullable=True)
 
 
 class Agent(Base):
@@ -95,6 +99,11 @@ class Task(Base):
     branch = Column(Text)
     worktree_path = Column(Text)
     pr_url = Column(Text)
+    # Explicit PR coordinates extracted from pr_url at PR-creation time, so
+    # github webhook events can be linked back to the task without fragile
+    # URL substring matching. Both NULL until the worker reports a PR.
+    pr_number = Column(Integer, nullable=True)
+    pr_repo = Column(Text, nullable=True)
     created_at = Column(Text, nullable=False)
     finished_at = Column(Text)
     name = Column(Text)
@@ -188,4 +197,24 @@ class ForemanTurn(Base):
     is_tool_response = Column(Integer, nullable=False, server_default="0")
     # For tool_result turns: id of the assistant turn whose tool_use blocks this answers
     parent_id = Column(Integer, ForeignKey("foreman_turns.id"), nullable=True)
+    created_at = Column(Text, nullable=False)
+
+
+class GithubEvent(Base):
+    __tablename__ = "github_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False)
+    # task_id is nullable because an event may arrive before we've linked the
+    # PR to a task (e.g. webhook fires for a manually-opened PR).
+    task_id = Column(Text, ForeignKey("tasks.id"), nullable=True)
+    # X-GitHub-Delivery header value; UNIQUE so GitHub redelivery is a no-op.
+    delivery_id = Column(Text, nullable=False, unique=True)
+    event_type = Column(Text, nullable=False)
+    action = Column(Text, nullable=True)
+    repo = Column(Text, nullable=False)  # owner/repo
+    pr_number = Column(Integer, nullable=True)
+    pr_url = Column(Text, nullable=True)
+    sender_login = Column(Text, nullable=True)
+    payload_json = Column(Text, nullable=False)
     created_at = Column(Text, nullable=False)

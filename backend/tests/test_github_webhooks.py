@@ -1,0 +1,373 @@
+"""Tests for the GitHub webhook receiver and webhook-secret endpoints."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import sqlite3
+import sys
+from datetime import UTC, datetime
+
+sys.path.insert(0, os.path.dirname(__file__))
+from helpers import insert_guild, make_auth_token
+
+
+def _set_webhook_secret(db_path: str, guild_id: str, secret: str) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE guilds SET webhook_secret = ? WHERE id = ?",
+            (secret, guild_id),
+        )
+        conn.commit()
+
+
+def _insert_task(
+    db_path: str,
+    *,
+    task_id: str,
+    guild_id: str,
+    pr_url: str | None = None,
+    pr_number: int | None = None,
+    pr_repo: str | None = None,
+) -> None:
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        # Workers FK is NOT NULL; insert a placeholder worker row first.
+        conn.execute(
+            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (f"w-{task_id}", guild_id, "[]", "online", now),
+        )
+        conn.execute(
+            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, "
+            "pr_url, pr_number, pr_repo, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                task_id,
+                f"w-{task_id}",
+                guild_id,
+                "test task",
+                "claude",
+                "awaiting-review",
+                pr_url,
+                pr_number,
+                pr_repo,
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def _signed_headers(secret: str, body: bytes, *, event: str, delivery: str) -> dict[str, str]:
+    sig = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return {
+        "X-GitHub-Event": event,
+        "X-GitHub-Delivery": delivery,
+        "X-Hub-Signature-256": f"sha256={sig}",
+        "Content-Type": "application/json",
+    }
+
+
+def _pr_payload(*, action: str, repo: str, number: int) -> dict:
+    return {
+        "action": action,
+        "repository": {"full_name": repo},
+        "pull_request": {
+            "number": number,
+            "html_url": f"https://github.com/{repo}/pull/{number}",
+        },
+        "sender": {"login": "octocat"},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Webhook receiver
+# ---------------------------------------------------------------------------
+
+
+def test_webhook_rejects_unknown_guild(client):
+    test_client, _ = client
+    body = json.dumps({}).encode()
+    resp = test_client.post(
+        "/webhooks/github/nosuch",
+        content=body,
+        headers={
+            "X-GitHub-Event": "ping",
+            "X-GitHub-Delivery": "abc",
+            "X-Hub-Signature-256": "sha256=00",
+            "Content-Type": "application/json",
+        },
+    )
+    assert resp.status_code == 404
+
+
+def test_webhook_rejects_guild_without_secret(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g1")
+    body = json.dumps({}).encode()
+    resp = test_client.post(
+        "/webhooks/github/g1",
+        content=body,
+        headers={
+            "X-GitHub-Event": "ping",
+            "X-GitHub-Delivery": "abc",
+            "X-Hub-Signature-256": "sha256=00",
+            "Content-Type": "application/json",
+        },
+    )
+    # Webhook secret never generated for this guild
+    assert resp.status_code == 404
+
+
+def test_webhook_rejects_bad_signature(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g2")
+    _set_webhook_secret(db_path, "g2", "topsecret")
+    body = json.dumps({"action": "opened"}).encode()
+    resp = test_client.post(
+        "/webhooks/github/g2",
+        content=body,
+        headers={
+            "X-GitHub-Event": "pull_request",
+            "X-GitHub-Delivery": "d-1",
+            "X-Hub-Signature-256": "sha256=" + "0" * 64,
+            "Content-Type": "application/json",
+        },
+    )
+    assert resp.status_code == 401
+
+
+def test_webhook_rejects_missing_signature(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g3")
+    _set_webhook_secret(db_path, "g3", "topsecret")
+    body = json.dumps({"action": "opened"}).encode()
+    resp = test_client.post(
+        "/webhooks/github/g3",
+        content=body,
+        headers={
+            "X-GitHub-Event": "pull_request",
+            "X-GitHub-Delivery": "d-1",
+            "Content-Type": "application/json",
+        },
+    )
+    assert resp.status_code == 401
+
+
+def test_webhook_accepts_ping(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g4")
+    secret = "topsecret"
+    _set_webhook_secret(db_path, "g4", secret)
+    body = json.dumps({"zen": "Mind your words"}).encode()
+    headers = _signed_headers(secret, body, event="ping", delivery="d-ping")
+    resp = test_client.post("/webhooks/github/g4", content=body, headers=headers)
+    assert resp.status_code == 204
+    # Ping deliveries are not persisted
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM github_events").fetchone()
+    assert rows[0] == 0
+
+
+def test_webhook_persists_event_and_links_task(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g5")
+    _set_webhook_secret(db_path, "g5", "s5")
+    _insert_task(
+        db_path,
+        task_id="t-1",
+        guild_id="g5",
+        pr_url="https://github.com/owner/repo/pull/42",
+        pr_number=42,
+        pr_repo="owner/repo",
+    )
+    payload = _pr_payload(action="opened", repo="owner/repo", number=42)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("s5", body, event="pull_request", delivery="d-evt-1")
+    resp = test_client.post("/webhooks/github/g5", content=body, headers=headers)
+    assert resp.status_code == 202
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT guild_id, task_id, delivery_id, event_type, action, repo, "
+            "pr_number, pr_url, sender_login FROM github_events"
+        ).fetchone()
+    assert row == (
+        "g5",
+        "t-1",
+        "d-evt-1",
+        "pull_request",
+        "opened",
+        "owner/repo",
+        42,
+        "https://github.com/owner/repo/pull/42",
+        "octocat",
+    )
+
+
+def test_webhook_event_without_matching_task(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g6")
+    _set_webhook_secret(db_path, "g6", "s6")
+    payload = _pr_payload(action="opened", repo="owner/repo", number=7)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("s6", body, event="pull_request", delivery="d-evt-2")
+    resp = test_client.post("/webhooks/github/g6", content=body, headers=headers)
+    assert resp.status_code == 202
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT task_id, pr_number FROM github_events").fetchone()
+    assert row == (None, 7)
+
+
+def test_webhook_dedupes_redelivery(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g7")
+    _set_webhook_secret(db_path, "g7", "s7")
+    payload = _pr_payload(action="opened", repo="owner/repo", number=1)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("s7", body, event="pull_request", delivery="dup-1")
+    r1 = test_client.post("/webhooks/github/g7", content=body, headers=headers)
+    r2 = test_client.post("/webhooks/github/g7", content=body, headers=headers)
+    assert r1.status_code == 202
+    assert r2.status_code == 202
+    with sqlite3.connect(db_path) as conn:
+        n = conn.execute("SELECT COUNT(*) FROM github_events").fetchone()[0]
+    assert n == 1
+
+
+def test_webhook_check_run_extracts_pr_from_pull_requests_array(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g8")
+    _set_webhook_secret(db_path, "g8", "s8")
+    _insert_task(
+        db_path,
+        task_id="t-2",
+        guild_id="g8",
+        pr_url="https://github.com/o/r/pull/9",
+        pr_number=9,
+        pr_repo="o/r",
+    )
+    payload = {
+        "action": "completed",
+        "repository": {"full_name": "o/r"},
+        "check_run": {
+            "name": "rspec",
+            "conclusion": "failure",
+            "pull_requests": [{"number": 9, "html_url": "https://github.com/o/r/pull/9"}],
+        },
+        "sender": {"login": "ci-bot[bot]"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("s8", body, event="check_run", delivery="cr-1")
+    resp = test_client.post("/webhooks/github/g8", content=body, headers=headers)
+    assert resp.status_code == 202
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT task_id, event_type, action, pr_number FROM github_events"
+        ).fetchone()
+    assert row == ("t-2", "check_run", "completed", 9)
+
+
+def test_webhook_rejects_invalid_json(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g9")
+    _set_webhook_secret(db_path, "g9", "s9")
+    body = b"not-json"
+    headers = _signed_headers("s9", body, event="pull_request", delivery="bad-1")
+    resp = test_client.post("/webhooks/github/g9", content=body, headers=headers)
+    assert resp.status_code == 400
+
+
+def test_webhook_missing_github_headers(client):
+    test_client, db_path = client
+    insert_guild(db_path, "g10")
+    _set_webhook_secret(db_path, "g10", "s10")
+    body = json.dumps({}).encode()
+    resp = test_client.post(
+        "/webhooks/github/g10",
+        content=body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Webhook-secret REST endpoints
+# ---------------------------------------------------------------------------
+
+
+def test_get_webhook_secret_requires_auth(client):
+    test_client, db_path = client
+    insert_guild(db_path, "gs1")
+    resp = test_client.get("/guilds/gs1/webhook-secret")
+    assert resp.status_code == 401
+
+
+def test_get_webhook_secret_generates_on_first_access(client):
+    test_client, db_path = client
+    insert_guild(db_path, "gs2")
+    token = make_auth_token(db_path)
+    resp = test_client.get(
+        "/guilds/gs2/webhook-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    secret = resp.json()["webhook_secret"]
+    assert secret and len(secret) == 64  # 32 bytes hex
+
+    # Same secret on second access (no rotation)
+    resp2 = test_client.get(
+        "/guilds/gs2/webhook-secret",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp2.json()["webhook_secret"] == secret
+
+
+def test_rotate_webhook_secret_owner_only(client):
+    test_client, db_path = client
+    insert_guild(db_path, "gs3")
+    other = make_auth_token(db_path, user_id="someone-else", username="other")
+    resp = test_client.post(
+        "/guilds/gs3/webhook-secret",
+        headers={"Authorization": f"Bearer {other}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_rotate_webhook_secret_changes_value(client):
+    test_client, db_path = client
+    insert_guild(db_path, "gs4")
+    token = make_auth_token(db_path)
+    headers = {"Authorization": f"Bearer {token}"}
+    first = test_client.get("/guilds/gs4/webhook-secret", headers=headers).json()["webhook_secret"]
+    rotated = test_client.post("/guilds/gs4/webhook-secret", headers=headers).json()[
+        "webhook_secret"
+    ]
+    assert rotated != first
+
+
+# ---------------------------------------------------------------------------
+# pr_url -> (number, repo) backfill
+# ---------------------------------------------------------------------------
+
+
+def test_parse_pr_url_web():
+    from ws_handlers import _parse_pr_url
+
+    assert _parse_pr_url("https://github.com/owner/repo/pull/42") == (42, "owner/repo")
+
+
+def test_parse_pr_url_api():
+    from ws_handlers import _parse_pr_url
+
+    assert _parse_pr_url("https://api.github.com/repos/o/r/pulls/9") == (9, "o/r")
+
+
+def test_parse_pr_url_handles_garbage():
+    from ws_handlers import _parse_pr_url
+
+    assert _parse_pr_url(None) == (None, None)
+    assert _parse_pr_url("") == (None, None)
+    assert _parse_pr_url("not-a-url") == (None, None)
+    assert _parse_pr_url("https://github.com/owner/repo/issues/1") == (None, None)
