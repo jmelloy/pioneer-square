@@ -19,6 +19,10 @@ class Config:
     backend_url: str
     guild_id: str
     repos: list[str] = field(default_factory=list)
+    # GitHub org name (e.g. "jmelloy"). When set, the worker is eligible for
+    # any task targeting <org>/* and will clone repos lazily on first use.
+    # Can be used alongside repos (static list) or instead of it.
+    org: str | None = None
     worker_id: str | None = None
     worker_name: str | None = None
     # Bearer token issued by the backend at registration; required for fetching
@@ -147,6 +151,10 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             or raw.get("repos")
             or _repos_from_env
         ),
+        org=overrides.get("org")
+        or github_block.get("org")
+        or os.environ.get("PIONEER_ORG")
+        or None,
         worker_name=overrides.get("worker_name")
         or raw.get("worker_name")
         or os.environ.get("PIONEER_WORKER_NAME"),

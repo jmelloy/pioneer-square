@@ -22,8 +22,12 @@ pull_interval = 300
 # max_agents = 4
 
 [github]
-# Repos this worker will clone and operate on.
+# Repos this worker will clone and operate on (static list).
 repos = ["owner/repo"]
+
+# Alternatively (or additionally), specify a GitHub org. When set, the worker
+# accepts tasks for any repo under that org and clones them lazily on first use.
+# org = "myorg"
 
 # GitHub token for cloning private repos and opening pull requests.
 # Use "env:VAR_NAME" to read from an environment variable instead of inlining.

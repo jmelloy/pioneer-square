@@ -429,7 +429,7 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
 
     result = await db.execute(
         text(
-            "SELECT w.id, w.repos, w.state as worker_state,"
+            "SELECT w.id, w.repos, w.org, w.state as worker_state,"
             " COUNT(a.id) as agent_count,"
             " GROUP_CONCAT(a.id || ':' || a.state) as agents"
             " FROM workers w"
@@ -437,7 +437,7 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
             " WHERE w.guild_id = :guild_id AND w.state = 'online'"
             " GROUP BY w.id"
             " UNION ALL"
-            " SELECT a.id, '[]', a.state, 1, a.id || ':' || a.state"
+            " SELECT a.id, '[]', NULL, a.state, 1, a.id || ':' || a.state"
             " FROM agents a"
             " WHERE a.guild_id = :guild_id AND a.type = 'worker'"
             " AND a.worker_id IS NULL AND a.state != 'offline'"
@@ -511,6 +511,7 @@ async def run_foreman_ai(
                 "id": r["id"],
                 "state": r["worker_state"] or "idle",
                 "repos": json.loads(r["repos"] or "[]"),
+                **({"org": r["org"]} if r.get("org") else {}),
                 "agent_count": r["agent_count"] or 0,
             }
             for r in worker_rows

@@ -72,6 +72,9 @@ class Worker(Base):
     id = Column(Text, primary_key=True)
     guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False)
     repos = Column(Text, nullable=False, server_default="[]")
+    # Optional GitHub org; when set the worker accepts any task targeting <org>/*
+    # and clones repos lazily. NULL for workers that use an explicit repos list only.
+    org = Column(Text, nullable=True)
     state = Column(Text, nullable=False, server_default="idle")
     created_at = Column(Text, nullable=False)
     last_seen = Column(Text, nullable=True)
