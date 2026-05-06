@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import os
 import random
 import re
 import string
@@ -424,8 +423,8 @@ FOREMAN_TOOLS = [
             "code-review-agent MCP server. The agent fetches the PR diff, runs a "
             "Claude-powered review, and posts the result as a GitHub PR review "
             "(APPROVE / REQUEST_CHANGES / COMMENT). "
-            "Requires REVIEWER_MCP_CMD (or REVIEWER_MCP_URL) and REVIEWER_AGENT_URL "
-            "to be set in the backend environment. "
+            "Uses the code-review-agent MCP server at https://agent.meyers.life by default "
+            "(override with REVIEWER_MCP_URL). "
             "Use this after a worker opens a PR to get an automated review before "
             "merging, or when a human asks for a code review."
         ),
@@ -1301,50 +1300,34 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         else:
                             pr_repo = pr_match.group(1)
                             pr_number = int(pr_match.group(2))
-                            mcp_cmd = os.environ.get("REVIEWER_MCP_CMD")
-                            mcp_url = os.environ.get("REVIEWER_MCP_URL")
-                            agent_url = os.environ.get("REVIEWER_AGENT_URL", "")
-                            if not mcp_cmd and not mcp_url:
-                                result_text = (
-                                    "Code review agent not configured. "
-                                    "Set REVIEWER_MCP_CMD or REVIEWER_MCP_URL in "
-                                    "the backend environment."
-                                )
-                                is_error = True
-                            elif not agent_url:
-                                result_text = (
-                                    "REVIEWER_AGENT_URL not set. Configure it to "
-                                    "point at the code-review-agent harness."
-                                )
-                                is_error = True
-                            else:
-                                from foreman.mcp_client import MCPClient
+                            agent_url = f"https://{guild_id}.pioneer-square.melloy.life"
+                            from foreman.mcp_client import MCPClient
 
-                                client = MCPClient()
-                                mcp_result = await client.call_tool(
-                                    "start_conversation",
-                                    {
-                                        "agent_url": agent_url,
-                                        "capability": "review_pr",
-                                        "initial_text": pr_url,
-                                    },
-                                )
-                                github_event, review_body = _extract_review_data(mcp_result)
-                                review_data = await asyncio.to_thread(
-                                    _gh_api_post,
-                                    f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
-                                    token,
-                                    {"body": review_body, "event": github_event},
-                                )
-                                result_text = json.dumps(
-                                    {
-                                        "pr_url": pr_url,
-                                        "verdict": github_event,
-                                        "review_id": review_data.get("id"),
-                                        "review_posted": True,
-                                        "summary": review_body[:400],
-                                    }
-                                )
+                            client = MCPClient()
+                            mcp_result = await client.call_tool(
+                                "start_conversation",
+                                {
+                                    "agent_url": agent_url,
+                                    "capability": "review_pr",
+                                    "initial_text": pr_url,
+                                },
+                            )
+                            github_event, review_body = _extract_review_data(mcp_result)
+                            review_data = await asyncio.to_thread(
+                                _gh_api_post,
+                                f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
+                                token,
+                                {"body": review_body, "event": github_event},
+                            )
+                            result_text = json.dumps(
+                                {
+                                    "pr_url": pr_url,
+                                    "verdict": github_event,
+                                    "review_id": review_data.get("id"),
+                                    "review_posted": True,
+                                    "summary": review_body[:400],
+                                }
+                            )
 
                 except urllib.error.HTTPError as exc:
                     result_text = f"GitHub API error: {exc.code} {exc.reason}"

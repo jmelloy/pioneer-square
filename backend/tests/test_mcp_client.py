@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from foreman.mcp_client import _MCP_PROTOCOL_VERSION, MCPClient, MCPError
+from foreman.mcp_client import _DEFAULT_MCP_URL, _MCP_PROTOCOL_VERSION, MCPClient, MCPError
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -73,17 +73,19 @@ def _init_response() -> bytes:
 
 
 class TestMCPClientInit:
-    def test_raises_without_cmd_or_url(self, monkeypatch):
+    def test_defaults_to_agent_meyers_life(self, monkeypatch):
         monkeypatch.delenv("REVIEWER_MCP_CMD", raising=False)
         monkeypatch.delenv("REVIEWER_MCP_URL", raising=False)
-        with pytest.raises(ValueError, match="REVIEWER_MCP_CMD"):
-            MCPClient()
+        client = MCPClient()
+        assert client._url == _DEFAULT_MCP_URL
+        assert client._cmd is None
 
     def test_uses_env_var_cmd(self, monkeypatch):
         monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
         monkeypatch.delenv("REVIEWER_MCP_URL", raising=False)
         client = MCPClient()
         assert client._cmd == "crv-mcp"
+        # cmd-only config: no URL default — uses stdio transport
         assert client._url is None
 
     def test_uses_env_var_url(self, monkeypatch):
@@ -97,6 +99,11 @@ class TestMCPClientInit:
         monkeypatch.setenv("REVIEWER_MCP_CMD", "from-env")
         client = MCPClient(cmd="explicit-cmd")
         assert client._cmd == "explicit-cmd"
+
+    def test_explicit_url_overrides_default(self, monkeypatch):
+        monkeypatch.delenv("REVIEWER_MCP_URL", raising=False)
+        client = MCPClient(url="http://private-instance:9000")
+        assert client._url == "http://private-instance:9000"
 
     def test_http_takes_precedence_when_both_set(self, monkeypatch):
         monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")

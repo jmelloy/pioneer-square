@@ -1,12 +1,12 @@
 """Lightweight async MCP client for the Foreman.
 
 Supports two transports:
+- **HTTP**: POSTs JSON-RPC 2.0 to an HTTP endpoint.
+  Configure via ``REVIEWER_MCP_URL`` env var (default: ``https://agent.meyers.life``).
 - **stdio**: launches a subprocess and speaks JSON-RPC 2.0 over stdin/stdout.
   Configure via ``REVIEWER_MCP_CMD`` env var (e.g. ``"crv-mcp"``).
-- **HTTP**: POSTs JSON-RPC 2.0 to an HTTP endpoint.
-  Configure via ``REVIEWER_MCP_URL`` env var.
 
-When both are set, HTTP takes precedence.
+HTTP takes precedence when both are configured.
 """
 
 import asyncio
@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 _JSONRPC_VERSION = "2.0"
 _MCP_PROTOCOL_VERSION = "2024-11-05"
 _DEFAULT_TIMEOUT_SECS = 180.0  # code-review-agent reviews can take ~2 min
+_DEFAULT_MCP_URL = "https://agent.meyers.life"
 
 
 class MCPError(Exception):
@@ -42,12 +43,10 @@ class MCPClient:
         timeout: float = _DEFAULT_TIMEOUT_SECS,
     ):
         self._cmd = cmd if cmd is not None else os.environ.get("REVIEWER_MCP_CMD")
-        self._url = url if url is not None else os.environ.get("REVIEWER_MCP_URL")
+        _explicit_url = url if url is not None else os.environ.get("REVIEWER_MCP_URL")
+        # Default to the shared MCP server only when no transport is explicitly configured.
+        self._url = _explicit_url if _explicit_url else (None if self._cmd else _DEFAULT_MCP_URL)
         self._timeout = timeout
-        if not self._cmd and not self._url:
-            raise ValueError(
-                "MCPClient requires REVIEWER_MCP_CMD (stdio) or REVIEWER_MCP_URL (HTTP)."
-            )
 
     async def list_tools(self) -> list[dict]:
         """Return the tools exposed by the MCP server."""

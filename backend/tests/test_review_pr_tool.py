@@ -80,10 +80,8 @@ def _mock_mcp_result(
 
 class TestReviewPrValidation:
     @pytest.mark.asyncio
-    async def test_invalid_pr_url_returns_error(self, db_session, monkeypatch):
+    async def test_invalid_pr_url_returns_error(self, db_session):
         insert_guild(db_session, "g-rev-badurl")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
         with patch("foreman.tools._guild_github_token", return_value=("tok", "user")):
             results = await exec_tools(
                 "g-rev-badurl",
@@ -93,37 +91,8 @@ class TestReviewPrValidation:
         assert "Invalid GitHub PR URL" in results[0]["content"]
 
     @pytest.mark.asyncio
-    async def test_no_mcp_config_returns_error(self, db_session, monkeypatch):
-        insert_guild(db_session, "g-rev-nomcp")
-        monkeypatch.delenv("REVIEWER_MCP_CMD", raising=False)
-        monkeypatch.delenv("REVIEWER_MCP_URL", raising=False)
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
-        with patch("foreman.tools._guild_github_token", return_value=("tok", "user")):
-            results = await exec_tools(
-                "g-rev-nomcp",
-                [_fake_tu("review_pr", {"pr_url": "https://github.com/org/repo/pull/1"})],
-            )
-        assert results[0].get("is_error") is True
-        assert "not configured" in results[0]["content"].lower()
-
-    @pytest.mark.asyncio
-    async def test_no_agent_url_returns_error(self, db_session, monkeypatch):
-        insert_guild(db_session, "g-rev-noagent")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.delenv("REVIEWER_AGENT_URL", raising=False)
-        with patch("foreman.tools._guild_github_token", return_value=("tok", "user")):
-            results = await exec_tools(
-                "g-rev-noagent",
-                [_fake_tu("review_pr", {"pr_url": "https://github.com/org/repo/pull/1"})],
-            )
-        assert results[0].get("is_error") is True
-        assert "REVIEWER_AGENT_URL" in results[0]["content"]
-
-    @pytest.mark.asyncio
-    async def test_no_github_token_returns_error(self, db_session, monkeypatch):
+    async def test_no_github_token_returns_error(self, db_session):
         insert_guild(db_session, "g-rev-notoк")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
         with patch("foreman.tools._guild_github_token", return_value=None):
             results = await exec_tools(
                 "g-rev-notoк",
@@ -140,11 +109,9 @@ class TestReviewPrValidation:
 
 class TestReviewPrHappyPath:
     @pytest.mark.asyncio
-    async def test_approve_verdict_posts_approve_review(self, db_session, monkeypatch):
+    async def test_approve_verdict_posts_approve_review(self, db_session):
         """When the code-review-agent approves the PR, GitHub APPROVE is posted."""
         insert_guild(db_session, "g-rev-approve")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
 
         mcp_result = _mock_mcp_result(verdict="approved")
         mock_client = MagicMock()
@@ -176,11 +143,9 @@ class TestReviewPrHappyPath:
         assert gh_post_calls[0]["payload"]["event"] == "APPROVE"
 
     @pytest.mark.asyncio
-    async def test_changes_requested_posts_request_changes(self, db_session, monkeypatch):
+    async def test_changes_requested_posts_request_changes(self, db_session):
         """When the agent requests changes, GitHub REQUEST_CHANGES is posted."""
         insert_guild(db_session, "g-rev-changes")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
 
         mcp_result = _mock_mcp_result(verdict="changes-requested")
         mock_client = MagicMock()
@@ -202,11 +167,9 @@ class TestReviewPrHappyPath:
         assert parsed["verdict"] == "REQUEST_CHANGES"
 
     @pytest.mark.asyncio
-    async def test_no_structured_content_defaults_to_comment(self, db_session, monkeypatch):
+    async def test_no_structured_content_defaults_to_comment(self, db_session):
         """Without structuredContent, the tool falls back to COMMENT verdict."""
         insert_guild(db_session, "g-rev-nosc")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
 
         mcp_result = {"content": [{"type": "text", "text": "Some review text."}]}
         mock_client = MagicMock()
@@ -226,11 +189,9 @@ class TestReviewPrHappyPath:
         assert parsed["verdict"] == "COMMENT"
 
     @pytest.mark.asyncio
-    async def test_review_body_included_in_result(self, db_session, monkeypatch):
+    async def test_review_body_included_in_result(self, db_session):
         """The summary field in the result contains the beginning of the review text."""
         insert_guild(db_session, "g-rev-body")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
 
         review_text = "## Code Review\nEverything looks great!"
         mcp_result = _mock_mcp_result(review_text=review_text, verdict="approved")
@@ -251,11 +212,9 @@ class TestReviewPrHappyPath:
         assert "Code Review" in parsed["summary"]
 
     @pytest.mark.asyncio
-    async def test_mcp_call_passes_correct_arguments(self, db_session, monkeypatch):
-        """The foreman passes the PR URL and capability to the MCP start_conversation tool."""
+    async def test_mcp_call_passes_correct_arguments(self, db_session):
+        """The foreman passes the PR URL and per-guild agent URL to start_conversation."""
         insert_guild(db_session, "g-rev-args")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.myorg.com")
 
         mock_client = MagicMock()
         mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result())
@@ -273,7 +232,7 @@ class TestReviewPrHappyPath:
         mock_client.call_tool.assert_awaited_once_with(
             "start_conversation",
             {
-                "agent_url": "http://crv.myorg.com",
+                "agent_url": "https://g-rev-args.pioneer-square.melloy.life",
                 "capability": "review_pr",
                 "initial_text": "https://github.com/org/repo/pull/99",
             },
@@ -287,13 +246,11 @@ class TestReviewPrHappyPath:
 
 class TestReviewPrErrors:
     @pytest.mark.asyncio
-    async def test_mcp_error_propagates_as_tool_error(self, db_session, monkeypatch):
+    async def test_mcp_error_propagates_as_tool_error(self, db_session):
         """An MCPError from the review agent is surfaced as a tool error."""
         from foreman.mcp_client import MCPError
 
         insert_guild(db_session, "g-rev-mcperr")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
 
         mock_client = MagicMock()
         mock_client.call_tool = AsyncMock(side_effect=MCPError(-32000, "review failed"))
@@ -311,13 +268,11 @@ class TestReviewPrErrors:
         assert "review failed" in results[0]["content"] or "GitHub error" in results[0]["content"]
 
     @pytest.mark.asyncio
-    async def test_github_post_failure_surfaces_as_error(self, db_session, monkeypatch):
+    async def test_github_post_failure_surfaces_as_error(self, db_session):
         """If posting the review to GitHub fails, the tool returns an error."""
         import urllib.error
 
         insert_guild(db_session, "g-rev-gherr")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
 
         mock_client = MagicMock()
         mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result())
@@ -337,11 +292,9 @@ class TestReviewPrErrors:
         assert "422" in results[0]["content"] or "GitHub API error" in results[0]["content"]
 
     @pytest.mark.asyncio
-    async def test_result_has_correct_tool_use_id(self, db_session, monkeypatch):
+    async def test_result_has_correct_tool_use_id(self, db_session):
         """The tool_result block must echo back the original tool_use_id."""
         insert_guild(db_session, "g-rev-tid")
-        monkeypatch.setenv("REVIEWER_MCP_CMD", "crv-mcp")
-        monkeypatch.setenv("REVIEWER_AGENT_URL", "http://crv.example.com")
 
         mock_client = MagicMock()
         mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result())
