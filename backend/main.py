@@ -271,3 +271,8 @@ class _SPAStaticFiles(StaticFiles):
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 if _STATIC_DIR.is_dir():
     app.mount("/", _SPAStaticFiles(directory=_STATIC_DIR, html=True), name="spa")
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, access_log=True, log_level="info")
