@@ -4,7 +4,7 @@ Adds a ``guild_keys`` table to store per-guild EC P-256 key pairs used to
 serve guild-specific JWKS at /.well-known/jwks.json on subdomain requests.
 
 Revision ID: 20260506_000000_add_guild_keys
-Revises: f4a5b6c7d8e9
+Revises: e7f8a9b0c1d2
 Create Date: 2026-05-06 00:00:00.000000
 
 """
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260506_000000_add_guild_keys"
-down_revision: str | Sequence[str] | None = "f4a5b6c7d8e9"
+down_revision: str | Sequence[str] | None = "e7f8a9b0c1d2"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
