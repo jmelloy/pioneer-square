@@ -15,7 +15,7 @@ from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from utils import generate_guild_id, row_to_dict
@@ -56,36 +56,35 @@ async def create_guild(
     created_at = datetime.now(UTC).isoformat()
     db = await get_db()
     try:
-        for _ in range(5):
-            guild_id = generate_guild_id()
-            try:
-                db.add(
-                    Guild(
-                        id=guild_id,
-                        created_at=created_at,
-                        name=data.name or f"Guild {guild_id}",
-                        github_user_id=github_user_id,
-                    )
+        result = await db.execute(text("SELECT id FROM guilds"))
+        existing_ids = {row[0] for row in result.fetchall()}
+        guild_id = generate_guild_id(name=data.name or "", existing_ids=existing_ids)
+        guild_name = data.name or f"Guild {guild_id}"
+        try:
+            db.add(
+                Guild(
+                    id=guild_id,
+                    created_at=created_at,
+                    name=guild_name,
+                    github_user_id=github_user_id,
                 )
-                await db.flush()
-                db.add(
-                    GuildMember(
-                        guild_id=guild_id,
-                        user_id=github_user_id,
-                        role="owner",
-                        created_at=created_at,
-                    )
+            )
+            await db.flush()
+            db.add(
+                GuildMember(
+                    guild_id=guild_id,
+                    user_id=github_user_id,
+                    role="owner",
+                    created_at=created_at,
                 )
-                await db.commit()
-                break
-            except IntegrityError:
-                await db.rollback()
-                continue
-        else:
+            )
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
             raise HTTPException(status_code=500, detail="Could not generate unique guild ID")
     finally:
         await db.close()
-    return {"id": guild_id, "created_at": created_at, "name": data.name or f"Guild {guild_id}"}
+    return {"id": guild_id, "created_at": created_at, "name": guild_name}
 
 
 @router.get("/guilds")

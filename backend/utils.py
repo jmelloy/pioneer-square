@@ -9,7 +9,14 @@ from __future__ import annotations
 import base64
 import json
 import random
+import re
 import string
+import unicodedata
+
+_VOWELS = frozenset("aeiou")
+_MIN_LEN = 5
+_TARGET_LEN = 8
+_SUFFIX_LEN = 4
 
 
 def row_to_dict(obj) -> dict:
@@ -17,9 +24,75 @@ def row_to_dict(obj) -> dict:
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
 
-def generate_guild_id() -> str:
-    """Random 6-char lowercase id used in guild URLs."""
-    return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+def _slugify(name: str) -> str:
+    """Lowercase, normalize unicode, replace non-alphanumeric runs with '-'."""
+    normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    lowered = normalized.lower()
+    slugged = re.sub(r"[^a-z0-9]+", "-", lowered)
+    return slugged.strip("-")
+
+
+def _strip_vowels(s: str) -> str:
+    """Remove vowels, keeping consonants and digits and hyphens."""
+    return "".join(c for c in s if c not in _VOWELS)
+
+
+def _candidate_from_name(name: str) -> str:
+    """Derive a deterministic slug from a guild name."""
+    slug = _slugify(name)
+    if not slug:
+        return ""
+
+    devoweled = _strip_vowels(slug)
+
+    # If devoweling left nothing or below minimum, fall back to the slug.
+    if len(devoweled) < _MIN_LEN:
+        base = slug
+    else:
+        base = devoweled
+
+    # Trim from end until we're at or below the target length.
+    while len(base) > _TARGET_LEN:
+        # Don't trim past the minimum.
+        if len(base) <= _MIN_LEN:
+            break
+        base = base[:-1].rstrip("-")
+
+    return base or slug
+
+
+def generate_guild_id(name: str = "", existing_ids: set[str] | None = None) -> str:
+    """Return a slug-based guild ID derived from *name*, unique among *existing_ids*.
+
+    Algorithm:
+    1. Slugify the name (lowercase, replace non-alphanum with '-').
+    2. Remove vowels from the slug.
+    3. If the result is < _MIN_LEN chars, fall back to the full slug.
+    4. Trim from the end to _TARGET_LEN, never below _MIN_LEN.
+    5. If the candidate collides with an existing ID, append a random suffix.
+    6. If no name is given, generate a fully random ID (legacy fallback).
+    """
+    if existing_ids is None:
+        existing_ids = set()
+
+    candidate = _candidate_from_name(name) if name else ""
+
+    if not candidate:
+        # No usable name — generate a random ID.
+        while True:
+            rid = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+            if rid not in existing_ids:
+                return rid
+
+    if candidate not in existing_ids:
+        return candidate
+
+    # Collision: append a random suffix.
+    while True:
+        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=_SUFFIX_LEN))
+        unique = f"{candidate}-{suffix}"
+        if unique not in existing_ids:
+            return unique
 
 
 def worker_display_name(worker_id: str, hostname: str | None = None) -> str:
