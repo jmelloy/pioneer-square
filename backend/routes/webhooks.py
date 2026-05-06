@@ -24,7 +24,7 @@ from database import get_db
 from events import broadcast
 from fastapi import APIRouter, HTTPException, Request, Response
 from foreman import reset_foreman_poll, run_foreman_ai
-from models import GithubEvent, Guild, Task
+from models import GithubEvent, Guild, Message, Task
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -230,6 +230,44 @@ def _build_foreman_summary(
     return f"{header}{sender_line}\n{detail}".strip() if detail else f"{header}{sender_line}"
 
 
+def _build_chat_line(
+    event_type: str,
+    action: str | None,
+    repo: str | None,
+    pr_number: int | None,
+    payload: dict,
+    task_id: str | None,
+) -> str:
+    """Build a compact ``[github-event]`` chat line for the foreman stream.
+
+    Format: ``[github-event] pull_request/closed — repo#42 (merged=true) — task: t-abc``
+    """
+    event_action = f"{event_type}/{action}" if action else event_type
+    pr_part = f" — {repo}#{pr_number}" if repo and pr_number else (f" — {repo}" if repo else "")
+
+    extra = ""
+    if event_type == "pull_request" and action == "closed":
+        pr = payload.get("pull_request") or {}
+        merged = pr.get("merged")
+        if merged is not None:
+            extra = f"merged={str(merged).lower()}"
+    elif event_type in {"check_run", "check_suite"}:
+        node = payload.get(event_type) or {}
+        conclusion = node.get("conclusion") if isinstance(node, dict) else None
+        if conclusion:
+            extra = f"conclusion={conclusion}"
+    elif event_type == "pull_request_review" and action == "submitted":
+        review = payload.get("review") or {}
+        state = review.get("state") if isinstance(review, dict) else None
+        if state:
+            extra = f"state={state}"
+
+    extra_part = f" ({extra})" if extra else ""
+    task_part = f" — task: {task_id}" if task_id else ""
+
+    return f"[github-event] {event_action}{pr_part}{extra_part}{task_part}"
+
+
 @router.post("/webhooks/github/{guild_id}")
 async def github_webhook(guild_id: str, request: Request) -> Response:
     body = await request.body()
@@ -243,6 +281,13 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
     signature = request.headers.get("x-hub-signature-256")
     if not delivery_id or not event_type:
         raise HTTPException(status_code=400, detail="Missing GitHub headers")
+
+    logger.info(
+        "github webhook received guild=%s delivery=%s event=%s",
+        guild_id,
+        delivery_id,
+        event_type,
+    )
 
     db = await get_db()
     try:
@@ -264,13 +309,31 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         # GitHub sends ping deliveries on webhook setup; accept them but skip
         # the rest of the pipeline (no PR context, no foreman action).
         if event_type == "ping":
+            logger.info(
+                "github webhook ping guild=%s delivery=%s",
+                guild_id,
+                delivery_id,
+            )
             return Response(status_code=204)
 
         try:
             payload = json.loads(body)
         except json.JSONDecodeError:
+            logger.warning(
+                "github webhook invalid JSON guild=%s delivery=%s event=%s excerpt=%r",
+                guild_id,
+                delivery_id,
+                event_type,
+                body[:200].decode("utf-8", errors="replace"),
+            )
             raise HTTPException(status_code=400, detail="Invalid JSON body") from None
         if not isinstance(payload, dict):
+            logger.warning(
+                "github webhook non-object payload guild=%s delivery=%s event=%s",
+                guild_id,
+                delivery_id,
+                event_type,
+            )
             raise HTTPException(status_code=400, detail="Payload must be a JSON object")
 
         action = payload.get("action") if isinstance(payload.get("action"), str) else None
@@ -352,6 +415,34 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
             "sender": sender_login,
         },
     )
+
+    chat_line = _build_chat_line(event_type, action, repo, pr_number, payload, task_id)
+    chat_now = datetime.now(UTC).isoformat()
+    await broadcast(
+        guild_id,
+        {
+            "type": "chat",
+            "from": "github",
+            "to": "foreman",
+            "content": chat_line,
+            "createdAt": chat_now,
+        },
+    )
+    msg_db = await get_db()
+    try:
+        msg_db.add(
+            Message(
+                guild_id=guild_id,
+                from_agent="github",
+                to_agent="foreman",
+                content=chat_line,
+                message_type="chat",
+                created_at=chat_now,
+            )
+        )
+        await msg_db.commit()
+    finally:
+        await msg_db.close()
 
     dispatch, skip_reason = _should_dispatch_to_foreman(
         event_type, action, payload, sender_login, task_id

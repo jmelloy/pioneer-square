@@ -292,6 +292,77 @@ def test_webhook_missing_github_headers(client):
     assert resp.status_code == 400
 
 
+def test_webhook_emits_foreman_chat_message(client):
+    test_client, db_path = client
+    insert_guild(db_path, "gchat1")
+    _set_webhook_secret(db_path, "gchat1", "schat1")
+    _insert_task(
+        db_path,
+        task_id="t-chat1",
+        guild_id="gchat1",
+        pr_url="https://github.com/owner/repo/pull/10",
+        pr_number=10,
+        pr_repo="owner/repo",
+    )
+    payload = _pr_payload(action="opened", repo="owner/repo", number=10)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("schat1", body, event="pull_request", delivery="d-chat-1")
+    resp = test_client.post("/webhooks/github/gchat1", content=body, headers=headers)
+    assert resp.status_code == 202
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT from_agent, to_agent, content, message_type FROM messages"
+        ).fetchone()
+    assert row is not None
+    from_agent, to_agent, content, message_type = row
+    assert from_agent == "github"
+    assert to_agent == "foreman"
+    assert content.startswith("[github-event]")
+    assert "pull_request/opened" in content
+    assert "owner/repo#10" in content
+    assert "task: t-chat1" in content
+    assert message_type == "chat"
+
+
+def test_webhook_chat_line_includes_merged_status(client):
+    test_client, db_path = client
+    insert_guild(db_path, "gchat2")
+    _set_webhook_secret(db_path, "gchat2", "schat2")
+    payload = {
+        "action": "closed",
+        "repository": {"full_name": "owner/repo"},
+        "pull_request": {
+            "number": 5,
+            "html_url": "https://github.com/owner/repo/pull/5",
+            "merged": True,
+        },
+        "sender": {"login": "octocat"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("schat2", body, event="pull_request", delivery="d-chat-2")
+    resp = test_client.post("/webhooks/github/gchat2", content=body, headers=headers)
+    assert resp.status_code == 202
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT content FROM messages").fetchone()
+    assert row is not None
+    assert "merged=true" in row[0]
+    assert "task:" not in row[0]  # no task linked
+
+
+def test_webhook_chat_line_not_emitted_for_duplicate(client):
+    test_client, db_path = client
+    insert_guild(db_path, "gchat3")
+    _set_webhook_secret(db_path, "gchat3", "schat3")
+    payload = _pr_payload(action="opened", repo="owner/repo", number=1)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("schat3", body, event="pull_request", delivery="d-chat-dup")
+    test_client.post("/webhooks/github/gchat3", content=body, headers=headers)
+    test_client.post("/webhooks/github/gchat3", content=body, headers=headers)
+    with sqlite3.connect(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    assert count == 1  # second delivery is a duplicate; no second message
+
+
 # ---------------------------------------------------------------------------
 # Webhook-secret REST endpoints
 # ---------------------------------------------------------------------------
