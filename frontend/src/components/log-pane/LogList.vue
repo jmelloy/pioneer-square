@@ -49,8 +49,7 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import { renderMarkdown } from '../../utils/markdown'
 import { formatClock } from '../../utils/format'
 import type { LogEntry } from '../../types'
 
@@ -81,10 +80,6 @@ function isMarkdownLine(line: string): boolean {
   return line.startsWith('[thinking]') || line.startsWith('[claude]')
 }
 
-function renderMarkdown(text: string): string {
-  const html = marked.parse(text, { async: false }) as string
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
-}
 
 function renderLine(line: string): string {
   if (isMarkdownLine(line)) return renderMarkdown(line)

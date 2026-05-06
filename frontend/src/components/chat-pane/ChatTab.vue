@@ -47,7 +47,7 @@
           v-if="(msg as ChatMessage).prUrl"
           :href="(msg as ChatMessage).prUrl!"
           target="_blank"
-          rel="noopener"
+          rel="noopener noreferrer"
           class="pr-link"
         >
           Open PR →
@@ -68,8 +68,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import { renderMarkdown } from '../../utils/markdown'
 import { useGuildStore } from '../../stores/guild'
 import { useAgentsStore } from '../../stores/agents'
 import { formatClock } from '../../utils/format'
@@ -109,10 +108,6 @@ function senderLabel(msg: ChatMessage): string {
   return sender.toUpperCase()
 }
 
-function renderMarkdown(text: string): string {
-  const html = marked.parse(text, { async: false }) as string
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
-}
 
 const formatTime = (iso?: string) => formatClock(iso)
 

@@ -2,7 +2,7 @@
   <div v-if="taskBranch || taskPrUrl || taskCreatedAt" class="pane-subheader">
     <span v-if="taskId" class="sub-id">{{ taskId }}</span>
     <span v-if="taskBranch" class="sub-branch">⌥ {{ taskBranch }}</span>
-    <a v-if="taskPrUrl" :href="taskPrUrl" target="_blank" rel="noopener" class="sub-pr-link"
+    <a v-if="taskPrUrl" :href="taskPrUrl" target="_blank" rel="noopener noreferrer" class="sub-pr-link"
       >PR →</a
     >
     <span v-if="taskCreatedAt" class="sub-time">{{ formatDateTime(taskCreatedAt) }}</span>
@@ -19,8 +19,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import { renderMarkdown } from '../../utils/markdown'
 
 const props = defineProps<{
   taskId?: string
@@ -32,8 +31,7 @@ const props = defineProps<{
 
 const renderedDescription = computed(() => {
   if (!props.taskDescription) return ''
-  const html = marked.parse(props.taskDescription, { async: false }) as string
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
+  return renderMarkdown(props.taskDescription)
 })
 
 function formatDateTime(iso?: string) {
