@@ -1503,6 +1503,7 @@ class Worker:
                 if task_id in self._cancelled_tasks:
                     await emit("[worker] Task cancelled.")
                     await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                    await self._release_task_worktrees(task_id)
                     await self._set_state("idle", slot)
                     return
 
@@ -1514,6 +1515,7 @@ class Worker:
                 if redirect_instr is _CANCEL_SENTINEL:
                     await emit("[worker] Task cancelled.")
                     await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                    await self._release_task_worktrees(task_id)
                     await self._set_state("idle", slot)
                     return
 
@@ -1598,7 +1600,6 @@ class Worker:
                             "lastText": last_msg,
                         }
                     )
-                await self._set_state("awaiting-review", slot)
             else:
                 logger.warning("Task %s failed: %s", task_id, stop_reason)
                 # Don't mark finishedAt yet — the foreman may send a follow-up
