@@ -4,7 +4,7 @@
     <div class="app-body">
       <GuildSidebar />
       <MainView />
-      <ChatPane />
+      <ChatPane ref="chatPaneRef" />
     </div>
     <teleport to="body">
       <DebugSidebar v-if="showDebug" @close="showDebug = false" />
@@ -43,6 +43,7 @@ import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 import TopBar from '../components/TopBar.vue'
 import DebugSidebar from '../components/DebugSidebar.vue'
+import type { GitHubIssue } from '../types'
 
 const props = defineProps<{ guildId?: string }>()
 
@@ -50,6 +51,9 @@ const activeTab = ref<'tasks' | 'work' | 'chat'>('chat')
 provide('switchMobileTab', (tab: 'tasks' | 'work' | 'chat') => {
   activeTab.value = tab
 })
+
+const chatPaneRef = ref<InstanceType<typeof ChatPane> | null>(null)
+provide('selectIssue', (issue: GitHubIssue) => chatPaneRef.value?.selectIssue(issue))
 
 const showDebug = ref(false)
 
@@ -122,8 +126,11 @@ async function initGuild(guildId: string) {
     })
   }, 200)
 
-  if (ghStore.isConfigured && ghStore.selectedRepos.length > 0) {
-    ghStore.fetchIssues()
+  if (ghStore.isConfigured) {
+    const reposToFetch = guild.primary_repo ? [guild.primary_repo] : undefined
+    if (reposToFetch || ghStore.selectedRepos.length > 0) {
+      ghStore.fetchIssues(reposToFetch)
+    }
   }
 }
 

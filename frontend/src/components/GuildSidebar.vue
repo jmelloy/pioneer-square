@@ -8,6 +8,22 @@
 
     <WorkerList />
 
+    <div v-if="ghStore.isConfigured" class="issues-section">
+      <div class="section-header">
+        <span class="section-label">Issues</span>
+        <span v-if="ghStore.issues.length" class="section-count">{{ ghStore.issues.length }}</span>
+        <button
+          class="issues-refresh-btn"
+          @click="issuesTabRef?.refreshIssues()"
+          :disabled="ghStore.loading"
+          title="Refresh issues"
+        >
+          {{ ghStore.loading ? '…' : '↻' }}
+        </button>
+      </div>
+      <IssuesTab ref="issuesTabRef" @select-issue="onSelectIssue" />
+    </div>
+
     <div class="sidebar-footer">
       <div class="connection-status" :class="{ connected: isConnected }">
         <span class="status-dot"></span>
@@ -18,20 +34,24 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useTasksStore } from '../stores/tasks'
 import TaskList from './sidebar/TaskList.vue'
 import WorkerList from './sidebar/WorkerList.vue'
+import IssuesTab from './chat-pane/IssuesTab.vue'
+import type { GitHubIssue } from '../types'
 
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 const tasksStore = useTasksStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
+const selectIssue = inject<(issue: GitHubIssue) => void>('selectIssue', () => {})
 
 const isConnected = computed(() => guildStore.isConnected)
+const issuesTabRef = ref<InstanceType<typeof IssuesTab> | null>(null)
 
 onMounted(async () => {
   if (ghStore.repos.length === 0 && ghStore.token) {
@@ -42,6 +62,11 @@ onMounted(async () => {
 function onOpenTask(taskId: string) {
   tasksStore.selectTask(taskId)
   switchMobileTab('work')
+}
+
+function onSelectIssue(issue: GitHubIssue) {
+  switchMobileTab('chat')
+  selectIssue(issue)
 }
 </script>
 
@@ -71,6 +96,77 @@ function onOpenTask(taskId: string) {
   letter-spacing: 2px;
   text-transform: uppercase;
   text-shadow: 0 0 6px rgba(255, 214, 68, 0.4);
+}
+
+.issues-section {
+  border-top: 2px solid var(--color-brass-dark);
+  flex-shrink: 0;
+  max-height: 260px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px 4px;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-brass-dark);
+  flex-shrink: 0;
+}
+
+.section-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+
+.section-count {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  background: var(--color-bg);
+  padding: 1px 5px;
+  border-radius: 2px;
+}
+
+.issues-refresh-btn {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-brass);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  opacity: 0.7;
+  transition:
+    opacity 0.12s,
+    background 0.12s;
+}
+
+.issues-refresh-btn:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(232, 170, 0, 0.1);
+}
+
+.issues-refresh-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Override IssuesTab internals for sidebar: hide its toolbar (we have our own header) */
+.issues-section :deep(.issues-toolbar) {
+  display: none;
+}
+
+.issues-section :deep(.issues-list) {
+  min-height: 0;
+  max-height: none;
+  flex: 1;
 }
 
 .sidebar-footer {
