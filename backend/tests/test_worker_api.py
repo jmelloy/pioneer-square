@@ -237,35 +237,35 @@ def test_spawn_worker_env_default_backend_url():
     assert env["PIONEER_BACKEND_URL"] == "http://backend:8000"
 
 
-def test_spawn_worker_env_public_url_forwarded():
+def test_spawn_worker_env_frontend_url_forwarded():
     from main import _build_spawn_worker_env
 
     env = _build_spawn_worker_env(
         guild_id="g1",
         repos=[],
         worker_name=None,
-        source_env={"PUBLIC_URL": "https://pioneer-square.melloy.life"},
+        source_env={"FRONTEND_URL": "https://pioneer-square.melloy.life"},
     )
-    assert env["PIONEER_PUBLIC_BACKEND_URL"] == "https://pioneer-square.melloy.life"
+    assert env["PIONEER_FRONTEND_URL"] == "https://pioneer-square.melloy.life"
 
 
-def test_spawn_worker_env_public_url_absent():
+def test_spawn_worker_env_frontend_url_absent():
     from main import _build_spawn_worker_env
 
     env = _build_spawn_worker_env(guild_id="g1", repos=[], worker_name=None, source_env={})
-    assert "PIONEER_PUBLIC_BACKEND_URL" not in env
+    assert "PIONEER_FRONTEND_URL" not in env
 
 
-def test_spawn_worker_env_public_url_trailing_slash_stripped():
+def test_spawn_worker_env_frontend_url_trailing_slash_stripped():
     from main import _build_spawn_worker_env
 
     env = _build_spawn_worker_env(
         guild_id="g1",
         repos=[],
         worker_name=None,
-        source_env={"PUBLIC_URL": "https://pioneer-square.melloy.life/"},
+        source_env={"FRONTEND_URL": "https://pioneer-square.melloy.life/"},
     )
-    assert env["PIONEER_PUBLIC_BACKEND_URL"] == "https://pioneer-square.melloy.life"
+    assert env["PIONEER_FRONTEND_URL"] == "https://pioneer-square.melloy.life"
 
 
 def test_spawn_worker_env_db_token_beats_host_env():

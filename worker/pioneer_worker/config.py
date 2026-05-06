@@ -181,6 +181,6 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         ),
         public_backend_url=overrides.get("public_backend_url")
         or raw.get("public_backend_url")
-        or os.environ.get("PIONEER_PUBLIC_BACKEND_URL"),
+        or os.environ.get("PIONEER_FRONTEND_URL"),
         config_path=cfg_path,
     )
