@@ -72,6 +72,9 @@ def build_spawn_worker_env(
         "PIONEER_GUILD_ID": guild_id,
         "PIONEER_REPOS": ",".join(repos),
     }
+    public_url = source_env.get("FRONTEND_URL", "").rstrip("/")
+    if public_url:
+        env["PIONEER_FRONTEND_URL"] = public_url
     gh_token = source_env.get("GITHUB_TOKEN", "")
     if gh_token:
         # PIONEER_GITHUB_TOKEN feeds the worker config loader; GITHUB_TOKEN is

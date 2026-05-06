@@ -19,6 +19,11 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       WORKER_IMAGE: ${WORKER_IMAGE:-pioneer-square-worker}
       WORKER_BACKEND_URL: ${WORKER_BACKEND_URL:-http://backend:8000}
+      # Externally-reachable base URL used when registering GitHub webhooks.
+      # Workers spawned by the backend inherit this as PIONEER_FRONTEND_URL.
+      # Set to your public hostname in production (e.g. https://pioneer-square.melloy.life).
+      # If unset, workers fall back to WORKER_BACKEND_URL which is unreachable from GitHub.
+      FRONTEND_URL: ${FRONTEND_URL:-}
       # When set (e.g. DEBUG), backend-spawned worker containers are launched
       # with PIONEER_WORKER_LOG_LEVEL=<this value>, raising worker verbosity.
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-}
