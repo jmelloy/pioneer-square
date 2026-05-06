@@ -204,6 +204,10 @@ app.add_middleware(
 async def _wellknown_middleware(request: Request, call_next):
     # Starlette's StaticFiles returns 403 for dotfile paths, intercepting
     # /.well-known/ before the route handler fires. Handle it here first.
+    if request.url.path == "/.well-known/agent.json":
+        from routes.wellknown import agent_card
+
+        return await agent_card(request)
     if request.url.path.startswith("/.well-known/"):
         from routes.wellknown import jwks
 

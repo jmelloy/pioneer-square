@@ -34,6 +34,10 @@ class GuildCreate(BaseModel):
 class GuildUpdate(BaseModel):
     name: str | None = None
     primary_repo: str | None = None
+    # A2A AgentCard fields
+    description: str | None = None
+    url: str | None = None
+    version: str | None = None
 
 
 class MemberCreate(BaseModel):
@@ -138,6 +142,12 @@ async def update_guild(
             guild.name = data.name
         if "primary_repo" in data.model_fields_set:
             guild.primary_repo = data.primary_repo
+        if "description" in data.model_fields_set:
+            guild.description = data.description
+        if "url" in data.model_fields_set:
+            guild.url = data.url
+        if "version" in data.model_fields_set:
+            guild.version = data.version
         await db.commit()
     finally:
         await db.close()
@@ -148,9 +158,19 @@ async def update_guild(
             "id": guild_id,
             "name": guild.name,
             "primary_repo": guild.primary_repo,
+            "description": guild.description,
+            "url": guild.url,
+            "version": guild.version,
         },
     )
-    return {"id": guild_id, "name": guild.name, "primary_repo": guild.primary_repo}
+    return {
+        "id": guild_id,
+        "name": guild.name,
+        "primary_repo": guild.primary_repo,
+        "description": guild.description,
+        "url": guild.url,
+        "version": guild.version,
+    }
 
 
 @router.get("/guilds/{guild_id}")
