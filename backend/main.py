@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,6 +27,9 @@ from fastapi.staticfiles import StaticFiles
 from models import Agent, Worker
 from sqlalchemy import select, update
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 from util.tasks import spawn
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -178,6 +182,16 @@ async def lifespan(app: FastAPI):
         foreman_log.addHandler(_h)
     foreman_log.propagate = False
     foreman_log.info("foreman logger active (level=DEBUG)")
+
+    # Uvicorn sets the root logger to WARNING, so configure the main module logger
+    # explicitly so that INFO-level access logs reach the console.
+    _log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logger.setLevel(getattr(logging, _log_level, logging.INFO))
+    if not logger.handlers:
+        _lh = logging.StreamHandler()
+        _lh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+        logger.addHandler(_lh)
+    logger.propagate = False
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
     try:
         yield
@@ -189,8 +203,33 @@ async def lifespan(app: FastAPI):
             pass
 
 
+class _AccessLogMiddleware(BaseHTTPMiddleware):
+    """Log every HTTP request with method, path, status, response time, and client IP."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        start = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        xff = request.headers.get("x-forwarded-for")
+        client_ip = (
+            xff.split(",")[0].strip() if xff else (request.client.host if request.client else "-")
+        )
+        qs = f"?{request.url.query}" if request.url.query else ""
+        logger.info(
+            "%s %s%s → %d (%.1fms) %s",
+            request.method,
+            request.url.path,
+            qs,
+            response.status_code,
+            elapsed_ms,
+            client_ip,
+        )
+        return response
+
+
 app = FastAPI(title="Pioneer Square", lifespan=lifespan)
 
+app.add_middleware(_AccessLogMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
