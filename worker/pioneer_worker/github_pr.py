@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import urllib.error
 import urllib.request
@@ -12,6 +13,21 @@ from collections.abc import Awaitable, Callable
 from . import git_ops
 
 EmitFn = Callable[[str], Awaitable[None]]
+
+logger = logging.getLogger(__name__)
+
+
+# GitHub webhook events the foreman cares about — kept narrow so a single
+# repo's hook doesn't fan out the firehose. ``status`` is the legacy
+# pre-checks API; we subscribe so older repos still surface CI signals.
+_WEBHOOK_EVENTS = [
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "issue_comment",
+    "check_run",
+    "status",
+]
 
 
 async def push_branch(
@@ -148,3 +164,174 @@ async def open_pr(
     except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
         await emit(f"[worker] PR failed: {exc}")
         return None
+
+
+async def _fetch_webhook_secret(*, http_url: str, guild_id: str, auth_token: str) -> str | None:
+    """GET the guild's webhook secret from the backend, returning None on failure.
+
+    The backend lazily generates the secret on first read (see
+    ``backend/routes/guilds.py``), so the first PR ever opened against a guild
+    transparently provisions one.
+    """
+
+    def _get() -> dict:
+        req = urllib.request.Request(
+            f"{http_url.rstrip('/')}/guilds/{guild_id}/webhook-secret",
+            headers={"Authorization": f"Bearer {auth_token}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+
+    try:
+        data = await asyncio.to_thread(_get)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
+        logger.warning("webhook secret fetch failed: %s", exc)
+        return None
+    secret = data.get("webhook_secret") if isinstance(data, dict) else None
+    return secret if isinstance(secret, str) and secret else None
+
+
+def _repo_from_pr_url(pr_url: str) -> str | None:
+    """Extract ``owner/repo`` from a PR HTML URL like
+    ``https://github.com/owner/repo/pull/42``."""
+    if not pr_url:
+        return None
+    m = re.search(r"github\.com/([^/]+/[^/]+)/pull/\d+", pr_url)
+    return m.group(1) if m else None
+
+
+async def ensure_webhook(
+    *,
+    repo: str,
+    target_url: str,
+    http_url: str,
+    guild_id: str,
+    auth_token: str | None,
+    github_token: str | None,
+    emit: EmitFn,
+) -> bool:
+    """Idempotently configure a Pioneer Square webhook on *repo*.
+
+    Best-effort: returns True when the hook is in place after this call,
+    False on any failure. Failures emit a single warning and are otherwise
+    swallowed — the PR has already been opened, so missing webhook coverage
+    shouldn't block the task.
+
+    Idempotency: looks up existing hooks first. If one already targets
+    *target_url* it's reused (and updated only when the active flag, secret,
+    or events list drift). Otherwise a new hook is created.
+    """
+    if not auth_token:
+        await emit("[worker] webhook setup skipped — no worker auth_token")
+        return False
+    if not github_token:
+        await emit("[worker] webhook setup skipped — no GitHub token")
+        return False
+
+    secret = await _fetch_webhook_secret(
+        http_url=http_url, guild_id=guild_id, auth_token=auth_token
+    )
+    if not secret:
+        await emit("[worker] webhook setup skipped — backend did not return a secret")
+        return False
+
+    def _list_hooks() -> list:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/hooks?per_page=100",
+            headers={
+                "Authorization": f"Bearer {github_token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+
+    def _create_hook() -> dict:
+        body = json.dumps(
+            {
+                "name": "web",
+                "active": True,
+                "events": _WEBHOOK_EVENTS,
+                "config": {
+                    "url": target_url,
+                    "secret": secret,
+                    "content_type": "json",
+                    "insecure_ssl": "0",
+                },
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/hooks",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {github_token}",
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+
+    def _patch_hook(hook_id: int) -> dict:
+        body = json.dumps(
+            {
+                "active": True,
+                "events": _WEBHOOK_EVENTS,
+                "config": {
+                    "url": target_url,
+                    "secret": secret,
+                    "content_type": "json",
+                    "insecure_ssl": "0",
+                },
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/hooks/{hook_id}",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {github_token}",
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json",
+            },
+            method="PATCH",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+
+    try:
+        hooks = await asyncio.to_thread(_list_hooks)
+    except urllib.error.HTTPError as exc:
+        # 403 => token lacks admin:repo_hook (or admin access on the repo).
+        # Treat as a non-fatal warning; the operator can configure manually.
+        await emit(f"[worker] webhook list failed ({exc.code}): {exc.reason}")
+        return False
+    except (urllib.error.URLError, OSError) as exc:
+        await emit(f"[worker] webhook list failed: {exc}")
+        return False
+
+    existing = next(
+        (
+            h
+            for h in hooks
+            if isinstance(h, dict) and (h.get("config") or {}).get("url") == target_url
+        ),
+        None,
+    )
+
+    try:
+        if existing:
+            # Always re-PATCH: the secret may have been rotated, the events
+            # list may have grown, or the hook may have been deactivated.
+            await asyncio.to_thread(_patch_hook, int(existing["id"]))
+            await emit(f"[worker] ✓ Webhook refreshed on {repo}")
+        else:
+            await asyncio.to_thread(_create_hook)
+            await emit(f"[worker] ✓ Webhook installed on {repo} → {target_url}")
+        return True
+    except urllib.error.HTTPError as exc:
+        await emit(f"[worker] webhook setup failed ({exc.code}): {exc.reason}")
+        return False
+    except (urllib.error.URLError, OSError) as exc:
+        await emit(f"[worker] webhook setup failed: {exc}")
+        return False

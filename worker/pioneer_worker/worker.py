@@ -673,6 +673,28 @@ class Worker:
             }
         )
 
+    async def _ensure_pr_webhook(self, pr_url: str, emit) -> None:
+        """Best-effort: install/refresh a Pioneer Square webhook on the PR's repo.
+
+        Failures are logged via *emit* and swallowed — the PR is already
+        open, so missing webhook coverage shouldn't block the task.
+        """
+        repo = github_pr._repo_from_pr_url(pr_url)
+        if not repo:
+            return
+        try:
+            await github_pr.ensure_webhook(
+                repo=repo,
+                target_url=self.cfg.webhook_target_url,
+                http_url=self.cfg.http_url,
+                guild_id=self.cfg.guild_id,
+                auth_token=self.cfg.auth_token,
+                github_token=self.cfg.github_token,
+                emit=emit,
+            )
+        except Exception as exc:
+            logger.warning("ensure_webhook raised for %s: %s", repo, exc)
+
     async def _initiate_shutdown(self, reason: str) -> None:
         """Begin a graceful shutdown.
 
@@ -1536,6 +1558,8 @@ class Worker:
                         token=token,
                         emit=emit,
                     )
+                if pr_url:
+                    await self._ensure_pr_webhook(pr_url, emit)
                 logger.info("Task %s: pr_url=%s", task_id, pr_url)
 
                 await self._task_update(
