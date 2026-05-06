@@ -185,6 +185,17 @@ class ClaudeCredentials(Base):
     updated_at = Column(Text, nullable=False)
 
 
+class GuildKey(Base):
+    __tablename__ = "guild_keys"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False, unique=True)
+    key_id = Column(Text, nullable=False)  # "kid" in JWK
+    public_key_pem = Column(Text, nullable=False)
+    private_key_pem = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False)
+
+
 class ForemanTurn(Base):
     __tablename__ = "foreman_turns"
 
