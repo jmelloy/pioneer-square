@@ -41,8 +41,14 @@ def _slug(text: str, max_len: int = 60) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text[:max_len].lower()).strip("-")
 
 
-_CANCEL_SENTINEL = object()  # placed in followup queue to signal task cancellation
+_CANCEL_SENTINEL = object()  # placed in redirect queue to signal task cancellation
 _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during shutdown
+
+# Worktrees are kept around after a task completes so the foreman can send
+# follow-ups without paying for a re-clone. They're swept at startup and on a
+# steady cadence; anything older than this is fair game to remove.
+WORKTREE_TTL_SECONDS = 24 * 60 * 60
+WORKTREE_SWEEP_INTERVAL_SECONDS = 60 * 60
 
 
 class Agent:
@@ -68,12 +74,16 @@ class Worker:
         self.ws = WSClient(cfg.ws_url)
         self.task_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._known_task_ids: set[str] = set()
-        # Per-task queues for follow-up instructions; None signals finalization
-        self._followup_queues: dict[str, asyncio.Queue] = {}
         # Tasks that have been cancelled (by foreman or human); checked before/during execution
         self._cancelled_tasks: set[str] = set()
         # Per-task queues for mid-run redirect instructions (SIGTERM + --resume)
         self._redirect_queues: dict[str, asyncio.Queue] = {}
+        # Worktrees this worker has materialised, keyed by task_id. Each entry
+        # is a list of (repo_path, wt_path, created_monotonic) tuples. The
+        # sweeper prunes entries older than ``WORKTREE_TTL_SECONDS`` so a
+        # follow-up arriving inside the TTL window can reuse an existing
+        # checkout instead of attaching a fresh one.
+        self._task_worktrees: dict[str, list[tuple[str, str, float]]] = {}
         # Queue for auth codes received from the UI during claude auth login
         self._auth_code_queue: asyncio.Queue[str] | None = None
         # Set to True once _join() has been called the first time so that
@@ -667,7 +677,9 @@ class Worker:
         """Begin a graceful shutdown.
 
         Idle agents wake up and exit; busy agents finish their current claude
-        run and skip the follow-up window. Safe to call multiple times.
+        run and then return to idle (the post-task follow-up window is gone —
+        the foreman now drives follow-ups by re-queueing the task). Safe to
+        call multiple times.
         """
         if self._shutdown_event.is_set():
             return
@@ -683,17 +695,6 @@ class Worker:
         # Wake idle agents waiting on task_queue.get()
         for _ in self.slots:
             self.task_queue.put_nowait(_SHUTDOWN_SENTINEL)
-        # Wake any agents currently parked in their follow-up window.
-        for slot in self.slots:
-            tid = slot.current_task_id
-            if not tid:
-                continue
-            q = self._followup_queues.get(tid)
-            if q is not None:
-                try:
-                    q.put_nowait(None)  # None = finalize
-                except asyncio.QueueFull:
-                    pass
 
     def _install_signal_handlers(self) -> None:
         """Wire SIGINT/SIGTERM to graceful shutdown. Second signal force-exits."""
@@ -820,6 +821,11 @@ class Worker:
         for slot in self.slots:
             await self._set_state("idle", slot)
 
+        # Reclaim any worktrees the previous incarnation of this worker left
+        # behind. Tasks within the TTL window are re-registered so a follow-up
+        # arriving for them can reuse the existing checkout.
+        await self._initial_worktree_sweep()
+
         initial = await self._fetch_pending_tasks()
         logger.info("Initial pending-task fetch: %d task(s)", len(initial))
         for task in initial:
@@ -830,11 +836,12 @@ class Worker:
         runners = [asyncio.create_task(self._agent_loop(slot)) for slot in self.slots]
         puller = asyncio.create_task(self._idle_puller())
         heartbeat = asyncio.create_task(self._heartbeat())
+        sweeper = asyncio.create_task(self._worktree_sweeper())
         try:
             # Wait for either: all runners exit (graceful shutdown), or one of
             # the auxiliary tasks crashes (unexpected).
             done, _pending = await asyncio.wait(
-                [listener, puller, heartbeat, *runners],
+                [listener, puller, heartbeat, sweeper, *runners],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             # Surface any non-cancellation exception that fired first.
@@ -856,8 +863,11 @@ class Worker:
             listener.cancel()
             puller.cancel()
             heartbeat.cancel()
+            sweeper.cancel()
 
-            await asyncio.gather(listener, puller, heartbeat, *runners, return_exceptions=True)
+            await asyncio.gather(
+                listener, puller, heartbeat, sweeper, *runners, return_exceptions=True
+            )
 
             if first_exc is not None:
                 raise first_exc
@@ -966,27 +976,48 @@ class Worker:
                 if msg.get("workerId") != self.cfg.worker_id:
                     continue
                 task_id = msg.get("taskId")
+                if not task_id:
+                    continue
                 instructions = msg.get("instructions", "")
-                q = self._followup_queues.get(task_id)
-                if q is not None:
-                    await q.put(instructions)
-                    logger.info("Follow-up queued for task %s: %s", task_id, instructions[:80])
-                else:
-                    logger.warning(
-                        "task-followup for %s but no queue (task may have ended)",
-                        task_id,
-                    )
+                # The follow-up window inside _execute_task is gone — workers
+                # return to the idle pool right after task-complete. A
+                # follow-up is now a fresh enqueue: reuse the existing
+                # worktree if it's still on disk, otherwise attach one to the
+                # branch the original worker pushed.
+                logger.info(
+                    "Follow-up received for task %s: %s",
+                    task_id,
+                    instructions[:80],
+                )
+                # Drop the cached known-id so the puller doesn't reject the
+                # re-queued task as a duplicate after a worker restart.
+                self._known_task_ids.add(task_id)
+                await self.task_queue.put(
+                    {
+                        "id": task_id,
+                        "worker_id": self.cfg.worker_id,
+                        "guild_id": self.cfg.guild_id,
+                        "name": msg.get("name", ""),
+                        "description": msg.get("description", "") or instructions,
+                        "tool": msg.get("tool", "claude"),
+                        "issue_number": msg.get("issueNumber"),
+                        "issue_repo": msg.get("issueRepo"),
+                        "followup_instructions": instructions,
+                        "followup_branch": msg.get("branch", ""),
+                    }
+                )
 
             elif mtype == "task-finalize":
+                # The worker no longer parks waiting for finalize; foreman
+                # drives lifecycle now. Treat finalize as a hint that the
+                # task is closed and the worktree can be released early.
                 if msg.get("workerId") != self.cfg.worker_id:
                     continue
                 task_id = msg.get("taskId")
-                q = self._followup_queues.get(task_id)
-                if q is not None:
-                    await q.put(None)  # None = finalize signal
-                    logger.info("Finalize signal for task %s", task_id)
-                else:
-                    logger.debug("task-finalize for %s but no queue", task_id)
+                if not task_id:
+                    continue
+                logger.info("Finalize signal for task %s — releasing worktree", task_id)
+                await self._release_task_worktrees(task_id)
 
             elif mtype == "task-cancel":
                 if msg.get("workerId") != self.cfg.worker_id:
@@ -1001,11 +1032,12 @@ class Worker:
                 if active and active.current_claude:
                     await active.current_claude.terminate()
                     logger.info("Terminated subprocess for cancelled task %s", task_id)
-                # Unblock awaiting-review loop if the task is waiting for follow-up
-                q = self._followup_queues.get(task_id)
-                if q is not None:
-                    await q.put(_CANCEL_SENTINEL)
-                    logger.info("Signalled followup queue for cancelled task %s", task_id)
+                # Wake the redirect/cancel-aware inner loop if the task is
+                # mid-run; finalize-time cleanup happens through task-finalize.
+                rq = self._redirect_queues.get(task_id)
+                if rq is not None:
+                    await rq.put(_CANCEL_SENTINEL)
+                    logger.info("Signalled redirect queue for cancelled task %s", task_id)
 
             elif mtype == "worker-shutdown":
                 # Targeted at a specific worker, or broadcast (no workerId) to all.
@@ -1024,33 +1056,173 @@ class Worker:
                 logger.info("Redirect for task %s: %s", task_id, instructions[:80])
                 active = next((s for s in self.slots if s.current_task_id == task_id), None)
                 if active and active.current_claude:
-                    # Subprocess is running — terminate it, queue redirect instructions
+                    # Subprocess running — SIGTERM it and queue redirect for the
+                    # in-flight redirect loop, which resumes claude with the
+                    # full prior session id.
                     await active.current_claude.terminate()
                     logger.info("Terminated subprocess for redirect of task %s", task_id)
                     rq = self._redirect_queues.get(task_id)
                     if rq is not None:
                         await rq.put(instructions)
                 else:
-                    # No subprocess running — task is awaiting-review; use followup queue
-                    fq = self._followup_queues.get(task_id)
-                    if fq is not None:
-                        await fq.put(instructions)
-                        logger.info("Redirect queued as followup for task %s", task_id)
+                    rq = self._redirect_queues.get(task_id)
+                    if rq is not None:
+                        # Subprocess just exited — buffer; the redirect loop
+                        # picks the buffered instructions up before returning
+                        # the slot to idle.
+                        await rq.put(instructions)
+                        logger.info(
+                            "task-redirect for %s: buffered for in-flight redirect loop",
+                            task_id,
+                        )
                     else:
-                        # Followup window not yet open (post-subprocess, pre-followup-setup):
-                        # buffer in redirect_q so the followup window can drain it on open.
-                        rq = self._redirect_queues.get(task_id)
-                        if rq is not None:
-                            await rq.put(instructions)
-                            logger.info(
-                                "task-redirect for %s: buffered (followup window not yet open)",
-                                task_id,
-                            )
-                        else:
-                            logger.warning(
-                                "task-redirect for %s: task already finalized, redirect dropped",
-                                task_id,
-                            )
+                        # Task is no longer running on this worker; treat the
+                        # redirect like a follow-up — re-queue the task with
+                        # the new instructions. The branch field is whatever
+                        # the foreman supplied; an empty string means "use
+                        # the worktree we already have".
+                        logger.info(
+                            "task-redirect for %s outside an active run — re-queueing as follow-up",
+                            task_id,
+                        )
+                        await self.task_queue.put(
+                            {
+                                "id": task_id,
+                                "worker_id": self.cfg.worker_id,
+                                "guild_id": self.cfg.guild_id,
+                                "name": msg.get("name", ""),
+                                "description": msg.get("description", "") or instructions,
+                                "tool": msg.get("tool", "claude"),
+                                "issue_number": msg.get("issueNumber"),
+                                "issue_repo": msg.get("issueRepo"),
+                                "followup_instructions": instructions,
+                                "followup_branch": msg.get("branch", ""),
+                            }
+                        )
+
+    # ------------------------------------------------------------------ Worktree bookkeeping
+
+    def _register_worktrees(self, task_id: str, entries: list[tuple[str, str, str]]) -> None:
+        """Record the worktrees we materialised for ``task_id``.
+
+        Stored entries are ``(repo_path, wt_path, last_used_monotonic)``. The
+        sweeper consults the timestamp to decide what's stale.
+        """
+        if not entries:
+            return
+        ts = asyncio.get_event_loop().time()
+        self._task_worktrees[task_id] = [(rp, wt, ts) for _repo_full, rp, wt in entries]
+
+    def _touch_task_worktrees(self, task_id: str) -> None:
+        """Refresh the activity timestamp for a task's worktrees."""
+        existing = self._task_worktrees.get(task_id)
+        if not existing:
+            return
+        ts = asyncio.get_event_loop().time()
+        self._task_worktrees[task_id] = [(rp, wt, ts) for rp, wt, _old in existing]
+
+    async def _release_task_worktrees(self, task_id: str) -> None:
+        """Remove all worktrees for a task immediately and forget them."""
+        entries = self._task_worktrees.pop(task_id, None)
+        if not entries:
+            return
+        logger.info("Releasing %d worktree(s) for task %s", len(entries), task_id)
+        for repo_path, wt_path, _ts in entries:
+            try:
+                await git_ops.remove_worktree(repo_path, wt_path)
+            except Exception as exc:
+                logger.warning("remove_worktree failed for %s: %s", wt_path, exc)
+
+    async def _initial_worktree_sweep(self) -> None:
+        """At startup, prune any worktrees this worker left behind from a previous run.
+
+        The previous process may have died mid-task; nothing in memory tracks
+        those worktrees, so we walk the work directory and remove anything
+        attributable to this worker_id that's older than the TTL.
+        """
+        base = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id)
+        if not os.path.isdir(base):
+            return
+        try:
+            now = asyncio.get_event_loop().time()
+            wall_now = datetime.now(UTC).timestamp()
+            for entry in os.listdir(base):
+                full = os.path.join(base, entry)
+                if not os.path.isdir(full):
+                    continue
+                try:
+                    age = wall_now - os.path.getmtime(full)
+                except OSError:
+                    continue
+                if age <= WORKTREE_TTL_SECONDS:
+                    # Re-register so the in-memory sweeper takes over.
+                    ts = now - age
+                    repos_for_task: list[tuple[str, str, float]] = []
+                    for repo_full in self.cfg.repos:
+                        repo_name = repo_full.split("/")[-1]
+                        wt_path = os.path.join(full, repo_name)
+                        if os.path.isdir(wt_path):
+                            repo_path = os.path.join(self.cfg.repos_dir, *repo_full.split("/", 1))
+                            repos_for_task.append((repo_path, wt_path, ts))
+                    if repos_for_task:
+                        self._task_worktrees[entry] = repos_for_task
+                    continue
+                logger.info("Startup sweep: removing stale task dir %s (age=%.0fs)", full, age)
+                # Best-effort: remove each worktree via git, then drop the dir.
+                for repo_full in self.cfg.repos:
+                    repo_name = repo_full.split("/")[-1]
+                    wt_path = os.path.join(full, repo_name)
+                    if os.path.isdir(wt_path):
+                        repo_path = os.path.join(self.cfg.repos_dir, *repo_full.split("/", 1))
+                        try:
+                            await git_ops.remove_worktree(repo_path, wt_path)
+                        except Exception as exc:
+                            logger.debug("startup-sweep remove_worktree failed: %s", exc)
+                # Whatever git left behind, drop the directory.
+                import shutil
+
+                try:
+                    shutil.rmtree(full, ignore_errors=True)
+                except Exception as exc:
+                    logger.debug("startup-sweep rmtree failed for %s: %s", full, exc)
+            # Prune dangling worktree references in each repo.
+            for repo_full in self.cfg.repos:
+                repo_path = os.path.join(self.cfg.repos_dir, *repo_full.split("/", 1))
+                if os.path.isdir(repo_path):
+                    try:
+                        await git_ops.prune_worktrees(repo_path)
+                    except Exception as exc:
+                        logger.debug("prune_worktrees failed for %s: %s", repo_path, exc)
+        except Exception as exc:
+            logger.warning("Worktree startup sweep failed: %s", exc)
+
+    async def _worktree_sweeper(self) -> None:
+        """Periodically retire worktrees older than ``WORKTREE_TTL_SECONDS``."""
+        logger.info(
+            "Worktree sweeper started (TTL=%ds, interval=%ds)",
+            WORKTREE_TTL_SECONDS,
+            WORKTREE_SWEEP_INTERVAL_SECONDS,
+        )
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=WORKTREE_SWEEP_INTERVAL_SECONDS,
+                )
+                return  # shutdown
+            except TimeoutError:
+                pass
+            now = asyncio.get_event_loop().time()
+            stale: list[str] = []
+            active_task_ids = {s.current_task_id for s in self.slots if s.current_task_id}
+            for task_id, entries in list(self._task_worktrees.items()):
+                if task_id in active_task_ids:
+                    continue
+                if all(now - ts > WORKTREE_TTL_SECONDS for _rp, _wt, ts in entries):
+                    stale.append(task_id)
+            for tid in stale:
+                logger.info("Sweeper: retiring worktrees for task %s", tid)
+                await self._release_task_worktrees(tid)
 
     # ------------------------------------------------------------------ Idle puller
     async def _idle_puller(self) -> None:
@@ -1126,20 +1298,37 @@ class Worker:
         desc = task.get("description") or ""
         token = self.cfg.github_token
         repos = self.cfg.repos
+        followup_instructions = task.get("followup_instructions") or ""
+        followup_branch = task.get("followup_branch") or ""
+        is_followup = bool(followup_instructions)
 
-        logger.info("Executing task %s (agent=%s): %s", task_id, slot.agent_id, desc[:120])
+        logger.info(
+            "Executing task %s (agent=%s, followup=%s): %s",
+            task_id,
+            slot.agent_id,
+            is_followup,
+            desc[:120],
+        )
         await self._set_state("working", slot)
         await self._task_update(task_id, state="working")
 
         name = task.get("name") or desc
-        branch = f"claude/{_slug(name)}-{task_id[:6]}"
+        # On follow-ups we must continue on the existing branch — the original
+        # worker pushed it and the foreman wants the same PR updated.
+        branch = followup_branch or f"claude/{_slug(name)}-{task_id[:6]}"
         work_dir = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id, task_id)
-        logger.info("Task %s branch=%s work_dir=%s", task_id, branch, work_dir)
+        logger.info(
+            "Task %s branch=%s work_dir=%s followup=%s", task_id, branch, work_dir, is_followup
+        )
         os.makedirs(work_dir, exist_ok=True)
 
         emit = self._task_emit(task_id, slot)
-        await emit(f"[worker] Task: {desc}")
-        await emit(f"[worker] Branch: {branch}")
+        if is_followup:
+            await emit(f"[worker] Follow-up: {followup_instructions[:120]}")
+            await emit(f"[worker] Branch: {branch}")
+        else:
+            await emit(f"[worker] Task: {desc}")
+            await emit(f"[worker] Branch: {branch}")
 
         worktree_entries: list[tuple[str, str, str]] = []
         primary_wt: str | None = None
@@ -1154,8 +1343,29 @@ class Worker:
                 continue
             repo_name = repo_full.split("/")[-1]
             wt_path = os.path.join(work_dir, repo_name)
-            logger.info("Task %s: creating worktree %s on branch %s", task_id, wt_path, branch)
-            if await git_ops.create_worktree(repo_path, wt_path, branch):
+            if (
+                os.path.isdir(wt_path)
+                and os.path.isdir(os.path.join(wt_path, ".git"))
+                or (os.path.isdir(wt_path) and os.path.isfile(os.path.join(wt_path, ".git")))
+            ):
+                # Worktree from a prior run on the same task — reuse it. Pull
+                # the latest origin state for the branch so a different worker
+                # that pushed changes is reflected here.
+                logger.info("Task %s: reusing worktree at %s", task_id, wt_path)
+                await emit(f"[worker] Reusing worktree {repo_name}")
+                if is_followup:
+                    await git_ops.run_git(["fetch", "origin", branch], cwd=wt_path)
+                worktree_entries.append((repo_full, repo_path, wt_path))
+                if primary_wt is None:
+                    primary_wt = wt_path
+                continue
+            if is_followup:
+                logger.info("Task %s: attaching worktree %s to branch %s", task_id, wt_path, branch)
+                ok = await git_ops.attach_worktree(repo_path, wt_path, branch)
+            else:
+                logger.info("Task %s: creating worktree %s on branch %s", task_id, wt_path, branch)
+                ok = await git_ops.create_worktree(repo_path, wt_path, branch)
+            if ok:
                 logger.info("Task %s: worktree ready at %s", task_id, wt_path)
                 worktree_entries.append((repo_full, repo_path, wt_path))
                 if primary_wt is None:
@@ -1172,6 +1382,9 @@ class Worker:
             return
 
         await self._task_update(task_id, branch=branch, worktreePath=primary_wt)
+        # Register worktrees for the deferred sweeper — touched again below in
+        # finally so the timestamp reflects the most recent activity.
+        self._register_worktrees(task_id, worktree_entries)
 
         tool = (task.get("tool") or "claude").lower()
 
@@ -1195,17 +1408,28 @@ class Worker:
 
         try:
             # ── Main execution with redirect loop ──────────────────────────
-            current_desc = desc
-            if tool == "claude":
-                pr_title = (task.get("name") or desc)[:72].replace('"', "'")
-                closes = f" Closes #{task['issue_number']}" if task.get("issue_number") else ""
+            if is_followup:
                 current_desc = (
-                    f"{desc}\n\n"
-                    f"After completing your changes, commit, push, and open a PR:\n"
+                    f"You are continuing existing work on branch `{branch}` for task {task_id}.\n\n"
+                    f"Original task:\n{desc}\n\n"
+                    f"Follow-up instructions:\n{followup_instructions}\n\n"
+                    "Make the requested changes, then commit and push:\n"
                     f'  git add -A && git commit -m "<concise commit message>"\n'
                     f"  git push origin {branch}\n"
-                    f'  gh pr create --title "{pr_title}" --body "<summary of changes>{closes}"\n'
+                    "If a PR already exists for this branch, no new PR is needed."
                 )
+            else:
+                current_desc = desc
+                if tool == "claude":
+                    pr_title = (task.get("name") or desc)[:72].replace('"', "'")
+                    closes = f" Closes #{task['issue_number']}" if task.get("issue_number") else ""
+                    current_desc = (
+                        f"{desc}\n\n"
+                        f"After completing your changes, commit, push, and open a PR:\n"
+                        f'  git add -A && git commit -m "<concise commit message>"\n'
+                        f"  git push origin {branch}\n"
+                        f'  gh pr create --title "{pr_title}" --body "<summary of changes>{closes}"\n'
+                    )
             success = False
             stop_reason = "no_events"
             last_msg = ""
@@ -1265,6 +1489,12 @@ class Worker:
                 except asyncio.QueueEmpty:
                     redirect_instr = None
 
+                if redirect_instr is _CANCEL_SENTINEL:
+                    await emit("[worker] Task cancelled.")
+                    await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                    await self._set_state("idle", slot)
+                    return
+
                 if redirect_instr is not None and not self._shutdown_event.is_set():
                     await emit(f"[worker] ↩ Redirected: {redirect_instr[:120]}")
                     current_desc = redirect_instr
@@ -1314,18 +1544,36 @@ class Worker:
                     worktreePath=primary_wt,
                     state="awaiting-review",
                 )
-                await self._send(
-                    {
-                        "type": "task-complete",
-                        "workerId": self.cfg.worker_id,
-                        "taskId": task_id,
-                        "branch": branch,
-                        "description": desc,
-                        "prUrl": pr_url or "",
-                        "sessionId": resume_session_id or "",
-                        "lastText": last_msg,
-                    }
-                )
+                # On a follow-up run, surface task-followup-done so the
+                # foreman knows iteration finished; on a fresh run, surface
+                # task-complete. Both leave the task in awaiting-review for
+                # the foreman to decide whether more work is required.
+                if is_followup:
+                    await self._send(
+                        {
+                            "type": "task-followup-done",
+                            "workerId": self.cfg.worker_id,
+                            "taskId": task_id,
+                            "success": True,
+                            "stopReason": stop_reason,
+                            "branch": branch,
+                            "sessionId": resume_session_id or "",
+                            "prUrl": pr_url or "",
+                        }
+                    )
+                else:
+                    await self._send(
+                        {
+                            "type": "task-complete",
+                            "workerId": self.cfg.worker_id,
+                            "taskId": task_id,
+                            "branch": branch,
+                            "description": desc,
+                            "prUrl": pr_url or "",
+                            "sessionId": resume_session_id or "",
+                            "lastText": last_msg,
+                        }
+                    )
                 await self._set_state("awaiting-review", slot)
             else:
                 logger.warning("Task %s failed: %s", task_id, stop_reason)
@@ -1351,159 +1599,14 @@ class Worker:
                 )
                 await self._set_state("error", slot)
 
-            # ── Follow-up loop — runs after both success and failure so the
-            # foreman can resume the same worktree (with --resume) for a while
-            # before we tear it down. ─────────────────────────────────────────
-            followup_q: asyncio.Queue = asyncio.Queue()
-            self._followup_queues[task_id] = followup_q
-            # Drain any redirect instructions that arrived between subprocess exit
-            # and followup-window open (buffered in redirect_q by the listener).
-            while not redirect_q.empty():
-                try:
-                    buffered = redirect_q.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-                await followup_q.put(buffered)
-                logger.info("Task %s: replaying buffered redirect as first followup", task_id)
-            followup_cancelled = False
-            last_success = success
-            try:
-                if self._shutdown_event.is_set():
-                    await emit("[worker] Shutdown in progress — skipping follow-up window.")
-                while not self._shutdown_event.is_set():
-                    try:
-                        instructions = await asyncio.wait_for(followup_q.get(), timeout=300.0)
-                    except TimeoutError:
-                        await emit("[worker] Follow-up window expired — finalizing.")
-                        await self._send(
-                            {
-                                "type": "task-complete",
-                                "workerId": self.cfg.worker_id,
-                                "taskId": task_id,
-                                "branch": branch,
-                                "description": desc,
-                                "prUrl": pr_url or "",
-                                "sessionId": resume_session_id or "",
-                                "finalizedBy": "timeout",
-                            }
-                        )
-                        break
-                    if instructions is _CANCEL_SENTINEL:
-                        await emit("[worker] Task cancelled.")
-                        followup_cancelled = True
-                        break
-                    if instructions is None:
-                        await emit("[worker] Task finalized by foreman.")
-                        break
-
-                    await self._set_state("working", slot)
-                    await self._task_update(task_id, state="working")
-                    await emit(f"[worker] Follow-up: {instructions[:120]}")
-
-                    # Inner redirect loop for followup runs
-                    current_fu_desc = instructions
-                    fu_ok = False
-                    fu_reason = "no_events"
-                    while True:
-                        fu_ok, fu_reason, _ = await claude_runner.run_claude_auto(
-                            current_fu_desc,
-                            primary_wt,
-                            max_turns=self.cfg.claude_max_turns,
-                            emit=emit,
-                            on_proc=_on_proc,
-                            claude_path=self.cfg.claude_path,
-                            resume_session_id=resume_session_id,
-                        )
-                        _capture_session_and_clear()
-                        logger.info(
-                            "Task %s follow-up: ok=%s reason=%s session=%s",
-                            task_id,
-                            fu_ok,
-                            fu_reason,
-                            resume_session_id,
-                        )
-
-                        if task_id in self._cancelled_tasks:
-                            followup_cancelled = True
-                            break
-
-                        try:
-                            redir = redirect_q.get_nowait()
-                        except asyncio.QueueEmpty:
-                            redir = None
-
-                        if redir is not None and not self._shutdown_event.is_set():
-                            await emit(f"[worker] ↩ Redirected during follow-up: {redir[:120]}")
-                            current_fu_desc = redir
-                            continue
-
-                        break
-
-                    if followup_cancelled:
-                        break
-
-                    last_success = fu_ok
-
-                    if fu_ok:
-                        await github_pr.push_branch(
-                            branch=branch,
-                            worktree_path=primary_wt,
-                            emit=emit,
-                        )
-                        # Originally-failed tasks never opened a PR; do it now
-                        # that we have something worth reviewing.
-                        if not pr_url:
-                            existing_pr = await github_pr.find_existing_pr(
-                                branch=branch,
-                                worktree_path=primary_wt,
-                                token=token,
-                            )
-                            if existing_pr:
-                                pr_url = existing_pr
-                                await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
-                            else:
-                                pr_url = await github_pr.open_pr(
-                                    task=task,
-                                    branch=branch,
-                                    worktree_path=primary_wt,
-                                    token=token,
-                                    emit=emit,
-                                )
-
-                    await self._send(
-                        {
-                            "type": "task-followup-done",
-                            "workerId": self.cfg.worker_id,
-                            "taskId": task_id,
-                            "success": fu_ok,
-                            "stopReason": fu_reason,
-                            "branch": branch,
-                            "sessionId": resume_session_id or "",
-                            "prUrl": pr_url or "",
-                        }
-                    )
-                    await self._task_update(
-                        task_id,
-                        state="awaiting-review" if fu_ok else "failed",
-                    )
-                    await self._set_state(
-                        "awaiting-review" if fu_ok else "error",
-                        slot,
-                    )
-            finally:
-                self._followup_queues.pop(task_id, None)
-
-            if followup_cancelled:
-                await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
-                await self._set_state("idle", slot)
-                return
-
-            final_state = "done" if last_success else "failed"
-            await self._task_update(task_id, state=final_state, finishedAt=_now_iso())
+            # The slot returns to idle here. Worktrees stay on disk so the
+            # foreman can dispatch a follow-up to this same worker without
+            # paying for a re-clone; the deferred sweeper reclaims them
+            # after WORKTREE_TTL_SECONDS.
             await self._set_state("idle", slot)
 
         finally:
             self._redirect_queues.pop(task_id, None)
-            logger.info("Task %s: cleaning up %d worktree(s)", task_id, len(worktree_entries))
-            for _repo_full, repo_path, wt_path in worktree_entries:
-                await git_ops.remove_worktree(repo_path, wt_path)
+            # Refresh the worktree-registry timestamp so the sweeper holds
+            # off on this task for another full TTL window.
+            self._touch_task_worktrees(task_id)

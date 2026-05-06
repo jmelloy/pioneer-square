@@ -83,9 +83,40 @@ async def create_worktree(repo_path: str, wt_path: str, branch: str) -> bool:
     return rc == 0
 
 
+async def attach_worktree(repo_path: str, wt_path: str, branch: str) -> bool:
+    """Create a worktree that checks out an *existing* branch.
+
+    Used when continuing a task on a branch the original worker already
+    pushed: a different worker (or the same worker after a worktree-cleanup
+    sweep) attaches a fresh worktree to ``origin/<branch>`` so it can keep
+    iterating on the same PR.
+    """
+    logger.info(
+        "Attaching worktree at %s to existing branch %s (from %s)", wt_path, branch, repo_path
+    )
+    os.makedirs(os.path.dirname(wt_path), exist_ok=True)
+    await run_git(["fetch", "origin", branch], cwd=repo_path)
+    # Prefer attaching to the local branch ref if it exists; otherwise fall
+    # back to creating a tracking branch from origin/<branch>.
+    rc, _, _ = await run_git(["worktree", "add", wt_path, branch], cwd=repo_path)
+    if rc != 0:
+        rc, _, _ = await run_git(
+            ["worktree", "add", "-B", branch, wt_path, f"origin/{branch}"],
+            cwd=repo_path,
+        )
+    if rc != 0:
+        logger.error("Worktree attach failed at %s for branch %s (rc=%d)", wt_path, branch, rc)
+    return rc == 0
+
+
 async def remove_worktree(repo_path: str, wt_path: str) -> None:
     logger.info("Removing worktree %s", wt_path)
     await run_git(["worktree", "remove", "--force", wt_path], cwd=repo_path)
+
+
+async def prune_worktrees(repo_path: str) -> None:
+    """Run ``git worktree prune`` to reclaim references for removed dirs."""
+    await run_git(["worktree", "prune"], cwd=repo_path)
 
 
 async def pull_repos(
