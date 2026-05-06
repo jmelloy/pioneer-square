@@ -201,3 +201,60 @@ def test_load_github_token_empty_pioneer_falls_through(tmp_path, monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_github")
     cfg = load(str(tmp_path / "missing.toml"))
     assert cfg.github_token == "ghp_github"
+
+
+# ---------------------------------------------------------------------------
+# load() — org field
+# ---------------------------------------------------------------------------
+
+
+def test_org_defaults_to_none():
+    cfg = Config(backend_url="ws://x:1", guild_id="g")
+    assert cfg.org is None
+
+
+def test_load_org_from_toml(tmp_path):
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\norg = "myorg"\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.org == "myorg"
+
+
+def test_load_org_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("PIONEER_ORG", "envorg")
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.org == "envorg"
+
+
+def test_load_org_override_beats_toml(tmp_path):
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\norg = "tomlorg"\n'
+    )
+    cfg = load(str(toml_path), overrides={"org": "overrideorg"})
+    assert cfg.org == "overrideorg"
+
+
+def test_load_org_and_repos_can_coexist(tmp_path):
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n'
+        '[github]\norg = "myorg"\nrepos = ["myorg/extra"]\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.org == "myorg"
+    assert "myorg/extra" in cfg.repos
+
+
+def test_load_repos_only_org_none(tmp_path):
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\nrepos = ["owner/repo"]\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.org is None
+    assert "owner/repo" in cfg.repos

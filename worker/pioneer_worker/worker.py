@@ -112,6 +112,7 @@ class Worker:
                 f"/guilds/{self.cfg.guild_id}/workers",
                 json={
                     "repos": self.cfg.repos,
+                    "org": self.cfg.org,
                     "github_token": None,
                     "hostname": socket.gethostname(),
                     "user": self.cfg.user,
@@ -1193,6 +1194,20 @@ class Worker:
             except Exception as exc:
                 logger.warning("remove_worktree failed for %s: %s", wt_path, exc)
 
+    def _known_repos(self) -> list[str]:
+        """All repos this worker may have cloned: static list + org repos already on disk."""
+        repos = list(self.cfg.repos)
+        if self.cfg.org:
+            org_dir = os.path.join(self.cfg.repos_dir, self.cfg.org)
+            if os.path.isdir(org_dir):
+                for entry in os.listdir(org_dir):
+                    repo_full = f"{self.cfg.org}/{entry}"
+                    if repo_full not in repos and os.path.isdir(
+                        os.path.join(org_dir, entry, ".git")
+                    ):
+                        repos.append(repo_full)
+        return repos
+
     async def _initial_worktree_sweep(self) -> None:
         """At startup, prune any worktrees this worker left behind from a previous run.
 
@@ -1206,6 +1221,7 @@ class Worker:
         try:
             now = asyncio.get_event_loop().time()
             wall_now = datetime.now(UTC).timestamp()
+            known_repos = self._known_repos()
             for entry in os.listdir(base):
                 full = os.path.join(base, entry)
                 if not os.path.isdir(full):
@@ -1218,7 +1234,7 @@ class Worker:
                     # Re-register so the in-memory sweeper takes over.
                     ts = now - age
                     repos_for_task: list[tuple[str, str, float]] = []
-                    for repo_full in self.cfg.repos:
+                    for repo_full in known_repos:
                         repo_name = repo_full.split("/")[-1]
                         wt_path = os.path.join(full, repo_name)
                         if os.path.isdir(wt_path):
@@ -1229,7 +1245,7 @@ class Worker:
                     continue
                 logger.info("Startup sweep: removing stale task dir %s (age=%.0fs)", full, age)
                 # Best-effort: remove each worktree via git, then drop the dir.
-                for repo_full in self.cfg.repos:
+                for repo_full in known_repos:
                     repo_name = repo_full.split("/")[-1]
                     wt_path = os.path.join(full, repo_name)
                     if os.path.isdir(wt_path):
@@ -1246,7 +1262,7 @@ class Worker:
                 except Exception as exc:
                     logger.debug("startup-sweep rmtree failed for %s: %s", full, exc)
             # Prune dangling worktree references in each repo.
-            for repo_full in self.cfg.repos:
+            for repo_full in known_repos:
                 repo_path = os.path.join(self.cfg.repos_dir, *repo_full.split("/", 1))
                 if os.path.isdir(repo_path):
                     try:
@@ -1310,13 +1326,15 @@ class Worker:
             except Exception as exc:
                 logger.warning("Pending-task poll failed: %s", exc)
             all_idle = all(s.current_claude is None for s in self.slots)
-            if self.task_queue.empty() and all_idle and self.cfg.repos:
-                await git_ops.pull_repos(
-                    self.cfg.repos_dir,
-                    self.cfg.repos,
-                    self.cfg.github_token,
-                    self._emit,
-                )
+            if self.task_queue.empty() and all_idle:
+                known = self._known_repos()
+                if known:
+                    await git_ops.pull_repos(
+                        self.cfg.repos_dir,
+                        known,
+                        self.cfg.github_token,
+                        self._emit,
+                    )
 
     # ------------------------------------------------------------------ Agent loop
     async def _agent_loop(self, slot: Agent) -> None:
@@ -1357,7 +1375,12 @@ class Worker:
         task_id = task["id"]
         desc = task.get("description") or ""
         token = self.cfg.github_token
-        repos = self.cfg.repos
+        # Build effective repo list: static config repos + lazy org repo if applicable.
+        repos = list(self.cfg.repos)
+        issue_repo = task.get("issue_repo") or ""
+        if self.cfg.org and issue_repo.startswith(f"{self.cfg.org}/"):
+            if issue_repo not in repos:
+                repos.insert(0, issue_repo)
         followup_instructions = task.get("followup_instructions") or ""
         followup_branch = task.get("followup_branch") or ""
         is_followup = bool(followup_instructions)

@@ -35,7 +35,10 @@ router = APIRouter()
 
 
 class WorkerCreate(BaseModel):
-    repos: list[str]  # ["owner/repo", ...]
+    repos: list[str] = []  # ["owner/repo", ...]
+    # Optional GitHub org. When set the worker accepts any task for <org>/* and
+    # clones repos lazily. May be used alongside or instead of repos.
+    org: str | None = None
     github_token: str | None = None
     hostname: str | None = None
     # Either a users.id (numeric GitHub id as text) or a github_login. The
@@ -85,6 +88,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
                 id=worker_id,
                 guild_id=guild_id,
                 repos=json.dumps(data.repos),
+                org=data.org,
                 state="offline",
                 created_at=created_at,
                 user_id=resolved_user_id,
@@ -131,6 +135,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
         "id": worker_id,
         "name": worker_name,
         "repos": data.repos,
+        "org": data.org,
         "created_at": created_at,
         "auth_token": auth_token,
     }
