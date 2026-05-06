@@ -122,3 +122,47 @@ Agents connect via WebSocket at `ws://localhost:8000/ws/{sessionId}` and send:
 ```
 
 States: `idle` | `thinking` | `working` | `busy` | `error`
+
+## A2A AgentCard
+
+Pioneer Square implements the [A2A (Agent-to-Agent) protocol](https://google.github.io/A2A/)
+AgentCard discovery document. Each guild exposes its identity at:
+
+```
+GET /.well-known/agent.json        # subdomain-routed (e.g. myguild.pioneer-square.melloy.life)
+GET /guilds/{guild_id}/agent-card  # direct REST (requires auth)
+```
+
+The card describes the guild's Foreman AI and lists all currently-online workers
+as skills. Example response:
+
+```json
+{
+  "name": "My Factory",
+  "description": "A real-time multi-agent workspace...",
+  "url": "https://myguild.pioneer-square.melloy.life",
+  "version": "1.0.0",
+  "capabilities": { "streaming": true },
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    { "id": "foreman", "name": "Foreman", "tags": ["orchestration", "planning", "review"], ... },
+    { "id": "w-abc123", "name": "Worker (my-org/my-repo)", "tags": ["coding", "github"], ... }
+  ],
+  "provider": { "organization": "Pioneer Square", "url": "https://github.com/jmelloy/pioneer-square" }
+}
+```
+
+### Customising the card
+
+Update a guild's AgentCard fields via `PATCH /guilds/{id}`:
+
+```bash
+curl -X PATCH http://localhost:8000/guilds/{guild_id} \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"description": "My factory description", "url": "https://my-instance.example.com", "version": "1.0.0"}'
+```
+
+All three fields (`description`, `url`, `version`) are optional — the endpoint
+falls back to sensible defaults when they are unset.

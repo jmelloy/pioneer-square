@@ -32,6 +32,10 @@ class Guild(Base):
     # this guild. NULL until an owner first requests one via the
     # webhook-secret endpoint.
     webhook_secret = Column(Text, nullable=True)
+    # A2A AgentCard fields — used to populate /.well-known/agent.json
+    description = Column(Text, nullable=True)
+    url = Column(Text, nullable=True)
+    version = Column(Text, nullable=True)
 
 
 class Agent(Base):
