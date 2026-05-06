@@ -82,10 +82,14 @@ async def test_org_repo_cloned_on_first_task(tmp_path):
         ),
         patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=True)),
         patch(
-            "pioneer_worker.worker.github_pr.ensure_pr",
+            "pioneer_worker.worker.github_pr.find_existing_pr",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "pioneer_worker.worker.github_pr.open_pr",
             new=AsyncMock(return_value="https://github.com/myorg/newrepo/pull/1"),
         ),
-        patch("pioneer_worker.worker.git_ops.ensure_webhook", new=AsyncMock()),
+        patch("pioneer_worker.worker.github_pr.ensure_webhook", new=AsyncMock()),
     ):
         await worker._execute_task(task, slot)
 
@@ -144,10 +148,14 @@ async def test_already_cloned_repo_skips_clone(tmp_path):
         ),
         patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=True)),
         patch(
-            "pioneer_worker.worker.github_pr.ensure_pr",
+            "pioneer_worker.worker.github_pr.find_existing_pr",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "pioneer_worker.worker.github_pr.open_pr",
             new=AsyncMock(return_value="https://github.com/myorg/existingrepo/pull/1"),
         ),
-        patch("pioneer_worker.worker.git_ops.ensure_webhook", new=AsyncMock()),
+        patch("pioneer_worker.worker.github_pr.ensure_webhook", new=AsyncMock()),
     ):
         await worker._execute_task(task, slot)
 
@@ -194,10 +202,14 @@ async def test_repos_only_worker_no_org(tmp_path):
         ),
         patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=True)),
         patch(
-            "pioneer_worker.worker.github_pr.ensure_pr",
+            "pioneer_worker.worker.github_pr.find_existing_pr",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "pioneer_worker.worker.github_pr.open_pr",
             new=AsyncMock(return_value="https://github.com/owner/myrepo/pull/1"),
         ),
-        patch("pioneer_worker.worker.git_ops.ensure_webhook", new=AsyncMock()),
+        patch("pioneer_worker.worker.github_pr.ensure_webhook", new=AsyncMock()),
     ):
         await worker._execute_task(task, slot)
 
