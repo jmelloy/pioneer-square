@@ -40,6 +40,36 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _parse_pr_url(pr_url: str | None) -> tuple[int | None, str | None]:
+    """Extract ``(pr_number, "owner/repo")`` from a GitHub PR URL.
+
+    Accepts both web URLs (``https://github.com/o/r/pull/42``) and API URLs
+    (``https://api.github.com/repos/o/r/pulls/42``). Returns ``(None, None)``
+    on anything that doesn't look like a PR URL — the caller stamps both
+    columns to NULL in that case so we don't link a stale (number, repo) to
+    a task whose PR was retracted.
+    """
+    if not pr_url or not isinstance(pr_url, str):
+        return None, None
+    parts = pr_url.rstrip("/").split("/")
+    try:
+        # ``…/{owner}/{repo}/pull/{n}`` or ``…/repos/{owner}/{repo}/pulls/{n}``
+        if "pull" in parts:
+            idx = parts.index("pull")
+        elif "pulls" in parts:
+            idx = parts.index("pulls")
+        else:
+            return None, None
+        owner = parts[idx - 2]
+        repo = parts[idx - 1]
+        number = int(parts[idx + 1])
+    except (ValueError, IndexError):
+        return None, None
+    if not owner or not repo:
+        return None, None
+    return number, f"{owner}/{repo}"
+
+
 async def _resolve_user_identifier(db, identifier: str) -> str | None:
     """Look up a User by id (numeric github id as text) or github_login.
 
@@ -368,6 +398,13 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
     ):
         if src in data:
             update_values[col] = data[src]
+    # When the worker reports a PR URL, derive pr_number + pr_repo so github
+    # webhook deliveries can be linked back to this task without fragile URL
+    # substring matching at receive time.
+    if "prUrl" in data:
+        pr_number, pr_repo = _parse_pr_url(data.get("prUrl"))
+        update_values["pr_number"] = pr_number
+        update_values["pr_repo"] = pr_repo
     if update_values:
         await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_values))
         await ctx.db.commit()

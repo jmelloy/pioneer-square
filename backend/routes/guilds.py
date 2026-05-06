@@ -6,9 +6,10 @@ Owns ``/guilds`` (create/list) and ``/guilds/{id}`` (read/update), plus the
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime
 
-from auth_deps import require_member, require_user
+from auth_deps import require_member, require_user, require_worker_or_member_path
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
@@ -287,6 +288,59 @@ async def update_guild_member(
         member.role = data.role
         await db.commit()
         return {"guild_id": guild_id, "user_id": user_id, "role": data.role}
+    finally:
+        await db.close()
+
+
+async def _ensure_webhook_secret(db, guild_id: str) -> str:
+    """Return the guild's webhook secret, generating one on first access."""
+    res = await db.execute(select(Guild).where(Guild.id == guild_id))
+    guild = res.scalar_one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    if not guild.webhook_secret:
+        guild.webhook_secret = secrets.token_hex(32)
+        await db.commit()
+    return guild.webhook_secret
+
+
+@router.post("/guilds/{guild_id}/webhook-secret")
+async def rotate_webhook_secret(
+    guild_id: str,
+    github_user_id: str = Depends(require_member("owner")),
+):
+    """Generate a fresh webhook secret for the guild (owner only).
+
+    Rotating invalidates webhooks already configured against the previous
+    secret — callers must update each repo's webhook config to match.
+    """
+    db = await get_db()
+    try:
+        res = await db.execute(select(Guild).where(Guild.id == guild_id))
+        guild = res.scalar_one_or_none()
+        if not guild:
+            raise HTTPException(status_code=404, detail="Guild not found")
+        guild.webhook_secret = secrets.token_hex(32)
+        await db.commit()
+        return {"guild_id": guild_id, "webhook_secret": guild.webhook_secret}
+    finally:
+        await db.close()
+
+
+@router.get("/guilds/{guild_id}/webhook-secret")
+async def get_webhook_secret(
+    guild_id: str,
+    principal: str = Depends(require_worker_or_member_path),
+):
+    """Return the guild's webhook secret, generating one on first access.
+
+    Accessible by guild members (any role) or registered workers — workers
+    need it to configure ``POST /repos/{repo}/hooks`` on the user's behalf.
+    """
+    db = await get_db()
+    try:
+        secret = await _ensure_webhook_secret(db, guild_id)
+        return {"guild_id": guild_id, "webhook_secret": secret}
     finally:
         await db.close()
 
