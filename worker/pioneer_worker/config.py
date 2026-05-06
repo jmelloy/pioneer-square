@@ -38,6 +38,12 @@ class Config:
     pull_interval: float = 300.0
     claude_max_turns: int = 50
     max_agents: int = 4
+    # Optional public-facing backend URL used when registering GitHub webhooks.
+    # ``backend_url`` may point at an internal address GitHub can't reach
+    # (e.g. ``http://backend:8000`` in Docker); set ``public_backend_url`` to
+    # the externally-reachable URL (e.g. an ngrok / Cloudflare tunnel) and
+    # webhook registration will target it. Defaults to ``backend_url``.
+    public_backend_url: str | None = None
 
     config_path: Path = field(default_factory=Path)
 
@@ -47,6 +53,12 @@ class Config:
         parsed = urlparse(self.backend_url)
         scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme or "http")
         return urlunparse((scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
+
+    @property
+    def webhook_target_url(self) -> str:
+        """Public URL GitHub should POST webhook deliveries to for this guild."""
+        base = (self.public_backend_url or self.http_url).rstrip("/")
+        return f"{base}/webhooks/github/{self.guild_id}"
 
     @property
     def ws_url(self) -> str:
@@ -167,5 +179,8 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             if overrides.get("max_agents") is not None
             else raw.get("max_agents", 4)
         ),
+        public_backend_url=overrides.get("public_backend_url")
+        or raw.get("public_backend_url")
+        or os.environ.get("PIONEER_PUBLIC_BACKEND_URL"),
         config_path=cfg_path,
     )
