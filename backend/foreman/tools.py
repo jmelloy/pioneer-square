@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import string
 import urllib.error
 import urllib.parse
@@ -415,6 +416,31 @@ FOREMAN_TOOLS = [
             "required": ["repo", "query"],
         },
     },
+    {
+        "name": "review_pr",
+        "description": (
+            "Request an automated code review of a GitHub pull request via the "
+            "code-review-agent MCP server. The agent fetches the PR diff, runs a "
+            "Claude-powered review, and posts the result as a GitHub PR review "
+            "(APPROVE / REQUEST_CHANGES / COMMENT). "
+            "Uses the code-review-agent MCP server at https://agent.meyers.life by default "
+            "(override with REVIEWER_MCP_URL). "
+            "Use this after a worker opens a PR to get an automated review before "
+            "merging, or when a human asks for a code review."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pr_url": {
+                    "type": "string",
+                    "description": (
+                        "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123"
+                    ),
+                },
+            },
+            "required": ["pr_url"],
+        },
+    },
 ]
 
 
@@ -552,6 +578,51 @@ async def maybe_post_plan_comment(guild_id: str, task_id: str, last_text: str) -
         logger.info("plan comment posted to %s#%s for task %s", issue_repo, issue_number, task_id)
     except Exception as exc:
         logger.warning("plan comment failed for task %s: %s", task_id, exc)
+
+
+# ---------------------------------------------------------------------------
+# MCP / code-review-agent helpers
+# ---------------------------------------------------------------------------
+
+_PR_URL_RE = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?$")
+
+_VERDICT_TO_GH_EVENT = {
+    "approved": "APPROVE",
+    "changes-requested": "REQUEST_CHANGES",
+    "comment": "COMMENT",
+}
+
+
+def _extract_review_data(mcp_result: dict) -> tuple[str, str]:
+    """Parse an MCP ``tools/call`` result from the code-review-agent.
+
+    Returns ``(github_event, review_body)`` where ``github_event`` is one of
+    ``"APPROVE"``, ``"REQUEST_CHANGES"``, or ``"COMMENT"``.
+    """
+    # Extract the human-readable review text from the MCP content blocks.
+    review_body = ""
+    for block in mcp_result.get("content", []):
+        if isinstance(block, dict) and block.get("type") == "text":
+            review_body = block.get("text", "")
+            break
+    if not review_body and isinstance(mcp_result.get("content"), str):
+        review_body = mcp_result["content"]
+
+    # Try to extract a machine-readable verdict from structuredContent artifacts.
+    verdict = "comment"
+    structured = mcp_result.get("structuredContent") or {}
+    for artifact in structured.get("artifacts", []):
+        if artifact.get("content_type") == "application/vnd.code-review-agent.report+json":
+            try:
+                report = json.loads(artifact.get("body", "{}"))
+                verdict = report.get("summary", {}).get("verdict", "comment")
+            except (json.JSONDecodeError, AttributeError):
+                pass
+            break
+
+    github_event = _VERDICT_TO_GH_EVENT.get(str(verdict).lower(), "COMMENT")
+    review_body = review_body or f"Automated code review completed (verdict: {verdict})."
+    return github_event, review_body
 
 
 # ---------------------------------------------------------------------------
@@ -1037,6 +1108,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             "create_github_issue",
             "search_github_issues",
             "get_pr_status",
+            "review_pr",
         ):
             creds = await _guild_github_token(guild_id)
             if not creds:
@@ -1215,6 +1287,47 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 for i in items
                             ]
                         )
+
+                    elif tu.name == "review_pr":
+                        pr_url = inp["pr_url"]
+                        pr_match = _PR_URL_RE.match(pr_url.rstrip("/"))
+                        if not pr_match:
+                            result_text = (
+                                f"Invalid GitHub PR URL: {pr_url!r}. "
+                                "Expected https://github.com/owner/repo/pull/N"
+                            )
+                            is_error = True
+                        else:
+                            pr_repo = pr_match.group(1)
+                            pr_number = int(pr_match.group(2))
+                            agent_url = f"https://{guild_id}.pioneer-square.melloy.life"
+                            from foreman.mcp_client import MCPClient
+
+                            client = MCPClient()
+                            mcp_result = await client.call_tool(
+                                "start_conversation",
+                                {
+                                    "agent_url": agent_url,
+                                    "capability": "review_pr",
+                                    "initial_text": pr_url,
+                                },
+                            )
+                            github_event, review_body = _extract_review_data(mcp_result)
+                            review_data = await asyncio.to_thread(
+                                _gh_api_post,
+                                f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
+                                token,
+                                {"body": review_body, "event": github_event},
+                            )
+                            result_text = json.dumps(
+                                {
+                                    "pr_url": pr_url,
+                                    "verdict": github_event,
+                                    "review_id": review_data.get("id"),
+                                    "review_posted": True,
+                                    "summary": review_body[:400],
+                                }
+                            )
 
                 except urllib.error.HTTPError as exc:
                     result_text = f"GitHub API error: {exc.code} {exc.reason}"
