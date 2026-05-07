@@ -2,7 +2,7 @@
 
 When an A2A agent declares a dnsid-based security scheme the caller must:
   1. POST dnsid.challenge to the agent to receive a server {nonce, challenge_id}.
-  2. Sign a JWT (ES256) containing those values plus purpose/iss/sub.
+  2. Sign a JWT (EdDSA/Ed25519) via the dnsid-sdk CLI containing those values.
   3. Include Authorization: DNSid <jwt> on subsequent task requests.
 
 The caller's identity is a subdomain of the guild's base domain
@@ -13,40 +13,46 @@ verify ownership by fetching {caller_domain}/.well-known/jwks.json.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
+import os
+import subprocess
 import time
 import urllib.request
 from abc import ABC, abstractmethod
 
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
-
 # ---------------------------------------------------------------------------
-# JWT primitives
+# dnsid-sdk subprocess helpers
 # ---------------------------------------------------------------------------
 
 
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+def _dnsid_bin() -> str:
+    return os.path.expanduser(os.environ.get("DNSID_SDK_BIN", "~/dnsid-go/bin/dnsid-sdk"))
 
 
-def build_es256_jwt(claims: dict, private_key_pem: str, key_id: str) -> str:
-    """Return a signed compact ES256 JWT."""
-    header = _b64url(
-        json.dumps({"alg": "ES256", "typ": "JWT", "kid": key_id}, separators=(",", ":")).encode()
-    )
-    payload = _b64url(json.dumps(claims, separators=(",", ":")).encode())
-    signing_input = f"{header}.{payload}".encode()
+def _dnsid_sign_sync(claims: dict, private_key_pem: str) -> str:
+    """Sign a JWT via `dnsid sign` using an Ed25519 PEM key. Returns the compact JWT string."""
+    import tempfile
 
-    key = serialization.load_pem_private_key(private_key_pem.encode(), password=None)
-    der_sig = key.sign(signing_input, ec.ECDSA(hashes.SHA256()))  # type: ignore[arg-type]
-
-    # Convert DER-encoded ECDSA sig to fixed-length r||s (32+32 bytes for P-256)
-    r, s = decode_dss_signature(der_sig)
-    raw_sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
-    return f"{header}.{payload}.{_b64url(raw_sig)}"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        key_path = os.path.join(tmpdir, "key.pem")
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(key_path, "w") as f:
+            f.write(private_key_pem)
+        with open(config_path, "w") as f:
+            json.dump({"key_path": key_path}, f)
+        result = subprocess.run(
+            [_dnsid_bin(), "sign", "--config", config_path],
+            input=json.dumps(claims).encode(),
+            capture_output=True,
+            timeout=10,
+        )
+    out = json.loads(result.stdout)
+    if not out.get("ok"):
+        raise RuntimeError(
+            f"dnsid sign [{out.get('error', '?')}]: "
+            f"{out.get('message', result.stderr.decode(errors='replace')[:200])}"
+        )
+    return out["jwt"]
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +77,7 @@ class DNSidAuthScheme(A2AAuthScheme):
     """Mutual DNSid challenge-response (dnsid-cr security scheme).
 
     Step 1 — POST dnsid.challenge (JSON-RPC 2.0) to {base_url}/a2a.
-    Step 2 — Build an ES256 JWT with nonce/challenge_id/purpose/iss/sub.
+    Step 2 — Sign an EdDSA JWT with nonce/challenge_id/purpose/iss/sub via dnsid-sdk.
     Step 3 — Return Authorization: DNSid <jwt>.
     """
 
@@ -79,12 +85,10 @@ class DNSidAuthScheme(A2AAuthScheme):
         self,
         caller_domain: str,
         private_key_pem: str,
-        key_id: str,
         purpose: str = "a2a-pr-review",
     ) -> None:
         self.caller_domain = caller_domain
         self.private_key_pem = private_key_pem
-        self.key_id = key_id
         self.purpose = purpose
 
     def _challenge_sync(self, agent_base_url: str) -> dict:
@@ -101,7 +105,6 @@ class DNSidAuthScheme(A2AAuthScheme):
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-        # Unwrap JSON-RPC envelope if present
         return data.get("result", data)
 
     async def get_auth_headers(self, agent_base_url: str) -> dict[str, str]:
@@ -119,5 +122,5 @@ class DNSidAuthScheme(A2AAuthScheme):
             "iat": now,
             "exp": now + 300,
         }
-        token = build_es256_jwt(claims, self.private_key_pem, self.key_id)
+        token = await asyncio.to_thread(_dnsid_sign_sync, claims, self.private_key_pem)
         return {"Authorization": f"DNSid {token}"}

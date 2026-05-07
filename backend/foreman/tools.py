@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import string
@@ -13,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from events import broadcast, emit_terminal_line
-from models import Agent, GithubToken, Guild, Task, TaskLog, Worker
+from models import Agent, GithubToken, Guild, GuildKey, Task, TaskLog, Worker
 from sqlalchemy import select, update
 
 # Default soft-delete window (seconds) when finalize_task is called without
@@ -441,6 +442,81 @@ FOREMAN_TOOLS = [
             "required": ["pr_url"],
         },
     },
+    {
+        "name": "dnsid",
+        "description": (
+            "Run a DNSid operation via the local dnsid-sdk CLI. "
+            "Three commands: "
+            "'resolve' — look up an FQDN's _dnsid TXT record and JWKS (param: fqdn); "
+            "'sign' — sign a JWT with the agent's configured Ed25519 identity (param: claims object); "
+            "'verify' — verify a JWT against its DNSid record (params: jwt, expected_aud, optional expected_nonce). "
+            "Returns the CLI's JSON output on success; raises on failure."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "enum": ["resolve", "sign", "verify"],
+                    "description": "Subcommand to run.",
+                },
+                "fqdn": {
+                    "type": "string",
+                    "description": "resolve: FQDN to look up, e.g. 'example.com'.",
+                },
+                "claims": {
+                    "type": "object",
+                    "description": "sign: JSON object of JWT claims (iss, sub, exp, nonce, …).",
+                },
+                "jwt": {
+                    "type": "string",
+                    "description": "verify: compact JWT string to verify.",
+                },
+                "expected_aud": {
+                    "type": "string",
+                    "description": "verify: required — aud claim must contain this value.",
+                },
+                "expected_nonce": {
+                    "type": "string",
+                    "description": "verify: optional — nonce claim must equal this value.",
+                },
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "call_agent",
+        "description": (
+            "Call a skill on a remote A2A-compatible HTTP agent. "
+            "Fetches the agent card from {agent_url}/.well-known/agent.json to discover "
+            "available skills, then dispatches the requested skill with the given params. "
+            "Returns the raw JSON result from the agent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_url": {
+                    "type": "string",
+                    "description": (
+                        "Base URL of the target A2A agent, "
+                        "e.g. https://agent.example.com or http://localhost:8080"
+                    ),
+                },
+                "skill": {
+                    "type": "string",
+                    "description": (
+                        "Skill id to invoke, e.g. 'verify_identity_record' or 'lookup_dnsid'. "
+                        "Must match a skill id listed in the agent card."
+                    ),
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Parameters to pass to the skill as a JSON object.",
+                },
+            },
+            "required": ["agent_url", "skill"],
+        },
+    },
 ]
 
 
@@ -490,6 +566,18 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
         )
         row = result.first()
         return (row.access_token, row.github_username) if row else None
+    finally:
+        await db.close()
+
+
+async def _guild_private_key_pem(guild_id: str) -> str | None:
+    """Return the Ed25519 private key PEM for the guild, or None if not found."""
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(GuildKey.private_key_pem).where(GuildKey.guild_id == guild_id)
+        )
+        return result.scalar_one_or_none()
     finally:
         await db.close()
 
@@ -581,7 +669,7 @@ async def maybe_post_plan_comment(guild_id: str, task_id: str, last_text: str) -
 
 
 # ---------------------------------------------------------------------------
-# MCP / code-review-agent helpers
+# code-review-agent helpers
 # ---------------------------------------------------------------------------
 
 _PR_URL_RE = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?$")
@@ -592,37 +680,124 @@ _VERDICT_TO_GH_EVENT = {
     "comment": "COMMENT",
 }
 
+_REVIEW_REPORT_MIME = "application/vnd.code-review-agent.report+json"
 
-def _extract_review_data(mcp_result: dict) -> tuple[str, str]:
-    """Parse an MCP ``tools/call`` result from the code-review-agent.
+
+def _extract_review_data(a2a_result: dict) -> tuple[str, str]:
+    """Parse an A2A tasks/send result from the code-review-agent.
 
     Returns ``(github_event, review_body)`` where ``github_event`` is one of
     ``"APPROVE"``, ``"REQUEST_CHANGES"``, or ``"COMMENT"``.
-    """
-    # Extract the human-readable review text from the MCP content blocks.
-    review_body = ""
-    for block in mcp_result.get("content", []):
-        if isinstance(block, dict) and block.get("type") == "text":
-            review_body = block.get("text", "")
-            break
-    if not review_body and isinstance(mcp_result.get("content"), str):
-        review_body = mcp_result["content"]
 
-    # Try to extract a machine-readable verdict from structuredContent artifacts.
+    Inspects ``artifacts[*].parts[*]``: text parts supply the review body,
+    a part with type ``application/vnd.code-review-agent.report+json`` supplies
+    the structured verdict.
+    """
+    review_body = ""
     verdict = "comment"
-    structured = mcp_result.get("structuredContent") or {}
-    for artifact in structured.get("artifacts", []):
-        if artifact.get("content_type") == "application/vnd.code-review-agent.report+json":
-            try:
-                report = json.loads(artifact.get("body", "{}"))
-                verdict = report.get("summary", {}).get("verdict", "comment")
-            except (json.JSONDecodeError, AttributeError):
-                pass
-            break
+
+    for artifact in a2a_result.get("artifacts", []):
+        for part in artifact.get("parts", []):
+            part_type = part.get("type", "")
+            if part_type == "text" and not review_body:
+                review_body = part.get("text", "")
+            elif part_type == _REVIEW_REPORT_MIME:
+                try:
+                    report = json.loads(part.get("text", "{}"))
+                    verdict = report.get("verdict") or report.get("summary", {}).get(
+                        "verdict", "comment"
+                    )
+                except (json.JSONDecodeError, AttributeError):
+                    pass
 
     github_event = _VERDICT_TO_GH_EVENT.get(str(verdict).lower(), "COMMENT")
     review_body = review_body or f"Automated code review completed (verdict: {verdict})."
     return github_event, review_body
+
+
+# ---------------------------------------------------------------------------
+# A2A agent call helpers
+# ---------------------------------------------------------------------------
+
+
+def _dnsid_bin() -> str:
+    return os.path.expanduser(os.environ.get("DNSID_SDK_BIN", "~/dnsid-go/bin/dnsid-sdk"))
+
+
+async def _run_dnsid(command: str, inp: dict, private_key_pem: str | None = None) -> dict:
+    """Run a dnsid-sdk subcommand and return the parsed JSON result."""
+    if command == "resolve":
+        fqdn = inp.get("fqdn", "")
+        if not fqdn:
+            raise ValueError("dnsid resolve requires fqdn")
+        cmd = [_dnsid_bin(), "resolve", fqdn]
+        stdin_data = None
+    elif command == "sign":
+        claims = inp.get("claims")
+        if not isinstance(claims, dict):
+            raise ValueError("dnsid sign requires claims object")
+        if not private_key_pem:
+            raise ValueError("dnsid sign requires a guild signing key (none found in DB)")
+        from foreman.auth import _dnsid_sign_sync
+
+        return {
+            "ok": True,
+            "jwt": await asyncio.to_thread(_dnsid_sign_sync, claims, private_key_pem),
+        }
+    elif command == "verify":
+        jwt_token = inp.get("jwt", "")
+        expected_aud = inp.get("expected_aud", "")
+        if not jwt_token:
+            raise ValueError("dnsid verify requires jwt")
+        if not expected_aud:
+            raise ValueError("dnsid verify requires expected_aud")
+        cmd = [_dnsid_bin(), "verify", "--jwt", jwt_token, "--expected-aud", expected_aud]
+        if nonce := inp.get("expected_nonce"):
+            cmd += ["--expected-nonce", nonce]
+        stdin_data = None
+    else:
+        raise ValueError(f"Unknown dnsid command: {command!r}")
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(stdin_data), timeout=15)
+    result = json.loads(stdout)
+    if not result.get("ok"):
+        raise RuntimeError(
+            f"dnsid {command} [{result.get('error', '?')}]: "
+            f"{result.get('message', stderr.decode(errors='replace')[:200])}"
+        )
+    return result
+
+
+def _fetch_agent_card(card_url: str) -> dict:
+    """Fetch and parse an A2A agent card from a well-known URL."""
+    req = urllib.request.Request(
+        card_url,
+        headers={"Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+def _post_agent_task(task_url: str, body: bytes) -> dict:
+    """POST a JSON-RPC tasks/send payload to an A2A agent and return the result dict."""
+    req = urllib.request.Request(
+        task_url,
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.loads(resp.read())
+    if "error" in data:
+        err = data["error"]
+        raise RuntimeError(f"Agent error {err.get('code')}: {err.get('message', 'unknown')}")
+    return data.get("result", data)
 
 
 # ---------------------------------------------------------------------------
@@ -1300,19 +1475,18 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         else:
                             pr_repo = pr_match.group(1)
                             pr_number = int(pr_match.group(2))
-                            agent_url = f"https://{guild_id}.pioneer-square.melloy.life"
-                            from foreman.mcp_client import MCPClient
+                            from foreman.a2a_client import A2AClient, _guild_caller_domain
 
-                            client = MCPClient()
-                            mcp_result = await client.call_tool(
-                                "start_conversation",
-                                {
-                                    "agent_url": agent_url,
-                                    "capability": "review_pr",
-                                    "initial_text": pr_url,
-                                },
+                            review_agent = os.environ.get(
+                                "REVIEWER_AGENT_URL", "https://agent.meyers.life"
                             )
-                            github_event, review_body = _extract_review_data(mcp_result)
+                            client = A2AClient(f"{review_agent.rstrip('/')}/.well-known/agent.json")
+                            a2a_result = await client.review_pr(
+                                pr_url,
+                                caller_domain=_guild_caller_domain(guild_id),
+                                private_key_pem=await _guild_private_key_pem(guild_id),
+                            )
+                            github_event, review_body = _extract_review_data(a2a_result)
                             review_data = await asyncio.to_thread(
                                 _gh_api_post,
                                 f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
@@ -1334,6 +1508,80 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     is_error = True
                 except Exception as exc:
                     result_text = f"GitHub error: {exc}"
+                    is_error = True
+
+        # dnsid CLI — resolve / sign / verify
+        if tu.name == "dnsid":
+            command = inp.get("command", "")
+            if not command:
+                result_text = "dnsid requires command (resolve, sign, verify)"
+                is_error = True
+            else:
+                try:
+                    pem = await _guild_private_key_pem(guild_id) if command == "sign" else None
+                    result_text = json.dumps(await _run_dnsid(command, inp, pem))
+                except (ValueError, RuntimeError) as exc:
+                    result_text = str(exc)
+                    is_error = True
+                except Exception as exc:
+                    result_text = f"dnsid {command} failed: {exc}"
+                    is_error = True
+
+        # A2A agent call — no GitHub token or DB required
+        if tu.name == "call_agent":
+            agent_url = (inp.get("agent_url") or "").rstrip("/")
+            skill_id = inp.get("skill") or ""
+            params = inp.get("params") or {}
+            if not agent_url:
+                result_text = "call_agent requires agent_url"
+                is_error = True
+            elif not skill_id:
+                result_text = "call_agent requires skill"
+                is_error = True
+            else:
+                try:
+                    card_url = f"{agent_url}/.well-known/agent.json"
+                    card = await asyncio.to_thread(_fetch_agent_card, card_url)
+                    skills = card.get("skills", [])
+                    skill_ids = [s.get("id", "") for s in skills]
+                    if skills and skill_id not in skill_ids:
+                        result_text = (
+                            f"Skill {skill_id!r} not found on agent at {agent_url}. "
+                            f"Available skills: {', '.join(skill_ids)}"
+                        )
+                        is_error = True
+                    else:
+                        task_body = json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "tasks/send",
+                                "params": {
+                                    "skill_id": skill_id,
+                                    "message": {
+                                        "parts": [{"type": "text", "text": json.dumps(params)}]
+                                    },
+                                },
+                                "id": 1,
+                            }
+                        ).encode()
+                        response = await asyncio.to_thread(
+                            _post_agent_task,
+                            f"{agent_url}/a2a",
+                            task_body,
+                        )
+                        result_text = json.dumps(
+                            {
+                                "agent_url": agent_url,
+                                "skill": skill_id,
+                                "agent_name": card.get("name", ""),
+                                "response": response,
+                            }
+                        )
+                except urllib.error.HTTPError as exc:
+                    result_text = f"Agent HTTP error {exc.code}: {exc.reason}"
+                    is_error = True
+                except Exception as exc:
+                    result_text = f"Agent call failed: {exc}"
                     is_error = True
 
     except Exception as exc:

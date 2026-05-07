@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      secrets:
+        - build_github_token
     ports:
       - "8056:8000"
     environment:
@@ -54,3 +56,7 @@ volumes:
   backend-data:
   worker-repos:
   worker-worktrees:
+
+secrets:
+  build_github_token:
+    environment: BUILD_GITHUB_TOKEN

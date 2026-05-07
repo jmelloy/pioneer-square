@@ -1,6 +1,6 @@
 """Unit tests for the review_pr foreman tool.
 
-All external calls (MCPClient, GitHub API, DB) are mocked — no real network or
+All external calls (A2AClient, GitHub API, DB) are mocked — no real network or
 subprocess usage.
 """
 
@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -46,30 +45,35 @@ def _fake_tu(name: str, inputs: dict, tool_id: str = "tool-rev1") -> SimpleNames
     return SimpleNamespace(name=name, input=inputs, id=tool_id)
 
 
-def _mock_mcp_result(
+_REVIEW_REPORT_MIME = "application/vnd.code-review-agent.report+json"
+
+
+def _mock_a2a_result(
     review_text: str = "## Review\nLooks good.",
     verdict: str = "approved",
 ) -> dict:
     return {
-        "content": [{"type": "text", "text": review_text}],
-        "isError": False,
-        "structuredContent": {
-            "conversation_id": "conv-abc",
-            "status": "completed",
-            "artifacts": [
-                {
-                    "content_type": "application/vnd.code-review-agent.report+json",
-                    "body": json.dumps(
-                        {
-                            "review_id": "r-001",
-                            "pr_url": "https://github.com/org/repo/pull/42",
-                            "summary": {"verdict": verdict, "blocking_count": 0},
-                            "findings": [],
-                        }
-                    ),
-                }
-            ],
-        },
+        "id": "task-abc",
+        "status": {"state": "completed"},
+        "artifacts": [
+            {
+                "name": "review",
+                "parts": [
+                    {"type": "text", "text": review_text},
+                    {
+                        "type": _REVIEW_REPORT_MIME,
+                        "text": json.dumps(
+                            {
+                                "review_id": "r-001",
+                                "pr_url": "https://github.com/org/repo/pull/42",
+                                "verdict": verdict,
+                                "findings": [],
+                            }
+                        ),
+                    },
+                ],
+            }
+        ],
     }
 
 
@@ -113,9 +117,8 @@ class TestReviewPrHappyPath:
         """When the code-review-agent approves the PR, GitHub APPROVE is posted."""
         insert_guild(db_session, "g-rev-approve")
 
-        mcp_result = _mock_mcp_result(verdict="approved")
         mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(return_value=mcp_result)
+        mock_client.review_pr = AsyncMock(return_value=_mock_a2a_result(verdict="approved"))
         gh_post_calls = []
 
         def capture_gh_post(path, token, payload, method="POST"):
@@ -124,7 +127,7 @@ class TestReviewPrHappyPath:
 
         with (
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
-            patch("foreman.mcp_client.MCPClient", return_value=mock_client),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
             patch("foreman.tools._gh_api_post", side_effect=capture_gh_post),
         ):
             results = await exec_tools(
@@ -147,13 +150,14 @@ class TestReviewPrHappyPath:
         """When the agent requests changes, GitHub REQUEST_CHANGES is posted."""
         insert_guild(db_session, "g-rev-changes")
 
-        mcp_result = _mock_mcp_result(verdict="changes-requested")
         mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(return_value=mcp_result)
+        mock_client.review_pr = AsyncMock(
+            return_value=_mock_a2a_result(verdict="changes-requested")
+        )
 
         with (
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
-            patch("foreman.mcp_client.MCPClient", return_value=mock_client),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
             patch(
                 "foreman.tools._gh_api_post", return_value={"id": 55, "state": "CHANGES_REQUESTED"}
             ),
@@ -167,17 +171,17 @@ class TestReviewPrHappyPath:
         assert parsed["verdict"] == "REQUEST_CHANGES"
 
     @pytest.mark.asyncio
-    async def test_no_structured_content_defaults_to_comment(self, db_session):
-        """Without structuredContent, the tool falls back to COMMENT verdict."""
+    async def test_no_report_artifact_defaults_to_comment(self, db_session):
+        """Without a report artifact, the tool falls back to COMMENT verdict."""
         insert_guild(db_session, "g-rev-nosc")
 
-        mcp_result = {"content": [{"type": "text", "text": "Some review text."}]}
+        plain_result = {"artifacts": [{"parts": [{"type": "text", "text": "Some review text."}]}]}
         mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(return_value=mcp_result)
+        mock_client.review_pr = AsyncMock(return_value=plain_result)
 
         with (
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
-            patch("foreman.mcp_client.MCPClient", return_value=mock_client),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
             patch("foreman.tools._gh_api_post", return_value={"id": 33}),
         ):
             results = await exec_tools(
@@ -194,13 +198,14 @@ class TestReviewPrHappyPath:
         insert_guild(db_session, "g-rev-body")
 
         review_text = "## Code Review\nEverything looks great!"
-        mcp_result = _mock_mcp_result(review_text=review_text, verdict="approved")
         mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(return_value=mcp_result)
+        mock_client.review_pr = AsyncMock(
+            return_value=_mock_a2a_result(review_text=review_text, verdict="approved")
+        )
 
         with (
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
-            patch("foreman.mcp_client.MCPClient", return_value=mock_client),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
             patch("foreman.tools._gh_api_post", return_value={"id": 1}),
         ):
             results = await exec_tools(
@@ -212,16 +217,16 @@ class TestReviewPrHappyPath:
         assert "Code Review" in parsed["summary"]
 
     @pytest.mark.asyncio
-    async def test_mcp_call_passes_correct_arguments(self, db_session):
-        """The foreman passes the PR URL and per-guild agent URL to start_conversation."""
+    async def test_a2a_call_passes_pr_url_and_guild_domain(self, db_session):
+        """The foreman passes the PR URL and guild caller domain to review_pr."""
         insert_guild(db_session, "g-rev-args")
 
         mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result())
+        mock_client.review_pr = AsyncMock(return_value=_mock_a2a_result())
 
         with (
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
-            patch("foreman.mcp_client.MCPClient", return_value=mock_client),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
             patch("foreman.tools._gh_api_post", return_value={"id": 1}),
         ):
             await exec_tools(
@@ -229,13 +234,10 @@ class TestReviewPrHappyPath:
                 [_fake_tu("review_pr", {"pr_url": "https://github.com/org/repo/pull/99"})],
             )
 
-        mock_client.call_tool.assert_awaited_once_with(
-            "start_conversation",
-            {
-                "agent_url": "https://g-rev-args.pioneer-square.melloy.life",
-                "capability": "review_pr",
-                "initial_text": "https://github.com/org/repo/pull/99",
-            },
+        mock_client.review_pr.assert_awaited_once_with(
+            "https://github.com/org/repo/pull/99",
+            caller_domain="g-rev-args.pioneer-square.melloy.life",
+            private_key_pem=None,
         )
 
 
@@ -246,26 +248,23 @@ class TestReviewPrHappyPath:
 
 class TestReviewPrErrors:
     @pytest.mark.asyncio
-    async def test_mcp_error_propagates_as_tool_error(self, db_session):
-        """An MCPError from the review agent is surfaced as a tool error."""
-        from foreman.mcp_client import MCPError
-
-        insert_guild(db_session, "g-rev-mcperr")
+    async def test_review_agent_error_propagates_as_tool_error(self, db_session):
+        """A RuntimeError from the review agent is surfaced as a tool error."""
+        insert_guild(db_session, "g-rev-agenterr")
 
         mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(side_effect=MCPError(-32000, "review failed"))
+        mock_client.review_pr = AsyncMock(side_effect=RuntimeError("agent unavailable"))
 
         with (
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
-            patch("foreman.mcp_client.MCPClient", return_value=mock_client),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
         ):
             results = await exec_tools(
-                "g-rev-mcperr",
+                "g-rev-agenterr",
                 [_fake_tu("review_pr", {"pr_url": "https://github.com/org/repo/pull/5"})],
             )
 
         assert results[0].get("is_error") is True
-        assert "review failed" in results[0]["content"] or "GitHub error" in results[0]["content"]
 
     @pytest.mark.asyncio
     async def test_github_post_failure_surfaces_as_error(self, db_session):
@@ -275,12 +274,12 @@ class TestReviewPrErrors:
         insert_guild(db_session, "g-rev-gherr")
 
         mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result())
+        mock_client.review_pr = AsyncMock(return_value=_mock_a2a_result())
         gh_err = urllib.error.HTTPError("url", 422, "Unprocessable Entity", None, None)  # type: ignore
 
         with (
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
-            patch("foreman.mcp_client.MCPClient", return_value=mock_client),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
             patch("foreman.tools._gh_api_post", side_effect=gh_err),
         ):
             results = await exec_tools(
@@ -297,11 +296,11 @@ class TestReviewPrErrors:
         insert_guild(db_session, "g-rev-tid")
 
         mock_client = MagicMock()
-        mock_client.call_tool = AsyncMock(return_value=_mock_mcp_result())
+        mock_client.review_pr = AsyncMock(return_value=_mock_a2a_result())
 
         with (
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
-            patch("foreman.mcp_client.MCPClient", return_value=mock_client),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
             patch("foreman.tools._gh_api_post", return_value={"id": 1}),
         ):
             results = await exec_tools(
