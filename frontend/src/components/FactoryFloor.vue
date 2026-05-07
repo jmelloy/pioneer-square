@@ -111,8 +111,10 @@ const floorH = ref(600)
 
 function updateFloorSize() {
   if (floorEl.value) {
-    floorW.value = floorEl.value.clientWidth || 900
-    floorH.value = floorEl.value.clientHeight || 600
+    const w = floorEl.value.clientWidth
+    const h = floorEl.value.clientHeight
+    if (w > 0) floorW.value = w
+    if (h > 0) floorH.value = h
   }
 }
 
@@ -124,7 +126,7 @@ const floorSize = computed<'sm' | 'md' | 'lg'>(() => {
 
 const tableWidth = computed(() => {
   const reservedRight = floorSize.value === 'sm' ? 0 : CHAT_PANE_W
-  return Math.max(floorW.value - reservedRight - TABLE_LEFT * 2, 360)
+  return Math.max(floorW.value - reservedRight - TABLE_LEFT * 2, 50)
 })
 
 const visibleRowCount = computed(() => {
@@ -200,14 +202,20 @@ const choreography = useAgentChoreography({
   stations: STATIONS,
 })
 
+let resizeObserver: ResizeObserver | null = null
+
 onMounted(() => {
+  if (floorEl.value) {
+    resizeObserver = new ResizeObserver(updateFloorSize)
+    resizeObserver.observe(floorEl.value)
+  }
   updateFloorSize()
-  window.addEventListener('resize', updateFloorSize)
   choreography.syncAll()
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', updateFloorSize)
+  resizeObserver?.disconnect()
+  resizeObserver = null
 })
 
 // ── Ticker ─────────────────────────────────────────────────
