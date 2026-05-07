@@ -3,11 +3,11 @@
 # ---- dnsid-sdk build stage ----
 FROM golang:latest AS dnsid-build
 
-RUN --mount=type=secret,id=github_token \
+RUN --mount=type=secret,id=build_github_token \
     --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     git config --global \
-        url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf \
+        url."https://$(cat /run/secrets/build_github_token)@github.com/".insteadOf \
         "https://github.com/" && \
     git clone https://github.com/Identity-Digital/dnsid-go.git /src/dnsid-go && \
     cd /src/dnsid-go && \
