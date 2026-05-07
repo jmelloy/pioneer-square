@@ -574,7 +574,9 @@ async def _guild_private_key_pem(guild_id: str) -> str | None:
     """Return the Ed25519 private key PEM for the guild, or None if not found."""
     db = await get_db()
     try:
-        result = await db.execute(select(GuildKey.private_key_pem).where(GuildKey.guild_id == guild_id))
+        result = await db.execute(
+            select(GuildKey.private_key_pem).where(GuildKey.guild_id == guild_id)
+        )
         return result.scalar_one_or_none()
     finally:
         await db.close()
@@ -738,7 +740,10 @@ async def _run_dnsid(command: str, inp: dict, private_key_pem: str | None = None
             raise ValueError("dnsid sign requires a guild signing key (none found in DB)")
         from foreman.auth import _dnsid_sign_sync
 
-        return {"ok": True, "jwt": await asyncio.to_thread(_dnsid_sign_sync, claims, private_key_pem)}
+        return {
+            "ok": True,
+            "jwt": await asyncio.to_thread(_dnsid_sign_sync, claims, private_key_pem),
+        }
     elif command == "verify":
         jwt_token = inp.get("jwt", "")
         expected_aud = inp.get("expected_aud", "")

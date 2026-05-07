@@ -162,9 +162,7 @@ def test_dnsid_cli() -> list[dict]:
                 results.append(_result("verify (sign step)", False, str(sign_out)[:120]))
             else:
                 jwt_token = sign_out["jwt"]
-                verify_proc = _run_dnsid(
-                    "verify", "--jwt", jwt_token, "--expected-aud", "test-aud"
-                )
+                verify_proc = _run_dnsid("verify", "--jwt", jwt_token, "--expected-aud", "test-aud")
                 out = json.loads(verify_proc.stdout)
                 ok = out.get("ok") is True and out.get("iss") == "nyoyny.pioneer-square.melloy.life"
                 results.append(_result("verify signed token", ok, str(out)[:120]))

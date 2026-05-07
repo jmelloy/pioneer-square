@@ -13,8 +13,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from foreman.auth import DNSidAuthScheme
 from foreman.a2a_client import A2AClient, _guild_caller_domain
+from foreman.auth import DNSidAuthScheme
 
 # ---------------------------------------------------------------------------
 # DNSidAuthScheme

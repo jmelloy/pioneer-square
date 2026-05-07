@@ -88,7 +88,9 @@ class A2AClient:
             spec = schemes.get(name, {})
             if spec.get("scheme", "").upper() == "DNSID":
                 if not private_key_pem:
-                    raise ValueError(f"Agent {self._card_url} requires DNSid auth but no private key is available for guild")
+                    raise ValueError(
+                        f"Agent {self._card_url} requires DNSid auth but no private key is available for guild"
+                    )
                 skills = card.get("skills", [])
                 purpose = skills[0].get("id", "a2a-pr-review") if skills else "a2a-pr-review"
                 return DNSidAuthScheme(
