@@ -442,3 +442,73 @@ def test_parse_pr_url_handles_garbage():
     assert _parse_pr_url("") == (None, None)
     assert _parse_pr_url("not-a-url") == (None, None)
     assert _parse_pr_url("https://github.com/owner/repo/issues/1") == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# Webhook back-fills Task.pr_url when it was never set by the worker
+# ---------------------------------------------------------------------------
+
+
+def test_webhook_backfills_task_pr_url(client):
+    """pull_request event sets Task.pr_url when the task has pr_number/pr_repo but no pr_url."""
+    test_client, db_path = client
+    insert_guild(db_path, "gbf1")
+    _set_webhook_secret(db_path, "gbf1", "sbf1")
+    # Task has pr_number + pr_repo (set when the branch was pushed) but pr_url is NULL.
+    _insert_task(
+        db_path,
+        task_id="t-bf1",
+        guild_id="gbf1",
+        pr_url=None,
+        pr_number=55,
+        pr_repo="org/my-repo",
+    )
+    payload = {
+        "action": "opened",
+        "repository": {"full_name": "org/my-repo"},
+        "pull_request": {
+            "number": 55,
+            "html_url": "https://github.com/org/my-repo/pull/55",
+        },
+        "sender": {"login": "octocat"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("sbf1", body, event="pull_request", delivery="bf-1")
+    resp = test_client.post("/webhooks/github/gbf1", content=body, headers=headers)
+    assert resp.status_code == 202
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT pr_url FROM tasks WHERE id = 't-bf1'").fetchone()
+    assert row is not None
+    assert row[0] == "https://github.com/org/my-repo/pull/55"
+
+
+def test_webhook_does_not_overwrite_existing_pr_url(client):
+    """Webhook must not clobber a pr_url that was already set by the worker."""
+    test_client, db_path = client
+    insert_guild(db_path, "gbf2")
+    _set_webhook_secret(db_path, "gbf2", "sbf2")
+    _insert_task(
+        db_path,
+        task_id="t-bf2",
+        guild_id="gbf2",
+        pr_url="https://github.com/org/my-repo/pull/77",
+        pr_number=77,
+        pr_repo="org/my-repo",
+    )
+    payload = {
+        "action": "synchronize",
+        "repository": {"full_name": "org/my-repo"},
+        "pull_request": {
+            "number": 77,
+            "html_url": "https://github.com/org/my-repo/pull/77",
+        },
+        "sender": {"login": "octocat"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("sbf2", body, event="pull_request", delivery="bf-2")
+    resp = test_client.post("/webhooks/github/gbf2", content=body, headers=headers)
+    assert resp.status_code == 202
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT pr_url FROM tasks WHERE id = 't-bf2'").fetchone()
+    assert row is not None
+    assert row[0] == "https://github.com/org/my-repo/pull/77"

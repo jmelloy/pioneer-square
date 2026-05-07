@@ -25,7 +25,7 @@ from events import broadcast
 from fastapi import APIRouter, HTTPException, Request, Response
 from foreman import reset_foreman_poll, run_foreman_ai
 from models import GithubEvent, Guild, Message, Task
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from util.tasks import spawn
@@ -387,6 +387,16 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
                 event_type,
             )
             return Response(status_code=202)
+
+        # Back-fill pr_url on the task from the webhook payload when a
+        # pull_request event arrives and the task doesn't already have it set.
+        # This is a safety net for the (rare) case where the worker's
+        # task-update message was dropped before pr_url was persisted.
+        if task_id and pr_url and event_type == "pull_request":
+            await db.execute(
+                update(Task).where(Task.id == task_id, Task.pr_url.is_(None)).values(pr_url=pr_url)
+            )
+            await db.commit()
 
         logger.info(
             "github webhook accepted guild=%s delivery=%s event=%s action=%s repo=%s pr=%s task=%s",

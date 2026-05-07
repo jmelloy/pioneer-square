@@ -1631,6 +1631,7 @@ class Worker:
                     worktreePath=primary_wt,
                     prUrl=pr_url or "",
                     state="awaiting-review",
+                    prUrl=pr_url or "",
                 )
                 # On a follow-up run, surface task-followup-done so the
                 # foreman knows iteration finished; on a fresh run, surface
