@@ -441,6 +441,41 @@ FOREMAN_TOOLS = [
             "required": ["pr_url"],
         },
     },
+    {
+        "name": "call_agent",
+        "description": (
+            "Call a skill on a remote A2A-compatible agent. "
+            "Fetches the agent card from {agent_url}/.well-known/agent.json to discover "
+            "available skills, then dispatches the requested skill with the given params. "
+            "Use this to invoke specialised remote agents — e.g. a dnsid-go agent for DNS "
+            "identity record verification, or any other A2A-compatible service. "
+            "Returns the raw JSON result from the agent."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_url": {
+                    "type": "string",
+                    "description": (
+                        "Base URL of the target A2A agent, "
+                        "e.g. https://agent.example.com or http://localhost:8080"
+                    ),
+                },
+                "skill": {
+                    "type": "string",
+                    "description": (
+                        "Skill id to invoke, e.g. 'verify_identity_record' or 'lookup_dnsid'. "
+                        "Must match a skill id listed in the agent card."
+                    ),
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Parameters to pass to the skill as a JSON object.",
+                },
+            },
+            "required": ["agent_url", "skill"],
+        },
+    },
 ]
 
 
@@ -623,6 +658,37 @@ def _extract_review_data(mcp_result: dict) -> tuple[str, str]:
     github_event = _VERDICT_TO_GH_EVENT.get(str(verdict).lower(), "COMMENT")
     review_body = review_body or f"Automated code review completed (verdict: {verdict})."
     return github_event, review_body
+
+
+# ---------------------------------------------------------------------------
+# A2A agent call helpers
+# ---------------------------------------------------------------------------
+
+
+def _fetch_agent_card(card_url: str) -> dict:
+    """Fetch and parse an A2A agent card from a well-known URL."""
+    req = urllib.request.Request(
+        card_url,
+        headers={"Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
+def _post_agent_task(task_url: str, body: bytes) -> dict:
+    """POST a JSON-RPC tasks/send payload to an A2A agent and return the result dict."""
+    req = urllib.request.Request(
+        task_url,
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.loads(resp.read())
+    if "error" in data:
+        err = data["error"]
+        raise RuntimeError(f"Agent error {err.get('code')}: {err.get('message', 'unknown')}")
+    return data.get("result", data)
 
 
 # ---------------------------------------------------------------------------
@@ -1334,6 +1400,63 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     is_error = True
                 except Exception as exc:
                     result_text = f"GitHub error: {exc}"
+                    is_error = True
+
+        # A2A agent call — no GitHub token or DB required
+        if tu.name == "call_agent":
+            agent_url = (inp.get("agent_url") or "").rstrip("/")
+            skill_id = inp.get("skill") or ""
+            params = inp.get("params") or {}
+            if not agent_url:
+                result_text = "call_agent requires agent_url"
+                is_error = True
+            elif not skill_id:
+                result_text = "call_agent requires skill"
+                is_error = True
+            else:
+                try:
+                    card_url = f"{agent_url}/.well-known/agent.json"
+                    card = await asyncio.to_thread(_fetch_agent_card, card_url)
+                    skills = card.get("skills", [])
+                    skill_ids = [s.get("id", "") for s in skills]
+                    if skills and skill_id not in skill_ids:
+                        result_text = (
+                            f"Skill {skill_id!r} not found on agent at {agent_url}. "
+                            f"Available skills: {', '.join(skill_ids)}"
+                        )
+                        is_error = True
+                    else:
+                        task_body = json.dumps(
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "tasks/send",
+                                "params": {
+                                    "skill_id": skill_id,
+                                    "message": {
+                                        "parts": [{"type": "text", "text": json.dumps(params)}]
+                                    },
+                                },
+                                "id": 1,
+                            }
+                        ).encode()
+                        response = await asyncio.to_thread(
+                            _post_agent_task,
+                            f"{agent_url}/a2a",
+                            task_body,
+                        )
+                        result_text = json.dumps(
+                            {
+                                "agent_url": agent_url,
+                                "skill": skill_id,
+                                "agent_name": card.get("name", ""),
+                                "response": response,
+                            }
+                        )
+                except urllib.error.HTTPError as exc:
+                    result_text = f"Agent HTTP error {exc.code}: {exc.reason}"
+                    is_error = True
+                except Exception as exc:
+                    result_text = f"Agent call failed: {exc}"
                     is_error = True
 
     except Exception as exc:
