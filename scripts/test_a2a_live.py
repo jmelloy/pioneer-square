@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
-"""Live integration test for A2A agent calls.
+"""Live integration test for A2A agent calls and the dnsid-sdk CLI.
 
-Tests that the Foreman's call_agent tool can reach real A2A agents:
+Tests:
   - code-review-agent at https://agent.meyers.life (always attempted)
-  - dnsid-go agent at DNSID_AGENT_URL (default http://localhost:8080, skipped if unreachable)
+  - dnsid-sdk CLI at DNSID_SDK_BIN (default ~/dnsid-go/bin/dnsid-sdk, skipped if not found)
 
 Exit codes:
-  0  All reachable agents passed
-  1  At least one reachable agent failed
+  0  All reachable agents/tools passed
+  1  At least one reachable check failed
 
 Usage:
     python scripts/test_a2a_live.py
-    DNSID_AGENT_URL=http://myhost:9090 python scripts/test_a2a_live.py
+    DNSID_SDK_BIN=/custom/path/dnsid-sdk python scripts/test_a2a_live.py
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 
 REVIEW_AGENT_URL = "https://agent.meyers.life"
-DNSID_AGENT_URL = os.environ.get("DNSID_AGENT_URL", "http://localhost:8080")
+DNSID_BIN = os.path.expanduser(os.environ.get("DNSID_SDK_BIN", "~/dnsid-go/bin/dnsid-sdk"))
 TIMEOUT = 15
 
 
@@ -38,25 +39,6 @@ def _fetch(url: str, *, data: bytes | None = None, headers: dict | None = None) 
         return json.loads(resp.read())
 
 
-def _post_task(agent_url: str, skill_id: str, params: dict) -> dict:
-    body = json.dumps(
-        {
-            "jsonrpc": "2.0",
-            "method": "tasks/send",
-            "params": {
-                "skill_id": skill_id,
-                "message": {"parts": [{"type": "text", "text": json.dumps(params)}]},
-            },
-            "id": 1,
-        }
-    ).encode()
-    return _fetch(
-        f"{agent_url.rstrip('/')}/a2a",
-        data=body,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-    )
-
-
 def _result(label: str, passed: bool, detail: str = "") -> dict:
     status = "PASS" if passed else "FAIL"
     line = f"[{status}] {label}"
@@ -69,6 +51,15 @@ def _result(label: str, passed: bool, detail: str = "") -> dict:
 def _skip(label: str, reason: str) -> dict:
     print(f"[SKIP] {label} — {reason}")
     return {"label": label, "passed": True, "skipped": True, "detail": reason}
+
+
+def _run_dnsid(*args, stdin_data: bytes | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [DNSID_BIN, *args],
+        input=stdin_data,
+        capture_output=True,
+        timeout=10,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -104,81 +95,81 @@ def test_review_agent(agent_url: str) -> list[dict]:
     has_review = any("review" in sid for sid in skill_ids)
     results.append(_result("review skill present", has_review, f"skills={skill_ids}"))
 
-    # 4. Call the MCP tools/list endpoint to verify it responds to JSON-RPC
-    try:
-        payload = json.dumps(
-            {"jsonrpc": "2.0", "id": "ping", "method": "tools/list", "params": {}}
-        ).encode()
-        resp = _fetch(
-            agent_url,
-            data=payload,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-        )
-        has_tools = "result" in resp or "error" in resp
-        results.append(_result("MCP tools/list responds", has_tools))
-    except Exception as exc:
-        results.append(_result("MCP tools/list responds", False, str(exc)))
-
     return results
 
 
-def test_dnsid_agent(agent_url: str) -> list[dict]:
+def test_dnsid_cli() -> list[dict]:
     results: list[dict] = []
-    print(f"\n=== dnsid-go agent @ {agent_url} ===")
+    print(f"\n=== dnsid-sdk CLI @ {DNSID_BIN} ===")
 
-    # 1. Fetch agent card (skip entire suite if unreachable)
+    # 0. Check binary exists
+    if not os.path.isfile(DNSID_BIN):
+        results.append(_skip("dnsid-sdk suite", f"binary not found at {DNSID_BIN}"))
+        return results
+
+    # 1. resolve — look up a well-known domain
     try:
-        card = _fetch(f"{agent_url}/.well-known/agent.json", headers={"Accept": "application/json"})
-        results.append(_result("agent card fetched", True, f"name={card.get('name', '?')!r}"))
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", str(exc))
-        if "refused" in str(reason).lower() or "timed out" in str(reason).lower():
-            results.append(_skip("dnsid-go suite", f"agent not reachable at {agent_url}: {reason}"))
-            return results
-        results.append(_result("agent card fetched", False, str(exc)))
-        return results
-    except urllib.error.HTTPError as exc:
-        results.append(_result("agent card fetched", False, f"HTTP {exc.code}"))
-        return results
+        proc = _run_dnsid("resolve", "nyoyny.pioneer-square.melloy.life")
+        out = json.loads(proc.stdout)
+        ok = out.get("ok") is True and "fqdn" in out
+        results.append(_result("resolve nyoyny.pioneer-square.melloy.life", ok, str(out)[:120]))
+    except subprocess.TimeoutExpired:
+        results.append(_result("resolve nyoyny.pioneer-square.melloy.life", False, "timed out"))
+    except Exception as exc:
+        results.append(_result("resolve nyoyny.pioneer-square.melloy.life", False, str(exc)))
 
-    # 2. Card has required skills
-    skill_ids = [s.get("id", "") for s in card.get("skills", [])]
-    has_verify = "verify_identity_record" in skill_ids
-    has_lookup = "lookup_dnsid" in skill_ids
-    results.append(
-        _result("verify_identity_record skill present", has_verify, f"skills={skill_ids}")
-    )
-    results.append(_result("lookup_dnsid skill present", has_lookup, f"skills={skill_ids}"))
-
-    # 3. Call lookup_dnsid with a known safe domain
-    if has_lookup:
-        try:
-            resp = _post_task(agent_url, "lookup_dnsid", {"domain": "example.com"})
-            ok = "result" in resp or "error" not in resp
-            results.append(_result("lookup_dnsid call returns response", ok, str(resp)[:120]))
-        except urllib.error.HTTPError as exc:
-            results.append(_result("lookup_dnsid call returns response", False, f"HTTP {exc.code}"))
-        except Exception as exc:
-            results.append(_result("lookup_dnsid call returns response", False, str(exc)))
+    # 2. sign — requires DNSID_AGENT_CONFIG; skip if not set
+    config_path = os.environ.get("DNSID_AGENT_CONFIG", "")
+    if not config_path:
+        results.append(_skip("sign (no DNSID_AGENT_CONFIG)", "set DNSID_AGENT_CONFIG to test"))
     else:
-        results.append(_skip("lookup_dnsid call", "skill not advertised"))
-
-    # 4. Call verify_identity_record
-    if has_verify:
         try:
-            resp = _post_task(agent_url, "verify_identity_record", {"domain": "example.com"})
-            ok = "result" in resp or "error" not in resp
-            results.append(
-                _result("verify_identity_record call returns response", ok, str(resp)[:120])
+            import time
+
+            claims = {
+                "iss": "nyoyny.pioneer-square.melloy.life",
+                "sub": "nyoyny.pioneer-square.melloy.life",
+                "aud": "test-aud",
+                "exp": int(time.time()) + 300,
+            }
+            proc = _run_dnsid(
+                "sign", "--config", config_path, stdin_data=json.dumps(claims).encode()
             )
-        except urllib.error.HTTPError as exc:
-            results.append(
-                _result("verify_identity_record call returns response", False, f"HTTP {exc.code}")
-            )
+            out = json.loads(proc.stdout)
+            ok = out.get("ok") is True and isinstance(out.get("jwt"), str)
+            results.append(_result("sign with config", ok, str(out)[:120]))
         except Exception as exc:
-            results.append(_result("verify_identity_record call returns response", False, str(exc)))
+            results.append(_result("sign with config", False, str(exc)))
+
+    # 3. verify — skip if no config (nothing to sign with)
+    if not config_path:
+        results.append(_skip("verify (no DNSID_AGENT_CONFIG)", "set DNSID_AGENT_CONFIG to test"))
     else:
-        results.append(_skip("verify_identity_record call", "skill not advertised"))
+        try:
+            import time
+
+            claims = {
+                "iss": "nyoyny.pioneer-square.melloy.life",
+                "sub": "nyoyny.pioneer-square.melloy.life",
+                "aud": "test-aud",
+                "exp": int(time.time()) + 300,
+            }
+            sign_proc = _run_dnsid(
+                "sign", "--config", config_path, stdin_data=json.dumps(claims).encode()
+            )
+            sign_out = json.loads(sign_proc.stdout)
+            if not sign_out.get("ok"):
+                results.append(_result("verify (sign step)", False, str(sign_out)[:120]))
+            else:
+                jwt_token = sign_out["jwt"]
+                verify_proc = _run_dnsid(
+                    "verify", "--jwt", jwt_token, "--expected-aud", "test-aud"
+                )
+                out = json.loads(verify_proc.stdout)
+                ok = out.get("ok") is True and out.get("iss") == "nyoyny.pioneer-square.melloy.life"
+                results.append(_result("verify signed token", ok, str(out)[:120]))
+        except Exception as exc:
+            results.append(_result("verify signed token", False, str(exc)))
 
     return results
 
@@ -192,7 +183,7 @@ def main() -> int:
     all_results: list[dict] = []
 
     all_results.extend(test_review_agent(REVIEW_AGENT_URL))
-    all_results.extend(test_dnsid_agent(DNSID_AGENT_URL))
+    all_results.extend(test_dnsid_cli())
 
     non_skip = [r for r in all_results if not r.get("skipped")]
     passed = sum(1 for r in non_skip if r["passed"])

@@ -10,15 +10,10 @@ and how to add new agents.
 Browser
   │ (chat message)
   ▼
-Backend ─── Foreman AI (Claude) ─── call_agent tool
-                                         │
-                    ┌────────────────────┤
-                    │                    │
-                    ▼                    ▼
-        code-review-agent         dnsid-go agent
-        (agent.meyers.life)       (localhost:8080)
-        /.well-known/agent.json   /.well-known/agent.json
-        POST /a2a                 POST /a2a
+Backend ─── Foreman AI (Claude) ─── call_agent tool ──► HTTP A2A agents
+                                │                        (e.g. agent.meyers.life)
+                                └── dnsid tool ──────► dnsid-sdk CLI
+                                                         (resolve / sign / verify)
 ```
 
 ### Discovery flow
@@ -38,49 +33,44 @@ Foreman                     Remote Agent
   │ ◄─────────────────────────────│
 ```
 
-## `call_agent` Foreman tool
+## Foreman tools
 
-The `call_agent` tool is the generic A2A entrypoint for the Foreman.
+### `call_agent` — HTTP A2A agents
+
+The `call_agent` tool calls any HTTP-based A2A agent.
 
 | Parameter   | Type   | Required | Description |
 |-------------|--------|----------|-------------|
-| `agent_url` | string | yes      | Base URL of the remote agent |
+| `agent_url` | string | yes      | Base URL of the target agent |
 | `skill`     | string | yes      | Skill id to invoke |
 | `params`    | object | no       | Skill-specific parameters (JSON object) |
 
-### How it works
+How it works: fetches `{agent_url}/.well-known/agent.json`, verifies the skill
+exists, then POSTs a JSON-RPC `tasks/send` to `{agent_url}/a2a`.
 
-1. Fetches `{agent_url}/.well-known/agent.json` (the AgentCard).
-2. Verifies the requested `skill` id is listed in the card's `skills` array
-   (skipped if the card advertises no skills).
-3. POSTs a JSON-RPC `tasks/send` message to `{agent_url}/a2a`:
-   ```json
-   {
-     "jsonrpc": "2.0",
-     "method": "tasks/send",
-     "params": {
-       "skill_id": "<skill>",
-       "message": {
-         "parts": [{"type": "text", "text": "<params as JSON>"}]
-       }
-     },
-     "id": 1
-   }
-   ```
-4. Returns the agent's result as JSON to the Foreman.
+### `dnsid` — DNSid CLI operations
 
-### Example Foreman prompt
+The `dnsid` tool shells out to the `dnsid-sdk` binary
+(configured via `DNSID_SDK_BIN`, default `~/dnsid-go/bin/dnsid-sdk`).
 
-> "Use call_agent to ask the dnsid-go agent at http://localhost:8080 to run
-> verify_identity_record for domain example.com."
+| Command   | Required params          | Optional params   | Description |
+|-----------|--------------------------|-------------------|-------------|
+| `resolve` | `fqdn`                   | —                 | Look up an FQDN's `_dnsid` TXT record and JWKS |
+| `sign`    | `claims` (object)        | —                 | Sign a JWT with the agent's Ed25519 identity (`DNSID_AGENT_CONFIG`) |
+| `verify`  | `jwt`, `expected_aud`    | `expected_nonce`  | Verify a JWT against its DNSid record |
 
-The Foreman will call:
+All three return the CLI's JSON output (`{"ok": true, ...}`).
+
+Example Foreman prompts:
+
+> "Use dnsid to resolve the identity record for example.com."
 ```json
-{
-  "agent_url": "http://localhost:8080",
-  "skill": "verify_identity_record",
-  "params": {"domain": "example.com"}
-}
+{"command": "resolve", "fqdn": "example.com"}
+```
+
+> "Use dnsid to verify this token against aud=pioneer-square.melloy.life."
+```json
+{"command": "verify", "jwt": "<token>", "expected_aud": "pioneer-square.melloy.life"}
 ```
 
 ## Known agents
@@ -91,20 +81,19 @@ Automated GitHub PR code review via the `review_pr` Foreman tool (MCP transport)
 The Foreman also exposes the `review_pr` tool which is purpose-built for this
 agent; `call_agent` is an alternative generic path.
 
-### dnsid-go (`Identity-Digital/dnsid-go`)
+### dnsid-sdk (`Identity-Digital/dnsid-go`)
 
-DNS identity record operations.  When the dnsid-go A2A server is running it
-advertises two skills:
+A CLI binary for DNS identity operations — **not** an HTTP server.
+The Foreman calls it via the `dnsid` tool rather than `call_agent`.
 
-| Skill id | Description |
-|---|---|
-| `verify_identity_record` | Verify a DNSID TXT record for a domain |
-| `lookup_dnsid` | Resolve and return raw DNSID records for a domain |
-
-Start it with:
-```bash
-dnsid-go serve --port 8080
 ```
+dnsid resolve <fqdn>                          # look up _dnsid record + JWKS
+dnsid sign [--config path]                    # sign JWT (reads claims JSON on stdin)
+dnsid verify --jwt <tok> --expected-aud <aud> # verify JWT via DNS trust chain
+```
+
+Binary path: `~/dnsid-go/bin/dnsid-sdk` (override with `DNSID_SDK_BIN`).
+Signing identity: JSON config file at `DNSID_AGENT_CONFIG` pointing to an Ed25519 PKCS#8 PEM key.
 
 ## Adding a new agent
 
@@ -115,15 +104,19 @@ dnsid-go serve --port 8080
 ## Running the live integration test
 
 ```bash
-# Test both code-review-agent (always) and dnsid-go (if reachable):
+# Test code-review-agent + dnsid-sdk CLI:
 python scripts/test_a2a_live.py
 
-# Override the dnsid-go URL:
-DNSID_AGENT_URL=http://myhost:9090 python scripts/test_a2a_live.py
+# Override the binary path:
+DNSID_SDK_BIN=/custom/path/dnsid-sdk python scripts/test_a2a_live.py
+
+# Enable sign/verify checks (requires a configured agent identity):
+DNSID_AGENT_CONFIG=/path/to/config.json python scripts/test_a2a_live.py
 ```
 
 The script prints `[PASS]`, `[FAIL]`, or `[SKIP]` per check and exits 0 only
-if all reachable agents pass.
+if all reachable checks pass. sign/verify are skipped when `DNSID_AGENT_CONFIG`
+is not set.
 
 ## AgentCard format
 
