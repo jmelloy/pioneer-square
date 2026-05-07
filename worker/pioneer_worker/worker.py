@@ -1629,6 +1629,7 @@ class Worker:
                     task_id,
                     branch=branch,
                     worktreePath=primary_wt,
+                    prUrl=pr_url or "",
                     state="awaiting-review",
                 )
                 # On a follow-up run, surface task-followup-done so the
