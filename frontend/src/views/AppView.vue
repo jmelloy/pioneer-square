@@ -187,7 +187,7 @@ watch(
   display: flex;
   flex-direction: column;
   height: 100vh;
-  width: 100vw;
+  width: 100%;
   overflow: hidden;
   background: var(--color-bg);
 }
@@ -264,9 +264,9 @@ watch(
     left: 0;
     right: 0;
     bottom: 52px;
-    width: 100vw !important;
+    width: 100% !important;
     min-width: 0 !important;
-    max-width: 100vw !important;
+    max-width: 100% !important;
     height: calc(100dvh - 96px) !important;
     max-height: calc(100dvh - 96px) !important;
     display: none !important;
