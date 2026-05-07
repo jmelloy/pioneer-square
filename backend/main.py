@@ -171,27 +171,18 @@ async def _stale_worker_sweeper() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    # Uvicorn sets the root logger to WARNING, so foreman.* logs would be silently
-    # dropped without an explicit handler.  Wire up a StreamHandler on the foreman
-    # package logger so debug output reaches the console regardless of root level.
-    foreman_log = logging.getLogger("foreman")
-    foreman_log.setLevel(logging.DEBUG)
-    if not foreman_log.handlers:
-        _h = logging.StreamHandler()
-        _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
-        foreman_log.addHandler(_h)
-    foreman_log.propagate = False
-    foreman_log.info("foreman logger active (level=DEBUG)")
-
-    # Uvicorn sets the root logger to WARNING, so configure the main module logger
-    # explicitly so that INFO-level access logs reach the console.
+    # Uvicorn pins the root logger to WARNING; reconfigure it so all backend
+    # modules (main, foreman.*, utils, etc.) emit at the requested level.
     _log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    logger.setLevel(getattr(logging, _log_level, logging.INFO))
-    if not logger.handlers:
-        _lh = logging.StreamHandler()
-        _lh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
-        logger.addHandler(_lh)
-    logger.propagate = False
+    _level = getattr(logging, _log_level, logging.INFO)
+    logging.basicConfig(
+        level=_level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        force=True,
+    )
+    # foreman is always at least DEBUG so detailed AI loop output is available
+    # when LOG_LEVEL=DEBUG; at INFO it still inherits the root handler above.
+    logging.getLogger("foreman").setLevel(logging.DEBUG)
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
     try:
         yield

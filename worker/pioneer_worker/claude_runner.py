@@ -184,13 +184,13 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
     """Log the full content of a stream-json event, untruncated."""
     t = event.get("type")
     subtype = event.get("subtype")
-    logger.info("claude[%d] event#%d type=%s subtype=%s", pid, n, t, subtype)
+    logger.debug("claude[%d] event#%d type=%s subtype=%s", pid, n, t, subtype)
 
     if t == "assistant":
         for i, blk in enumerate(event.get("message", {}).get("content", [])):
             btype = blk.get("type")
             if btype == "text":
-                logger.info(
+                logger.debug(
                     "claude[%d] event#%d assistant.text[%d]:\n%s",
                     pid,
                     n,
@@ -208,7 +208,7 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
                     json.dumps(blk.get("input", {}), ensure_ascii=False),
                 )
             elif btype == "thinking":
-                logger.info(
+                logger.debug(
                     "claude[%d] event#%d assistant.thinking[%d]:\n%s",
                     pid,
                     n,
@@ -216,7 +216,7 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
                     blk.get("thinking", ""),
                 )
             else:
-                logger.info(
+                logger.debug(
                     "claude[%d] event#%d assistant.block[%d] type=%s: %s",
                     pid,
                     n,
@@ -241,7 +241,7 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
                     content,
                 )
             else:
-                logger.info(
+                logger.debug(
                     "claude[%d] event#%d user.block[%d] type=%s: %s",
                     pid,
                     n,
@@ -250,21 +250,21 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
                     json.dumps(blk, ensure_ascii=False),
                 )
     elif t == "result":
-        logger.info(
+        logger.debug(
             "claude[%d] event#%d result: %s",
             pid,
             n,
             json.dumps(event, ensure_ascii=False),
         )
     elif t == "system":
-        logger.info(
+        logger.debug(
             "claude[%d] event#%d system: %s",
             pid,
             n,
             json.dumps(event, ensure_ascii=False),
         )
     else:
-        logger.info(
+        logger.debug(
             "claude[%d] event#%d %s: %s",
             pid,
             n,

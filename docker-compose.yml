@@ -23,6 +23,7 @@ services:
       WORKER_BACKEND_URL: ${WORKER_BACKEND_URL:-http://backend:8000}
       # When set (e.g. DEBUG), backend-spawned worker containers are launched
       # with PIONEER_WORKER_LOG_LEVEL=<this value>, raising worker verbosity.
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-}
     volumes:
       - backend-data:/data
