@@ -430,7 +430,9 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
                 .values(pr_url=pr_url, pr_number=pr_number_val, pr_repo=pr_repo_val)
             )
         await ctx.db.execute(
-            update(Task).where(Task.id == task_id, Task.state == "working").values(state="awaiting-review")
+            update(Task)
+            .where(Task.id == task_id, Task.state == "working")
+            .values(state="awaiting-review")
         )
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
