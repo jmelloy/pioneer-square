@@ -63,7 +63,9 @@ export const useGuildStore = defineStore('guild', () => {
     try {
       const guild = await api<Guild>(`/guilds/${guildId}`)
       currentGuild.value = guild
-      messages.value = guild.messages || []
+      messages.value = (guild.messages || []).filter(
+        (m: ChatMessage) => (m.from || m.from_agent) !== 'github',
+      )
       return guild
     } catch (e) {
       console.error('Failed to join guild', e)
@@ -115,7 +117,10 @@ export const useGuildStore = defineStore('guild', () => {
       }
       try {
         if (data.type === 'chat') {
-          messages.value.push(data as ChatMessage)
+          const chatMsg = data as ChatMessage
+          if ((chatMsg.from || chatMsg.from_agent) !== 'github') {
+            messages.value.push(chatMsg)
+          }
         }
         if (data.type === 'guild-updated') {
           if (currentGuild.value && currentGuild.value.id === data.id) {
