@@ -419,14 +419,20 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
     pr_url = data.get("prUrl", "")
     last_text = data.get("lastText", "")
     if task_id:
-        update_values: dict = {"state": "awaiting-review"}
+        # Persist pr_url regardless of current state — the prior task-update may
+        # have already moved the task to awaiting-review, so the state guard below
+        # would be a no-op, but pr_url still needs to be written.
         if pr_url:
-            update_values["pr_url"] = pr_url
-            pr_number, pr_repo = _parse_pr_url(pr_url)
-            update_values["pr_number"] = pr_number
-            update_values["pr_repo"] = pr_repo
+            pr_number_val, pr_repo_val = _parse_pr_url(pr_url)
+            await ctx.db.execute(
+                update(Task)
+                .where(Task.id == task_id)
+                .values(pr_url=pr_url, pr_number=pr_number_val, pr_repo=pr_repo_val)
+            )
         await ctx.db.execute(
-            update(Task).where(Task.id == task_id, Task.state == "working").values(**update_values)
+            update(Task)
+            .where(Task.id == task_id, Task.state == "working")
+            .values(state="awaiting-review")
         )
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
@@ -463,7 +469,14 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     task_id = data.get("taskId")
     worker_id_msg = data.get("workerId", "")
     if task_id:
-        await ctx.db.execute(update(Task).where(Task.id == task_id).values(state="awaiting-review"))
+        pr_url_fud = data.get("prUrl", "")
+        update_vals: dict = {"state": "awaiting-review"}
+        if pr_url_fud:
+            pr_number_val, pr_repo_val = _parse_pr_url(pr_url_fud)
+            update_vals.update(
+                {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
+            )
+        await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_vals))
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if not task_id:
