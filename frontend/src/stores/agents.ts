@@ -19,6 +19,7 @@ interface RegisterAgentData {
   agentName?: string
   agentType?: string
   workerId?: string | null
+  workerName?: string
   state?: AgentState
   joinedAt?: string
 }
@@ -62,7 +63,9 @@ export const useAgentsStore = defineStore('agents', () => {
       if (!map.has(agent.workerId)) {
         map.set(agent.workerId, {
           id: agent.workerId,
-          name: _workerDroidName(agent.workerId),
+          // Prefer the backend-supplied workerName from the agent-joined payload;
+          // fall back to local derivation for agents from older backends or REST init.
+          name: agent.workerName || _workerDroidName(agent.workerId),
           state: agent.state,
         })
       } else {
@@ -82,12 +85,14 @@ export const useAgentsStore = defineStore('agents', () => {
       existing.state = agentData.state || 'idle'
       existing.name = agentData.agentName || existing.name
       if (agentData.workerId) existing.workerId = agentData.workerId
+      if (agentData.workerName) existing.workerName = agentData.workerName
     } else {
       agents.value.push({
         id: agentData.agentId,
         name: agentData.agentName || 'Unknown',
         type: agentData.agentType || 'worker',
         workerId: agentData.workerId || null,
+        workerName: agentData.workerName,
         state: agentData.state || 'idle',
         logs: [],
         joinedAt: agentData.joinedAt || new Date().toISOString(),
