@@ -36,6 +36,16 @@ interface AssignTaskOpts {
   issueRepo?: string | null
 }
 
+// Mirrors backend/utils.py worker_display_name() (without hostname).
+// Deriving the worker label from workerId rather than the first agent's name
+// prevents slot 0's droid name from appearing identical to the worker name (#283).
+function _workerDroidName(workerId: string): string {
+  const raw = workerId.slice(2).toUpperCase()
+  const charSum = raw.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
+  const split = 2 + (charSum % 3)
+  return `${raw.slice(0, split)}-${raw.slice(split)}`
+}
+
 export const useAgentsStore = defineStore('agents', () => {
   const agents = ref<Agent[]>([])
   const workerLogs = ref<Record<string, LogEntry[]>>({})
@@ -52,7 +62,7 @@ export const useAgentsStore = defineStore('agents', () => {
       if (!map.has(agent.workerId)) {
         map.set(agent.workerId, {
           id: agent.workerId,
-          name: agent.name.replace(/\/\d+$/, ''),
+          name: _workerDroidName(agent.workerId),
           state: agent.state,
         })
       } else {
