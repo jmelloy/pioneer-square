@@ -21,9 +21,9 @@ export type AgentType = 'foreman' | 'worker' | string
 export interface LogDetail {
   toolType?: 'tool_use' | 'tool_result'
   name?: string
-  input?: Record<string, any>
+  input?: Record<string, unknown>
   output?: string
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface LogEntry {
@@ -100,7 +100,7 @@ export interface ChatMessage {
   prUrl?: string | null
   createdAt?: string
   created_at?: string
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface AuthUser {
@@ -124,13 +124,13 @@ export interface GitHubIssue {
   created_at: string
   pull_request?: unknown
   repo: string
-  [key: string]: any
+  [key: string]: unknown
 }
 
 export interface GitHubRepo {
   full_name: string
   language?: string
-  [key: string]: any
+  [key: string]: unknown
 }
 
 // ── WebSocket protocol ──────────────────────────────────────────────

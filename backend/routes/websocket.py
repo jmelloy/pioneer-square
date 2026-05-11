@@ -148,4 +148,13 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         },
                     )
             finally:
-                await db.close()
+                # If a cancellation was delivered inside a handler (e.g.
+                # handle_worker_disconnect) the underlying aiosqlite connection
+                # may already be closed, making the implicit rollback inside
+                # db.close() raise ValueError("Connection closed").  Swallow
+                # that so the teardown error doesn't propagate to the test
+                # client or the caller.
+                try:
+                    await db.close()
+                except Exception:
+                    logger.debug("WS db session close error during teardown", exc_info=True)

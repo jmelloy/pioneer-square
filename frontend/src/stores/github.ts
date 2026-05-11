@@ -53,8 +53,8 @@ export const useGitHubStore = defineStore('github', () => {
       if (!res.ok) throw new Error(`GitHub error ${res.status}`)
       repos.value = await res.json()
       return repos.value
-    } catch (e: any) {
-      error.value = e.message
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : String(e)
       return []
     } finally {
       loading.value = false
@@ -78,10 +78,10 @@ export const useGitHubStore = defineStore('github', () => {
             { headers: ghHeaders(token.value) },
           )
           if (!res.ok) return [] as GitHubIssue[]
-          const data = await res.json()
+          const data: Array<Record<string, unknown>> = await res.json()
           return data
-            .filter((i: any) => !i.pull_request)
-            .map((i: any) => ({ ...i, repo: repoName })) as GitHubIssue[]
+            .filter((i) => !i.pull_request)
+            .map((i) => ({ ...i, repo: repoName })) as GitHubIssue[]
         }),
       )
       issues.value = allIssues.flat().sort((a, b) => {
@@ -106,8 +106,8 @@ export const useGitHubStore = defineStore('github', () => {
         )
       })
       return issues.value
-    } catch (e: any) {
-      error.value = e.message
+    } catch (e: unknown) {
+      error.value = e instanceof Error ? e.message : String(e)
       return []
     } finally {
       if (!silent) loading.value = false

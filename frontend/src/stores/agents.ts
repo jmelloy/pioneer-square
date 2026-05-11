@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
 import { api } from '../utils/api'
-import type { Agent, AgentActivity, AgentState, LogEntry, Worker, WSInbound } from '../types'
+import type { Agent, AgentActivity, AgentState, LogDetail, LogEntry, Worker, WSInbound } from '../types'
 
 const STATE_RANK: Record<string, number> = {
   working: 0,
@@ -92,7 +92,7 @@ export const useAgentsStore = defineStore('agents', () => {
     if (activity !== undefined) agent.activity = activity
   }
 
-  function addLog(agentId: string, line: string, timestamp?: string, detail?: any) {
+  function addLog(agentId: string, line: string, timestamp?: string, detail?: LogDetail | null) {
     const agent = agents.value.find((a) => a.id === agentId)
     if (agent && line) {
       const ts = timestamp || new Date().toISOString()
@@ -101,7 +101,7 @@ export const useAgentsStore = defineStore('agents', () => {
     }
   }
 
-  function addWorkerLog(workerId: string, line: string, timestamp?: string, detail?: any) {
+  function addWorkerLog(workerId: string, line: string, timestamp?: string, detail?: LogDetail | null) {
     if (!line) return
     if (!workerLogs.value[workerId]) workerLogs.value[workerId] = []
     const ts = timestamp || new Date().toISOString()
