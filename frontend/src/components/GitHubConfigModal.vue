@@ -26,7 +26,7 @@
 <script setup lang="ts">
 import { useAuthStore } from '../stores/auth'
 
-defineEmits(['close'])
+defineEmits<{ close: [] }>()
 const authStore = useAuthStore()
 </script>
 

@@ -82,7 +82,21 @@ const emit = defineEmits<{ close: [] }>()
 
 const guildStore = useGuildStore()
 
-const debugContext = ref<any[]>([])
+interface DebugBlock {
+  type: string
+  text?: string
+  name?: string
+  input?: unknown
+  tool_use_id?: string
+  content?: unknown
+}
+
+interface DebugMessage {
+  role: string
+  content: string | DebugBlock[]
+}
+
+const debugContext = ref<DebugMessage[]>([])
 const debugLoading = ref(false)
 const debugClearing = ref(false)
 const debugEl = ref<HTMLElement | null>(null)
@@ -100,8 +114,8 @@ async function refreshDebug() {
   if (!guildId) return
   debugLoading.value = true
   try {
-    const data = await api<{ messages?: unknown[] }>(`/guilds/${guildId}/foreman/context`)
-    debugContext.value = data?.messages || []
+    const data = await api<{ messages?: DebugMessage[] }>(`/guilds/${guildId}/foreman/context`)
+    debugContext.value = data?.messages ?? []
   } catch (e) {
     console.error('Failed to load foreman context', e)
   } finally {
