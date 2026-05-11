@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
 import { api } from '../utils/api'
-import type { Agent, AgentActivity, AgentState, LogEntry, Worker, WSInbound } from '../types'
+import type { Agent, AgentActivity, AgentState, LogDetail, LogEntry, Worker, WSInbound } from '../types'
 
 const STATE_RANK: Record<string, number> = {
   working: 0,
