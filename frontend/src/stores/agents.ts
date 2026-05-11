@@ -19,6 +19,7 @@ interface RegisterAgentData {
   agentName?: string
   agentType?: string
   workerId?: string | null
+  workerName?: string
   state?: AgentState
   joinedAt?: string
 }
@@ -34,6 +35,16 @@ interface AssignTaskOpts {
   description: string
   issueNumber?: number | null
   issueRepo?: string | null
+}
+
+// Mirrors backend/utils.py worker_display_name() (without hostname).
+// Deriving the worker label from workerId rather than the first agent's name
+// prevents slot 0's droid name from appearing identical to the worker name (#283).
+function _workerDroidName(workerId: string): string {
+  const raw = workerId.slice(2).toUpperCase()
+  const charSum = raw.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
+  const split = 2 + (charSum % 3)
+  return `${raw.slice(0, split)}-${raw.slice(split)}`
 }
 
 export const useAgentsStore = defineStore('agents', () => {
@@ -52,7 +63,9 @@ export const useAgentsStore = defineStore('agents', () => {
       if (!map.has(agent.workerId)) {
         map.set(agent.workerId, {
           id: agent.workerId,
-          name: agent.name.replace(/\/\d+$/, ''),
+          // Prefer the backend-supplied workerName from the agent-joined payload;
+          // fall back to local derivation for agents from older backends or REST init.
+          name: agent.workerName || _workerDroidName(agent.workerId),
           state: agent.state,
         })
       } else {
@@ -72,12 +85,14 @@ export const useAgentsStore = defineStore('agents', () => {
       existing.state = agentData.state || 'idle'
       existing.name = agentData.agentName || existing.name
       if (agentData.workerId) existing.workerId = agentData.workerId
+      if (agentData.workerName) existing.workerName = agentData.workerName
     } else {
       agents.value.push({
         id: agentData.agentId,
         name: agentData.agentName || 'Unknown',
         type: agentData.agentType || 'worker',
         workerId: agentData.workerId || null,
+        workerName: agentData.workerName,
         state: agentData.state || 'idle',
         logs: [],
         joinedAt: agentData.joinedAt || new Date().toISOString(),

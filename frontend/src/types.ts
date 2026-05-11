@@ -37,6 +37,7 @@ export interface Agent {
   name: string
   type: AgentType
   workerId: string | null
+  workerName?: string
   state: AgentState
   activity?: AgentActivity | null
   logs: LogEntry[]
@@ -164,6 +165,7 @@ export interface AgentJoinedWS {
   agentName?: string
   agentType?: string
   workerId?: string | null
+  workerName?: string
   state?: AgentState
   joinedAt?: string
 }

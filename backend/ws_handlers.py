@@ -30,6 +30,7 @@ from models import Agent, Message, Task, TaskLog, User, Worker
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from util.tasks import spawn
+from utils import worker_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -206,18 +207,18 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                         "issueRepo": pt.issue_repo,
                     }
                 )
-    await broadcast(
-        ctx.guild_id,
-        {
-            "type": "agent-joined",
-            "agentId": agent_id,
-            "agentName": agent_name,
-            "agentType": agent_type,
-            "workerId": worker_id,
-            "state": "idle",
-            "joinedAt": joined_at,
-        },
-    )
+    broadcast_payload: dict = {
+        "type": "agent-joined",
+        "agentId": agent_id,
+        "agentName": agent_name,
+        "agentType": agent_type,
+        "workerId": worker_id,
+        "state": "idle",
+        "joinedAt": joined_at,
+    }
+    if worker_id:
+        broadcast_payload["workerName"] = worker_display_name(worker_id)
+    await broadcast(ctx.guild_id, broadcast_payload)
 
 
 async def handle_agent_state(ctx: WSContext, data: dict) -> None:
