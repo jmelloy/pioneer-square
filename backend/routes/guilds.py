@@ -95,8 +95,6 @@ async def create_guild(
 async def list_guilds(github_user_id: str = Depends(require_user)):
     db = await get_db()
     try:
-        # Union: guilds the user explicitly belongs to, plus legacy guilds
-        # whose github_user_id matches but never got a guild_members row.
         result = await db.execute(
             select(
                 Guild.guild_id.label("id"),
@@ -105,7 +103,7 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
                 func.count(Agent.id).label("agent_count"),
             )
             .select_from(Guild)
-            .outerjoin(
+            .join(
                 GuildMember,
                 (GuildMember.guild_id == Guild.guild_id) & (GuildMember.user_id == github_user_id),
             )
@@ -115,9 +113,7 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
                 & (Agent.type != "foreman")
                 & (Agent.state != "offline"),
             )
-            .where(
-                (GuildMember.user_id == github_user_id) | (Guild.github_user_id == github_user_id)
-            )
+            .where(GuildMember.user_id == github_user_id)
             .group_by(Guild.guild_id)
             .order_by(Guild.created_at.desc())
         )

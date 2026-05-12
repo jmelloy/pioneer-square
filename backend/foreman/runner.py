@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from database import get_db
 from events import broadcast
-from models import ForemanTurn, Guild, Message, Task, live_tasks_filter
+from models import ForemanTurn, Guild, GuildMember, Message, Task, live_tasks_filter
 from sqlalchemy import delete, select
 from util.tasks import spawn
 
@@ -247,7 +247,11 @@ def _serialize_content(content) -> str:
 async def _get_guild_user_id(guild_id: str) -> str | None:
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.github_user_id).where(Guild.guild_id == guild_id))
+        result = await db.execute(
+            select(GuildMember.user_id)
+            .where(GuildMember.guild_id == guild_id, GuildMember.role == "owner")
+            .limit(1)
+        )
         return result.scalar_one_or_none()
     finally:
         await db.close()

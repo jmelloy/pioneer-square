@@ -182,3 +182,45 @@ def test_get_github_token_accepts_worker_token(client):
     )
     assert resp.status_code == 200
     assert "access_token" in resp.json()
+
+
+def test_get_github_token_uses_guild_members_owner(client):
+    """Token endpoint resolves the owner via guild_members, not guilds.github_user_id."""
+    test_client, db_path = client
+    # insert_guild adds owner "gh-user-test" to guild_members; make_auth_token creates their token
+    insert_guild(db_path, "g-gm-tok")
+    _seed_github_token(db_path)  # ensures gh-user-test has a github_tokens row
+    worker = _register_worker(test_client, "g-gm-tok")
+    resp = test_client.get(
+        "/auth/github/token",
+        params={"guild_id": "g-gm-tok"},
+        headers={"Authorization": f"Bearer {worker['auth_token']}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "access_token" in data
+    assert "username" in data
+
+
+def test_get_github_token_no_owner_in_guild_members(client):
+    """Returns 404 when no owner exists in guild_members (legacy-only guild)."""
+    import sqlite3
+    from datetime import UTC, datetime
+
+    test_client, db_path = client
+    now = datetime.now(UTC).isoformat()
+    # Insert a guild with github_user_id but no guild_members row
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name, github_user_id) VALUES (?, ?, ?, ?)",
+            ("g-noowner", now, "No Owner", "gh-user-test"),
+        )
+        conn.commit()
+    # Register a worker (bypasses membership check via auth_token)
+    worker = _register_worker(test_client, "g-noowner")
+    resp = test_client.get(
+        "/auth/github/token",
+        params={"guild_id": "g-noowner"},
+        headers={"Authorization": f"Bearer {worker['auth_token']}"},
+    )
+    assert resp.status_code == 404

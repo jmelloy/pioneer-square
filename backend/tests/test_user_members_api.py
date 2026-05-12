@@ -13,6 +13,17 @@ sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, insert_member, make_auth_token
 
 
+def _insert_guild_legacy_only(db_path: str, guild_id: str, user_id: str) -> None:
+    """Insert a guild with github_user_id but no guild_members row."""
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name, github_user_id) VALUES (?, ?, ?, ?)",
+            (guild_id, now, "Legacy", user_id),
+        )
+        conn.commit()
+
+
 def _seed_user(db_path: str, user_id: str, login: str) -> None:
     """Insert a users row directly so it can be referenced as a member."""
     now = datetime.now(UTC).isoformat()
@@ -174,3 +185,21 @@ def test_invalid_role_rejected(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# guild_members migration — /api/me must not include legacy guilds
+# ---------------------------------------------------------------------------
+
+
+def test_api_me_excludes_legacy_guilds(client):
+    """Guilds where guilds.github_user_id matches but no guild_members row exists
+    must NOT appear in /api/me memberships; the legacy path has been removed."""
+    test_client, db_path = client
+    _seed_user(db_path, "gh-user-test", "testuser")
+    _insert_guild_legacy_only(db_path, "gm-legacy", "gh-user-test")
+    token = make_auth_token(db_path)
+    resp = test_client.get("/api/me", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    guild_ids = [m["guild_id"] for m in resp.json()["memberships"]]
+    assert "gm-legacy" not in guild_ids
