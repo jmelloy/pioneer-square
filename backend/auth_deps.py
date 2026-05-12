@@ -12,6 +12,11 @@ Three flavours:
 - ``require_worker_or_member`` — accepts either a worker auth_token (issued
   at registration) or a member login_token; used by query-string endpoints
   that fetch guild secrets so workers can self-serve their credentials.
+
+Helper:
+
+- ``get_guild_pk(db, guild_id)`` — look up the integer PK for a guild string
+  identifier. Returns None when the guild does not exist.
 """
 
 from __future__ import annotations
@@ -23,6 +28,12 @@ from models import Guild, GuildMember, UserSession, Worker
 from sqlalchemy import select
 
 http_bearer = HTTPBearer(auto_error=False)
+
+
+async def get_guild_pk(db, guild_id: str) -> int | None:
+    """Return the integer PK (guilds.id) for *guild_id*, or None if not found."""
+    result = await db.execute(select(Guild.id).where(Guild.guild_id == guild_id))
+    return result.scalar_one_or_none()
 
 
 async def require_user(
@@ -47,13 +58,13 @@ async def require_user(
 
 async def ensure_membership(db, guild_id: str, user_id: str) -> str:
     """Return the role of *user_id* in *guild_id* or raise HTTP 403/404."""
-    g_res = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
-    if not g_res.first():
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
 
     res = await db.execute(
         select(GuildMember.role).where(
-            GuildMember.guild_id == guild_id, GuildMember.user_id == user_id
+            GuildMember.guild_pk == guild_pk, GuildMember.user_id == user_id
         )
     )
     role = res.scalar_one_or_none()
@@ -93,8 +104,12 @@ async def authorize_worker_or_member(guild_id: str, token: str | None) -> str:
         raise HTTPException(status_code=401, detail="Authentication required")
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
+
         worker_res = await db.execute(
-            select(Worker.id).where(Worker.guild_id == guild_id, Worker.auth_token == token)
+            select(Worker.id).where(Worker.guild_pk == guild_pk, Worker.auth_token == token)
         )
         worker_id = worker_res.scalar_one_or_none()
         if worker_id:

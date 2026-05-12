@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from auth_deps import get_guild_pk
 from database import get_db
 from events import broadcast
 from models import ForemanTurn, Guild, GuildMember, Message, Task, live_tasks_filter
@@ -247,9 +248,12 @@ def _serialize_content(content) -> str:
 async def _get_guild_user_id(guild_id: str) -> str | None:
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            return None
         result = await db.execute(
             select(GuildMember.user_id)
-            .where(GuildMember.guild_id == guild_id, GuildMember.role == "owner")
+            .where(GuildMember.guild_pk == guild_pk, GuildMember.role == "owner")
             .limit(1)
         )
         return result.scalar_one_or_none()

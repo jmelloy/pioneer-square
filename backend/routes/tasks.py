@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
-from auth_deps import require_member
+from auth_deps import get_guild_pk, require_member
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
@@ -74,6 +74,9 @@ async def list_guild_tasks(
     """List all tasks for a guild, most recent first."""
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
             select(
                 Task.id,
@@ -92,7 +95,7 @@ async def list_guild_tasks(
                 Task.finished_at,
                 Task.deleted_at,
             )
-            .where(Task.guild_id == guild_id, live_tasks_filter())
+            .where(Task.guild_pk == guild_pk, live_tasks_filter())
             .order_by(Task.created_at.desc())
             .limit(100)
         )
@@ -110,10 +113,13 @@ async def get_task_logs(
     """Get all saved log lines for a task."""
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
             select(Task.id).where(
                 Task.id == task_id,
-                Task.guild_id == guild_id,
+                Task.guild_pk == guild_pk,
                 live_tasks_filter(),
             )
         )
@@ -205,9 +211,12 @@ async def create_task_followup(
     """
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
             select(Task.worker_id, Task.state, Task.branch).where(
-                Task.id == task_id, Task.guild_id == guild_id
+                Task.id == task_id, Task.guild_pk == guild_pk
             )
         )
         row = result.one_or_none()
@@ -248,8 +257,11 @@ async def finalize_task_endpoint(
     """
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_id)
+            select(Task.worker_id).where(Task.id == task_id, Task.guild_pk == guild_pk)
         )
         worker_id = result.scalar_one_or_none()
         if not worker_id:
@@ -294,8 +306,11 @@ async def cancel_task_endpoint(
     """Cancel a running or pending task — terminates the worker's Claude subprocess."""
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_id == guild_id)
+            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_pk == guild_pk)
         )
         row = result.one_or_none()
         if not row:
@@ -345,8 +360,13 @@ async def redirect_task_endpoint(
         raise HTTPException(status_code=400, detail="instructions required")
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_id == guild_id)
+            select(Task.worker_id, Task.state).where(
+                Task.id == task_id, Task.guild_pk == guild_pk
+            )
         )
         row = result.one_or_none()
         if not row:
