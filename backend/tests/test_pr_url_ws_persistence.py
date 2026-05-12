@@ -75,7 +75,7 @@ def _insert_guild_worker_task(
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO guilds (id, created_at, name) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
             (guild_id, now, "Test Guild"),
         )
         conn.execute(

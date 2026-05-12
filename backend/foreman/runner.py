@@ -247,7 +247,7 @@ def _serialize_content(content) -> str:
 async def _get_guild_user_id(guild_id: str) -> str | None:
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
+        result = await db.execute(select(Guild.github_user_id).where(Guild.guild_id == guild_id))
         return result.scalar_one_or_none()
     finally:
         await db.close()
@@ -475,7 +475,7 @@ async def run_foreman_ai(
     db = await get_db()
     try:
         guild_result = await db.execute(
-            select(Guild.name, Guild.primary_repo).where(Guild.id == guild_id)
+            select(Guild.name, Guild.primary_repo).where(Guild.guild_id == guild_id)
         )
         guild_row = guild_result.one_or_none()
         primary_repo = guild_row.primary_repo if guild_row else None
@@ -500,7 +500,9 @@ async def run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.fetchall()
         ]
-        guild_result = await db.execute(select(Guild.primary_repo).where(Guild.id == guild_id))
+        guild_result = await db.execute(
+            select(Guild.primary_repo).where(Guild.guild_id == guild_id)
+        )
         primary_repo: str | None = guild_result.scalar_one_or_none()
     finally:
         await db.close()

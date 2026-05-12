@@ -52,7 +52,9 @@ async def ensure_membership(db, guild_id: str, user_id: str) -> str:
     on the guild row and no member rows; treat that owner as a member so the
     pre-migration UI keeps working without a manual repair step.
     """
-    g_res = await db.execute(select(Guild.id, Guild.github_user_id).where(Guild.id == guild_id))
+    g_res = await db.execute(
+        select(Guild.guild_id, Guild.github_user_id).where(Guild.guild_id == guild_id)
+    )
     grow = g_res.first()
     if not grow:
         raise HTTPException(status_code=404, detail="Guild not found")

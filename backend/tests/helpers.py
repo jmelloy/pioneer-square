@@ -59,7 +59,7 @@ def insert_guild(
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO guilds (id, created_at, name, github_user_id) "
+            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name, github_user_id) "
             "VALUES (?, ?, ?, ?)",
             (guild_id, now, name, owner_user_id),
         )

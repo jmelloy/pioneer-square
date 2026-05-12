@@ -85,7 +85,7 @@ async def get_github_token(
     Without auth, anyone knowing a guild_id could exfiltrate the GitHub token."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.github_user_id).where(Guild.id == guild_id))
+        result = await db.execute(select(Guild.github_user_id).where(Guild.guild_id == guild_id))
         github_user_id_val = result.scalar_one_or_none()
         if not github_user_id_val:
             raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")
@@ -202,7 +202,7 @@ async def api_me(github_user_id: str = Depends(require_user)):
 
         explicit = await db.execute(
             select(GuildMember.guild_id, GuildMember.role, Guild.name)
-            .join(Guild, Guild.id == GuildMember.guild_id)
+            .join(Guild, Guild.guild_id == GuildMember.guild_id)
             .where(GuildMember.user_id == github_user_id)
         )
         memberships = {
@@ -214,7 +214,9 @@ async def api_me(github_user_id: str = Depends(require_user)):
             for row in explicit.fetchall()
         }
         legacy = await db.execute(
-            select(Guild.id, Guild.name).where(Guild.github_user_id == github_user_id)
+            select(Guild.guild_id.label("id"), Guild.name).where(
+                Guild.github_user_id == github_user_id
+            )
         )
         for row in legacy.fetchall():
             memberships.setdefault(

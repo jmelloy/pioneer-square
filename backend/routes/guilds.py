@@ -60,14 +60,14 @@ async def create_guild(
     created_at = datetime.now(UTC).isoformat()
     db = await get_db()
     try:
-        result = await db.execute(text("SELECT id FROM guilds"))
+        result = await db.execute(text("SELECT guild_id FROM guilds WHERE deleted_at IS NULL"))
         existing_ids = {row[0] for row in result.fetchall()}
         guild_id = generate_guild_id(name=data.name or "", existing_ids=existing_ids)
         guild_name = data.name or f"Guild {guild_id}"
         try:
             db.add(
                 Guild(
-                    id=guild_id,
+                    guild_id=guild_id,
                     created_at=created_at,
                     name=guild_name,
                     github_user_id=github_user_id,
@@ -99,7 +99,7 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
         # whose github_user_id matches but never got a guild_members row.
         result = await db.execute(
             select(
-                Guild.id,
+                Guild.guild_id.label("id"),
                 Guild.created_at,
                 Guild.name,
                 func.count(Agent.id).label("agent_count"),
@@ -107,18 +107,18 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
             .select_from(Guild)
             .outerjoin(
                 GuildMember,
-                (GuildMember.guild_id == Guild.id) & (GuildMember.user_id == github_user_id),
+                (GuildMember.guild_id == Guild.guild_id) & (GuildMember.user_id == github_user_id),
             )
             .outerjoin(
                 Agent,
-                (Agent.guild_id == Guild.id)
+                (Agent.guild_id == Guild.guild_id)
                 & (Agent.type != "foreman")
                 & (Agent.state != "offline"),
             )
             .where(
                 (GuildMember.user_id == github_user_id) | (Guild.github_user_id == github_user_id)
             )
-            .group_by(Guild.id)
+            .group_by(Guild.guild_id)
             .order_by(Guild.created_at.desc())
         )
         return [dict(r._mapping) for r in result.fetchall()]
@@ -134,7 +134,7 @@ async def update_guild(
 ):
     db = await get_db()
     try:
-        result = await db.execute(select(Guild).where(Guild.id == guild_id))
+        result = await db.execute(select(Guild).where(Guild.guild_id == guild_id))
         guild = result.scalar_one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
@@ -177,7 +177,7 @@ async def update_guild(
 async def get_guild(guild_id: str, github_user_id: str = Depends(require_member())):
     db = await get_db()
     try:
-        result = await db.execute(select(Guild).where(Guild.id == guild_id))
+        result = await db.execute(select(Guild).where(Guild.guild_id == guild_id))
         guild = result.scalar_one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
@@ -198,6 +198,7 @@ async def get_guild(guild_id: str, github_user_id: str = Depends(require_member(
         messages = result.scalars().all()
         return {
             **row_to_dict(guild),
+            "id": guild.guild_id,  # keep text guild_id as "id" for API compatibility
             "agents": [row_to_dict(a) for a in agents],
             "messages": [row_to_dict(m) for m in reversed(messages)],
         }
@@ -313,7 +314,7 @@ async def update_guild_member(
 
 async def _ensure_webhook_secret(db, guild_id: str) -> str:
     """Return the guild's webhook secret, generating one on first access."""
-    res = await db.execute(select(Guild).where(Guild.id == guild_id))
+    res = await db.execute(select(Guild).where(Guild.guild_id == guild_id))
     guild = res.scalar_one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
@@ -335,7 +336,7 @@ async def rotate_webhook_secret(
     """
     db = await get_db()
     try:
-        res = await db.execute(select(Guild).where(Guild.id == guild_id))
+        res = await db.execute(select(Guild).where(Guild.guild_id == guild_id))
         guild = res.scalar_one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")

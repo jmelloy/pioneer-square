@@ -65,7 +65,7 @@ def _setup_guild_and_worker(db_path: str, guild_id: str, worker_id: str) -> None
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO guilds (id, created_at, name) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
             (guild_id, now, "Test Guild"),
         )
         conn.execute(

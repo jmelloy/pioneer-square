@@ -23,7 +23,8 @@ def live_tasks_filter(now: str | None = None):
 class Guild(Base):
     __tablename__ = "guilds"
 
-    id = Column(Text, primary_key=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    guild_id = Column(Text, nullable=False)
     created_at = Column(Text, nullable=False)
     name = Column(Text)
     github_user_id = Column(Text)
@@ -36,13 +37,16 @@ class Guild(Base):
     description = Column(Text, nullable=True)
     url = Column(Text, nullable=True)
     version = Column(Text, nullable=True)
+    # ISO-8601 UTC timestamp at which this guild is considered soft-deleted.
+    # NULL = active; partial unique index enforces one active row per guild_id.
+    deleted_at = Column(Text, nullable=True)
 
 
 class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(Text, primary_key=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False)
+    guild_id = Column(Text, ForeignKey("guilds.guild_id"), nullable=False)
     worker_id = Column(Text, ForeignKey("workers.id"))
     name = Column(Text, nullable=False)
     type = Column(Text, nullable=False, server_default="worker")
@@ -59,7 +63,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False)
+    guild_id = Column(Text, ForeignKey("guilds.guild_id"), nullable=False)
     from_agent = Column(Text)
     to_agent = Column(Text)
     content = Column(Text, nullable=False)
@@ -74,7 +78,7 @@ class Worker(Base):
     __tablename__ = "workers"
 
     id = Column(Text, primary_key=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False)
+    guild_id = Column(Text, ForeignKey("guilds.guild_id"), nullable=False)
     repos = Column(Text, nullable=False, server_default="[]")
     # Optional GitHub org; when set the worker accepts any task targeting <org>/*
     # and clones repos lazily. NULL for workers that use an explicit repos list only.
@@ -164,7 +168,7 @@ class User(Base):
 class GuildMember(Base):
     __tablename__ = "guild_members"
 
-    guild_id = Column(Text, ForeignKey("guilds.id"), primary_key=True)
+    guild_id = Column(Text, ForeignKey("guilds.guild_id"), primary_key=True)
     user_id = Column(Text, ForeignKey("users.id"), primary_key=True)
     # owner | member | viewer
     role = Column(Text, nullable=False, server_default="member")
@@ -187,7 +191,7 @@ class ClaudeCredentials(Base):
     __tablename__ = "claude_credentials"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False, unique=True)
+    guild_id = Column(Text, ForeignKey("guilds.guild_id"), nullable=False, unique=True)
     credentials_blob = Column(Text, nullable=False)  # base64-encoded tar.gz of ~/.claude/
     updated_at = Column(Text, nullable=False)
 
@@ -196,7 +200,7 @@ class GuildKey(Base):
     __tablename__ = "guild_keys"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False, unique=True)
+    guild_id = Column(Text, ForeignKey("guilds.guild_id"), nullable=False, unique=True)
     key_id = Column(Text, nullable=False)  # "kid" in JWK
     public_key_pem = Column(Text, nullable=False)
     private_key_pem = Column(Text, nullable=False)
@@ -227,7 +231,7 @@ class GithubEvent(Base):
     __tablename__ = "github_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    guild_id = Column(Text, ForeignKey("guilds.id"), nullable=False)
+    guild_id = Column(Text, ForeignKey("guilds.guild_id"), nullable=False)
     # task_id is nullable because an event may arrive before we've linked the
     # PR to a task (e.g. webhook fires for a manually-opened PR).
     task_id = Column(Text, ForeignKey("tasks.id"), nullable=True)

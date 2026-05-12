@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, make_auth_token
@@ -176,6 +179,54 @@ def test_update_guild_clear_primary_repo(client):
     )
     assert patch_resp.status_code == 200
     assert patch_resp.json()["primary_repo"] is None
+
+
+def test_guild_partial_unique_index(client):
+    """guild_id must be unique among active guilds but reusable after soft-delete."""
+    import sqlite3
+
+    test_client, db_path = client  # noqa: F841 — db_path used directly
+
+    shared_id = "reuse-me-001"
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+
+    with sqlite3.connect(db_path) as conn:
+        # Insert the first active guild.
+        conn.execute(
+            "INSERT INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
+            (shared_id, now, "First"),
+        )
+        conn.commit()
+
+        # A second guild with the same guild_id (both active) must violate the
+        # partial unique index.
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
+                (shared_id, now, "Duplicate"),
+            )
+            conn.commit()
+
+    # Soft-delete the first guild.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE guilds SET deleted_at = ? WHERE guild_id = ? AND deleted_at IS NULL",
+            (now, shared_id),
+        )
+        conn.commit()
+
+    # After soft-delete the same guild_id can be inserted again.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
+            (shared_id, now, "Third"),
+        )
+        conn.commit()
+
+        row = conn.execute(
+            "SELECT COUNT(*) FROM guilds WHERE guild_id = ?", (shared_id,)
+        ).fetchone()
+    assert row[0] == 2, "should have one deleted and one active row for the same guild_id"
 
 
 def test_primary_repo_in_foreman_prompt():
