@@ -7,6 +7,7 @@ keyed by the ``type`` field; outbound broadcasts go through ``events.broadcast``
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 
@@ -69,37 +70,42 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         connections[guild_id] = []
     connections[guild_id].append(websocket)
 
-    # Look up the guild's integer PK once for the lifetime of this connection.
+    # Shield the setup awaits so a WS close that arrives before setup completes
+    # does not deliver CancelledError here — it is deferred to the first
+    # checkpoint inside the message loop where it is properly caught.
     _guild_pk: int | None = None
-    _gp_db = await get_db()
-    try:
-        _gp_res = await _gp_db.execute(select(Guild.id).where(Guild.guild_id == guild_id))
-        _guild_pk = _gp_res.scalar_one_or_none()
-    except Exception:
-        logger.exception("WS guild_pk lookup failed for guild %s", guild_id)
-    finally:
-        try:
-            await _gp_db.close()
-        except Exception:
-            logger.debug("WS _gp_db close error during guild_pk lookup", exc_info=True)
-
-    # Identify the browser user from the optional ?token= query param.
-    # Workers don't pass a token; ws_user_id stays None for them.
     ws_user_id: str | None = None
-    _token = websocket.query_params.get("token")
-    if _token:
-        _auth_db = await get_db()
+    with anyio.CancelScope(shield=True):
+        _gp_db = await get_db()
         try:
-            _res = await _auth_db.execute(
-                select(UserSession.github_user_id).where(UserSession.token == _token)
-            )
-            ws_user_id = _res.scalar_one_or_none()
+            _gp_res = await _gp_db.execute(select(Guild.id).where(Guild.guild_id == guild_id))
+            _guild_pk = _gp_res.scalar_one_or_none()
         except Exception:
-            logger.exception("WS token lookup failed (token treated as anonymous)")
+            logger.exception("WS guild_pk lookup failed for guild %s", guild_id)
         finally:
-            await _auth_db.close()
+            try:
+                await _gp_db.close()
+            except Exception:
+                logger.debug("WS _gp_db close error during guild_pk lookup", exc_info=True)
 
-    db = await get_db()
+        # Identify the browser user from the optional ?token= query param.
+        # Workers don't pass a token; ws_user_id stays None for them.
+        _token = websocket.query_params.get("token")
+        if _token:
+            _auth_db = await get_db()
+            try:
+                _res = await _auth_db.execute(
+                    select(UserSession.github_user_id).where(UserSession.token == _token)
+                )
+                ws_user_id = _res.scalar_one_or_none()
+            except Exception:
+                logger.exception("WS token lookup failed (token treated as anonymous)")
+            finally:
+                await _auth_db.close()
+
+        # Open the main session inside the shield so all setup awaits are
+        # protected; deferred cancellation fires at receive_json() instead.
+        db = await get_db()
     ctx = ws_handlers.WSContext(
         websocket=websocket,
         guild_id=guild_id,
@@ -120,6 +126,13 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             await ws_handlers.dispatch(ctx, data)
 
     except WebSocketDisconnect:
+        if guild_id in connections and websocket in connections[guild_id]:
+            connections[guild_id].remove(websocket)
+    except asyncio.CancelledError:
+        # Deferred cancellation from the shielded setup phase (WS closed before
+        # setup completed).  Clean up the connection slot and let the finally
+        # block handle the rest; do NOT re-raise so sibling connections are not
+        # cascade-cancelled by the anyio task group.
         if guild_id in connections and websocket in connections[guild_id]:
             connections[guild_id].remove(websocket)
     except Exception:
