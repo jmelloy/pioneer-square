@@ -18,6 +18,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+import urllib.error
 import urllib.request
 from typing import Any
 from urllib.parse import urlparse
@@ -130,12 +132,48 @@ class A2AClient:
             }
         ).encode()
 
-        result = await asyncio.to_thread(
-            _fetch_json,
-            f"{base_url}/a2a",
-            data=body,
-            headers=headers,
+        task_url = f"{base_url}/a2a"
+        log_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+        logger.debug(
+            "a2a send_task: url=%s method=POST skill_id=%s headers=%s payload=%.500s",
+            task_url,
+            skill_id,
+            log_headers,
+            body.decode(),
         )
+
+        t0 = time.monotonic()
+        try:
+            result = await asyncio.to_thread(_fetch_json, task_url, data=body, headers=headers)
+        except urllib.error.HTTPError as exc:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            try:
+                err_body = exc.read().decode(errors="replace")
+            except Exception:
+                err_body = ""
+            logger.error(
+                "a2a send_task: url=%s status=%d elapsed_ms=%d err_body=%.500s",
+                task_url,
+                exc.code,
+                elapsed_ms,
+                err_body,
+                exc_info=True,
+            )
+            raise
+        except Exception:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            logger.error(
+                "a2a send_task: url=%s elapsed_ms=%d request_failed",
+                task_url,
+                elapsed_ms,
+                exc_info=True,
+            )
+            raise
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        logger.info("a2a send_task: url=%s status=200 elapsed_ms=%d", task_url, elapsed_ms)
+        logger.debug("a2a send_task: response_preview=%.500s", str(result))
+
         return result.get("result", result)
 
     async def review_pr(

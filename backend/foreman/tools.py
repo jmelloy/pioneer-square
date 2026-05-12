@@ -17,6 +17,8 @@ from events import broadcast, emit_terminal_line
 from models import Agent, GithubToken, GuildKey, GuildMember, Task, TaskLog, Worker
 from sqlalchemy import select, update
 
+logger = logging.getLogger(__name__)
+
 # Default soft-delete window (seconds) when finalize_task is called without
 # an explicit expiry. Mirrors backend.main.DEFAULT_FINALIZE_TTL.
 DEFAULT_FINALIZE_TTL_SECONDS = 3 * 24 * 60 * 60  # 3 days
@@ -1466,6 +1468,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
 
                     elif tu.name == "review_pr":
                         pr_url = inp["pr_url"]
+                        logger.info("guild=%s review_pr: pr_url=%s", guild_id, pr_url)
                         pr_match = _PR_URL_RE.match(pr_url.rstrip("/"))
                         if not pr_match:
                             result_text = (
@@ -1482,12 +1485,41 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 "REVIEWER_AGENT_URL", "https://agent.meyers.life"
                             )
                             client = A2AClient(f"{review_agent.rstrip('/')}/.well-known/agent.json")
-                            a2a_result = await client.review_pr(
-                                pr_url,
-                                caller_domain=_guild_caller_domain(guild_id),
-                                private_key_pem=await _guild_private_key_pem(guild_id),
-                            )
+                            try:
+                                a2a_result = await client.review_pr(
+                                    pr_url,
+                                    caller_domain=_guild_caller_domain(guild_id),
+                                    private_key_pem=await _guild_private_key_pem(guild_id),
+                                )
+                            except urllib.error.HTTPError as exc:
+                                try:
+                                    err_body = exc.read().decode(errors="replace")
+                                except Exception:
+                                    err_body = ""
+                                logger.error(
+                                    "guild=%s review_pr: mcp_request_failed pr_url=%s status=%d err_body=%.500s",
+                                    guild_id,
+                                    pr_url,
+                                    exc.code,
+                                    err_body,
+                                    exc_info=True,
+                                )
+                                raise
+                            except Exception:
+                                logger.error(
+                                    "guild=%s review_pr: mcp_request_failed pr_url=%s",
+                                    guild_id,
+                                    pr_url,
+                                    exc_info=True,
+                                )
+                                raise
                             github_event, review_body = _extract_review_data(a2a_result)
+                            logger.info(
+                                "guild=%s review_pr: verdict=%s summary_preview=%.200s",
+                                guild_id,
+                                github_event,
+                                review_body,
+                            )
                             review_data = await asyncio.to_thread(
                                 _gh_api_post,
                                 f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
