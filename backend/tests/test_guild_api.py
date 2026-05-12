@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, make_auth_token

@@ -562,7 +562,7 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
         result = await db.execute(
             select(GithubToken.access_token, GithubToken.github_username)
             .join(Guild, Guild.github_user_id == GithubToken.github_user_id)
-            .where(Guild.id == guild_id)
+            .where(Guild.guild_id == guild_id)
         )
         row = result.first()
         return (row.access_token, row.github_username) if row else None

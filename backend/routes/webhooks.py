@@ -291,7 +291,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
 
     db = await get_db()
     try:
-        secret_res = await db.execute(select(Guild.webhook_secret).where(Guild.id == guild_id))
+        secret_res = await db.execute(select(Guild.webhook_secret).where(Guild.guild_id == guild_id))
         secret = secret_res.scalar_one_or_none()
         if not secret:
             # Guild missing or no secret configured. Don't leak which is which.

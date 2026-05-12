@@ -27,7 +27,7 @@ async def get_foreman_context(
     """Return the stored foreman conversation turns for this guild+user (debug view)."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
+        result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Guild not found")
     finally:
@@ -44,7 +44,7 @@ async def clear_foreman_context(
     """Delete all stored foreman turns for this guild+user. Chat history in messages table is preserved."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
+        result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Guild not found")
     finally:

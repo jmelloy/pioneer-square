@@ -154,7 +154,7 @@ async def get_guild_logs(
         raise HTTPException(status_code=400, detail="Specify worker_id, agent_id, or task_id")
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.id).where(Guild.id == guild_id))
+        result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Guild not found")
         stmt = select(
