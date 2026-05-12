@@ -24,7 +24,7 @@ from events import agent_owners, broadcast
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from models import Agent, Worker
+from models import Agent, Guild, Worker
 from sqlalchemy import select, update
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -101,7 +101,8 @@ async def _sweep_stale_workers_once() -> int:
     async with AsyncSessionLocal() as db:
         stale_agents = (
             await db.execute(
-                select(Agent.id, Agent.guild_id, Agent.worker_id)
+                select(Agent.id, Agent.guild_pk, Agent.worker_id, Guild.guild_id)
+                .join(Guild, Guild.id == Agent.guild_pk)
                 .where(Agent.state != "offline")
                 .where(Agent.last_seen.isnot(None))
                 .where(Agent.last_seen < cutoff)
@@ -109,20 +110,20 @@ async def _sweep_stale_workers_once() -> int:
         ).all()
         if not stale_agents:
             return 0
-        stale_worker_keys: set[tuple[str, str]] = set()
+        stale_worker_keys: set[tuple[str, int]] = set()
         for row in stale_agents:
             await db.execute(
                 update(Agent)
-                .where(Agent.id == row.id, Agent.guild_id == row.guild_id)
+                .where(Agent.id == row.id, Agent.guild_pk == row.guild_pk)
                 .values(state="offline", activity=None)
             )
             if row.worker_id:
-                stale_worker_keys.add((row.worker_id, row.guild_id))
+                stale_worker_keys.add((row.worker_id, row.guild_pk))
             agent_owners.pop(row.id, None)
-        for worker_id, gid in stale_worker_keys:
+        for worker_id, gpk in stale_worker_keys:
             await db.execute(
                 update(Worker)
-                .where(Worker.id == worker_id, Worker.guild_id == gid)
+                .where(Worker.id == worker_id, Worker.guild_pk == gpk)
                 .values(state="offline")
             )
         await db.commit()
