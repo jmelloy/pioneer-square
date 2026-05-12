@@ -46,10 +46,7 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(Text, primary_key=True)
-    # guild_id is the human-readable TEXT identifier used by application code.
-    # guild_pk is the integer FK that references guilds(id) for DB integrity.
-    guild_id = Column(Text, nullable=False)
-    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=True)
+    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False)
     worker_id = Column(Text, ForeignKey("workers.id"))
     name = Column(Text, nullable=False)
     type = Column(Text, nullable=False, server_default="worker")
@@ -66,10 +63,7 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # guild_id is the human-readable TEXT identifier used by application code.
-    # guild_pk is the integer FK that references guilds(id) for DB integrity.
-    guild_id = Column(Text, nullable=False)
-    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=True)
+    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False)
     from_agent = Column(Text)
     to_agent = Column(Text)
     content = Column(Text, nullable=False)
@@ -84,10 +78,7 @@ class Worker(Base):
     __tablename__ = "workers"
 
     id = Column(Text, primary_key=True)
-    # guild_id is the human-readable TEXT identifier used by application code.
-    # guild_pk is the integer FK that references guilds(id) for DB integrity.
-    guild_id = Column(Text, nullable=False)
-    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=True)
+    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False)
     repos = Column(Text, nullable=False, server_default="[]")
     # Optional GitHub org; when set the worker accepts any task targeting <org>/*
     # and clones repos lazily. NULL for workers that use an explicit repos list only.
@@ -110,7 +101,7 @@ class Task(Base):
 
     id = Column(Text, primary_key=True)
     worker_id = Column(Text, ForeignKey("workers.id"), nullable=False)
-    guild_id = Column(Text, nullable=False)
+    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False)
     description = Column(Text, nullable=False)
     tool = Column(Text, nullable=False, server_default="claude")
     issue_number = Column(Integer)
@@ -177,11 +168,8 @@ class User(Base):
 class GuildMember(Base):
     __tablename__ = "guild_members"
 
-    # guild_id is the human-readable TEXT identifier; part of the composite PK.
-    # guild_pk is the integer FK that references guilds(id) for DB integrity.
-    guild_id = Column(Text, primary_key=True)
+    guild_pk = Column(Integer, ForeignKey("guilds.id"), primary_key=True)
     user_id = Column(Text, ForeignKey("users.id"), primary_key=True)
-    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=True)
     # owner | member | viewer
     role = Column(Text, nullable=False, server_default="member")
     created_at = Column(Text, nullable=False)
@@ -203,10 +191,7 @@ class ClaudeCredentials(Base):
     __tablename__ = "claude_credentials"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # guild_id is the human-readable TEXT identifier used by application code.
-    # guild_pk is the integer FK that references guilds(id) for DB integrity.
-    guild_id = Column(Text, nullable=False, unique=True)
-    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=True)
+    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False, unique=True)
     credentials_blob = Column(Text, nullable=False)  # base64-encoded tar.gz of ~/.claude/
     updated_at = Column(Text, nullable=False)
 
@@ -215,10 +200,7 @@ class GuildKey(Base):
     __tablename__ = "guild_keys"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # guild_id is the human-readable TEXT identifier used by application code.
-    # guild_pk is the integer FK that references guilds(id) for DB integrity.
-    guild_id = Column(Text, nullable=False, unique=True)
-    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=True)
+    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False, unique=True)
     key_id = Column(Text, nullable=False)  # "kid" in JWK
     public_key_pem = Column(Text, nullable=False)
     private_key_pem = Column(Text, nullable=False)
@@ -234,7 +216,7 @@ class ForemanTurn(Base):
     __tablename__ = "foreman_turns"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    guild_id = Column(Text, nullable=False)
+    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False)
     user_id = Column(Text, nullable=False)
     role = Column(Text, nullable=False)  # "user" | "assistant" | "system"
     content_json = Column(Text, nullable=False)  # JSON-serialized content blocks
@@ -249,10 +231,7 @@ class GithubEvent(Base):
     __tablename__ = "github_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    # guild_id is the human-readable TEXT identifier used by application code.
-    # guild_pk is the integer FK that references guilds(id) for DB integrity.
-    guild_id = Column(Text, nullable=False)
-    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=True)
+    guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False)
     # task_id is nullable because an event may arrive before we've linked the
     # PR to a task (e.g. webhook fires for a manually-opened PR).
     task_id = Column(Text, ForeignKey("tasks.id"), nullable=True)

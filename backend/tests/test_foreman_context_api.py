@@ -18,10 +18,14 @@ def _insert_foreman_turn(
 ) -> None:
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
-            "INSERT INTO foreman_turns (guild_id, user_id, role, content_json, is_tool_response, created_at) "
+            "INSERT INTO foreman_turns (guild_pk, user_id, role, content_json, is_tool_response, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (guild_id, user_id, role, f'"{content}"', 0, now),
+            (guild_pk, user_id, role, f'"{content}"', 0, now),
         )
         conn.commit()
 

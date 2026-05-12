@@ -74,10 +74,14 @@ def _fake_tool_use(name: str, inputs: dict, tool_id: str = "tool-abc123") -> Sim
 def _insert_worker(db_path: str, guild_id: str, worker_id: str) -> None:
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at) "
+            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (worker_id, guild_id, "[]", "idle", now),
+            (worker_id, guild_pk, "[]", "idle", now),
         )
         conn.commit()
 
@@ -95,15 +99,19 @@ def _insert_task(
 ) -> None:
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
             "INSERT OR IGNORE INTO tasks "
-            "(id, worker_id, guild_id, description, tool, state, phase, created_at, "
+            "(id, worker_id, guild_pk, description, tool, state, phase, created_at, "
             " issue_number, issue_repo, branch) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 worker_id,
-                guild_id,
+                guild_pk,
                 "do the thing",
                 "claude",
                 state,
@@ -127,11 +135,15 @@ def _insert_agent(
     """Add a worker-attached agent (defaults to idle) so send_followup has a target."""
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
             "INSERT OR IGNORE INTO agents "
-            "(id, guild_id, worker_id, name, type, state, joined_at) "
+            "(id, guild_pk, worker_id, name, type, state, joined_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (agent_id, guild_id, worker_id, agent_id.upper(), "worker", state, now),
+            (agent_id, guild_pk, worker_id, agent_id.upper(), "worker", state, now),
         )
         conn.commit()
 
@@ -218,10 +230,14 @@ class TestBuildSystemPrompt:
 def _insert_worker_with_state(db_path: str, guild_id: str, worker_id: str, state: str) -> None:
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at) "
+            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (worker_id, guild_id, "[]", state, now),
+            (worker_id, guild_pk, "[]", state, now),
         )
         conn.commit()
 

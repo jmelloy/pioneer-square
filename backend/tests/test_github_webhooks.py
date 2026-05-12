@@ -34,20 +34,24 @@ def _insert_task(
 ) -> None:
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         # Workers FK is NOT NULL; insert a placeholder worker row first.
         conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at) "
+            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (f"w-{task_id}", guild_id, "[]", "online", now),
+            (f"w-{task_id}", guild_pk, "[]", "online", now),
         )
         conn.execute(
-            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, "
+            "INSERT INTO tasks (id, worker_id, guild_pk, description, tool, state, "
             "pr_url, pr_number, pr_repo, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 f"w-{task_id}",
-                guild_id,
+                guild_pk,
                 "test task",
                 "claude",
                 "awaiting-review",
@@ -190,11 +194,10 @@ def test_webhook_persists_event_and_links_task(client):
     assert resp.status_code == 202
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
-            "SELECT guild_id, task_id, delivery_id, event_type, action, repo, "
+            "SELECT task_id, delivery_id, event_type, action, repo, "
             "pr_number, pr_url, sender_login FROM github_events"
         ).fetchone()
     assert row == (
-        "g5",
         "t-1",
         "d-evt-1",
         "pull_request",

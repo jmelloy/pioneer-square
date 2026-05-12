@@ -63,6 +63,10 @@ def insert_guild(
             "VALUES (?, ?, ?, ?)",
             (guild_id, now, name, owner_user_id),
         )
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         if owner_user_id:
             conn.execute(
                 "INSERT OR IGNORE INTO users (id, github_id, github_login, "
@@ -70,9 +74,9 @@ def insert_guild(
                 (owner_user_id, owner_user_id, owner_user_id, now, now),
             )
             conn.execute(
-                "INSERT OR IGNORE INTO guild_members (guild_id, user_id, role, created_at) "
+                "INSERT OR IGNORE INTO guild_members (guild_pk, user_id, role, created_at) "
                 "VALUES (?, ?, ?, ?)",
-                (guild_id, owner_user_id, "owner", now),
+                (guild_pk, owner_user_id, "owner", now),
             )
         conn.commit()
 
@@ -86,9 +90,13 @@ def insert_member(db_path: str, guild_id: str, user_id: str, role: str = "member
             "VALUES (?, ?, ?, ?, ?)",
             (user_id, user_id, user_id, now, now),
         )
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
-            "INSERT OR REPLACE INTO guild_members (guild_id, user_id, role, created_at) "
+            "INSERT OR REPLACE INTO guild_members (guild_pk, user_id, role, created_at) "
             "VALUES (?, ?, ?, ?)",
-            (guild_id, user_id, role, now),
+            (guild_pk, user_id, role, now),
         )
         conn.commit()

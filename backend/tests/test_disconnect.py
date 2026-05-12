@@ -69,10 +69,14 @@ def _setup_guild_and_worker(db_path: str, guild_id: str, worker_id: str) -> None
             "INSERT OR IGNORE INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
             (guild_id, now, "Test Guild"),
         )
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at)"
+            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at)"
             " VALUES (?, ?, '[]', 'online', ?)",
-            (worker_id, guild_id, now),
+            (worker_id, guild_pk, now),
         )
         conn.commit()
 

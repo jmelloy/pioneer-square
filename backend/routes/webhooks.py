@@ -88,7 +88,7 @@ def _extract_pr_info(payload: dict) -> tuple[int | None, str | None, str | None]
     return None, None, repo
 
 
-async def _find_task(db, guild_id: str, repo: str | None, pr_number: int | None):
+async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None):
     """Match a webhook to one of this guild's tasks by (repo, pr_number).
 
     Returns the task row (id + user_id) or ``None``. The user_id is needed so
@@ -99,7 +99,7 @@ async def _find_task(db, guild_id: str, repo: str | None, pr_number: int | None)
     res = await db.execute(
         select(Task.id, Task.user_id)
         .where(
-            Task.guild_id == guild_id,
+            Task.guild_pk == guild_pk,
             Task.pr_repo == repo,
             Task.pr_number == pr_number,
         )
@@ -291,13 +291,15 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
 
     db = await get_db()
     try:
-        secret_res = await db.execute(
-            select(Guild.webhook_secret).where(Guild.guild_id == guild_id)
+        guild_res = await db.execute(
+            select(Guild.webhook_secret, Guild.id).where(Guild.guild_id == guild_id)
         )
-        secret = secret_res.scalar_one_or_none()
-        if not secret:
+        guild_row = guild_res.one_or_none()
+        if not guild_row or not guild_row.webhook_secret:
             # Guild missing or no secret configured. Don't leak which is which.
             raise HTTPException(status_code=404, detail="Webhook not configured")
+        secret = guild_row.webhook_secret
+        guild_pk = guild_row.id
 
         if not _verify_signature(secret, body, signature):
             logger.warning(
@@ -343,7 +345,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         sender = payload.get("sender") or {}
         sender_login = sender.get("login") if isinstance(sender, dict) else None
 
-        task_row = await _find_task(db, guild_id, repo, pr_number)
+        task_row = await _find_task(db, guild_pk, repo, pr_number)
         task_id = task_row.id if task_row else None
         task_user_id = task_row.user_id if task_row else None
 
@@ -356,7 +358,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         stmt = (
             sqlite_insert(GithubEvent)
             .values(
-                guild_id=guild_id,
+                guild_pk=guild_pk,
                 task_id=task_id,
                 delivery_id=delivery_id,
                 event_type=event_type,
@@ -444,7 +446,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
     try:
         msg_db.add(
             Message(
-                guild_id=guild_id,
+                guild_pk=guild_pk,
                 from_agent="github",
                 to_agent="foreman",
                 content=chat_line,

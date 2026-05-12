@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from auth_deps import get_guild_pk
 from database import get_db
 from events import broadcast
 from models import ForemanTurn, Guild, GuildMember, Message, Task, live_tasks_filter
@@ -247,9 +248,12 @@ def _serialize_content(content) -> str:
 async def _get_guild_user_id(guild_id: str) -> str | None:
     db = await get_db()
     try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            return None
         result = await db.execute(
             select(GuildMember.user_id)
-            .where(GuildMember.guild_id == guild_id, GuildMember.role == "owner")
+            .where(GuildMember.guild_pk == guild_pk, GuildMember.role == "owner")
             .limit(1)
         )
         return result.scalar_one_or_none()
@@ -267,9 +271,10 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
     """
     db = await get_db()
     try:
+        guild_pk_val = await get_guild_pk(db, guild_id)
         result = await db.execute(
             select(ForemanTurn)
-            .where(ForemanTurn.guild_id == guild_id, ForemanTurn.user_id == user_id)
+            .where(ForemanTurn.guild_pk == guild_pk_val, ForemanTurn.user_id == user_id)
             .order_by(ForemanTurn.id)
         )
         turns = result.scalars().all()
@@ -328,8 +333,9 @@ async def _save_turn(
     """Persist one turn to the DB. Returns the new row's id."""
     db = await get_db()
     try:
+        guild_pk_val = await get_guild_pk(db, guild_id)
         turn = ForemanTurn(
-            guild_id=guild_id,
+            guild_pk=guild_pk_val,
             user_id=user_id,
             role=role,
             content_json=_serialize_content(content),
@@ -367,9 +373,10 @@ async def _poll_loop(guild_id: str) -> None:
         try:
             db = await get_db()
             try:
+                guild_pk_val = await get_guild_pk(db, guild_id)
                 result = await db.execute(
                     select(Task.id, Task.state, Task.name).where(
-                        Task.guild_id == guild_id,
+                        Task.guild_pk == guild_pk_val,
                         ~Task.state.in_(list(_TERMINAL_STATES)),
                         live_tasks_filter(),
                     )
@@ -431,6 +438,7 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
     """
     from sqlalchemy import text
 
+    guild_pk_val = await get_guild_pk(db, guild_id)
     result = await db.execute(
         text(
             "SELECT w.id, w.repos, w.org, w.state as worker_state,"
@@ -438,15 +446,15 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
             " GROUP_CONCAT(a.id || ':' || a.state) as agents"
             " FROM workers w"
             " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
-            " WHERE w.guild_id = :guild_id AND w.state = 'online'"
+            " WHERE w.guild_pk = :guild_pk AND w.state = 'online'"
             " GROUP BY w.id"
             " UNION ALL"
             " SELECT a.id, '[]', NULL, a.state, 1, a.id || ':' || a.state"
             " FROM agents a"
-            " WHERE a.guild_id = :guild_id AND a.type = 'worker'"
+            " WHERE a.guild_pk = :guild_pk AND a.type = 'worker'"
             " AND a.worker_id IS NULL AND a.state != 'offline'"
         ),
-        {"guild_id": guild_id},
+        {"guild_pk": guild_pk_val},
     )
     return [dict(r._mapping) for r in result.fetchall()]
 
@@ -485,6 +493,7 @@ async def run_foreman_ai(
         primary_repo = guild_row.primary_repo if guild_row else None
 
         worker_rows = await _fetch_online_workers(db, guild_id)
+        guild_pk_val = await get_guild_pk(db, guild_id)
         task_result = await db.execute(
             select(
                 Task.id,
@@ -496,7 +505,7 @@ async def run_foreman_ai(
                 Task.pr_url,
                 Task.finished_at,
             )
-            .where(Task.guild_id == guild_id, live_tasks_filter())
+            .where(Task.guild_pk == guild_pk_val, live_tasks_filter())
             .order_by(Task.created_at.desc())
             .limit(10)
         )
@@ -731,9 +740,10 @@ async def run_foreman_ai(
             )
             db = await get_db()
             try:
+                msg_guild_pk = await get_guild_pk(db, guild_id)
                 db.add(
                     Message(
-                        guild_id=guild_id,
+                        guild_pk=msg_guild_pk,
                         from_agent="foreman",
                         to_agent="user",
                         content=response_text,
@@ -763,9 +773,10 @@ async def clear_foreman_history(guild_id: str, user_id: str) -> int:
     """Delete all stored turns for this guild+user. Returns count removed."""
     db = await get_db()
     try:
+        guild_pk_val = await get_guild_pk(db, guild_id)
         result = await db.execute(
             delete(ForemanTurn).where(
-                ForemanTurn.guild_id == guild_id, ForemanTurn.user_id == user_id
+                ForemanTurn.guild_pk == guild_pk_val, ForemanTurn.user_id == user_id
             )
         )
         await db.commit()
@@ -778,9 +789,10 @@ async def get_foreman_history(guild_id: str, user_id: str) -> list[dict]:
     """Return all stored turns as JSON-safe dicts (for the debug endpoint)."""
     db = await get_db()
     try:
+        guild_pk_val = await get_guild_pk(db, guild_id)
         result = await db.execute(
             select(ForemanTurn)
-            .where(ForemanTurn.guild_id == guild_id, ForemanTurn.user_id == user_id)
+            .where(ForemanTurn.guild_pk == guild_pk_val, ForemanTurn.user_id == user_id)
             .order_by(ForemanTurn.id)
         )
         turns = result.scalars().all()

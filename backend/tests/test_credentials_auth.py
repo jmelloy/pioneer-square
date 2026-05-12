@@ -29,10 +29,14 @@ def _register_worker(test_client, guild_id: str) -> dict:
 def _seed_claude_credentials(db_path: str, guild_id: str, blob: str = "BLOB") -> None:
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
-            "INSERT INTO claude_credentials (guild_id, credentials_blob, updated_at) "
+            "INSERT INTO claude_credentials (guild_pk, credentials_blob, updated_at) "
             "VALUES (?, ?, ?)",
-            (guild_id, blob, now),
+            (guild_pk, blob, now),
         )
         conn.commit()
 
@@ -151,7 +155,9 @@ def test_post_claude_credentials_accepts_worker_token(client):
     assert resp.status_code == 200
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
-            "SELECT credentials_blob FROM claude_credentials WHERE guild_id = ?",
+            "SELECT cc.credentials_blob FROM claude_credentials cc "
+            "JOIN guilds g ON g.id = cc.guild_pk "
+            "WHERE g.guild_id = ? AND g.deleted_at IS NULL",
             ("g-write",),
         ).fetchone()
     assert row[0] == "NEW"

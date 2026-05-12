@@ -78,17 +78,21 @@ def _insert_guild_worker_task(
             "INSERT OR IGNORE INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
             (guild_id, now, "Test Guild"),
         )
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at)"
+            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at)"
             " VALUES (?, ?, '[]', 'online', ?)",
-            (worker_id, guild_id, now),
+            (worker_id, guild_pk, now),
         )
         # Use "awaiting-review" so the join handler does not replay the task as
         # task-assigned (it only replays "pending" and "working" tasks).
         conn.execute(
-            "INSERT OR IGNORE INTO tasks (id, worker_id, guild_id, description, tool, state, created_at)"
+            "INSERT OR IGNORE INTO tasks (id, worker_id, guild_pk, description, tool, state, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (task_id, worker_id, guild_id, "test task", "claude", "awaiting-review", now),
+            (task_id, worker_id, guild_pk, "test task", "claude", "awaiting-review", now),
         )
         conn.commit()
 

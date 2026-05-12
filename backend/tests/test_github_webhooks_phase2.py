@@ -62,19 +62,23 @@ def _insert_task(
 ) -> None:
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at) "
+            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (f"w-{task_id}", guild_id, "[]", "online", now),
+            (f"w-{task_id}", guild_pk, "[]", "online", now),
         )
         conn.execute(
-            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, "
+            "INSERT INTO tasks (id, worker_id, guild_pk, description, tool, state, "
             "pr_url, pr_number, pr_repo, user_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 task_id,
                 f"w-{task_id}",
-                guild_id,
+                guild_pk,
                 "test task",
                 "claude",
                 "awaiting-review",
