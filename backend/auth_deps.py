@@ -46,17 +46,9 @@ async def require_user(
 
 
 async def ensure_membership(db, guild_id: str, user_id: str) -> str:
-    """Return the role of *user_id* in *guild_id* or raise HTTP 403/404.
-
-    Legacy guilds created before guild_members existed have a ``github_user_id``
-    on the guild row and no member rows; treat that owner as a member so the
-    pre-migration UI keeps working without a manual repair step.
-    """
-    g_res = await db.execute(
-        select(Guild.guild_id, Guild.github_user_id).where(Guild.guild_id == guild_id)
-    )
-    grow = g_res.first()
-    if not grow:
+    """Return the role of *user_id* in *guild_id* or raise HTTP 403/404."""
+    g_res = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
+    if not g_res.first():
         raise HTTPException(status_code=404, detail="Guild not found")
 
     res = await db.execute(
@@ -67,8 +59,6 @@ async def ensure_membership(db, guild_id: str, user_id: str) -> str:
     role = res.scalar_one_or_none()
     if role:
         return role
-    if grow.github_user_id and grow.github_user_id == user_id:
-        return "owner"
     raise HTTPException(status_code=403, detail="Not a member of this guild")
 
 

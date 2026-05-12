@@ -85,13 +85,17 @@ async def get_github_token(
     Without auth, anyone knowing a guild_id could exfiltrate the GitHub token."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.github_user_id).where(Guild.guild_id == guild_id))
-        github_user_id_val = result.scalar_one_or_none()
-        if not github_user_id_val:
+        owner_res = await db.execute(
+            select(GuildMember.user_id)
+            .where(GuildMember.guild_id == guild_id, GuildMember.role == "owner")
+            .limit(1)
+        )
+        owner_user_id = owner_res.scalar_one_or_none()
+        if not owner_user_id:
             raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")
         result = await db.execute(
             select(GithubToken.access_token, GithubToken.github_username).where(
-                GithubToken.github_user_id == github_user_id_val
+                GithubToken.github_user_id == owner_user_id
             )
         )
         token_row = result.first()
@@ -187,12 +191,7 @@ async def get_me(github_user_id: str = Depends(require_user)):
 
 @router.get("/api/me")
 async def api_me(github_user_id: str = Depends(require_user)):
-    """Return the current user's profile + their guild memberships.
-
-    Includes legacy guilds owned via ``guilds.github_user_id`` even when no
-    ``guild_members`` row exists, so the UI never sees a logged-in owner with
-    zero guilds just because their backfill row is missing.
-    """
+    """Return the current user's profile + their guild memberships."""
     db = await get_db()
     try:
         u_res = await db.execute(select(User).where(User.id == github_user_id))
@@ -200,29 +199,15 @@ async def api_me(github_user_id: str = Depends(require_user)):
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        explicit = await db.execute(
+        members_res = await db.execute(
             select(GuildMember.guild_id, GuildMember.role, Guild.name)
             .join(Guild, Guild.guild_id == GuildMember.guild_id)
             .where(GuildMember.user_id == github_user_id)
         )
-        memberships = {
-            row.guild_id: {
-                "guild_id": row.guild_id,
-                "guild_name": row.name,
-                "role": row.role,
-            }
-            for row in explicit.fetchall()
-        }
-        legacy = await db.execute(
-            select(Guild.guild_id.label("id"), Guild.name).where(
-                Guild.github_user_id == github_user_id
-            )
-        )
-        for row in legacy.fetchall():
-            memberships.setdefault(
-                row.id,
-                {"guild_id": row.id, "guild_name": row.name, "role": "owner"},
-            )
+        memberships = [
+            {"guild_id": row.guild_id, "guild_name": row.name, "role": row.role}
+            for row in members_res.fetchall()
+        ]
         return {
             "user": {
                 "id": user.id,
@@ -232,7 +217,7 @@ async def api_me(github_user_id: str = Depends(require_user)):
                 "display_name": user.display_name,
                 "avatar_url": user.avatar_url,
             },
-            "memberships": list(memberships.values()),
+            "memberships": memberships,
         }
     finally:
         await db.close()

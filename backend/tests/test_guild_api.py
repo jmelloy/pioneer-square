@@ -5,11 +5,26 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+from datetime import UTC, datetime
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, make_auth_token
+
+
+def _insert_guild_legacy_only(db_path: str, guild_id: str, user_id: str) -> None:
+    """Insert a guild with github_user_id set but NO guild_members row.
+
+    Simulates a pre-migration guild to verify the legacy fallback is gone.
+    """
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name, github_user_id) VALUES (?, ?, ?, ?)",
+            (guild_id, now, "Legacy Guild", user_id),
+        )
+        conn.commit()
 
 
 def test_get_guild_requires_auth(client):
@@ -253,3 +268,30 @@ def test_primary_repo_in_foreman_prompt():
     prompt_both = build_system_prompt("[]", "[]", extra_context="some context", primary_repo="o/r")
     assert "o/r" in prompt_both
     assert "some context" in prompt_both
+
+
+# ---------------------------------------------------------------------------
+# guild_members migration — legacy github_user_id paths must be gone
+# ---------------------------------------------------------------------------
+
+
+def test_list_guilds_excludes_legacy_owner(client):
+    """Guilds where guilds.github_user_id matches but no guild_members row exists
+    must NOT appear in the list; the legacy OR-clause has been removed."""
+    test_client, db_path = client
+    token = make_auth_token(db_path)  # user_id="gh-user-test"
+    _insert_guild_legacy_only(db_path, "g-legacy", "gh-user-test")
+    resp = test_client.get("/guilds", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    guild_ids = [g["id"] for g in resp.json()]
+    assert "g-legacy" not in guild_ids
+
+
+def test_get_guild_rejects_legacy_owner(client):
+    """A user whose id is only in guilds.github_user_id (no guild_members row)
+    must get 403, not 200 — the ensure_membership legacy fallback is gone."""
+    test_client, db_path = client
+    token = make_auth_token(db_path)  # user_id="gh-user-test"
+    _insert_guild_legacy_only(db_path, "g-leg2", "gh-user-test")
+    resp = test_client.get("/guilds/g-leg2", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403

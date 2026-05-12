@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from events import broadcast, emit_terminal_line
-from models import Agent, GithubToken, Guild, GuildKey, Task, TaskLog, Worker
+from models import Agent, GithubToken, GuildKey, GuildMember, Task, TaskLog, Worker
 from sqlalchemy import select, update
 
 # Default soft-delete window (seconds) when finalize_task is called without
@@ -561,8 +561,9 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
     try:
         result = await db.execute(
             select(GithubToken.access_token, GithubToken.github_username)
-            .join(Guild, Guild.github_user_id == GithubToken.github_user_id)
-            .where(Guild.guild_id == guild_id)
+            .join(GuildMember, GuildMember.user_id == GithubToken.github_user_id)
+            .where(GuildMember.guild_id == guild_id, GuildMember.role == "owner")
+            .limit(1)
         )
         row = result.first()
         return (row.access_token, row.github_username) if row else None
