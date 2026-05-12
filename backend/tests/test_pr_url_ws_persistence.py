@@ -51,10 +51,10 @@ def client(tmp_path_factory):
     mp.setattr(database_module, "AsyncSessionLocal", new_session)
     mp.setattr(main_module, "AsyncSessionLocal", new_session)
 
-    async def _stubbed_init_db() -> None:
+    async def _stubbed_reset_connection_state() -> None:
         pass
 
-    mp.setattr(main_module, "init_db", _stubbed_init_db)
+    mp.setattr(main_module, "reset_connection_state", _stubbed_reset_connection_state)
     mp.setenv("DATABASE_URL", db_url)
     mp.setenv("DB_PATH", db_path)
 
