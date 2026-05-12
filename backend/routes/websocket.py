@@ -78,7 +78,10 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
     except Exception:
         logger.exception("WS guild_pk lookup failed for guild %s", guild_id)
     finally:
-        await _gp_db.close()
+        try:
+            await _gp_db.close()
+        except Exception:
+            logger.debug("WS _gp_db close error during guild_pk lookup", exc_info=True)
 
     # Identify the browser user from the optional ?token= query param.
     # Workers don't pass a token; ws_user_id stays None for them.
