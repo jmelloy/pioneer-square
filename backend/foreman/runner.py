@@ -500,7 +500,9 @@ async def run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.fetchall()
         ]
-        guild_result = await db.execute(select(Guild.primary_repo).where(Guild.guild_id == guild_id))
+        guild_result = await db.execute(
+            select(Guild.primary_repo).where(Guild.guild_id == guild_id)
+        )
         primary_repo: str | None = guild_result.scalar_one_or_none()
     finally:
         await db.close()

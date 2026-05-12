@@ -44,7 +44,7 @@ from routes.webhooks import (  # noqa: E402
 def _set_webhook_secret(db_path: str, guild_id: str, secret: str) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "UPDATE guilds SET webhook_secret = ? WHERE id = ?",
+            "UPDATE guilds SET webhook_secret = ? WHERE guild_id = ?",
             (secret, guild_id),
         )
         conn.commit()

@@ -93,7 +93,9 @@ async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
                 await db.refresh(row)
             return row
 
-        guild = (await db.execute(select(Guild).where(Guild.guild_id == guild_id))).scalar_one_or_none()
+        guild = (
+            await db.execute(select(Guild).where(Guild.guild_id == guild_id))
+        ).scalar_one_or_none()
         if not guild:
             return None
 
@@ -335,7 +337,9 @@ async def guild_agent_card(
     """Returns the AgentCard for a specific guild (authenticated)."""
     db = await get_db()
     try:
-        guild = (await db.execute(select(Guild).where(Guild.guild_id == guild_id))).scalar_one_or_none()
+        guild = (
+            await db.execute(select(Guild).where(Guild.guild_id == guild_id))
+        ).scalar_one_or_none()
         if not guild:
             raise HTTPException(404, detail="Guild not found")
         rows = await db.execute(select(Worker).where(Worker.guild_id == guild_id))

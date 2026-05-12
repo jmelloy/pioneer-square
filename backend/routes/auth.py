@@ -214,7 +214,9 @@ async def api_me(github_user_id: str = Depends(require_user)):
             for row in explicit.fetchall()
         }
         legacy = await db.execute(
-            select(Guild.guild_id.label("id"), Guild.name).where(Guild.github_user_id == github_user_id)
+            select(Guild.guild_id.label("id"), Guild.name).where(
+                Guild.github_user_id == github_user_id
+            )
         )
         for row in legacy.fetchall():
             memberships.setdefault(
