@@ -68,10 +68,14 @@ def _setup_guild_and_worker(db_path: str, guild_id: str, worker_id: str) -> None
             "INSERT OR IGNORE INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
             (guild_id, now, "Test Guild"),
         )
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_id, repos, state, created_at)"
+            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at)"
             " VALUES (?, ?, '[]', 'online', ?)",
-            (worker_id, guild_id, now),
+            (worker_id, guild_pk, now),
         )
         conn.commit()
 
@@ -202,11 +206,15 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
     _setup_guild_and_worker(db_path, guild_id, worker_id)
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
             "INSERT INTO agents "
-            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen) "
+            "(id, guild_pk, worker_id, name, type, state, joined_at, last_seen) "
             "VALUES (?, ?, ?, 'Test', 'worker', 'idle', ?, ?)",
-            (agent_id, guild_id, worker_id, now, now),
+            (agent_id, guild_pk, worker_id, now, now),
         )
         # Backdate last_seen so the sweeper considers it stale.
         old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
@@ -300,11 +308,15 @@ def test_sweeper_skips_fresh_workers(client):
     _setup_guild_and_worker(db_path, guild_id, worker_id)
     now = datetime.now(UTC).isoformat()
     with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
         conn.execute(
             "INSERT INTO agents "
-            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen) "
+            "(id, guild_pk, worker_id, name, type, state, joined_at, last_seen) "
             "VALUES (?, ?, ?, 'Test', 'worker', 'idle', ?, ?)",
-            (agent_id, guild_id, worker_id, now, now),
+            (agent_id, guild_pk, worker_id, now, now),
         )
         conn.commit()
 
