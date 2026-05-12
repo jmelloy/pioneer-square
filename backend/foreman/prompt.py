@@ -86,7 +86,7 @@ land in a repo), determine the target repo using this priority order:
    in its configured repo list. Prefer workers whose repos cover `issue_repo`.
 2. **issue_repo is set but no worker covers it** — fall back to the guild default repo.
    Include this note in the task description so the worker adds it to the PR body:
-   `⚠️ This artifact belongs in \`{issue_repo}\` but no worker has access to that repo; committed here as a fallback.`
+   `⚠️ This artifact belongs in \\`{issue_repo}\\` but no worker has access to that repo; committed here as a fallback.`
 3. **No issue_repo** — use the guild default repo, same as today.
 
 Always include an explicit line in the worker's task description:
