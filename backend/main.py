@@ -57,32 +57,7 @@ WORKER_OFFLINE_AFTER_SECONDS = float(os.environ.get("WORKER_OFFLINE_AFTER_SECOND
 WORKER_SWEEP_INTERVAL_SECONDS = float(os.environ.get("WORKER_SWEEP_INTERVAL_SECONDS", "30"))
 
 
-async def init_db() -> None:
-    from alembic import command
-    from alembic.config import Config
-    from sqlalchemy import create_engine, inspect
-
-    def run_migrations():
-        cfg = Config(Path(__file__).resolve().parent / "alembic.ini")
-        db_url = os.environ.get(
-            "DATABASE_URL", f"sqlite+aiosqlite:///{os.environ.get('DB_PATH', 'pioneer_square.db')}"
-        )
-        # Need a sync engine for inspection; strip aiosqlite async driver prefix.
-        sync_url = db_url.replace("+aiosqlite", "")
-        engine = create_engine(sync_url)
-        try:
-            tables = inspect(engine).get_table_names()
-            has_alembic = "alembic_version" in tables
-            has_data = "guilds" in tables
-            # Pre-Alembic database: stamp to current head so upgrade is a no-op.
-            if has_data and not has_alembic:
-                command.stamp(cfg, "head")
-        finally:
-            engine.dispose()
-        command.upgrade(cfg, "head")
-
-    await asyncio.to_thread(run_migrations)
-
+async def reset_connection_state() -> None:
     # On every startup, no worker processes are connected yet.
     async with AsyncSessionLocal() as db:
         await db.execute(update(Worker).values(state="offline"))
@@ -170,9 +145,8 @@ async def _stale_worker_sweeper() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
-    # Uvicorn pins the root logger to WARNING; reconfigure it so all backend
-    # modules (main, foreman.*, utils, etc.) emit at the requested level.
+    # Configure logging before startup tasks so all log output uses consistent
+    # handlers. force=True replaces uvicorn's root handlers.
     _log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     _level = getattr(logging, _log_level, logging.INFO)
     logging.basicConfig(
@@ -183,6 +157,7 @@ async def lifespan(app: FastAPI):
     # foreman is always at least DEBUG so detailed AI loop output is available
     # when LOG_LEVEL=DEBUG; at INFO it still inherits the root handler above.
     logging.getLogger("foreman").setLevel(logging.DEBUG)
+    await reset_connection_state()
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
     try:
         yield
