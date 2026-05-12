@@ -558,6 +558,7 @@ def _gh_api_post(path: str, token: str, payload: dict, method: str = "POST") -> 
 async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
     """Return (access_token, github_username) for this guild, or None."""
     from auth_deps import get_guild_pk
+
     db = await get_db()
     try:
         guild_pk = await get_guild_pk(db, guild_id)
@@ -578,6 +579,7 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
 async def _guild_private_key_pem(guild_id: str) -> str | None:
     """Return the Ed25519 private key PEM for the guild, or None if not found."""
     from auth_deps import get_guild_pk
+
     db = await get_db()
     try:
         guild_pk = await get_guild_pk(db, guild_id)
@@ -627,6 +629,7 @@ async def _select_followup_worker(
     # the foreman trusts that a guild's workers cover the same repo set.
     if guild_pk is None:
         from auth_deps import get_guild_pk
+
         guild_pk = await get_guild_pk(db, guild_id)
     result = await db.execute(
         select(Agent.worker_id)
@@ -845,6 +848,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
         db = await get_db()
         try:
             from auth_deps import get_guild_pk
+
             guild_pk = await get_guild_pk(db, guild_id)
             if tu.name == "create_task":
                 name = (inp.get("name") or "")[:80]

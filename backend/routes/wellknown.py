@@ -313,9 +313,7 @@ async def agent_card(request: Request) -> JSONResponse:
                 await db.execute(select(Guild).where(Guild.guild_id == guild_id))
             ).scalar_one_or_none()
             if guild:
-                rows = await db.execute(
-                    select(Worker).where(Worker.guild_pk == guild.id)
-                )
+                rows = await db.execute(select(Worker).where(Worker.guild_pk == guild.id))
                 workers = list(rows.scalars().all())
         finally:
             await db.close()

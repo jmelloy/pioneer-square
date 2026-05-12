@@ -135,9 +135,7 @@ async def spawn_worker_container(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(ClaudeCredentials.credentials_blob).where(
-                ClaudeCredentials.guild_pk == guild_pk
-            )
+            select(ClaudeCredentials.credentials_blob).where(ClaudeCredentials.guild_pk == guild_pk)
         )
         stored_blob = result.scalar_one_or_none()
     finally:

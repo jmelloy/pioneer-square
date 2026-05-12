@@ -364,9 +364,7 @@ async def redirect_task_endpoint(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Task.worker_id, Task.state).where(
-                Task.id == task_id, Task.guild_pk == guild_pk
-            )
+            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_pk == guild_pk)
         )
         row = result.one_or_none()
         if not row:

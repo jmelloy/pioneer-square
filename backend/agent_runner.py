@@ -36,6 +36,7 @@ async def set_agent_state(guild_id: str, agent_id: str, state: str) -> None:
     db = await get_db()
     try:
         from auth_deps import get_guild_pk
+
         guild_pk = await get_guild_pk(db, guild_id)
         await db.execute(
             update(Agent)
