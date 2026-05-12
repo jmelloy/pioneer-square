@@ -4,7 +4,7 @@ Each test gets a fresh temporary SQLite database so tests are fully isolated.
 The DB is created synchronously via Alembic before the TestClient starts, which
 avoids the anyio/asyncio.to_thread interaction that can deadlock in pytest.
 AsyncSessionLocal is patched in both the `database` module (used by get_db)
-and in `main` (used directly inside init_db's startup query).
+and in `main` (used directly inside reset_connection_state's startup query).
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def client(tmp_path, monkeypatch):
     db_url = f"sqlite+aiosqlite:///{db_path}"
 
     # Create DB tables synchronously before the TestClient starts.
-    # This avoids the asyncio.to_thread(run_migrations) call inside init_db()
+    # This avoids any asyncio.to_thread calls during startup
     # which can deadlock under pytest's anyio event loop.
     os.environ["DATABASE_URL"] = db_url
     _create_db(db_path)
@@ -42,12 +42,12 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(database_module, "AsyncSessionLocal", new_session)
     monkeypatch.setattr(main_module, "AsyncSessionLocal", new_session)
 
-    # Stub out init_db: tables already exist (we just created them above) and
-    # there are no workers to reset in a fresh DB, so the stub is a no-op.
-    async def _stubbed_init_db() -> None:
+    # Stub out reset_connection_state: tables already exist (we just created them
+    # above) and there are no workers to reset in a fresh DB, so the stub is a no-op.
+    async def _stubbed_reset_connection_state() -> None:
         pass
 
-    monkeypatch.setattr(main_module, "init_db", _stubbed_init_db)
+    monkeypatch.setattr(main_module, "reset_connection_state", _stubbed_reset_connection_state)
     monkeypatch.setenv("DATABASE_URL", db_url)
     monkeypatch.setenv("DB_PATH", db_path)
 
