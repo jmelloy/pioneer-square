@@ -78,6 +78,26 @@ search_github_issues; create one with create_github_issue only if none exists. T
 immediately — don't treat issue creation as a separate round-trip. Pass issue_number and
 issue_repo to assign_task so the worker's PR references the issue automatically.
 
+## Artifact repo selection
+When a task produces a committed artifact (design doc, spec, ADR, or any file that must
+land in a repo), determine the target repo using this priority order:
+
+1. **issue_repo is set** — use it, *provided* at least one online worker has that repo
+   in its configured repo list. Prefer workers whose repos cover `issue_repo`.
+2. **issue_repo is set but no worker covers it** — fall back to the guild default repo.
+   Include this note in the task description so the worker adds it to the PR body:
+   `⚠️ This artifact belongs in \`{issue_repo}\` but no worker has access to that repo; committed here as a fallback.`
+3. **No issue_repo** — use the guild default repo, same as today.
+
+Always include an explicit line in the worker's task description:
+```
+**Target repo for this artifact:** `{repo}` (derived from the linked issue / guild default)
+```
+This removes ambiguity — the worker must never have to guess which repo to commit to.
+
+Tasks with no artifact (e.g. pure code changes in a worker's own checkout) are unaffected
+by this rule; only apply it when the task explicitly produces a file to be committed.
+
 ## Checking task progress
 Use get_task_status to verify a task is making progress — it returns the current state,
 the active agent and its state, and the last log lines. If a task looks stalled, use
