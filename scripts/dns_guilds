@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Add Linode DNS records for Pioneer Square guilds.
+
+For each guild creates:
+  <guild_id>.pioneer-square.melloy.life  A     <same IPv4 as pioneer-square.melloy.life>
+  <guild_id>.pioneer-square.melloy.life  AAAA  <same IPv6 as pioneer-square.melloy.life>
+
+Usage:
+  scripts/dns_guilds                      # all active guilds from the local DB
+  scripts/dns_guilds abc123 def456        # specific guild IDs
+  scripts/dns_guilds --dry-run            # print what would be created
+
+Requires:
+  LINODE_TOKEN env var (a personal access token with Domains read/write)
+
+Optional:
+  PIONEER_DB  path to SQLite DB file (default: pioneer_square.db in repo root)
+"""
+
+import argparse
+import os
+import socket
+import sqlite3
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+import json
+from pathlib import Path
+
+DOMAIN_ZONE = "melloy.life"
+APEX_HOST = "pioneer-square.melloy.life"
+LINODE_API = "https://api.linode.com/v4"
+
+
+def linode(token: str, method: str, path: str, body: dict | None = None):
+    url = f"{LINODE_API}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")
+        print(f"  Linode API {method} {path} → {exc.code}: {detail}", file=sys.stderr)
+        raise
+
+
+def resolve_apex() -> tuple[str, str]:
+    """Return (ipv4, ipv6) for the apex host."""
+    ipv4 = socket.getaddrinfo(APEX_HOST, None, socket.AF_INET)[0][4][0]
+    ipv6 = socket.getaddrinfo(APEX_HOST, None, socket.AF_INET6)[0][4][0]
+    return ipv4, ipv6
+
+
+def find_domain_id(token: str) -> int:
+    page = 1
+    while True:
+        result = linode(token, "GET", f"/domains?page={page}&page_size=100")
+        for d in result["data"]:
+            if d["domain"] == DOMAIN_ZONE:
+                return d["id"]
+        if page >= result["pages"]:
+            break
+        page += 1
+    raise SystemExit(f"Domain zone '{DOMAIN_ZONE}' not found in this Linode account.")
+
+
+def existing_records(token: str, domain_id: int) -> dict[tuple[str, str], int]:
+    """Return {(name, type): record_id} for all records in the zone."""
+    records: dict[tuple[str, str], int] = {}
+    page = 1
+    while True:
+        result = linode(token, "GET", f"/domains/{domain_id}/records?page={page}&page_size=500")
+        for r in result["data"]:
+            records[(r["name"], r["type"])] = r["id"]
+        if page >= result["pages"]:
+            break
+        page += 1
+    return records
+
+
+def active_guild_ids(db_path: Path) -> list[str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT guild_id FROM guilds WHERE deleted_at IS NULL ORDER BY created_at"
+        ).fetchall()
+        return [r[0] for r in rows]
+    finally:
+        conn.close()
+
+
+def ensure_record(
+    token: str,
+    domain_id: int,
+    existing: dict[tuple[str, str], int],
+    name: str,
+    rtype: str,
+    target: str,
+    dry_run: bool,
+):
+    key = (name, rtype)
+    if key in existing:
+        print(f"  skip  {rtype:4}  {name}.{DOMAIN_ZONE}  (already exists)")
+        return
+    if dry_run:
+        print(f"  would create  {rtype:4}  {name}.{DOMAIN_ZONE} → {target}")
+        return
+    linode(token, "POST", f"/domains/{domain_id}/records", {
+        "type": rtype,
+        "name": name,
+        "target": target,
+        "ttl_sec": 300,
+    })
+    print(f"  created  {rtype:4}  {name}.{DOMAIN_ZONE} → {target}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("guild_ids", nargs="*", help="Guild IDs to add (default: all active guilds from DB)")
+    parser.add_argument("--dry-run", "-n", action="store_true", help="Print what would be created without making changes")
+    parser.add_argument("--db", help="Path to pioneer_square.db (default: auto-detect)")
+    args = parser.parse_args()
+
+    token = os.environ.get("LINODE_TOKEN")
+    if not token:
+        sys.exit("LINODE_TOKEN env var is required.")
+
+    print(f"Resolving {APEX_HOST} ...", end=" ", flush=True)
+    ipv4, ipv6 = resolve_apex()
+    print(f"{ipv4} / {ipv6}")
+
+    guild_ids = args.guild_ids
+    if not guild_ids:
+        repo_root = Path(__file__).resolve().parent.parent
+        db_path = Path(args.db) if args.db else Path(os.environ.get("PIONEER_DB", repo_root / "pioneer_square.db"))
+        if not db_path.exists():
+            sys.exit(f"DB not found: {db_path}  (set PIONEER_DB or pass --db)")
+        guild_ids = active_guild_ids(db_path)
+        print(f"Found {len(guild_ids)} active guild(s) in {db_path}")
+
+    if not guild_ids:
+        print("No guilds to process.")
+        return
+
+    print(f"Looking up domain zone '{DOMAIN_ZONE}' ...")
+    domain_id = find_domain_id(token)
+    print(f"  domain_id = {domain_id}")
+
+    print("Fetching existing records ...")
+    existing = existing_records(token, domain_id)
+
+    for guild_id in guild_ids:
+        name = f"{guild_id}.pioneer-square"
+        print(f"\n{guild_id}  ({name}.{DOMAIN_ZONE})")
+        ensure_record(token, domain_id, existing, name, "A", ipv4, args.dry_run)
+        ensure_record(token, domain_id, existing, name, "AAAA", ipv6, args.dry_run)
+
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()
