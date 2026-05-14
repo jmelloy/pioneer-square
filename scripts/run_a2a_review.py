@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """Live test: call review_pr on the code-review-agent at agent.meyers.life.
 
-Run from inside the backend Docker container:
-    docker exec pioneer-square-backend-1 python3 /app/../scripts/run_a2a_review.py
+The scripts/ folder is not in the Docker image, so copy it in first:
+    docker cp scripts/run_a2a_review.py pioneer-square-backend-1:/app/
 
-Or with overrides:
-    REVIEWER_AGENT_URL=https://agent.meyers.life \
-    PR_URL=https://github.com/org/repo/pull/1 \
-    CALLER_DOMAIN=dnsid.pioneer-square.melloy.life \
-    PRIVATE_KEY_PEM="$(cat key.pem)" \
-    python3 scripts/run_a2a_review.py
+Then run (PRIVATE_KEY_PEM is required):
+    docker exec -e PRIVATE_KEY_PEM="$(cat key.pem)" pioneer-square-backend-1 \
+        python3 /app/run_a2a_review.py
+
+Optional overrides:
+    docker exec \
+        -e PRIVATE_KEY_PEM="$(cat key.pem)" \
+        -e REVIEWER_AGENT_URL=https://agent.meyers.life \
+        -e PR_URL=https://github.com/org/repo/pull/1 \
+        -e CALLER_DOMAIN=dnsid.pioneer-square.melloy.life \
+        pioneer-square-backend-1 python3 /app/run_a2a_review.py
 """
 
 from __future__ import annotations
