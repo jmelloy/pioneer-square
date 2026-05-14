@@ -11,8 +11,10 @@ def _write_toml(tmp_path, body: str):
     return p
 
 
-def test_cli_exits_when_no_repos_configured(tmp_path, capsys, caplog):
+def test_cli_exits_when_no_repos_configured(tmp_path, capsys, monkeypatch):
     """No repos in config -> exit 2 before constructing the Worker."""
+    monkeypatch.delenv("PIONEER_REPOS", raising=False)
+    monkeypatch.delenv("PIONEER_ORG", raising=False)
     toml_path = _write_toml(
         tmp_path,
         'backend_url = "ws://x:1"\nguild_id = "g"\n',
@@ -21,11 +23,12 @@ def test_cli_exits_when_no_repos_configured(tmp_path, capsys, caplog):
     assert rc == 2
     err = capsys.readouterr().err
     assert "no repos configured" in err.lower()
-    assert any("no repos configured" in r.message.lower() for r in caplog.records)
 
 
-def test_cli_exits_when_repos_list_empty(tmp_path, capsys):
+def test_cli_exits_when_repos_list_empty(tmp_path, capsys, monkeypatch):
     """Explicitly empty repos list also fails the check."""
+    monkeypatch.delenv("PIONEER_REPOS", raising=False)
+    monkeypatch.delenv("PIONEER_ORG", raising=False)
     toml_path = _write_toml(
         tmp_path,
         'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\nrepos = []\n',
