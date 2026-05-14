@@ -114,6 +114,11 @@ class A2AClient:
         card = await self.fetch_agent_card()
         base_url = self._agent_base_url(card)
 
+        logger.debug(
+            "a2a send_task: fetched agent card from %s base_url=%s",
+            self._card_url,
+            base_url,
+        )
         auth = self._auth_scheme
         if auth is None and caller_domain:
             auth = self._resolve_auth_scheme(card, caller_domain, private_key_pem)

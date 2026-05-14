@@ -76,7 +76,7 @@ class A2AAuthScheme(ABC):
 class DNSidAuthScheme(A2AAuthScheme):
     """Mutual DNSid challenge-response (dnsid-cr security scheme).
 
-    Step 1 — POST dnsid.challenge (JSON-RPC 2.0) to {base_url}/a2a.
+    Step 1 — POST dnsid.challenge (JSON-RPC 2.0) to {base_url}/jsonrpc.
     Step 2 — Sign an EdDSA JWT with nonce/challenge_id/purpose/iss/sub via dnsid-sdk.
     Step 3 — Return Authorization: DNSid <jwt>.
     """
@@ -93,7 +93,7 @@ class DNSidAuthScheme(A2AAuthScheme):
 
     def _challenge_sync(self, agent_base_url: str) -> dict:
         """Synchronous POST to dnsid.challenge; returns unwrapped result dict."""
-        url = agent_base_url.rstrip("/") + "/a2a"
+        url = agent_base_url.rstrip("/") + "/jsonrpc"
         body = json.dumps(
             {
                 "jsonrpc": "2.0",

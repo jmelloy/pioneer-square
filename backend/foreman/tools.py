@@ -1306,6 +1306,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             "get_pr_status",
             "review_pr",
         ):
+            logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
             creds = await _guild_github_token(guild_id)
             if not creds:
                 result_text = (
@@ -1563,6 +1564,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
 
         # dnsid CLI — resolve / sign / verify
         if tu.name == "dnsid":
+            logger.info("dnsid tool: input=%s", inp)
             command = inp.get("command", "")
             if not command:
                 result_text = "dnsid requires command (resolve, sign, verify)"
@@ -1580,6 +1582,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
 
         # A2A agent call — no GitHub token or DB required
         if tu.name == "call_agent":
+            logger.info("call_agent: input=%s", inp)
             agent_url = (inp.get("agent_url") or "").rstrip("/")
             skill_id = inp.get("skill") or ""
             params = inp.get("params") or {}
@@ -1593,6 +1596,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 try:
                     card_url = f"{agent_url}/.well-known/agent.json"
                     card = await asyncio.to_thread(_fetch_agent_card, card_url)
+                    logger.debug("call_agent: fetched agent card from %s: %s", card_url, card)
                     skills = card.get("skills", [])
                     skill_ids = [s.get("id", "") for s in skills]
                     if skills and skill_id not in skill_ids:
@@ -1617,7 +1621,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         ).encode()
                         response = await asyncio.to_thread(
                             _post_agent_task,
-                            f"{agent_url}/a2a",
+                            f"{agent_url}/jsonrpc",
                             task_body,
                         )
                         result_text = json.dumps(
