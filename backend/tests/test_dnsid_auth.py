@@ -188,7 +188,7 @@ async def test_review_pr_attaches_dnsid_header():
         )
 
     assert captured["headers"].get("Authorization") == "DNSid signed.jwt.value"
-    assert captured["url"] == "https://agent.meyers.life/a2a"
+    assert captured["url"] == "https://agent.meyers.life/jsonrpc"
     assert result == fake_task_result
 
 
