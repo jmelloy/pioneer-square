@@ -132,7 +132,7 @@ class A2AClient:
             }
         ).encode()
 
-        task_url = f"{base_url}/a2a"
+        task_url = f"{base_url}/jsonrpc"
         log_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
         logger.debug(
             "a2a send_task: url=%s method=POST skill_id=%s headers=%s payload=%.500s",

@@ -19,7 +19,6 @@ Optional:
 
 import argparse
 import os
-import socket
 import sqlite3
 import sys
 import urllib.error
@@ -54,13 +53,6 @@ def linode(token: str, method: str, path: str, body: dict | None = None):
         raise
 
 
-def resolve_apex() -> tuple[str, str]:
-    """Return (ipv4, ipv6) for the apex host."""
-    ipv4 = socket.getaddrinfo(APEX_HOST, None, socket.AF_INET)[0][4][0]
-    ipv6 = socket.getaddrinfo(APEX_HOST, None, socket.AF_INET6)[0][4][0]
-    return ipv4, ipv6
-
-
 def find_domain_id(token: str) -> int:
     page = 1
     while True:
@@ -74,18 +66,37 @@ def find_domain_id(token: str) -> int:
     raise SystemExit(f"Domain zone '{DOMAIN_ZONE}' not found in this Linode account.")
 
 
-def existing_records(token: str, domain_id: int) -> dict[tuple[str, str], int]:
-    """Return {(name, type): record_id} for all records in the zone."""
-    records: dict[tuple[str, str], int] = {}
+def fetch_all_records(token: str, domain_id: int) -> list[dict]:
+    """Return all DNS records in the zone."""
+    records = []
     page = 1
     while True:
         result = linode(token, "GET", f"/domains/{domain_id}/records?page={page}&page_size=500")
-        for r in result["data"]:
-            records[(r["name"], r["type"])] = r["id"]
+        records.extend(result["data"])
         if page >= result["pages"]:
             break
         page += 1
     return records
+
+
+def existing_records(all_records: list[dict]) -> dict[tuple[str, str], int]:
+    """Return {(name, type): record_id} for duplicate-checking."""
+    return {(r["name"], r["type"]): r["id"] for r in all_records}
+
+
+def apex_ips(all_records: list[dict]) -> tuple[str, str | None]:
+    """Read the A and AAAA targets for 'pioneer-square' from Linode records."""
+    apex_name = "pioneer-square"
+    ipv4 = ipv6 = None
+    for r in all_records:
+        if r["name"] == apex_name:
+            if r["type"] == "A":
+                ipv4 = r["target"]
+            elif r["type"] == "AAAA":
+                ipv6 = r["target"]
+    if not ipv4:
+        raise SystemExit(f"No A record found for '{apex_name}' in zone '{DOMAIN_ZONE}'.")
+    return ipv4, ipv6
 
 
 def active_guild_ids(db_path: Path) -> list[str]:
@@ -135,10 +146,6 @@ def main():
     if not token:
         sys.exit("LINODE_TOKEN env var is required.")
 
-    print(f"Resolving {APEX_HOST} ...", end=" ", flush=True)
-    ipv4, ipv6 = resolve_apex()
-    print(f"{ipv4} / {ipv6}")
-
     guild_ids = args.guild_ids
     if not guild_ids:
         repo_root = Path(__file__).resolve().parent.parent
@@ -157,13 +164,18 @@ def main():
     print(f"  domain_id = {domain_id}")
 
     print("Fetching existing records ...")
-    existing = existing_records(token, domain_id)
+    all_recs = fetch_all_records(token, domain_id)
+    existing = existing_records(all_recs)
+
+    ipv4, ipv6 = apex_ips(all_recs)
+    print(f"Apex IPs from Linode: {ipv4} / {ipv6 or '(no AAAA)'}")
 
     for guild_id in guild_ids:
         name = f"{guild_id}.pioneer-square"
         print(f"\n{guild_id}  ({name}.{DOMAIN_ZONE})")
         ensure_record(token, domain_id, existing, name, "A", ipv4, args.dry_run)
-        ensure_record(token, domain_id, existing, name, "AAAA", ipv6, args.dry_run)
+        if ipv6:
+            ensure_record(token, domain_id, existing, name, "AAAA", ipv6, args.dry_run)
 
     print("\nDone.")
 
