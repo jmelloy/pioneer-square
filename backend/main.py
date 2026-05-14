@@ -158,6 +158,9 @@ async def lifespan(app: FastAPI):
     # foreman is always at least DEBUG so detailed AI loop output is available
     # when LOG_LEVEL=DEBUG; at INFO it still inherits the root handler above.
     logging.getLogger("foreman").setLevel(logging.DEBUG)
+    # Suppress noisy third-party loggers regardless of root log level.
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
     await reset_connection_state()
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
     try:
