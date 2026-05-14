@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import logging.config
 import os
 import sys
 
 from . import __version__
 from . import config as config_mod
+from .logging_config import get_logging_config
 from .worker import Worker
 
 
@@ -86,10 +88,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    logging.basicConfig(
-        level=args.log_level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    log_format = os.environ.get("LOG_FORMAT", "colored")
+    logging.config.dictConfig(get_logging_config(log_level=args.log_level, log_format=log_format))
     log = logging.getLogger("pioneer_worker.cli")
     log.info("pioneer-worker CLI starting (log_level=%s)", args.log_level)
 
