@@ -1,14 +1,15 @@
 """A2A protocol client for the Foreman.
 
 A2AClient — discovers remote agents via their agent card, negotiates auth
-(DNSid challenge-response if declared), and dispatches tasks.
+(DNSid challenge-response if declared), and dispatches tasks via the
+message/stream SSE endpoint.
 
 Typical usage:
     client = A2AClient("https://agent.meyers.life/.well-known/agent.json")
     result = await client.review_pr(
         pr_url,
         caller_domain=_guild_caller_domain(guild_id),
-        config_path=os.environ.get("DNSID_AGENT_CONFIG"),
+        private_key_pem=os.environ.get("GUILD_PRIVATE_KEY_PEM"),
     )
 """
 
@@ -30,12 +31,55 @@ logger = logging.getLogger(__name__)
 
 _JSONRPC_VERSION = "2.0"
 _DEFAULT_TIMEOUT_SECS = 180.0  # reviews can take ~2 min
+_MAX_SSE_STREAM_BYTES = 32 * 1024 * 1024  # 32 MiB
 
 
 def _fetch_json(url: str, *, data: bytes | None = None, headers: dict | None = None) -> Any:
     req = urllib.request.Request(url, data=data, headers=headers or {})
     with urllib.request.urlopen(req, timeout=_DEFAULT_TIMEOUT_SECS) as resp:
         return json.loads(resp.read())
+
+
+def _read_sse_events(
+    url: str,
+    *,
+    data: bytes,
+    headers: dict,
+) -> list[dict]:
+    """POST to url, read SSE (text/event-stream) response, return all parsed events."""
+    req = urllib.request.Request(url, data=data, headers=headers)
+    events: list[dict] = []
+    buf: list[str] = []
+    stream_bytes = 0
+
+    with urllib.request.urlopen(req, timeout=_DEFAULT_TIMEOUT_SECS) as resp:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            stream_bytes += len(line) + 1
+            if stream_bytes > _MAX_SSE_STREAM_BYTES:
+                logger.warning("a2a SSE stream exceeded byte cap, truncating")
+                break
+
+            if line == "":
+                if buf:
+                    payload = "\n".join(buf)
+                    buf = []
+                    try:
+                        events.append(json.loads(payload))
+                    except json.JSONDecodeError:
+                        logger.debug("a2a SSE non-JSON frame: %.200s", payload)
+            elif line.startswith("data:"):
+                buf.append(line[5:].lstrip(" "))
+            # event:/id:/retry:/comment lines silently ignored
+
+    if buf:
+        payload = "\n".join(buf)
+        try:
+            events.append(json.loads(payload))
+        except json.JSONDecodeError:
+            pass
+
+    return events
 
 
 def _guild_caller_domain(
@@ -50,7 +94,8 @@ def _guild_caller_domain(
 class A2AClient:
     """Client for A2A-protocol agents.
 
-    Fetches the remote agent card, negotiates authentication, and sends tasks.
+    Fetches the remote agent card, negotiates authentication, and sends tasks
+    via the message/stream SSE endpoint.
     """
 
     def __init__(
@@ -93,12 +138,14 @@ class A2AClient:
                     raise ValueError(
                         f"Agent {self._card_url} requires DNSid auth but no private key is available for guild"
                     )
-                skills = card.get("skills", [])
-                purpose = skills[0].get("id", "a2a-pr-review") if skills else "a2a-pr-review"
+                # purpose is a protocol constant, not the skill id
+                service_domain = spec.get("serviceDomain")
+                purpose = "a2a-pr-review"
                 return DNSidAuthScheme(
                     caller_domain=caller_domain,
                     private_key_pem=private_key_pem,
                     purpose=purpose,
+                    service_domain=service_domain,
                 )
         return None
 
@@ -110,7 +157,11 @@ class A2AClient:
         caller_domain: str | None = None,
         private_key_pem: str | None = None,
     ) -> dict:
-        """Send a task to the agent and return the raw result."""
+        """Send a task via message/stream and return collected artifacts.
+
+        Auth token (if needed) is placed in the JSON-RPC params as
+        `authorization: "DNSid <jwt>"` per the protocol spec.
+        """
         card = await self.fetch_agent_card()
         base_url = self._agent_base_url(card)
 
@@ -123,33 +174,45 @@ class A2AClient:
         if auth is None and caller_domain:
             auth = self._resolve_auth_scheme(card, caller_domain, private_key_pem)
 
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        # Resolve auth token — challenge-response runs here.
+        auth_token: str | None = None
         if auth is not None:
             auth_headers = await auth.get_auth_headers(base_url)
-            headers.update(auth_headers)
+            raw = auth_headers.get("Authorization", "")
+            auth_token = raw  # e.g. "DNSid <jwt>"
+
+        params: dict[str, Any] = {
+            "skill": skill_id,
+            "parts": message.get("parts", []),
+        }
+        if auth_token:
+            params["authorization"] = auth_token
 
         body = json.dumps(
             {
                 "jsonrpc": _JSONRPC_VERSION,
-                "method": "tasks/send",
-                "params": {"skill_id": skill_id, "message": message},
+                "method": "message/stream",
+                "params": params,
                 "id": 1,
             }
         ).encode()
 
         task_url = f"{base_url}/jsonrpc"
-        log_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
         logger.debug(
-            "a2a send_task: url=%s method=POST skill_id=%s headers=%s payload=%.500s",
+            "a2a send_task: url=%s method=POST skill_id=%s payload=%.500s",
             task_url,
             skill_id,
-            log_headers,
             body.decode(),
         )
 
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+
         t0 = time.monotonic()
         try:
-            result = await asyncio.to_thread(_fetch_json, task_url, data=body, headers=headers)
+            events = await asyncio.to_thread(_read_sse_events, task_url, data=body, headers=headers)
         except urllib.error.HTTPError as exc:
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             try:
@@ -176,10 +239,15 @@ class A2AClient:
             raise
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
-        logger.info("a2a send_task: url=%s status=200 elapsed_ms=%d", task_url, elapsed_ms)
-        logger.debug("a2a send_task: response_preview=%.500s", str(result))
+        logger.info(
+            "a2a send_task: url=%s status=200 elapsed_ms=%d events=%d",
+            task_url,
+            elapsed_ms,
+            len(events),
+        )
+        logger.debug("a2a send_task: events=%.500s", str(events))
 
-        return result.get("result", result)
+        return _assemble_result(events)
 
     async def review_pr(
         self,
@@ -191,7 +259,36 @@ class A2AClient:
         """Submit a GitHub PR URL to the pr-review skill and return the task result."""
         return await self.send_task(
             "pr-review",
-            {"parts": [{"type": "github-pr-url", "text": pr_url}]},
+            {"parts": [{"type": "github-pr-url", "url": pr_url}]},
             caller_domain=caller_domain,
             private_key_pem=private_key_pem,
         )
+
+
+def _assemble_result(events: list[dict]) -> dict:
+    """Collect SSE events into a task result dict compatible with the existing foreman tools."""
+    artifacts: list[dict] = []
+    terminal_state: str | None = None
+    error_code: str | None = None
+    message: str | None = None
+
+    for event in events:
+        kind = event.get("kind")
+        if kind == "status-update":
+            state = event.get("state")
+            if state in ("completed", "failed", "rejected"):
+                terminal_state = state
+                error_code = event.get("error_code")
+                message = event.get("message")
+        elif kind == "artifact-update":
+            art = event.get("artifact")
+            if art:
+                artifacts.append(art)
+
+    if terminal_state in ("failed", "rejected"):
+        raise RuntimeError(f"a2a agent {terminal_state}: {error_code or message or 'no detail'}")
+
+    return {
+        "status": {"state": terminal_state or "unknown"},
+        "artifacts": artifacts,
+    }

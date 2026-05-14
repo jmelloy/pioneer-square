@@ -1,9 +1,12 @@
 """DNSid challenge-response authentication for A2A protocol connections.
 
-When an A2A agent declares a dnsid-based security scheme the caller must:
-  1. POST dnsid.challenge to the agent to receive a server {nonce, challenge_id}.
-  2. Sign a JWT (EdDSA/Ed25519) via the dnsid-sdk CLI containing those values.
-  3. Include Authorization: DNSid <jwt> on subsequent task requests.
+When an A2A agent declares a dnsid-cr security scheme the caller must:
+  1. POST dnsid.challenge {caller_domain, client_nonce} to receive
+     {server_nonce, challenge_id, server_assertion, exp}.
+  2. Sign a JWT (EdDSA/Ed25519) via the dnsid-sdk CLI with claims:
+     iss/sub=caller_domain, aud=service_domain, nonce=server_nonce,
+     challenge_id, purpose, iat, exp (≤60s), jti.
+  3. Include Authorization: DNSid <jwt> on the message/stream call.
 
 The caller's identity is a subdomain of the guild's base domain
 (e.g. {guild_id}.pioneer-square.melloy.life), and the remote agent can
@@ -18,6 +21,7 @@ import os
 import subprocess
 import time
 import urllib.request
+import uuid
 from abc import ABC, abstractmethod
 
 # ---------------------------------------------------------------------------
@@ -76,8 +80,8 @@ class A2AAuthScheme(ABC):
 class DNSidAuthScheme(A2AAuthScheme):
     """Mutual DNSid challenge-response (dnsid-cr security scheme).
 
-    Step 1 — POST dnsid.challenge (JSON-RPC 2.0) to {base_url}/jsonrpc.
-    Step 2 — Sign an EdDSA JWT with nonce/challenge_id/purpose/iss/sub via dnsid-sdk.
+    Step 1 — POST dnsid.challenge {caller_domain, client_nonce} to /jsonrpc.
+    Step 2 — Sign an EdDSA JWT with the returned server_nonce/challenge_id.
     Step 3 — Return Authorization: DNSid <jwt>.
     """
 
@@ -86,41 +90,59 @@ class DNSidAuthScheme(A2AAuthScheme):
         caller_domain: str,
         private_key_pem: str,
         purpose: str = "a2a-pr-review",
+        service_domain: str | None = None,
     ) -> None:
         self.caller_domain = caller_domain
         self.private_key_pem = private_key_pem
         self.purpose = purpose
+        self.service_domain = service_domain  # aud claim; inferred from base_url if None
 
     def _challenge_sync(self, agent_base_url: str) -> dict:
         """Synchronous POST to dnsid.challenge; returns unwrapped result dict."""
+        import secrets as _secrets
+
         url = agent_base_url.rstrip("/") + "/jsonrpc"
         body = json.dumps(
             {
                 "jsonrpc": "2.0",
                 "method": "dnsid.challenge",
-                "params": {"caller_id": self.caller_domain},
+                "params": {
+                    "caller_domain": self.caller_domain,
+                    "client_nonce": _secrets.token_hex(16),
+                },
                 "id": 1,
             }
         ).encode()
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-        return data.get("result", data)
+        result = data.get("result", data)
+        if "error" in data and "server_nonce" not in result:
+            raise RuntimeError(
+                f"dnsid.challenge failed: {data['error'].get('message', data['error'])}"
+            )
+        return result
 
     async def get_auth_headers(self, agent_base_url: str) -> dict[str, str]:
         result = await asyncio.to_thread(self._challenge_sync, agent_base_url)
-        nonce = result["nonce"]
+        server_nonce = result["server_nonce"]
         challenge_id = result["challenge_id"]
+
+        from urllib.parse import urlparse
+
+        aud = self.service_domain or urlparse(agent_base_url).hostname or agent_base_url
 
         now = int(time.time())
         claims = {
             "iss": self.caller_domain,
             "sub": self.caller_domain,
-            "nonce": nonce,
+            "aud": aud,
+            "nonce": server_nonce,
             "challenge_id": challenge_id,
             "purpose": self.purpose,
+            "jti": str(uuid.uuid4()),
             "iat": now,
-            "exp": now + 300,
+            "exp": now + 60,
         }
         token = await asyncio.to_thread(_dnsid_sign_sync, claims, self.private_key_pem)
         return {"Authorization": f"DNSid {token}"}

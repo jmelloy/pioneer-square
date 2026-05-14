@@ -5,6 +5,7 @@ All network calls and subprocess calls are mocked — no real I/O.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -29,7 +30,9 @@ async def test_dnsid_auth_returns_authorization_header():
     )
     with (
         patch.object(
-            scheme, "_challenge_sync", return_value={"nonce": "abc", "challenge_id": "ch-1"}
+            scheme,
+            "_challenge_sync",
+            return_value={"server_nonce": "abc", "challenge_id": "ch-1"},
         ),
         patch("foreman.auth._dnsid_sign_sync", return_value="fake.jwt.token"),
     ):
@@ -39,11 +42,12 @@ async def test_dnsid_auth_returns_authorization_header():
 
 
 async def test_dnsid_auth_passes_correct_claims():
-    """JWT claims include nonce, challenge_id, purpose, iss, sub, iat, exp."""
+    """JWT claims include server_nonce as nonce, challenge_id, aud, jti, purpose, iss, sub, iat, exp."""
     scheme = DNSidAuthScheme(
         caller_domain="g1.pioneer-square.melloy.life",
         private_key_pem="fake-pem",
         purpose="pr-review",
+        service_domain="agent.example.com",
     )
     captured_claims: list[dict] = []
 
@@ -53,20 +57,25 @@ async def test_dnsid_auth_passes_correct_claims():
 
     with (
         patch.object(
-            scheme, "_challenge_sync", return_value={"nonce": "n42", "challenge_id": "c99"}
+            scheme,
+            "_challenge_sync",
+            return_value={"server_nonce": "n42", "challenge_id": "c99"},
         ),
         patch("foreman.auth._dnsid_sign_sync", side_effect=capture_sign),
     ):
-        await scheme.get_auth_headers("https://example.com")
+        await scheme.get_auth_headers("https://agent.example.com")
 
     claims = captured_claims[0]
-    assert claims["nonce"] == "n42"
+    assert claims["nonce"] == "n42"  # server_nonce goes into nonce claim
     assert claims["challenge_id"] == "c99"
     assert claims["purpose"] == "pr-review"
     assert claims["iss"] == "g1.pioneer-square.melloy.life"
     assert claims["sub"] == "g1.pioneer-square.melloy.life"
+    assert claims["aud"] == "agent.example.com"
+    assert "jti" in claims
     assert "iat" in claims
     assert "exp" in claims
+    assert claims["exp"] <= claims["iat"] + 60
     assert claims["exp"] > claims["iat"]
 
 
@@ -83,7 +92,9 @@ async def test_dnsid_auth_forwards_private_key_pem():
         return "tok"
 
     with (
-        patch.object(scheme, "_challenge_sync", return_value={"nonce": "n", "challenge_id": "c"}),
+        patch.object(
+            scheme, "_challenge_sync", return_value={"server_nonce": "n", "challenge_id": "c"}
+        ),
         patch("foreman.auth._dnsid_sign_sync", side_effect=capture_sign),
     ):
         await scheme.get_auth_headers("https://example.com")
@@ -134,7 +145,7 @@ def test_resolve_dnsid_scheme():
     assert isinstance(scheme, DNSidAuthScheme)
     assert scheme.caller_domain == "g.pioneer-square.melloy.life"
     assert scheme.private_key_pem == "my-pem"
-    assert scheme.purpose == "pr-review"
+    assert scheme.purpose == "a2a-pr-review"
 
 
 def test_resolve_dnsid_scheme_raises_without_key():
@@ -159,25 +170,25 @@ def test_guild_caller_domain_custom():
     assert _guild_caller_domain("abc123", "custom.example.com") == "abc123.custom.example.com"
 
 
-async def test_review_pr_attaches_dnsid_header():
-    """review_pr runs the challenge, attaches Authorization: DNSid, and POSTs."""
+async def test_review_pr_attaches_dnsid_param():
+    """review_pr runs the challenge and passes authorization in message/stream params."""
     client = A2AClient("https://agent.meyers.life/.well-known/agent.json")
     client._card = SAMPLE_CARD
 
     captured: dict = {}
-    fake_task_result = {"task_id": "t-1", "status": "complete"}
+    fake_events = [{"kind": "status-update", "state": "completed"}]
 
-    def fake_fetch(url, *, data=None, headers=None):
+    def fake_stream(url, *, data=None, headers=None):
         captured["url"] = url
         captured["headers"] = dict(headers or {})
-        captured["data"] = data
-        return {"result": fake_task_result}
+        captured["params"] = json.loads(data)["params"]
+        return fake_events
 
     with (
-        patch("foreman.a2a_client._fetch_json", side_effect=fake_fetch),
+        patch("foreman.a2a_client._read_sse_events", side_effect=fake_stream),
         patch(
             "foreman.auth.DNSidAuthScheme._challenge_sync",
-            return_value={"nonce": "n1", "challenge_id": "c1"},
+            return_value={"server_nonce": "n1", "challenge_id": "c1"},
         ),
         patch("foreman.auth._dnsid_sign_sync", return_value="signed.jwt.value"),
     ):
@@ -187,13 +198,14 @@ async def test_review_pr_attaches_dnsid_header():
             private_key_pem="fake-pem",
         )
 
-    assert captured["headers"].get("Authorization") == "DNSid signed.jwt.value"
+    assert captured["params"].get("authorization") == "DNSid signed.jwt.value"
+    assert "Authorization" not in captured["headers"]
     assert captured["url"] == "https://agent.meyers.life/jsonrpc"
-    assert result == fake_task_result
+    assert result["status"]["state"] == "completed"
 
 
 async def test_review_pr_no_auth_when_no_scheme():
-    """review_pr sends request without auth header when card has no auth scheme."""
+    """review_pr sends request without authorization param when card has no auth scheme."""
     card_no_auth = {**SAMPLE_CARD, "securitySchemes": {}, "security": []}
 
     client = A2AClient("https://example.com/.well-known/agent.json")
@@ -201,11 +213,11 @@ async def test_review_pr_no_auth_when_no_scheme():
 
     captured: dict = {}
 
-    def fake_fetch(url, *, data=None, headers=None):
-        captured["headers"] = dict(headers or {})
-        return {"result": {}}
+    def fake_stream(url, *, data=None, headers=None):
+        captured["params"] = json.loads(data)["params"]
+        return [{"kind": "status-update", "state": "completed"}]
 
-    with patch("foreman.a2a_client._fetch_json", side_effect=fake_fetch):
+    with patch("foreman.a2a_client._read_sse_events", side_effect=fake_stream):
         await client.review_pr("https://github.com/o/r/pull/1")
 
-    assert "Authorization" not in captured["headers"]
+    assert "authorization" not in captured["params"]
