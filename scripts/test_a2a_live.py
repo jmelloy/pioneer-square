@@ -109,14 +109,14 @@ def test_dnsid_cli() -> list[dict]:
 
     # 1. resolve — look up a well-known domain
     try:
-        proc = _run_dnsid("resolve", "nyoyny.pioneer-square.melloy.life")
+        proc = _run_dnsid("resolve", "dnsid.pioneer-square.melloy.life")
         out = json.loads(proc.stdout)
         ok = out.get("ok") is True and "fqdn" in out
-        results.append(_result("resolve nyoyny.pioneer-square.melloy.life", ok, str(out)[:120]))
+        results.append(_result("resolve dnsid.pioneer-square.melloy.life", ok, str(out)[:120]))
     except subprocess.TimeoutExpired:
-        results.append(_result("resolve nyoyny.pioneer-square.melloy.life", False, "timed out"))
+        results.append(_result("resolve dnsid.pioneer-square.melloy.life", False, "timed out"))
     except Exception as exc:
-        results.append(_result("resolve nyoyny.pioneer-square.melloy.life", False, str(exc)))
+        results.append(_result("resolve dnsid.pioneer-square.melloy.life", False, str(exc)))
 
     # 2. sign — requires DNSID_AGENT_CONFIG; skip if not set
     config_path = os.environ.get("DNSID_AGENT_CONFIG", "")
@@ -127,8 +127,8 @@ def test_dnsid_cli() -> list[dict]:
             import time
 
             claims = {
-                "iss": "nyoyny.pioneer-square.melloy.life",
-                "sub": "nyoyny.pioneer-square.melloy.life",
+                "iss": "dnsid.pioneer-square.melloy.life",
+                "sub": "dnsid.pioneer-square.melloy.life",
                 "aud": "test-aud",
                 "exp": int(time.time()) + 300,
             }
@@ -149,8 +149,8 @@ def test_dnsid_cli() -> list[dict]:
             import time
 
             claims = {
-                "iss": "nyoyny.pioneer-square.melloy.life",
-                "sub": "nyoyny.pioneer-square.melloy.life",
+                "iss": "dnsid.pioneer-square.melloy.life",
+                "sub": "dnsid.pioneer-square.melloy.life",
                 "aud": "test-aud",
                 "exp": int(time.time()) + 300,
             }
@@ -164,7 +164,7 @@ def test_dnsid_cli() -> list[dict]:
                 jwt_token = sign_out["jwt"]
                 verify_proc = _run_dnsid("verify", "--jwt", jwt_token, "--expected-aud", "test-aud")
                 out = json.loads(verify_proc.stdout)
-                ok = out.get("ok") is True and out.get("iss") == "nyoyny.pioneer-square.melloy.life"
+                ok = out.get("ok") is True and out.get("iss") == "dnsid.pioneer-square.melloy.life"
                 results.append(_result("verify signed token", ok, str(out)[:120]))
         except Exception as exc:
             results.append(_result("verify signed token", False, str(exc)))
