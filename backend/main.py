@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.config
 import os
 import time
 from contextlib import asynccontextmanager
@@ -41,6 +42,16 @@ try:
     load_dotenv(Path(__file__).resolve().parent / ".env")
 except ImportError:
     pass
+
+# Apply logging config at module import time so no messages are lost before
+# the lifespan hook fires.  uvicorn will later call dictConfig with its own
+# defaults; our lifespan re-applies it (with force-equivalent disable_existing
+# behaviour) to ensure consistent formatting after uvicorn starts.
+from logging_config import get_logging_config as _get_logging_config
+
+_early_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+_early_log_format = os.environ.get("LOG_FORMAT", "colored")
+logging.config.dictConfig(_get_logging_config(_early_log_level, _early_log_format))
 
 logger = logging.getLogger(__name__)
 
@@ -146,21 +157,11 @@ async def _stale_worker_sweeper() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Configure logging before startup tasks so all log output uses consistent
-    # handlers. force=True replaces uvicorn's root handlers.
+    # Re-apply our logging config after uvicorn has set up its own handlers so
+    # the format remains consistent for the lifetime of the server.
     _log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    _level = getattr(logging, _log_level, logging.INFO)
-    logging.basicConfig(
-        level=_level,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        force=True,
-    )
-    # foreman is always at least DEBUG so detailed AI loop output is available
-    # when LOG_LEVEL=DEBUG; at INFO it still inherits the root handler above.
-    logging.getLogger("foreman").setLevel(logging.DEBUG)
-    # Suppress noisy third-party loggers regardless of root log level.
-    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
-    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    _log_format = os.environ.get("LOG_FORMAT", "colored")
+    logging.config.dictConfig(_get_logging_config(_log_level, _log_format))
     await reset_connection_state()
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
     try:
@@ -273,4 +274,13 @@ if _STATIC_DIR.is_dir():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, access_log=True, log_level="info")
+    _main_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    _main_log_format = os.environ.get("LOG_FORMAT", "colored")
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        access_log=True,
+        log_level=_main_log_level.lower(),
+        log_config=_get_logging_config(_main_log_level, _main_log_format),
+    )

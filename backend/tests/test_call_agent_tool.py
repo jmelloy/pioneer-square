@@ -174,8 +174,8 @@ class TestCallAgentHappyPath:
             )
 
         assert results[0].get("is_error") is not True
-        # URL should have slash stripped, then /a2a appended
-        assert post_calls[0] == "http://localhost:8080/a2a"
+        # URL should have slash stripped, then /jsonrpc appended
+        assert post_calls[0] == "http://localhost:8080/jsonrpc"
 
     @pytest.mark.asyncio
     async def test_agent_with_no_skills_in_card_still_calls(self, db_session):
