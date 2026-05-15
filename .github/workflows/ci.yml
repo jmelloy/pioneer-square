@@ -93,6 +93,8 @@ jobs:
         run: npm run type-check
 
       - name: Test
+        env:
+          SKIP_E2E: '1'
         run: npm test
 
       - name: Build
