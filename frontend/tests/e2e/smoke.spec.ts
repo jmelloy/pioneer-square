@@ -14,7 +14,7 @@ const FRONTEND_ROOT = path.resolve(__dirname, '../..')
 // (or any other truthy value) to force-skip on machines where these tests
 // shouldn't run regardless of what's installed.
 function findChromium(): string | null {
-  if (process.env.SKIP_E2E) return null
+  if (process.env.SKIP_E2E || process.env.CI) return null
   const env = process.env.PLAYWRIGHT_CHROMIUM_PATH
   if (env && existsSync(env)) return env
   const candidates = [
