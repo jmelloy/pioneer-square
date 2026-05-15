@@ -395,7 +395,7 @@ async def _poll_loop(guild_id: str) -> None:
             )
 
             if active_tasks:
-                task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks[:8])
+                task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
                 msg = (
                     f"[periodic-check] Automated status poll — {n} non-terminal "
                     f"task(s): {task_summary}. Check whether any are stalled. "
@@ -505,9 +505,12 @@ async def run_foreman_ai(
                 Task.pr_url,
                 Task.finished_at,
             )
-            .where(Task.guild_pk == guild_pk_val, live_tasks_filter())
+            .where(
+                Task.guild_pk == guild_pk_val,
+                ~Task.state.in_(list(_TERMINAL_STATES)),
+                live_tasks_filter(),
+            )
             .order_by(Task.created_at.desc())
-            .limit(10)
         )
         task_rows = [
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
@@ -537,7 +540,7 @@ async def run_foreman_ai(
     summarized_tasks = [
         s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
     ]
-    tasks_block = json.dumps(summarized_tasks[:6], indent=2)
+    tasks_block = json.dumps(summarized_tasks, indent=2)
     system_blocks = build_system_blocks(primary_repo=primary_repo)
     state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
     # Legacy single-string render — persisted for audit only, not sent to the API.
