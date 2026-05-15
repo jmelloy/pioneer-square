@@ -3,6 +3,14 @@
     <div class="tab-bar">
       <button
         class="tab"
+        :class="{ active: activeTab === 'workshop' }"
+        @click="activeTab = 'workshop'"
+      >
+        <span class="tab-icon">🪑</span>
+        <span class="tab-label">Workshop Floor</span>
+      </button>
+      <button
+        class="tab"
         :class="{ active: activeTab === 'factory' }"
         @click="activeTab = 'factory'"
       >
@@ -47,7 +55,8 @@
       </button>
     </div>
     <div class="tab-content">
-      <FactoryFloor v-if="activeTab === 'factory'" />
+      <WorkshopFloor v-if="activeTab === 'workshop'" />
+      <FactoryFloor v-else-if="activeTab === 'factory'" />
       <LogPane v-else-if="activeTab.startsWith('agent-')" kind="agent" :id="activeTab.slice(6)" />
       <LogPane v-else-if="activeTab.startsWith('worker-')" kind="worker" :id="activeTab.slice(7)" />
       <LogPane v-else-if="activeTab.startsWith('task-')" kind="task" :id="activeTab.slice(5)" />
@@ -60,11 +69,12 @@ import { ref, computed, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import FactoryFloor from './FactoryFloor.vue'
+import WorkshopFloor from './workshop/WorkshopFloor.vue'
 import LogPane from './LogPane.vue'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
-const activeTab = ref('factory')
+const activeTab = ref('workshop')
 
 const visibleAgentTabs = computed(() =>
   agentsStore.openedAgentIds
