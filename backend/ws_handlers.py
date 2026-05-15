@@ -22,6 +22,7 @@ from events import (
     agent_owners,
     broadcast,
     connections,
+    foreman_connections,
     pending_claude_auth,
 )
 from fastapi import WebSocket
@@ -95,6 +96,78 @@ async def _task_user_id(db, task_id: str | None) -> str | None:
         return None
     res = await db.execute(select(Task.user_id).where(Task.id == task_id))
     return res.scalar_one_or_none()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: External-foreman dispatch helper
+# ---------------------------------------------------------------------------
+
+
+async def _trigger_foreman(
+    guild_id: str,
+    event: str,
+    human_message: str,
+    *,
+    user_id: str | None = None,
+    task_id: str | None = None,
+    task_name: str = "foreman.unknown",
+) -> None:
+    """Send a ``foreman-trigger`` WS message to an external foreman if one is
+    connected for this guild; otherwise fall back to the embedded foreman.
+
+    The ``foreman-trigger`` payload carries all context the standalone process
+    needs to call its own ``run_foreman_ai()``:
+
+    .. code-block:: json
+
+        {
+          "type": "foreman-trigger",
+          "event": "<event-type>",
+          "guildId": "<guild_id>",
+          "humanMessage": "<message>",
+          "userId": "<user_id>",   // omitted when None
+          "taskId": "<task_id>"    // omitted when None
+        }
+
+    If the send fails (broken socket) the foreman is evicted and the embedded
+    fallback fires so the trigger is never lost.
+
+    ``event`` mirrors the plan's trigger-type vocabulary:
+    ``chat``, ``task-complete``, ``followup-done``, ``needs-input``,
+    ``claude-auth``, ``periodic-check``.
+    """
+    ws = foreman_connections.get(guild_id)
+    if ws is not None:
+        payload: dict = {
+            "type": "foreman-trigger",
+            "event": event,
+            "guildId": guild_id,
+            "humanMessage": human_message,
+        }
+        if user_id:
+            payload["userId"] = user_id
+        if task_id:
+            payload["taskId"] = task_id
+        try:
+            await ws.send_json(payload)
+            logger.debug(
+                "guild=%s foreman-trigger dispatched to external foreman: event=%s",
+                guild_id,
+                event,
+            )
+            return
+        except Exception:
+            logger.warning(
+                "guild=%s external foreman WS broken (event=%s), falling back to embedded",
+                guild_id,
+                event,
+            )
+            foreman_connections.pop(guild_id, None)
+    # Embedded fallback — identical to the pre-Phase-2 behaviour.
+    spawn(
+        run_foreman_ai(guild_id, human_message, user_id=user_id),
+        name=task_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +245,37 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         # decide it owns the agent, and stamp the just-joined agent offline.
         async with agent_owner_lock(ctx.guild_id):
             agent_owners[agent_id] = ctx.websocket
-    if agent_type == "worker":
+    if agent_type == "foreman":
+        # Register as the active external foreman for this guild.
+        # Evict any previously connected foreman so there is never more than
+        # one active at a time (prevents duplicate task mutations / triggers).
+        existing_ws = foreman_connections.get(ctx.guild_id)
+        if existing_ws is not None and existing_ws is not ctx.websocket:
+            logger.info(
+                "guild=%s evicting previous external foreman (new foreman connected)",
+                ctx.guild_id,
+            )
+            try:
+                await existing_ws.send_json(
+                    {
+                        "type": "foreman-evicted",
+                        "guildId": ctx.guild_id,
+                        "reason": "superseded by new foreman connection",
+                    }
+                )
+            except Exception:
+                pass
+        foreman_connections[ctx.guild_id] = ctx.websocket
+        logger.info("guild=%s external foreman registered: agentId=%s", ctx.guild_id, agent_id)
+        # Acknowledge registration so the foreman knows it is the active one.
+        await ctx.websocket.send_json(
+            {
+                "type": "foreman-registered",
+                "guildId": ctx.guild_id,
+                "agentId": agent_id,
+            }
+        )
+    elif agent_type == "worker":
         reset_foreman_poll(ctx.guild_id)
         # Replay any pending tasks already assigned to this worker so they
         # aren't lost if the backend sent task-assigned while the socket was
@@ -304,9 +407,12 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
             },
         )
     else:
-        spawn(
-            run_foreman_ai(ctx.guild_id, content, user_id=ctx.ws_user_id),
-            name=f"foreman.chat:{ctx.guild_id}",
+        await _trigger_foreman(
+            ctx.guild_id,
+            "chat",
+            content,
+            user_id=ctx.ws_user_id,
+            task_name=f"foreman.chat:{ctx.guild_id}",
         )
         reset_foreman_poll(ctx.guild_id)
 
@@ -452,21 +558,21 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
 
     task_uid = await _task_user_id(ctx.db, task_id)
     pr_line = f" PR: {pr_url}." if pr_url else ""
-    spawn(
-        run_foreman_ai(
-            ctx.guild_id,
-            f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
-            f'"{desc[:80]}" — branch: {branch}.{pr_line} '
-            "The worker has returned to its idle pool; the task is parked in "
-            "awaiting-review for human review. "
-            "Default behaviour: leave PR-bearing tasks open so reviewers can "
-            "comment — call send_followup if a comment or CI failure asks for "
-            "an iteration on the same branch (any idle worker can pick it up). "
-            "Only call finalize_task when the work is genuinely closed (PR "
-            "merged, task abandoned, or it was an ephemeral/automation task).",
-            user_id=task_uid,
-        ),
-        name=f"foreman.task-complete:{task_id}",
+    await _trigger_foreman(
+        ctx.guild_id,
+        "task-complete",
+        f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
+        f'"{desc[:80]}" — branch: {branch}.{pr_line} '
+        "The worker has returned to its idle pool; the task is parked in "
+        "awaiting-review for human review. "
+        "Default behaviour: leave PR-bearing tasks open so reviewers can "
+        "comment — call send_followup if a comment or CI failure asks for "
+        "an iteration on the same branch (any idle worker can pick it up). "
+        "Only call finalize_task when the work is genuinely closed (PR "
+        "merged, task abandoned, or it was an ephemeral/automation task).",
+        user_id=task_uid,
+        task_id=task_id,
+        task_name=f"foreman.task-complete:{task_id}",
     )
     reset_foreman_poll(ctx.guild_id)
 
@@ -488,14 +594,14 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     if not task_id:
         return
     task_uid = await _task_user_id(ctx.db, task_id)
-    spawn(
-        run_foreman_ai(
-            ctx.guild_id,
-            f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
-            "Decide: call send_followup for more work, or call finalize_task to mark it done.",
-            user_id=task_uid,
-        ),
-        name=f"foreman.followup-done:{task_id}",
+    await _trigger_foreman(
+        ctx.guild_id,
+        "followup-done",
+        f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
+        "Decide: call send_followup for more work, or call finalize_task to mark it done.",
+        user_id=task_uid,
+        task_id=task_id,
+        task_name=f"foreman.followup-done:{task_id}",
     )
     reset_foreman_poll(ctx.guild_id)
 
@@ -513,9 +619,13 @@ async def handle_needs_input(ctx: WSContext, data: dict) -> None:
         f"Stop reason: {stop_reason}" + (f"\nLast message: {last_msg}" if last_msg else "")
     )
     task_uid = await _task_user_id(ctx.db, task_id) if task_id else None
-    spawn(
-        run_foreman_ai(ctx.guild_id, escalation, user_id=task_uid),
-        name=f"foreman.needs-input:{task_id or 'unknown'}",
+    await _trigger_foreman(
+        ctx.guild_id,
+        "needs-input",
+        escalation,
+        user_id=task_uid,
+        task_id=task_id or None,
+        task_name=f"foreman.needs-input:{task_id or 'unknown'}",
     )
 
 
@@ -535,16 +645,35 @@ async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
         len(pending_claude_auth.get(ctx.guild_id, {})),
         ctx.guild_id,
     )
-    spawn(
-        run_foreman_ai(
+    await _trigger_foreman(
+        ctx.guild_id,
+        "claude-auth",
+        f"Worker {worker_id} needs Claude authentication. "
+        f"Auth URL: {auth_url}. "
+        "A human must visit this URL, complete authentication, then paste the "
+        "resulting code into the auth panel that has appeared in the chat UI "
+        "(or type it into the Foreman Comms input). The worker is waiting.",
+        task_name=f"foreman.claude-auth:{worker_id}",
+    )
+
+
+async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:
+    """External foreman announcing a graceful shutdown.
+
+    Removes the guild's foreman_connections entry so subsequent trigger events
+    fall back to the embedded foreman immediately rather than waiting for a
+    failed send to discover the socket is gone.
+    """
+    if foreman_connections.get(ctx.guild_id) is ctx.websocket:
+        foreman_connections.pop(ctx.guild_id, None)
+        logger.info(
+            "guild=%s external foreman disconnected gracefully",
             ctx.guild_id,
-            f"Worker {worker_id} needs Claude authentication. "
-            f"Auth URL: {auth_url}. "
-            "A human must visit this URL, complete authentication, then paste the "
-            "resulting code into the auth panel that has appeared in the chat UI "
-            "(or type it into the Foreman Comms input). The worker is waiting.",
-        ),
-        name=f"foreman.claude-auth:{worker_id}",
+        )
+    await broadcast(
+        ctx.guild_id,
+        {"type": "foreman-disconnect", "guildId": ctx.guild_id},
+        exclude=ctx.websocket,
     )
 
 
@@ -585,6 +714,7 @@ HANDLERS: dict[str, callable] = {
     "task-followup-done": handle_task_followup_done,
     "needs-input": handle_needs_input,
     "claude-auth-required": handle_claude_auth_required,
+    "foreman-disconnect": handle_foreman_disconnect,
     "worker-auth-response": handle_worker_auth_response,
     "offer": handle_webrtc_signal,
     "answer": handle_webrtc_signal,
