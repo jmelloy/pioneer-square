@@ -30,6 +30,40 @@ _WEBHOOK_EVENTS = [
 ]
 
 
+async def fetch_accessible_repos(token: str) -> list[str]:
+    """Return repos accessible to the GitHub token via the API.
+
+    Queries /user/repos with pagination (up to 200 repos). Returns
+    ``["owner/repo", ...]``. Network errors are logged; an empty list is
+    returned so callers can treat a failed fetch as a no-op.
+    """
+
+    def _fetch_page(page: int) -> list:
+        req = urllib.request.Request(
+            f"https://api.github.com/user/repos?per_page=100&page={page}&sort=pushed",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+
+    all_repos: list[str] = []
+    for page in range(1, 3):  # cap at 200 repos (2 pages × 100)
+        try:
+            repos = await asyncio.to_thread(_fetch_page, page)
+        except Exception as exc:
+            logger.warning("GitHub repo list fetch failed (page %d): %s", page, exc)
+            break
+        if not repos:
+            break
+        all_repos.extend(r["full_name"] for r in repos if r.get("full_name"))
+        if len(repos) < 100:
+            break
+    return all_repos
+
+
 async def push_branch(
     *,
     branch: str,

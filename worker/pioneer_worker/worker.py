@@ -50,6 +50,10 @@ _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during
 WORKTREE_TTL_SECONDS = 24 * 60 * 60
 WORKTREE_SWEEP_INTERVAL_SECONDS = 60 * 60
 
+# How often to re-query the GitHub API for accessible repos. Keeps the worker's
+# list current if new repos are added or permissions change without a restart.
+REPO_REFRESH_INTERVAL_SECONDS = 20 * 60
+
 
 class Agent:
     def __init__(self, *, id: str | None = None, name: str | None = None) -> None:
@@ -89,6 +93,9 @@ class Worker:
         # Set to True once _join() has been called the first time so that
         # _on_ws_reconnect doesn't prematurely join before auth completes.
         self._joined = False
+        # Monotonic timestamp of the last successful GitHub repo-list refresh.
+        # 0 means never refreshed; _idle_puller compares against this.
+        self._last_repo_refresh: float = 0.0
 
         self.slots: list[Agent] = [Agent() for i in range(cfg.max_agents)]
         # Set when graceful shutdown is requested (via WS or signal). Idle
@@ -861,6 +868,7 @@ class Worker:
         assert self.cfg.worker_id, "worker_id must be set after registration"
 
         await self._fetch_github_token_if_needed()
+        await self._refresh_github_repos()
         await self._check_gh_auth()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
@@ -1197,6 +1205,50 @@ class Worker:
             except Exception as exc:
                 logger.warning("remove_worktree failed for %s: %s", wt_path, exc)
 
+    async def _refresh_github_repos(self) -> None:
+        """Fetch repos accessible to the GitHub token and update the registered list.
+
+        Merges API results with the static config list (static entries keep
+        their order; API-only repos are appended). If the merged set differs
+        from the current list the backend is notified via worker-register so
+        the UI and foreman see the updated repo count without a restart.
+        """
+        if not self.cfg.github_token:
+            return
+        try:
+            api_repos = await github_pr.fetch_accessible_repos(self.cfg.github_token)
+        except Exception as exc:
+            logger.warning("GitHub repo refresh failed: %s", exc)
+            return
+        if not api_repos:
+            logger.debug("GitHub repo refresh returned empty list; skipping update")
+            self._last_repo_refresh = asyncio.get_event_loop().time()
+            return
+
+        merged = list(self.cfg.repos)
+        for r in api_repos:
+            if r not in merged:
+                merged.append(r)
+
+        prev_count = len(self.cfg.repos)
+        self._last_repo_refresh = asyncio.get_event_loop().time()
+
+        if set(merged) == set(self.cfg.repos) and len(merged) == prev_count:
+            logger.debug("GitHub repo list unchanged (%d repos)", prev_count)
+            return
+
+        self.cfg.repos = merged
+        logger.info("GitHub repos refreshed: %d total (was %d)", len(merged), prev_count)
+        if self.cfg.worker_id:
+            await self._send(
+                {
+                    "type": "worker-register",
+                    "workerId": self.cfg.worker_id,
+                    "repos": self.cfg.repos,
+                    **({"user": self.cfg.user} if self.cfg.user else {}),
+                }
+            )
+
     def _known_repos(self) -> list[str]:
         """All repos this worker may have cloned: static list + org repos already on disk."""
         repos = list(self.cfg.repos)
@@ -1328,6 +1380,12 @@ class Worker:
                 logger.debug("Poll: %d known, %d new", len(pending), new_count)
             except Exception as exc:
                 logger.warning("Pending-task poll failed: %s", exc)
+            now = asyncio.get_event_loop().time()
+            if (
+                self.cfg.github_token
+                and now - self._last_repo_refresh > REPO_REFRESH_INTERVAL_SECONDS
+            ):
+                await self._refresh_github_repos()
             all_idle = all(s.current_claude is None for s in self.slots)
             if self.task_queue.empty() and all_idle:
                 known = self._known_repos()
