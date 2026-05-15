@@ -218,7 +218,11 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         "joinedAt": joined_at,
     }
     if worker_id:
-        broadcast_payload["workerName"] = worker_display_name(worker_id)
+        r = await ctx.db.execute(
+            select(Worker.name).where(Worker.id == worker_id, Worker.guild_pk == ctx.guild_pk)
+        )
+        stored_name = r.scalar_one_or_none()
+        broadcast_payload["workerName"] = stored_name or worker_display_name(worker_id)
     await broadcast(ctx.guild_id, broadcast_payload)
 
 

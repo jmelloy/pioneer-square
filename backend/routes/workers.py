@@ -94,6 +94,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
                 created_at=created_at,
                 user_id=resolved_user_id,
                 auth_token=auth_token,
+                name=worker_name,
             )
         )
         await db.commit()
