@@ -95,6 +95,7 @@ class Worker:
         # agents stop immediately; busy agents finish their current task and
         # skip the follow-up window.
         self._shutdown_event = asyncio.Event()
+        self._worker_name: str = ""
 
     # ------------------------------------------------------------------ HTTP
     async def _http(self, *, authed: bool = False) -> httpx.AsyncClient:
@@ -122,6 +123,7 @@ class Worker:
             payload = resp.json()
             wid = payload["id"]
             self.cfg.auth_token = payload.get("auth_token")
+            self._worker_name = payload.get("name") or wid
         self.cfg.worker_id = wid
         if not self.cfg.auth_token:
             logger.warning(
@@ -130,8 +132,9 @@ class Worker:
                 "Backend may need an upgrade."
             )
         logger.info(
-            "Registered as worker %s (%d agents) user=%s",
+            "Registered as worker %s (name=%s, %d agents) user=%s",
             wid,
+            self._worker_name,
             len(self.slots),
             self.cfg.user or "<unattributed>",
         )

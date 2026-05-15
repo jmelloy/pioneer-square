@@ -94,6 +94,10 @@ class Worker(Base):
     # predate the auth requirement — those workers must re-register to get a
     # token before they can fetch credentials.
     auth_token = Column(Text, nullable=True)
+    # Human-readable label: ``hostname[:3]/worker_id`` (e.g. ``tok/w-g2otus``).
+    # NULL on rows created before this column was added; the API falls back to
+    # worker_id for those legacy rows.
+    name = Column(Text, nullable=True)
 
 
 class Task(Base):

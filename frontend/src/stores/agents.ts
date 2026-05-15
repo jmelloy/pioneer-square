@@ -37,14 +37,11 @@ interface AssignTaskOpts {
   issueRepo?: string | null
 }
 
-// Mirrors backend/utils.py worker_display_name() (without hostname).
-// Deriving the worker label from workerId rather than the first agent's name
-// prevents slot 0's droid name from appearing identical to the worker name (#283).
+// Fallback label when the backend hasn't supplied a workerName.
+// New backends return ``hostname[:3]/worker_id`` (e.g. ``tok/w-g2otus``);
+// this handles older backends that omit the field.
 function _workerDroidName(workerId: string): string {
-  const raw = workerId.slice(2).toUpperCase()
-  const charSum = raw.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
-  const split = 2 + (charSum % 3)
-  return `${raw.slice(0, split)}-${raw.slice(split)}`
+  return workerId
 }
 
 export const useAgentsStore = defineStore('agents', () => {

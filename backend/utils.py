@@ -96,13 +96,15 @@ def generate_guild_id(name: str = "", existing_ids: set[str] | None = None) -> s
 
 
 def worker_display_name(worker_id: str, hostname: str | None = None) -> str:
-    """Render a worker id as ``HOST/PREFIX-SUFFIX`` for the UI."""
-    raw = worker_id[2:].upper()
-    split = 2 + sum(ord(c) for c in raw) % 3
-    droid = f"{raw[:split]}-{raw[split:]}"
+    """Render a worker id as ``hostname[:3]/worker_id`` (e.g. ``tok/w-g2otus``).
+
+    When *hostname* is absent the bare *worker_id* is returned so callers
+    always have a usable label.  Edge cases: hostnames shorter than 3 chars
+    are used in full.
+    """
     if hostname:
-        return f"{hostname[:3].upper()}/{droid}".upper()
-    return droid.upper()
+        return f"{hostname[:3]}/{worker_id}"
+    return worker_id
 
 
 def decode_claude_oauth_token(blob: str | None) -> str | None:
