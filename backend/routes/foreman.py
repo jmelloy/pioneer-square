@@ -32,8 +32,12 @@ async def get_foreman_context(
             raise HTTPException(status_code=404, detail="Guild not found")
     finally:
         await db.close()
-    turns = await get_foreman_history(guild_id, github_user_id)
-    return {"messages": turns, "count": len(turns)}
+    history = await get_foreman_history(guild_id, github_user_id)
+    return {
+        "system": history["system"],
+        "messages": history["messages"],
+        "count": len(history["messages"]),
+    }
 
 
 @router.post("/guilds/{guild_id}/foreman/clear-context")

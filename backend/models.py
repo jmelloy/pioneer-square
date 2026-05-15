@@ -229,6 +229,9 @@ class ForemanTurn(Base):
     # For tool_result turns: id of the assistant turn whose tool_use blocks this answers
     parent_id = Column(Integer, ForeignKey("foreman_turns.id"), nullable=True)
     created_at = Column(Text, nullable=False)
+    # Token usage from the API response (assistant turns only; NULL for user/system turns)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
 
 
 class GithubEvent(Base):

@@ -1195,10 +1195,12 @@ class TestForemanHistory:
         await _save_turn("g-hist-sys2", "u-1", "system", "System prompt content")
         await _save_turn("g-hist-sys2", "u-1", "user", "Human message")
         history = await get_foreman_history("g-hist-sys2", "u-1")
-        roles = [t["role"] for t in history]
-        assert "system" in roles
+        # System turn is surfaced via the dedicated "system" key, not in messages[]
+        assert history["system"] == "System prompt content"
+        roles = [t["role"] for t in history["messages"]]
         assert "user" in roles
-        assert len(history) == 2
+        assert "system" not in roles
+        assert len(history["messages"]) == 1
 
     async def test_system_turns_not_counted_in_sliding_window(self, db_session):
         """System turns interspersed with human turns must not affect the 5-turn

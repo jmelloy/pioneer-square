@@ -351,6 +351,22 @@ async def _save_turn(
         await db.close()
 
 
+async def _update_turn_tokens(turn_id: int, input_tokens: int, output_tokens: int) -> None:
+    """Write token counts back to an existing ForemanTurn row."""
+    from sqlalchemy import update as sa_update
+
+    db = await get_db()
+    try:
+        await db.execute(
+            sa_update(ForemanTurn)
+            .where(ForemanTurn.id == turn_id)
+            .values(input_tokens=input_tokens, output_tokens=output_tokens)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
 async def _poll_loop(guild_id: str) -> None:
     """Background loop: check non-terminal tasks and call the foreman if any are found.
 
@@ -600,6 +616,8 @@ async def run_foreman_ai(
                 tools=FOREMAN_TOOLS,
             )
             usage = resp.usage
+            _input_tokens = getattr(usage, "input_tokens", 0) or 0
+            _output_tokens = getattr(usage, "output_tokens", 0) or 0
             logger.info(
                 "guild=%s run_foreman_ai round %d: stop_reason=%s content_blocks=%d "
                 "input=%d cache_read=%d cache_write=%d output=%d",
@@ -607,14 +625,15 @@ async def run_foreman_ai(
                 round_num,
                 resp.stop_reason,
                 len(resp.content),
-                getattr(usage, "input_tokens", 0) or 0,
+                _input_tokens,
                 getattr(usage, "cache_read_input_tokens", 0) or 0,
                 getattr(usage, "cache_creation_input_tokens", 0) or 0,
-                getattr(usage, "output_tokens", 0) or 0,
+                _output_tokens,
             )
 
             # Persist assistant turn and append to local messages
             asst_turn_id = await _save_turn(guild_id, user_id, "assistant", resp.content)
+            await _update_turn_tokens(asst_turn_id, _input_tokens, _output_tokens)
             messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
             # Re-parse so messages stays as plain dicts (not SDK objects)
             messages[-1]["content"] = json.loads(messages[-1]["content"])
@@ -714,17 +733,20 @@ async def run_foreman_ai(
                 tool_choice={"type": "none"},
             )
             wrap_usage = wrap_resp.usage
+            _wrap_input = getattr(wrap_usage, "input_tokens", 0) or 0
+            _wrap_output = getattr(wrap_usage, "output_tokens", 0) or 0
             logger.info(
                 "guild=%s run_foreman_ai wrap-up: stop_reason=%s "
                 "input=%d cache_read=%d cache_write=%d output=%d",
                 guild_id,
                 wrap_resp.stop_reason,
-                getattr(wrap_usage, "input_tokens", 0) or 0,
+                _wrap_input,
                 getattr(wrap_usage, "cache_read_input_tokens", 0) or 0,
                 getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0,
-                getattr(wrap_usage, "output_tokens", 0) or 0,
+                _wrap_output,
             )
-            await _save_turn(guild_id, user_id, "assistant", wrap_resp.content)
+            wrap_turn_id = await _save_turn(guild_id, user_id, "assistant", wrap_resp.content)
+            await _update_turn_tokens(wrap_turn_id, _wrap_input, _wrap_output)
             text_parts += [b.text for b in wrap_resp.content if b.type == "text" and b.text.strip()]
             text_parts.append(f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_")
 
@@ -788,8 +810,20 @@ async def clear_foreman_history(guild_id: str, user_id: str) -> int:
         await db.close()
 
 
-async def get_foreman_history(guild_id: str, user_id: str) -> list[dict]:
-    """Return all stored turns as JSON-safe dicts (for the debug endpoint)."""
+async def get_foreman_history(guild_id: str, user_id: str) -> dict:
+    """Return stored turns structured for the debug view.
+
+    Returns::
+
+        {
+            "system": <str | None>,   # most-recent audit system prompt text
+            "messages": [...],        # non-system turns only, in DB order
+        }
+
+    System turns are persisted for auditing but are never part of the
+    ``messages[]`` array sent to the Anthropic API — they appear here once
+    at the top so the debug pane accurately mirrors what would be sent.
+    """
     db = await get_db()
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
@@ -802,7 +836,16 @@ async def get_foreman_history(guild_id: str, user_id: str) -> list[dict]:
     finally:
         await db.close()
 
-    return [
+    # Grab the most-recent system turn (there's one per invocation; we only
+    # show the latest to avoid duplicates in the debug pane).
+    system_content: str | None = None
+    for t in reversed(turns):
+        if t.role == "system":
+            raw = json.loads(t.content_json)
+            system_content = raw if isinstance(raw, str) else json.dumps(raw)
+            break
+
+    messages = [
         {
             "id": t.id,
             "role": t.role,
@@ -810,6 +853,11 @@ async def get_foreman_history(guild_id: str, user_id: str) -> list[dict]:
             "parent_id": t.parent_id,
             "content": json.loads(t.content_json),
             "created_at": t.created_at,
+            "input_tokens": t.input_tokens,
+            "output_tokens": t.output_tokens,
         }
         for t in turns
+        if t.role != "system"
     ]
+
+    return {"system": system_content, "messages": messages}

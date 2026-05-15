@@ -19,10 +19,17 @@
       </div>
 
       <div class="debug-messages" ref="debugEl">
-        <div v-if="debugContext.length === 0 && !debugLoading" class="debug-empty">
+        <div v-if="debugContext.length === 0 && !debugLoading && !systemPrompt" class="debug-empty">
           No context — foreman hasn't run yet.
         </div>
         <div v-if="debugLoading" class="debug-empty">Loading...</div>
+
+        <!-- System prompt rendered once at top -->
+        <div v-if="systemPrompt" class="debug-msg debug-system">
+          <span class="debug-role">SYSTEM</span>
+          <span class="debug-text">{{ systemPrompt }}</span>
+        </div>
+
         <div
           v-for="(msg, i) in debugContext"
           :key="i"
@@ -35,9 +42,19 @@
                 : 'debug-user'
           "
         >
-          <span class="debug-role">{{
-            isToolResponseMsg(msg) ? 'TOOL RESPONSE' : msg.role.toUpperCase()
-          }}</span>
+          <div class="debug-msg-header">
+            <span class="debug-role">{{
+              isToolResponseMsg(msg) ? 'TOOL RESPONSE' : msg.role.toUpperCase()
+            }}</span>
+            <span
+              v-if="msg.role === 'assistant' && (msg.input_tokens || msg.output_tokens)"
+              class="debug-tokens"
+              title="input / output tokens for this API call"
+            >
+              ↑ {{ (msg.input_tokens ?? 0).toLocaleString() }} / ↓
+              {{ (msg.output_tokens ?? 0).toLocaleString() }} tokens
+            </span>
+          </div>
           <template v-if="typeof msg.content === 'string'">
             <span class="debug-text">{{ msg.content }}</span>
           </template>
@@ -92,11 +109,16 @@ interface DebugBlock {
 }
 
 interface DebugMessage {
+  id?: number
   role: string
   content: string | DebugBlock[]
+  is_tool_response?: boolean
+  input_tokens?: number | null
+  output_tokens?: number | null
 }
 
 const debugContext = ref<DebugMessage[]>([])
+const systemPrompt = ref<string | null>(null)
 const debugLoading = ref(false)
 const debugClearing = ref(false)
 const debugEl = ref<HTMLElement | null>(null)
@@ -114,8 +136,11 @@ async function refreshDebug() {
   if (!guildId) return
   debugLoading.value = true
   try {
-    const data = await api<{ messages?: DebugMessage[] }>(`/guilds/${guildId}/foreman/context`)
+    const data = await api<{ messages?: DebugMessage[]; system?: string | null }>(
+      `/guilds/${guildId}/foreman/context`,
+    )
     debugContext.value = data?.messages ?? []
+    systemPrompt.value = data?.system ?? null
   } catch (e) {
     console.error('Failed to load foreman context', e)
   } finally {
@@ -132,6 +157,7 @@ async function clearContext() {
   try {
     await api(`/guilds/${guildId}/foreman/clear-context`, { method: 'POST' })
     debugContext.value = []
+    systemPrompt.value = null
   } catch (e) {
     console.error('Failed to clear foreman context', e)
   } finally {
@@ -270,6 +296,19 @@ onMounted(() => refreshDebug())
   border-radius: 2px;
 }
 
+.debug-msg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+
+.debug-system {
+  background: rgba(120, 80, 200, 0.07);
+  border-left: 3px solid #8b5cf6;
+}
+
 .debug-assistant {
   background: rgba(0, 187, 170, 0.06);
   border-left: 3px solid var(--color-teal);
@@ -290,9 +329,11 @@ onMounted(() => refreshDebug())
   font-size: 6px;
   letter-spacing: 1px;
   color: var(--color-text-dim);
-  margin-bottom: 2px;
 }
 
+.debug-system .debug-role {
+  color: #8b5cf6;
+}
 .debug-assistant .debug-role {
   color: var(--color-teal);
 }
@@ -301,6 +342,14 @@ onMounted(() => refreshDebug())
 }
 .debug-tool-response .debug-role {
   color: #50c878;
+}
+
+.debug-tokens {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-teal);
+  opacity: 0.8;
+  white-space: nowrap;
 }
 
 .debug-text {
