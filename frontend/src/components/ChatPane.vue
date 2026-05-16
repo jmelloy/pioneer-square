@@ -163,18 +163,12 @@ onUnmounted(() => {
 
 <style scoped>
 .chat-pane {
-  position: fixed;
-  bottom: 0;
-  right: 0;
   width: 360px;
-  max-height: 500px;
+  min-width: 360px;
   display: flex;
   flex-direction: column;
-  z-index: 100;
-}
-
-.chat-pane.minimized {
-  max-height: 44px;
+  overflow: hidden;
+  border-left: 2px solid var(--color-brass-dark);
 }
 
 .chat-header {
@@ -260,7 +254,7 @@ onUnmounted(() => {
 
 @media (max-width: 1024px) {
   .chat-pane {
-    max-height: 100% !important;
+    border-left: none;
     border-radius: 0;
   }
 }
