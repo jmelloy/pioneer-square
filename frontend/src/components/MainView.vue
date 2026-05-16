@@ -9,14 +9,6 @@
         <span class="tab-icon">⚙</span>
         <span class="tab-label">Factory Floor</span>
       </button>
-      <button
-        class="tab"
-        :class="{ active: activeTab === 'workshop' }"
-        @click="activeTab = 'workshop'"
-      >
-        <span class="tab-icon">⬡</span>
-        <span class="tab-label">Workshop</span>
-      </button>
       <!-- Agent tabs — opened from sidebar -->
       <button
         v-for="agent in visibleAgentTabs"
@@ -56,7 +48,6 @@
     </div>
     <div class="tab-content">
       <FactoryFloor v-if="activeTab === 'factory'" />
-      <WorkshopFloor v-else-if="activeTab === 'workshop'" />
       <LogPane v-else-if="activeTab.startsWith('agent-')" kind="agent" :id="activeTab.slice(6)" />
       <LogPane v-else-if="activeTab.startsWith('worker-')" kind="worker" :id="activeTab.slice(7)" />
       <LogPane v-else-if="activeTab.startsWith('task-')" kind="task" :id="activeTab.slice(5)" />
@@ -69,7 +60,6 @@ import { ref, computed, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import FactoryFloor from './FactoryFloor.vue'
-import WorkshopFloor from './WorkshopFloor.vue'
 import LogPane from './LogPane.vue'
 
 const agentsStore = useAgentsStore()
