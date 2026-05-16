@@ -30,6 +30,13 @@ pending_claude_auth: dict[str, dict[str, str]] = {}
 # get its just-joined agent stamped offline.
 _agent_owner_locks: dict[str, asyncio.Lock] = {}
 
+# Active external foreman WebSocket per guild — at most one per guild at a
+# time. Set by ws_handlers.handle_join when an agent with agentType="foreman"
+# joins; cleared on graceful disconnect or when the socket drops.
+# Phase 2: ws_handlers reads this to decide whether to send a foreman-trigger
+# WS message or fall back to the embedded run_foreman_ai().
+foreman_connections: dict[str, WebSocket] = {}
+
 
 def agent_owner_lock(guild_id: str) -> asyncio.Lock:
     """Return the per-guild lock used to serialise ``agent_owners`` writes."""

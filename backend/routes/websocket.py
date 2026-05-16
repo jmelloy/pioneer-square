@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 import anyio
 import ws_handlers
 from database import get_db
-from events import agent_owner_lock, agent_owners, broadcast, connections
+from events import agent_owner_lock, agent_owners, broadcast, connections, foreman_connections
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from models import Agent, Guild, UserSession, Worker
 from sqlalchemy import select, update
@@ -148,6 +148,12 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         # group to cancel sibling connections.
         with anyio.CancelScope(shield=True):
             try:
+                # If this socket was the active external foreman, evict it so
+                # subsequent trigger events fall back to the embedded foreman.
+                if foreman_connections.get(guild_id) is websocket:
+                    foreman_connections.pop(guild_id, None)
+                    logger.info("guild=%s external foreman WS closed (socket disconnect)", guild_id)
+
                 # Only mark agents offline if this WS is still the current owner.
                 # The per-guild lock pairs with handle_join's ownership write so a
                 # reconnect's just-installed agent can't be stamped offline by the

@@ -387,6 +387,22 @@ async def _poll_loop(guild_id: str) -> None:
             return
 
         try:
+            # If an external foreman is connected for this guild it owns the
+            # poll loop — skip the embedded run to avoid double-triggering.
+            from events import foreman_connections
+
+            if guild_id in foreman_connections:
+                next_interval = min(interval * 2, POLL_MAX_SECS)
+                logger.debug(
+                    "guild=%s external foreman connected, skipping embedded poll", guild_id
+                )
+                interval = next_interval
+                await broadcast(
+                    guild_id,
+                    {"type": "foreman-poll-status", "nextCheckIn": interval},
+                )
+                continue
+
             db = await get_db()
             try:
                 guild_pk_val = await get_guild_pk(db, guild_id)
