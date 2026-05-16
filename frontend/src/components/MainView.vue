@@ -17,21 +17,6 @@
         <span class="tab-icon">⬡</span>
         <span class="tab-label">Workshop</span>
       </button>
-      <!-- Floor-view toggle (bench rows vs. table grid) — visible only on factory tab -->
-      <div v-if="activeTab === 'factory'" class="floor-toggle">
-        <button
-          class="view-btn"
-          :class="{ active: factoryMode === 'bench' }"
-          title="Workbench row view"
-          @click="setFactoryMode('bench')"
-        >≡ BENCH</button>
-        <button
-          class="view-btn"
-          :class="{ active: factoryMode === 'grid' }"
-          title="Table grid view"
-          @click="setFactoryMode('grid')"
-        >⊞ TABLES</button>
-      </div>
       <!-- Agent tabs — opened from sidebar -->
       <button
         v-for="agent in visibleAgentTabs"
@@ -70,10 +55,7 @@
       </button>
     </div>
     <div class="tab-content">
-      <template v-if="activeTab === 'factory'">
-        <FactoryFloor v-if="factoryMode === 'bench'" />
-        <WorkTableFloor v-else />
-      </template>
+      <FactoryFloor v-if="activeTab === 'factory'" />
       <WorkshopFloor v-else-if="activeTab === 'workshop'" />
       <LogPane v-else-if="activeTab.startsWith('agent-')" kind="agent" :id="activeTab.slice(6)" />
       <LogPane v-else-if="activeTab.startsWith('worker-')" kind="worker" :id="activeTab.slice(7)" />
@@ -88,22 +70,11 @@ import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import FactoryFloor from './FactoryFloor.vue'
 import WorkshopFloor from './WorkshopFloor.vue'
-import WorkTableFloor from './factory-floor/WorkshopFloor.vue'
 import LogPane from './LogPane.vue'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
 const activeTab = ref('factory')
-
-const FACTORY_MODE_KEY = 'pioneer-factory-mode'
-const factoryMode = ref<'bench' | 'grid'>(
-  (localStorage.getItem(FACTORY_MODE_KEY) as 'bench' | 'grid') ?? 'bench',
-)
-
-function setFactoryMode(mode: 'bench' | 'grid') {
-  factoryMode.value = mode
-  localStorage.setItem(FACTORY_MODE_KEY, mode)
-}
 
 const visibleAgentTabs = computed(() =>
   agentsStore.openedAgentIds
@@ -331,43 +302,5 @@ function onTabClick(event: MouseEvent, taskId: string) {
   flex: 1;
   overflow: hidden;
   position: relative;
-}
-
-/* ── Floor view toggle ─────────────────────────────────────── */
-.floor-toggle {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 8px;
-  border-right: 1px solid var(--color-bg-tertiary);
-}
-
-.view-btn {
-  display: flex;
-  align-items: center;
-  padding: 4px 8px;
-  background: none;
-  border: 1px solid rgba(232, 170, 0, 0.2);
-  border-radius: 2px;
-  color: var(--color-text-dim);
-  cursor: pointer;
-  font-family: var(--font-pixel);
-  font-size: 8px;
-  letter-spacing: 0.8px;
-  white-space: nowrap;
-  transition: all 0.15s;
-}
-
-.view-btn:hover {
-  background: rgba(232, 170, 0, 0.08);
-  color: var(--color-text);
-  border-color: rgba(232, 170, 0, 0.4);
-}
-
-.view-btn.active {
-  background: rgba(232, 170, 0, 0.12);
-  color: var(--color-brass-light);
-  border-color: var(--color-brass);
-  text-shadow: 0 0 6px rgba(232, 170, 0, 0.4);
 }
 </style>
