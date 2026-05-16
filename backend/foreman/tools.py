@@ -422,14 +422,13 @@ FOREMAN_TOOLS = [
     {
         "name": "review_pr",
         "description": (
-            "Request an automated code review of a GitHub pull request via the "
-            "code-review-agent MCP server. The agent fetches the PR diff, runs a "
-            "Claude-powered review, and posts the result as a GitHub PR review "
-            "(APPROVE / REQUEST_CHANGES / COMMENT). "
-            "Uses the code-review-agent MCP server at https://agent.meyers.life by default "
-            "(override with REVIEWER_MCP_URL). "
-            "Use this after a worker opens a PR to get an automated review before "
-            "merging, or when a human asks for a code review."
+            "Request an automated code review via the EXTERNAL code-review-agent MCP server "
+            "at agent.meyers.life (override with REVIEWER_AGENT_URL env var). "
+            "The remote agent fetches the PR diff, runs a Claude-powered review, and posts "
+            "the result as a GitHub PR review (APPROVE / REQUEST_CHANGES / COMMENT). "
+            "Use this when you want a specialised external reviewer. "
+            "For a self-contained internal review without any external dependency, "
+            "use review_pr_internal instead."
         ),
         "input_schema": {
             "type": "object",
@@ -438,6 +437,38 @@ FOREMAN_TOOLS = [
                     "type": "string",
                     "description": (
                         "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123"
+                    ),
+                },
+            },
+            "required": ["pr_url"],
+        },
+    },
+    {
+        "name": "review_pr_internal",
+        "description": (
+            "Perform an internal agent-driven code review of a GitHub pull request "
+            "without calling any external service. "
+            "Fetches the PR diff directly from the GitHub API, uses the Foreman AI to "
+            "analyse it, then posts a GitHub PR review with a 3–5 bullet-point summary "
+            "and up to 5 inline comments on specific lines. "
+            "Supports action values APPROVE, REQUEST_CHANGES, or COMMENT (default COMMENT). "
+            "Use this instead of review_pr when you want a quick review with no external "
+            "dependency, or when agent.meyers.life is unavailable."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pr_url": {
+                    "type": "string",
+                    "description": "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["APPROVE", "REQUEST_CHANGES", "COMMENT"],
+                    "description": (
+                        "Review verdict to submit to GitHub. "
+                        "APPROVE — looks good; REQUEST_CHANGES — must fix before merge; "
+                        "COMMENT — neutral feedback (default)."
                     ),
                 },
             },
@@ -555,6 +586,42 @@ def _gh_api_post(path: str, token: str, payload: dict, method: str = "POST") -> 
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read())
+
+
+def _gh_api_diff(path: str, token: str) -> str:
+    """GET a GitHub API path and return the raw unified diff text."""
+    req = urllib.request.Request(
+        f"https://api.github.com{path}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3.diff",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def _parse_review_from_claude(text: str) -> dict:
+    """Extract a review JSON object from Claude's response.
+
+    Claude may wrap JSON in markdown code fences; this function strips them.
+    Falls back to a minimal object if parsing fails entirely.
+    """
+    # Strip markdown fences if present
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+    # Try the whole string
+    stripped = text.strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    # Last resort: return a plain summary with no inline comments
+    return {"summary": stripped[:2000], "comments": []}
 
 
 async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
@@ -1305,6 +1372,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             "search_github_issues",
             "get_pr_status",
             "review_pr",
+            "review_pr_internal",
         ):
             logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
             creds = await _guild_github_token(guild_id)
@@ -1552,6 +1620,142 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     "review_id": review_data.get("id"),
                                     "review_posted": True,
                                     "summary": review_body[:400],
+                                }
+                            )
+
+                    elif tu.name == "review_pr_internal":
+                        pr_url = inp["pr_url"]
+                        action = (inp.get("action") or "COMMENT").upper()
+                        if action not in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):
+                            action = "COMMENT"
+                        logger.info(
+                            "guild=%s review_pr_internal: pr_url=%s action=%s",
+                            guild_id,
+                            pr_url,
+                            action,
+                        )
+                        pr_match = _PR_URL_RE.match(pr_url.rstrip("/"))
+                        if not pr_match:
+                            result_text = (
+                                f"Invalid GitHub PR URL: {pr_url!r}. "
+                                "Expected https://github.com/owner/repo/pull/N"
+                            )
+                            is_error = True
+                        else:
+                            pr_repo = pr_match.group(1)
+                            pr_number = int(pr_match.group(2))
+                            pr_data, diff_text = await asyncio.gather(
+                                asyncio.to_thread(
+                                    _gh_api,
+                                    f"/repos/{pr_repo}/pulls/{pr_number}",
+                                    token,
+                                ),
+                                asyncio.to_thread(
+                                    _gh_api_diff,
+                                    f"/repos/{pr_repo}/pulls/{pr_number}",
+                                    token,
+                                ),
+                            )
+                            pr_title = pr_data.get("title", "")
+                            pr_body_text = pr_data.get("body") or "(no description)"
+                            base_ref = (pr_data.get("base") or {}).get("ref", "")
+                            head_ref = (pr_data.get("head") or {}).get("ref", "")
+
+                            try:
+                                import anthropic as _anthropic
+
+                                _ai = _anthropic.AsyncAnthropic()
+                                review_prompt = (
+                                    "You are a thorough code reviewer. Review the following "
+                                    "GitHub pull request and provide structured feedback.\n\n"
+                                    f"PR: {pr_title}\n"
+                                    f"Base: {base_ref} ← Head: {head_ref}\n"
+                                    f"Description: {pr_body_text[:1000]}\n\n"
+                                    f"Diff (up to 40 000 chars):\n{diff_text[:40000]}\n\n"
+                                    "Respond with a JSON object only (no markdown fences) "
+                                    "with exactly these fields:\n"
+                                    '{"summary": "3-5 markdown bullet points (use - prefix)", '
+                                    '"comments": [{"path": "file.py", "line": 42, '
+                                    '"side": "RIGHT", "body": "concise comment"}]}\n\n'
+                                    "Rules:\n"
+                                    "- summary: 3-5 bullet points covering key findings\n"
+                                    "- comments: 0-5 objects for the most important issues\n"
+                                    "- line: line number in the NEW file version (RIGHT side)\n"
+                                    "- Only comment on lines present in the diff\n"
+                                    "- Focus on bugs, security issues, and significant design problems\n"
+                                    "- Keep each comment concise (1-3 sentences)"
+                                )
+                                ai_msg = await _ai.messages.create(
+                                    model="claude-sonnet-4-6",
+                                    max_tokens=2048,
+                                    messages=[{"role": "user", "content": review_prompt}],
+                                )
+                                review_json = _parse_review_from_claude(ai_msg.content[0].text)
+                            except Exception as exc:
+                                logger.error(
+                                    "guild=%s review_pr_internal: ai generation failed: %s",
+                                    guild_id,
+                                    exc,
+                                    exc_info=True,
+                                )
+                                review_json = {
+                                    "summary": "Review could not be generated by the AI agent.",
+                                    "comments": [],
+                                }
+
+                            summary_text = review_json.get("summary", "(no summary)")
+                            raw_comments = review_json.get("comments") or []
+                            gh_comments = [
+                                {
+                                    "path": c["path"],
+                                    "line": int(c["line"]),
+                                    "side": c.get("side", "RIGHT"),
+                                    "body": c["body"],
+                                }
+                                for c in raw_comments
+                                if c.get("path") and c.get("line") and c.get("body")
+                            ]
+
+                            try:
+                                review_data = await asyncio.to_thread(
+                                    _gh_api_post,
+                                    f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
+                                    token,
+                                    {
+                                        "body": summary_text,
+                                        "event": action,
+                                        "comments": gh_comments,
+                                    },
+                                )
+                            except urllib.error.HTTPError:
+                                logger.warning(
+                                    "guild=%s review_pr_internal: inline comments rejected, "
+                                    "retrying without them",
+                                    guild_id,
+                                )
+                                review_data = await asyncio.to_thread(
+                                    _gh_api_post,
+                                    f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
+                                    token,
+                                    {"body": summary_text, "event": action, "comments": []},
+                                )
+                                gh_comments = []
+
+                            logger.info(
+                                "guild=%s review_pr_internal: review=%s verdict=%s comments=%d",
+                                guild_id,
+                                review_data.get("id"),
+                                action,
+                                len(gh_comments),
+                            )
+                            result_text = json.dumps(
+                                {
+                                    "pr_url": pr_url,
+                                    "verdict": action,
+                                    "review_id": review_data.get("id"),
+                                    "review_posted": True,
+                                    "inline_comments_posted": len(gh_comments),
+                                    "summary": summary_text[:400],
                                 }
                             )
 
