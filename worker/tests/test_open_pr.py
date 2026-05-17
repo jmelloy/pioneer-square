@@ -61,11 +61,9 @@ async def test_open_pr_422_finds_existing_pr():
     """A 422 should trigger a lookup; if an existing PR is found, return it."""
     emit = AsyncMock()
     existing_url = "https://github.com/owner/repo/pull/7"
+    mock_find = AsyncMock(return_value=existing_url)
 
-    with patch(
-        "pioneer_worker.github_pr.find_existing_pr",
-        new=AsyncMock(return_value=existing_url),
-    ):
+    with patch("pioneer_worker.github_pr.find_existing_pr", mock_find):
         with patch(
             "urllib.request.urlopen",
             side_effect=_http_error(422),
@@ -79,6 +77,7 @@ async def test_open_pr_422_finds_existing_pr():
             )
 
     assert result == existing_url
+    mock_find.assert_awaited_once_with(branch=_BRANCH, worktree_path=_WORKTREE, token=_TOKEN)
     # Confirm the emit message mentions the branch
     emitted = " ".join(str(c) for c in [call.args[0] for call in emit.call_args_list])
     assert "422" in emitted
@@ -89,11 +88,9 @@ async def test_open_pr_422_finds_existing_pr():
 async def test_open_pr_422_no_existing_pr_returns_none():
     """If 422 and no existing PR found, return None (genuine failure)."""
     emit = AsyncMock()
+    mock_find = AsyncMock(return_value=None)
 
-    with patch(
-        "pioneer_worker.github_pr.find_existing_pr",
-        new=AsyncMock(return_value=None),
-    ):
+    with patch("pioneer_worker.github_pr.find_existing_pr", mock_find):
         with patch(
             "urllib.request.urlopen",
             side_effect=_http_error(422),
@@ -107,28 +104,28 @@ async def test_open_pr_422_no_existing_pr_returns_none():
             )
 
     assert result is None
+    mock_find.assert_awaited_once_with(branch=_BRANCH, worktree_path=_WORKTREE, token=_TOKEN)
 
 
 @pytest.mark.asyncio
-async def test_open_pr_non_422_http_error_returns_none():
-    """Non-422 HTTP errors should not trigger the existing-PR lookup."""
+async def test_open_pr_non_422_http_error_propagates():
+    """Non-422 HTTP errors should be re-raised, not swallowed."""
     emit = AsyncMock()
+    mock_find = AsyncMock(return_value="https://github.com/owner/repo/pull/99")
 
-    with patch(
-        "pioneer_worker.github_pr.find_existing_pr",
-        new=AsyncMock(return_value="https://github.com/owner/repo/pull/99"),
-    ) as mock_find:
+    with patch("pioneer_worker.github_pr.find_existing_pr", mock_find):
         with patch(
             "urllib.request.urlopen",
             side_effect=_http_error(500),
         ):
-            result = await github_pr.open_pr(
-                task=_TASK,
-                branch=_BRANCH,
-                worktree_path=_WORKTREE,
-                token=_TOKEN,
-                emit=emit,
-            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                await github_pr.open_pr(
+                    task=_TASK,
+                    branch=_BRANCH,
+                    worktree_path=_WORKTREE,
+                    token=_TOKEN,
+                    emit=emit,
+                )
 
-    assert result is None
+    assert exc_info.value.code == 500
     mock_find.assert_not_called()

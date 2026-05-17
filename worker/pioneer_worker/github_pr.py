@@ -196,6 +196,8 @@ async def open_pr(
         await emit(f"[worker] ✓ PR: {pr_url}")
         return pr_url
     except urllib.error.HTTPError as exc:
+        if exc.fp is not None:
+            exc.fp.close()
         if exc.code == 422:
             await emit(f"[worker] PR creation returned 422 — checking for existing PR on {branch}")
             existing = await find_existing_pr(
@@ -204,8 +206,10 @@ async def open_pr(
             if existing:
                 await emit(f"[worker] ✓ Found existing PR: {existing}")
                 return existing
-        await emit(f"[worker] PR failed: {exc}")
-        return None
+            await emit(f"[worker] PR failed: {exc}")
+            return None
+        logger.error("PR creation failed: %s", exc)
+        raise
     except (urllib.error.URLError, OSError) as exc:
         await emit(f"[worker] PR failed: {exc}")
         return None
