@@ -151,14 +151,20 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     return 'idle'
   }
 
+  // Snap to integer pixels so stepped CSS transitions land on the pixel grid.
+  function snap(p: Position): Position {
+    return { x: Math.round(p.x), y: Math.round(p.y) }
+  }
+
   function moveAgent(id: string, target: Position) {
-    reservedPos[id] = target
-    const cur = positions[id] || target
-    const dist = Math.hypot(target.x - cur.x, target.y - cur.y)
+    const snapped = snap(target)
+    reservedPos[id] = snapped
+    const cur = positions[id] || snapped
+    const dist = Math.hypot(snapped.x - cur.x, snapped.y - cur.y)
     const dur = Math.max(0.6, dist / 120)
     duration[id] = dur
     walking[id] = true
-    positions[id] = target
+    positions[id] = snapped
     clearTimeout(timers[id])
     timers[id] = setTimeout(
       () => {
@@ -185,7 +191,7 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     if (prevTargetKey[agent.id] === key && positions[agent.id]) return
     prevTargetKey[agent.id] = key
     if (!positions[agent.id]) {
-      positions[agent.id] = pickWanderPos(agent.id)
+      positions[agent.id] = snap(pickWanderPos(agent.id))
     }
     moveAgent(agent.id, targetForAgent(agent))
   }
