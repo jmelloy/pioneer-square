@@ -48,7 +48,11 @@
         choreography.getPos(agent.id).y
       }px; --walk-dur: ${choreography.duration[agent.id] || 1.5}s;`"
     >
-      <AgentAvatar :agent="agent" :walking="!!choreography.walking[agent.id]" />
+      <AgentAvatar
+        :agent="agent"
+        :walking="!!choreography.walking[agent.id]"
+        :pose="choreography.pose[agent.id] || 'stand'"
+      />
     </div>
 
     <TickerTape :messages="tickerMessages" />

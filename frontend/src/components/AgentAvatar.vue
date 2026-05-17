@@ -1,16 +1,17 @@
 <template>
   <div
     class="avatar-wrapper"
-    :class="[agent.state, agent.type]"
+    :class="[agent.state, agent.type, `pose-${pose}`]"
     :style="`--agent-color: ${agentColor}; --agent-color-dim: ${agentColorDim}`"
     :title="`${agent.name} [${agent.state}]`"
   >
-    <RobotWorker :state="agent.state" :type="agent.type" :walking="walking" />
+    <RobotWorker :state="agent.state" :type="agent.type" :walking="walking" :pose="pose" />
 
     <div class="avatar-label">{{ agent.name.slice(0, 8) }}</div>
     <div v-if="agent.state === 'thinking'" class="think-bubble">💭</div>
     <div v-if="agent.state === 'working'" class="work-burst">⭐</div>
     <div v-if="agent.state === 'error'" class="error-burst">!</div>
+    <div v-if="pose === 'sit'" class="zzz-bubble">z</div>
   </div>
 </template>
 
@@ -18,14 +19,17 @@
 import { computed } from 'vue'
 import RobotWorker from './sprites/RobotWorker.vue'
 import type { Agent } from '../types'
+import type { AgentPose } from '../composables/useErrands'
 
 const props = withDefaults(
   defineProps<{
     agent: Agent
     walking?: boolean
+    pose?: AgentPose
   }>(),
   {
     walking: false,
+    pose: 'stand',
   },
 )
 
@@ -160,6 +164,31 @@ const agentColorDim = computed(() => {
   }
   75% {
     transform: translateX(3px);
+  }
+}
+
+/* Sleepy "z" while sitting on the couch */
+.zzz-bubble {
+  position: absolute;
+  top: -16px;
+  right: -8px;
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  color: var(--color-sky, #44aaee);
+  text-shadow: 0 0 4px var(--color-sky, #44aaee);
+  animation: zzzFloat 2s steps(2, end) infinite;
+}
+
+@keyframes zzzFloat {
+  0%,
+  49% {
+    opacity: 0.7;
+    transform: translateY(0);
+  }
+  50%,
+  100% {
+    opacity: 1;
+    transform: translateY(-3px);
   }
 }
 </style>
