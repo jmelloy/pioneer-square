@@ -387,9 +387,10 @@ function stateLabel(state: string) {
   position: absolute;
   z-index: 6;
   transform: translate(-50%, -50%);
+  /* Stepped position transitions — pixel-art motion, not smooth glide */
   transition:
-    left var(--walk-dur, 1.5s) ease-in-out,
-    top var(--walk-dur, 1.5s) ease-in-out;
+    left var(--walk-dur, 1.5s) steps(8, end),
+    top var(--walk-dur, 1.5s) steps(8, end);
   display: flex;
   flex-direction: column;
   align-items: center;
