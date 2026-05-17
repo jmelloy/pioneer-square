@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pioneer Square — visual demos</title>
+    <style>
+      :root {
+        --color-bg: #120900;
+        --color-bg-2: #1a0e00;
+        --color-cream: #ffe8c0;
+        --color-brass: #e8aa00;
+        --color-brass-dark: #a07800;
+        --color-text-dim: #554433;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: linear-gradient(180deg, #0d0600 0%, var(--color-bg) 50%, var(--color-bg-2) 100%);
+        color: var(--color-cream);
+        font-family: 'Share Tech Mono', monospace;
+        padding: 48px 32px;
+      }
+      .wrap {
+        max-width: 720px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 14px;
+        letter-spacing: 4px;
+        color: var(--color-brass);
+        text-shadow: 0 0 6px rgba(232, 170, 0, 0.3);
+        margin: 0 0 8px;
+      }
+      .subtitle {
+        font-size: 11px;
+        letter-spacing: 1.5px;
+        color: var(--color-text-dim);
+        margin-bottom: 32px;
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+        display: grid;
+        gap: 14px;
+      }
+      a.card {
+        display: block;
+        padding: 14px 18px;
+        background: rgba(36, 18, 4, 0.55);
+        border: 2px solid var(--color-brass-dark);
+        border-radius: 0;
+        text-decoration: none;
+        color: var(--color-cream);
+        transition: border-color 0.2s, background 0.2s;
+      }
+      a.card:hover {
+        border-color: var(--color-brass);
+        background: rgba(60, 30, 0, 0.65);
+      }
+      .title {
+        font-size: 12px;
+        letter-spacing: 2px;
+        color: var(--color-brass);
+        margin-bottom: 4px;
+      }
+      .desc {
+        font-size: 11px;
+        color: var(--color-cream);
+        opacity: 0.85;
+        line-height: 1.5;
+      }
+      footer {
+        margin-top: 48px;
+        font-size: 10px;
+        color: var(--color-text-dim);
+      }
+      footer a {
+        color: var(--color-brass-dark);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>⚙ PIONEER SQUARE — VISUAL DEMOS ⚙</h1>
+      <div class="subtitle">
+        Isolated scaffolds for inspecting factory-floor SVG components without
+        a running guild. Useful for regression-checking pixel-art renders.
+      </div>
+      <ul>
+        <li>
+          <a class="card" href="./scenery.html">
+            <div class="title">Bench scenery</div>
+            <div class="desc">
+              One workbench row per task state — pending, planning, working,
+              awaiting-review, followup, done, failed — to inspect the
+              per-state SVG overlays.
+            </div>
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./robots.html">
+            <div class="title">Robot sprite grid</div>
+            <div class="desc">
+              Worker and foreman variants across every agent state (idle,
+              thinking, working, busy, error) in both still and walking
+              poses. Animations run live.
+            </div>
+          </a>
+        </li>
+      </ul>
+      <footer>
+        Pages are built from <a href="https://github.com/jmelloy/pioneer-square/tree/main/frontend/demo">frontend/demo/</a>.
+      </footer>
+    </div>
+  </body>
+</html>
