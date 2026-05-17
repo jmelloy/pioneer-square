@@ -1,6 +1,6 @@
 <template>
   <svg
-    :class="['robot-sprite', state, type, { walking }]"
+    :class="['robot-sprite', state, type, { walking }, `pose-${pose}`]"
     viewBox="0 0 40 56"
     xmlns="http://www.w3.org/2000/svg"
     overflow="visible"
@@ -186,14 +186,18 @@
 </template>
 
 <script setup lang="ts">
+import type { AgentPose } from '../../composables/useErrands'
+
 withDefaults(
   defineProps<{
     state: string
     type: string
     walking?: boolean
+    pose?: AgentPose
   }>(),
   {
     walking: false,
+    pose: 'stand',
   },
 )
 </script>
@@ -430,5 +434,33 @@ withDefaults(
   transform-box: fill-box;
   transform-origin: top left;
   animation: leftArmSwing 0.32s steps(1, end) infinite alternate;
+}
+
+/* ── Sit pose (couch) — legs tuck under, body settles ───── */
+/* Walking always wins over sit; an arriving robot drops to sit only after
+   the walking class is removed. */
+.robot-sprite.pose-sit:not(.walking) {
+  transform: translateY(4px);
+}
+.robot-sprite.pose-sit:not(.walking) .left-leg {
+  transform-box: fill-box;
+  transform-origin: top center;
+  transform: translate(2px, -3px) rotate(35deg);
+}
+.robot-sprite.pose-sit:not(.walking) .right-leg {
+  transform-box: fill-box;
+  transform-origin: top center;
+  transform: translate(-2px, -3px) rotate(-35deg);
+}
+/* Cancel the work-bounce while sitting so the body stays still. */
+.robot-sprite.pose-sit.working:not(.walking) {
+  animation: none;
+}
+
+/* ── Lean pose (table) — slight forward tilt ────────────── */
+.robot-sprite.pose-lean:not(.walking) .head-group {
+  transform-box: fill-box;
+  transform-origin: bottom center;
+  transform: rotate(8deg) translateY(1px);
 }
 </style>

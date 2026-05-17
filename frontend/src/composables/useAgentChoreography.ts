@@ -1,5 +1,14 @@
 import { reactive, watch, onUnmounted, type ComputedRef } from 'vue'
 import type { Agent, Task } from '../types'
+import {
+  type AgentPose,
+  type Poi,
+  buildErrandQueue,
+  defaultRng,
+  lingerFor,
+  personalityFor,
+  poisFromGeometry,
+} from './useErrands'
 
 export interface Position {
   x: number
@@ -29,11 +38,18 @@ export interface ChoreographyOptions {
 export function useAgentChoreography(opts: ChoreographyOptions) {
   const positions = reactive<Record<string, Position>>({})
   const walking = reactive<Record<string, boolean>>({})
+  const pose = reactive<Record<string, AgentPose>>({})
   const duration = reactive<Record<string, number>>({})
   const timers: Record<string, ReturnType<typeof setTimeout>> = {}
   const prevTargetKey: Record<string, string> = {}
   // Tracks each robot's current destination for collision avoidance
   const reservedPos: Record<string, Position> = {}
+  // Per-agent errand chain; refilled on demand from useErrands.
+  const errandQueue: Record<string, Poi[]> = {}
+  // Linger duration carried from target selection into the post-arrival timer.
+  const pendingLinger: Record<string, number> = {}
+  // Pose to apply on arrival at the current target.
+  const pendingPose: Record<string, AgentPose> = {}
 
   function rowYFor(rowIndex: number) {
     return opts.tableTop + rowIndex * (opts.rowHeight.value + opts.rowGap)
@@ -132,15 +148,49 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     return { x: Math.cos(angle) * r, y: Math.sin(angle) * r }
   }
 
+  function nextErrand(agentId: string): Poi {
+    const geom = {
+      tableLeft: opts.tableLeft,
+      tableWidth: opts.tableWidth.value,
+      breakRoomTop: opts.breakRoomTop.value,
+      breakRoomHeight: opts.breakRoomHeight.value,
+    }
+    const pois = poisFromGeometry(geom)
+    // Skip POIs another robot is already reserved on, so the queue surfaces
+    // an open seat rather than queueing two robots on the same couch cushion.
+    const free = pois.filter((p) => !isCrowded(p.pos, agentId, 24))
+    const usable = free.length ? free : pois
+
+    if (!errandQueue[agentId] || errandQueue[agentId].length === 0) {
+      const wanderFactory = (): Poi => ({
+        kind: 'wander',
+        pos: pickWanderPos(agentId),
+        lingerMs: [1200, 2600],
+        pose: 'stand',
+      })
+      errandQueue[agentId] = buildErrandQueue(
+        personalityFor(agentId),
+        usable,
+        wanderFactory,
+        defaultRng,
+      )
+    }
+    return errandQueue[agentId].shift()!
+  }
+
   function targetForAgent(agent: Agent): Position {
     const row = rowForAgent(agent)
     const jitter = slotJitter(agent.id)
     if (row && isWorking(agent)) {
       const key = row.activityKey
       const base = key ? stationPos(row.index, key) : rowCenterPos(row.index)
+      pendingPose[agent.id] = 'stand'
       return { x: base.x + jitter.x, y: base.y + jitter.y }
     }
-    return pickWanderPos(agent.id)
+    const errand = nextErrand(agent.id)
+    pendingLinger[agent.id] = lingerFor(errand, defaultRng)
+    pendingPose[agent.id] = errand.pose
+    return errand.pos
   }
 
   function targetKey(agent: Agent): string {
@@ -164,11 +214,14 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     const dur = Math.max(0.6, dist / 120)
     duration[id] = dur
     walking[id] = true
+    // Robot is in transit — drop any sit/lean pose until they arrive.
+    pose[id] = 'stand'
     positions[id] = snapped
     clearTimeout(timers[id])
     timers[id] = setTimeout(
       () => {
         walking[id] = false
+        pose[id] = pendingPose[id] ?? 'stand'
         const agent = opts.agents.value.find((a) => a.id === id)
         if (agent && !isWorking(agent)) scheduleIdleStroll(id)
       },
@@ -177,12 +230,14 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
   }
 
   function scheduleIdleStroll(id: string) {
-    const linger = 3500 + Math.random() * 4000
+    // Linger picked at the moment the previous target was selected so each
+    // POI honors its own dwell time (couch lingers way longer than water).
+    const linger = pendingLinger[id] ?? 3500 + Math.random() * 4000
     clearTimeout(timers[id])
     timers[id] = setTimeout(() => {
       const agent = opts.agents.value.find((a) => a.id === id)
       if (!agent || isWorking(agent)) return
-      moveAgent(id, pickWanderPos(id))
+      moveAgent(id, targetForAgent(agent))
     }, linger)
   }
 
@@ -216,6 +271,7 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
   return {
     positions,
     walking,
+    pose,
     duration,
     syncAll,
     getPos,
