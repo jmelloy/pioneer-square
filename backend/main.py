@@ -75,7 +75,7 @@ async def reset_connection_state() -> None:
         await db.execute(
             update(Agent)
             .where(Agent.worker_id.in_(select(Worker.id).where(Worker.state == "offline")))
-            .values(state="offline")
+            .values(state="offline", activity=None, current_task_id=None)
         )
         await db.commit()
 
@@ -101,7 +101,7 @@ async def _sweep_stale_workers_once() -> int:
             await db.execute(
                 update(Agent)
                 .where(Agent.id == row.id, Agent.guild_pk == row.guild_pk)
-                .values(state="offline", activity=None)
+                .values(state="offline", activity=None, current_task_id=None)
             )
             if row.worker_id:
                 stale_worker_keys.add((row.worker_id, row.guild_pk))

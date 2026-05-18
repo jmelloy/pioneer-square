@@ -167,7 +167,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         await db.execute(
                             update(Agent)
                             .where(Agent.id == agent_id, Agent.guild_pk == _guild_pk)
-                            .values(state="offline")
+                            .values(state="offline", activity=None, current_task_id=None)
                         )
                         # Mirror into workers table so foreman sees the worker as offline.
                         await db.execute(

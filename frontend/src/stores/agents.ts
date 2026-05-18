@@ -20,6 +20,7 @@ interface RegisterAgentData {
   workerId?: string | null
   workerName?: string
   state?: AgentState
+  taskId?: string | null
   joinedAt?: string
 }
 
@@ -75,6 +76,7 @@ export const useAgentsStore = defineStore('agents', () => {
       existing.name = agentData.agentName || existing.name
       if (agentData.workerId) existing.workerId = agentData.workerId
       if (agentData.workerName) existing.workerName = agentData.workerName
+      if (agentData.taskId !== undefined) existing.taskId = agentData.taskId
     } else {
       agents.value.push({
         id: agentData.agentId,
@@ -83,17 +85,27 @@ export const useAgentsStore = defineStore('agents', () => {
         workerId: agentData.workerId || null,
         workerName: agentData.workerName,
         state: agentData.state || 'idle',
+        taskId: agentData.taskId ?? null,
         logs: [],
         joinedAt: agentData.joinedAt || new Date().toISOString(),
       })
     }
   }
 
-  function updateAgentState(agentId: string, state: AgentState, activity?: AgentActivity | null) {
+  function updateAgentState(
+    agentId: string,
+    state: AgentState,
+    activity?: AgentActivity | null,
+    taskId?: string | null,
+  ) {
     const agent = agents.value.find((a) => a.id === agentId)
     if (!agent) return
     agent.state = state
     if (activity !== undefined) agent.activity = activity
+    if (taskId !== undefined) agent.taskId = taskId
+    // Idle/offline agents are by definition not working a task; clear the
+    // link so a stale taskId from a prior run can't latch the agent to a row.
+    if (state === 'idle' || state === 'offline') agent.taskId = null
   }
 
   function addLog(agentId: string, line: string, timestamp?: string, detail?: LogDetail | null) {
@@ -246,7 +258,12 @@ export const useAgentsStore = defineStore('agents', () => {
     if (data.type === 'agent-joined') {
       registerAgent(data)
     } else if (data.type === 'agent-state') {
-      updateAgentState(data.agentId, data.state, data.activity ?? undefined)
+      updateAgentState(
+        data.agentId,
+        data.state,
+        data.activity ?? undefined,
+        data.taskId ?? undefined,
+      )
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
       if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)

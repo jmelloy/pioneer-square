@@ -215,6 +215,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         name=agent_name,
         type=agent_type,
         state="idle",
+        current_task_id=None,
         joined_at=joined_at,
         last_seen=joined_at,
     )
@@ -226,6 +227,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
             "name": stmt.excluded.name,
             "type": stmt.excluded.type,
             "state": stmt.excluded.state,
+            "current_task_id": stmt.excluded.current_task_id,
             "joined_at": stmt.excluded.joined_at,
             "last_seen": stmt.excluded.last_seen,
         },
@@ -331,6 +333,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
 
 async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     agent_id = data.get("agentId")
+    worker_id = data.get("workerId")
     state = data.get("state", "idle")
     activity = data.get("activity")
     update_vals: dict = {"state": state}
@@ -338,6 +341,13 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
         update_vals["activity"] = activity
     elif state in ("idle", "offline"):
         update_vals["activity"] = None
+    # taskId is the slot's current_task_id. Idle/offline agents are not
+    # executing anything, so we always clear the column for those states even
+    # if the worker forgot to send taskId=null.
+    if "taskId" in data:
+        update_vals["current_task_id"] = data.get("taskId")
+    elif state in ("idle", "offline"):
+        update_vals["current_task_id"] = None
     await ctx.db.execute(
         update(Agent)
         .where(Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk)
@@ -345,8 +355,12 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     )
     await ctx.db.commit()
     msg: dict = {"type": "agent-state", "agentId": agent_id, "state": state}
+    if worker_id:
+        msg["workerId"] = worker_id
     if "activity" in update_vals:
         msg["activity"] = update_vals["activity"]
+    if "current_task_id" in update_vals:
+        msg["taskId"] = update_vals["current_task_id"]
     await broadcast(ctx.guild_id, msg)
 
 
@@ -478,7 +492,7 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
         await ctx.db.execute(
             update(Agent)
             .where(Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk)
-            .values(state="offline")
+            .values(state="offline", activity=None, current_task_id=None)
         )
     if worker_id:
         await ctx.db.execute(

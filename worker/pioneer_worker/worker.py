@@ -634,7 +634,9 @@ class Worker:
                     await self._send(
                         {
                             "type": "agent-state",
+                            "workerId": self.cfg.worker_id,
                             "agentId": slot.agent_id,
+                            "taskId": slot.current_task_id,
                             "state": slot.state,
                             "activity": new_activity,
                         }
@@ -646,10 +648,17 @@ class Worker:
         slot.state = state
         if state != "working":
             slot.activity = None
+        # Idle/offline slots aren't working anything; drop the task link so the
+        # frontend can match `agent.taskId === task.id` without picking up a
+        # stale association from the previous run.
+        if state in ("idle", "offline"):
+            slot.current_task_id = None
         await self._send(
             {
                 "type": "agent-state",
+                "workerId": self.cfg.worker_id,
                 "agentId": slot.agent_id,
+                "taskId": slot.current_task_id,
                 "state": state,
                 "activity": slot.activity,
             }
@@ -695,8 +704,11 @@ class Worker:
                 await self._send(
                     {
                         "type": "agent-state",
+                        "workerId": self.cfg.worker_id,
                         "agentId": slot.agent_id,
+                        "taskId": slot.current_task_id,
                         "state": slot.state,
+                        "activity": slot.activity,
                     }
                 )
         # Re-fetch any tasks that were assigned while the WS was down; without

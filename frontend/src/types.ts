@@ -33,6 +33,10 @@ export interface Agent {
   workerName?: string
   state: AgentState
   activity?: AgentActivity | null
+  // ID of the task this agent is currently executing (set when state is
+  // working/thinking/busy/error, null when idle/offline). Source of truth for
+  // mapping a task row to its agent on the factory floor.
+  taskId?: string | null
   logs: LogEntry[]
   joinedAt: string
 }
@@ -60,10 +64,6 @@ export interface Task {
   phase?: string
   state: TaskState
   worker_id?: string
-  // Agent slot currently (or most recently) executing this task. Set on each
-  // task-update broadcast from the worker; lets the UI map task→agent when a
-  // worker runs multiple concurrent slots.
-  agent_id?: string | null
   parent_task_id?: string | null
   branch?: string
   pr_url?: string
@@ -83,6 +83,7 @@ export interface Guild {
     type: string
     worker_id?: string | null
     state: AgentState
+    current_task_id?: string | null
     joined_at?: string
   }>
   messages?: ChatMessage[]
@@ -164,12 +165,15 @@ export interface AgentJoinedWS {
   workerId?: string | null
   workerName?: string
   state?: AgentState
+  taskId?: string | null
   joinedAt?: string
 }
 
 export interface AgentStateWS {
   type: 'agent-state'
   agentId: string
+  workerId?: string | null
+  taskId?: string | null
   state: AgentState
   activity?: AgentActivity | null
 }
