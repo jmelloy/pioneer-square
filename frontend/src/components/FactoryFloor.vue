@@ -1,163 +1,173 @@
 <template>
-  <div class="factory-floor" ref="floorEl" :class="[`size-${floorSize}`, `density-${rowDensity}`]">
-    <FactoryAtmosphere />
+  <div class="factory-floor">
+    <!-- Background grid -->
+    <div class="floor-grid"></div>
 
-    <!-- Header -->
+    <!-- Warm floating sparkles -->
+    <div class="sparkle-field">
+      <div
+        v-for="n in 14"
+        :key="`sp${n}`"
+        class="sparkle"
+        :style="`left: ${(n * 73 + 11) % 93}%; top: ${(n * 59 + 17) % 80}%; font-size: ${
+          8 + (n % 3) * 3
+        }px; animation-delay: ${((n * 0.37) % 2.8).toFixed(1)}s; animation-duration: ${
+          2.5 + (n % 3) * 0.8
+        }s;`"
+      >
+        {{ ['✦', '★', '✧', '⋆', '✩'][n % 5] }}
+      </div>
+    </div>
+
+    <!-- Ceiling pipes -->
+    <div class="ceiling-pipe pipe-h pipe1"></div>
+    <div class="ceiling-pipe pipe-h pipe2"></div>
+    <div class="ceiling-pipe pipe-v pipe3"></div>
+    <div class="ceiling-pipe pipe-v pipe4"></div>
+
+    <!-- Pipe joints -->
+    <div class="pipe-joint j1"></div>
+    <div class="pipe-joint j2"></div>
+
+    <!-- Steam vents -->
+    <div class="steam-vent vent1">
+      <div v-for="n in 4" :key="n" class="steam-particle" :style="`--delay: ${n * 0.3}s`"></div>
+    </div>
+    <div class="steam-vent vent2">
+      <div v-for="n in 4" :key="n" class="steam-particle" :style="`--delay: ${n * 0.4}s`"></div>
+    </div>
+    <div class="steam-vent vent3">
+      <div v-for="n in 3" :key="n" class="steam-particle" :style="`--delay: ${n * 0.5}s`"></div>
+    </div>
+
+    <!-- Ambient gears -->
+    <div class="gear gear-large g1">⚙</div>
+    <div class="gear gear-medium g2">⚙</div>
+    <div class="gear gear-small g3">⚙</div>
+    <div class="gear gear-medium g4">⚙</div>
+    <div class="gear gear-small g5">⚙</div>
+
+    <!-- Furnace -->
+    <div class="furnace">
+      <div class="furnace-body">
+        <div class="furnace-door">
+          <div class="furnace-fire">🔥</div>
+        </div>
+        <div class="furnace-gauge">
+          <div class="gauge-needle"></div>
+        </div>
+      </div>
+      <div class="furnace-chimney">
+        <div v-for="n in 5" :key="n" class="smoke-particle" :style="`--delay: ${n * 0.6}s`"></div>
+      </div>
+      <div class="furnace-label">FURNACE</div>
+    </div>
+
+    <!-- Conveyor belt -->
+    <div class="conveyor-belt">
+      <div class="belt-track">
+        <div
+          v-for="(item, n) in beltItems"
+          :key="n"
+          class="belt-item"
+          :style="`--offset: ${n * 60}px`"
+        >
+          {{ item }}
+        </div>
+      </div>
+      <div class="belt-roller left"></div>
+      <div class="belt-roller right"></div>
+    </div>
+
+    <!-- Work stations — one per active task slot -->
+    <div
+      v-for="(station, i) in visibleStations"
+      :key="i"
+      class="work-station"
+      :class="{ occupied: station.task }"
+      :style="`left: ${station.x}px; top: ${station.y}px`"
+    >
+      <div class="station-desk">
+        <div class="station-monitor">
+          <div class="monitor-screen">
+            <div v-if="station.task" class="screen-active">
+              <div v-for="l in 3" :key="l" class="screen-line"></div>
+            </div>
+            <div v-else class="screen-idle">--</div>
+          </div>
+        </div>
+        <div class="station-table"></div>
+      </div>
+      <div class="station-label">
+        {{ station.task ? truncate(station.task.name || station.task.id, 10) : `WS-${i + 1}` }}
+      </div>
+      <div v-if="station.task" class="task-badge" :class="`state-${station.task.state}`">
+        {{ stateLabel(station.task.state) }}
+      </div>
+    </div>
+
+    <!-- Floating agents — walk to their task station or wander when idle -->
+    <div
+      v-for="agent in agents"
+      :key="agent.id"
+      class="floating-agent"
+      :style="`left: ${agentPos(agent.id).x}px; top: ${agentPos(agent.id).y}px`"
+    >
+      <AgentAvatar :agent="agent" :walking="isWalking(agent.id)" />
+      <div class="agent-nametag">{{ agent.name }}</div>
+    </div>
+
+    <!-- Info overlay -->
     <div class="factory-info">
       <span class="factory-title">⚙ PIONEER SQUARE WORKSHOP ⚙</span>
       <span class="agent-count">Agents: {{ agents.length }}</span>
     </div>
 
-    <!-- Tasks table — each row is a workbench -->
-    <div
-      class="task-table"
-      :style="`top: ${TABLE_TOP}px; left: ${TABLE_LEFT}px; width: ${tableWidth}px;`"
-    >
-      <WorkbenchRow
-        v-for="row in taskRows"
-        :key="row.task ? row.task.id : `empty-${row.index}`"
-        :task="row.task"
-        :index="row.index"
-        :row-height="rowHeight"
-        :activity-key="row.activityKey"
-        :stations="STATIONS"
-        :state-label="stateLabel"
-      />
+    <!-- Ticker tape -->
+    <div class="ticker-tape">
+      <div class="ticker-content">
+        <span v-for="(msg, i) in tickerMessages" :key="i" class="ticker-msg"> ⚙ {{ msg }} </span>
+      </div>
     </div>
-
-    <!-- Break room (idle agents lounge here) -->
-    <div
-      class="break-room"
-      :style="`top: ${breakRoomTop}px; left: ${TABLE_LEFT}px; width: ${tableWidth}px; height: ${BREAK_ROOM_H}px;`"
-    >
-      <div class="break-label">⏚ BREAK ROOM ⏚</div>
-      <div class="br-furniture br-bulletin">📋 BOARD</div>
-      <div class="br-furniture br-watercooler">💧 H₂O</div>
-      <div class="br-furniture br-couch">🛋 COUCH</div>
-      <div class="br-furniture br-table br-table-1">TABLE</div>
-      <div class="br-furniture br-table br-table-2">TABLE</div>
-      <div class="br-furniture br-table br-table-3">TABLE</div>
-    </div>
-
-    <!-- Agents — single overlay; positioned absolutely over the floor -->
-    <div
-      v-for="agent in agents"
-      :key="agent.id"
-      class="floating-agent"
-      :style="`left: ${choreography.getPos(agent.id).x}px; top: ${
-        choreography.getPos(agent.id).y
-      }px; --walk-dur: ${choreography.duration[agent.id] || 1.5}s;`"
-    >
-      <AgentAvatar :agent="agent" :walking="!!choreography.walking[agent.id]" />
-    </div>
-
-    <TickerTape :messages="tickerMessages" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
-import type { AgentActivity, Task } from '../types'
 import AgentAvatar from './AgentAvatar.vue'
-import FactoryAtmosphere from './factory-floor/FactoryAtmosphere.vue'
-import WorkbenchRow from './factory-floor/WorkbenchRow.vue'
-import TickerTape from './factory-floor/TickerTape.vue'
-import { useAgentChoreography } from '../composables/useAgentChoreography'
+import type { Agent, Task } from '../types'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
 const agents = computed(() => agentsStore.agents.filter((a) => a.state !== 'offline'))
 
-// ── Stations on each bench ─────────────────────────────────
-const STATIONS = [
-  { key: 'reading', label: 'ARCHIVE', frac: 0.1, component: 'archive' },
-  { key: 'searching', label: 'SCRYING', frac: 0.25, component: 'orb' },
-  { key: 'fetching', label: 'TELEGRAPH', frac: 0.4, component: 'telegraph' },
-  { key: 'thinking', label: 'THINK TANK', frac: 0.56, component: 'tank' },
-  { key: 'running', label: 'ENGINE', frac: 0.72, component: 'engine' },
-  { key: 'editing', label: 'FORGE', frac: 0.88, component: 'forge' },
-] as const
+const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
 
-type StationKey = (typeof STATIONS)[number]['key']
+// 4-wide × 2-tall grid of work stations. Positions are fixed pixels relative
+// to the floor wrapper — keeps the layout predictable on the steampunk
+// backdrop and matches the README screenshot.
+const stationPositions = [
+  { x: 60, y: 120 },
+  { x: 200, y: 120 },
+  { x: 340, y: 120 },
+  { x: 480, y: 120 },
+  { x: 60, y: 280 },
+  { x: 200, y: 280 },
+  { x: 340, y: 280 },
+  { x: 480, y: 280 },
+]
 
-// `planning` shares the archive station with `reading`.
-const ACTIVITY_TO_STATION: Record<AgentActivity, StationKey> = {
-  reading: 'reading',
-  planning: 'reading',
-  searching: 'searching',
-  fetching: 'fetching',
-  thinking: 'thinking',
-  running: 'running',
-  editing: 'editing',
+const WALK_AREA = { xMin: 30, xMax: 540, yMin: 80, yMax: 330 }
+const MAX_STATIONS = stationPositions.length
+
+interface Station {
+  x: number
+  y: number
+  task: Task | null
 }
 
-// ── Layout geometry ────────────────────────────────────────
-const CHAT_PANE_W = 360
-const TABLE_LEFT = 28
-const TABLE_TOP = 56
-const ROW_GAP = 8
-const MAX_ROWS = 4
-const TICKER_H = 28
-const BREAK_PAD = 20
-const BREAK_ROOM_H = 64
-const ROW_H_MIN = 70
-const ROW_H_MAX = 124
-
-const floorEl = ref<HTMLElement | null>(null)
-const floorW = ref(900)
-const floorH = ref(600)
-
-function updateFloorSize() {
-  if (floorEl.value) {
-    const w = floorEl.value.clientWidth
-    const h = floorEl.value.clientHeight
-    if (w > 0) floorW.value = w
-    if (h > 0) floorH.value = h
-  }
-}
-
-const floorSize = computed<'sm' | 'md' | 'lg'>(() => {
-  if (floorW.value < 720) return 'sm'
-  if (floorW.value < 1100) return 'md'
-  return 'lg'
-})
-
-const tableWidth = computed(() => {
-  const reservedRight = floorSize.value === 'sm' ? 0 : CHAT_PANE_W
-  return Math.max(floorW.value - reservedRight - TABLE_LEFT * 2, 50)
-})
-
-const visibleRowCount = computed(() => {
-  const active = activeTasks.value.length
-  return Math.max(2, Math.min(MAX_ROWS, active || 2))
-})
-
-const rowHeight = computed(() => {
-  const reserved = TABLE_TOP + BREAK_PAD + BREAK_ROOM_H + TICKER_H + 16
-  const available = Math.max(160, floorH.value - reserved)
-  const n = visibleRowCount.value
-  const candidate = (available - (n - 1) * ROW_GAP) / n
-  return Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, Math.round(candidate)))
-})
-
-const rowDensity = computed<'tall' | 'medium' | 'short'>(() => {
-  const h = rowHeight.value
-  if (h >= 100) return 'tall'
-  if (h >= 82) return 'medium'
-  return 'short'
-})
-
-const tableHeight = computed(
-  () => visibleRowCount.value * rowHeight.value + (visibleRowCount.value - 1) * ROW_GAP,
-)
-
-const breakRoomTop = computed(() => TABLE_TOP + tableHeight.value + BREAK_PAD)
-
-const breakRoomHeight = computed(() => BREAK_ROOM_H)
-
-// ── Tasks → rows ───────────────────────────────────────────
 const activeTasks = computed<Task[]>(() =>
   tasksStore.tasks
     .filter(
@@ -166,63 +176,94 @@ const activeTasks = computed<Task[]>(() =>
         t.worker_id &&
         t.worker_id !== 'foreman',
     )
-    .slice(0, MAX_ROWS),
+    .slice(0, MAX_STATIONS),
 )
 
-const taskRows = computed(() => {
-  const tasks = activeTasks.value
-  const rows = []
-  for (let i = 0; i < visibleRowCount.value; i++) {
-    const task = tasks[i] || null
-    // Agents carry the taskId they're working on (reported via agent-state).
-    // That's the source of truth for which slot owns which row when a worker
-    // runs concurrent slots; matching by workerId would collapse all rows
-    // onto slot[0].
-    const agent = task ? agents.value.find((a) => a.taskId === task.id) || null : null
-    const activityKey: StationKey | null =
-      agent && agent.activity ? ACTIVITY_TO_STATION[agent.activity] : null
-    rows.push({ index: i, task, agent, activityKey })
+const visibleStations = computed<Station[]>(() =>
+  stationPositions.map((pos, i) => ({ ...pos, task: activeTasks.value[i] || null })),
+)
+
+// Per-agent position + walking-flag. Walking is set briefly when the agent
+// moves so RobotWorker can run its walk animation; cleared after the CSS
+// transition ends.
+const agentPositions = reactive<Record<string, { x: number; y: number }>>({})
+const walking = reactive<Record<string, boolean>>({})
+const walkTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+
+function agentPos(agentId: string) {
+  return agentPositions[agentId] || { x: 100, y: 220 }
+}
+
+function isWalking(agentId: string) {
+  return !!walking[agentId]
+}
+
+function randomPos() {
+  return {
+    x: WALK_AREA.xMin + Math.random() * (WALK_AREA.xMax - WALK_AREA.xMin),
+    y: WALK_AREA.yMin + Math.random() * (WALK_AREA.yMax - WALK_AREA.yMin),
   }
-  return rows
-})
+}
 
-const choreography = useAgentChoreography({
-  agents,
-  taskRows: computed(() =>
-    taskRows.value.map((r) => ({
-      index: r.index,
-      task: r.task,
-      activityKey: r.activityKey,
-      agentId: r.agent?.id ?? null,
-    })),
-  ),
-  rowHeight,
-  tableWidth,
-  breakRoomTop,
-  breakRoomHeight,
-  tableLeft: TABLE_LEFT,
-  tableTop: TABLE_TOP,
-  rowGap: ROW_GAP,
-  stations: STATIONS,
-})
+// An agent is "at work" when it owns one of the visible task stations.
+// taskId is the source of truth — workerId would collapse concurrent slots
+// onto the same bench.
+function stationForAgent(agent: Agent): Station | null {
+  if (!agent.taskId) return null
+  return visibleStations.value.find((s) => s.task && s.task.id === agent.taskId) || null
+}
 
-let resizeObserver: ResizeObserver | null = null
+function isAgentAtWork(agent: Agent) {
+  return !!stationForAgent(agent) && !['idle', 'offline'].includes(agent.state)
+}
+
+function moveTo(agentId: string, pos: { x: number; y: number }) {
+  const cur = agentPositions[agentId]
+  if (cur && cur.x === pos.x && cur.y === pos.y) return
+  agentPositions[agentId] = pos
+  walking[agentId] = true
+  clearTimeout(walkTimers[agentId])
+  walkTimers[agentId] = setTimeout(() => {
+    walking[agentId] = false
+  }, 2400)
+}
+
+function syncPositions() {
+  agents.value.forEach((agent) => {
+    if (isAgentAtWork(agent)) {
+      const station = stationForAgent(agent)!
+      moveTo(agent.id, { x: station.x + 25, y: station.y + 90 })
+    } else if (!agentPositions[agent.id]) {
+      agentPositions[agent.id] = randomPos()
+    }
+  })
+}
+
+// Cycle through idle agents one at a time so they don't all move at once.
+let walkIdx = 0
+let walkTimer: ReturnType<typeof setInterval> | null = null
+
+function tickWalk() {
+  const idle = agents.value.filter((a) => !isAgentAtWork(a))
+  if (idle.length === 0) return
+  const agent = idle[walkIdx % idle.length]
+  walkIdx++
+  moveTo(agent.id, randomPos())
+}
 
 onMounted(() => {
-  if (floorEl.value) {
-    resizeObserver = new ResizeObserver(updateFloorSize)
-    resizeObserver.observe(floorEl.value)
-  }
-  updateFloorSize()
-  choreography.syncAll()
+  syncPositions()
+  walkTimer = setInterval(tickWalk, 2000)
 })
 
 onUnmounted(() => {
-  resizeObserver?.disconnect()
-  resizeObserver = null
+  if (walkTimer) clearInterval(walkTimer)
+  Object.values(walkTimers).forEach(clearTimeout)
 })
 
-// ── Ticker ─────────────────────────────────────────────────
+watch(agents, syncPositions, { deep: true })
+watch(visibleStations, syncPositions)
+
 const tickerMessages = computed(() => {
   const msgs: string[] = []
   agents.value.forEach((a) => {
@@ -233,9 +274,16 @@ const tickerMessages = computed(() => {
     .filter((t) => !['done', 'failed', 'cancelled'].includes(t.state))
     .slice(0, 4)
     .forEach((t) => msgs.push(`TASK: ${t.name || t.id}`))
-  if (msgs.length === 0) msgs.push('AWAITING WORKERS', 'SYSTEMS NOMINAL', 'BOILER PRESSURE: 87 PSI')
+  if (msgs.length === 0) {
+    msgs.push('AWAITING WORKERS', 'SYSTEMS NOMINAL', 'BOILER PRESSURE: 87 PSI')
+  }
   return msgs
 })
+
+function truncate(str: string | undefined, len: number) {
+  if (!str) return ''
+  return str.length > len ? str.slice(0, len) + '…' : str
+}
 
 function stateLabel(state: string) {
   return tasksStore.stateLabel(state)
@@ -246,13 +294,567 @@ function stateLabel(state: string) {
 .factory-floor {
   width: 100%;
   height: 100%;
-  background: linear-gradient(180deg, #0d0600 0%, #120900 50%, #1a0e00 100%);
+  background: linear-gradient(180deg, #0d0600 0%, #120900 40%, #1c1000 100%);
   position: relative;
   overflow: hidden;
   font-family: var(--font-pixel);
 }
 
-/* Header overlay */
+.floor-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(232, 170, 0, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(232, 170, 0, 0.06) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.sparkle-field {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.sparkle {
+  position: absolute;
+  animation: sparkleFade 2.5s infinite ease-in-out;
+}
+.sparkle:nth-child(5n + 1) {
+  color: var(--color-gold);
+}
+.sparkle:nth-child(5n + 2) {
+  color: var(--color-teal);
+}
+.sparkle:nth-child(5n + 3) {
+  color: var(--color-amber);
+}
+.sparkle:nth-child(5n + 4) {
+  color: var(--color-cream);
+}
+.sparkle:nth-child(5n) {
+  color: var(--color-orange);
+}
+@keyframes sparkleFade {
+  0%,
+  100% {
+    opacity: 0;
+    transform: scale(0.3) rotate(0deg);
+  }
+  40%,
+  60% {
+    opacity: 0.85;
+    transform: scale(1.1) rotate(180deg);
+  }
+}
+
+.ceiling-pipe {
+  position: absolute;
+  background: linear-gradient(180deg, #7a3c00 0%, #cc5500 35%, #ee7722 55%, #8a4400 100%);
+  border: 1px solid #7a3c00;
+  box-shadow: 0 0 6px rgba(204, 85, 0, 0.4);
+}
+.pipe-h {
+  height: 12px;
+}
+.pipe-v {
+  width: 12px;
+}
+.pipe1 {
+  top: 20px;
+  left: 0;
+  right: 0;
+}
+.pipe2 {
+  top: 50px;
+  left: 100px;
+  width: 200px;
+}
+.pipe3 {
+  top: 0;
+  left: 150px;
+  height: 80px;
+}
+.pipe4 {
+  top: 0;
+  left: 400px;
+  height: 60px;
+}
+
+.pipe-joint {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  background: radial-gradient(
+    circle,
+    var(--color-brass-light) 20%,
+    var(--color-brass) 60%,
+    var(--color-brass-dark) 100%
+  );
+  border: 2px solid var(--color-brass-dark);
+  border-radius: 50%;
+  box-shadow: 0 0 5px rgba(232, 170, 0, 0.5);
+}
+.j1 {
+  top: 14px;
+  left: 147px;
+}
+.j2 {
+  top: 14px;
+  left: 397px;
+}
+
+.steam-vent {
+  position: absolute;
+  width: 14px;
+}
+.vent1 {
+  top: 32px;
+  left: 155px;
+}
+.vent2 {
+  top: 32px;
+  left: 405px;
+}
+.vent3 {
+  top: 62px;
+  left: 230px;
+}
+.steam-particle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: radial-gradient(circle, rgba(255, 232, 176, 0.85) 0%, transparent 70%);
+  border-radius: 50%;
+  animation: steamRise 2s var(--delay, 0s) infinite ease-out;
+}
+@keyframes steamRise {
+  0% {
+    transform: translateY(0) scale(0.5);
+    opacity: 0.8;
+  }
+  50% {
+    transform: translateY(-30px) scale(1.5) translateX(5px);
+    opacity: 0.4;
+  }
+  100% {
+    transform: translateY(-60px) scale(2) translateX(-5px);
+    opacity: 0;
+  }
+}
+
+.gear {
+  position: absolute;
+  user-select: none;
+  line-height: 1;
+}
+.gear-large {
+  font-size: 56px;
+  animation: gearSpin 8s linear infinite;
+}
+.gear-medium {
+  font-size: 36px;
+  animation: gearSpin 5s linear infinite reverse;
+}
+.gear-small {
+  font-size: 22px;
+  animation: gearSpin 3s linear infinite;
+}
+.g1 {
+  right: 30px;
+  top: 60px;
+  color: var(--color-gold);
+  text-shadow:
+    0 0 10px var(--color-gold),
+    0 0 20px rgba(255, 214, 68, 0.4);
+}
+.g2 {
+  right: 75px;
+  top: 80px;
+  color: var(--color-teal);
+  text-shadow:
+    0 0 10px var(--color-teal),
+    0 0 20px rgba(0, 187, 170, 0.4);
+}
+.g3 {
+  right: 55px;
+  top: 100px;
+  color: var(--color-orange);
+  text-shadow:
+    0 0 10px var(--color-orange),
+    0 0 20px rgba(255, 119, 0, 0.4);
+}
+.g4 {
+  left: 620px;
+  top: 40px;
+  color: var(--color-sky);
+  text-shadow:
+    0 0 10px var(--color-sky),
+    0 0 20px rgba(68, 170, 238, 0.4);
+}
+.g5 {
+  left: 650px;
+  top: 65px;
+  color: var(--color-amber);
+  text-shadow:
+    0 0 10px var(--color-amber),
+    0 0 20px rgba(255, 204, 0, 0.4);
+}
+@keyframes gearSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.furnace {
+  position: absolute;
+  right: 120px;
+  top: 60px;
+}
+.furnace-body {
+  width: 60px;
+  height: 80px;
+  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
+  border: 3px solid var(--color-copper);
+  border-radius: 4px 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-around;
+  padding: 6px;
+  box-shadow:
+    0 0 14px rgba(204, 85, 0, 0.4),
+    inset 0 0 8px rgba(255, 119, 0, 0.1);
+}
+.furnace-door {
+  width: 36px;
+  height: 36px;
+  background: #0d0400;
+  border: 2px solid var(--color-copper-light);
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  animation: flicker 0.3s infinite alternate;
+  box-shadow: inset 0 0 10px rgba(255, 100, 0, 0.5);
+}
+@keyframes flicker {
+  from {
+    opacity: 0.85;
+    box-shadow: inset 0 0 8px rgba(255, 80, 0, 0.4);
+  }
+  to {
+    opacity: 1;
+    box-shadow: inset 0 0 14px rgba(255, 120, 0, 0.7);
+  }
+}
+.furnace-gauge {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #0d0400;
+  border: 2px solid var(--color-brass);
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 4px var(--color-brass-dark);
+}
+.gauge-needle {
+  position: absolute;
+  left: 50%;
+  bottom: 50%;
+  width: 2px;
+  height: 8px;
+  background: var(--color-red);
+  transform-origin: bottom center;
+  animation: needleSpin 3s ease-in-out infinite alternate;
+  box-shadow: 0 0 4px var(--color-red);
+}
+@keyframes needleSpin {
+  from {
+    transform: rotate(-60deg);
+  }
+  to {
+    transform: rotate(60deg);
+  }
+}
+.furnace-chimney {
+  position: absolute;
+  top: -30px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 30px;
+  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
+  border: 2px solid var(--color-copper);
+  border-bottom: none;
+}
+.smoke-particle {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  background: radial-gradient(circle, rgba(160, 100, 40, 0.7) 0%, transparent 70%);
+  border-radius: 50%;
+  animation: smokeRise 3s var(--delay, 0s) infinite ease-out;
+}
+@keyframes smokeRise {
+  0% {
+    transform: translate(-50%, 0) scale(0.5);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translate(calc(-50% + 20px), -50px) scale(3);
+    opacity: 0;
+  }
+}
+.furnace-label {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 5px;
+  color: var(--color-copper);
+  white-space: nowrap;
+  letter-spacing: 1px;
+  text-shadow: 0 0 4px var(--color-copper);
+}
+
+.conveyor-belt {
+  position: absolute;
+  bottom: 80px;
+  left: 60px;
+  right: 200px;
+  height: 28px;
+}
+.belt-track {
+  width: 100%;
+  height: 18px;
+  background: repeating-linear-gradient(
+    90deg,
+    #2a1800 0px,
+    #2a1800 18px,
+    #3a2200 18px,
+    #3a2200 36px
+  );
+  border: 2px solid var(--color-copper-light);
+  position: relative;
+  overflow: hidden;
+}
+.belt-item {
+  position: absolute;
+  font-size: 13px;
+  top: 1px;
+  animation: beltMove 4s linear infinite;
+  animation-delay: calc(var(--offset, 0) * -1ms / 10);
+}
+.belt-item:nth-child(6n + 1) {
+  filter: drop-shadow(0 0 3px var(--color-gold));
+}
+.belt-item:nth-child(6n + 2) {
+  filter: drop-shadow(0 0 3px var(--color-teal));
+}
+.belt-item:nth-child(6n + 3) {
+  filter: drop-shadow(0 0 3px var(--color-amber));
+}
+.belt-item:nth-child(6n + 4) {
+  filter: drop-shadow(0 0 3px var(--color-sky));
+}
+.belt-item:nth-child(6n + 5) {
+  filter: drop-shadow(0 0 3px var(--color-orange));
+}
+.belt-item:nth-child(6n) {
+  filter: drop-shadow(0 0 3px var(--color-gold));
+}
+@keyframes beltMove {
+  from {
+    transform: translateX(120%);
+  }
+  to {
+    transform: translateX(-100px);
+  }
+}
+.belt-roller {
+  position: absolute;
+  bottom: 0;
+  width: 28px;
+  height: 28px;
+  background: radial-gradient(
+    circle,
+    var(--color-copper-light) 20%,
+    var(--color-copper) 55%,
+    var(--color-brass-dark) 100%
+  );
+  border-radius: 50%;
+  border: 3px solid var(--color-brass-dark);
+  box-shadow: 0 0 6px rgba(204, 85, 0, 0.5);
+}
+.belt-roller.left {
+  left: -14px;
+}
+.belt-roller.right {
+  right: -14px;
+}
+
+.work-station {
+  position: absolute;
+  width: 100px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.station-desk {
+  width: 100%;
+  position: relative;
+}
+.station-monitor {
+  width: 60px;
+  height: 48px;
+  background: #0d0600;
+  border: 3px solid var(--color-brass-dark);
+  border-radius: 2px;
+  margin: 0 auto;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+}
+.monitor-screen {
+  flex: 1;
+  background: #080400;
+  border: 2px solid #1c1000;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.screen-active {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.screen-line {
+  height: 3px;
+  opacity: 0.85;
+  animation: screenScroll 2s infinite linear;
+  border-radius: 1px;
+}
+.screen-line:nth-child(1) {
+  background: var(--color-teal);
+}
+.screen-line:nth-child(2) {
+  background: var(--color-sky);
+  animation-delay: -0.7s;
+  opacity: 0.5;
+}
+.screen-line:nth-child(3) {
+  background: var(--color-green);
+  animation-delay: -1.4s;
+  opacity: 0.3;
+  width: 60%;
+}
+@keyframes screenScroll {
+  0% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 0.85;
+  }
+}
+.screen-idle {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  color: #3a2510;
+}
+
+.station-table {
+  width: 100%;
+  height: 14px;
+  background: linear-gradient(180deg, #5a3818 0%, #3a2010 100%);
+  border: 2px solid var(--color-copper-light);
+  border-top: 3px solid var(--color-brass);
+}
+.work-station.occupied .station-table {
+  border-top-color: var(--color-brass-light);
+  background: linear-gradient(180deg, #6a4820 0%, #4a2e12 100%);
+}
+
+.station-label {
+  font-size: 5px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-badge {
+  font-size: 5px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.state-working {
+  color: var(--color-green);
+  text-shadow: 0 0 4px var(--color-green);
+}
+.state-pending {
+  color: var(--color-text-dim);
+}
+.state-planning {
+  color: var(--color-sky);
+  text-shadow: 0 0 4px var(--color-sky);
+}
+.state-awaiting-review {
+  color: var(--color-amber);
+  text-shadow: 0 0 4px var(--color-amber);
+}
+.state-followup {
+  color: var(--color-orange);
+  text-shadow: 0 0 4px var(--color-orange);
+}
+.state-failed {
+  color: var(--color-red);
+  text-shadow: 0 0 4px var(--color-red);
+}
+.state-done {
+  color: var(--color-teal);
+  text-shadow: 0 0 4px var(--color-teal);
+}
+.state-cancelled {
+  color: var(--color-red);
+  text-shadow: 0 0 4px var(--color-red);
+}
+
+.floating-agent {
+  position: absolute;
+  z-index: 5;
+  transition:
+    left 2.4s ease-in-out,
+    top 2.4s ease-in-out;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+.agent-nametag {
+  font-size: 5px;
+  color: var(--color-brass);
+  margin-top: 2px;
+  white-space: nowrap;
+  text-shadow: 0 0 4px rgba(232, 170, 0, 0.5);
+  letter-spacing: 1px;
+}
+
 .factory-info {
   position: absolute;
   top: 8px;
@@ -269,7 +871,6 @@ function stateLabel(state: string) {
     0 0 12px rgba(232, 170, 0, 0.3),
     inset 0 0 6px rgba(232, 170, 0, 0.06);
 }
-
 .factory-title {
   font-size: 7px;
   letter-spacing: 2px;
@@ -289,7 +890,6 @@ function stateLabel(state: string) {
   background-size: 250% auto;
   animation: goldShimmer 5s linear infinite;
 }
-
 @keyframes goldShimmer {
   from {
     background-position: 0% center;
@@ -298,249 +898,53 @@ function stateLabel(state: string) {
     background-position: 250% center;
   }
 }
-
 .agent-count {
   font-size: 7px;
   color: var(--color-teal);
   text-shadow: 0 0 6px var(--color-teal);
 }
 
-/* ── Tasks table ─────────────────────────────────────────── */
-.task-table {
+.ticker-tape {
   position: absolute;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  z-index: 3;
-}
-
-/* ── Break room ─────────────────────────────────────────── */
-.break-room {
-  position: absolute;
-  border-top: 1px dashed rgba(232, 170, 0, 0.25);
-  border-bottom: 1px dashed rgba(232, 170, 0, 0.15);
-  background: repeating-linear-gradient(
-    45deg,
-    rgba(232, 170, 0, 0.03) 0px,
-    rgba(232, 170, 0, 0.03) 8px,
-    transparent 8px,
-    transparent 16px
-  );
-  z-index: 2;
-  pointer-events: none;
-}
-.break-label {
-  position: absolute;
-  top: 4px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 6px;
-  letter-spacing: 2px;
-  color: var(--color-brass-dark);
-  text-shadow: 0 0 4px rgba(232, 170, 0, 0.4);
-}
-
-/* Break room furniture */
-.br-furniture {
-  position: absolute;
-  background: rgba(12, 7, 0, 0.85);
-  border: 1px solid rgba(200, 140, 0, 0.4);
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  background: var(--color-bg-secondary);
+  border-top: 2px solid var(--color-brass-dark);
+  overflow: hidden;
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 6px;
-  letter-spacing: 1px;
-  color: var(--color-brass-dark);
-  gap: 2px;
+}
+.ticker-content {
+  display: flex;
+  animation: tickerScroll 20s linear infinite;
   white-space: nowrap;
 }
-.br-bulletin {
-  left: 2%;
-  top: 17px;
-  width: 42px;
-  height: 22px;
-  border-left: 2px solid rgba(232, 170, 0, 0.55);
-}
-.br-watercooler {
-  right: 2%;
-  top: 17px;
-  width: 36px;
-  height: 22px;
-}
-.br-couch {
-  left: 18%;
-  bottom: 5px;
-  width: 58px;
-  height: 16px;
-  font-size: 11px;
-  background: rgba(60, 30, 0, 0.7);
-  border-color: rgba(160, 90, 0, 0.5);
-  gap: 3px;
-}
-.br-table {
-  top: 17px;
-  width: 42px;
-  height: 18px;
-}
-.br-table-1 { left: 33%; }
-.br-table-2 { left: 49%; }
-.br-table-3 { left: 65%; }
-
-/* ── Floating agents ──────────────────────────────────────── */
-.floating-agent {
-  position: absolute;
-  z-index: 6;
-  transform: translate(-50%, -50%);
-  transition:
-    left var(--walk-dur, 1.5s) ease-in-out,
-    top var(--walk-dur, 1.5s) ease-in-out;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  pointer-events: none;
-}
-
-/* ── Size classes ─────────────────────────────────────────── */
-.factory-floor.size-sm .factory-title {
-  font-size: 6px;
-  letter-spacing: 1.5px;
-}
-.factory-floor.size-sm .agent-count {
-  font-size: 6px;
-}
-.factory-floor.size-sm :deep(.ambient-gear.g1) {
-  font-size: 32px;
-  right: 10px;
-  top: 50px;
-}
-.factory-floor.size-sm :deep(.ambient-gear.g2) {
-  font-size: 22px;
-  right: 36px;
-  top: 76px;
-}
-.factory-floor.size-sm :deep(.row-header) {
-  font-size: 6px;
-  gap: 6px;
-  padding: 3px 6px;
-}
-.factory-floor.size-sm :deep(.row-state) {
-  font-size: 5px;
-  padding: 1px 4px;
-}
-
-.factory-floor.size-lg .factory-title {
+.ticker-msg {
   font-size: 8px;
+  color: var(--color-amber);
+  margin-right: 60px;
+  letter-spacing: 1px;
+  text-shadow: 0 0 4px rgba(255, 204, 0, 0.5);
 }
-.factory-floor.size-lg .agent-count {
-  font-size: 8px;
+.ticker-msg:nth-child(3n + 1) {
+  color: var(--color-amber);
 }
-.factory-floor.size-lg :deep(.ambient-gear.g1) {
-  font-size: 60px;
+.ticker-msg:nth-child(3n + 2) {
+  color: var(--color-teal);
+  text-shadow: 0 0 4px rgba(0, 187, 170, 0.5);
 }
-.factory-floor.size-lg :deep(.ambient-gear.g2) {
-  font-size: 38px;
+.ticker-msg:nth-child(3n) {
+  color: var(--color-gold);
+  text-shadow: 0 0 4px rgba(255, 214, 68, 0.5);
 }
-
-/* Row density */
-.factory-floor.density-tall :deep(.station-icon) {
-  width: 32px;
-  height: 32px;
-}
-.factory-floor.density-tall :deep(.mini-engine) {
-  font-size: 26px;
-}
-.factory-floor.density-tall :deep(.mini-forge) {
-  font-size: 22px;
-}
-.factory-floor.density-tall :deep(.mini-orb) {
-  font-size: 20px;
-}
-.factory-floor.density-tall :deep(.mini-tg-body) {
-  width: 28px;
-  height: 22px;
-}
-.factory-floor.density-tall :deep(.mini-tank) {
-  width: 26px;
-  height: 26px;
-}
-.factory-floor.density-tall :deep(.mini-book.b1) {
-  height: 20px;
-}
-.factory-floor.density-tall :deep(.mini-book.b2) {
-  height: 14px;
-}
-.factory-floor.density-tall :deep(.mini-book.b3) {
-  height: 22px;
-}
-.factory-floor.density-tall :deep(.mini-book.b4) {
-  height: 16px;
-}
-
-.factory-floor.density-medium :deep(.station-icon) {
-  width: 26px;
-  height: 26px;
-}
-.factory-floor.density-medium :deep(.mini-engine) {
-  font-size: 20px;
-}
-.factory-floor.density-medium :deep(.mini-forge) {
-  font-size: 17px;
-}
-.factory-floor.density-medium :deep(.mini-orb) {
-  font-size: 15px;
-}
-
-.factory-floor.density-short :deep(.station-icon) {
-  width: 20px;
-  height: 20px;
-}
-.factory-floor.density-short :deep(.station-label) {
-  display: none;
-}
-.factory-floor.density-short :deep(.mini-engine) {
-  font-size: 16px;
-}
-.factory-floor.density-short :deep(.mini-forge) {
-  font-size: 14px;
-}
-.factory-floor.density-short :deep(.mini-orb) {
-  font-size: 13px;
-}
-.factory-floor.density-short :deep(.mini-tg-body) {
-  width: 18px;
-  height: 14px;
-}
-.factory-floor.density-short :deep(.mini-tank) {
-  width: 18px;
-  height: 18px;
-}
-.factory-floor.density-short :deep(.mini-book) {
-  width: 3px;
-}
-.factory-floor.density-short :deep(.mini-book.b1) {
-  height: 12px;
-}
-.factory-floor.density-short :deep(.mini-book.b2) {
-  height: 9px;
-}
-.factory-floor.density-short :deep(.mini-book.b3) {
-  height: 14px;
-}
-.factory-floor.density-short :deep(.mini-book.b4) {
-  height: 10px;
-}
-.factory-floor.density-short :deep(.bench-station) {
-  bottom: 10px;
-}
-.factory-floor.density-short :deep(.bench-rail) {
-  bottom: 8px;
-}
-.factory-floor.density-short :deep(.bench-bolts) {
-  bottom: 1px;
-  height: 6px;
-}
-.factory-floor.density-short :deep(.bolt) {
-  width: 4px;
-  height: 4px;
+@keyframes tickerScroll {
+  from {
+    transform: translateX(100vw);
+  }
+  to {
+    transform: translateX(-100%);
+  }
 }
 </style>
