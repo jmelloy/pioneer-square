@@ -214,6 +214,10 @@ class AgentCard(_CamelModel):
     skills: list[AgentSkill]
     provider: AgentProvider | None = None
     documentation_url: str | None = None
+    # Security schemes advertised when the A2A receiver + OIDC are enabled.
+    # Excluded from serialisation when None (exclude_none=True in model_dump).
+    security_schemes: dict | None = None
+    security: list[dict] | None = None
 
 
 def _worker_to_skill(worker: Worker) -> AgentSkill:
@@ -241,6 +245,26 @@ def _worker_to_skill(worker: Worker) -> AgentSkill:
         name=name,
         description=description,
         tags=tags,
+    )
+
+
+def _oidc_security_schemes(base_url: str) -> tuple[dict | None, list[dict] | None]:
+    """Return (securitySchemes, security) when OIDC is enabled, else (None, None)."""
+    # Imported lazily to avoid triggering foreman/__init__ circular imports.
+    from foreman.oidc import OIDCConfig, is_a2a_receiver_enabled
+
+    if not is_a2a_receiver_enabled():
+        return None, None
+    config = OIDCConfig.from_env()
+    issuer = config.issuer or base_url
+    return (
+        {
+            "oidc": {
+                "type": "openIdConnect",
+                "openIdConnectUrl": f"{issuer.rstrip('/')}/.well-known/openid-configuration",
+            }
+        },
+        [{"oidc": []}],
     )
 
 
@@ -282,6 +306,8 @@ def _build_agent_card(
     )
     skills.insert(0, foreman_skill)
 
+    security_schemes, security = _oidc_security_schemes(base_url)
+
     return AgentCard(
         name=guild_name,
         description=guild_description,
@@ -296,6 +322,8 @@ def _build_agent_card(
             url="https://github.com/jmelloy/pioneer-square",
         ),
         documentation_url="https://github.com/jmelloy/pioneer-square#readme",
+        security_schemes=security_schemes,
+        security=security,
     )
 
 
