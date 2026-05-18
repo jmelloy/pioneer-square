@@ -193,8 +193,7 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 180px;
-  max-height: 340px;
+  min-height: 0;
 }
 
 .chat-empty {
@@ -482,11 +481,4 @@ watch(
   font-size: 10px;
 }
 
-@media (max-width: 1024px) {
-  .chat-messages {
-    min-height: 0;
-    max-height: none;
-    flex: 1;
-  }
-}
 </style>

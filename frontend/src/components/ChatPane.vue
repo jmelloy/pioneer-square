@@ -8,7 +8,7 @@
           {{ foreman.state }}
         </span>
         <span v-if="pollLabel" class="poll-indicator">⏱ {{ pollLabel }}</span>
-        <span class="minimize-btn">{{ minimized ? '▲' : '▼' }}</span>
+        <span class="minimize-btn">{{ minimized ? '▶' : '◀' }}</span>
       </div>
     </div>
 
@@ -169,6 +169,18 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   border-left: 2px solid var(--color-brass-dark);
+  transition: width 0.2s ease, min-width 0.2s ease;
+}
+
+.chat-pane.minimized {
+  width: 44px;
+  min-width: 44px;
+}
+
+.chat-pane.minimized .chat-title,
+.chat-pane.minimized .agent-status,
+.chat-pane.minimized .poll-indicator {
+  display: none;
 }
 
 .chat-header {
