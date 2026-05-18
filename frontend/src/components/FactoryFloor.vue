@@ -89,12 +89,7 @@
     >
       <div class="station-desk">
         <div class="station-monitor">
-          <div class="monitor-screen">
-            <div v-if="station.task" class="screen-active">
-              <div v-for="l in 3" :key="l" class="screen-line"></div>
-            </div>
-            <div v-else class="screen-idle">--</div>
-          </div>
+          <StationScreen :state="station.task ? station.task.state : null" />
         </div>
         <div class="station-table"></div>
       </div>
@@ -137,6 +132,7 @@ import { computed, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import AgentAvatar from './AgentAvatar.vue'
+import StationScreen from './factory-floor/StationScreen.vue'
 import type { Agent, Task } from '../types'
 
 const agentsStore = useAgentsStore()
@@ -722,58 +718,6 @@ function stateLabel(state: string) {
   align-items: stretch;
   overflow: hidden;
 }
-.monitor-screen {
-  flex: 1;
-  background: #080400;
-  border: 2px solid #1c1000;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.screen-active {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.screen-line {
-  height: 3px;
-  opacity: 0.85;
-  animation: screenScroll 2s infinite linear;
-  border-radius: 1px;
-}
-.screen-line:nth-child(1) {
-  background: var(--color-teal);
-}
-.screen-line:nth-child(2) {
-  background: var(--color-sky);
-  animation-delay: -0.7s;
-  opacity: 0.5;
-}
-.screen-line:nth-child(3) {
-  background: var(--color-green);
-  animation-delay: -1.4s;
-  opacity: 0.3;
-  width: 60%;
-}
-@keyframes screenScroll {
-  0% {
-    opacity: 0.85;
-  }
-  50% {
-    opacity: 0.3;
-  }
-  100% {
-    opacity: 0.85;
-  }
-}
-.screen-idle {
-  font-family: var(--font-pixel);
-  font-size: 8px;
-  color: #3a2510;
-}
-
 .station-table {
   width: 100%;
   height: 14px;
