@@ -908,7 +908,7 @@ class Worker:
         # prune/remove hang indefinitely, blocking the entire startup sequence.
         try:
             await asyncio.wait_for(self._initial_worktree_sweep(), timeout=30.0)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             logger.warning("Worktree startup sweep timed out after 30s — skipping")
 
         initial = await self._fetch_pending_tasks()
