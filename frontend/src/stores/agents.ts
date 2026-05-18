@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
 import { api } from '../utils/api'
+import { formatWorkerId } from '../utils/format'
 import type { Agent, AgentActivity, AgentState, LogDetail, LogEntry, Worker, WSInbound } from '../types'
 
 const STATE_RANK: Record<string, number> = {
@@ -54,8 +55,8 @@ export const useAgentsStore = defineStore('agents', () => {
         map.set(agent.workerId, {
           id: agent.workerId,
           // Prefer the backend-supplied workerName; older backends that omit it
-          // fall back to the workerId itself as a stable label.
-          name: agent.workerName || agent.workerId,
+          // fall back to the droid-formatted workerId as a stable label.
+          name: agent.workerName || (agent.workerId ? formatWorkerId(agent.workerId) : agent.workerId),
           state: agent.state,
         })
       } else {

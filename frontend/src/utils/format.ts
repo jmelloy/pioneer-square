@@ -1,5 +1,15 @@
 // Shared time formatters. Keep these tiny and pure — they show up everywhere.
 
+// "w-vd3566" → "VD-3566": strip prefix, split at first digit, uppercase both parts.
+export function formatWorkerId(workerId: string): string {
+  const bare = workerId.replace(/^w-/, '')
+  const m = bare.search(/\d/)
+  if (m > 0) {
+    return `${bare.slice(0, m).toUpperCase()}-${bare.slice(m).toUpperCase()}`
+  }
+  return bare.toUpperCase()
+}
+
 export function formatClock(iso?: string, withSeconds = false): string {
   if (!iso) return withSeconds ? '00:00:00' : ''
   const d = new Date(iso)
