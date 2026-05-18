@@ -12,6 +12,7 @@ import sys
 from . import __version__
 from . import config as config_mod
 from .logging_config import get_logging_config
+from .mock_worker import MockWorker
 from .worker import Worker
 
 
@@ -83,6 +84,26 @@ def _build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"pioneer-worker {__version__}",
     )
+
+    # Mock mode (for e2e tests). Skips all subprocess/git/claude work and
+    # exposes an HTTP control API so Playwright tests can drive agent state
+    # and task lifecycle deterministically.
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        help="Run as a mock worker for e2e tests (no real claude/git/gh).",
+    )
+    parser.add_argument(
+        "--mock-api-port",
+        type=int,
+        default=9100,
+        help="Port for the mock-mode HTTP control API (default: 9100).",
+    )
+    parser.add_argument(
+        "--mock-api-host",
+        default="127.0.0.1",
+        help="Bind host for the mock-mode HTTP control API (default: 127.0.0.1).",
+    )
     return parser
 
 
@@ -122,6 +143,14 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info("Config loaded from %s", cfg.config_path)
 
+    if args.mock and not cfg.repos:
+        # The mock worker needs to register against the backend, which expects a
+        # non-empty repos list on the worker row. Inject a placeholder so the
+        # registration call succeeds without forcing the test harness to set
+        # one explicitly.
+        cfg.repos = ["mock/mock"]
+        log.info("Mock mode: defaulting repos to %s", cfg.repos)
+
     if not cfg.repos:
         msg = (
             "Worker cannot start: no repos configured. "
@@ -132,7 +161,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {msg}", file=sys.stderr)
         return 2
 
-    worker = Worker(cfg)
+    if args.mock:
+        log.info(
+            "Starting in MOCK mode (HTTP API on %s:%d)",
+            args.mock_api_host,
+            args.mock_api_port,
+        )
+        worker = MockWorker(
+            cfg,
+            mock_api_port=args.mock_api_port,
+            mock_api_host=args.mock_api_host,
+        )
+    else:
+        worker = Worker(cfg)
     try:
         asyncio.run(worker.run())
     except KeyboardInterrupt:
