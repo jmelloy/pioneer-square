@@ -174,7 +174,11 @@ const taskRows = computed(() => {
   const rows = []
   for (let i = 0; i < visibleRowCount.value; i++) {
     const task = tasks[i] || null
-    const agent = task ? agents.value.find((a) => a.workerId === task.worker_id) || null : null
+    // Agents carry the taskId they're working on (reported via agent-state).
+    // That's the source of truth for which slot owns which row when a worker
+    // runs concurrent slots; matching by workerId would collapse all rows
+    // onto slot[0].
+    const agent = task ? agents.value.find((a) => a.taskId === task.id) || null : null
     const activityKey: StationKey | null =
       agent && agent.activity ? ACTIVITY_TO_STATION[agent.activity] : null
     rows.push({ index: i, task, agent, activityKey })

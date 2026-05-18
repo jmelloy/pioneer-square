@@ -9,9 +9,8 @@ const STATE_RANK: Record<string, number> = {
   thinking: 1,
   busy: 2,
   error: 3,
-  'awaiting-review': 4,
-  idle: 5,
-  offline: 6,
+  idle: 4,
+  offline: 5,
 }
 
 interface RegisterAgentData {
@@ -21,6 +20,7 @@ interface RegisterAgentData {
   workerId?: string | null
   workerName?: string
   state?: AgentState
+  taskId?: string | null
   joinedAt?: string
 }
 
@@ -35,13 +35,6 @@ interface AssignTaskOpts {
   description: string
   issueNumber?: number | null
   issueRepo?: string | null
-}
-
-// Fallback label when the backend hasn't supplied a workerName.
-// New backends return ``hostname[:3]/worker_id`` (e.g. ``tok/w-g2otus``);
-// this handles older backends that omit the field.
-function _workerDroidName(workerId: string): string {
-  return workerId
 }
 
 export const useAgentsStore = defineStore('agents', () => {
@@ -60,9 +53,9 @@ export const useAgentsStore = defineStore('agents', () => {
       if (!map.has(agent.workerId)) {
         map.set(agent.workerId, {
           id: agent.workerId,
-          // Prefer the backend-supplied workerName from the agent-joined payload;
-          // fall back to local derivation for agents from older backends or REST init.
-          name: agent.workerName || _workerDroidName(agent.workerId),
+          // Prefer the backend-supplied workerName; older backends that omit it
+          // fall back to the workerId itself as a stable label.
+          name: agent.workerName || agent.workerId,
           state: agent.state,
         })
       } else {
@@ -83,6 +76,7 @@ export const useAgentsStore = defineStore('agents', () => {
       existing.name = agentData.agentName || existing.name
       if (agentData.workerId) existing.workerId = agentData.workerId
       if (agentData.workerName) existing.workerName = agentData.workerName
+      if (agentData.taskId !== undefined) existing.taskId = agentData.taskId
     } else {
       agents.value.push({
         id: agentData.agentId,
@@ -91,17 +85,27 @@ export const useAgentsStore = defineStore('agents', () => {
         workerId: agentData.workerId || null,
         workerName: agentData.workerName,
         state: agentData.state || 'idle',
+        taskId: agentData.taskId ?? null,
         logs: [],
         joinedAt: agentData.joinedAt || new Date().toISOString(),
       })
     }
   }
 
-  function updateAgentState(agentId: string, state: AgentState, activity?: AgentActivity | null) {
+  function updateAgentState(
+    agentId: string,
+    state: AgentState,
+    activity?: AgentActivity | null,
+    taskId?: string | null,
+  ) {
     const agent = agents.value.find((a) => a.id === agentId)
     if (!agent) return
     agent.state = state
     if (activity !== undefined) agent.activity = activity
+    if (taskId !== undefined) agent.taskId = taskId
+    // Idle/offline agents are by definition not working a task; clear the
+    // link so a stale taskId from a prior run can't latch the agent to a row.
+    if (state === 'idle' || state === 'offline') agent.taskId = null
   }
 
   function addLog(agentId: string, line: string, timestamp?: string, detail?: LogDetail | null) {
@@ -201,14 +205,11 @@ export const useAgentsStore = defineStore('agents', () => {
 
   function firstIdleWorker() {
     const workerAgents = agents.value.filter((a) => a.workerId && a.state !== 'offline')
-    const idleAgent =
+    const pick =
       workerAgents.find((a) => a.state === 'idle') ||
-      workerAgents.find((a) => !['working', 'awaiting-review', 'error'].includes(a.state)) ||
+      workerAgents.find((a) => !['working', 'error'].includes(a.state)) ||
       workerAgents[0]
-    if (idleAgent) return { id: idleAgent.workerId, name: idleAgent.name, state: idleAgent.state }
-
-    const legacy = agents.value.filter((a) => a.id.startsWith('w-') && a.state !== 'offline')
-    return legacy.find((a) => a.state === 'idle') || legacy[0] || null
+    return pick ? { id: pick.workerId, name: pick.name, state: pick.state } : null
   }
 
   function clearAgents() {
@@ -254,7 +255,12 @@ export const useAgentsStore = defineStore('agents', () => {
     if (data.type === 'agent-joined') {
       registerAgent(data)
     } else if (data.type === 'agent-state') {
-      updateAgentState(data.agentId, data.state, data.activity ?? undefined)
+      updateAgentState(
+        data.agentId,
+        data.state,
+        data.activity ?? undefined,
+        data.taskId ?? undefined,
+      )
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
       if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)

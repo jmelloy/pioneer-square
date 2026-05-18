@@ -113,7 +113,9 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     return positions[id] || { x: opts.tableLeft + 60, y: opts.tableTop + opts.rowHeight.value }
   }
 
-  // Match by agentId so each robot goes to its own table, not all to the same one.
+  // Each row belongs to one agent (the slot that reported taskId === task.id),
+  // so this returns at most one row per agent — no jitter needed to spread
+  // multiple robots that used to collapse onto the same bench.
   function rowForAgent(agent: Agent): ChoreographyRow | null {
     return opts.taskRows.value.find((r) => r.agentId === agent.id) ?? null
   }
@@ -122,23 +124,11 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     return !['idle', 'offline'].includes(agent.state)
   }
 
-  // Small golden-angle spiral offset per slot index prevents robots from stacking
-  // exactly on top of each other when they share a workbench position.
-  function slotJitter(agentId: string): Position {
-    const idx = opts.agents.value.findIndex((a) => a.id === agentId)
-    if (idx <= 0) return { x: 0, y: 0 }
-    const angle = (idx * 137.508 * Math.PI) / 180
-    const r = Math.min(idx * 5, 16)
-    return { x: Math.cos(angle) * r, y: Math.sin(angle) * r }
-  }
-
   function targetForAgent(agent: Agent): Position {
     const row = rowForAgent(agent)
-    const jitter = slotJitter(agent.id)
     if (row && isWorking(agent)) {
       const key = row.activityKey
-      const base = key ? stationPos(row.index, key) : rowCenterPos(row.index)
-      return { x: base.x + jitter.x, y: base.y + jitter.y }
+      return key ? stationPos(row.index, key) : rowCenterPos(row.index)
     }
     return pickWanderPos(agent.id)
   }
@@ -200,10 +190,13 @@ export function useAgentChoreography(opts: ChoreographyOptions) {
     opts.agents.value.forEach(syncAgent)
   }
 
+  // Re-run choreography when any property that changes an agent's target
+  // moves: state (working ↔ idle), activity (which station), or taskId
+  // (which bench). taskRows changes are covered by the second watcher.
   watch(
     () =>
       opts.agents.value
-        .map((a) => `${a.id}:${a.state}:${a.workerId}:${a.activity ?? ''}`)
+        .map((a) => `${a.id}:${a.state}:${a.activity ?? ''}:${a.taskId ?? ''}`)
         .join(','),
     syncAll,
   )

@@ -1,11 +1,4 @@
-export type AgentState =
-  | 'idle'
-  | 'thinking'
-  | 'working'
-  | 'busy'
-  | 'error'
-  | 'offline'
-  | 'awaiting-review'
+export type AgentState = 'idle' | 'thinking' | 'working' | 'busy' | 'error' | 'offline'
 
 export type AgentActivity =
   | 'reading'
@@ -40,6 +33,10 @@ export interface Agent {
   workerName?: string
   state: AgentState
   activity?: AgentActivity | null
+  // ID of the task this agent is currently executing (set when state is
+  // working/thinking/busy/error, null when idle/offline). Source of truth for
+  // mapping a task row to its agent on the factory floor.
+  taskId?: string | null
   logs: LogEntry[]
   joinedAt: string
 }
@@ -86,6 +83,7 @@ export interface Guild {
     type: string
     worker_id?: string | null
     state: AgentState
+    current_task_id?: string | null
     joined_at?: string
   }>
   messages?: ChatMessage[]
@@ -167,12 +165,15 @@ export interface AgentJoinedWS {
   workerId?: string | null
   workerName?: string
   state?: AgentState
+  taskId?: string | null
   joinedAt?: string
 }
 
 export interface AgentStateWS {
   type: 'agent-state'
   agentId: string
+  workerId?: string | null
+  taskId?: string | null
   state: AgentState
   activity?: AgentActivity | null
 }
@@ -210,6 +211,7 @@ export interface TaskAssignedWS {
 export interface TaskUpdateWS {
   type: 'task-update'
   taskId: string
+  agentId?: string | null
   state?: TaskState
   branch?: string
   prUrl?: string
@@ -222,6 +224,7 @@ export interface TaskCompleteWS {
   type: 'task-complete'
   taskId: string
   workerId?: string
+  agentId?: string | null
   branch?: string
   prUrl?: string | null
 }
@@ -229,6 +232,7 @@ export interface TaskCompleteWS {
 export interface TaskFollowupDoneWS {
   type: 'task-followup-done'
   taskId: string
+  agentId?: string | null
 }
 
 export interface NeedsInputWS {

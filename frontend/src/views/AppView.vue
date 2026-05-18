@@ -111,6 +111,7 @@ async function initGuild(guildId: string) {
           agentType: a.type,
           workerId: a.worker_id || null,
           state: a.state,
+          taskId: a.current_task_id ?? null,
           joinedAt: a.joined_at,
         }),
       )

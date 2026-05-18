@@ -52,6 +52,11 @@ class Agent(Base):
     type = Column(Text, nullable=False, server_default="worker")
     state = Column(Text, nullable=False, server_default="idle")
     activity = Column(Text, nullable=True)
+    # Task this agent is currently executing (NULL when idle/offline). Set
+    # from worker-emitted agent-state messages; lets the UI map a task row
+    # to its agent unambiguously when a worker runs concurrent slots that
+    # share a worker_id.
+    current_task_id = Column(Text, nullable=True)
     joined_at = Column(Text, nullable=False)
     # ISO-8601 UTC timestamp of the last message received from this agent over
     # the WebSocket. Refreshed by every inbound frame (incl. application-level

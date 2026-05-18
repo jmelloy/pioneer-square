@@ -631,29 +631,38 @@ class Worker:
                 new_activity = detail.get("activity")
                 if new_activity and new_activity != slot.activity:
                     slot.activity = new_activity
-                    await self._send(
-                        {
-                            "type": "agent-state",
-                            "agentId": slot.agent_id,
-                            "state": slot.state,
-                            "activity": new_activity,
-                        }
-                    )
+                    await self._emit_agent_state(slot)
 
         return _emit_task
+
+    async def _emit_agent_state(self, slot: Agent) -> None:
+        """Broadcast the slot's full identity + runtime state.
+
+        Every ``agent-state`` frame carries workerId/agentId/taskId so the
+        frontend can map a task row to the slot that owns it without
+        falling back to ambiguous worker-level matching.
+        """
+        await self._send(
+            {
+                "type": "agent-state",
+                "workerId": self.cfg.worker_id,
+                "agentId": slot.agent_id,
+                "taskId": slot.current_task_id,
+                "state": slot.state,
+                "activity": slot.activity,
+            }
+        )
 
     async def _set_state(self, state: str, slot: Agent) -> None:
         slot.state = state
         if state != "working":
             slot.activity = None
-        await self._send(
-            {
-                "type": "agent-state",
-                "agentId": slot.agent_id,
-                "state": state,
-                "activity": slot.activity,
-            }
-        )
+        # Idle/offline slots aren't working anything; drop the task link so the
+        # frontend can match `agent.taskId === task.id` without picking up a
+        # stale association from the previous run.
+        if state in ("idle", "offline"):
+            slot.current_task_id = None
+        await self._emit_agent_state(slot)
 
     async def _join(self) -> None:
         for slot in self.slots:
@@ -692,13 +701,7 @@ class Worker:
         # state so a mid-task reconnect doesn't show us as idle while we work.
         for slot in self.slots:
             if slot.state and slot.state != "idle":
-                await self._send(
-                    {
-                        "type": "agent-state",
-                        "agentId": slot.agent_id,
-                        "state": slot.state,
-                    }
-                )
+                await self._emit_agent_state(slot)
         # Re-fetch any tasks that were assigned while the WS was down; without
         # this they'd be missed until the idle puller fires (up to 300s later).
         try:
@@ -711,15 +714,20 @@ class Worker:
         except Exception as exc:
             logger.warning("Reconnect: pending-task fetch failed: %s", exc)
 
-    async def _task_update(self, task_id: str, **fields: object) -> None:
-        await self._send(
-            {
-                "type": "task-update",
-                "workerId": self.cfg.worker_id,
-                "taskId": task_id,
-                **fields,
-            }
-        )
+    async def _task_update(
+        self, task_id: str, *, slot: Agent | None = None, **fields: object
+    ) -> None:
+        payload: dict = {
+            "type": "task-update",
+            "workerId": self.cfg.worker_id,
+            "taskId": task_id,
+            **fields,
+        }
+        # Include the slot identity so the UI can map task→agent unambiguously
+        # when a worker runs multiple concurrent slots (workerId is shared).
+        if slot is not None:
+            payload["agentId"] = slot.agent_id
+        await self._send(payload)
 
     async def _ensure_pr_webhook(self, pr_url: str, emit) -> None:
         """Best-effort: install/refresh a Pioneer Square webhook on the PR's repo.
@@ -1422,7 +1430,9 @@ class Worker:
             except Exception as exc:
                 logger.exception("Task %s crashed: %s", task_id, exc)
                 await self._emit(f"[worker] ✗ Internal error on task {task_id}: {exc}")
-                await self._task_update(task["id"], state="failed", finishedAt=_now_iso())
+                await self._task_update(
+                    task["id"], slot=slot, state="failed", finishedAt=_now_iso()
+                )
             finally:
                 slot.current_task_id = None
         try:
@@ -1454,7 +1464,7 @@ class Worker:
             desc[:120],
         )
         await self._set_state("working", slot)
-        await self._task_update(task_id, state="working")
+        await self._task_update(task_id, slot=slot, state="working")
 
         name = task.get("name") or desc
         # On follow-ups we must continue on the existing branch — the original
@@ -1521,11 +1531,11 @@ class Worker:
         if not primary_wt:
             logger.error("Task %s: no worktrees created — aborting", task_id)
             await emit("[worker] ✗ No worktrees — aborting.")
-            await self._task_update(task_id, state="failed", finishedAt=_now_iso())
+            await self._task_update(task_id, slot=slot, state="failed", finishedAt=_now_iso())
             await self._set_state("error", slot)
             return
 
-        await self._task_update(task_id, branch=branch, worktreePath=primary_wt)
+        await self._task_update(task_id, slot=slot, branch=branch, worktreePath=primary_wt)
         # Register worktrees for the deferred sweeper — touched again below in
         # finally so the timestamp reflects the most recent activity.
         self._register_worktrees(task_id, worktree_entries)
@@ -1624,7 +1634,9 @@ class Worker:
 
                 if task_id in self._cancelled_tasks:
                     await emit("[worker] Task cancelled.")
-                    await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                    await self._task_update(
+                        task_id, slot=slot, state="cancelled", finishedAt=_now_iso()
+                    )
                     await self._release_task_worktrees(task_id)
                     await self._set_state("idle", slot)
                     return
@@ -1636,7 +1648,9 @@ class Worker:
 
                 if redirect_instr is _CANCEL_SENTINEL:
                     await emit("[worker] Task cancelled.")
-                    await self._task_update(task_id, state="cancelled", finishedAt=_now_iso())
+                    await self._task_update(
+                        task_id, slot=slot, state="cancelled", finishedAt=_now_iso()
+                    )
                     await self._release_task_worktrees(task_id)
                     await self._set_state("idle", slot)
                     return
@@ -1644,7 +1658,7 @@ class Worker:
                 if redirect_instr is not None and not self._shutdown_event.is_set():
                     await emit(f"[worker] ↩ Redirected: {redirect_instr[:120]}")
                     current_desc = redirect_instr
-                    await self._task_update(task_id, state="working")
+                    await self._task_update(task_id, slot=slot, state="working")
                     continue
 
                 break  # normal exit from redirect loop
@@ -1688,6 +1702,7 @@ class Worker:
 
                 await self._task_update(
                     task_id,
+                    slot=slot,
                     branch=branch,
                     worktreePath=primary_wt,
                     prUrl=pr_url or "",
@@ -1702,6 +1717,7 @@ class Worker:
                         {
                             "type": "task-followup-done",
                             "workerId": self.cfg.worker_id,
+                            "agentId": slot.agent_id,
                             "taskId": task_id,
                             "success": True,
                             "stopReason": stop_reason,
@@ -1715,6 +1731,7 @@ class Worker:
                         {
                             "type": "task-complete",
                             "workerId": self.cfg.worker_id,
+                            "agentId": slot.agent_id,
                             "taskId": task_id,
                             "branch": branch,
                             "description": desc,
@@ -1729,6 +1746,7 @@ class Worker:
                 # that resumes the same worktree/session.
                 await self._task_update(
                     task_id,
+                    slot=slot,
                     branch=branch,
                     worktreePath=primary_wt,
                     state="failed",
@@ -1737,6 +1755,7 @@ class Worker:
                     {
                         "type": "needs-input",
                         "workerId": self.cfg.worker_id,
+                        "agentId": slot.agent_id,
                         "taskId": task_id,
                         "description": desc,
                         "branch": branch,
