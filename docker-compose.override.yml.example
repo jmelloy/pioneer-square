@@ -9,6 +9,10 @@ services:
     # is served by the Vite dev server on port 5056.
     volumes:
       - ./backend:/app
+    environment:
+      # Proxy unmatched requests to the Vite dev server so GitHub OAuth
+      # (registered to the backend URL) can redirect back and reach the SPA.
+      VITE_DEV_URL: http://frontend:5173
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   # To run the worker with verbose logging, either set WORKER_LOG_LEVEL=DEBUG
@@ -21,15 +25,10 @@ services:
     working_dir: /app
     volumes:
       - ./frontend:/app
-      - frontend-node-modules:/app/node_modules
     ports:
       - "5056:5173"
     environment:
       BACKEND_URL: http://backend:8000
-    # npm ci is skipped if node_modules is already populated (volume persists between runs)
-    command: sh -c "[ -d node_modules ] || npm ci && npm run dev -- --host 0.0.0.0"
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0"
     depends_on:
       - backend
-
-volumes:
-  frontend-node-modules:
