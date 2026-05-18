@@ -43,6 +43,7 @@ foreman_connections: dict[str, WebSocket] = {}
 # connections dict.  The standalone foreman/main.py sets this before importing
 # the runner so that broadcasts are relayed to the backend via WebSocket.
 _broadcast_override = None
+_broadcast_override_lock = asyncio.Lock()
 
 
 def agent_owner_lock(guild_id: str) -> asyncio.Lock:
@@ -54,10 +55,19 @@ def agent_owner_lock(guild_id: str) -> asyncio.Lock:
     return lock
 
 
+async def set_broadcast_override(fn) -> None:
+    """Set the broadcast override callable under the override lock."""
+    global _broadcast_override
+    async with _broadcast_override_lock:
+        _broadcast_override = fn
+
+
 async def broadcast(guild_id: str, message: dict, exclude: WebSocket | None = None):
     """Broadcast a message to all connections in a guild."""
-    if _broadcast_override is not None:
-        await _broadcast_override(guild_id, message, exclude)
+    async with _broadcast_override_lock:
+        override = _broadcast_override
+    if override is not None:
+        await override(guild_id, message, exclude)
         return
     if guild_id not in connections:
         return

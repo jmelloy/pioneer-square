@@ -19,6 +19,8 @@ from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)
 
+FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-haiku-4-5-20251001")
+
 # Default soft-delete window (seconds) when finalize_task is called without
 # an explicit expiry. Mirrors backend.main.DEFAULT_FINALIZE_TTL.
 DEFAULT_FINALIZE_TTL_SECONDS = 3 * 24 * 60 * 60  # 3 days
@@ -1686,7 +1688,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     "- Keep each comment concise (1-3 sentences)"
                                 )
                                 ai_msg = await _ai.messages.create(
-                                    model="claude-haiku-4-5-20251001",
+                                    model=FOREMAN_MODEL,
                                     max_tokens=2048,
                                     messages=[{"role": "user", "content": review_prompt}],
                                 )

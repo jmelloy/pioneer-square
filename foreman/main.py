@@ -17,6 +17,7 @@ Environment variables:
     DB_PATH          Path to the SQLite database file   (default: pioneer_square.db)
     DATABASE_URL     Full SQLAlchemy URL; overrides DB_PATH
     ANTHROPIC_API_KEY  Anthropic key for the AI loop
+    FOREMAN_MODEL    Claude model for the foreman AI    (default: claude-haiku-4-5-20251001)
     LOG_LEVEL        Logging level                       (default: INFO)
 """
 
