@@ -119,10 +119,24 @@ async def authorize_worker_or_member(guild_id: str, token: str | None) -> str:
             select(UserSession.github_user_id).where(UserSession.token == token)
         )
         github_user_id = user_res.scalar_one_or_none()
-        if not github_user_id:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-        await ensure_membership(db, guild_id, github_user_id)
-        return f"user:{github_user_id}"
+        if github_user_id:
+            await ensure_membership(db, guild_id, github_user_id)
+            return f"user:{github_user_id}"
+
+        # OIDC token fallback — only when the A2A receiver is enabled.
+        # Imported lazily to avoid a circular import (foreman/__init__ → runner → auth_deps).
+        from foreman.oidc import OIDCConfig, is_a2a_receiver_enabled, validate_oidc_token
+
+        if is_a2a_receiver_enabled():
+            try:
+                config = OIDCConfig.from_env()
+                payload = validate_oidc_token(token, config)
+                sub = payload.get("sub") or "oidc-agent"
+                return f"oidc:{sub}"
+            except ValueError:
+                pass
+
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     finally:
         await db.close()
 
