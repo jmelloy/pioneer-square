@@ -14,11 +14,12 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
-from foreman import run_foreman_ai
 from models import Guild, Task, TaskLog, live_tasks_filter
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from util.tasks import spawn
+
+from foreman import run_foreman_ai
 
 router = APIRouter()
 

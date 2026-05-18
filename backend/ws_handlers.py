@@ -26,12 +26,13 @@ from events import (
     pending_claude_auth,
 )
 from fastapi import WebSocket
-from foreman import maybe_post_plan_comment, reset_foreman_poll, run_foreman_ai
 from models import Agent, Message, Task, TaskLog, User, Worker
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from util.tasks import spawn
 from utils import worker_display_name
+
+from foreman import maybe_post_plan_comment, reset_foreman_poll, run_foreman_ai
 
 logger = logging.getLogger(__name__)
 
@@ -720,6 +721,20 @@ async def handle_worker_auth_response(ctx: WSContext, data: dict) -> None:
     await broadcast(ctx.guild_id, data)
 
 
+async def handle_foreman_broadcast(ctx: WSContext, data: dict) -> None:
+    """External foreman relays a broadcast payload to all guild connections.
+
+    The standalone foreman/main.py cannot call broadcast() directly (its
+    connections dict is empty — only the backend process holds live WS
+    connections).  Instead it sends a foreman-broadcast envelope; this handler
+    extracts the payload and fans it out to every frontend client in the guild.
+    """
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        return
+    await broadcast(ctx.guild_id, payload, exclude=ctx.websocket)
+
+
 async def handle_webrtc_signal(ctx: WSContext, data: dict) -> None:
     """offer/answer/ice-candidate — forward to all peers in the guild."""
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
@@ -739,6 +754,7 @@ HANDLERS: dict[str, callable] = {
     "needs-input": handle_needs_input,
     "claude-auth-required": handle_claude_auth_required,
     "foreman-disconnect": handle_foreman_disconnect,
+    "foreman-broadcast": handle_foreman_broadcast,
     "worker-auth-response": handle_worker_auth_response,
     "offer": handle_webrtc_signal,
     "answer": handle_webrtc_signal,

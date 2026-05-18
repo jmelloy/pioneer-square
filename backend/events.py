@@ -37,6 +37,13 @@ _agent_owner_locks: dict[str, asyncio.Lock] = {}
 # WS message or fall back to the embedded run_foreman_ai().
 foreman_connections: dict[str, WebSocket] = {}
 
+# Optional broadcast override for the standalone foreman process.
+# When set (to an async callable with the same signature as broadcast), all
+# broadcast() calls are routed through this function instead of the in-process
+# connections dict.  The standalone foreman/main.py sets this before importing
+# the runner so that broadcasts are relayed to the backend via WebSocket.
+_broadcast_override = None
+
 
 def agent_owner_lock(guild_id: str) -> asyncio.Lock:
     """Return the per-guild lock used to serialise ``agent_owners`` writes."""
@@ -49,6 +56,9 @@ def agent_owner_lock(guild_id: str) -> asyncio.Lock:
 
 async def broadcast(guild_id: str, message: dict, exclude: WebSocket | None = None):
     """Broadcast a message to all connections in a guild."""
+    if _broadcast_override is not None:
+        await _broadcast_override(guild_id, message, exclude)
+        return
     if guild_id not in connections:
         return
     dead = []

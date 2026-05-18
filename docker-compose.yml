@@ -31,6 +31,26 @@ services:
     command: sh -c "alembic upgrade head && python main.py"
     restart: unless-stopped
 
+  foreman:
+    build:
+      context: .
+      dockerfile: foreman/Dockerfile
+    profiles: ["foreman"]
+    environment:
+      DB_PATH: /data/pioneer_square.db
+      DATABASE_URL: sqlite+aiosqlite:////data/pioneer_square.db
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # WebSocket base URL of the backend service (no trailing slash)
+      BACKEND_WS_URL: ${BACKEND_WS_URL:-ws://backend:8000}
+      # 6-char guild ID this foreman instance manages (required)
+      GUILD_ID: ${GUILD_ID:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - backend-data:/data
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   worker:
     build:
       context: ./worker

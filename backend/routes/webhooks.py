@@ -23,12 +23,13 @@ from datetime import UTC, datetime
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, HTTPException, Request, Response
-from foreman import reset_foreman_poll, run_foreman_ai
 from models import GithubEvent, Guild, Message, Task
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from util.tasks import spawn
+
+from foreman import reset_foreman_poll, run_foreman_ai
 
 logger = logging.getLogger(__name__)
 

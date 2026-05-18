@@ -1686,7 +1686,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     "- Keep each comment concise (1-3 sentences)"
                                 )
                                 ai_msg = await _ai.messages.create(
-                                    model="claude-sonnet-4-6",
+                                    model="claude-haiku-4-5-20251001",
                                     max_tokens=2048,
                                     messages=[{"role": "user", "content": review_prompt}],
                                 )

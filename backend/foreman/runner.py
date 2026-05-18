@@ -625,7 +625,7 @@ async def run_foreman_ai(
                 len(messages),
             )
             resp = await client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=1024,
                 system=system_blocks,
                 messages=messages,
@@ -741,7 +741,7 @@ async def run_foreman_ai(
             messages = strip_orphaned_tool_results(messages)
             _stamp_message_cache_breakpoint(messages)
             wrap_resp = await client.messages.create(
-                model="claude-sonnet-4-6",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=1024,
                 system=system_blocks,
                 messages=messages,
