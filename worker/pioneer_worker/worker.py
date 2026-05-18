@@ -904,7 +904,12 @@ class Worker:
         # Reclaim any worktrees the previous incarnation of this worker left
         # behind. Tasks within the TTL window are re-registered so a follow-up
         # arriving for them can reuse the existing checkout.
-        await self._initial_worktree_sweep()
+        # Guard with a timeout: a git lock left by a crashed process can make
+        # prune/remove hang indefinitely, blocking the entire startup sequence.
+        try:
+            await asyncio.wait_for(self._initial_worktree_sweep(), timeout=30.0)
+        except TimeoutError:
+            logger.warning("Worktree startup sweep timed out after 30s — skipping")
 
         initial = await self._fetch_pending_tasks()
         logger.info("Initial pending-task fetch: %d task(s)", len(initial))
