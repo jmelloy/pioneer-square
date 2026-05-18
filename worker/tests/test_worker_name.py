@@ -1,7 +1,8 @@
-"""Tests for worker name: stored from registration response, format hostname[:3]/worker_id."""
+"""Tests for worker name: stored from registration response, droid-style format."""
 
 from __future__ import annotations
 
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -39,7 +40,7 @@ async def test_register_stores_name_from_response():
     mock_response.raise_for_status = MagicMock()
     mock_response.json.return_value = {
         "id": "w-abc123",
-        "name": "tok/w-abc123",
+        "name": "ABC-123",
         "auth_token": "secret-token",
     }
 
@@ -51,7 +52,7 @@ async def test_register_stores_name_from_response():
     with patch.object(w, "_http", return_value=mock_client):
         await w._register()
 
-    assert w._worker_name == "tok/w-abc123"
+    assert w._worker_name == "ABC-123"
     assert w.cfg.worker_id == "w-abc123"
 
 
@@ -81,21 +82,31 @@ async def test_register_name_falls_back_to_worker_id_when_absent():
 
 
 # ---------------------------------------------------------------------------
-# Name format invariants (black-box, driven by the backend formula)
+# Name format invariants (droid-style: leading-letters + '-' + rest, uppercased)
 # ---------------------------------------------------------------------------
 
 
+# Local copy of the droid-format algorithm used to verify the worker stores the
+# name it received.  This intentionally mirrors backend/utils.py:format_worker_id
+# — if the canonical algorithm changes, update this shadow copy too.
+def _droid_format(worker_id: str) -> str:
+    bare = worker_id.removeprefix("w-")
+    m = re.search(r"\d", bare)
+    if m and m.start() > 0:
+        return f"{bare[: m.start()].upper()}-{bare[m.start() :].upper()}"
+    return bare.upper()
+
+
 @pytest.mark.parametrize(
-    "hostname, worker_id, expected",
+    "worker_id, expected",
     [
-        ("tokenhost", "w-g2otus", "tok/w-g2otus"),
-        ("ab", "w-short0", "ab/w-short0"),
-        ("z", "w-single0", "z/w-single0"),
-        ("xyz", "w-abc123", "xyz/w-abc123"),
-        ("longhost", "w-abc123", "lon/w-abc123"),
+        ("w-vd3566", "VD-3566"),
+        ("w-ab1234", "AB-1234"),
+        ("w-x9", "X-9"),
+        ("w-abc123", "ABC-123"),
+        ("w-g2otus", "G-2OTUS"),
     ],
 )
-def test_name_format(hostname, worker_id, expected):
-    """The name format ``hostname[:3]/worker_id`` holds for various inputs."""
-    prefix = hostname[:3]
-    assert f"{prefix}/{worker_id}" == expected
+def test_name_format(worker_id, expected):
+    """Droid-style: leading letters uppercased, '-', then rest uppercased."""
+    assert _droid_format(worker_id) == expected

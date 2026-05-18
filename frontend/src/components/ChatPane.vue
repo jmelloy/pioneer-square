@@ -91,8 +91,8 @@ function handleTaskEvent(data: WSInbound) {
       from: 'system',
       to: 'user',
       content: data.prUrl
-        ? `✓ ${data.workerId} done — PR: ${data.prUrl}`
-        : `✓ ${data.workerId} finished (no PR)`,
+        ? `✓ ${agentsStore.workerDisplayName(data.workerId)} done — PR: ${data.prUrl}`
+        : `✓ ${agentsStore.workerDisplayName(data.workerId)} finished (no PR)`,
       prUrl: data.prUrl || null,
       createdAt: new Date().toISOString(),
     })
@@ -101,7 +101,7 @@ function handleTaskEvent(data: WSInbound) {
       type: 'chat',
       from: 'system',
       to: 'user',
-      content: `⚠ ${data.workerId} needs attention on: "${data.description}"`,
+      content: `⚠ ${agentsStore.workerDisplayName(data.workerId)} needs attention on: "${data.description}"`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'claude-auth-required') {
@@ -110,7 +110,7 @@ function handleTaskEvent(data: WSInbound) {
       type: 'chat',
       from: 'system',
       to: 'user',
-      content: `⚿ ${data.workerId} needs Claude auth — visit the URL and paste the code below`,
+      content: `⚿ ${agentsStore.workerDisplayName(data.workerId)} needs Claude auth — visit the URL and paste the code below`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'task-assigned') {
@@ -119,7 +119,7 @@ function handleTaskEvent(data: WSInbound) {
       type: 'chat',
       from: 'system',
       to: 'user',
-      content: `→ ${data.workerId} assigned: ${taskName}`,
+      content: `→ ${agentsStore.workerDisplayName(data.workerId)} assigned: ${taskName}`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'foreman-poll-status') {

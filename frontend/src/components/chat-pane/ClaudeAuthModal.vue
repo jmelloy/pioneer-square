@@ -4,7 +4,7 @@
       <div class="auth-modal">
         <div class="auth-modal-header">
           <span class="auth-modal-title">⚿ CLAUDE AUTH REQUIRED</span>
-          <span class="auth-modal-worker">{{ pending.workerId }}</span>
+          <span class="auth-modal-worker">{{ agentsStore.workerDisplayName(pending.workerId) }}</span>
         </div>
         <div class="auth-modal-body">
           <p class="auth-instruction">
@@ -37,6 +37,9 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useAgentsStore } from '../../stores/agents'
+
+const agentsStore = useAgentsStore()
 
 const props = defineProps<{
   pending: { workerId: string; url: string } | null

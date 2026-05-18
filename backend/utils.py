@@ -95,16 +95,53 @@ def generate_guild_id(name: str = "", existing_ids: set[str] | None = None) -> s
             return unique
 
 
-def worker_display_name(worker_id: str, hostname: str | None = None) -> str:
-    """Render a worker id as ``hostname[:3]/worker_id`` (e.g. ``tok/w-g2otus``).
+# ---------------------------------------------------------------------------
+# MIRROR: format_worker_id is intentionally duplicated in
+#   frontend/src/utils/format.ts as ``formatWorkerId``.
+# Both implementations MUST be kept in sync.
+#
+# Transformation rules:
+#   1. Strip the "w-" prefix (removeprefix is a no-op if absent).
+#   2. Find the first digit in the remaining string.
+#   3. If a digit exists at position > 0, split there:
+#        LEFT  = everything before the first digit (uppercased)
+#        RIGHT = everything from the first digit onward (uppercased)
+#        result = LEFT + "-" + RIGHT
+#   4. Otherwise return the whole string uppercased (no hyphen inserted).
+#
+# Examples:  w-vd3566 → VD-3566 | w-ab1234 → AB-1234 | w-x9 → X-9
+# Edge cases:
+#   - All-digit suffix (e.g. w-1234): m.start()==0, returns "1234".
+#   - No-digit suffix (e.g. w-abc):   no match,     returns "ABC".
+#   - No w- prefix (bare ID):         no-op strip,  still formatted.
+# ---------------------------------------------------------------------------
+def format_worker_id(worker_id: str) -> str:
+    """Format a worker ID in droid style: ``w-vd3566`` → ``VD-3566``.
 
-    When *hostname* is absent the bare *worker_id* is returned so callers
-    always have a usable label.  Edge cases: hostnames shorter than 3 chars
-    are used in full.
+    Strips the ``w-`` prefix, splits at the first digit boundary, uppercases
+    both parts, and joins with a hyphen.  Examples: ``w-ab1234`` → ``AB-1234``,
+    ``w-x9`` → ``X-9``, ``w-g2otus`` → ``G-2OTUS``.
+
+    Input is expected to be a ``w-<slug>`` worker ID, but the function degrades
+    gracefully for bare slugs (no prefix) or all-digit/all-letter slugs.
     """
+    bare = worker_id.removeprefix("w-")
+    m = re.search(r"\d", bare)
+    if m and m.start() > 0:
+        return f"{bare[: m.start()].upper()}-{bare[m.start() :].upper()}"
+    return bare.upper()
+
+
+def worker_display_name(worker_id: str, hostname: str | None = None) -> str:
+    """Render a worker ID as ``hostname/VD-3566``, or just ``VD-3566`` when no hostname.
+
+    The hostname, when present, is prepended with a ``/`` separator so operators
+    can tell workers on different machines apart at a glance.
+    """
+    droid = format_worker_id(worker_id)
     if hostname:
-        return f"{hostname[:3]}/{worker_id}"
-    return worker_id
+        return f"{hostname}/{droid}"
+    return droid
 
 
 def decode_claude_oauth_token(blob: str | None) -> str | None:

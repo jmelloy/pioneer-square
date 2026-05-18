@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
 import { api } from '../utils/api'
+import { formatWorkerId } from '../utils/format'
 import type { Agent, AgentActivity, AgentState, LogDetail, LogEntry, Worker, WSInbound } from '../types'
 
 const STATE_RANK: Record<string, number> = {
@@ -212,6 +213,13 @@ export const useAgentsStore = defineStore('agents', () => {
     return pick ? { id: pick.workerId, name: pick.name, state: pick.state } : null
   }
 
+  // Returns the stored display name (e.g. "myhost/VD-3566") for a worker,
+  // falling back to the droid-style ID for workers not yet seen via WebSocket.
+  function workerDisplayName(workerId: string): string {
+    const worker = workers.value.find((w) => w.id === workerId)
+    return worker?.name ?? formatWorkerId(workerId)
+  }
+
   function clearAgents() {
     agents.value = []
     workerLogs.value = {}
@@ -296,6 +304,7 @@ export const useAgentsStore = defineStore('agents', () => {
     assignTask,
     messageWorker,
     firstIdleWorker,
+    workerDisplayName,
     clearAgents,
     handleWebSocketMessage,
   }
