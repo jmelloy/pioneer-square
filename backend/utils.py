@@ -95,16 +95,27 @@ def generate_guild_id(name: str = "", existing_ids: set[str] | None = None) -> s
             return unique
 
 
-def worker_display_name(worker_id: str, hostname: str | None = None) -> str:
-    """Render a worker id as ``hostname[:3]/worker_id`` (e.g. ``tok/w-g2otus``).
+def format_worker_id(worker_id: str) -> str:
+    """Format a worker ID in droid style: ``w-vd3566`` → ``VD-3566``.
 
-    When *hostname* is absent the bare *worker_id* is returned so callers
-    always have a usable label.  Edge cases: hostnames shorter than 3 chars
-    are used in full.
+    Strips the ``w-`` prefix, splits at the first digit boundary, uppercases
+    both parts, and joins with a hyphen.  Examples: ``w-ab1234`` → ``AB-1234``,
+    ``w-x9`` → ``X-9``, ``w-g2otus`` → ``G-2OTUS``.
     """
-    if hostname:
-        return f"{hostname[:3]}/{worker_id}"
-    return worker_id
+    bare = worker_id.removeprefix("w-")
+    m = re.search(r"\d", bare)
+    if m and m.start() > 0:
+        return f"{bare[: m.start()].upper()}-{bare[m.start() :].upper()}"
+    return bare.upper()
+
+
+def worker_display_name(worker_id: str, hostname: str | None = None) -> str:
+    """Render a worker ID in droid style (e.g. ``VD-3566``).
+
+    The *hostname* parameter is accepted for backwards compatibility but is
+    no longer used — the droid-style format derives entirely from the worker ID.
+    """
+    return format_worker_id(worker_id)
 
 
 def decode_claude_oauth_token(blob: str | None) -> str | None:

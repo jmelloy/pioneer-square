@@ -1,4 +1,4 @@
-"""Tests for worker identity: name = hostname[:3]/worker_id."""
+"""Tests for worker identity: droid-style name derived from worker ID."""
 
 from __future__ import annotations
 
@@ -8,62 +8,75 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils import worker_display_name
+from utils import format_worker_id, worker_display_name
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, make_auth_token
 
 # ---------------------------------------------------------------------------
-# worker_display_name unit tests
+# format_worker_id unit tests
 # ---------------------------------------------------------------------------
 
 
-def test_with_hostname_normal():
-    assert worker_display_name("w-g2otus", "token-machine") == "tok/w-g2otus"
+def test_format_standard():
+    assert format_worker_id("w-vd3566") == "VD-3566"
 
 
-def test_with_hostname_takes_exactly_3_chars():
-    assert worker_display_name("w-abc123", "xy") == "xy/w-abc123"
+def test_format_ab1234():
+    assert format_worker_id("w-ab1234") == "AB-1234"
 
 
-def test_with_hostname_single_char():
-    assert worker_display_name("w-abc123", "z") == "z/w-abc123"
+def test_format_single_letter():
+    assert format_worker_id("w-x9") == "X-9"
 
 
-def test_with_hostname_exactly_3_chars():
-    assert worker_display_name("w-abc123", "tok") == "tok/w-abc123"
+def test_format_three_letters():
+    assert format_worker_id("w-abc123") == "ABC-123"
 
 
-def test_with_hostname_longer_than_3():
-    assert worker_display_name("w-abc123", "foobar") == "foo/w-abc123"
+def test_format_letter_digit_letters():
+    # Letters end at 'g', digits+letters follow from '2otus'
+    assert format_worker_id("w-g2otus") == "G-2OTUS"
 
 
-def test_without_hostname_returns_worker_id():
-    assert worker_display_name("w-abc123") == "w-abc123"
+def test_format_strips_w_prefix():
+    name = format_worker_id("w-vd3566")
+    assert not name.startswith("w-")
+    assert not name.startswith("W-")
 
 
-def test_without_hostname_explicit_none():
-    assert worker_display_name("w-abc123", None) == "w-abc123"
-
-
-def test_hostname_empty_string():
-    # Empty hostname — falsy, so treated as absent; returns bare worker_id.
-    assert worker_display_name("w-abc123", "") == "w-abc123"
-
-
-def test_name_contains_worker_id():
-    wid = "w-g2otus"
-    name = worker_display_name(wid, "pioneer")
-    assert wid in name
-
-
-def test_name_contains_hostname_prefix():
-    name = worker_display_name("w-g2otus", "pioneer")
-    assert name.startswith("pio/")
+def test_format_uppercase():
+    assert format_worker_id("w-vd3566") == format_worker_id("w-vd3566").upper()
 
 
 # ---------------------------------------------------------------------------
-# API tests: registration returns name; list includes name
+# worker_display_name: delegates to format_worker_id, ignores hostname
+# ---------------------------------------------------------------------------
+
+
+def test_worker_display_name_with_hostname():
+    assert worker_display_name("w-vd3566", "token-machine") == "VD-3566"
+
+
+def test_worker_display_name_no_hostname():
+    assert worker_display_name("w-abc123") == "ABC-123"
+
+
+def test_worker_display_name_none_hostname():
+    assert worker_display_name("w-abc123", None) == "ABC-123"
+
+
+def test_worker_display_name_empty_hostname():
+    assert worker_display_name("w-abc123", "") == "ABC-123"
+
+
+def test_worker_display_name_matches_format_worker_id():
+    wid = "w-vd3566"
+    assert worker_display_name(wid, "some-host") == format_worker_id(wid)
+
+
+# ---------------------------------------------------------------------------
+# API tests: registration returns droid-style name
 # ---------------------------------------------------------------------------
 
 
@@ -72,17 +85,17 @@ def _auth(db_path: str) -> dict:
 
 
 def test_register_worker_name_without_hostname(client):
-    """When no hostname is supplied the name falls back to the worker_id."""
+    """Name is the droid-formatted worker ID even without a hostname."""
     test_client, db_path = client
     insert_guild(db_path, "wname01")
     resp = test_client.post("/guilds/wname01/workers", json={"repos": []})
     assert resp.status_code == 200
     data = resp.json()
-    assert data["name"] == data["id"]
+    assert data["name"] == format_worker_id(data["id"])
 
 
 def test_register_worker_name_with_hostname(client):
-    """Registration with a hostname produces ``hostname[:3]/worker_id``."""
+    """Hostname is ignored — name is always the droid-formatted worker ID."""
     test_client, db_path = client
     insert_guild(db_path, "wname02")
     resp = test_client.post(
@@ -91,12 +104,11 @@ def test_register_worker_name_with_hostname(client):
     )
     assert resp.status_code == 200
     data = resp.json()
-    wid = data["id"]
-    assert data["name"] == f"pio/{wid}"
+    assert data["name"] == format_worker_id(data["id"])
 
 
 def test_register_worker_name_short_hostname(client):
-    """Hostnames shorter than 3 chars are used in full."""
+    """Short hostnames are also ignored; name is droid-formatted."""
     test_client, db_path = client
     insert_guild(db_path, "wname03")
     resp = test_client.post(
@@ -105,8 +117,7 @@ def test_register_worker_name_short_hostname(client):
     )
     assert resp.status_code == 200
     data = resp.json()
-    wid = data["id"]
-    assert data["name"] == f"ab/{wid}"
+    assert data["name"] == format_worker_id(data["id"])
 
 
 def test_list_workers_includes_name(client):
@@ -125,7 +136,7 @@ def test_list_workers_includes_name(client):
     workers = list_resp.json()
     assert len(workers) == 1
     assert "name" in workers[0]
-    assert workers[0]["name"] == f"tes/{wid}"
+    assert workers[0]["name"] == format_worker_id(wid)
 
 
 def test_list_workers_name_persisted_correctly(client):
@@ -139,7 +150,7 @@ def test_list_workers_name_persisted_correctly(client):
         json={"repos": [], "hostname": "myhost"},
     )
     wid = resp.json()["id"]
-    expected_name = f"myh/{wid}"
+    expected_name = format_worker_id(wid)
 
     with sqlite3.connect(db_path) as conn:
         row = conn.execute("SELECT name FROM workers WHERE id = ?", (wid,)).fetchone()
