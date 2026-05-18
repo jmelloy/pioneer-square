@@ -1,5 +1,5 @@
 <template>
-  <div class="factory-floor">
+  <div class="factory-floor" ref="floorEl">
     <!-- Background grid -->
     <div class="floor-grid"></div>
 
@@ -133,7 +133,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch, onMounted, onUnmounted } from 'vue'
+import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import AgentAvatar from './AgentAvatar.vue'
@@ -145,22 +145,36 @@ const agents = computed(() => agentsStore.agents.filter((a) => a.state !== 'offl
 
 const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
 
-// 4-wide × 2-tall grid of work stations. Positions are fixed pixels relative
-// to the floor wrapper — keeps the layout predictable on the steampunk
-// backdrop and matches the README screenshot.
-const stationPositions = [
-  { x: 60, y: 120 },
-  { x: 200, y: 120 },
-  { x: 340, y: 120 },
-  { x: 480, y: 120 },
-  { x: 60, y: 280 },
-  { x: 200, y: 280 },
-  { x: 340, y: 280 },
-  { x: 480, y: 280 },
-]
+const floorEl = ref<HTMLElement | null>(null)
+const containerWidth = ref(640)
+let _ro: ResizeObserver | null = null
 
-const WALK_AREA = { xMin: 30, xMax: 540, yMin: 80, yMax: 330 }
-const MAX_STATIONS = stationPositions.length
+// 4-column on wide screens, 2-column on phones. Computed so agents re-sync on resize.
+const stationPositions = computed(() => {
+  const w = containerWidth.value
+  if (w < 480) {
+    const col1 = 16
+    const col2 = w - 136  // 16px margin + 120px station width
+    return [
+      { x: col1, y: 170 }, { x: col2, y: 170 },
+      { x: col1, y: 350 }, { x: col2, y: 350 },
+      { x: col1, y: 530 }, { x: col2, y: 530 },
+    ]
+  }
+  return [
+    { x: 60, y: 100 }, { x: 220, y: 100 }, { x: 380, y: 100 },
+    { x: 60, y: 340 }, { x: 220, y: 340 }, { x: 380, y: 340 },
+  ]
+})
+
+const WALK_AREA = computed(() => {
+  const w = containerWidth.value
+  return w < 480
+    ? { xMin: 16, xMax: w - 36, yMin: 170, yMax: 610 }
+    : { xMin: 30, xMax: 480, yMin: 80, yMax: 330 }
+})
+
+const MAX_STATIONS = 6
 
 interface Station {
   x: number
@@ -180,7 +194,7 @@ const activeTasks = computed<Task[]>(() =>
 )
 
 const visibleStations = computed<Station[]>(() =>
-  stationPositions.map((pos, i) => ({ ...pos, task: activeTasks.value[i] || null })),
+  stationPositions.value.map((pos, i) => ({ ...pos, task: activeTasks.value[i] || null })),
 )
 
 // Per-agent position + walking-flag. Walking is set briefly when the agent
@@ -199,9 +213,10 @@ function isWalking(agentId: string) {
 }
 
 function randomPos() {
+  const { xMin, xMax, yMin, yMax } = WALK_AREA.value
   return {
-    x: WALK_AREA.xMin + Math.random() * (WALK_AREA.xMax - WALK_AREA.xMin),
-    y: WALK_AREA.yMin + Math.random() * (WALK_AREA.yMax - WALK_AREA.yMin),
+    x: xMin + Math.random() * (xMax - xMin),
+    y: yMin + Math.random() * (yMax - yMin),
   }
 }
 
@@ -252,6 +267,13 @@ function tickWalk() {
 }
 
 onMounted(() => {
+  if (floorEl.value) {
+    containerWidth.value = floorEl.value.clientWidth
+    _ro = new ResizeObserver(([entry]) => {
+      containerWidth.value = entry.contentRect.width
+    })
+    _ro.observe(floorEl.value)
+  }
   syncPositions()
   walkTimer = setInterval(tickWalk, 2000)
 })
@@ -259,10 +281,12 @@ onMounted(() => {
 onUnmounted(() => {
   if (walkTimer) clearInterval(walkTimer)
   Object.values(walkTimers).forEach(clearTimeout)
+  _ro?.disconnect()
 })
 
 watch(agents, syncPositions, { deep: true })
 watch(visibleStations, syncPositions)
+watch(containerWidth, syncPositions)
 
 const tickerMessages = computed(() => {
   const msgs: string[] = []
@@ -945,6 +969,41 @@ function stateLabel(state: string) {
   }
   to {
     transform: translateX(-100%);
+  }
+}
+
+@media (max-width: 479px) {
+  .g4,
+  .g5 {
+    display: none;
+  }
+  .conveyor-belt {
+    display: none;
+  }
+  .factory-info {
+    padding: 3px 8px;
+    gap: 8px;
+  }
+  .factory-title {
+    font-size: 5px;
+    letter-spacing: 1px;
+  }
+  .work-station {
+    width: 120px;
+  }
+  .station-monitor {
+    width: 76px;
+    height: 60px;
+  }
+  .station-table {
+    height: 18px;
+  }
+  .station-label {
+    font-size: 6px;
+    max-width: 120px;
+  }
+  .task-badge {
+    font-size: 6px;
   }
 }
 </style>

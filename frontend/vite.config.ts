@@ -14,7 +14,7 @@ export default defineConfig({
     },
   },
   server: {
-    allowedHosts: ['localhost', 'pioneer-square.melloy.life'],
+    allowedHosts: ['localhost', 'frontend', 'pioneer-square.melloy.life'],
     // Forward backend routes when running `npm run dev` so the SPA can
     // call /auth, /guilds, /ws against the dev server. In production
     // these are handled by nginx-in-container (see frontend/nginx.conf).

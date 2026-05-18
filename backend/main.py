@@ -268,8 +268,36 @@ class _SPAStaticFiles(StaticFiles):
 
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
-if _STATIC_DIR.is_dir():
+_VITE_DEV_URL = os.environ.get("VITE_DEV_URL", "").rstrip("/")
+
+if _VITE_DEV_URL:
+    # Dev mode: proxy all unmatched requests to the Vite dev server so GitHub
+    # OAuth can redirect to the backend URL while Vite serves the SPA.
+    # Takes precedence over static/ so it works in the container too.
+    import httpx
+    from starlette.background import BackgroundTask
+    from starlette.responses import StreamingResponse
+
+    _vite_client = httpx.AsyncClient(base_url=_VITE_DEV_URL, follow_redirects=False)
+
+    @app.api_route("/{path:path}", methods=["GET", "HEAD", "OPTIONS"])
+    async def _vite_proxy(request: Request, path: str) -> Response:
+        url = httpx.URL(path=f"/{path}", query=request.url.query.encode("utf-8"))
+        headers = {
+            k: v for k, v in request.headers.items() if k.lower() not in ("host", "connection")
+        }
+        rp_req = _vite_client.build_request(request.method, url, headers=headers)
+        rp_resp = await _vite_client.send(rp_req, stream=True)
+        return StreamingResponse(
+            rp_resp.aiter_raw(),
+            status_code=rp_resp.status_code,
+            headers=dict(rp_resp.headers),
+            background=BackgroundTask(rp_resp.aclose),
+        )
+
+elif _STATIC_DIR.is_dir():
     app.mount("/", _SPAStaticFiles(directory=_STATIC_DIR, html=True), name="spa")
+
 
 if __name__ == "__main__":
     import uvicorn
