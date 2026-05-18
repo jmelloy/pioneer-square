@@ -30,6 +30,8 @@ import os
 import sys
 from pathlib import Path
 
+import websockets
+
 # ── Python path ──────────────────────────────────────────────────────────────
 # The foreman entry point lives at <repo>/foreman/main.py while all backend
 # modules (database, models, events, foreman/runner, …) live under
@@ -46,36 +48,12 @@ sys.path.insert(0, str(_BACKEND_DIR))
 # import of runner or tools.
 import events as _events  # noqa: E402  (must precede runner import)
 
-_relay_ws: websockets.WebSocketClientProtocol | None = None
-
-logger = logging.getLogger("pioneer_foreman")
-
-
-async def _relay_broadcast(guild_id: str, message: dict, exclude: object = None) -> None:
-    """Relay a broadcast message to the backend for fan-out to frontend clients."""
-    ws = _relay_ws
-    if ws is None:
-        return
-    try:
-        await ws.send(
-            json.dumps(
-                {
-                    "type": "foreman-broadcast",
-                    "guildId": guild_id,
-                    "payload": message,
-                }
-            )
-        )
-    except Exception as exc:
-        logger.warning("relay_broadcast failed: %s", exc)
-
-
-_events._broadcast_override = _relay_broadcast
-
-# Safe to import the runner now; every broadcast() call will hit _relay_broadcast.
-import websockets  # noqa: E402
+# Safe to import the runner now; the broadcast override will be installed
+# per-connection inside _run_guild via _events.set_broadcast_override().
 from foreman.runner import run_foreman_ai  # noqa: E402
 from util.tasks import spawn  # noqa: E402
+
+logger = logging.getLogger("pioneer_foreman")
 
 # ── Trigger handling ──────────────────────────────────────────────────────────
 
@@ -96,15 +74,36 @@ async def _handle_trigger(data: dict) -> None:
 # ── WebSocket connection loop ─────────────────────────────────────────────────
 
 
-async def _run_guild(backend_ws_url: str, guild_id: str) -> None:
-    """Connect to the backend WS for *guild_id* and handle triggers until evicted."""
-    global _relay_ws
+async def _run_guild(backend_ws_url: str, guild_id: str) -> bool:
+    """Connect to the backend WS for *guild_id* and handle triggers until evicted.
 
+    Returns True if evicted (caller should back off before reconnecting),
+    False for any other clean exit.
+    """
     ws_url = f"{backend_ws_url.rstrip('/')}/ws/{guild_id}"
     logger.info("Connecting to backend at %s", ws_url)
+    evicted = False
 
     async with websockets.connect(ws_url) as ws:
-        _relay_ws = ws
+
+        async def _relay_broadcast(
+            relay_guild_id: str, message: dict, exclude: object = None
+        ) -> None:
+            """Relay a broadcast message to the backend for fan-out to frontend clients."""
+            try:
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "foreman-broadcast",
+                            "guildId": relay_guild_id,
+                            "payload": message,
+                        }
+                    )
+                )
+            except Exception as exc:
+                logger.warning("relay_broadcast failed: %s", exc)
+
+        await _events.set_broadcast_override(_relay_broadcast)
         try:
             # Register as an external foreman — the backend checks `external: true`
             # to distinguish us from the legacy browser join that also sends
@@ -141,15 +140,18 @@ async def _run_guild(backend_ws_url: str, guild_id: str) -> None:
                     await _handle_trigger(msg)
                 elif msg_type == "foreman-evicted":
                     logger.warning(
-                        "Evicted from guild %s: %s — reconnecting",
+                        "Evicted from guild %s: %s",
                         guild_id,
                         msg.get("reason"),
                     )
+                    evicted = True
                     break
                 # All other message types (broadcasts the backend sends to this
                 # connection, etc.) are intentionally ignored here.
         finally:
-            _relay_ws = None
+            await _events.set_broadcast_override(None)
+
+    return evicted
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
@@ -169,9 +171,15 @@ async def main() -> None:
     retry_delay = 5
     while True:
         try:
-            await _run_guild(backend_ws_url, guild_id)
-            # Clean exit (e.g. evicted) — reset the backoff
-            retry_delay = 5
+            evicted = await _run_guild(backend_ws_url, guild_id)
+            if evicted:
+                # Back off before reconnecting to avoid a rapid evict-reconnect storm.
+                logger.info("Evicted; waiting %ds before reconnecting", retry_delay)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+            else:
+                # Unexpected clean exit — reset backoff and retry immediately.
+                retry_delay = 5
         except Exception as exc:
             logger.error(
                 "Connection error for guild %s: %s — retrying in %ds",
