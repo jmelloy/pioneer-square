@@ -125,7 +125,11 @@ async def pull_repos(
     token: str | None,
     emit: EmitFn,
 ) -> None:
-    """Refresh all configured repos; emit progress through *emit*."""
+    """Refresh repos that are already cloned locally; skip repos not yet on disk.
+
+    Repos are cloned lazily the first time a task needs them, so this function
+    only fast-forwards existing clones rather than triggering upfront clones.
+    """
     logger.info("pull_repos: refreshing %d repo(s)", len(repos))
     for repo_full in repos:
         parts = repo_full.split("/", 1)
@@ -135,15 +139,13 @@ async def pull_repos(
         owner, name = parts
         local_path = os.path.join(repos_dir, owner, name)
         if not os.path.exists(os.path.join(local_path, ".git")):
-            logger.info("pull_repos: %s missing locally — cloning", repo_full)
-            await emit(f"[worker] Cloning {repo_full}...")
-            await ensure_repo(repos_dir, repo_full, token)
+            logger.debug("pull_repos: %s not cloned yet — will clone on demand", repo_full)
+            continue
+        rc, _, err = await run_git(["fetch", "origin"], cwd=local_path)
+        await run_git(["merge", "--ff-only", "origin/HEAD"], cwd=local_path)
+        if rc == 0:
+            logger.info("pull_repos: pulled %s", repo_full)
+            await emit(f"[worker] Pulled {repo_full}")
         else:
-            rc, _, err = await run_git(["fetch", "origin"], cwd=local_path)
-            await run_git(["merge", "--ff-only", "origin/HEAD"], cwd=local_path)
-            if rc == 0:
-                logger.info("pull_repos: pulled %s", repo_full)
-                await emit(f"[worker] Pulled {repo_full}")
-            else:
-                logger.warning("pull_repos: fetch warn for %s: %s", repo_full, err.strip()[:120])
-                await emit(f"[worker] Pull warn {repo_full}: {err.strip()[:60]}")
+            logger.warning("pull_repos: fetch warn for %s: %s", repo_full, err.strip()[:120])
+            await emit(f"[worker] Pull warn {repo_full}: {err.strip()[:60]}")
