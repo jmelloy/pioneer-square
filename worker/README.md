@@ -124,3 +124,52 @@ mkdir -p ~/.pioneer/builder ~/.pioneer/tester
 pioneer-worker --config ~/.pioneer/builder/pioneer-worker.toml &
 pioneer-worker --config ~/.pioneer/tester/pioneer-worker.toml  &
 ```
+
+## Mock mode (for e2e tests)
+
+```bash
+pioneer-worker --mock --backend-url http://localhost:8000 --guild-id <id>
+pioneer-worker --mock --mock-api-port 9100   # default
+```
+
+In mock mode the worker:
+
+- still registers with the backend and joins the guild over WebSocket using
+  the same `join` / `worker-register` / `agent-state` / `terminal-output` /
+  `task-*` frames a real worker emits, so the frontend (and foreman) see a
+  real-looking worker;
+- skips the GitHub token fetch, the `claude` and `gh` auth checks, all
+  cloning/worktree/PR work, and the claude/codex/pi subprocesses;
+- exposes a small HTTP control API (default `127.0.0.1:9100`) so test code
+  can drive agent state and task lifecycle deterministically.
+
+### HTTP control API
+
+| Method | Path                              | Body                                                                     | Effect                                                       |
+| ------ | --------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| GET    | `/`                               | —                                                                        | Worker + slots + active tasks snapshot                       |
+| GET    | `/agents`                         | —                                                                        | Just the slots array                                         |
+| POST   | `/agents/{agentId}/state`         | `{state, activity?, taskId?}`                                            | Emit an `agent-state` frame                                  |
+| POST   | `/agents/{agentId}/output`        | `{line, taskId?, detail?}`                                               | Emit a `terminal-output` frame                               |
+| POST   | `/tasks/{taskId}/complete`        | `{branch?, prUrl?, stopReason?, lastText?, sessionId?}`                  | Send `task-complete` (or `task-followup-done`); slot → idle  |
+| POST   | `/tasks/{taskId}/fail`            | `{stopReason?, lastMessage?}`                                            | Send `needs-input`; slot → error → idle                      |
+| POST   | `/control/shutdown`               | —                                                                        | Graceful shutdown                                            |
+
+### Per-task scripts
+
+Embed a `MOCK_SCRIPT:` line in the task description and the mock will run it
+without waiting for HTTP control. Each step is one of:
+
+```json
+[
+  {"state": "thinking", "delay_ms": 100},
+  {"output": "[mock] reading source", "delay_ms": 50},
+  {"state": "working", "activity": "editing"},
+  {"complete": {"prUrl": "https://example.com/pr/1", "lastText": "done"}}
+]
+```
+
+If the script doesn't end with `complete` / `fail`, the slot parks on the
+future and finishes once the HTTP API resolves it. Mixed mode (script then
+HTTP) lets you script the noisy bits and have the test assert the terminal
+state.
