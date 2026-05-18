@@ -174,7 +174,7 @@ async def get_guild_logs(
         if task_id:
             stmt = stmt.where(TaskLog.task_id == task_id)
         elif worker_id:
-            stmt = stmt.where(TaskLog.worker_id == worker_id)
+            stmt = stmt.where(TaskLog.worker_id == worker_id, TaskLog.task_id.is_(None))
         else:
             stmt = stmt.where(TaskLog.agent_id == agent_id)
         stmt = stmt.order_by(TaskLog.id.asc())
