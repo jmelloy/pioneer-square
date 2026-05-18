@@ -314,3 +314,222 @@ class TestReviewPrErrors:
 
         assert results[0]["tool_use_id"] == "my-tool-id"
         assert results[0]["type"] == "tool_result"
+
+
+# ---------------------------------------------------------------------------
+# _supersede_prior_bot_reviews unit tests
+# ---------------------------------------------------------------------------
+
+
+def _make_review(review_id: int, login: str, body: str = "Old review.") -> dict:
+    return {"id": review_id, "user": {"login": login}, "body": body}
+
+
+def _make_gql_threads(threads: list[dict]) -> dict:
+    """Build a minimal GraphQL response for GetPRThreads."""
+    return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": threads}}}}}
+
+
+def _make_thread(thread_id: str, review_db_id: int, is_resolved: bool = False) -> dict:
+    return {
+        "id": thread_id,
+        "isResolved": is_resolved,
+        "comments": {
+            "nodes": [{"databaseId": 1, "pullRequestReview": {"databaseId": review_db_id}}]
+        },
+    }
+
+
+class TestSupersedePriorBotReviews:
+    @pytest.mark.asyncio
+    async def test_no_prior_reviews_is_noop(self):
+        """When there are no prior reviews, nothing is called."""
+        from foreman.tools import _supersede_prior_bot_reviews
+
+        with patch("foreman.tools._gh_api", return_value=[]):
+            result = await _supersede_prior_bot_reviews("org/repo", 42, "bot", "tok")
+
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_no_bot_reviews_is_noop(self):
+        """When no reviews belong to the bot user, nothing is superseded."""
+        from foreman.tools import _supersede_prior_bot_reviews
+
+        reviews = [_make_review(1, "other-user")]
+        with patch("foreman.tools._gh_api", return_value=reviews):
+            result = await _supersede_prior_bot_reviews("org/repo", 42, "bot", "tok")
+
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_already_superseded_review_is_skipped(self):
+        """Reviews whose body already starts with ~~Superseded are not patched again."""
+        from foreman.tools import _supersede_prior_bot_reviews
+
+        reviews = [_make_review(5, "bot", "~~Superseded by review posted 2026-01-01~~\n\nOld.")]
+        gh_api_calls = []
+
+        with (
+            patch("foreman.tools._gh_api", return_value=reviews),
+            patch("foreman.tools._gh_graphql", return_value=_make_gql_threads([])),
+            patch(
+                "foreman.tools._gh_api_post",
+                side_effect=lambda *a, **kw: gh_api_calls.append(a) or {},
+            ),
+        ):
+            result = await _supersede_prior_bot_reviews("org/repo", 42, "bot", "tok")
+
+        assert result == 0
+        assert gh_api_calls == []
+
+    @pytest.mark.asyncio
+    async def test_supersedes_prior_review_body(self):
+        """A prior bot review body is prepended with the superseded notice."""
+        from foreman.tools import _supersede_prior_bot_reviews
+
+        reviews = [_make_review(7, "bot", "Good review.")]
+        put_calls = []
+
+        def capture_post(path, token, payload, method="POST"):
+            put_calls.append({"path": path, "payload": payload, "method": method})
+            return {}
+
+        with (
+            patch("foreman.tools._gh_api", return_value=reviews),
+            patch("foreman.tools._gh_graphql", return_value=_make_gql_threads([])),
+            patch("foreman.tools._gh_api_post", side_effect=capture_post),
+        ):
+            result = await _supersede_prior_bot_reviews("org/repo", 42, "bot", "tok")
+
+        assert result == 1
+        assert len(put_calls) == 1
+        assert put_calls[0]["method"] == "PUT"
+        assert "org/repo/pulls/42/reviews/7" in put_calls[0]["path"]
+        assert put_calls[0]["payload"]["body"].startswith("~~Superseded by review posted ")
+        assert "Good review." in put_calls[0]["payload"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_resolves_unresolved_inline_threads(self):
+        """Unresolved threads from a prior bot review are resolved via GraphQL."""
+        from foreman.tools import _supersede_prior_bot_reviews
+
+        reviews = [_make_review(10, "bot")]
+        thread = _make_thread("TID_xyz", review_db_id=10, is_resolved=False)
+        gql_responses = [_make_gql_threads([thread]), {}]
+        gql_iter = iter(gql_responses)
+        graphql_calls = []
+
+        def fake_graphql(token, query, variables):
+            graphql_calls.append({"query": query, "variables": variables})
+            return next(gql_iter)
+
+        with (
+            patch("foreman.tools._gh_api", return_value=reviews),
+            patch("foreman.tools._gh_graphql", side_effect=fake_graphql),
+            patch("foreman.tools._gh_api_post", return_value={}),
+        ):
+            await _supersede_prior_bot_reviews("org/repo", 42, "bot", "tok")
+
+        resolve_calls = [c for c in graphql_calls if "resolveReviewThread" in c["query"]]
+        assert len(resolve_calls) == 1
+        assert resolve_calls[0]["variables"]["threadId"] == "TID_xyz"
+
+    @pytest.mark.asyncio
+    async def test_already_resolved_threads_are_skipped(self):
+        """Threads already marked isResolved are not re-resolved."""
+        from foreman.tools import _supersede_prior_bot_reviews
+
+        reviews = [_make_review(11, "bot")]
+        thread = _make_thread("TID_done", review_db_id=11, is_resolved=True)
+        graphql_calls = []
+
+        def fake_graphql(token, query, variables):
+            graphql_calls.append({"query": query, "variables": variables})
+            return _make_gql_threads([thread]) if "GetPRThreads" in query else {}
+
+        with (
+            patch("foreman.tools._gh_api", return_value=reviews),
+            patch("foreman.tools._gh_graphql", side_effect=fake_graphql),
+            patch("foreman.tools._gh_api_post", return_value={}),
+        ):
+            await _supersede_prior_bot_reviews("org/repo", 42, "bot", "tok")
+
+        resolve_calls = [c for c in graphql_calls if "resolveReviewThread" in c["query"]]
+        assert len(resolve_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_graphql_failure_does_not_block_supersede(self):
+        """If GraphQL fails, the review body is still superseded (failure is non-fatal)."""
+        from foreman.tools import _supersede_prior_bot_reviews
+
+        reviews = [_make_review(12, "bot", "Some review.")]
+
+        with (
+            patch("foreman.tools._gh_api", return_value=reviews),
+            patch("foreman.tools._gh_graphql", side_effect=RuntimeError("graphql down")),
+            patch("foreman.tools._gh_api_post", return_value={}) as mock_put,
+        ):
+            result = await _supersede_prior_bot_reviews("org/repo", 42, "bot", "tok")
+
+        assert result == 1
+        mock_put.assert_called_once()
+
+
+class TestReviewPrSupersedePriorReviews:
+    """Integration tests: review_pr tool calls _supersede_prior_bot_reviews."""
+
+    @pytest.mark.asyncio
+    async def test_supersede_called_before_posting_new_review(self, db_session):
+        """_supersede_prior_bot_reviews is invoked before the new review is posted."""
+        insert_guild(db_session, "g-rev-sup1")
+
+        mock_client = MagicMock()
+        mock_client.review_pr = AsyncMock(return_value=_mock_a2a_result())
+        supersede_calls = []
+
+        async def fake_supersede(pr_repo, pr_number, bot_username, token):
+            supersede_calls.append((pr_repo, pr_number, bot_username))
+            return 1
+
+        with (
+            patch("foreman.tools._guild_github_token", return_value=("tok", "bot-user")),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
+            patch("foreman.tools._supersede_prior_bot_reviews", side_effect=fake_supersede),
+            patch("foreman.tools._gh_api_post", return_value={"id": 55}),
+        ):
+            results = await exec_tools(
+                "g-rev-sup1",
+                [_fake_tu("review_pr", {"pr_url": "https://github.com/org/repo/pull/20"})],
+            )
+
+        assert results[0].get("is_error") is not True
+        assert len(supersede_calls) == 1
+        assert supersede_calls[0] == ("org/repo", 20, "bot-user")
+
+    @pytest.mark.asyncio
+    async def test_supersede_failure_does_not_block_review_post(self, db_session):
+        """Even if supersede raises, the new review is still posted (non-fatal)."""
+        insert_guild(db_session, "g-rev-sup2")
+
+        mock_client = MagicMock()
+        mock_client.review_pr = AsyncMock(return_value=_mock_a2a_result())
+
+        async def failing_supersede(*args):
+            raise RuntimeError("supersede blew up")
+
+        with (
+            patch("foreman.tools._guild_github_token", return_value=("tok", "bot-user")),
+            patch("foreman.a2a_client.A2AClient", return_value=mock_client),
+            patch("foreman.tools._supersede_prior_bot_reviews", side_effect=failing_supersede),
+            patch("foreman.tools._gh_api_post", return_value={"id": 77}),
+        ):
+            results = await exec_tools(
+                "g-rev-sup2",
+                [_fake_tu("review_pr", {"pr_url": "https://github.com/org/repo/pull/21"})],
+            )
+
+        # Supersede failure is caught and logged; review post proceeds normally.
+        assert results[0].get("is_error") is not True
+        parsed = json.loads(results[0]["content"])
+        assert parsed["review_id"] == 77

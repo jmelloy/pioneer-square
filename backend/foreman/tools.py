@@ -603,6 +603,23 @@ def _gh_api_diff(path: str, token: str) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+def _gh_graphql(token: str, query: str, variables: dict) -> dict:
+    """Execute a GitHub GraphQL query/mutation and return the parsed response."""
+    payload = json.dumps({"query": query, "variables": variables}).encode()
+    req = urllib.request.Request(
+        "https://api.github.com/graphql",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/vnd.github.v3+json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
 def _parse_review_from_claude(text: str) -> dict:
     """Extract a review JSON object from Claude's response.
 
@@ -800,6 +817,133 @@ def _extract_review_data(a2a_result: dict) -> tuple[str, str]:
     github_event = _VERDICT_TO_GH_EVENT.get(str(verdict).lower(), "COMMENT")
     review_body = review_body or f"Automated code review completed (verdict: {verdict})."
     return github_event, review_body
+
+
+_GQL_PR_THREADS = """
+query GetPRThreads($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          comments(first: 10) {
+            nodes {
+              databaseId
+              pullRequestReview { databaseId }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+_GQL_RESOLVE_THREAD = """
+mutation ResolveThread($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
+  }
+}
+"""
+
+
+async def _supersede_prior_bot_reviews(
+    pr_repo: str, pr_number: int, bot_username: str, token: str
+) -> int:
+    """Resolve prior inline threads and mark previous bot reviews as superseded.
+
+    Before a new review is posted this function:
+    1. Fetches all existing reviews and filters to those authored by ``bot_username``.
+    2. Resolves any unresolved inline threads that belong to those reviews via
+       the GitHub GraphQL ``resolveReviewThread`` mutation.
+    3. PUTs each prior review body to prepend a "Superseded" strike-through line.
+
+    Returns the count of reviews superseded. Errors in individual steps are
+    logged as warnings rather than raised so that the main review post is never
+    blocked by a cleanup failure.
+    """
+    reviews = await asyncio.to_thread(_gh_api, f"/repos/{pr_repo}/pulls/{pr_number}/reviews", token)
+    if not isinstance(reviews, list):
+        return 0
+
+    bot_reviews = [r for r in reviews if (r.get("user") or {}).get("login") == bot_username]
+    if not bot_reviews:
+        return 0
+
+    bot_review_ids = {r["id"] for r in bot_reviews}
+
+    # Resolve unresolved inline threads that belong to our prior reviews.
+    owner, repo_name = pr_repo.split("/", 1)
+    try:
+        gql_result = await asyncio.to_thread(
+            _gh_graphql,
+            token,
+            _GQL_PR_THREADS,
+            {"owner": owner, "repo": repo_name, "number": pr_number},
+        )
+        threads = (
+            gql_result.get("data", {})
+            .get("repository", {})
+            .get("pullRequest", {})
+            .get("reviewThreads", {})
+            .get("nodes", [])
+        )
+        for thread in threads:
+            if thread.get("isResolved"):
+                continue
+            comments = thread.get("comments", {}).get("nodes", [])
+            if any(
+                (c.get("pullRequestReview") or {}).get("databaseId") in bot_review_ids
+                for c in comments
+            ):
+                try:
+                    await asyncio.to_thread(
+                        _gh_graphql,
+                        token,
+                        _GQL_RESOLVE_THREAD,
+                        {"threadId": thread["id"]},
+                    )
+                    logger.info(
+                        "review_pr: resolved thread %s on %s#%d",
+                        thread["id"],
+                        pr_repo,
+                        pr_number,
+                    )
+                except Exception as exc:
+                    logger.warning("review_pr: failed to resolve thread %s: %s", thread["id"], exc)
+    except Exception as exc:
+        logger.warning(
+            "review_pr: GraphQL thread resolution failed for %s#%d: %s",
+            pr_repo,
+            pr_number,
+            exc,
+        )
+
+    # Mark old reviews as superseded.
+    today_iso = datetime.now(UTC).date().isoformat()
+    supersede_prefix = f"~~Superseded by review posted {today_iso}~~\n\n"
+    superseded = 0
+    for review in bot_reviews:
+        review_id = review["id"]
+        old_body = review.get("body") or ""
+        if old_body.startswith("~~Superseded"):
+            continue
+        new_body = supersede_prefix + old_body
+        try:
+            await asyncio.to_thread(
+                _gh_api_post,
+                f"/repos/{pr_repo}/pulls/{pr_number}/reviews/{review_id}",
+                token,
+                {"body": new_body},
+                "PUT",
+            )
+            superseded += 1
+        except Exception as exc:
+            logger.warning("review_pr: failed to supersede review %d: %s", review_id, exc)
+
+    return superseded
 
 
 # ---------------------------------------------------------------------------
@@ -1609,6 +1753,25 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 github_event,
                                 review_body,
                             )
+                            try:
+                                superseded = await _supersede_prior_bot_reviews(
+                                    pr_repo, pr_number, username, token
+                                )
+                                if superseded:
+                                    logger.info(
+                                        "guild=%s review_pr: superseded %d prior review(s)"
+                                        " on %s#%d",
+                                        guild_id,
+                                        superseded,
+                                        pr_repo,
+                                        pr_number,
+                                    )
+                            except Exception as _sup_exc:
+                                logger.warning(
+                                    "guild=%s review_pr: supersede step failed (non-fatal): %s",
+                                    guild_id,
+                                    _sup_exc,
+                                )
                             review_data = await asyncio.to_thread(
                                 _gh_api_post,
                                 f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
@@ -1718,6 +1881,26 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 if c.get("path") and c.get("line") and c.get("body")
                             ]
 
+                            try:
+                                superseded = await _supersede_prior_bot_reviews(
+                                    pr_repo, pr_number, username, token
+                                )
+                                if superseded:
+                                    logger.info(
+                                        "guild=%s review_pr_internal: superseded %d prior"
+                                        " review(s) on %s#%d",
+                                        guild_id,
+                                        superseded,
+                                        pr_repo,
+                                        pr_number,
+                                    )
+                            except Exception as _sup_exc:
+                                logger.warning(
+                                    "guild=%s review_pr_internal: supersede step failed"
+                                    " (non-fatal): %s",
+                                    guild_id,
+                                    _sup_exc,
+                                )
                             try:
                                 review_data = await asyncio.to_thread(
                                     _gh_api_post,
