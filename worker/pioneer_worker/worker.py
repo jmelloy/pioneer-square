@@ -898,13 +898,16 @@ class Worker:
             len(self.slots),
         )
         await self._emit("[worker] Online. Watching for tasks.")
-        for slot in self.slots:
-            await self._set_state("idle", slot)
 
         # Reclaim any worktrees the previous incarnation of this worker left
         # behind. Tasks within the TTL window are re-registered so a follow-up
         # arriving for them can reuse the existing checkout.
+        # Run BEFORE announcing idle so the foreman doesn't dispatch tasks
+        # while git-prune / worktree-remove operations are still in flight.
         await self._initial_worktree_sweep()
+
+        for slot in self.slots:
+            await self._set_state("idle", slot)
 
         initial = await self._fetch_pending_tasks()
         logger.info("Initial pending-task fetch: %d task(s)", len(initial))
@@ -1318,10 +1321,12 @@ class Worker:
                         except Exception as exc:
                             logger.debug("startup-sweep remove_worktree failed: %s", exc)
                 # Whatever git left behind, drop the directory.
+                # Use asyncio.to_thread so rmtree (which walks the whole
+                # checkout) doesn't block the event loop for large repos.
                 import shutil
 
                 try:
-                    shutil.rmtree(full, ignore_errors=True)
+                    await asyncio.to_thread(shutil.rmtree, full, True)
                 except Exception as exc:
                     logger.debug("startup-sweep rmtree failed for %s: %s", full, exc)
             # Prune dangling worktree references in each repo.
