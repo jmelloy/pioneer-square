@@ -852,15 +852,14 @@ mutation ResolveThread($threadId: ID!) {
 async def _supersede_prior_bot_reviews(
     pr_repo: str, pr_number: int, bot_username: str, token: str
 ) -> int:
-    """Resolve prior inline threads and mark previous bot reviews as superseded.
+    """Resolve prior inline threads from previous bot reviews.
 
     Before a new review is posted this function:
     1. Fetches all existing reviews and filters to those authored by ``bot_username``.
     2. Resolves any unresolved inline threads that belong to those reviews via
        the GitHub GraphQL ``resolveReviewThread`` mutation.
-    3. PUTs each prior review body to prepend a "Superseded" strike-through line.
 
-    Returns the count of reviews superseded. Errors in individual steps are
+    Returns the count of threads resolved. Errors in individual steps are
     logged as warnings rather than raised so that the main review post is never
     blocked by a cleanup failure.
     """
@@ -875,6 +874,7 @@ async def _supersede_prior_bot_reviews(
     bot_review_ids = {r["id"] for r in bot_reviews}
 
     # Resolve unresolved inline threads that belong to our prior reviews.
+    threads_resolved = 0
     owner, repo_name = pr_repo.split("/", 1)
     try:
         gql_result = await asyncio.to_thread(
@@ -905,6 +905,7 @@ async def _supersede_prior_bot_reviews(
                         _GQL_RESOLVE_THREAD,
                         {"threadId": thread["id"]},
                     )
+                    threads_resolved += 1
                     logger.info(
                         "review_pr: resolved thread %s on %s#%d",
                         thread["id"],
@@ -921,29 +922,7 @@ async def _supersede_prior_bot_reviews(
             exc,
         )
 
-    # Mark old reviews as superseded.
-    today_iso = datetime.now(UTC).date().isoformat()
-    supersede_prefix = f"~~Superseded by review posted {today_iso}~~\n\n"
-    superseded = 0
-    for review in bot_reviews:
-        review_id = review["id"]
-        old_body = review.get("body") or ""
-        if old_body.startswith("~~Superseded"):
-            continue
-        new_body = supersede_prefix + old_body
-        try:
-            await asyncio.to_thread(
-                _gh_api_post,
-                f"/repos/{pr_repo}/pulls/{pr_number}/reviews/{review_id}",
-                token,
-                {"body": new_body},
-                "PUT",
-            )
-            superseded += 1
-        except Exception as exc:
-            logger.warning("review_pr: failed to supersede review %d: %s", review_id, exc)
-
-    return superseded
+    return threads_resolved
 
 
 # ---------------------------------------------------------------------------
@@ -1754,21 +1733,21 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 review_body,
                             )
                             try:
-                                superseded = await _supersede_prior_bot_reviews(
+                                threads_resolved = await _supersede_prior_bot_reviews(
                                     pr_repo, pr_number, username, token
                                 )
-                                if superseded:
+                                if threads_resolved:
                                     logger.info(
-                                        "guild=%s review_pr: superseded %d prior review(s)"
-                                        " on %s#%d",
+                                        "guild=%s review_pr: resolved %d thread(s) from"
+                                        " prior review(s) on %s#%d",
                                         guild_id,
-                                        superseded,
+                                        threads_resolved,
                                         pr_repo,
                                         pr_number,
                                     )
                             except Exception as _sup_exc:
                                 logger.warning(
-                                    "guild=%s review_pr: supersede step failed (non-fatal): %s",
+                                    "guild=%s review_pr: thread resolution step failed (non-fatal): %s",
                                     guild_id,
                                     _sup_exc,
                                 )
@@ -1882,21 +1861,21 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             ]
 
                             try:
-                                superseded = await _supersede_prior_bot_reviews(
+                                threads_resolved = await _supersede_prior_bot_reviews(
                                     pr_repo, pr_number, username, token
                                 )
-                                if superseded:
+                                if threads_resolved:
                                     logger.info(
-                                        "guild=%s review_pr_internal: superseded %d prior"
-                                        " review(s) on %s#%d",
+                                        "guild=%s review_pr_internal: resolved %d thread(s)"
+                                        " from prior review(s) on %s#%d",
                                         guild_id,
-                                        superseded,
+                                        threads_resolved,
                                         pr_repo,
                                         pr_number,
                                     )
                             except Exception as _sup_exc:
                                 logger.warning(
-                                    "guild=%s review_pr_internal: supersede step failed"
+                                    "guild=%s review_pr_internal: thread resolution step failed"
                                     " (non-fatal): %s",
                                     guild_id,
                                     _sup_exc,
