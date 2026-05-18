@@ -110,12 +110,15 @@ def format_worker_id(worker_id: str) -> str:
 
 
 def worker_display_name(worker_id: str, hostname: str | None = None) -> str:
-    """Render a worker ID in droid style (e.g. ``VD-3566``).
+    """Render a worker ID as ``hostname/VD-3566``, or just ``VD-3566`` when no hostname.
 
-    The *hostname* parameter is accepted for backwards compatibility but is
-    no longer used — the droid-style format derives entirely from the worker ID.
+    The hostname, when present, is prepended with a ``/`` separator so operators
+    can tell workers on different machines apart at a glance.
     """
-    return format_worker_id(worker_id)
+    droid = format_worker_id(worker_id)
+    if hostname:
+        return f"{hostname}/{droid}"
+    return droid
 
 
 def decode_claude_oauth_token(blob: str | None) -> str | None:

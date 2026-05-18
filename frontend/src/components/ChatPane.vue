@@ -25,7 +25,6 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
 import { api } from '../utils/api'
-import { formatWorkerId } from '../utils/format'
 import type { GitHubIssue, WSInbound } from '../types'
 import ChatTab from './chat-pane/ChatTab.vue'
 import ClaudeAuthModal from './chat-pane/ClaudeAuthModal.vue'
@@ -92,8 +91,8 @@ function handleTaskEvent(data: WSInbound) {
       from: 'system',
       to: 'user',
       content: data.prUrl
-        ? `✓ ${formatWorkerId(data.workerId)} done — PR: ${data.prUrl}`
-        : `✓ ${formatWorkerId(data.workerId)} finished (no PR)`,
+        ? `✓ ${agentsStore.workerDisplayName(data.workerId)} done — PR: ${data.prUrl}`
+        : `✓ ${agentsStore.workerDisplayName(data.workerId)} finished (no PR)`,
       prUrl: data.prUrl || null,
       createdAt: new Date().toISOString(),
     })
@@ -102,7 +101,7 @@ function handleTaskEvent(data: WSInbound) {
       type: 'chat',
       from: 'system',
       to: 'user',
-      content: `⚠ ${formatWorkerId(data.workerId)} needs attention on: "${data.description}"`,
+      content: `⚠ ${agentsStore.workerDisplayName(data.workerId)} needs attention on: "${data.description}"`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'claude-auth-required') {
@@ -111,7 +110,7 @@ function handleTaskEvent(data: WSInbound) {
       type: 'chat',
       from: 'system',
       to: 'user',
-      content: `⚿ ${formatWorkerId(data.workerId)} needs Claude auth — visit the URL and paste the code below`,
+      content: `⚿ ${agentsStore.workerDisplayName(data.workerId)} needs Claude auth — visit the URL and paste the code below`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'task-assigned') {
@@ -120,7 +119,7 @@ function handleTaskEvent(data: WSInbound) {
       type: 'chat',
       from: 'system',
       to: 'user',
-      content: `→ ${formatWorkerId(data.workerId)} assigned: ${taskName}`,
+      content: `→ ${agentsStore.workerDisplayName(data.workerId)} assigned: ${taskName}`,
       createdAt: new Date().toISOString(),
     })
   } else if (data.type === 'foreman-poll-status') {

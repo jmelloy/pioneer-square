@@ -55,7 +55,7 @@ def test_format_uppercase():
 
 
 def test_worker_display_name_with_hostname():
-    assert worker_display_name("w-vd3566", "token-machine") == "VD-3566"
+    assert worker_display_name("w-vd3566", "token-machine") == "token-machine/VD-3566"
 
 
 def test_worker_display_name_no_hostname():
@@ -70,9 +70,9 @@ def test_worker_display_name_empty_hostname():
     assert worker_display_name("w-abc123", "") == "ABC-123"
 
 
-def test_worker_display_name_matches_format_worker_id():
+def test_worker_display_name_with_hostname_format():
     wid = "w-vd3566"
-    assert worker_display_name(wid, "some-host") == format_worker_id(wid)
+    assert worker_display_name(wid, "some-host") == f"some-host/{format_worker_id(wid)}"
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ def test_register_worker_name_without_hostname(client):
 
 
 def test_register_worker_name_with_hostname(client):
-    """Hostname is ignored — name is always the droid-formatted worker ID."""
+    """Name is ``hostname/droid-ID`` when a hostname is provided."""
     test_client, db_path = client
     insert_guild(db_path, "wname02")
     resp = test_client.post(
@@ -104,11 +104,11 @@ def test_register_worker_name_with_hostname(client):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["name"] == format_worker_id(data["id"])
+    assert data["name"] == f"pioneer-box/{format_worker_id(data['id'])}"
 
 
 def test_register_worker_name_short_hostname(client):
-    """Short hostnames are also ignored; name is droid-formatted."""
+    """Short hostnames are still prepended."""
     test_client, db_path = client
     insert_guild(db_path, "wname03")
     resp = test_client.post(
@@ -117,7 +117,7 @@ def test_register_worker_name_short_hostname(client):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["name"] == format_worker_id(data["id"])
+    assert data["name"] == f"ab/{format_worker_id(data['id'])}"
 
 
 def test_list_workers_includes_name(client):
@@ -136,7 +136,7 @@ def test_list_workers_includes_name(client):
     workers = list_resp.json()
     assert len(workers) == 1
     assert "name" in workers[0]
-    assert workers[0]["name"] == format_worker_id(wid)
+    assert workers[0]["name"] == f"testhost/{format_worker_id(wid)}"
 
 
 def test_list_workers_name_persisted_correctly(client):
@@ -150,7 +150,7 @@ def test_list_workers_name_persisted_correctly(client):
         json={"repos": [], "hostname": "myhost"},
     )
     wid = resp.json()["id"]
-    expected_name = format_worker_id(wid)
+    expected_name = f"myhost/{format_worker_id(wid)}"
 
     with sqlite3.connect(db_path) as conn:
         row = conn.execute("SELECT name FROM workers WHERE id = ?", (wid,)).fetchone()
