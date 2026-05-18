@@ -205,14 +205,11 @@ export const useAgentsStore = defineStore('agents', () => {
 
   function firstIdleWorker() {
     const workerAgents = agents.value.filter((a) => a.workerId && a.state !== 'offline')
-    const idleAgent =
+    const pick =
       workerAgents.find((a) => a.state === 'idle') ||
       workerAgents.find((a) => !['working', 'error'].includes(a.state)) ||
       workerAgents[0]
-    if (idleAgent) return { id: idleAgent.workerId, name: idleAgent.name, state: idleAgent.state }
-
-    const legacy = agents.value.filter((a) => a.id.startsWith('w-') && a.state !== 'offline')
-    return legacy.find((a) => a.state === 'idle') || legacy[0] || null
+    return pick ? { id: pick.workerId, name: pick.name, state: pick.state } : null
   }
 
   function clearAgents() {

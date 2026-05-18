@@ -631,18 +631,27 @@ class Worker:
                 new_activity = detail.get("activity")
                 if new_activity and new_activity != slot.activity:
                     slot.activity = new_activity
-                    await self._send(
-                        {
-                            "type": "agent-state",
-                            "workerId": self.cfg.worker_id,
-                            "agentId": slot.agent_id,
-                            "taskId": slot.current_task_id,
-                            "state": slot.state,
-                            "activity": new_activity,
-                        }
-                    )
+                    await self._emit_agent_state(slot)
 
         return _emit_task
+
+    async def _emit_agent_state(self, slot: Agent) -> None:
+        """Broadcast the slot's full identity + runtime state.
+
+        Every ``agent-state`` frame carries workerId/agentId/taskId so the
+        frontend can map a task row to the slot that owns it without
+        falling back to ambiguous worker-level matching.
+        """
+        await self._send(
+            {
+                "type": "agent-state",
+                "workerId": self.cfg.worker_id,
+                "agentId": slot.agent_id,
+                "taskId": slot.current_task_id,
+                "state": slot.state,
+                "activity": slot.activity,
+            }
+        )
 
     async def _set_state(self, state: str, slot: Agent) -> None:
         slot.state = state
@@ -653,16 +662,7 @@ class Worker:
         # stale association from the previous run.
         if state in ("idle", "offline"):
             slot.current_task_id = None
-        await self._send(
-            {
-                "type": "agent-state",
-                "workerId": self.cfg.worker_id,
-                "agentId": slot.agent_id,
-                "taskId": slot.current_task_id,
-                "state": state,
-                "activity": slot.activity,
-            }
-        )
+        await self._emit_agent_state(slot)
 
     async def _join(self) -> None:
         for slot in self.slots:
@@ -701,16 +701,7 @@ class Worker:
         # state so a mid-task reconnect doesn't show us as idle while we work.
         for slot in self.slots:
             if slot.state and slot.state != "idle":
-                await self._send(
-                    {
-                        "type": "agent-state",
-                        "workerId": self.cfg.worker_id,
-                        "agentId": slot.agent_id,
-                        "taskId": slot.current_task_id,
-                        "state": slot.state,
-                        "activity": slot.activity,
-                    }
-                )
+                await self._emit_agent_state(slot)
         # Re-fetch any tasks that were assigned while the WS was down; without
         # this they'd be missed until the idle puller fires (up to 300s later).
         try:
