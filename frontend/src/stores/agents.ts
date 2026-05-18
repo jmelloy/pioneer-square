@@ -268,7 +268,7 @@ export const useAgentsStore = defineStore('agents', () => {
       const wid =
         data.workerId ||
         (data.agentId ? agents.value.find((a) => a.id === data.agentId)?.workerId : null)
-      if (wid) addWorkerLog(wid, data.line, data.timestamp, data.detail)
+      if (wid && !data.taskId) addWorkerLog(wid, data.line, data.timestamp, data.detail)
     }
   }
 
