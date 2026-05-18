@@ -37,7 +37,6 @@ from auth_deps import get_guild_pk, require_member, require_worker_or_member_pat
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException, Query
-from foreman import clear_foreman_history, get_foreman_history
 from models import (
     ForemanTurn,
     Guild,
@@ -48,6 +47,8 @@ from models import (
 )
 from pydantic import BaseModel
 from sqlalchemy import select, text, update
+
+from foreman import clear_foreman_history, get_foreman_history
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

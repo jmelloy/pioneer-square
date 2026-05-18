@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Pioneer Square is a real-time multi-agent workspace: a pixel-art steampunk factory floor UI where a **Foreman AI** (Claude) coordinates **worker processes** that autonomously clone repos, run Claude on tasks, and open GitHub PRs. Three independent processes must all be running for the full system to work.
+Pioneer Square is a real-time multi-agent workspace: a pixel-art steampunk factory floor UI where a **Foreman AI** (Claude) coordinates **worker processes** that autonomously clone repos, run Claude on tasks, and open GitHub PRs. Three independent processes must all be running for the full system to work (a fourth — the standalone foreman — is opt-in; see below).
 
 ## Commands
 
@@ -35,6 +35,30 @@ cp pioneer-worker.toml.example pioneer-worker.toml
 pioneer-worker
 pioneer-worker --log-level DEBUG   # verbose
 ```
+
+### Standalone Foreman (Phase 2 — opt-in)
+The embedded foreman (inside the backend process) is the default.  A standalone
+foreman process can be run alongside the backend; it registers as an external
+foreman and takes over trigger handling for a specific guild, allowing independent
+scaling and model changes without restarting the backend.
+
+```bash
+# Requires backend + ANTHROPIC_API_KEY
+# Install backend deps (foreman/main.py imports backend modules directly):
+cd backend && pip install -r requirements.txt && cd ..
+
+BACKEND_WS_URL=ws://localhost:8000 \
+GUILD_ID=<your-6-char-guild-id> \
+ANTHROPIC_API_KEY=<key> \
+python foreman/main.py
+
+# Or via docker compose (profile "foreman"):
+GUILD_ID=abc123 docker compose --profile foreman up --build foreman
+```
+
+When an external foreman is connected, the backend routes `foreman-trigger` events
+to it instead of running the embedded loop.  If the external foreman disconnects,
+the backend falls back to the embedded foreman automatically.
 
 ### Tests and lint
 
@@ -89,11 +113,13 @@ After a worker sends `task-complete`, the backend triggers the Foreman AI. The f
 
 ### Foreman AI
 
-Lives in `backend/foreman/` (`runner.py` for the Claude SDK loop, `tools.py` for tool definitions, `prompt.py` for the system prompt, `state.py` for in-memory conversation history). Uses `claude-sonnet-4-6` with five tools: `create_task`, `assign_task`, `send_followup`, `finalize_task`, `message_worker`. Conversation history is kept in-memory (trimmed to 40 messages). The foreman is triggered by:
+Lives in `backend/foreman/` (`runner.py` for the Claude SDK loop, `tools.py` for tool definitions, `prompt.py` for the system prompt, `state.py` for in-memory conversation history). Uses `claude-haiku-4-5-20251001`. Conversation history is kept in-memory (trimmed to 40 messages). The foreman is triggered by:
 1. Human chat messages addressed to `foreman`
 2. `task-complete` WS messages from workers
 3. `task-followup-done` WS messages
 4. `needs-input` worker escalations
+
+**Phase 2 — standalone foreman**: `foreman/main.py` is an opt-in external foreman process.  It connects to the backend WS with `agentType="foreman"` and `external=true`; the backend routes triggers to it and the embedded loop becomes a fallback.  See `foreman/Dockerfile` and the `foreman` service in `docker-compose.yml`.
 
 ### WebSocket message protocol
 
@@ -112,6 +138,10 @@ All real-time communication is JSON over `ws://localhost:8000/ws/{guild_id}`. Ke
 | `task-followup-done` | worker→backend | Follow-up finished |
 | `task-finalize` | backend→worker | No more follow-ups needed |
 | `needs-input` | worker→backend | Claude stopped and needs human input |
+| `foreman-trigger` | backend→foreman | Trigger an external foreman AI run |
+| `foreman-broadcast` | foreman→backend | External foreman relays a broadcast to frontend clients |
+| `foreman-registered` | backend→foreman | Confirms external foreman registration |
+| `foreman-evicted` | backend→foreman | Another foreman connected; this one should exit |
 | `offer`/`answer`/`ice-candidate` | any→backend | WebRTC signaling (forwarded to all peers) |
 
 ### Database schema

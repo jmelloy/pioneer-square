@@ -34,6 +34,16 @@ cp worker/pioneer-worker.toml.example worker/pioneer-worker.toml
 docker compose --profile worker up --build worker
 ```
 
+The standalone foreman process (Phase 2) is also opt-in.  It offloads the Foreman
+AI out of the backend process — useful if you want to scale or restart the foreman
+independently.  The backend falls back to its embedded foreman when no external one
+is connected.
+
+```bash
+# Get your guild ID from the URL bar (6 chars after /g/)
+GUILD_ID=abc123 docker compose --profile foreman up --build foreman
+```
+
 ### GitHub OAuth App
 
 Pioneer Square uses GitHub OAuth instead of personal access tokens. You need to create a GitHub OAuth App and set the credentials as environment variables before starting the backend.
