@@ -9,9 +9,8 @@ const STATE_RANK: Record<string, number> = {
   thinking: 1,
   busy: 2,
   error: 3,
-  'awaiting-review': 4,
-  idle: 5,
-  offline: 6,
+  idle: 4,
+  offline: 5,
 }
 
 interface RegisterAgentData {
@@ -37,13 +36,6 @@ interface AssignTaskOpts {
   issueRepo?: string | null
 }
 
-// Fallback label when the backend hasn't supplied a workerName.
-// New backends return ``hostname[:3]/worker_id`` (e.g. ``tok/w-g2otus``);
-// this handles older backends that omit the field.
-function _workerDroidName(workerId: string): string {
-  return workerId
-}
-
 export const useAgentsStore = defineStore('agents', () => {
   const agents = ref<Agent[]>([])
   const workerLogs = ref<Record<string, LogEntry[]>>({})
@@ -60,9 +52,9 @@ export const useAgentsStore = defineStore('agents', () => {
       if (!map.has(agent.workerId)) {
         map.set(agent.workerId, {
           id: agent.workerId,
-          // Prefer the backend-supplied workerName from the agent-joined payload;
-          // fall back to local derivation for agents from older backends or REST init.
-          name: agent.workerName || _workerDroidName(agent.workerId),
+          // Prefer the backend-supplied workerName; older backends that omit it
+          // fall back to the workerId itself as a stable label.
+          name: agent.workerName || agent.workerId,
           state: agent.state,
         })
       } else {
@@ -203,7 +195,7 @@ export const useAgentsStore = defineStore('agents', () => {
     const workerAgents = agents.value.filter((a) => a.workerId && a.state !== 'offline')
     const idleAgent =
       workerAgents.find((a) => a.state === 'idle') ||
-      workerAgents.find((a) => !['working', 'awaiting-review', 'error'].includes(a.state)) ||
+      workerAgents.find((a) => !['working', 'error'].includes(a.state)) ||
       workerAgents[0]
     if (idleAgent) return { id: idleAgent.workerId, name: idleAgent.name, state: idleAgent.state }
 

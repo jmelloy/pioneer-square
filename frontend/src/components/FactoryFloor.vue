@@ -174,7 +174,16 @@ const taskRows = computed(() => {
   const rows = []
   for (let i = 0; i < visibleRowCount.value; i++) {
     const task = tasks[i] || null
-    const agent = task ? agents.value.find((a) => a.workerId === task.worker_id) || null : null
+    // Match by agent_id (the slot that picked up the task) so concurrent
+    // tasks on the same worker map to distinct slots. Fall back to workerId
+    // only for tasks the worker hasn't claimed yet — those have no agent
+    // doing the work, so the lookup will be discarded anyway when the
+    // matched agent isn't actually `working` this task.
+    const agent = task
+      ? agents.value.find((a) => a.id === task.agent_id) ||
+        (task.agent_id ? null : agents.value.find((a) => a.workerId === task.worker_id)) ||
+        null
+      : null
     const activityKey: StationKey | null =
       agent && agent.activity ? ACTIVITY_TO_STATION[agent.activity] : null
     rows.push({ index: i, task, agent, activityKey })

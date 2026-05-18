@@ -154,6 +154,7 @@ export const useTasksStore = defineStore('tasks', () => {
     } else if (data.type === 'task-update') {
       const task = tasks.value.find((t) => t.id === data.taskId)
       if (task) {
+        if (data.agentId) task.agent_id = data.agentId
         if (data.state) task.state = data.state
         if (data.branch) task.branch = data.branch
         if (data.prUrl) task.pr_url = data.prUrl
@@ -168,11 +169,15 @@ export const useTasksStore = defineStore('tasks', () => {
       const task = tasks.value.find((t) => t.id === data.taskId)
       if (task) {
         task.state = 'awaiting-review'
+        if (data.agentId) task.agent_id = data.agentId
         if (data.branch) task.branch = data.branch
       }
     } else if (data.type === 'task-followup-done') {
       const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task) task.state = 'awaiting-review'
+      if (task) {
+        task.state = 'awaiting-review'
+        if (data.agentId) task.agent_id = data.agentId
+      }
     } else if (data.type === 'terminal-output' && data.taskId) {
       const { taskId, line, timestamp, detail } = data
       if (line) {

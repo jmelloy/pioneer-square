@@ -1,11 +1,4 @@
-export type AgentState =
-  | 'idle'
-  | 'thinking'
-  | 'working'
-  | 'busy'
-  | 'error'
-  | 'offline'
-  | 'awaiting-review'
+export type AgentState = 'idle' | 'thinking' | 'working' | 'busy' | 'error' | 'offline'
 
 export type AgentActivity =
   | 'reading'
@@ -67,6 +60,10 @@ export interface Task {
   phase?: string
   state: TaskState
   worker_id?: string
+  // Agent slot currently (or most recently) executing this task. Set on each
+  // task-update broadcast from the worker; lets the UI map task→agent when a
+  // worker runs multiple concurrent slots.
+  agent_id?: string | null
   parent_task_id?: string | null
   branch?: string
   pr_url?: string
@@ -210,6 +207,7 @@ export interface TaskAssignedWS {
 export interface TaskUpdateWS {
   type: 'task-update'
   taskId: string
+  agentId?: string | null
   state?: TaskState
   branch?: string
   prUrl?: string
@@ -222,6 +220,7 @@ export interface TaskCompleteWS {
   type: 'task-complete'
   taskId: string
   workerId?: string
+  agentId?: string | null
   branch?: string
   prUrl?: string | null
 }
@@ -229,6 +228,7 @@ export interface TaskCompleteWS {
 export interface TaskFollowupDoneWS {
   type: 'task-followup-done'
   taskId: string
+  agentId?: string | null
 }
 
 export interface NeedsInputWS {
