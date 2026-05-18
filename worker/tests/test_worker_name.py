@@ -86,6 +86,9 @@ async def test_register_name_falls_back_to_worker_id_when_absent():
 # ---------------------------------------------------------------------------
 
 
+# Local copy of the droid-format algorithm used to verify the worker stores the
+# name it received.  This intentionally mirrors backend/utils.py:format_worker_id
+# — if the canonical algorithm changes, update this shadow copy too.
 def _droid_format(worker_id: str) -> str:
     bare = worker_id.removeprefix("w-")
     m = re.search(r"\d", bare)

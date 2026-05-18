@@ -49,6 +49,19 @@ def test_format_uppercase():
     assert format_worker_id("w-vd3566") == format_worker_id("w-vd3566").upper()
 
 
+# Edge cases — mirrored in frontend/src/utils/__tests__/format.spec.ts
+
+
+def test_format_all_digit_suffix():
+    # m.start() == 0 → no hyphen inserted, digits returned as-is
+    assert format_worker_id("w-1234") == "1234"
+
+
+def test_format_no_digit_suffix():
+    # No digit match → whole string uppercased, no hyphen
+    assert format_worker_id("w-abc") == "ABC"
+
+
 # ---------------------------------------------------------------------------
 # worker_display_name: delegates to format_worker_id, ignores hostname
 # ---------------------------------------------------------------------------

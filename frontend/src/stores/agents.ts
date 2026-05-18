@@ -217,7 +217,7 @@ export const useAgentsStore = defineStore('agents', () => {
   // falling back to the droid-style ID for workers not yet seen via WebSocket.
   function workerDisplayName(workerId: string): string {
     const worker = workers.value.find((w) => w.id === workerId)
-    return worker?.name || formatWorkerId(workerId)
+    return worker?.name ?? formatWorkerId(workerId)
   }
 
   function clearAgents() {

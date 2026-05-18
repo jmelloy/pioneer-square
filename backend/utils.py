@@ -95,12 +95,35 @@ def generate_guild_id(name: str = "", existing_ids: set[str] | None = None) -> s
             return unique
 
 
+# ---------------------------------------------------------------------------
+# MIRROR: format_worker_id is intentionally duplicated in
+#   frontend/src/utils/format.ts as ``formatWorkerId``.
+# Both implementations MUST be kept in sync.
+#
+# Transformation rules:
+#   1. Strip the "w-" prefix (removeprefix is a no-op if absent).
+#   2. Find the first digit in the remaining string.
+#   3. If a digit exists at position > 0, split there:
+#        LEFT  = everything before the first digit (uppercased)
+#        RIGHT = everything from the first digit onward (uppercased)
+#        result = LEFT + "-" + RIGHT
+#   4. Otherwise return the whole string uppercased (no hyphen inserted).
+#
+# Examples:  w-vd3566 → VD-3566 | w-ab1234 → AB-1234 | w-x9 → X-9
+# Edge cases:
+#   - All-digit suffix (e.g. w-1234): m.start()==0, returns "1234".
+#   - No-digit suffix (e.g. w-abc):   no match,     returns "ABC".
+#   - No w- prefix (bare ID):         no-op strip,  still formatted.
+# ---------------------------------------------------------------------------
 def format_worker_id(worker_id: str) -> str:
     """Format a worker ID in droid style: ``w-vd3566`` → ``VD-3566``.
 
     Strips the ``w-`` prefix, splits at the first digit boundary, uppercases
     both parts, and joins with a hyphen.  Examples: ``w-ab1234`` → ``AB-1234``,
     ``w-x9`` → ``X-9``, ``w-g2otus`` → ``G-2OTUS``.
+
+    Input is expected to be a ``w-<slug>`` worker ID, but the function degrades
+    gracefully for bare slugs (no prefix) or all-digit/all-letter slugs.
     """
     bare = worker_id.removeprefix("w-")
     m = re.search(r"\d", bare)
