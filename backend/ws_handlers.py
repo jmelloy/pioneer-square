@@ -247,7 +247,12 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         # decide it owns the agent, and stamp the just-joined agent offline.
         async with agent_owner_lock(ctx.guild_id):
             agent_owners[agent_id] = ctx.websocket
-    if agent_type == "foreman":
+    # Only an explicit external foreman client may claim the foreman seat —
+    # the legacy browser join still carries agentType="foreman" but must NOT
+    # be registered in foreman_connections, or every chat trigger gets routed
+    # to the browser (which has no handler) and the embedded foreman AI never
+    # runs. The external client signals its intent with `external: true`.
+    if agent_type == "foreman" and data.get("external") is True:
         # Register as the active external foreman for this guild.
         # Evict any previously connected foreman so there is never more than
         # one active at a time (prevents duplicate task mutations / triggers).
@@ -362,6 +367,7 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     if "current_task_id" in update_vals:
         msg["taskId"] = update_vals["current_task_id"]
     await broadcast(ctx.guild_id, msg)
+    reset_foreman_poll(ctx.guild_id)
 
 
 async def handle_chat(ctx: WSContext, data: dict) -> None:
@@ -535,6 +541,8 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_values))
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
+    if "state" in update_values:
+        reset_foreman_poll(ctx.guild_id)
 
 
 async def handle_task_complete(ctx: WSContext, data: dict) -> None:
@@ -641,6 +649,7 @@ async def handle_needs_input(ctx: WSContext, data: dict) -> None:
         task_id=task_id or None,
         task_name=f"foreman.needs-input:{task_id or 'unknown'}",
     )
+    reset_foreman_poll(ctx.guild_id)
 
 
 async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
@@ -669,6 +678,7 @@ async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
         "(or type it into the Foreman Comms input). The worker is waiting.",
         task_name=f"foreman.claude-auth:{worker_id}",
     )
+    reset_foreman_poll(ctx.guild_id)
 
 
 async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:

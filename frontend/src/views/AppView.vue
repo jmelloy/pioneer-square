@@ -65,15 +65,6 @@ const authStore = useAuthStore()
 const ghStore = useGitHubStore()
 const tasksStore = useTasksStore()
 
-function getClientId() {
-  let id = localStorage.getItem('client_id')
-  if (!id) {
-    id = Math.random().toString(36).slice(2, 10)
-    localStorage.setItem('client_id', id)
-  }
-  return id
-}
-
 async function initGuild(guildId: string) {
   if (!authStore.isLoggedIn) {
     // On a subdomain, redirect to the root domain bridge so it can pass
@@ -117,23 +108,10 @@ async function initGuild(guildId: string) {
       )
   }
 
-  const clientId = getClientId()
-  const suffix = clientId.slice(0, 4)
-  const foremanName = authStore.user ? `${authStore.user.login}-${suffix}` : `Foreman-${suffix}`
-
   guildStore.connectWebSocket(guildId, (data) => {
     agentsStore.handleWebSocketMessage(data)
     tasksStore.handleWebSocketMessage(data)
   })
-
-  setTimeout(() => {
-    guildStore.sendMessage({
-      type: 'join',
-      agentId: `foreman-${clientId}`,
-      agentName: foremanName,
-      agentType: 'foreman',
-    })
-  }, 200)
 
   if (ghStore.isConfigured) {
     const reposToFetch = guild.primary_repo ? [guild.primary_repo] : undefined
