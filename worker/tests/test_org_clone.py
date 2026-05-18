@@ -5,6 +5,8 @@ Covers:
   - Task for an already-cloned repo skips ensure_repo
   - Worker with repos list only still works (no org set)
   - _known_repos() includes lazily-cloned repos from the org dir
+  - pull_repos skips repos not yet cloned (lazy clone on demand)
+  - pull_repos updates repos that are already cloned
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from pioneer_worker.config import Config
+from pioneer_worker.git_ops import pull_repos
 from pioneer_worker.worker import Worker
 
 
@@ -290,3 +293,89 @@ def test_known_repos_deduplicates_org_repos(tmp_path):
     )
     known = worker._known_repos()
     assert known.count("myorg/myrepo") == 1
+
+
+# ---------------------------------------------------------------------------
+# pull_repos: lazy clone — skip repos not yet on disk
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pull_repos_skips_uncloned_repo(tmp_path):
+    """pull_repos must NOT clone a repo that isn't on disk yet."""
+    repos_dir = tmp_path / "repos"
+    emitted: list[str] = []
+
+    async def fake_emit(msg: str) -> None:
+        emitted.append(msg)
+
+    cloned: list[str] = []
+
+    async def fake_ensure_repo(rd, repo_full, token):
+        cloned.append(repo_full)
+        return str(repos_dir / repo_full.split("/")[0] / repo_full.split("/")[1])
+
+    with patch("pioneer_worker.git_ops.ensure_repo", side_effect=fake_ensure_repo):
+        await pull_repos(str(repos_dir), ["owner/notcloned"], None, fake_emit)
+
+    assert cloned == [], "pull_repos must not clone repos that aren't present yet"
+    assert not any("notcloned" in m for m in emitted if "Cloning" in m)
+
+
+@pytest.mark.asyncio
+async def test_pull_repos_updates_already_cloned_repo(tmp_path):
+    """pull_repos fetches and fast-forwards repos that are already on disk."""
+    repos_dir = tmp_path / "repos"
+    repo_path = repos_dir / "owner" / "myrepo"
+    (repo_path / ".git").mkdir(parents=True)
+
+    emitted: list[str] = []
+
+    async def fake_emit(msg: str) -> None:
+        emitted.append(msg)
+
+    git_calls: list[list[str]] = []
+
+    async def fake_run_git(args, cwd=None):
+        git_calls.append(args)
+        return 0, "", ""
+
+    with patch("pioneer_worker.git_ops.run_git", side_effect=fake_run_git):
+        await pull_repos(str(repos_dir), ["owner/myrepo"], None, fake_emit)
+
+    assert any("fetch" in c for c in git_calls), "should fetch for cloned repo"
+    assert any("Pulled owner/myrepo" in m for m in emitted)
+
+
+@pytest.mark.asyncio
+async def test_pull_repos_skips_uncloned_but_pulls_cloned(tmp_path):
+    """When the list has a mix, only cloned repos are updated."""
+    repos_dir = tmp_path / "repos"
+    cloned_path = repos_dir / "owner" / "cloned"
+    (cloned_path / ".git").mkdir(parents=True)
+
+    emitted: list[str] = []
+
+    async def fake_emit(msg: str) -> None:
+        emitted.append(msg)
+
+    ensure_calls: list[str] = []
+    git_calls: list[list[str]] = []
+
+    async def fake_ensure_repo(rd, repo_full, token):
+        ensure_calls.append(repo_full)
+        return None
+
+    async def fake_run_git(args, cwd=None):
+        git_calls.append(args)
+        return 0, "", ""
+
+    with (
+        patch("pioneer_worker.git_ops.ensure_repo", side_effect=fake_ensure_repo),
+        patch("pioneer_worker.git_ops.run_git", side_effect=fake_run_git),
+    ):
+        await pull_repos(str(repos_dir), ["owner/notcloned", "owner/cloned"], None, fake_emit)
+
+    assert ensure_calls == [], "pull_repos must not clone missing repos"
+    assert any("fetch" in c for c in git_calls), "should still fetch for cloned repo"
+    assert any("Pulled owner/cloned" in m for m in emitted)
