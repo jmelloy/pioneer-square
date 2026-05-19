@@ -1,7 +1,7 @@
 """Pioneer Square backend entry point.
 
 Routes live in ``routes/*``; OAuth helpers in ``oauth.py``; auth dependencies
-in ``auth_deps.py``; the agent subprocess streamer in ``agent_runner.py``.
+in ``auth_deps.py``.
 This module wires them onto a single FastAPI app and runs the lifespan-scoped
 background tasks (stale-worker sweeper).
 
@@ -214,7 +214,6 @@ app.add_middleware(
 # Mount routers
 # ---------------------------------------------------------------------------
 
-from routes import agents as _agents_routes  # noqa: E402
 from routes import auth as _auth_routes  # noqa: E402
 from routes import foreman as _foreman_routes  # noqa: E402
 from routes import guilds as _guilds_routes  # noqa: E402
@@ -227,7 +226,6 @@ from routes import workers as _workers_routes  # noqa: E402
 app.include_router(_wellknown_routes.router)
 app.include_router(_auth_routes.router)
 app.include_router(_guilds_routes.router)
-app.include_router(_agents_routes.router)
 app.include_router(_workers_routes.router)
 app.include_router(_tasks_routes.router)
 app.include_router(_foreman_routes.router)
