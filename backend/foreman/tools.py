@@ -19,7 +19,7 @@ from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)
 
-FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-haiku-4-5-20251001")
+FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 
 # Default soft-delete window (seconds) when finalize_task is called without
 # an explicit expiry. Mirrors backend.main.DEFAULT_FINALIZE_TTL.
