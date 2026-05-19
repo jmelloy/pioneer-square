@@ -412,7 +412,6 @@ class TestSupersedePriorBotReviews:
         assert len(resolve_calls) == 0
 
 
-
 class TestReviewPrSupersedePriorReviews:
     """Integration tests: review_pr tool calls _supersede_prior_bot_reviews."""
 
