@@ -315,7 +315,7 @@ watch(
   font-style: italic;
 }
 
-.terminal-link {
+.log-text :deep(.terminal-link) {
   color: var(--color-blue);
   text-decoration: underline;
   cursor: pointer;
