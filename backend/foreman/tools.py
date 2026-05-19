@@ -1126,9 +1126,26 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 primary_repo: str | None = guild_result.scalar_one_or_none()
                 repos: list[str] = inp.get("repos") or ([primary_repo] if primary_repo else [])
                 worker_result = await db.execute(
-                    select(Worker.id).where(Worker.id == wid, Worker.guild_pk == guild_pk)
+                    select(Worker.id, Worker.repos, Worker.org).where(
+                        Worker.id == wid, Worker.guild_pk == guild_pk
+                    )
                 )
-                worker_row = worker_result.scalar_one_or_none()
+                worker_row = worker_result.one_or_none()
+                if worker_row and primary_repo and not inp.get("repos"):
+                    worker_repos: list[str] = json.loads(worker_row.repos or "[]")
+                    worker_org: str | None = worker_row.org
+                    if primary_repo not in worker_repos and not (
+                        worker_org and primary_repo.startswith(f"{worker_org}/")
+                    ):
+                        logger.warning(
+                            "guild=%s assign_task: primary_repo %r not in worker %s repos "
+                            "(registered: %d repos, org=%r) — clone will likely fail",
+                            guild_id,
+                            primary_repo,
+                            wid,
+                            len(worker_repos),
+                            worker_org,
+                        )
                 if not worker_row:
                     result_text = f"Worker {wid} not found — task NOT queued."
                 elif existing_task_id:
