@@ -55,7 +55,7 @@
 import { ref, watch, nextTick } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { formatClock } from '../../utils/format'
-import type { LogEntry, LogDetail } from '../../types'
+import type { LogEntry } from '../../types'
 
 const props = defineProps<{ logs: LogEntry[] }>()
 
