@@ -6,8 +6,8 @@
     <div v-for="(log, i) in logs" :key="i" class="log-entry">
       <div
         class="log-line"
-        :class="{ 'log-line--expandable': !!log.detail }"
-        @click="log.detail && toggleDetail(i)"
+        :class="{ 'log-line--expandable': isExpandable(log) }"
+        @click="isExpandable(log) && toggleDetail(i)"
       >
         <span class="log-time">{{ formatTime(log.timestamp) }}</span>
         <span
@@ -15,23 +15,23 @@
           :class="[lineClass(log.line), { 'log-text--markdown': isMarkdownLine(log.line) }]"
           v-html="renderLine(log.line)"
         ></span>
-        <span v-if="log.detail" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
+        <span v-if="isExpandable(log)" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
       </div>
-      <div v-if="log.detail && expandedIdx === i" class="log-detail">
+      <div v-if="isExpandable(log) && expandedIdx === i" class="log-detail">
         <template v-if="log.detail.toolType === 'tool_use'">
           <template v-if="log.detail.name === 'Edit'">
             <div class="log-detail-label">OLD</div>
-            <pre class="log-detail-body log-detail-old">{{ log.detail.input?.old_string }}</pre>
+            <pre class="log-detail-body log-detail-old">{{ inputRecord(log.detail.input).old_string }}</pre>
             <div class="log-detail-label log-detail-label--new">NEW</div>
-            <pre class="log-detail-body log-detail-new">{{ log.detail.input?.new_string }}</pre>
+            <pre class="log-detail-body log-detail-new">{{ inputRecord(log.detail.input).new_string }}</pre>
           </template>
           <template v-else-if="log.detail.name === 'Write'">
-            <div class="log-detail-label">{{ log.detail.input?.file_path }}</div>
-            <pre class="log-detail-body">{{ log.detail.input?.content }}</pre>
+            <div class="log-detail-label">{{ inputRecord(log.detail.input).file_path }}</div>
+            <pre class="log-detail-body">{{ inputRecord(log.detail.input).content }}</pre>
           </template>
           <template v-else-if="log.detail.name === 'Bash'">
             <div class="log-detail-label">COMMAND</div>
-            <pre class="log-detail-body">{{ log.detail.input?.command }}</pre>
+            <pre class="log-detail-body">{{ inputRecord(log.detail.input).command }}</pre>
           </template>
           <template v-else>
             <div class="log-detail-label">{{ log.detail.name }}</div>
@@ -41,6 +41,10 @@
         <template v-else-if="log.detail.toolType === 'tool_result'">
           <div class="log-detail-label">OUTPUT</div>
           <pre class="log-detail-body">{{ log.detail.output }}</pre>
+        </template>
+        <template v-else-if="log.detail.toolType === 'thinking'">
+          <div class="log-detail-label">FULL THOUGHT</div>
+          <pre class="log-detail-body log-detail-thinking">{{ log.detail.fullText }}</pre>
         </template>
       </div>
     </div>
@@ -57,6 +61,12 @@ const props = defineProps<{ logs: LogEntry[] }>()
 
 const bodyEl = ref<HTMLElement | null>(null)
 const expandedIdx = ref<number | null>(null)
+
+function isExpandable(log: LogEntry): boolean {
+  if (!log.detail?.toolType) return false
+  if (log.detail.toolType === 'thinking') return log.detail.input !== log.detail.summary
+  return true
+}
 
 function toggleDetail(i: number) {
   expandedIdx.value = expandedIdx.value === i ? null : i
@@ -90,6 +100,10 @@ function isMarkdownLine(line: string): boolean {
 function renderLine(line: string): string {
   if (isMarkdownLine(line)) return renderMarkdown(line)
   return linkify(line)
+}
+
+function inputRecord(input: Record<string, unknown> | string | undefined): Record<string, unknown> {
+  return typeof input === 'object' && input !== null ? input : {}
 }
 
 function lineClass(line: string) {
@@ -212,6 +226,12 @@ watch(
   background: rgba(0, 120, 60, 0.08);
   border-color: rgba(0, 187, 100, 0.3);
   color: #70c090;
+}
+.log-detail-thinking {
+  background: rgba(30, 60, 120, 0.1);
+  border-color: rgba(80, 140, 220, 0.25);
+  color: var(--color-blue);
+  font-style: italic;
 }
 
 .log-time {

@@ -26,6 +26,17 @@ def _summarize_lines(lines: list[str], prefix: str = "  → ") -> str:
     )
 
 
+_THINKING_PREVIEW_LEN = 300
+
+
+def _truncate_at_word(text: str, limit: int) -> str:
+    """Truncate text at a word boundary at or before limit characters."""
+    if len(text) <= limit:
+        return text
+    idx = text.rfind(" ", 0, limit)
+    return text[: idx if idx > 0 else limit]
+
+
 _TOOL_ACTIVITY: dict[str, str] = {
     "Bash": "running",
     "Read": "reading",
@@ -61,11 +72,22 @@ def parse_claude_event(event: dict) -> list[tuple[str, dict | None]]:
             elif btype == "thinking":
                 thinking = blk.get("thinking", "").strip()
                 if thinking:
-                    preview = thinking[:100].replace("\n", " ")
+                    flat = thinking.replace("\n", " ")
+                    is_long = len(flat) > _THINKING_PREVIEW_LEN
+                    preview = _truncate_at_word(flat, _THINKING_PREVIEW_LEN)
+                    suffix = "..." if is_long else ""
+                    detail: dict = {
+                        "activity": "thinking",
+                        "input": thinking,
+                        "summary": preview,
+                    }
+                    if is_long:
+                        detail["toolType"] = "thinking"
+                        detail["fullText"] = thinking
                     pairs.append(
                         (
-                            f"[thinking] {preview}{'...' if len(thinking) > 100 else ''}",
-                            {"activity": "thinking"},
+                            f"[thinking] {preview}{suffix}",
+                            detail,
                         )
                     )
             elif btype == "tool_use":
