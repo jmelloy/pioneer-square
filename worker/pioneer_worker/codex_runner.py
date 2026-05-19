@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
+import pty
+import tempfile
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -36,23 +41,47 @@ async def run_codex_auto(
     *,
     emit: EmitFn,
     codex_path: str = "codex",
+    codex_args: list[str] | None = None,
 ) -> tuple[bool, str, str]:
     """Run codex on *description* in *cwd*. Returns (success, stop_reason, last_text)."""
-    cmd = [codex_path, "exec", "--json", description]
+    last_message_file = tempfile.NamedTemporaryFile(
+        prefix="pioneer-codex-last-", suffix=".txt", delete=False
+    )
+    last_message_path = last_message_file.name
+    last_message_file.close()
+    cmd = [
+        codex_path,
+        "exec",
+        "--json",
+        "-C",
+        cwd,
+        "--output-last-message",
+        last_message_path,
+        *(codex_args or []),
+        description,
+    ]
     logger.info("Spawning codex in %s; description=%r", cwd, description)
     logger.info("codex argv: %s", cmd)
     await emit(f"[codex] Starting: {description[:80]}")
     last_text = ""
     stop_reason = "no_events"
     event_count = 0
+    master_fd: int | None = None
+    slave_fd: int | None = None
     try:
+        # `codex exec` treats any non-TTY stdin, including /dev/null, as piped
+        # prompt content and tries to drain it. Give it an idle TTY so the
+        # explicit prompt argument is the only task input.
+        master_fd, slave_fd = pty.openpty()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=slave_fd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        os.close(slave_fd)
+        slave_fd = None
         logger.info("codex subprocess started pid=%s", proc.pid)
 
         async def _drain_stderr() -> None:
@@ -90,6 +119,9 @@ async def run_codex_auto(
             logger.warning("codex[%d] produced no stdout events — check PATH/auth", proc.pid)
         if stop_reason == "no_events" and exit_code == 0:
             stop_reason = "success"
+        captured_last = Path(last_message_path).read_text(encoding="utf-8").strip()
+        if captured_last:
+            last_text = captured_last
         return exit_code == 0, stop_reason, last_text
     except FileNotFoundError:
         logger.error("`codex` CLI not found on PATH")
@@ -99,3 +131,10 @@ async def run_codex_auto(
         logger.exception("codex subprocess crashed: %s", exc)
         await emit(f"[codex] ✗ {exc}")
         return False, "error_during_execution", last_text
+    finally:
+        for fd in (slave_fd, master_fd):
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(last_message_path)

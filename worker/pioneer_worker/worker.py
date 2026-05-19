@@ -206,6 +206,42 @@ class Worker:
         else:
             logger.warning("gh auth status: NOT authenticated (rc=%d)\n%s", proc.returncode, output)
 
+    async def _check_codex_doctor(self) -> None:
+        """Run `codex doctor` as a non-fatal startup diagnostic."""
+        if not self.cfg.codex_doctor:
+            logger.info("codex doctor skipped by config")
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.cfg.codex_path,
+                "doctor",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except FileNotFoundError:
+            logger.warning("codex CLI not found at %r — Codex tasks will fail", self.cfg.codex_path)
+            return
+        except Exception as exc:
+            logger.warning("codex doctor spawn failed: %s", exc)
+            return
+
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+        except TimeoutError:
+            logger.warning("codex doctor timed out after 20s")
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            return
+
+        output = stdout.decode(errors="replace").strip()
+        if proc.returncode == 0:
+            logger.info("codex doctor: ok\n%s", output)
+        else:
+            logger.warning("codex doctor: failed (rc=%d)\n%s", proc.returncode, output)
+
     async def _claude_is_authenticated(self) -> bool:
         """Return True if `claude auth status --json` reports loggedIn=true.
 
@@ -864,7 +900,7 @@ class Worker:
         )
         logger.info(
             "Paths: repos_dir=%s work_dir=%s pull_interval=%.1fs max_turns=%d"
-            " max_agents=%d claude=%s codex=%s pi=%s",
+            " max_agents=%d claude=%s codex=%s codex_args=%s pi=%s",
             self.cfg.repos_dir,
             self.cfg.work_dir,
             self.cfg.pull_interval,
@@ -872,6 +908,7 @@ class Worker:
             self.cfg.max_agents,
             self.cfg.claude_path,
             self.cfg.codex_path,
+            self.cfg.codex_args,
             self.cfg.pi_path,
         )
 
@@ -883,6 +920,7 @@ class Worker:
         await self._fetch_github_token_if_needed()
         await self._refresh_github_repos()
         await self._check_gh_auth()
+        await self._check_codex_doctor()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         self.ws.on_reconnect = self._on_ws_reconnect
@@ -1634,6 +1672,7 @@ class Worker:
                         primary_wt,
                         emit=emit,
                         codex_path=self.cfg.codex_path,
+                        codex_args=self.cfg.codex_args,
                     )
                 elif tool == "pi":
                     logger.info("Task %s: launching pi in %s", task_id, primary_wt)

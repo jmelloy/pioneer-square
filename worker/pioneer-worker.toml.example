@@ -45,3 +45,11 @@ token = "env:GITHUB_TOKEN"
 
 [claude]
 max_turns = 50
+
+[codex]
+# Extra args passed to `codex exec` before the prompt. Keep approval policy
+# non-interactive for unattended workers.
+# args = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+
+# Run `codex doctor` at worker startup and log the result (non-fatal).
+doctor = true

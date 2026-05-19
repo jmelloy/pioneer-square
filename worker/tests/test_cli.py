@@ -58,3 +58,34 @@ def test_cli_repos_check_passes_with_cli_override(tmp_path, monkeypatch):
     rc = cli.main(["--config", str(toml_path), "--repo", "owner/repo"])
     assert rc == 0
     assert captured["repos"] == ["owner/repo"]
+
+
+def test_cli_passes_codex_args(tmp_path, monkeypatch):
+    toml_path = _write_toml(
+        tmp_path,
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\nrepos = ["owner/repo"]\n',
+    )
+
+    captured = {}
+
+    class _FakeWorker:
+        def __init__(self, cfg):
+            captured["codex_args"] = list(cfg.codex_args)
+            captured["codex_doctor"] = cfg.codex_doctor
+
+        async def run(self):
+            return None
+
+    monkeypatch.setattr(cli, "Worker", _FakeWorker)
+    rc = cli.main(
+        [
+            "--config",
+            str(toml_path),
+            "--codex-arg=--sandbox",
+            "--codex-arg=workspace-write",
+            "--skip-codex-doctor",
+        ]
+    )
+    assert rc == 0
+    assert captured["codex_args"] == ["--sandbox", "workspace-write"]
+    assert captured["codex_doctor"] is False

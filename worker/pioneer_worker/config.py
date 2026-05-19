@@ -6,6 +6,7 @@ Reads a TOML file (default: ``./pioneer-worker.toml``).
 from __future__ import annotations
 
 import os
+import shlex
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,8 @@ class Config:
     work_dir: str = "worktrees"
     claude_path: str = "claude"
     codex_path: str = "codex"
+    codex_args: list[str] = field(default_factory=list)
+    codex_doctor: bool = True
     pi_path: str = "pi"
     pull_interval: float = 300.0
     claude_max_turns: int = 50
@@ -121,6 +124,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     github_block = raw.get("github") or {}
     paths_block = raw.get("paths") or {}
     claude_block = raw.get("claude") or {}
+    codex_block = raw.get("codex") or {}
 
     token = overrides.get("github_token")
     if token is None:
@@ -141,6 +145,20 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
 
     _repos_env = os.environ.get("PIONEER_REPOS", "")
     _repos_from_env = [r.strip() for r in _repos_env.split(",") if r.strip()] if _repos_env else []
+    _codex_args_env = os.environ.get("PIONEER_CODEX_ARGS", "")
+    _codex_args = (
+        overrides.get("codex_args")
+        if overrides.get("codex_args") is not None
+        else codex_block.get("args")
+        if codex_block.get("args") is not None
+        else shlex.split(_codex_args_env)
+        if _codex_args_env
+        else []
+    )
+    if isinstance(_codex_args, str):
+        _codex_args = shlex.split(_codex_args)
+    if not isinstance(_codex_args, list) or not all(isinstance(arg, str) for arg in _codex_args):
+        raise ValueError("codex args must be a list of strings.")
 
     return Config(
         backend_url=backend_url.rstrip("/"),
@@ -171,6 +189,12 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         ),
         claude_path=overrides.get("claude_path") or paths_block.get("claude", "claude"),
         codex_path=overrides.get("codex_path") or paths_block.get("codex", "codex"),
+        codex_args=list(_codex_args),
+        codex_doctor=bool(
+            overrides.get("codex_doctor")
+            if overrides.get("codex_doctor") is not None
+            else codex_block.get("doctor", True)
+        ),
         pi_path=overrides.get("pi_path") or paths_block.get("pi", "pi"),
         pull_interval=float(
             overrides.get("pull_interval")

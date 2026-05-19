@@ -60,6 +60,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--claude-path", help="Path to the claude executable (default: claude).")
     parser.add_argument("--codex-path", help="Path to the codex executable (default: codex).")
+    parser.add_argument(
+        "--codex-arg",
+        dest="codex_args",
+        action="append",
+        help=(
+            "Extra argument passed to `codex exec` before the prompt "
+            "(may be repeated, e.g. --codex-arg --sandbox=workspace-write)."
+        ),
+    )
+    parser.add_argument(
+        "--skip-codex-doctor",
+        dest="codex_doctor",
+        action="store_false",
+        default=None,
+        help="Skip `codex doctor` startup diagnostics.",
+    )
     parser.add_argument("--pi-path", help="Path to the pi executable (default: pi).")
 
     # Tuning
@@ -127,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
             "work_dir": args.work_dir,
             "claude_path": args.claude_path,
             "codex_path": args.codex_path,
+            "codex_args": args.codex_args,
+            "codex_doctor": args.codex_doctor,
             "pi_path": args.pi_path,
             "pull_interval": args.pull_interval,
             "claude_max_turns": args.claude_max_turns,
