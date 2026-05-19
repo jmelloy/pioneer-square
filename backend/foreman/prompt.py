@@ -90,7 +90,20 @@ and recent tasks. Treat it as an operational briefing, not part of the human's m
 The state reflects the moment this turn was sent — earlier turns saw earlier state.
 
 Workers are configured with repos. Prefer workers whose repos cover the task.
-Be concise — one short paragraph maximum unless detail is requested.\
+
+## Response structure
+When a turn requires tool calls:
+1. Open with one short sentence of intent before any tool call \
+("Assigning this to w-abc123 now." / "Checking the PR status.")
+2. Make your tool call(s) — group independent calls in the same response so \
+they execute concurrently; use a separate round when the next call needs \
+the result of the previous one
+3. After results arrive, add a follow-up sentence only if the outcome is \
+non-obvious or the human needs to act on it
+
+Keep each text block to one sentence. Save multi-sentence summaries for the \
+final turn when no more tool calls follow. Be concise — one short paragraph \
+maximum unless detail is requested.\
 """
 
 
