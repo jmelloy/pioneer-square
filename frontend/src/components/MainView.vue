@@ -83,15 +83,15 @@ const visibleTaskTabs = computed(() =>
 )
 
 watch(
-  () => agentsStore.selectedAgentId,
-  (id) => {
+  [() => agentsStore.selectedAgentId, () => agentsStore.agentSelectSeq],
+  ([id]) => {
     if (id) activeTab.value = 'agent-' + id
   },
 )
 
 watch(
-  () => agentsStore.selectedWorkerId,
-  (id) => {
+  [() => agentsStore.selectedWorkerId, () => agentsStore.workerSelectSeq],
+  ([id]) => {
     if (id) activeTab.value = 'worker-' + id
   },
 )

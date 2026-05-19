@@ -43,8 +43,10 @@ export const useAgentsStore = defineStore('agents', () => {
   const workerLogs = ref<Record<string, LogEntry[]>>({})
   const selectedWorkerId = ref<string | null>(null)
   const openedWorkerIds = ref<string[]>([])
+  const workerSelectSeq = ref(0)
   const selectedAgentId = ref<string | null>(null)
   const openedAgentIds = ref<string[]>([])
+  const agentSelectSeq = ref(0)
 
   // Unique workers derived from agent slots
   const workers = computed<Worker[]>(() => {
@@ -128,6 +130,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
   function selectWorker(workerId: string | null) {
     selectedWorkerId.value = workerId
+    if (workerId) workerSelectSeq.value++
     if (workerId && !openedWorkerIds.value.includes(workerId)) {
       openedWorkerIds.value.push(workerId)
     }
@@ -141,6 +144,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
   function selectAgent(agentId: string | null) {
     selectedAgentId.value = agentId
+    if (agentId) agentSelectSeq.value++
     if (agentId && !openedAgentIds.value.includes(agentId)) {
       openedAgentIds.value.push(agentId)
     }
@@ -285,8 +289,10 @@ export const useAgentsStore = defineStore('agents', () => {
     workerLogs,
     selectedWorkerId,
     openedWorkerIds,
+    workerSelectSeq,
     selectedAgentId,
     openedAgentIds,
+    agentSelectSeq,
     registerAgent,
     updateAgentState,
     addLog,
