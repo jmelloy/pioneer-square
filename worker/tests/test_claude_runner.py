@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from pioneer_worker.claude_runner import _summarize_lines, parse_claude_event
+from pioneer_worker.claude_runner import _summarize_lines, _truncate_at_word, parse_claude_event
 
 # ---------------------------------------------------------------------------
 # _summarize_lines
@@ -73,14 +73,43 @@ def test_parse_assistant_thinking_block():
     assert "I should do X" in pairs[0][0]
 
 
-def test_parse_assistant_thinking_truncates_at_100():
-    long_thought = "x" * 200
+def test_parse_assistant_thinking_truncates_at_300():
+    long_thought = "x" * 400
     event = {
         "type": "assistant",
         "message": {"content": [{"type": "thinking", "thinking": long_thought}]},
     }
     pairs = parse_claude_event(event)
     assert "..." in pairs[0][0]
+    text, detail = pairs[0]
+    assert detail is not None
+    assert detail["toolType"] == "thinking"
+    assert detail["fullText"] == long_thought
+
+
+def test_parse_assistant_thinking_word_boundary():
+    long_thought = ("hello world " * 30).strip()  # spaces at word boundaries
+    event = {
+        "type": "assistant",
+        "message": {"content": [{"type": "thinking", "thinking": long_thought}]},
+    }
+    pairs = parse_claude_event(event)
+    text, _ = pairs[0]
+    preview = text[len("[thinking] ") :]
+    assert not preview.endswith("...") or preview[:-3].endswith(("o", "d", " "))
+
+
+def test_parse_assistant_thinking_short_no_tooltype():
+    short_thought = "I should do Y"
+    event = {
+        "type": "assistant",
+        "message": {"content": [{"type": "thinking", "thinking": short_thought}]},
+    }
+    pairs = parse_claude_event(event)
+    assert len(pairs) == 1
+    _, detail = pairs[0]
+    assert detail is not None
+    assert "toolType" not in detail
 
 
 def test_parse_assistant_bash_tool():

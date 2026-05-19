@@ -6,8 +6,8 @@
     <div v-for="(log, i) in logs" :key="i" class="log-entry">
       <div
         class="log-line"
-        :class="{ 'log-line--expandable': !!log.detail }"
-        @click="log.detail && toggleDetail(i)"
+        :class="{ 'log-line--expandable': !!log.detail?.toolType }"
+        @click="log.detail?.toolType && toggleDetail(i)"
       >
         <span class="log-time">{{ formatTime(log.timestamp) }}</span>
         <span
@@ -15,9 +15,9 @@
           :class="[lineClass(log.line), { 'log-text--markdown': isMarkdownLine(log.line) }]"
           v-html="renderLine(log.line)"
         ></span>
-        <span v-if="log.detail" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
+        <span v-if="log.detail?.toolType" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
       </div>
-      <div v-if="log.detail && expandedIdx === i" class="log-detail">
+      <div v-if="log.detail?.toolType && expandedIdx === i" class="log-detail">
         <template v-if="log.detail.toolType === 'tool_use'">
           <template v-if="log.detail.name === 'Edit'">
             <div class="log-detail-label">OLD</div>
@@ -41,6 +41,10 @@
         <template v-else-if="log.detail.toolType === 'tool_result'">
           <div class="log-detail-label">OUTPUT</div>
           <pre class="log-detail-body">{{ log.detail.output }}</pre>
+        </template>
+        <template v-else-if="log.detail.toolType === 'thinking'">
+          <div class="log-detail-label">FULL THOUGHT</div>
+          <pre class="log-detail-body log-detail-thinking">{{ log.detail.fullText }}</pre>
         </template>
       </div>
     </div>
@@ -212,6 +216,12 @@ watch(
   background: rgba(0, 120, 60, 0.08);
   border-color: rgba(0, 187, 100, 0.3);
   color: #70c090;
+}
+.log-detail-thinking {
+  background: rgba(30, 60, 120, 0.1);
+  border-color: rgba(80, 140, 220, 0.25);
+  color: var(--color-blue);
+  font-style: italic;
 }
 
 .log-time {
