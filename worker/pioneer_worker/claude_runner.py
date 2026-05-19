@@ -76,9 +76,13 @@ def parse_claude_event(event: dict) -> list[tuple[str, dict | None]]:
                     is_long = len(flat) > _THINKING_PREVIEW_LEN
                     preview = _truncate_at_word(flat, _THINKING_PREVIEW_LEN)
                     suffix = "..." if is_long else ""
-                    detail: dict = {"activity": "thinking"}
+                    detail: dict = {
+                        "activity": "thinking",
+                        "toolType": "thinking",
+                        "input": thinking,
+                        "summary": preview,
+                    }
                     if is_long:
-                        detail["toolType"] = "thinking"
                         detail["fullText"] = thinking
                     pairs.append(
                         (

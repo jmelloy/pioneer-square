@@ -6,8 +6,8 @@
     <div v-for="(log, i) in logs" :key="i" class="log-entry">
       <div
         class="log-line"
-        :class="{ 'log-line--expandable': !!log.detail?.toolType }"
-        @click="log.detail?.toolType && toggleDetail(i)"
+        :class="{ 'log-line--expandable': isExpandable(log) }"
+        @click="isExpandable(log) && toggleDetail(i)"
       >
         <span class="log-time">{{ formatTime(log.timestamp) }}</span>
         <span
@@ -15,9 +15,9 @@
           :class="[lineClass(log.line), { 'log-text--markdown': isMarkdownLine(log.line) }]"
           v-html="renderLine(log.line)"
         ></span>
-        <span v-if="log.detail?.toolType" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
+        <span v-if="isExpandable(log)" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
       </div>
-      <div v-if="log.detail?.toolType && expandedIdx === i" class="log-detail">
+      <div v-if="isExpandable(log) && expandedIdx === i" class="log-detail">
         <template v-if="log.detail.toolType === 'tool_use'">
           <template v-if="log.detail.name === 'Edit'">
             <div class="log-detail-label">OLD</div>
@@ -61,6 +61,12 @@ const props = defineProps<{ logs: LogEntry[] }>()
 
 const bodyEl = ref<HTMLElement | null>(null)
 const expandedIdx = ref<number | null>(null)
+
+function isExpandable(log: LogEntry): boolean {
+  if (!log.detail?.toolType) return false
+  if (log.detail.toolType === 'thinking') return log.detail.input !== log.detail.summary
+  return true
+}
 
 function toggleDetail(i: number) {
   expandedIdx.value = expandedIdx.value === i ? null : i
