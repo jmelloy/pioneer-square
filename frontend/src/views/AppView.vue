@@ -178,6 +178,24 @@ watch(
   overflow: hidden;
 }
 
+@media (min-width: 1025px) {
+  .app-body {
+    padding: 0 16px;
+  }
+}
+
+@media (min-width: 1400px) {
+  .app-body {
+    padding: 0 40px;
+  }
+}
+
+@media (min-width: 1800px) {
+  .app-body {
+    padding: 0 80px;
+  }
+}
+
 .mobile-tab-bar {
   display: none;
 }

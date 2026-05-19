@@ -69,6 +69,25 @@ export const useAuthStore = defineStore('auth', () => {
     return data
   }
 
+  async function loginAsGuest(): Promise<string> {
+    const res = await fetch(`${API_BASE}/auth/guest`, { method: 'POST' })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.detail || `Dev login failed: ${res.status}`)
+    }
+    const data = await res.json()
+    loginToken.value = data.login_token
+    user.value = {
+      id: data.gh_user_id,
+      login: data.gh_login,
+      name: data.gh_name || data.gh_login,
+      avatar_url: data.gh_avatar || '',
+    }
+    localStorage.setItem('auth_token', data.login_token)
+    localStorage.setItem('auth_user', JSON.stringify(user.value))
+    return data.guild_id as string
+  }
+
   async function logout() {
     if (loginToken.value) {
       await fetch(`${API_BASE}/auth/logout`, {
@@ -88,6 +107,7 @@ export const useAuthStore = defineStore('auth', () => {
     isLoggedIn,
     authHeaders,
     loginWithGitHub,
+    loginAsGuest,
     restoreFromCallback,
     exchangeCode,
     logout,

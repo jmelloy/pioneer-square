@@ -82,7 +82,7 @@ export const useTasksStore = defineStore('tasks', () => {
   async function fetchTaskLogs(guildId: string, taskId: string) {
     try {
       const raw = await api<Array<{ line: string; timestamp: string; detail?: unknown }>>(
-        `/guilds/${guildId}/tasks/${taskId}/logs`,
+        `/guilds/${guildId}/logs?task_id=${taskId}`,
       )
       const logs: LogEntry[] = raw.map((r) => ({
         line: r.line,
