@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from events import broadcast, emit_terminal_line
-from models import Agent, GithubToken, GuildKey, GuildMember, Task, TaskLog, Worker
+from models import Agent, GithubToken, Guild, GuildKey, GuildMember, Task, TaskLog, Worker
 from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)
@@ -132,6 +132,16 @@ FOREMAN_TOOLS = [
                 "issue_repo": {
                     "type": "string",
                     "description": "owner/repo for the issue (optional).",
+                },
+                "repos": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Explicit list of owner/repo strings to clone for this task. "
+                        "When provided, the worker clones only these repos instead of "
+                        "falling back to its full configured list. Omit when the full "
+                        "list is appropriate."
+                    ),
                 },
             },
             "required": ["worker_id", "description"],
@@ -1110,13 +1120,39 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 phase = inp.get("phase", "execute")
                 tool = inp.get("tool", "claude")
                 existing_task_id = inp.get("task_id")
-                worker_result = await db.execute(
-                    select(Worker.id).where(Worker.id == wid, Worker.guild_pk == guild_pk)
+                guild_result = await db.execute(
+                    select(Guild.primary_repo).where(Guild.id == guild_pk)
                 )
-                worker_row = worker_result.scalar_one_or_none()
+                primary_repo: str | None = guild_result.scalar_one_or_none()
+                repos: list[str] = inp.get("repos") or ([primary_repo] if primary_repo else [])
+                worker_result = await db.execute(
+                    select(Worker.id, Worker.repos, Worker.org).where(
+                        Worker.id == wid, Worker.guild_pk == guild_pk
+                    )
+                )
+                worker_row = worker_result.one_or_none()
                 if not worker_row:
                     result_text = f"Worker {wid} not found — task NOT queued."
-                elif existing_task_id:
+                    is_error = True
+                elif repos:
+                    worker_repos: list[str] = json.loads(worker_row.repos or "[]")
+                    worker_org: str | None = worker_row.org
+                    unreachable = [
+                        r
+                        for r in repos
+                        if r not in worker_repos
+                        and not (worker_org and r.startswith(f"{worker_org}/"))
+                    ]
+                    if unreachable:
+                        result_text = (
+                            f"Worker {wid} cannot access repo(s) {unreachable} — "
+                            f"task NOT queued. Worker has {len(worker_repos)} registered "
+                            f"repo(s) and org={worker_org!r}. Choose a worker that has "
+                            f"access to these repos, or omit repos to use the worker's "
+                            f"full configured list."
+                        )
+                        is_error = True
+                if not is_error and existing_task_id:
                     name_override = inp.get("name")
                     update_values: dict = {
                         "worker_id": wid,
@@ -1154,10 +1190,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "phase": phase,
                             "issueNumber": inp.get("issue_number"),
                             "issueRepo": inp.get("issue_repo"),
+                            "repos": repos,
                         },
                     )
                     result_text = f"Task {task_id} assigned to {wid}."
-                else:
+                elif not is_error:
                     name = inp.get("name") or desc[:60]
                     parent_task_id = inp.get("parent_task_id")
                     task_id = "t-" + "".join(
@@ -1195,6 +1232,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "parentTaskId": parent_task_id,
                             "issueNumber": inp.get("issue_number"),
                             "issueRepo": inp.get("issue_repo"),
+                            "repos": repos,
                         },
                     )
                     result_text = f"Task {task_id} queued for {wid}."

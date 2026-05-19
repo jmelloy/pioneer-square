@@ -109,9 +109,10 @@ async def test_fetch_accessible_repos_skips_missing_full_name():
 
 @pytest.mark.asyncio
 async def test_refresh_merges_new_api_repos():
-    """API repos not in the static config are appended and backend is notified."""
+    """Org repos from API not in static config are appended and backend is notified."""
     worker = _make_worker(
         repos=["owner/repo1"],
+        org="owner",
         github_token="ghp_token",
     )
 
@@ -123,7 +124,9 @@ async def test_refresh_merges_new_api_repos():
     ):
         await worker._refresh_github_repos()
 
-    assert worker.cfg.repos == ["owner/repo1", "owner/repo2", "owner/repo3"]
+    # cfg.repos stays as the static config — only _broadcast_repos expands
+    assert worker.cfg.repos == ["owner/repo1"]
+    assert worker._broadcast_repos == ["owner/repo1", "owner/repo2", "owner/repo3"]
     worker._send.assert_awaited_once()
     msg = worker._send.call_args[0][0]
     assert msg["type"] == "worker-register"
@@ -132,9 +135,10 @@ async def test_refresh_merges_new_api_repos():
 
 @pytest.mark.asyncio
 async def test_refresh_preserves_static_order():
-    """Static config repos keep their position; API extras are appended."""
+    """Static config repos keep their position; org extras are appended."""
     worker = _make_worker(
         repos=["owner/z-repo", "owner/a-repo"],
+        org="owner",
         github_token="ghp_token",
     )
 
@@ -146,16 +150,62 @@ async def test_refresh_preserves_static_order():
     ):
         await worker._refresh_github_repos()
 
-    assert worker.cfg.repos[0] == "owner/z-repo"
-    assert worker.cfg.repos[1] == "owner/a-repo"
-    assert worker.cfg.repos[2] == "owner/new-repo"
+    # cfg.repos stays as the static config — only _broadcast_repos expands
+    assert worker.cfg.repos == ["owner/z-repo", "owner/a-repo"]
+    assert worker._broadcast_repos[0] == "owner/z-repo"
+    assert worker._broadcast_repos[1] == "owner/a-repo"
+    assert worker._broadcast_repos[2] == "owner/new-repo"
+
+
+@pytest.mark.asyncio
+async def test_refresh_filters_out_other_org_repos():
+    """Repos from other orgs in the API response are not added to broadcast list."""
+    worker = _make_worker(
+        repos=["myorg/repo1"],
+        org="myorg",
+        github_token="ghp_token",
+    )
+
+    api_repos = ["myorg/repo1", "myorg/repo2", "otherorg/repo3", "unrelated/thing"]
+
+    with patch(
+        "pioneer_worker.worker.github_pr.fetch_accessible_repos",
+        new=AsyncMock(return_value=api_repos),
+    ):
+        await worker._refresh_github_repos()
+
+    assert worker.cfg.repos == ["myorg/repo1"]
+    assert worker._broadcast_repos == ["myorg/repo1", "myorg/repo2"]
+    assert "otherorg/repo3" not in worker._broadcast_repos
+    assert "unrelated/thing" not in worker._broadcast_repos
+
+
+@pytest.mark.asyncio
+async def test_refresh_noop_when_no_org():
+    """Without cfg.org, no API call is made and broadcast list stays as static config."""
+    worker = _make_worker(
+        repos=["owner/repo1", "owner/repo2"],
+        github_token="ghp_token",
+    )
+
+    with patch(
+        "pioneer_worker.worker.github_pr.fetch_accessible_repos",
+        new=AsyncMock(return_value=["owner/repo1", "owner/repo2", "owner/extra"]),
+    ) as mock_fetch:
+        await worker._refresh_github_repos()
+
+    mock_fetch.assert_not_awaited()
+    worker._send.assert_not_awaited()
+    assert worker.cfg.repos == ["owner/repo1", "owner/repo2"]
+    assert worker._broadcast_repos == ["owner/repo1", "owner/repo2"]
 
 
 @pytest.mark.asyncio
 async def test_refresh_noop_when_list_unchanged():
-    """No worker-register message is sent when the repo set hasn't changed."""
+    """No worker-register message is sent when the org repo set hasn't changed."""
     worker = _make_worker(
         repos=["owner/repo1", "owner/repo2"],
+        org="owner",
         github_token="ghp_token",
     )
 
@@ -190,7 +240,7 @@ async def test_refresh_skips_when_no_token():
 @pytest.mark.asyncio
 async def test_refresh_sets_last_refresh_timestamp():
     """_last_repo_refresh is updated after a successful refresh."""
-    worker = _make_worker(repos=[], github_token="ghp_token")
+    worker = _make_worker(repos=[], org="owner", github_token="ghp_token")
 
     assert worker._last_repo_refresh == 0.0
 
@@ -206,7 +256,7 @@ async def test_refresh_sets_last_refresh_timestamp():
 @pytest.mark.asyncio
 async def test_refresh_noop_when_api_returns_empty():
     """Empty API response is treated as a transient error — config unchanged."""
-    worker = _make_worker(repos=["owner/existing"], github_token="ghp_token")
+    worker = _make_worker(repos=["owner/existing"], org="owner", github_token="ghp_token")
 
     with patch(
         "pioneer_worker.worker.github_pr.fetch_accessible_repos",
