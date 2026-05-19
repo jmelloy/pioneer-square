@@ -65,6 +65,10 @@ const expandedIdx = ref<number | null>(null)
 function isExpandable(log: LogEntry): boolean {
   if (!log.detail?.toolType) return false
   if (log.detail.toolType === 'thinking') return log.detail.input !== log.detail.summary
+  if (log.detail.toolType === 'tool_result') {
+    // _summarize_lines shows all lines when count <= 4; only expand when output is truncated
+    return (log.detail.output?.trim().split('\n').length ?? 0) > 4
+  }
   return true
 }
 
