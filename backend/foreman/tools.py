@@ -1138,7 +1138,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     worker_repos: list[str] = json.loads(worker_row.repos or "[]")
                     worker_org: str | None = worker_row.org
                     unreachable = [
-                        r for r in repos
+                        r
+                        for r in repos
                         if r not in worker_repos
                         and not (worker_org and r.startswith(f"{worker_org}/"))
                     ]
