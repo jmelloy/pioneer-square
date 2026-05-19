@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from events import broadcast, emit_terminal_line
-from models import Agent, Guild, GithubToken, GuildKey, GuildMember, Task, TaskLog, Worker
+from models import Agent, GithubToken, Guild, GuildKey, GuildMember, Task, TaskLog, Worker
 from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)

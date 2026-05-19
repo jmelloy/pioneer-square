@@ -1480,7 +1480,8 @@ class Worker:
         if explicit_repos:
             org_prefix = f"{self.cfg.org}/" if self.cfg.org else None
             repos = [
-                r for r in explicit_repos
+                r
+                for r in explicit_repos
                 if r in self.cfg.repos or (org_prefix and r.startswith(org_prefix))
             ] or list(self.cfg.repos)
         else:
