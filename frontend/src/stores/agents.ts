@@ -43,10 +43,9 @@ export const useAgentsStore = defineStore('agents', () => {
   const workerLogs = ref<Record<string, LogEntry[]>>({})
   const selectedWorkerId = ref<string | null>(null)
   const openedWorkerIds = ref<string[]>([])
-  const workerSelectSeq = ref(0)
   const selectedAgentId = ref<string | null>(null)
   const openedAgentIds = ref<string[]>([])
-  const agentSelectSeq = ref(0)
+  const activeTab = ref<string>('factory')
 
   // Unique workers derived from agent slots
   const workers = computed<Worker[]>(() => {
@@ -130,9 +129,9 @@ export const useAgentsStore = defineStore('agents', () => {
 
   function selectWorker(workerId: string | null) {
     selectedWorkerId.value = workerId
-    if (workerId) workerSelectSeq.value++
-    if (workerId && !openedWorkerIds.value.includes(workerId)) {
-      openedWorkerIds.value.push(workerId)
+    if (workerId) {
+      if (!openedWorkerIds.value.includes(workerId)) openedWorkerIds.value.push(workerId)
+      activeTab.value = 'worker-' + workerId
     }
   }
 
@@ -140,13 +139,14 @@ export const useAgentsStore = defineStore('agents', () => {
     const idx = openedWorkerIds.value.indexOf(workerId)
     if (idx !== -1) openedWorkerIds.value.splice(idx, 1)
     if (selectedWorkerId.value === workerId) selectedWorkerId.value = null
+    if (activeTab.value === 'worker-' + workerId) activeTab.value = 'factory'
   }
 
   function selectAgent(agentId: string | null) {
     selectedAgentId.value = agentId
-    if (agentId) agentSelectSeq.value++
-    if (agentId && !openedAgentIds.value.includes(agentId)) {
-      openedAgentIds.value.push(agentId)
+    if (agentId) {
+      if (!openedAgentIds.value.includes(agentId)) openedAgentIds.value.push(agentId)
+      activeTab.value = 'agent-' + agentId
     }
   }
 
@@ -154,6 +154,7 @@ export const useAgentsStore = defineStore('agents', () => {
     const idx = openedAgentIds.value.indexOf(agentId)
     if (idx !== -1) openedAgentIds.value.splice(idx, 1)
     if (selectedAgentId.value === agentId) selectedAgentId.value = null
+    if (activeTab.value === 'agent-' + agentId) activeTab.value = 'factory'
   }
 
   function sendMessage(agentId: string, content: string) {
@@ -231,6 +232,7 @@ export const useAgentsStore = defineStore('agents', () => {
     openedWorkerIds.value = []
     selectedAgentId.value = null
     openedAgentIds.value = []
+    activeTab.value = 'factory'
   }
 
   type RawLog = { line: string; timestamp: string; detail?: unknown }
@@ -289,10 +291,9 @@ export const useAgentsStore = defineStore('agents', () => {
     workerLogs,
     selectedWorkerId,
     openedWorkerIds,
-    workerSelectSeq,
     selectedAgentId,
     openedAgentIds,
-    agentSelectSeq,
+    activeTab,
     registerAgent,
     updateAgentState,
     addLog,

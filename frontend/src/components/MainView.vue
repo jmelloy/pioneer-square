@@ -3,8 +3,8 @@
     <div class="tab-bar">
       <button
         class="tab"
-        :class="{ active: activeTab === 'factory' }"
-        @click="activeTab = 'factory'"
+        :class="{ active: agentsStore.activeTab === 'factory' }"
+        @click="agentsStore.activeTab = 'factory'"
       >
         <span class="tab-icon">⚙</span>
         <span class="tab-label">Factory Floor</span>
@@ -14,7 +14,7 @@
         v-for="agent in visibleAgentTabs"
         :key="'agent-' + agent.id"
         class="tab worker-tab"
-        :class="{ active: activeTab === 'agent-' + agent.id }"
+        :class="{ active: agentsStore.activeTab === 'agent-' + agent.id }"
         @click="onAgentTabClick($event, agent.id)"
       >
         <span class="state-dot" :class="agent.state"></span>
@@ -26,7 +26,7 @@
         v-for="worker in visibleWorkerTabs"
         :key="'worker-' + worker.id"
         class="tab worker-tab"
-        :class="{ active: activeTab === 'worker-' + worker.id }"
+        :class="{ active: agentsStore.activeTab === 'worker-' + worker.id }"
         @click="onWorkerTabClick($event, worker.id)"
       >
         <span class="state-dot" :class="worker.state"></span>
@@ -38,7 +38,7 @@
         v-for="task in visibleTaskTabs"
         :key="'task-' + task.id"
         class="tab task-tab"
-        :class="{ active: activeTab === 'task-' + task.id }"
+        :class="{ active: agentsStore.activeTab === 'task-' + task.id }"
         @click="onTabClick($event, task.id)"
       >
         <span class="task-dot" :class="'task-dot-' + task.state.replace(/[^a-z]/g, '-')"></span>
@@ -47,16 +47,16 @@
       </button>
     </div>
     <div class="tab-content">
-      <FactoryFloor v-if="activeTab === 'factory'" />
-      <LogPane v-else-if="activeTab.startsWith('agent-')" kind="agent" :id="activeTab.slice(6)" />
-      <LogPane v-else-if="activeTab.startsWith('worker-')" kind="worker" :id="activeTab.slice(7)" />
-      <LogPane v-else-if="activeTab.startsWith('task-')" kind="task" :id="activeTab.slice(5)" />
+      <FactoryFloor v-if="agentsStore.activeTab === 'factory'" />
+      <LogPane v-else-if="agentsStore.activeTab.startsWith('agent-')" kind="agent" :id="agentsStore.activeTab.slice(6)" />
+      <LogPane v-else-if="agentsStore.activeTab.startsWith('worker-')" kind="worker" :id="agentsStore.activeTab.slice(7)" />
+      <LogPane v-else-if="agentsStore.activeTab.startsWith('task-')" kind="task" :id="agentsStore.activeTab.slice(5)" />
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import FactoryFloor from './FactoryFloor.vue'
@@ -64,7 +64,6 @@ import LogPane from './LogPane.vue'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
-const activeTab = ref('factory')
 
 const visibleAgentTabs = computed(() =>
   agentsStore.openedAgentIds
@@ -83,50 +82,34 @@ const visibleTaskTabs = computed(() =>
 )
 
 watch(
-  [() => agentsStore.selectedAgentId, () => agentsStore.agentSelectSeq],
-  ([id]) => {
-    if (id) activeTab.value = 'agent-' + id
-  },
-)
-
-watch(
-  [() => agentsStore.selectedWorkerId, () => agentsStore.workerSelectSeq],
-  ([id]) => {
-    if (id) activeTab.value = 'worker-' + id
-  },
-)
-
-watch(
   () => tasksStore.selectedTaskId,
   (id) => {
-    if (id) activeTab.value = 'task-' + id
+    if (id) agentsStore.activeTab = 'task-' + id
   },
 )
 
 function onWorkerTabClick(event: MouseEvent, workerId: string) {
   if ((event.target as HTMLElement).closest('.tab-close')) {
     agentsStore.closeWorker(workerId)
-    if (activeTab.value === 'worker-' + workerId) activeTab.value = 'factory'
   } else {
-    activeTab.value = 'worker-' + workerId
+    agentsStore.activeTab = 'worker-' + workerId
   }
 }
 
 function onAgentTabClick(event: MouseEvent, agentId: string) {
   if ((event.target as HTMLElement).closest('.tab-close')) {
     agentsStore.closeAgent(agentId)
-    if (activeTab.value === 'agent-' + agentId) activeTab.value = 'factory'
   } else {
-    activeTab.value = 'agent-' + agentId
+    agentsStore.activeTab = 'agent-' + agentId
   }
 }
 
 function onTabClick(event: MouseEvent, taskId: string) {
   if ((event.target as HTMLElement).closest('.tab-close')) {
     tasksStore.closeTask(taskId)
-    if (activeTab.value === 'task-' + taskId) activeTab.value = 'factory'
+    if (agentsStore.activeTab === 'task-' + taskId) agentsStore.activeTab = 'factory'
   } else {
-    activeTab.value = 'task-' + taskId
+    agentsStore.activeTab = 'task-' + taskId
   }
 }
 </script>
