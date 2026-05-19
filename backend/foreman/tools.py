@@ -1131,24 +1131,27 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     )
                 )
                 worker_row = worker_result.one_or_none()
-                if worker_row and primary_repo and not inp.get("repos"):
-                    worker_repos: list[str] = json.loads(worker_row.repos or "[]")
-                    worker_org: str | None = worker_row.org
-                    if primary_repo not in worker_repos and not (
-                        worker_org and primary_repo.startswith(f"{worker_org}/")
-                    ):
-                        logger.warning(
-                            "guild=%s assign_task: primary_repo %r not in worker %s repos "
-                            "(registered: %d repos, org=%r) — clone will likely fail",
-                            guild_id,
-                            primary_repo,
-                            wid,
-                            len(worker_repos),
-                            worker_org,
-                        )
                 if not worker_row:
                     result_text = f"Worker {wid} not found — task NOT queued."
-                elif existing_task_id:
+                    is_error = True
+                elif repos:
+                    worker_repos: list[str] = json.loads(worker_row.repos or "[]")
+                    worker_org: str | None = worker_row.org
+                    unreachable = [
+                        r for r in repos
+                        if r not in worker_repos
+                        and not (worker_org and r.startswith(f"{worker_org}/"))
+                    ]
+                    if unreachable:
+                        result_text = (
+                            f"Worker {wid} cannot access repo(s) {unreachable} — "
+                            f"task NOT queued. Worker has {len(worker_repos)} registered "
+                            f"repo(s) and org={worker_org!r}. Choose a worker that has "
+                            f"access to these repos, or omit repos to use the worker's "
+                            f"full configured list."
+                        )
+                        is_error = True
+                if not is_error and existing_task_id:
                     name_override = inp.get("name")
                     update_values: dict = {
                         "worker_id": wid,
@@ -1190,7 +1193,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         },
                     )
                     result_text = f"Task {task_id} assigned to {wid}."
-                else:
+                elif not is_error:
                     name = inp.get("name") or desc[:60]
                     parent_task_id = inp.get("parent_task_id")
                     task_id = "t-" + "".join(
