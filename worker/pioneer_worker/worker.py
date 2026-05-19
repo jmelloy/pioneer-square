@@ -44,6 +44,7 @@ def _slug(text: str, max_len: int = 60) -> str:
 _CANCEL_SENTINEL = object()  # placed in redirect queue to signal task cancellation
 _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during shutdown
 
+
 # Worktrees are kept around after a task completes so the foreman can send
 # follow-ups without paying for a re-clone. They're swept at startup and on a
 # steady cadence; anything older than this is fair game to remove.
@@ -96,6 +97,10 @@ class Worker:
         # Monotonic timestamp of the last successful GitHub repo-list refresh.
         # 0 means never refreshed; _idle_puller compares against this.
         self._last_repo_refresh: float = 0.0
+        # Merged repo list for worker-register broadcasts (static config repos
+        # plus API-discovered repos). Never used for task execution — only for
+        # telling the backend/UI how many repos this worker can see.
+        self._broadcast_repos: list[str] = list(cfg.repos)
 
         self.slots: list[Agent] = [Agent() for i in range(cfg.max_agents)]
         # Set when graceful shutdown is requested (via WS or signal). Idle
@@ -679,7 +684,7 @@ class Worker:
             {
                 "type": "worker-register",
                 "workerId": self.cfg.worker_id,
-                "repos": self.cfg.repos,
+                "repos": self._broadcast_repos,
                 **({"user": self.cfg.user} if self.cfg.user else {}),
             }
         )
@@ -897,6 +902,16 @@ class Worker:
             self.cfg.worker_id,
             len(self.slots),
         )
+
+        if self.cfg.repos:
+            logger.info("Cloning/fetching %d configured repo(s) at startup", len(self.cfg.repos))
+            await asyncio.gather(
+                *(
+                    git_ops.ensure_repo(self.cfg.repos_dir, r, self.cfg.github_token)
+                    for r in self.cfg.repos
+                )
+            )
+
         await self._emit("[worker] Online. Watching for tasks.")
         for slot in self.slots:
             await self._set_state("idle", slot)
@@ -1005,6 +1020,7 @@ class Worker:
                         "tool": msg.get("tool", "claude"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
+                        "repos": msg.get("repos") or [],
                     }
                 )
 
@@ -1087,6 +1103,7 @@ class Worker:
                         "tool": msg.get("tool", "claude"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
+                        "repos": msg.get("repos") or [],
                         "followup_instructions": instructions,
                         "followup_branch": msg.get("branch", ""),
                     }
@@ -1180,6 +1197,7 @@ class Worker:
                                 "tool": msg.get("tool", "claude"),
                                 "issue_number": msg.get("issueNumber"),
                                 "issue_repo": msg.get("issueRepo"),
+                                "repos": msg.get("repos") or [],
                                 "followup_instructions": instructions,
                                 "followup_branch": msg.get("branch", ""),
                             }
@@ -1221,12 +1239,17 @@ class Worker:
     async def _refresh_github_repos(self) -> None:
         """Fetch repos accessible to the GitHub token and update the registered list.
 
-        Merges API results with the static config list (static entries keep
-        their order; API-only repos are appended). If the merged set differs
-        from the current list the backend is notified via worker-register so
-        the UI and foreman see the updated repo count without a restart.
+        Static config repos are always included. If cfg.org is set, org repos
+        from the API are appended (case-insensitive prefix match on owner).
+        Without cfg.org, no API repos are added — the broadcast list stays as
+        the static config. If the merged set differs from the current broadcast
+        list the backend is notified via worker-register.
         """
         if not self.cfg.github_token:
+            return
+        if not self.cfg.org:
+            # No org configured — nothing to expand; static repos are already broadcast.
+            self._last_repo_refresh = asyncio.get_event_loop().time()
             return
         try:
             api_repos = await github_pr.fetch_accessible_repos(self.cfg.github_token)
@@ -1238,26 +1261,27 @@ class Worker:
             self._last_repo_refresh = asyncio.get_event_loop().time()
             return
 
+        org_prefix = self.cfg.org.lower() + "/"
         merged = list(self.cfg.repos)
         for r in api_repos:
-            if r not in merged:
+            if r not in merged and r.lower().startswith(org_prefix):
                 merged.append(r)
 
-        prev_count = len(self.cfg.repos)
+        prev_count = len(self._broadcast_repos)
         self._last_repo_refresh = asyncio.get_event_loop().time()
 
-        if set(merged) == set(self.cfg.repos) and len(merged) == prev_count:
+        if set(merged) == set(self._broadcast_repos) and len(merged) == prev_count:
             logger.debug("GitHub repo list unchanged (%d repos)", prev_count)
             return
 
-        self.cfg.repos = merged
+        self._broadcast_repos = merged
         logger.info("GitHub repos refreshed: %d total (was %d)", len(merged), prev_count)
         if self.cfg.worker_id:
             await self._send(
                 {
                     "type": "worker-register",
                     "workerId": self.cfg.worker_id,
-                    "repos": self.cfg.repos,
+                    "repos": self._broadcast_repos,
                     **({"user": self.cfg.user} if self.cfg.user else {}),
                 }
             )
@@ -1451,12 +1475,20 @@ class Worker:
         task_id = task["id"]
         desc = task.get("description") or ""
         token = self.cfg.github_token
-        # Build effective repo list: static config repos + lazy org repo if applicable.
-        repos = list(self.cfg.repos)
         issue_repo = task.get("issue_repo") or ""
-        if self.cfg.org and issue_repo.startswith(f"{self.cfg.org}/"):
-            if issue_repo not in repos:
+        explicit_repos = task.get("repos") or []
+        if explicit_repos:
+            org_prefix = f"{self.cfg.org}/" if self.cfg.org else None
+            repos = [
+                r for r in explicit_repos
+                if r in self.cfg.repos or (org_prefix and r.startswith(org_prefix))
+            ] or list(self.cfg.repos)
+        else:
+            repos = list(self.cfg.repos)
+        if issue_repo and issue_repo not in repos:
+            if self.cfg.org and issue_repo.startswith(f"{self.cfg.org}/"):
                 repos.insert(0, issue_repo)
+        logger.info("Task %s: repos=%s", task_id, repos)
         followup_instructions = task.get("followup_instructions") or ""
         followup_branch = task.get("followup_branch") or ""
         is_followup = bool(followup_instructions)
