@@ -616,6 +616,7 @@ async def run_foreman_ai(
     client = _get_anthropic_client()
 
     try:
+        text_parts = []
         for round_num in range(MAX_FOREMAN_ROUNDS):
             messages = prune_history(messages)
             messages = strip_orphaned_tool_results(messages)
@@ -656,40 +657,9 @@ async def run_foreman_ai(
             # Re-parse so messages stays as plain dicts (not SDK objects)
             messages[-1]["content"] = json.loads(messages[-1]["content"])
 
-            _round_texts = [b.text for b in resp.content if b.type == "text" and b.text.strip()]
+            text_parts += [b.text for b in resp.content if b.type == "text" and b.text.strip()]
+
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
-
-            # Broadcast text immediately — before tool calls (intent) or as the final response
-            if _round_texts:
-                _now = datetime.now(UTC).isoformat()
-                _text = "\n".join(_round_texts)
-                await broadcast(
-                    guild_id,
-                    {
-                        "type": "chat",
-                        "from": "foreman",
-                        "to": "user",
-                        "content": _text,
-                        "createdAt": _now,
-                    },
-                )
-                db = await get_db()
-                try:
-                    msg_guild_pk = await get_guild_pk(db, guild_id)
-                    db.add(
-                        Message(
-                            guild_pk=msg_guild_pk,
-                            from_agent="foreman",
-                            to_agent="user",
-                            content=_text,
-                            message_type="chat",
-                            created_at=_now,
-                        )
-                    )
-                    await db.commit()
-                finally:
-                    await db.close()
-
             if not tool_uses:
                 break  # end_turn — foreman is done
 
@@ -796,39 +766,38 @@ async def run_foreman_ai(
             )
             wrap_turn_id = await _save_turn(guild_id, user_id, "assistant", wrap_resp.content)
             await _update_turn_tokens(wrap_turn_id, _wrap_input, _wrap_output)
-            _wrap_texts = [b.text for b in wrap_resp.content if b.type == "text" and b.text.strip()]
-            _wrap_texts.append(
-                f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_"
+            text_parts += [b.text for b in wrap_resp.content if b.type == "text" and b.text.strip()]
+            text_parts.append(f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_")
+
+        response_text = "\n".join(text_parts).strip()
+        if response_text:
+            now = datetime.now(UTC).isoformat()
+            await broadcast(
+                guild_id,
+                {
+                    "type": "chat",
+                    "from": "foreman",
+                    "to": "user",
+                    "content": response_text,
+                    "createdAt": now,
+                },
             )
-            _wrap_body = "\n".join(_wrap_texts).strip()
-            if _wrap_body:
-                _now = datetime.now(UTC).isoformat()
-                await broadcast(
-                    guild_id,
-                    {
-                        "type": "chat",
-                        "from": "foreman",
-                        "to": "user",
-                        "content": _wrap_body,
-                        "createdAt": _now,
-                    },
-                )
-                db = await get_db()
-                try:
-                    msg_guild_pk = await get_guild_pk(db, guild_id)
-                    db.add(
-                        Message(
-                            guild_pk=msg_guild_pk,
-                            from_agent="foreman",
-                            to_agent="user",
-                            content=_wrap_body,
-                            message_type="chat",
-                            created_at=_now,
-                        )
+            db = await get_db()
+            try:
+                msg_guild_pk = await get_guild_pk(db, guild_id)
+                db.add(
+                    Message(
+                        guild_pk=msg_guild_pk,
+                        from_agent="foreman",
+                        to_agent="user",
+                        content=response_text,
+                        message_type="chat",
+                        created_at=now,
                     )
-                    await db.commit()
-                finally:
-                    await db.close()
+                )
+                await db.commit()
+            finally:
+                await db.close()
 
     except Exception as exc:
         now = datetime.now(UTC).isoformat()
