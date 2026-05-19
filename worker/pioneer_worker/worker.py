@@ -44,6 +44,85 @@ def _slug(text: str, max_len: int = 60) -> str:
 _CANCEL_SENTINEL = object()  # placed in redirect queue to signal task cancellation
 _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during shutdown
 
+# Regex patterns for extracting GitHub repo references from task text.
+_GITHUB_URL_RE = re.compile(
+    r"https://github\.com/([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+?)(?:\.git|[/\s#?]|$)"
+)
+_GITHUB_SSH_RE = re.compile(r"git@github\.com:([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+?)(?:\.git|[\s]|$)")
+_OWNER_REPO_RE = re.compile(
+    r"(?<![/\w])([a-zA-Z0-9][a-zA-Z0-9_.-]*/[a-zA-Z0-9][a-zA-Z0-9_.-]*)(?![/\w])"
+)
+
+
+def _repos_for_task(
+    desc: str,
+    name: str,
+    issue_repo: str,
+    explicit_repos: list[str],
+    configured_repos: list[str],
+    org: str | None,
+) -> tuple[list[str], bool]:
+    """Determine which repos to prepare for a task.
+
+    Returns (repos, selective) where selective=True means a targeted subset was
+    identified; selective=False means we fell back to the full configured list.
+
+    Priority:
+    1. Explicit repos list from the task-assigned message
+    2. Repos parsed from the task description / name (filtered to accessible repos)
+    3. Fall back to all configured repos
+    """
+    known = set(configured_repos)
+
+    def _accessible(r: str) -> bool:
+        return r in known or (bool(org) and r.startswith(f"{org}/"))
+
+    def _prepend_issue(result: list[str]) -> list[str]:
+        if issue_repo and _accessible(issue_repo) and issue_repo not in result:
+            result.insert(0, issue_repo)
+        return result
+
+    # 1. Explicit repos from task assignment message
+    if explicit_repos:
+        result = [r for r in explicit_repos if _accessible(r)]
+        if result:
+            return _prepend_issue(result), True
+
+    # 2. Parse description + name for GitHub repo references
+    text = f"{name} {desc}"
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(r: str) -> None:
+        r = r.rstrip("/")
+        if r not in seen and _accessible(r):
+            seen.add(r)
+            found.append(r)
+
+    for m in _GITHUB_URL_RE.finditer(text):
+        _add(m.group(1))
+    for m in _GITHUB_SSH_RE.finditer(text):
+        _add(m.group(1))
+    for m in _OWNER_REPO_RE.finditer(text):
+        _add(m.group(1))
+
+    # issue_repo takes precedence — move it to front if found, add if missing
+    if issue_repo and _accessible(issue_repo):
+        if issue_repo in seen:
+            found.remove(issue_repo)
+        found.insert(0, issue_repo)
+        seen.add(issue_repo)
+
+    if found:
+        return found, True
+
+    # 3. Fall back to all configured repos + any org-based issue_repo
+    result = list(configured_repos)
+    if org and issue_repo and issue_repo.startswith(f"{org}/") and issue_repo not in result:
+        result.insert(0, issue_repo)
+    return result, False
+
+
 # Worktrees are kept around after a task completes so the foreman can send
 # follow-ups without paying for a re-clone. They're swept at startup and on a
 # steady cadence; anything older than this is fair game to remove.
@@ -1005,6 +1084,7 @@ class Worker:
                         "tool": msg.get("tool", "claude"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
+                        "repos": msg.get("repos") or [],
                     }
                 )
 
@@ -1087,6 +1167,7 @@ class Worker:
                         "tool": msg.get("tool", "claude"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
+                        "repos": msg.get("repos") or [],
                         "followup_instructions": instructions,
                         "followup_branch": msg.get("branch", ""),
                     }
@@ -1180,6 +1261,7 @@ class Worker:
                                 "tool": msg.get("tool", "claude"),
                                 "issue_number": msg.get("issueNumber"),
                                 "issue_repo": msg.get("issueRepo"),
+                                "repos": msg.get("repos") or [],
                                 "followup_instructions": instructions,
                                 "followup_branch": msg.get("branch", ""),
                             }
@@ -1451,12 +1533,24 @@ class Worker:
         task_id = task["id"]
         desc = task.get("description") or ""
         token = self.cfg.github_token
-        # Build effective repo list: static config repos + lazy org repo if applicable.
-        repos = list(self.cfg.repos)
         issue_repo = task.get("issue_repo") or ""
-        if self.cfg.org and issue_repo.startswith(f"{self.cfg.org}/"):
-            if issue_repo not in repos:
-                repos.insert(0, issue_repo)
+        explicit_repos = task.get("repos") or []
+        repos, selective = _repos_for_task(
+            desc,
+            task.get("name") or "",
+            issue_repo,
+            explicit_repos,
+            self.cfg.repos,
+            self.cfg.org,
+        )
+        if selective:
+            logger.info("Task %s: selective repo prep (%d): %s", task_id, len(repos), repos)
+        else:
+            logger.info(
+                "Task %s: no specific repos identified, using full list (%d repos)",
+                task_id,
+                len(repos),
+            )
         followup_instructions = task.get("followup_instructions") or ""
         followup_branch = task.get("followup_branch") or ""
         is_followup = bool(followup_instructions)

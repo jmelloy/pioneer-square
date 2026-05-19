@@ -133,6 +133,16 @@ FOREMAN_TOOLS = [
                     "type": "string",
                     "description": "owner/repo for the issue (optional).",
                 },
+                "repos": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Explicit list of owner/repo strings to clone for this task. "
+                        "When provided, the worker clones only these repos instead of "
+                        "scanning the description or falling back to its full repo list. "
+                        "Omit to let the worker infer repos from the task description."
+                    ),
+                },
             },
             "required": ["worker_id", "description"],
         },
@@ -1154,6 +1164,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "phase": phase,
                             "issueNumber": inp.get("issue_number"),
                             "issueRepo": inp.get("issue_repo"),
+                            "repos": inp.get("repos") or [],
                         },
                     )
                     result_text = f"Task {task_id} assigned to {wid}."
@@ -1195,6 +1206,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "parentTaskId": parent_task_id,
                             "issueNumber": inp.get("issue_number"),
                             "issueRepo": inp.get("issue_repo"),
+                            "repos": inp.get("repos") or [],
                         },
                     )
                     result_text = f"Task {task_id} queued for {wid}."

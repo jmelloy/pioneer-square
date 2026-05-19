@@ -58,6 +58,7 @@ class TaskCreate(BaseModel):
     issue_repo: str | None = None
     parent_task_id: str | None = None
     phase: str | None = "execute"
+    repos: list[str] = []  # explicit repos to clone; worker falls back to description parsing
 
 
 class WorkerMessage(BaseModel):
@@ -278,6 +279,7 @@ async def assign_task(
             "parentTaskId": data.parent_task_id,
             "issueNumber": data.issue_number,
             "issueRepo": data.issue_repo,
+            "repos": data.repos,
         },
     )
 
