@@ -135,6 +135,31 @@ def test_load_toml_github_token_env_prefix(tmp_path, monkeypatch):
     assert cfg.github_token == "ghp_from_env"
 
 
+def test_load_codex_args_from_toml(tmp_path):
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n'
+        '[codex]\nargs = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.codex_args == ["--sandbox", "workspace-write", "--ask-for-approval", "never"]
+
+
+def test_load_codex_args_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("PIONEER_CODEX_ARGS", '--sandbox workspace-write -m "gpt-5.4"')
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.codex_args == ["--sandbox", "workspace-write", "-m", "gpt-5.4"]
+
+
+def test_load_codex_doctor_can_be_disabled(tmp_path):
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\n[codex]\ndoctor = false\n')
+    cfg = load(str(toml_path))
+    assert cfg.codex_doctor is False
+
+
 # ---------------------------------------------------------------------------
 # load() — environment variable overrides
 # ---------------------------------------------------------------------------
