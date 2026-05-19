@@ -21,17 +21,17 @@
         <template v-if="log.detail.toolType === 'tool_use'">
           <template v-if="log.detail.name === 'Edit'">
             <div class="log-detail-label">OLD</div>
-            <pre class="log-detail-body log-detail-old">{{ log.detail.input?.old_string }}</pre>
+            <pre class="log-detail-body log-detail-old">{{ inputRecord(log.detail.input).old_string }}</pre>
             <div class="log-detail-label log-detail-label--new">NEW</div>
-            <pre class="log-detail-body log-detail-new">{{ log.detail.input?.new_string }}</pre>
+            <pre class="log-detail-body log-detail-new">{{ inputRecord(log.detail.input).new_string }}</pre>
           </template>
           <template v-else-if="log.detail.name === 'Write'">
-            <div class="log-detail-label">{{ log.detail.input?.file_path }}</div>
-            <pre class="log-detail-body">{{ log.detail.input?.content }}</pre>
+            <div class="log-detail-label">{{ inputRecord(log.detail.input).file_path }}</div>
+            <pre class="log-detail-body">{{ inputRecord(log.detail.input).content }}</pre>
           </template>
           <template v-else-if="log.detail.name === 'Bash'">
             <div class="log-detail-label">COMMAND</div>
-            <pre class="log-detail-body">{{ log.detail.input?.command }}</pre>
+            <pre class="log-detail-body">{{ inputRecord(log.detail.input).command }}</pre>
           </template>
           <template v-else>
             <div class="log-detail-label">{{ log.detail.name }}</div>
@@ -100,6 +100,10 @@ function isMarkdownLine(line: string): boolean {
 function renderLine(line: string): string {
   if (isMarkdownLine(line)) return renderMarkdown(line)
   return linkify(line)
+}
+
+function inputRecord(input: Record<string, unknown> | string | undefined): Record<string, unknown> {
+  return typeof input === 'object' && input !== null ? input : {}
 }
 
 function lineClass(line: string) {
