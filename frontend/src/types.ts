@@ -82,6 +82,7 @@ export interface Guild {
     name: string
     type: string
     worker_id?: string | null
+    worker_name?: string | null
     state: AgentState
     current_task_id?: string | null
     joined_at?: string

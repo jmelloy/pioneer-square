@@ -13,7 +13,7 @@ from auth_deps import get_guild_pk, require_member, require_user, require_worker
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
-from models import Agent, Guild, GuildMember, Message, User
+from models import Agent, Guild, GuildMember, Message, User, Worker
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -178,13 +178,15 @@ async def get_guild(guild_id: str, github_user_id: str = Depends(require_member(
             raise HTTPException(status_code=404, detail="Guild not found")
         guild_pk = guild.id
         result = await db.execute(
-            select(Agent).where(
+            select(Agent, Worker.name.label("worker_name"))
+            .outerjoin(Worker, Worker.id == Agent.worker_id)
+            .where(
                 Agent.guild_pk == guild_pk,
                 Agent.state != "offline",
                 Agent.type != "foreman",
             )
         )
-        agents = result.scalars().all()
+        agent_rows = result.all()
         result = await db.execute(
             select(Message)
             .where(Message.guild_pk == guild_pk)
@@ -195,7 +197,9 @@ async def get_guild(guild_id: str, github_user_id: str = Depends(require_member(
         return {
             **row_to_dict(guild),
             "id": guild.guild_id,  # keep text guild_id as "id" for API compatibility
-            "agents": [row_to_dict(a) for a in agents],
+            "agents": [
+                {**row_to_dict(row.Agent), "worker_name": row.worker_name} for row in agent_rows
+            ],
             "messages": [row_to_dict(m) for m in reversed(messages)],
         }
     finally:

@@ -248,11 +248,10 @@ export const useAgentsStore = defineStore('agents', () => {
   async function fetchAgentLogs(guildId: string, agentId: string) {
     try {
       const raw = await api<RawLog[]>(`/guilds/${guildId}/logs?agent_id=${agentId}`)
-      const historical = raw.map(_toLogEntry)
       const agent = agents.value.find((a) => a.id === agentId)
       if (agent) {
-        agent.logs = [...historical, ...agent.logs]
-        if (agent.logs.length > 2000) agent.logs = agent.logs.slice(-2000)
+        const historical = raw.map(_toLogEntry)
+        agent.logs = historical.length > 2000 ? historical.slice(-2000) : historical
       }
     } catch (e) {
       console.error('Failed to fetch agent logs', e)
