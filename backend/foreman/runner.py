@@ -25,7 +25,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-haiku-4-5-20251001")
+FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 
 MAX_TOOL_RESULT_CHARS = 8_000  # ~2 k tokens; cap per-result content before storing/sending
 MAX_HISTORY_MESSAGES = 20  # sliding window cap on messages sent to Anthropic

@@ -113,7 +113,7 @@ After a worker sends `task-complete`, the backend triggers the Foreman AI. The f
 
 ### Foreman AI
 
-Lives in `backend/foreman/` (`runner.py` for the Claude SDK loop, `tools.py` for tool definitions, `prompt.py` for the system prompt, `state.py` for in-memory conversation history). Uses `claude-haiku-4-5-20251001`. Conversation history is kept in-memory (trimmed to 40 messages). The foreman is triggered by:
+Lives in `backend/foreman/` (`runner.py` for the Claude SDK loop, `tools.py` for tool definitions, `prompt.py` for the system prompt, `state.py` for in-memory conversation history). Uses `claude-sonnet-4-6`. Conversation history is kept in-memory (trimmed to 40 messages). The foreman is triggered by:
 1. Human chat messages addressed to `foreman`
 2. `task-complete` WS messages from workers
 3. `task-followup-done` WS messages
