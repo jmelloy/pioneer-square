@@ -657,10 +657,10 @@ class Worker:
         await self.ws.send(payload)
 
     async def _emit(self, line: str, detail: dict | None = None) -> None:
-        """Emit a worker-level log line (attributed to slot 0)."""
+        """Emit a worker-level log line."""
         msg: dict = {
             "type": "terminal-output",
-            "agentId": self.slots[0].agent_id,
+            "workerId": self.cfg.worker_id,
             "line": line,
             "timestamp": _now_iso(),
         }
@@ -674,6 +674,7 @@ class Worker:
         async def _emit_task(line: str, detail: dict | None = None) -> None:
             msg: dict = {
                 "type": "terminal-output",
+                "workerId": self.cfg.worker_id,
                 "agentId": slot.agent_id,
                 "taskId": task_id,
                 "line": line,

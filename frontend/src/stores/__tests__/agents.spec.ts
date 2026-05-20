@@ -113,6 +113,42 @@ describe('useAgentsStore', () => {
     })
   })
 
+  describe('terminal-output routing', () => {
+    it('routes worker-only output to worker logs without attaching it to an agent', () => {
+      const store = useAgentsStore()
+
+      store.handleWebSocketMessage({
+        type: 'terminal-output',
+        workerId: 'w-x',
+        line: '[worker] Pulled repo',
+        timestamp: '2026-05-20T00:00:00.000Z',
+      })
+
+      expect(store.workerLogs['w-x']).toHaveLength(1)
+      expect(store.workerLogs['w-x'][0].line).toBe('[worker] Pulled repo')
+      expect(store.agents).toHaveLength(0)
+    })
+
+    it('routes task output to both the agent log and the worker log', () => {
+      const store = useAgentsStore()
+      store.registerAgent({ agentId: 'a-1', workerId: 'w-x', state: 'working', taskId: 't-1' })
+
+      store.handleWebSocketMessage({
+        type: 'terminal-output',
+        workerId: 'w-x',
+        agentId: 'a-1',
+        taskId: 't-1',
+        line: '[claude] editing',
+        timestamp: '2026-05-20T00:00:00.000Z',
+      })
+
+      expect(store.agents[0].logs).toHaveLength(1)
+      expect(store.agents[0].logs[0].line).toBe('[claude] editing')
+      expect(store.workerLogs['w-x']).toHaveLength(1)
+      expect(store.workerLogs['w-x'][0].line).toBe('[claude] editing')
+    })
+  })
+
   describe('concurrent slots on the same worker', () => {
     it('tracks distinct taskIds per slot even when workerId matches', () => {
       // Regression: prior matching by workerId collapsed concurrent slots

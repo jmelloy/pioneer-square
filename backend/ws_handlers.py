@@ -442,12 +442,13 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
 
 async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
     msg_agent_id = data.get("agentId")
+    msg_worker_id = data.get("workerId")
     line = data.get("line", "")
     task_id = data.get("taskId")
     detail = data.get("detail")
     created_at = datetime.now(UTC).isoformat()
-    worker_id_for_log = None
-    if msg_agent_id:
+    worker_id_for_log = msg_worker_id
+    if worker_id_for_log is None and msg_agent_id:
         result = await ctx.db.execute(select(Agent.worker_id).where(Agent.id == msg_agent_id))
         worker_id_for_log = result.scalar_one_or_none()
     if line:
