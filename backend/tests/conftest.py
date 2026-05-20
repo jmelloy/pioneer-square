@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from helpers import create_db as _create_db  # noqa: E402
+from routes.webhooks import shutdown_debouncer  # noqa: E402
 
 
 @pytest.fixture()
@@ -56,3 +57,11 @@ def client(tmp_path, monkeypatch):
 
     # Restore DATABASE_URL after test
     os.environ.pop("DATABASE_URL", None)
+
+
+@pytest.fixture(autouse=True)
+async def cleanup_debouncer():
+    """Ensure the module-level debounce queue is empty before and after each test."""
+    await shutdown_debouncer()
+    yield
+    await shutdown_debouncer()
