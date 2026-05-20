@@ -32,7 +32,7 @@ from models import (
 )
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from utils import generate_guild_id
 
@@ -337,6 +337,103 @@ async def guest_login():
         "gh_name": "Dev Guest",
         "gh_avatar": "",
     }
+
+
+@router.get("/api/user/logins")
+async def list_logins(github_user_id: str = Depends(require_user)):
+    """Return the list of connected OAuth providers for the current user.
+
+    Currently GitHub is the only supported provider; the response is structured
+    as a provider list so additional providers can be added without breaking the
+    API shape.
+    """
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(
+                GithubToken.github_username,
+                GithubToken.scope,
+                GithubToken.created_at,
+                GithubToken.updated_at,
+            ).where(GithubToken.github_user_id == github_user_id)
+        )
+        row = result.first()
+        logins = []
+        if row:
+            logins.append(
+                {
+                    "provider": "github",
+                    "username": row.github_username,
+                    "scope": row.scope,
+                    "connected_at": row.created_at,
+                    "updated_at": row.updated_at,
+                }
+            )
+        return {"logins": logins}
+    finally:
+        await db.close()
+
+
+@router.delete("/api/user/logins/{provider}")
+async def delete_login(provider: str, github_user_id: str = Depends(require_user)):
+    """Disconnect an OAuth provider from the current user's account.
+
+    Returns HTTP 404 if the user has no login for the requested provider.
+    Guards against removing the last login — if this would leave the user with
+    zero logins they would be permanently locked out, so we return HTTP 400.
+    Currently only ``github`` is supported; passing any other provider returns
+    HTTP 404.
+
+    Session behaviour: this endpoint removes only the provider credential for
+    the named provider.  It does NOT delete ``UserSession`` rows — the frontend
+    is responsible for calling ``DELETE /auth/logout`` immediately after to
+    invalidate the current session.  Other active sessions for this user remain
+    valid until they naturally expire; they will receive 401 on the next GitHub-
+    authenticated API call once the token is gone.
+    """
+    if provider != "github":
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider!r}")
+
+    db = await get_db()
+    try:
+        # Verify the requested provider login actually exists for this user.
+        existing_res = await db.execute(
+            select(GithubToken).where(GithubToken.github_user_id == github_user_id)
+        )
+        if existing_res.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No {provider!r} login found for this user.",
+            )
+
+        # Count total logins across all providers for this user.  If removing
+        # this provider would leave zero logins the user would be permanently
+        # locked out, so we block the operation.
+        # When new providers are added: total_logins += new_provider_count
+        github_count_res = await db.execute(
+            select(func.count())
+            .select_from(GithubToken)
+            .where(GithubToken.github_user_id == github_user_id)
+        )
+        github_count = github_count_res.scalar_one() or 0
+        total_logins = github_count  # add future provider counts here
+
+        if total_logins <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot disconnect your only login method — you would be locked out.",
+            )
+
+        # Delete only the token row for the specified provider and user.
+        # Other providers (future) are intentionally not touched.
+        if provider == "github":
+            await db.execute(
+                delete(GithubToken).where(GithubToken.github_user_id == github_user_id)
+            )
+        await db.commit()
+    finally:
+        await db.close()
+    return {"ok": True}
 
 
 @router.delete("/auth/logout")
