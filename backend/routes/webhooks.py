@@ -70,13 +70,29 @@ class DebounceQueue:
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
 
     def reset(self) -> None:
-        """Cancel all in-flight timers and clear state.
+        """Cancel all in-flight timers and clear state (sync, no await).
 
-        Call between tests or at server shutdown to prevent state bleed.
+        Prefer ``shutdown()`` in async contexts — this variant exists for
+        synchronous test helpers that cannot await.
         """
         for task in self._tasks.values():
             if not task.done():
                 task.cancel()
+        self._tasks.clear()
+        self._buffers.clear()
+
+    async def shutdown(self) -> None:
+        """Cancel all in-flight timers and wait for them to finish.
+
+        Awaiting the cancelled tasks ensures they run their CancelledError
+        handler and the event loop does not emit "Task destroyed but pending"
+        warnings.  Call this at server shutdown and in async test teardown.
+        """
+        pending = [t for t in self._tasks.values() if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         self._tasks.clear()
         self._buffers.clear()
 
@@ -152,12 +168,12 @@ class DebounceQueue:
 _debounce_queue = DebounceQueue()
 
 
-def clear_debounce_state() -> None:
-    """Cancel all in-flight debounce timers and clear accumulated buffers.
+async def shutdown_debouncer() -> None:
+    """Cancel all in-flight debounce timers and wait for them to complete.
 
-    Called from the server lifespan hook on startup and in test teardown.
+    Call at server shutdown and in async test teardown fixtures.
     """
-    _debounce_queue.reset()
+    await _debounce_queue.shutdown()
 
 
 def _verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:

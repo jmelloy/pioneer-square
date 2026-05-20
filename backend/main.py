@@ -211,7 +211,7 @@ async def lifespan(app: FastAPI):
             await sweeper
         except (asyncio.CancelledError, Exception):
             pass
-        _webhook_debounce_queue.reset()
+        await _shutdown_webhook_debouncer()
 
 
 class _AccessLogMiddleware(BaseHTTPMiddleware):
@@ -263,7 +263,7 @@ from routes import webhooks as _webhooks_routes  # noqa: E402
 from routes import websocket as _ws_routes  # noqa: E402
 from routes import wellknown as _wellknown_routes  # noqa: E402
 from routes import workers as _workers_routes  # noqa: E402
-from routes.webhooks import _debounce_queue as _webhook_debounce_queue  # noqa: E402
+from routes.webhooks import shutdown_debouncer as _shutdown_webhook_debouncer  # noqa: E402
 
 app.include_router(_wellknown_routes.router)
 app.include_router(_auth_routes.router)
