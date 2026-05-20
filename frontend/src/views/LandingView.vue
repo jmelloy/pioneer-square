@@ -28,6 +28,13 @@
           @login="handleLogin"
         />
 
+        <div v-if="!authStore.isLoggedIn && isDev" class="dev-login-bar">
+          <span class="dev-label">DEV MODE</span>
+          <button class="pixel-btn dev-btn" :disabled="loggingIn" @click="handleDevLogin">
+            SKIP LOGIN
+          </button>
+        </div>
+
         <template v-else>
           <div class="sessions-section">
             <div class="section-label">YOUR GUILDS</div>
@@ -80,6 +87,8 @@ const router = useRouter()
 const guildStore = useGuildStore()
 const authStore = useAuthStore()
 const ghStore = useGitHubStore()
+
+const isDev = import.meta.env.DEV
 
 const loading = ref(true)
 const guilds = ref<Guild[]>([])
@@ -139,6 +148,18 @@ onMounted(async () => {
 
 function goToSession(id: string) {
   router.push(`/${id}`)
+}
+
+async function handleDevLogin() {
+  loggingIn.value = true
+  loginError.value = ''
+  try {
+    const guildId = await authStore.loginAsGuest()
+    router.push(`/${guildId}`)
+  } catch (e: unknown) {
+    loginError.value = e instanceof Error ? e.message : String(e)
+    loggingIn.value = false
+  }
 }
 
 async function handleLogin() {
@@ -320,6 +341,35 @@ async function createGuild(name: string) {
   gap: 16px;
   overflow-y: auto;
   padding-bottom: 20px;
+}
+
+.dev-login-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px dashed rgba(0, 187, 170, 0.35);
+  background: rgba(0, 187, 170, 0.04);
+  margin-top: -20px;
+}
+.dev-label {
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  color: var(--color-teal);
+  letter-spacing: 2px;
+  opacity: 0.7;
+}
+.dev-btn {
+  font-size: 8px;
+  padding: 6px 14px;
+  border-color: var(--color-teal);
+  color: var(--color-teal);
+  background: transparent;
+  box-shadow: none;
+}
+.dev-btn:hover:not(:disabled) {
+  background: rgba(0, 187, 170, 0.1);
+  box-shadow: 0 0 8px rgba(0, 187, 170, 0.3);
 }
 
 @keyframes spin {

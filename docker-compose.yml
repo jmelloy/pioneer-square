@@ -25,6 +25,7 @@ services:
       # with PIONEER_WORKER_LOG_LEVEL=<this value>, raising worker verbosity.
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-}
+      TEST_MODE: ${TEST_MODE:-}
     volumes:
       - backend-data:/data
       - /var/run/docker.sock:/var/run/docker.sock

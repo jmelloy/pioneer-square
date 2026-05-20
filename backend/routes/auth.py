@@ -6,6 +6,8 @@ storage, the ``/auth/me`` + ``/api/me`` profile endpoints, and logout.
 
 from __future__ import annotations
 
+import os
+import secrets
 import urllib.parse
 from datetime import UTC, datetime
 
@@ -30,7 +32,9 @@ from models import (
 )
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from utils import generate_guild_id
 
 router = APIRouter()
 
@@ -233,6 +237,106 @@ async def api_me(github_user_id: str = Depends(require_user)):
         }
     finally:
         await db.close()
+
+
+@router.post("/auth/guest")
+async def guest_login():
+    """Create a dev session without GitHub OAuth.
+
+    Only available when TEST_MODE=1 is set. Idempotent: always creates a new
+    session token but reuses the same dev-guest user and guild across calls.
+    """
+    if not os.environ.get("TEST_MODE"):
+        raise HTTPException(status_code=403, detail="Test mode not enabled (set TEST_MODE=1)")
+
+    now = datetime.now(UTC).isoformat()
+    guest_user_id = "dev-guest"
+    login_token = secrets.token_urlsafe(32)
+
+    db = await get_db()
+    try:
+        # Upsert github_tokens (required FK target for user_sessions)
+        gh_stmt = sqlite_insert(GithubToken).values(
+            github_user_id=guest_user_id,
+            github_username="dev-guest",
+            access_token="dev-no-token",
+            token_type="bearer",
+            scope="",
+            created_at=now,
+            updated_at=now,
+        )
+        gh_stmt = gh_stmt.on_conflict_do_update(
+            index_elements=["github_user_id"],
+            set_={"updated_at": gh_stmt.excluded.updated_at},
+        )
+        await db.execute(gh_stmt)
+
+        # Upsert user
+        user_stmt = sqlite_insert(User).values(
+            id=guest_user_id,
+            github_id=guest_user_id,
+            github_login="dev-guest",
+            email=None,
+            display_name="Dev Guest",
+            avatar_url=None,
+            created_at=now,
+            updated_at=now,
+        )
+        user_stmt = user_stmt.on_conflict_do_update(
+            index_elements=["id"],
+            set_={"updated_at": user_stmt.excluded.updated_at},
+        )
+        await db.execute(user_stmt)
+
+        # Fresh session each call (so re-login after logout works)
+        db.add(UserSession(token=login_token, github_user_id=guest_user_id, created_at=now))
+
+        # Find or create the persistent dev guild
+        guild_res = await db.execute(
+            text(
+                "SELECT guild_id FROM guilds"
+                " WHERE github_user_id = :uid AND (deleted_at IS NULL OR deleted_at = '')"
+                " LIMIT 1"
+            ),
+            {"uid": guest_user_id},
+        )
+        guild_id = guild_res.scalar_one_or_none()
+
+        if not guild_id:
+            existing_res = await db.execute(
+                text("SELECT guild_id FROM guilds WHERE deleted_at IS NULL OR deleted_at = ''")
+            )
+            existing_ids = {row[0] for row in existing_res.fetchall()}
+            guild_id = generate_guild_id(name="dev", existing_ids=existing_ids)
+            new_guild = Guild(
+                guild_id=guild_id,
+                created_at=now,
+                name="Dev Workshop",
+                github_user_id=guest_user_id,
+            )
+            db.add(new_guild)
+            await db.flush()
+            db.add(
+                GuildMember(
+                    guild_pk=new_guild.id,
+                    user_id=guest_user_id,
+                    role="owner",
+                    created_at=now,
+                )
+            )
+
+        await db.commit()
+    finally:
+        await db.close()
+
+    return {
+        "login_token": login_token,
+        "guild_id": guild_id,
+        "gh_user_id": guest_user_id,
+        "gh_login": "dev-guest",
+        "gh_name": "Dev Guest",
+        "gh_avatar": "",
+    }
 
 
 @router.delete("/auth/logout")
