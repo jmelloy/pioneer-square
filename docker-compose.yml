@@ -75,9 +75,9 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       FOREMAN_MODEL: ${FOREMAN_MODEL:-claude-sonnet-4-6}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    volumes:
-      # Optional: mount a pioneer-foreman.toml for full config control.
-      # - ./pioneer-foreman/pioneer-foreman.toml:/config/pioneer-foreman.toml:ro
+    # Optional: mount a pioneer-foreman.toml for full config control:
+    #   volumes:
+    #     - ./pioneer-foreman/pioneer-foreman.toml:/config/pioneer-foreman.toml:ro
     depends_on:
       - backend
     restart: unless-stopped
