@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -264,19 +265,16 @@ def test_webhook_dispatches_to_foreman_when_task_matches(client):
     )
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="pull_request", delivery="d-disp-1")
-    with (
-        patch("routes.webhooks.spawn") as mock_spawn,
-        patch("routes.webhooks.reset_foreman_poll") as mock_reset,
-    ):
+    with patch("routes.webhooks._schedule_debounced_foreman") as mock_schedule:
         resp = test_client.post("/webhooks/github/gd1", content=body, headers=headers)
     assert resp.status_code == 202
-    # spawn() called once, with run_foreman_ai coroutine
-    assert mock_spawn.call_count == 1
-    call_kwargs = mock_spawn.call_args
-    coro = call_kwargs.args[0]
-    assert hasattr(coro, "send")  # it's a coroutine
-    coro.close()  # so asyncio doesn't whine about a never-awaited coroutine
-    assert mock_reset.call_count == 1
+    # _schedule_debounced_foreman called once with the right guild + user
+    assert mock_schedule.call_count == 1
+    key_arg, guild_arg, summary_arg, user_arg = mock_schedule.call_args.args
+    assert "gd1" in key_arg
+    assert guild_arg == "gd1"
+    assert "pull_request" in summary_arg
+    assert user_arg == "user-42"
 
 
 def test_webhook_skips_foreman_when_no_task_match(client):
@@ -349,15 +347,113 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
     }
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="check_run", delivery="d-ci-1")
-    with (
-        patch("routes.webhooks.spawn") as mock_spawn,
-        patch("routes.webhooks.reset_foreman_poll"),
-    ):
+    with patch("routes.webhooks._schedule_debounced_foreman") as mock_schedule:
         resp = test_client.post("/webhooks/github/gd4", content=body, headers=headers)
     assert resp.status_code == 202
-    assert mock_spawn.call_count == 1
-    coro = mock_spawn.call_args.args[0]
-    coro.close()
+    assert mock_schedule.call_count == 1
+    key_arg, guild_arg, summary_arg, _user_arg = mock_schedule.call_args.args
+    assert "gd4" in key_arg
+    assert guild_arg == "gd4"
+    assert "rspec" in summary_arg
+
+
+# ---------------------------------------------------------------------------
+# Debounce behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestDebounce:
+    """Per-PR debounce timer: rapid events coalesce; separated events deliver separately."""
+
+    def _patched_env(self, wh):
+        """Context manager: tiny debounce window + captured foreman calls."""
+        self._foreman_calls: list[tuple[str, str, str | None]] = []
+
+        async def fake_run_foreman(guild_id, summary, *, user_id=None):
+            self._foreman_calls.append((guild_id, summary, user_id))
+
+        return (
+            patch.object(wh, "DEBOUNCE_WINDOW_SECONDS", 0.05),
+            patch.object(wh, "run_foreman_ai", new=fake_run_foreman),
+            patch.object(wh, "reset_foreman_poll"),
+            patch.object(wh, "spawn", side_effect=lambda coro, **kw: asyncio.create_task(coro)),
+        )
+
+    async def test_rapid_events_single_foreman_call(self):
+        """Three events within the 0.05 s window → one combined foreman invocation."""
+        import routes.webhooks as wh
+
+        wh._debounce_buffers.clear()
+        wh._debounce_tasks.clear()
+
+        p1, p2, p3, p4 = self._patched_env(wh)
+        with p1, p2, p3, p4:
+            wh._schedule_debounced_foreman("g-rapid:t-r1", "g-rapid", "event A", "u1")
+            wh._schedule_debounced_foreman("g-rapid:t-r1", "g-rapid", "event B", "u1")
+            wh._schedule_debounced_foreman("g-rapid:t-r1", "g-rapid", "event C", "u1")
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 1, f"expected 1 call, got {self._foreman_calls}"
+        _, summary, _ = self._foreman_calls[0]
+        assert "event A" in summary
+        assert "event B" in summary
+        assert "event C" in summary
+
+    async def test_slow_events_separate_foreman_calls(self):
+        """Events separated by > debounce window → two independent foreman calls."""
+        import routes.webhooks as wh
+
+        wh._debounce_buffers.clear()
+        wh._debounce_tasks.clear()
+
+        p1, p2, p3, p4 = self._patched_env(wh)
+        with p1, p2, p3, p4:
+            wh._schedule_debounced_foreman("g-slow:t-s1", "g-slow", "event X", "u2")
+            await asyncio.sleep(0.2)  # first timer fires
+            wh._schedule_debounced_foreman("g-slow:t-s1", "g-slow", "event Y", "u2")
+            await asyncio.sleep(0.2)  # second timer fires
+
+        assert len(self._foreman_calls) == 2
+        assert "event X" in self._foreman_calls[0][1]
+        assert "event Y" in self._foreman_calls[1][1]
+
+    async def test_reset_cancels_previous_timer(self):
+        """New event before timer fires cancels the old timer (no early delivery)."""
+        import routes.webhooks as wh
+
+        wh._debounce_buffers.clear()
+        wh._debounce_tasks.clear()
+
+        p1, p2, p3, p4 = self._patched_env(wh)
+        with p1, p2, p3, p4:
+            wh._schedule_debounced_foreman("g-cancel:t-c1", "g-cancel", "first", "u3")
+            await asyncio.sleep(0.02)  # less than the 0.05 s window
+            wh._schedule_debounced_foreman("g-cancel:t-c1", "g-cancel", "second", "u3")
+            await asyncio.sleep(0.2)  # let the reset timer fire
+
+        # Only one delivery; the first timer was cancelled before it could fire
+        assert len(self._foreman_calls) == 1
+        _, summary, _ = self._foreman_calls[0]
+        assert "first" in summary
+        assert "second" in summary
+
+    async def test_independent_prs_not_merged(self):
+        """Events on different PR keys have independent timers and fire separately."""
+        import routes.webhooks as wh
+
+        wh._debounce_buffers.clear()
+        wh._debounce_tasks.clear()
+
+        p1, p2, p3, p4 = self._patched_env(wh)
+        with p1, p2, p3, p4:
+            wh._schedule_debounced_foreman("g-ind:t-pr1", "g-ind", "pr1 event", "u4")
+            wh._schedule_debounced_foreman("g-ind:t-pr2", "g-ind", "pr2 event", "u4")
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 2
+        summaries = {c[1] for c in self._foreman_calls}
+        assert any("pr1 event" in s for s in summaries)
+        assert any("pr2 event" in s for s in summaries)
 
 
 # ---------------------------------------------------------------------------

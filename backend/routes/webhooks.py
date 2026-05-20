@@ -14,6 +14,7 @@ can decide whether to send_followup, finalize, or no-op.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -35,6 +36,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# How long (seconds) to wait for further events on the same PR before
+# delivering the buffered batch to the foreman.  GitHub often sends several
+# check_run completions and a review comment within a second of each other;
+# this window lets them coalesce into a single foreman invocation.
+DEBOUNCE_WINDOW_SECONDS: float = 3.0
+
+# Per-key debounce state.  Key format: "{guild_id}:{task_id}".
+# _debounce_buffers accumulates (summary, user_id) pairs until the timer fires.
+# _debounce_tasks holds the in-flight asyncio Task for each key.
+_debounce_buffers: dict[str, list[tuple[str, str | None]]] = {}
+_debounce_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+
 
 # Cap on stored payloads. GitHub webhook payloads are typically <50 KB but
 # review-comment diff hunks can balloon — 64 KB is a safe upper bound that
@@ -46,6 +59,64 @@ _MAX_PAYLOAD_BYTES = 64 * 1024
 # most CI/automation traffic — filtering them out would silence the very
 # events we want to react to.
 _BOT_OK_EVENTS = frozenset({"check_run", "check_suite", "status"})
+
+
+def _debounce_key(guild_id: str, task_id: str) -> str:
+    return f"{guild_id}:{task_id}"
+
+
+async def _debounce_fire(key: str, guild_id: str) -> None:
+    """Sleep for the debounce window then deliver all buffered events.
+
+    If this task is cancelled before the window expires (because a new event
+    arrived and reset the timer), the CancelledError propagates normally and
+    nothing is delivered — the replacement timer carries the full buffer.
+    """
+    await asyncio.sleep(DEBOUNCE_WINDOW_SECONDS)
+    items = _debounce_buffers.pop(key, [])
+    _debounce_tasks.pop(key, None)
+    if not items:
+        return
+    summaries = [s for s, _ in items]
+    combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
+    user_id = items[-1][1]
+    spawn(
+        run_foreman_ai(guild_id, combined, user_id=user_id),
+        name=f"foreman.github-debounced:{key}",
+    )
+    reset_foreman_poll(guild_id)
+    logger.info(
+        "github webhook debounce fired key=%s events=%d guild=%s",
+        key,
+        len(items),
+        guild_id,
+    )
+
+
+def _schedule_debounced_foreman(
+    key: str,
+    guild_id: str,
+    summary: str,
+    user_id: str | None,
+) -> None:
+    """Buffer *summary* and (re)start the per-PR debounce timer.
+
+    Each call resets the window so the foreman is only invoked after
+    DEBOUNCE_WINDOW_SECONDS of silence on this PR.
+    """
+    existing = _debounce_tasks.pop(key, None)
+    if existing and not existing.done():
+        existing.cancel()
+    _debounce_buffers.setdefault(key, []).append((summary, user_id))
+    _debounce_tasks[key] = spawn(
+        _debounce_fire(key, guild_id),
+        name=f"foreman.debounce:{key}",
+    )
+    logger.info(
+        "github webhook debounce scheduled key=%s buffered=%d",
+        key,
+        len(_debounce_buffers[key]),
+    )
 
 
 def _verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
@@ -466,11 +537,8 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         summary = _build_foreman_summary(
             event_type, action, payload, repo, pr_number, task_id, sender_login
         )
-        spawn(
-            run_foreman_ai(guild_id, summary, user_id=task_user_id),
-            name=f"foreman.github-event:{delivery_id}",
-        )
-        reset_foreman_poll(guild_id)
+        key = _debounce_key(guild_id, task_id)
+        _schedule_debounced_foreman(key, guild_id, summary, task_user_id)
     else:
         logger.info(
             "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",
