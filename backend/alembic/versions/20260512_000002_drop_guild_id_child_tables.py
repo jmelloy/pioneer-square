@@ -327,6 +327,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # This migration restructured every major table (workers, agents, tasks,
+    # messages, guild_members, …) to remove the legacy guild_id TEXT column
+    # and make guild_pk NOT NULL.  Reversing it on PostgreSQL would require
+    # restoring guild_id from the guilds lookup join on every table in the
+    # correct FK-dependency order, then dropping the NOT NULL constraint.
+    # That path was never tested and is not supported for this Postgres
+    # deployment — roll forward instead.
+    raise NotImplementedError(
+        "Downgrade of 20260512_000002 is not supported.  "
+        "The schema restructuring that dropped guild_id from child tables "
+        "cannot be safely reversed on PostgreSQL.  Roll forward instead."
+    )
+    # Original downgrade code preserved below for reference only.
     # Restore guild_id by joining through guilds(id) → guilds(guild_id).
     # guild_pk becomes nullable again (state of 20260512_000001).
 
