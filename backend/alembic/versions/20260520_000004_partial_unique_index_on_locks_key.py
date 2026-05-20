@@ -1,9 +1,13 @@
 """partial_unique_index_on_locks_key
 
 Recreate the locks table with an auto-increment id PK (dropping key as PK),
-proper TIMESTAMPTZ columns for acquired_at and expires_at, and a partial
-unique index so only one non-expired lock per key can exist at a time.
-A lock is "active" if expires_at IS NULL (infinite) or expires_at > now().
+proper TIMESTAMPTZ columns for acquired_at and expires_at, and a unique
+index on key so only one lock per key can exist at a time.
+
+LockService.acquire() always deletes expired locks for a key before inserting,
+so a simple unique index enforces the same "one active lock" invariant without
+needing now() in the predicate (which PostgreSQL rejects because now() is not
+IMMUTABLE).
 
 Revision ID: 20260520_000004_partial_unique_index_on_locks_key
 Revises: 20260520_000003_merge_locking_and_messages
@@ -32,13 +36,7 @@ def upgrade() -> None:
         sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.execute(
-        """
-        CREATE UNIQUE INDEX locks_key_active_unique
-            ON locks (key)
-            WHERE expires_at IS NULL OR expires_at > now()
-        """
-    )
+    op.execute("CREATE UNIQUE INDEX locks_key_unique ON locks (key)")
 
 
 def downgrade() -> None:

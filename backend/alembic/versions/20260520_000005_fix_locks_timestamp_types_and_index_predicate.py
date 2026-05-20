@@ -1,9 +1,9 @@
 """fix_locks_timestamp_types_and_index_predicate
 
-Recreate the locks table to fix two issues introduced in migration 000004:
-1. acquired_at and expires_at were stored as Text; change to TIMESTAMPTZ.
-2. The partial unique index predicate included a 1-hour grace window after
-   expiry. Tighten to: expires_at IS NULL OR expires_at > now().
+Recreate the locks table to fix migration 000004 which used now() in the
+partial index predicate — PostgreSQL rejects this because now() is STABLE,
+not IMMUTABLE.  Replace with a simple unique index on key; LockService.acquire()
+already deletes expired rows before inserting, so correctness is preserved.
 
 Revision ID: 20260520_000005_fix_locks_timestamp_types_and_index_predicate
 Revises: 20260520_000004_partial_unique_index_on_locks_key
@@ -34,13 +34,7 @@ def upgrade() -> None:
         sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.execute(
-        """
-        CREATE UNIQUE INDEX locks_key_active_unique
-            ON locks (key)
-            WHERE expires_at IS NULL OR expires_at > now()
-        """
-    )
+    op.execute("CREATE UNIQUE INDEX locks_key_unique ON locks (key)")
 
 
 def downgrade() -> None:
@@ -50,14 +44,7 @@ def downgrade() -> None:
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("key", sa.Text(), nullable=False),
         sa.Column("owner", sa.Text(), nullable=True),
-        sa.Column("acquired_at", sa.Text(), nullable=False),
-        sa.Column("expires_at", sa.Text(), nullable=True),
+        sa.Column("acquired_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.execute(
-        """
-        CREATE UNIQUE INDEX locks_key_active_unique
-            ON locks (key)
-            WHERE expires_at IS NULL
-               OR expires_at > (now() - interval '1 hour')
-        """
-    )
+    op.execute("CREATE UNIQUE INDEX locks_key_unique ON locks (key)")
