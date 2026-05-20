@@ -178,8 +178,8 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
                     " empty string. Provide a valid OpenAI API key or unset the variable."
                 )
             _openai_api_key = _env_val  # None if var is absent, key string if present
-        elif raw_key:
-            _openai_api_key = raw_key
+        elif raw_key.strip():
+            _openai_api_key = raw_key.strip()
     if _openai_api_key is None:
         _env_val = os.environ.get("OPENAI_API_KEY")
         if _env_val == "":
