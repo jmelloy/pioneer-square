@@ -695,6 +695,8 @@ async def run_foreman_ai(
                     },
                 )
 
+            _tool_use_ts = _now  # capture before exec_tools may raise
+
             tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
             # Truncate verbose results before storing/sending
             trimmed = [
@@ -720,49 +722,53 @@ async def run_foreman_ai(
                     },
                 )
 
-            # Persist tool-use and tool-result messages in a single transaction so
-            # they succeed or fail together — no partial writes if exec_tools raised.
+            # Persist tool_use and tool_result together in one session/transaction
+            # so exec_tools raising never leaves tool_use rows without their results.
             _persist_db = await get_db()
             try:
                 _persist_guild_pk = await get_guild_pk(_persist_db, guild_id)
-                for tu in tool_uses:
-                    _persist_db.add(
-                        Message(
-                            guild_pk=_persist_guild_pk,
-                            from_agent="foreman",
-                            to_agent="user",
-                            content=f"▶ {tu.name}",
-                            message_type="chat",
-                            role="tool_use",
-                            meta=json.dumps(
-                                {
-                                    "toolId": tu.id,
-                                    "toolName": tu.name,
-                                    "toolInput": dict(tu.input) if tu.input else {},
-                                }
-                            ),
-                            created_at=_now,
+                try:
+                    for tu in tool_uses:
+                        _persist_db.add(
+                            Message(
+                                guild_pk=_persist_guild_pk,
+                                from_agent="foreman",
+                                to_agent="user",
+                                content=f"▶ {tu.name}",
+                                message_type="chat",
+                                role="tool_use",
+                                meta=json.dumps(
+                                    {
+                                        "toolId": tu.id,
+                                        "toolName": tu.name,
+                                        "toolInput": dict(tu.input) if tu.input else {},
+                                    }
+                                ),
+                                created_at=_tool_use_ts,
+                            )
                         )
-                    )
-                for result in trimmed:
-                    _persist_db.add(
-                        Message(
-                            guild_pk=_persist_guild_pk,
-                            from_agent="foreman",
-                            to_agent="user",
-                            content=result.get("content", "") or "",
-                            message_type="chat",
-                            role="tool_result",
-                            meta=json.dumps(
-                                {
-                                    "toolId": result.get("tool_use_id"),
-                                    "isError": result.get("is_error", False),
-                                }
-                            ),
-                            created_at=_now,
+                    for result in trimmed:
+                        _persist_db.add(
+                            Message(
+                                guild_pk=_persist_guild_pk,
+                                from_agent="foreman",
+                                to_agent="user",
+                                content=result.get("content", "") or "",
+                                message_type="chat",
+                                role="tool_result",
+                                meta=json.dumps(
+                                    {
+                                        "toolId": result.get("tool_use_id"),
+                                        "isError": result.get("is_error", False),
+                                    }
+                                ),
+                                created_at=_now,
+                            )
                         )
-                    )
-                await _persist_db.commit()
+                    await _persist_db.commit()
+                except Exception:
+                    await _persist_db.rollback()
+                    raise
             finally:
                 await _persist_db.close()
 
