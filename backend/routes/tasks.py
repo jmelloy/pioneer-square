@@ -8,18 +8,18 @@ direct unit testing in ``tests/test_soft_delete_tasks.py``.
 from __future__ import annotations
 
 import json
+import random
+import string
 from datetime import UTC, datetime, timedelta
 
 from auth_deps import get_guild_pk, require_member
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
+from foreman.tools import _select_followup_worker
 from models import Guild, Task, TaskLog, live_tasks_filter
 from pydantic import BaseModel
-from sqlalchemy import select, update
-from util.tasks import spawn
-
-from foreman import run_foreman_ai
+from sqlalchemy import or_, select, update
 
 router = APIRouter()
 
@@ -202,13 +202,12 @@ async def create_task_followup(
     data: FollowupCreate,
     github_user_id: str = Depends(require_member()),
 ):
-    """Route a user-supplied follow-up to the foreman.
+    """Dispatch a user-initiated follow-up directly, bypassing the task_events queue.
 
-    Workers no longer hold tasks open for follow-ups — the foreman owns task
-    lifecycle and decides which idle worker resumes the branch (the original
-    worker reuses its worktree if it's still idle; otherwise any idle worker
-    pulls the branch from GitHub). All follow-ups go through the foreman so
-    the same routing logic applies in every case.
+    User clicks are immediate — they should never be silently deferred to the
+    task_events debounce queue (which is reserved for webhook-driven events).
+    Instead this route acquires the follow-up lock and dispatches inline, or
+    returns 409 if the task is already processing a follow-up.
     """
     db = await get_db()
     try:
@@ -216,31 +215,113 @@ async def create_task_followup(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Task.worker_id, Task.state, Task.branch).where(
-                Task.id == task_id, Task.guild_pk == guild_pk
-            )
+            select(
+                Task.worker_id,
+                Task.state,
+                Task.branch,
+                Task.description,
+                Task.name,
+                Task.tool,
+                Task.issue_number,
+                Task.issue_repo,
+            ).where(Task.id == task_id, Task.guild_pk == guild_pk)
         )
         row = result.one_or_none()
         if not row:
             raise HTTPException(status_code=404, detail="Task not found")
-        _worker_id, state, branch = row
+        (
+            original_worker_id,
+            prior_state,
+            branch,
+            task_desc,
+            task_name,
+            task_tool,
+            task_issue_number,
+            task_issue_repo,
+        ) = row
+
+        if not branch:
+            raise HTTPException(
+                status_code=400,
+                detail="Task has no branch recorded — cannot dispatch a follow-up.",
+            )
+
+        target_worker_id = await _select_followup_worker(
+            db,
+            guild_id=guild_id,
+            guild_pk=guild_pk,
+            original_worker_id=original_worker_id,
+        )
+        if not target_worker_id:
+            raise HTTPException(
+                status_code=503,
+                detail="No idle worker available. Wait for one to come online and try again.",
+            )
+
+        # Atomically acquire the follow-up lock — same mechanism as send_followup in tools.py.
+        # Stale locks (older than 1 hour) are overridden automatically.
+        lock_id = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        now_ts = datetime.now(UTC).isoformat()
+        stale_cutoff = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        lock_result = await db.execute(
+            update(Task)
+            .where(
+                Task.id == task_id,
+                or_(Task.locked_at.is_(None), Task.locked_at < stale_cutoff),
+            )
+            .values(locked_at=now_ts, lock_holder=lock_id)
+        )
+        await db.commit()
+
+        if lock_result.rowcount == 0:
+            # Task is locked by a concurrent follow-up already in flight.
+            # Unlike webhook-driven events we do NOT queue — surface the conflict
+            # to the user so they can retry once the current follow-up finishes.
+            raise HTTPException(
+                status_code=409,
+                detail="Task is currently processing a follow-up. Please wait and try again.",
+            )
+
+        update_vals: dict = {
+            "state": "working",
+            "phase": "followup",
+            "worker_id": target_worker_id,
+        }
+        if prior_state in ("done", "failed", "cancelled"):
+            update_vals["deleted_at"] = None
+            update_vals["finished_at"] = None
+        await db.execute(update(Task).where(Task.id == task_id).values(**update_vals))
+        await db.commit()
+
+        await broadcast(
+            guild_id,
+            {
+                "type": "task-update",
+                "taskId": task_id,
+                "state": "working",
+                "workerId": target_worker_id,
+                "deletedAt": None,
+                "finishedAt": None,
+            },
+        )
+        await broadcast(
+            guild_id,
+            {
+                "type": "task-followup",
+                "workerId": target_worker_id,
+                "taskId": task_id,
+                "name": task_name or "",
+                "description": task_desc or "",
+                "tool": task_tool or "claude",
+                "branch": branch,
+                "instructions": data.instructions,
+                "issueNumber": task_issue_number,
+                "issueRepo": task_issue_repo,
+            },
+        )
+        return {"status": "dispatched", "taskId": task_id, "workerId": target_worker_id}
     finally:
         await db.close()
-
-    branch_ctx = f" on branch `{branch}`" if branch else ""
-    spawn(
-        run_foreman_ai(
-            guild_id,
-            f"[user-followup] User requested follow-up on task {task_id}{branch_ctx} "
-            f'(currently {state}): "{data.instructions}". '
-            "Call send_followup to dispatch this work — it will pick the "
-            "original worker if idle, otherwise any idle worker pulls the "
-            "branch from GitHub.",
-            user_id=github_user_id,
-        ),
-        name=f"foreman.user-followup:{task_id}",
-    )
-    return {"status": "queued_for_foreman", "taskId": task_id}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/finalize")
