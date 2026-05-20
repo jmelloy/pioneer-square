@@ -1282,9 +1282,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         lock_id = "".join(
                             random.choices(string.ascii_lowercase + string.digits, k=8)
                         )
-                        acquired = await LockService(db).acquire(
-                            f"task:{task_id}", owner=lock_id
-                        )
+                        acquired = await LockService(db).acquire(f"task:{task_id}", owner=lock_id)
                         await db.commit()
                         if not acquired:
                             # Task already locked by a concurrent follow-up —

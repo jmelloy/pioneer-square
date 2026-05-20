@@ -26,8 +26,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from lock_service import LockService
-from models import Agent, Guild, Worker
-from sqlalchemy import select, update
+from models import Agent, Guild, Lock, Task, Worker
+from sqlalchemy import literal, select, update
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -149,6 +149,64 @@ async def _sweep_stale_workers_once() -> int:
         if expired:
             await db.commit()
             logger.info("Cleared %d expired lock(s)", expired)
+
+    # Stale-task watchdog: find tasks stuck in "working" with no active agent.
+    # This catches the case where an agent crashed or disconnected without
+    # sending task-followup-done, leaving the task and lock orphaned.  We gate
+    # on lock age (>= WORKER_OFFLINE_AFTER_SECONDS) to avoid false positives
+    # on tasks that were just dispatched a moment ago.
+    stale_task_ids: list[str] = []
+    async with AsyncSessionLocal() as db:
+        cutoff_lock = (
+            datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)
+        ).isoformat()
+        # Tasks in "working" state that have no agent actively running them
+        # (i.e. no agent with current_task_id = task.id in a live state) and
+        # whose lock was acquired long enough ago to not be a new dispatch.
+        orphaned = (
+            (
+                await db.execute(
+                    select(Task.id).where(
+                        Task.state == "working",
+                        # Lock exists for this task and has been held long enough
+                        # that we can assume it's not a brand-new dispatch.
+                        select(Lock.key)
+                        .where(
+                            Lock.key == literal("task:").op("||")(Task.id),
+                            Lock.acquired_at < cutoff_lock,
+                        )
+                        .exists(),
+                        # No agent is actively running this task right now.
+                        ~select(Agent.id)
+                        .where(
+                            Agent.current_task_id == Task.id,
+                            Agent.state.in_(("working", "thinking", "busy")),
+                        )
+                        .exists(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if orphaned:
+            stale_task_ids = list(orphaned)
+            for task_id in stale_task_ids:
+                await db.execute(
+                    update(Task)
+                    .where(Task.id == task_id, Task.state == "working")
+                    .values(state="awaiting-review")
+                )
+                await LockService(db).release(f"task:{task_id}")
+            await db.commit()
+
+    for task_id in stale_task_ids:
+        logger.warning(
+            "Stale-task watchdog: released lock and moved task %s to awaiting-review"
+            " (no active agent for >= %.0fs)",
+            task_id,
+            WORKER_OFFLINE_AFTER_SECONDS,
+        )
 
     for row in stale_agents:
         logger.warning(

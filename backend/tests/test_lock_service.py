@@ -110,13 +110,7 @@ async def test_is_locked_false_after_release(db_session):
 @pytest.mark.anyio
 async def test_expired_lock_can_be_reacquired(db_session):
     """A lock with an already-elapsed TTL should be treated as free on the next acquire."""
-    import sqlite3
-
-    # Manually insert a lock with an already-expired expires_at.
     expired_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
-    db_path = str(db_session.kw["bind"].url).replace("sqlite+aiosqlite:///", "")
-    # Resolve via engine URL instead.
-    engine = db_session.kw.get("bind") or list(db_session.kw.values())[0]
 
     async with db_session() as db:
         # Insert expired lock directly via raw SQL to bypass the service layer.
@@ -159,9 +153,7 @@ async def test_cleanup_expired_removes_stale_locks(db_session):
         removed = await LockService.cleanup_expired(db)
         await db.commit()
 
-        remaining = (
-            await db.execute(sqlalchemy.text("SELECT COUNT(*) FROM locks"))
-        ).scalar_one()
+        remaining = (await db.execute(sqlalchemy.text("SELECT COUNT(*) FROM locks"))).scalar_one()
 
     assert removed == 1
     assert remaining == 1  # only the active lock survives

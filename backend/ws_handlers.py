@@ -340,6 +340,9 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     await broadcast(ctx.guild_id, broadcast_payload)
 
 
+_LOCK_RELEASE_AGENT_STATES = frozenset({"idle", "offline", "error", "cancelled", "timeout"})
+
+
 async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     agent_id = data.get("agentId")
     worker_id = data.get("workerId")
@@ -357,11 +360,34 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
         update_vals["current_task_id"] = data.get("taskId")
     elif state in ("idle", "offline"):
         update_vals["current_task_id"] = None
+
+    # When the agent transitions to a non-working state, release the task lock
+    # so the task doesn't stay stuck in "working" indefinitely.  We must read
+    # current_task_id from the DB *before* the update clears it.
+    task_id_to_release: str | None = None
+    if state in _LOCK_RELEASE_AGENT_STATES and agent_id:
+        row = await ctx.db.execute(
+            select(Agent.current_task_id).where(
+                Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk
+            )
+        )
+        task_id_to_release = row.scalar_one_or_none()
+
     await ctx.db.execute(
         update(Agent)
         .where(Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk)
         .values(**update_vals)
     )
+
+    if task_id_to_release:
+        # Move the task out of "working" so the foreman can decide next steps.
+        await ctx.db.execute(
+            update(Task)
+            .where(Task.id == task_id_to_release, Task.state == "working")
+            .values(state="awaiting-review")
+        )
+        await LockService(ctx.db).release(f"task:{task_id_to_release}")
+
     await ctx.db.commit()
     msg: dict = {"type": "agent-state", "agentId": agent_id, "state": state}
     if worker_id:

@@ -1000,12 +1000,8 @@ class TestExecToolsDispatching:
             )
         assert "finalized" in results[0]["content"].lower()
         with sqlite3.connect(db_session) as conn:
-            task_row = conn.execute(
-                "SELECT state FROM tasks WHERE id='t-fin-lk'"
-            ).fetchone()
-            lock_row = conn.execute(
-                "SELECT key FROM locks WHERE key='task:t-fin-lk'"
-            ).fetchone()
+            task_row = conn.execute("SELECT state FROM tasks WHERE id='t-fin-lk'").fetchone()
+            lock_row = conn.execute("SELECT key FROM locks WHERE key='task:t-fin-lk'").fetchone()
             event_count = conn.execute(
                 "SELECT COUNT(*) FROM task_events WHERE task_id='t-fin-lk'"
             ).fetchone()[0]
@@ -1042,9 +1038,7 @@ class TestExecToolsDispatching:
         followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
         assert len(followup_msgs) == 1, "Expired lock should be evicted and follow-up dispatched"
         with sqlite3.connect(db_session) as conn:
-            row = conn.execute(
-                "SELECT owner FROM locks WHERE key='task:t-stale'"
-            ).fetchone()
+            row = conn.execute("SELECT owner FROM locks WHERE key='task:t-stale'").fetchone()
         assert row is not None, "New lock row should exist"
         assert row[0] != "old-holder", "New owner should have replaced old-holder"
 
