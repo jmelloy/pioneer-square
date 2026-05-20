@@ -39,16 +39,17 @@ jobs:
           POSTGRES_DB: pioneer_test
           POSTGRES_USER: pioneer
           POSTGRES_PASSWORD: pioneer_password
-        ports:
-          - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U pioneer"
-          --health-interval 10s
+          --health-cmd pg_isready
+          --health-interval 5s
           --health-timeout 5s
           --health-retries 5
+        ports:
+          - 5432:5432
+
     env:
       TEST_DATABASE_URL: postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test
-      DATABASE_URL: postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test
+      
     steps:
       - uses: actions/checkout@v6
 
