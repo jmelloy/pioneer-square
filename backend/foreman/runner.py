@@ -719,55 +719,50 @@ async def run_foreman_ai(
                     },
                 )
 
-            # Persist tool_use and tool_result together in one session/transaction
+            # Persist tool_use and tool_result together in one transaction
             # so exec_tools raising never leaves tool_use rows without their results.
-            _persist_db = await get_db()
             try:
-                _persist_guild_pk = await get_guild_pk(_persist_db, guild_id)
-                try:
-                    for tu in tool_uses:
-                        _persist_db.add(
-                            Message(
-                                guild_pk=_persist_guild_pk,
-                                from_agent="foreman",
-                                to_agent="user",
-                                content=f"▶ {tu.name}",
-                                message_type="chat",
-                                role="tool_use",
-                                meta=json.dumps(
-                                    {
-                                        "toolId": tu.id,
-                                        "toolName": tu.name,
-                                        "toolInput": dict(tu.input) if tu.input else {},
-                                    }
-                                ),
-                                created_at=_tool_use_ts,
-                            )
+                for tu in tool_uses:
+                    db.add(
+                        Message(
+                            guild_pk=guild_pk_val,
+                            from_agent="foreman",
+                            to_agent="user",
+                            content=f"▶ {tu.name}",
+                            message_type="chat",
+                            role="tool_use",
+                            meta=json.dumps(
+                                {
+                                    "toolId": tu.id,
+                                    "toolName": tu.name,
+                                    "toolInput": dict(tu.input) if tu.input else {},
+                                }
+                            ),
+                            created_at=_tool_use_ts,
                         )
-                    for result in trimmed:
-                        _persist_db.add(
-                            Message(
-                                guild_pk=_persist_guild_pk,
-                                from_agent="foreman",
-                                to_agent="user",
-                                content=result.get("content", "") or "",
-                                message_type="chat",
-                                role="tool_result",
-                                meta=json.dumps(
-                                    {
-                                        "toolId": result.get("tool_use_id"),
-                                        "isError": result.get("is_error", False),
-                                    }
-                                ),
-                                created_at=_now,
-                            )
+                    )
+                for result in trimmed:
+                    db.add(
+                        Message(
+                            guild_pk=guild_pk_val,
+                            from_agent="foreman",
+                            to_agent="user",
+                            content=result.get("content", "") or "",
+                            message_type="chat",
+                            role="tool_result",
+                            meta=json.dumps(
+                                {
+                                    "toolId": result.get("tool_use_id"),
+                                    "isError": result.get("is_error", False),
+                                }
+                            ),
+                            created_at=_now,
                         )
-                    await _persist_db.commit()
-                except Exception:
-                    await _persist_db.rollback()
-                    raise
-            finally:
-                await _persist_db.close()
+                    )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
             # Persist tool_result turn as a child of the assistant turn
             await _save_turn(
@@ -860,22 +855,17 @@ async def run_foreman_ai(
         response_text = "\n".join(text_parts).strip()
         if response_text:
             now = datetime.now(UTC).isoformat()
-            db = await get_db()
-            try:
-                msg_guild_pk = await get_guild_pk(db, guild_id)
-                db.add(
-                    Message(
-                        guild_pk=msg_guild_pk,
-                        from_agent="foreman",
-                        to_agent="user",
-                        content=response_text,
-                        message_type="chat",
-                        created_at=now,
-                    )
+            db.add(
+                Message(
+                    guild_pk=guild_pk_val,
+                    from_agent="foreman",
+                    to_agent="user",
+                    content=response_text,
+                    message_type="chat",
+                    created_at=now,
                 )
-                await db.commit()
-            finally:
-                await db.close()
+            )
+            await db.commit()
 
     except Exception as exc:
         now = datetime.now(UTC).isoformat()
@@ -889,6 +879,8 @@ async def run_foreman_ai(
                 "createdAt": now,
             },
         )
+    finally:
+        await db.close()
 
 
 async def clear_foreman_history(guild_id: str, user_id: str) -> int:
