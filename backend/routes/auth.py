@@ -404,6 +404,23 @@ async def delete_login(provider: str, github_user_id: str = Depends(require_user
                 detail=f"No {provider!r} login found for this user.",
             )
 
+        # Lockout guard: count login tokens for providers OTHER than the one
+        # being removed.  Block if there are none — the user would have no way
+        # to log back in.  GitHub is the only provider today so other_count is
+        # always 0, correctly preventing disconnect until a second provider is
+        # supported.  Add each new OAuth provider's count below when it ships.
+        other_count = 0
+        # Future providers (add a count query per new OAuth provider here):
+        # e.g. other_count += (await db.execute(
+        #     select(func.count()).select_from(GoogleToken)
+        #     .where(GoogleToken.user_id == github_user_id)
+        # )).scalar_one_or_none() or 0
+        if other_count == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot disconnect your only login method.",
+            )
+
         # Delete only the token row for the specified provider and user.
         await db.execute(delete(GithubToken).where(GithubToken.github_user_id == github_user_id))
         await db.commit()
