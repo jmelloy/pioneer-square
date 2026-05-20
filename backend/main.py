@@ -84,6 +84,9 @@ async def _sweep_stale_workers_once() -> int:
     """One pass of the stale-worker sweep. Returns the number of agents
     marked offline. Extracted for direct testing."""
     cutoff = (datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)).isoformat()
+    stale_agents: list = []
+    zombie_workers: list = []
+    agent_cascade_wids: set[str] = set()
     async with AsyncSessionLocal() as db:
         stale_agents = (
             await db.execute(
@@ -95,9 +98,6 @@ async def _sweep_stale_workers_once() -> int:
             )
         ).all()
         stale_worker_keys: set[tuple[str, int]] = set()
-        # Track which workers were already caught via the agent-cascade path so
-        # the zombie-worker log below can skip them (they're already logged).
-        agent_cascade_wids: set[str] = set()
         for row in stale_agents:
             await db.execute(
                 update(Agent)
