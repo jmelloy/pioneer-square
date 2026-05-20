@@ -37,11 +37,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # How long (seconds) to wait for further events on the same PR before
-# delivering the buffered batch to the foreman.  GitHub often sends several
-# check_run completions and a review comment within a second of each other;
-# this window lets them coalesce into a single foreman invocation.
-# Configurable via WEBHOOK_DEBOUNCE_SECONDS (default: 3 seconds).
-DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "3"))
+# delivering the buffered batch to the foreman.  GitHub CI pipelines commonly
+# take 1–3 minutes; using a window long enough to cover the full CI run means
+# the foreman sees one coalesced batch (all check_run completions + any review
+# comments) rather than firing once per check.
+# Configurable via WEBHOOK_DEBOUNCE_SECONDS (default: 180 seconds).
+DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "180"))
 
 
 # Cap on stored payloads. GitHub webhook payloads are typically <50 KB but
