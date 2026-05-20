@@ -849,12 +849,11 @@ class TestExecToolsDispatching:
                 ],
             )
         assert "t-lock1" in results[0]["content"]
-        with sqlite3.connect(db_session) as conn:
-            row = conn.execute(
-                "SELECT locked_at, lock_holder FROM tasks WHERE id='t-lock1'"
-            ).fetchone()
-        assert row[0] is not None, "locked_at should be set after dispatch"
-        assert row[1] is not None, "lock_holder should be set after dispatch"
+        with raw_conn(db_session) as (conn, cur):
+            cur.execute("SELECT locked_at, lock_holder FROM tasks WHERE id='t-lock1'")
+            row = cur.fetchone()
+        assert row["locked_at"] is not None, "locked_at should be set after dispatch"
+        assert row["lock_holder"] is not None, "lock_holder should be set after dispatch"
 
     async def test_send_followup_while_locked_queues_event(self, db_session):
         """A second send_followup on a locked task queues the instructions instead of dispatching."""
@@ -864,12 +863,11 @@ class TestExecToolsDispatching:
         # Pre-lock the task to simulate a concurrent dispatch already in flight.
         _insert_task(db_session, "t-lq1", "g-lock-queue", "w-lq1")
         now = datetime.now(UTC).isoformat()
-        with sqlite3.connect(db_session) as conn:
-            conn.execute(
-                "UPDATE tasks SET locked_at=?, lock_holder='existing-holder' WHERE id='t-lq1'",
+        with raw_conn(db_session) as (conn, cur):
+            cur.execute(
+                "UPDATE tasks SET locked_at=%s, lock_holder='existing-holder' WHERE id='t-lq1'",
                 (now,),
             )
-            conn.commit()
 
         broadcast_calls = []
 
@@ -895,13 +893,12 @@ class TestExecToolsDispatching:
             "queued" in results[0]["content"].lower() or "locked" in results[0]["content"].lower()
         )
         # A task_event row should exist
-        with sqlite3.connect(db_session) as conn:
-            row = conn.execute(
-                "SELECT event_type, payload_json FROM task_events WHERE task_id='t-lq1'"
-            ).fetchone()
+        with raw_conn(db_session) as (conn, cur):
+            cur.execute("SELECT event_type, payload_json FROM task_events WHERE task_id='t-lq1'")
+            row = cur.fetchone()
         assert row is not None, "A task_event row should have been inserted"
-        assert row[0] == "pending-followup"
-        payload = json.loads(row[1])
+        assert row["event_type"] == "pending-followup"
+        payload = json.loads(row["payload_json"])
         assert payload["instructions"] == "Add integration tests"
 
     async def test_two_concurrent_followups_only_one_dispatched(self, db_session):
@@ -963,10 +960,9 @@ class TestExecToolsDispatching:
         )
 
         # One task_event row should exist with the queued instructions
-        with sqlite3.connect(db_session) as conn:
-            rows = conn.execute(
-                "SELECT payload_json FROM task_events WHERE task_id='t-race1'"
-            ).fetchall()
+        with raw_conn(db_session) as (conn, cur):
+            cur.execute("SELECT payload_json FROM task_events WHERE task_id='t-race1'")
+            rows = cur.fetchall()
         assert len(rows) == 1
 
     async def test_finalize_task_clears_lock_and_queued_events(self, db_session):
@@ -975,32 +971,29 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-fin-lock", "w-fin-lk")
         _insert_task(db_session, "t-fin-lk", "g-fin-lock", "w-fin-lk")
         now = datetime.now(UTC).isoformat()
-        with sqlite3.connect(db_session) as conn:
-            conn.execute(
-                "UPDATE tasks SET locked_at=?, lock_holder='h1' WHERE id='t-fin-lk'", (now,)
+        with raw_conn(db_session) as (conn, cur):
+            cur.execute(
+                "UPDATE tasks SET locked_at=%s, lock_holder='h1' WHERE id='t-fin-lk'", (now,)
             )
-            conn.execute(
+            cur.execute(
                 "INSERT INTO task_events (task_id, event_type, payload_json, created_at) "
-                "VALUES ('t-fin-lk', 'pending-followup', '{\"instructions\": \"stale\"}', ?)",
+                "VALUES ('t-fin-lk', 'pending-followup', '{\"instructions\": \"stale\"}', %s)",
                 (now,),
             )
-            conn.commit()
 
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
             results = await exec_tools(
                 "g-fin-lock", [_fake_tool_use("finalize_task", {"task_id": "t-fin-lk"})]
             )
         assert "finalized" in results[0]["content"].lower()
-        with sqlite3.connect(db_session) as conn:
-            task_row = conn.execute(
-                "SELECT state, locked_at, lock_holder FROM tasks WHERE id='t-fin-lk'"
-            ).fetchone()
-            event_count = conn.execute(
-                "SELECT COUNT(*) FROM task_events WHERE task_id='t-fin-lk'"
-            ).fetchone()[0]
-        assert task_row[0] == "done"
-        assert task_row[1] is None, "locked_at should be cleared on finalize"
-        assert task_row[2] is None, "lock_holder should be cleared on finalize"
+        with raw_conn(db_session) as (conn, cur):
+            cur.execute("SELECT state, locked_at, lock_holder FROM tasks WHERE id='t-fin-lk'")
+            task_row = cur.fetchone()
+            cur.execute("SELECT COUNT(*) FROM task_events WHERE task_id='t-fin-lk'")
+            event_count = cur.fetchone()["count"]
+        assert task_row["state"] == "done"
+        assert task_row["locked_at"] is None, "locked_at should be cleared on finalize"
+        assert task_row["lock_holder"] is None, "lock_holder should be cleared on finalize"
         assert event_count == 0, "Queued events should be deleted on finalize"
 
     async def test_stale_lock_overridden(self, db_session):
@@ -1011,12 +1004,11 @@ class TestExecToolsDispatching:
         _insert_task(db_session, "t-stale", "g-stale-lock", "w-stale")
         # Set locked_at to 2 hours ago
         stale_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
-        with sqlite3.connect(db_session) as conn:
-            conn.execute(
-                "UPDATE tasks SET locked_at=?, lock_holder='old-holder' WHERE id='t-stale'",
+        with raw_conn(db_session) as (conn, cur):
+            cur.execute(
+                "UPDATE tasks SET locked_at=%s, lock_holder='old-holder' WHERE id='t-stale'",
                 (stale_ts,),
             )
-            conn.commit()
 
         broadcast_calls = []
 
@@ -1030,9 +1022,10 @@ class TestExecToolsDispatching:
             )
         followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
         assert len(followup_msgs) == 1, "Stale lock should be overridden and follow-up dispatched"
-        with sqlite3.connect(db_session) as conn:
-            row = conn.execute("SELECT lock_holder FROM tasks WHERE id='t-stale'").fetchone()
-        assert row[0] != "old-holder", "Lock holder should have been replaced"
+        with raw_conn(db_session) as (conn, cur):
+            cur.execute("SELECT lock_holder FROM tasks WHERE id='t-stale'")
+            row = cur.fetchone()
+        assert row["lock_holder"] != "old-holder", "Lock holder should have been replaced"
 
 
 # ---------------------------------------------------------------------------
