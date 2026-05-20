@@ -136,6 +136,13 @@ class Task(Base):
     # worker-driven foreman events (task-complete, etc.) back to the originator's
     # foreman thread in multi-user guilds. NULL on legacy/system tasks.
     user_id = Column(Text, nullable=True)
+    # Follow-up dispatch lock. Set to a UTC ISO-8601 timestamp when a follow-up
+    # is dispatched; cleared when the follow-up worker reports done (or on
+    # finalize). Prevents two concurrent foreman runs from both dispatching a
+    # follow-up for the same task. Locks older than 1 hour are treated as stale
+    # and overridden automatically.
+    locked_at = Column(Text, nullable=True)
+    lock_holder = Column(Text, nullable=True)
 
 
 class GithubToken(Base):
@@ -256,4 +263,23 @@ class GithubEvent(Base):
     pr_url = Column(Text, nullable=True)
     sender_login = Column(Text, nullable=True)
     payload_json = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False)
+
+
+class TaskEvent(Base):
+    """Queued follow-up triggers that arrived while a task was locked.
+
+    When send_followup is called on a task that already holds a follow-up lock,
+    the call is serialised here instead of spawning a second worker. On lock
+    release (task-followup-done) the foreman is re-triggered with the queued
+    instructions so it can decide whether to dispatch them.
+    """
+
+    __tablename__ = "task_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(Text, ForeignKey("tasks.id"), nullable=False)
+    # "pending-followup" is the only event_type currently; reserved for future use.
+    event_type = Column(Text, nullable=False)
+    payload_json = Column(Text, nullable=False)  # JSON: instructions, preferred_worker_id
     created_at = Column(Text, nullable=False)

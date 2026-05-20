@@ -14,8 +14,18 @@ from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from events import broadcast, emit_terminal_line
-from models import Agent, GithubToken, Guild, GuildKey, GuildMember, Task, TaskLog, Worker
-from sqlalchemy import select, update
+from models import (
+    Agent,
+    GithubToken,
+    Guild,
+    GuildKey,
+    GuildMember,
+    Task,
+    TaskEvent,
+    TaskLog,
+    Worker,
+)
+from sqlalchemy import delete, or_, select, update
 
 logger = logging.getLogger(__name__)
 
@@ -1266,60 +1276,100 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         )
                         is_error = True
                     else:
-                        update_vals: dict = {
-                            "state": "working",
-                            "phase": "followup",
-                            "worker_id": target_worker_id,
-                        }
-                        if prior_state in ("done", "failed", "cancelled"):
-                            # Re-opening a terminal task: clear soft-delete fields so it
-                            # reappears in the live task list and isn't auto-purged.
-                            update_vals["deleted_at"] = None
-                            update_vals["finished_at"] = None
-                        await db.execute(
-                            update(Task).where(Task.id == task_id).values(**update_vals)
+                        # Atomically acquire the follow-up lock to prevent two
+                        # concurrent foreman runs from both dispatching a worker.
+                        # Locks older than 1 hour are treated as stale/abandoned.
+                        lock_id = "".join(
+                            random.choices(string.ascii_lowercase + string.digits, k=8)
+                        )
+                        now_ts = datetime.now(UTC).isoformat()
+                        stale_cutoff = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+                        lock_result = await db.execute(
+                            update(Task)
+                            .where(
+                                Task.id == task_id,
+                                or_(Task.locked_at.is_(None), Task.locked_at < stale_cutoff),
+                            )
+                            .values(locked_at=now_ts, lock_holder=lock_id)
                         )
                         await db.commit()
-                        await broadcast(
-                            guild_id,
-                            {
-                                "type": "task-update",
-                                "taskId": task_id,
-                                "state": "working",
-                                "workerId": target_worker_id,
-                                "deletedAt": None,
-                                "finishedAt": None,
-                            },
-                        )
-                        await broadcast(
-                            guild_id,
-                            {
-                                "type": "task-followup",
-                                "workerId": target_worker_id,
-                                "taskId": task_id,
-                                "name": task_name or "",
-                                "description": task_desc or "",
-                                "tool": task_tool or "claude",
-                                "branch": branch,
-                                "instructions": instructions,
-                                "issueNumber": task_issue_number,
-                                "issueRepo": task_issue_repo,
-                            },
-                        )
-                        if (
-                            target_worker_id != original_worker_id
-                            and original_worker_id
-                            and original_worker_id != "foreman"
-                        ):
+                        if lock_result.rowcount == 0:
+                            # Task already locked by a concurrent follow-up —
+                            # queue this request for replay when the lock releases.
+                            db.add(
+                                TaskEvent(
+                                    task_id=task_id,
+                                    event_type="pending-followup",
+                                    payload_json=json.dumps(
+                                        {
+                                            "instructions": instructions,
+                                            "preferred_worker_id": preferred_worker_id,
+                                        }
+                                    ),
+                                    created_at=datetime.now(UTC).isoformat(),
+                                )
+                            )
+                            await db.commit()
                             result_text = (
-                                f"Follow-up reassigned from {original_worker_id} "
-                                f"to {target_worker_id} (task {task_id} on branch {branch})."
+                                f"Task {task_id} is locked by an in-progress follow-up. "
+                                "Instructions have been queued and will be passed to the "
+                                "foreman when the current follow-up completes."
                             )
                         else:
-                            result_text = (
-                                f"Follow-up sent to {target_worker_id} for task {task_id} "
-                                f"on branch {branch}."
+                            update_vals: dict = {
+                                "state": "working",
+                                "phase": "followup",
+                                "worker_id": target_worker_id,
+                            }
+                            if prior_state in ("done", "failed", "cancelled"):
+                                # Re-opening a terminal task: clear soft-delete fields so it
+                                # reappears in the live task list and isn't auto-purged.
+                                update_vals["deleted_at"] = None
+                                update_vals["finished_at"] = None
+                            await db.execute(
+                                update(Task).where(Task.id == task_id).values(**update_vals)
                             )
+                            await db.commit()
+                            await broadcast(
+                                guild_id,
+                                {
+                                    "type": "task-update",
+                                    "taskId": task_id,
+                                    "state": "working",
+                                    "workerId": target_worker_id,
+                                    "deletedAt": None,
+                                    "finishedAt": None,
+                                },
+                            )
+                            await broadcast(
+                                guild_id,
+                                {
+                                    "type": "task-followup",
+                                    "workerId": target_worker_id,
+                                    "taskId": task_id,
+                                    "name": task_name or "",
+                                    "description": task_desc or "",
+                                    "tool": task_tool or "claude",
+                                    "branch": branch,
+                                    "instructions": instructions,
+                                    "issueNumber": task_issue_number,
+                                    "issueRepo": task_issue_repo,
+                                },
+                            )
+                            if (
+                                target_worker_id != original_worker_id
+                                and original_worker_id
+                                and original_worker_id != "foreman"
+                            ):
+                                result_text = (
+                                    f"Follow-up reassigned from {original_worker_id} "
+                                    f"to {target_worker_id} (task {task_id} on branch {branch})."
+                                )
+                            else:
+                                result_text = (
+                                    f"Follow-up sent to {target_worker_id} for task {task_id} "
+                                    f"on branch {branch}."
+                                )
 
             elif tu.name == "finalize_task":
                 task_id = inp["task_id"]
@@ -1343,8 +1393,12 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 state="done",
                                 finished_at=finished_at,
                                 deleted_at=deleted_at,
+                                locked_at=None,
+                                lock_holder=None,
                             )
                         )
+                        # Discard any queued follow-up events — the task is done.
+                        await db.execute(delete(TaskEvent).where(TaskEvent.task_id == task_id))
                         await db.commit()
                         await broadcast(
                             guild_id,
