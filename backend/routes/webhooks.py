@@ -114,15 +114,13 @@ class DebounceQueue:
     async def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None]]) -> None:
         summaries = [s for s, _ in items]
         combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
-        # Use the first non-bot user_id in the burst. In pure CI bursts
-        # (check_run completions, status events) every item's user_id may be
-        # None (task has no human owner) or a bot login.  "Last event wins" is
-        # no more reliable here because bot events appear throughout the burst.
-        # Fall back to the last item's user_id (possibly None) when every entry
-        # lacks a non-bot attribution.
+        # Use the first non-bot user_id in the batch. All items share the same
+        # task owner, but a bot user_id (ending in "[bot]") is less useful for
+        # attribution than a real human.  Fall back to any non-None user_id if
+        # every entry is a bot, and to None if the batch is entirely anonymous.
         user_id = next(
             (uid for _, uid in items if uid and not uid.endswith("[bot]")),
-            items[-1][1],
+            next((uid for _, uid in items if uid), None),
         )
         await run_foreman_ai(guild_id, combined, user_id=user_id)
         reset_foreman_poll(guild_id)
@@ -185,6 +183,12 @@ class DebounceQueue:
         if existing and not existing.done():
             existing.cancel()
             await asyncio.gather(existing, return_exceptions=True)
+        # Invariant: if _fire already ran before this pop (i.e. it cleared
+        # _buffers[key] and removed _tasks[key] itself), existing is None,
+        # setdefault creates a fresh list, and the new event is correctly
+        # appended.  The old events were already delivered by _fire — no events
+        # are lost.  If _fire had NOT yet run, its buffer is still present and
+        # setdefault returns it so the new event extends the existing batch.
         self._buffers.setdefault(key, []).append((summary, user_id))
         # Use asyncio.create_task directly: the task is kept alive by
         # self._tasks[key] (a strong reference), so GC is not a concern.

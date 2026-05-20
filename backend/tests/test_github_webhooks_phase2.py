@@ -505,7 +505,7 @@ class TestDebounce:
             task = wh._debounce_queue._tasks.get("g-cl:t-cl1")
             assert task is not None
             task.cancel()
-            await asyncio.sleep(0.0)
+            await asyncio.gather(task, return_exceptions=True)
 
             # Buffer must still hold both events
             assert len(wh._debounce_queue._buffers.get("g-cl:t-cl1", [])) == 2
@@ -540,7 +540,7 @@ class TestDebounce:
             # External cancel must NOT change the generation
             task = wh._debounce_queue._tasks[key]
             task.cancel()
-            await asyncio.sleep(0.0)
+            await asyncio.gather(task, return_exceptions=True)
             assert wh._debounce_queue._generation[key] == 3
 
             await asyncio.sleep(0.2)  # nothing fires — timer was externally cancelled
@@ -559,7 +559,7 @@ class TestDebounce:
 
             task = wh._debounce_queue._tasks[key]
             task.cancel()
-            await asyncio.sleep(0.0)
+            await asyncio.gather(task, return_exceptions=True)
 
             assert wh._debounce_queue._generation[key] == 1
             assert len(wh._debounce_queue._buffers.get(key, [])) == 1
@@ -584,7 +584,8 @@ class TestDebounce:
         async with self._patched_env(wh):
             key = "g-race:t-rc1"
             await wh._debounce_queue.schedule(key, "g-race", "event A", "u-race")
-            await asyncio.sleep(0)
+            for _ in range(3):
+                await asyncio.sleep(0)
             await wh._debounce_queue.schedule(key, "g-race", "event B", "u-race")
             await asyncio.sleep(0.2)
 
