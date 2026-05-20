@@ -378,8 +378,9 @@ async def list_logins(github_user_id: str = Depends(require_user)):
 async def delete_login(provider: str, github_user_id: str = Depends(require_user)):
     """Disconnect an OAuth provider from the current user's account.
 
-    Guards against removing the last login — if this is the only connected
-    provider the user would be permanently locked out, so we return HTTP 400.
+    Returns HTTP 404 if the user has no login for the requested provider.
+    Guards against removing the last login — if this would leave the user with
+    zero logins they would be permanently locked out, so we return HTTP 400.
     Currently only ``github`` is supported; passing any other provider returns
     HTTP 404.
     """
@@ -388,8 +389,21 @@ async def delete_login(provider: str, github_user_id: str = Depends(require_user
 
     db = await get_db()
     try:
-        # Count total logins across all providers before touching anything.
-        # (Only GitHub exists today; expand this query when new providers land.)
+        # Verify the requested provider login actually exists for this user.
+        if provider == "github":
+            existing_res = await db.execute(
+                select(GithubToken).where(GithubToken.github_user_id == github_user_id)
+            )
+            if existing_res.scalar_one_or_none() is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No {provider!r} login found for this user.",
+                )
+
+        # Count total logins across all providers.  With only GitHub today this
+        # equals the github_tokens row count; add other provider tables here when
+        # they land.  If removing this provider would leave the user with no logins,
+        # reject the request.
         count_res = await db.execute(
             select(func.count())
             .select_from(GithubToken)
@@ -401,7 +415,8 @@ async def delete_login(provider: str, github_user_id: str = Depends(require_user
                 status_code=400,
                 detail="Cannot disconnect your only login method — you would be locked out.",
             )
-        # Delete only the token(s) belonging to the requested provider.
+
+        # Delete only the token(s) for the requested provider.
         if provider == "github":
             await db.execute(
                 delete(GithubToken).where(GithubToken.github_user_id == github_user_id)
