@@ -31,13 +31,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import raw_conn, truncate_all
+from helpers import raw_conn
 from starlette.testclient import TestClient  # noqa: E402
 
 
 @pytest.fixture(scope="function")
 def client(_setup_schema):
-    truncate_all(TEST_DATABASE_URL)
     db_url = TEST_DATABASE_URL
 
     new_engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
@@ -89,21 +88,26 @@ def _insert_guild_worker_task(
         )
 
 
-def _join_ws(ws, agent_id: str, worker_id: str) -> None:
-    ws.send_json(
-        {
-            "type": "join",
-            "agentId": agent_id,
-            "agentName": "Test Slot",
-            "agentType": "worker",
-            "workerId": worker_id,
-        }
-    )
+def _join_ws(ws, agent_id: str, worker_id: str | None = None) -> None:
+    """Join a guild WebSocket.
+
+    Pass ``worker_id`` to join as a worker (FK-safe: must exist in workers
+    table).  Omit it to join as a browser observer — no workers row needed.
+    """
+    msg: dict = {
+        "type": "join",
+        "agentId": agent_id,
+        "agentName": "Test Slot",
+        "agentType": "worker" if worker_id else "browser",
+    }
+    if worker_id:
+        msg["workerId"] = worker_id
+    ws.send_json(msg)
     # The join handler replays any pending/working tasks via task-assigned
     # *before* the agent-joined broadcast, so drain those first.
     while True:
-        msg = ws.receive_json()
-        if msg["type"] == "agent-joined":
+        recv = ws.receive_json()
+        if recv["type"] == "agent-joined":
             break
 
 
@@ -116,7 +120,7 @@ def test_agent_state_persists_current_task_id(client):
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
-            _join_ws(ws_obs, "a-obs1", "w-obs1")
+            _join_ws(ws_obs, "a-obs1")
             ws_worker.receive_json()  # drain obs's agent-joined broadcast
 
             ws_worker.send_json(
@@ -159,7 +163,7 @@ def test_agent_state_idle_clears_current_task_id(client):
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
-            _join_ws(ws_obs, "a-obs2", "w-obs2")
+            _join_ws(ws_obs, "a-obs2")
             ws_worker.receive_json()
 
             # First put the slot into 'working' on a task.
@@ -209,7 +213,7 @@ def test_agent_state_explicit_task_id_null_clears(client):
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
-            _join_ws(ws_obs, "a-obs3", "w-obs3")
+            _join_ws(ws_obs, "a-obs3")
             ws_worker.receive_json()
 
             ws_worker.send_json(
@@ -260,6 +264,13 @@ def test_guild_get_returns_current_task_id(client):
             " VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
             ("u-gas4", "999004", "tester", now, now),
         )
+        # github_tokens is the parent of user_sessions.github_user_id FK
+        cur.execute(
+            "INSERT INTO github_tokens"
+            " (github_user_id, github_username, access_token, token_type, scope, created_at, updated_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (github_user_id) DO NOTHING",
+            ("u-gas4", "tester", "gh_tok_fake", "bearer", "repo", now, now),
+        )
         cur.execute(
             "INSERT INTO user_sessions (token, github_user_id, created_at)"
             " VALUES (%s, %s, %s) ON CONFLICT (token) DO UPDATE SET github_user_id = EXCLUDED.github_user_id",
@@ -276,7 +287,7 @@ def test_guild_get_returns_current_task_id(client):
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
-            _join_ws(ws_obs, "a-obs4", "w-obs4")
+            _join_ws(ws_obs, "a-obs4")
             ws_worker.receive_json()
 
             ws_worker.send_json(
@@ -325,7 +336,7 @@ def test_agent_idle_releases_task_lock(client):
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
-            _join_ws(ws_obs, "a-obs5", "w-obs5")
+            _join_ws(ws_obs, "a-obs5")
             ws_worker.receive_json()  # drain obs's join broadcast
 
             # Seed the agent row with current_task_id so handle_agent_state

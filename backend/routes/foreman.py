@@ -402,7 +402,7 @@ async def create_foreman_task(
         db.add(
             Task(
                 id=task_id,
-                worker_id="foreman",
+                worker_id=None,
                 guild_pk=guild_pk,
                 name=name,
                 description=body.description,

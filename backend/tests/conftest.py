@@ -35,18 +35,23 @@ from routes.webhooks import shutdown_debouncer  # noqa: E402
 
 @pytest.fixture(scope="session", autouse=True)
 def _setup_schema():
-    """Run migrations once for the whole test session."""
-    from helpers import create_db
+    """Run migrations once and wipe any leftover data from previous runs.
+
+    Per-test isolation comes from unique IDs, not truncation — this single
+    truncate at session start is the only one we need.
+    """
+    from helpers import create_db, truncate_all
 
     create_db(TEST_DATABASE_URL)
+    truncate_all(TEST_DATABASE_URL)
 
 
 @pytest.fixture()
 def client(monkeypatch, _setup_schema):
-    """Fresh test DB (tables truncated) + TestClient for each test."""
-    from helpers import truncate_all
+    """TestClient pointing at the test DB for each test.
 
-    truncate_all(TEST_DATABASE_URL)
+    No truncation between tests — tests use unique IDs for isolation.
+    """
     db_url = TEST_DATABASE_URL
 
     new_engine = create_async_engine(db_url, echo=False, poolclass=NullPool)

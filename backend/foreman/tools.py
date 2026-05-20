@@ -722,7 +722,7 @@ async def _select_followup_worker(
     """
 
     async def _idle(worker_id: str) -> bool:
-        if not worker_id or worker_id == "foreman":
+        if not worker_id:
             return False
         result = await db.execute(
             select(Agent.id).where(Agent.worker_id == worker_id, Agent.state == "idle").limit(1)
@@ -1076,7 +1076,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 db.add(
                     Task(
                         id=task_id,
-                        worker_id="foreman",
+                        worker_id=None,
                         guild_pk=guild_pk,
                         name=name,
                         description=desc,
@@ -1349,11 +1349,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     "issueRepo": task_issue_repo,
                                 },
                             )
-                            if (
-                                target_worker_id != original_worker_id
-                                and original_worker_id
-                                and original_worker_id != "foreman"
-                            ):
+                            if target_worker_id != original_worker_id and original_worker_id:
                                 result_text = (
                                     f"Follow-up reassigned from {original_worker_id} "
                                     f"to {target_worker_id} (task {task_id} on branch {branch})."
@@ -1541,7 +1537,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     result_text = f"Task {task_id} not found."
                 else:
                     agent_info = None
-                    if task.worker_id and task.worker_id != "foreman":
+                    if task.worker_id:
                         agent_result = await db.execute(
                             select(Agent.id, Agent.state)
                             .where(Agent.worker_id == task.worker_id, Agent.state != "offline")

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
 
@@ -360,32 +359,33 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
     old_lock_ts = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
     future_exp = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
 
-    with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
-        ).fetchone()
-        guild_pk = row[0]
+    with raw_conn(db_path) as (conn, cur):
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
+        row = cur.fetchone()
+        guild_pk = row["id"]
 
         # Task stuck in "working".
-        conn.execute(
-            "INSERT OR IGNORE INTO tasks "
+        cur.execute(
+            "INSERT INTO tasks "
             "(id, worker_id, guild_pk, description, tool, state, created_at)"
-            " VALUES (?, ?, ?, 'stuck task', 'claude', 'working', ?)",
+            " VALUES (%s, %s, %s, 'stuck task', 'claude', 'working', %s)"
+            " ON CONFLICT DO NOTHING",
             (task_id, worker_id, guild_pk, now),
         )
         # Agent is idle (finished), not actively running anything.
-        conn.execute(
-            "INSERT OR IGNORE INTO agents "
+        cur.execute(
+            "INSERT INTO agents "
             "(id, guild_pk, worker_id, name, type, state, joined_at, last_seen, current_task_id)"
-            " VALUES (?, ?, ?, 'Test', 'worker', 'idle', ?, ?, NULL)",
+            " VALUES (%s, %s, %s, 'Test', 'worker', 'idle', %s, %s, NULL)"
+            " ON CONFLICT DO NOTHING",
             (agent_id, guild_pk, worker_id, now, now),
         )
         # Stale lock for the task.
-        conn.execute(
-            "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+        cur.execute(
+            "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT DO NOTHING",
             (f"task:{task_id}", worker_id, old_lock_ts, future_exp),
         )
-        conn.commit()
 
     monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
 
@@ -394,10 +394,11 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
 
     asyncio.run(_drive())
 
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        t = conn.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        lock = conn.execute("SELECT key FROM locks WHERE key = ?", (f"task:{task_id}",)).fetchone()
+    with raw_conn(db_path) as (conn, cur):
+        cur.execute("SELECT state FROM tasks WHERE id = %s", (task_id,))
+        t = cur.fetchone()
+        cur.execute("SELECT key FROM locks WHERE key = %s", (f"task:{task_id}",))
+        lock = cur.fetchone()
 
     assert t["state"] == "awaiting-review", (
         f"task.state={t['state']!r} — watchdog should have moved it to 'awaiting-review'"
