@@ -81,13 +81,35 @@ async def reset_connection_state() -> None:
 
 
 async def _sweep_stale_workers_once() -> int:
-    """One pass of the stale-worker sweep. Returns the number of agents
-    marked offline. Extracted for direct testing."""
+    """One pass of the stale-worker sweep. Returns the total number of agents
+    and zombie workers marked offline. Extracted for direct testing."""
     cutoff = (datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)).isoformat()
     stale_agents: list = []
     zombie_workers: list = []
     agent_cascade_wids: set[str] = set()
     async with AsyncSessionLocal() as db:
+        # Zombie-worker pass runs first so the agent-state guard sees pre-update
+        # states.  A zombie is a worker stuck "online" with a stale last_seen
+        # whose agents are ALL already offline (the WS close handler marked them
+        # offline but failed to flip the Worker row due to the agent_id/worker_id
+        # bug).  Workers that still have any non-offline agent are skipped here
+        # and handled via the agent cascade below.
+        zombie_workers = (
+            await db.execute(
+                select(Worker.id, Worker.guild_pk, Guild.guild_id)
+                .join(Guild, Guild.id == Worker.guild_pk)
+                .where(Worker.state != "offline")
+                .where(Worker.last_seen.isnot(None))
+                .where(Worker.last_seen < cutoff)
+                .where(
+                    ~select(Agent.id)
+                    .where(Agent.worker_id == Worker.id)
+                    .where(Agent.state != "offline")
+                    .exists()
+                )
+            )
+        ).all()
+
         stale_agents = (
             await db.execute(
                 select(Agent.id, Agent.guild_pk, Agent.worker_id, Guild.guild_id)
@@ -109,21 +131,6 @@ async def _sweep_stale_workers_once() -> int:
                 agent_cascade_wids.add(row.worker_id)
             agent_owners.pop(row.id, None)
 
-        # Also sweep zombie workers directly.  A worker can be stuck in
-        # "online" with no non-offline agents when the WS close handler had
-        # the agent_id/worker_id bug and failed to update the Worker row.
-        # The agent cascade above only runs for non-offline stale agents;
-        # a worker whose agents are already "offline" (but whose own row was
-        # never flipped) would be missed without this direct pass.
-        zombie_workers = (
-            await db.execute(
-                select(Worker.id, Worker.guild_pk, Guild.guild_id)
-                .join(Guild, Guild.id == Worker.guild_pk)
-                .where(Worker.state != "offline")
-                .where(Worker.last_seen.isnot(None))
-                .where(Worker.last_seen < cutoff)
-            )
-        ).all()
         for row in zombie_workers:
             stale_worker_keys.add((row.id, row.guild_pk))
 
@@ -156,7 +163,7 @@ async def _sweep_stale_workers_once() -> int:
                 WORKER_OFFLINE_AFTER_SECONDS,
                 row.guild_id,
             )
-    return len(stale_agents)
+    return len(stale_agents) + len(zombie_workers)
 
 
 async def _stale_worker_sweeper() -> None:

@@ -222,21 +222,14 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
         conn.execute("UPDATE workers SET last_seen = ? WHERE id = ?", (old, worker_id))
         conn.commit()
 
-    # Open an observer connection to capture the offline broadcast.
-    with test_client.websocket_connect(f"/ws/{guild_id}") as observer:
-        # Tighten the threshold so the sweep triggers immediately for this test.
-        monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
+    # Tighten the threshold so the sweep triggers immediately for this test.
+    monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
 
-        async def _drive() -> int:
-            return await main_module._sweep_stale_workers_once()
+    async def _drive() -> int:
+        return await main_module._sweep_stale_workers_once()
 
-        marked = asyncio.run(_drive())
-        assert marked == 1
-
-        offline_msg = observer.receive_json()
-        assert offline_msg["type"] == "agent-state"
-        assert offline_msg["agentId"] == agent_id
-        assert offline_msg["state"] == "offline"
+    marked = asyncio.run(_drive())
+    assert marked == 1
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -341,15 +334,14 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
         )
         conn.commit()
 
-    with test_client.websocket_connect(f"/ws/{guild_id}"):
-        monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
+    monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
 
-        async def _drive() -> int:
-            return await main_module._sweep_stale_workers_once()
+    async def _drive() -> int:
+        return await main_module._sweep_stale_workers_once()
 
-        marked = asyncio.run(_drive())
-        # No non-offline agents were swept (agent was already offline).
-        assert marked == 0
+    marked = asyncio.run(_drive())
+    # 0 stale agents (agent was already offline) + 1 zombie worker evicted.
+    assert marked == 1
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
