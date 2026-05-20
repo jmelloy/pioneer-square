@@ -834,7 +834,7 @@ class TestExecToolsDispatching:
     # -----------------------------------------------------------------------
 
     async def test_send_followup_acquires_lock(self, db_session):
-        """Successful send_followup sets locked_at / lock_holder on the task."""
+        """Successful send_followup creates a row in the locks table for the task."""
         insert_guild(db_session, "g-lock-set")
         _insert_worker(db_session, "g-lock-set", "w-lock1")
         _insert_agent(db_session, "g-lock-set", "w-lock1", "a-lock1")
@@ -852,10 +852,12 @@ class TestExecToolsDispatching:
         assert "t-lock1" in results[0]["content"]
         with sqlite3.connect(db_session) as conn:
             row = conn.execute(
-                "SELECT locked_at, lock_holder FROM tasks WHERE id='t-lock1'"
+                "SELECT owner, acquired_at, expires_at FROM locks WHERE key='task:t-lock1'"
             ).fetchone()
-        assert row[0] is not None, "locked_at should be set after dispatch"
-        assert row[1] is not None, "lock_holder should be set after dispatch"
+        assert row is not None, "locks row should exist after dispatch"
+        assert row[0] is not None, "owner should be set"
+        assert row[1] is not None, "acquired_at should be set"
+        assert row[2] is not None, "expires_at (TTL) should be set"
 
     async def test_send_followup_while_locked_queues_event(self, db_session):
         """A second send_followup on a locked task queues the instructions instead of dispatching."""
@@ -865,10 +867,12 @@ class TestExecToolsDispatching:
         # Pre-lock the task to simulate a concurrent dispatch already in flight.
         _insert_task(db_session, "t-lq1", "g-lock-queue", "w-lq1")
         now = datetime.now(UTC).isoformat()
+        future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         with sqlite3.connect(db_session) as conn:
             conn.execute(
-                "UPDATE tasks SET locked_at=?, lock_holder='existing-holder' WHERE id='t-lq1'",
-                (now,),
+                "INSERT INTO locks (key, owner, acquired_at, expires_at) "
+                "VALUES ('task:t-lq1', 'existing-holder', ?, ?)",
+                (now, future),
             )
             conn.commit()
 
@@ -976,9 +980,12 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-fin-lock", "w-fin-lk")
         _insert_task(db_session, "t-fin-lk", "g-fin-lock", "w-fin-lk")
         now = datetime.now(UTC).isoformat()
+        future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         with sqlite3.connect(db_session) as conn:
             conn.execute(
-                "UPDATE tasks SET locked_at=?, lock_holder='h1' WHERE id='t-fin-lk'", (now,)
+                "INSERT INTO locks (key, owner, acquired_at, expires_at) "
+                "VALUES ('task:t-fin-lk', 'h1', ?, ?)",
+                (now, future),
             )
             conn.execute(
                 "INSERT INTO task_events (task_id, event_type, payload_json, created_at) "
@@ -994,28 +1001,31 @@ class TestExecToolsDispatching:
         assert "finalized" in results[0]["content"].lower()
         with sqlite3.connect(db_session) as conn:
             task_row = conn.execute(
-                "SELECT state, locked_at, lock_holder FROM tasks WHERE id='t-fin-lk'"
+                "SELECT state FROM tasks WHERE id='t-fin-lk'"
+            ).fetchone()
+            lock_row = conn.execute(
+                "SELECT key FROM locks WHERE key='task:t-fin-lk'"
             ).fetchone()
             event_count = conn.execute(
                 "SELECT COUNT(*) FROM task_events WHERE task_id='t-fin-lk'"
             ).fetchone()[0]
         assert task_row[0] == "done"
-        assert task_row[1] is None, "locked_at should be cleared on finalize"
-        assert task_row[2] is None, "lock_holder should be cleared on finalize"
+        assert lock_row is None, "locks row should be gone after finalize"
         assert event_count == 0, "Queued events should be deleted on finalize"
 
     async def test_stale_lock_overridden(self, db_session):
-        """A lock older than 1 hour is treated as stale and can be overridden."""
+        """An expired lock (past its TTL) is evicted on the next acquire attempt."""
         insert_guild(db_session, "g-stale-lock")
         _insert_worker(db_session, "g-stale-lock", "w-stale")
         _insert_agent(db_session, "g-stale-lock", "w-stale", "a-stale")
         _insert_task(db_session, "t-stale", "g-stale-lock", "w-stale")
-        # Set locked_at to 2 hours ago
+        # Insert a lock with an already-expired TTL (2 hours ago).
         stale_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
         with sqlite3.connect(db_session) as conn:
             conn.execute(
-                "UPDATE tasks SET locked_at=?, lock_holder='old-holder' WHERE id='t-stale'",
-                (stale_ts,),
+                "INSERT INTO locks (key, owner, acquired_at, expires_at) "
+                "VALUES ('task:t-stale', 'old-holder', ?, ?)",
+                (stale_ts, stale_ts),
             )
             conn.commit()
 
@@ -1030,10 +1040,13 @@ class TestExecToolsDispatching:
                 [_fake_tool_use("send_followup", {"task_id": "t-stale", "instructions": "Retry"})],
             )
         followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
-        assert len(followup_msgs) == 1, "Stale lock should be overridden and follow-up dispatched"
+        assert len(followup_msgs) == 1, "Expired lock should be evicted and follow-up dispatched"
         with sqlite3.connect(db_session) as conn:
-            row = conn.execute("SELECT lock_holder FROM tasks WHERE id='t-stale'").fetchone()
-        assert row[0] != "old-holder", "Lock holder should have been replaced"
+            row = conn.execute(
+                "SELECT owner FROM locks WHERE key='task:t-stale'"
+            ).fetchone()
+        assert row is not None, "New lock row should exist"
+        assert row[0] != "old-holder", "New owner should have replaced old-holder"
 
 
 # ---------------------------------------------------------------------------

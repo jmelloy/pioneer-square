@@ -25,6 +25,7 @@ from events import agent_owners, broadcast
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from lock_service import LockService
 from models import Agent, Guild, Worker
 from sqlalchemy import select, update
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -142,6 +143,13 @@ async def _sweep_stale_workers_once() -> int:
             )
         if stale_agents or zombie_workers:
             await db.commit()
+
+    async with AsyncSessionLocal() as db:
+        expired = await LockService.cleanup_expired(db)
+        if expired:
+            await db.commit()
+            logger.info("Cleared %d expired lock(s)", expired)
+
     for row in stale_agents:
         logger.warning(
             "Marking %s offline: no ping in over %.0fs (guild=%s)",

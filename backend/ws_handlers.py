@@ -26,6 +26,7 @@ from events import (
     pending_claude_auth,
 )
 from fastapi import WebSocket
+from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -542,10 +543,9 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         update_values["pr_number"] = pr_number
         update_values["pr_repo"] = pr_repo
     if update_values:
-        if update_values.get("state") in _TERMINAL_STATES:
-            update_values["locked_at"] = None
-            update_values["lock_holder"] = None
         await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_values))
+        if update_values.get("state") in _TERMINAL_STATES:
+            await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if "state" in update_values:
@@ -575,6 +575,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
             .where(Task.id == task_id, Task.state == "working")
             .values(state="awaiting-review")
         )
+        await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if task_id:
@@ -611,23 +612,23 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     worker_id_msg = data.get("workerId", "")
     if task_id:
         pr_url_fud = data.get("prUrl", "")
-        lock_release: dict = {"locked_at": None, "lock_holder": None}
+        pr_update: dict = {}
         if pr_url_fud:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url_fud)
-            lock_release.update(
-                {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
-            )
-        # Move to awaiting-review and release lock unless task is already terminal.
+            pr_update = {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
+        # Move to awaiting-review unless task is already terminal.
         await ctx.db.execute(
             update(Task)
             .where(Task.id == task_id, Task.state.not_in(_TERMINAL_STATES))
-            .values(**lock_release, state="awaiting-review")
+            .values(**pr_update, state="awaiting-review")
         )
-        await ctx.db.execute(
-            update(Task)
-            .where(Task.id == task_id, Task.state.in_(_TERMINAL_STATES))
-            .values(**lock_release)
-        )
+        if pr_update:
+            await ctx.db.execute(
+                update(Task)
+                .where(Task.id == task_id, Task.state.in_(_TERMINAL_STATES))
+                .values(**pr_update)
+            )
+        await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if not task_id:

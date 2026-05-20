@@ -14,6 +14,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
+from lock_service import LockService
 from models import Guild, Task, TaskLog, live_tasks_filter
 from pydantic import BaseModel
 from sqlalchemy import select, update
@@ -323,8 +324,9 @@ async def cancel_task_endpoint(
         await db.execute(
             update(Task)
             .where(Task.id == task_id)
-            .values(state="cancelled", finished_at=finished_at, locked_at=None, lock_holder=None)
+            .values(state="cancelled", finished_at=finished_at)
         )
+        await LockService(db).release(f"task:{task_id}")
         await db.commit()
     finally:
         await db.close()

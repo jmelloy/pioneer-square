@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from events import broadcast, emit_terminal_line
+from lock_service import LockService
 from models import (
     Agent,
     GithubToken,
@@ -25,7 +26,7 @@ from models import (
     TaskLog,
     Worker,
 )
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, select, update
 
 logger = logging.getLogger(__name__)
 
@@ -1278,22 +1279,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     else:
                         # Atomically acquire the follow-up lock to prevent two
                         # concurrent foreman runs from both dispatching a worker.
-                        # Locks older than 1 hour are treated as stale/abandoned.
                         lock_id = "".join(
                             random.choices(string.ascii_lowercase + string.digits, k=8)
                         )
-                        now_ts = datetime.now(UTC).isoformat()
-                        stale_cutoff = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-                        lock_result = await db.execute(
-                            update(Task)
-                            .where(
-                                Task.id == task_id,
-                                or_(Task.locked_at.is_(None), Task.locked_at < stale_cutoff),
-                            )
-                            .values(locked_at=now_ts, lock_holder=lock_id)
+                        acquired = await LockService(db).acquire(
+                            f"task:{task_id}", owner=lock_id
                         )
                         await db.commit()
-                        if lock_result.rowcount == 0:
+                        if not acquired:
                             # Task already locked by a concurrent follow-up —
                             # queue this request for replay when the lock releases.
                             db.add(
@@ -1393,10 +1386,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 state="done",
                                 finished_at=finished_at,
                                 deleted_at=deleted_at,
-                                locked_at=None,
-                                lock_holder=None,
                             )
                         )
+                        await LockService(db).release(f"task:{task_id}")
                         # Discard any queued follow-up events — the task is done.
                         await db.execute(delete(TaskEvent).where(TaskEvent.task_id == task_id))
                         await db.commit()
@@ -1495,6 +1487,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             .where(Task.id == task_id)
                             .values(state="cancelled", finished_at=finished_at)
                         )
+                        await LockService(db).release(f"task:{task_id}")
                         await db.commit()
                         await broadcast(
                             guild_id,
