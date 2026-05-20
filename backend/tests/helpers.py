@@ -41,7 +41,7 @@ def truncate_all(db_url: str) -> None:
 def raw_conn(db_url: str):
     """Synchronous psycopg2 connection for direct test DB access.
 
-    Usage (replaces sqlite3.connect(db_path)):
+    Usage (psycopg2 connection for direct test DB access):
         with helpers.raw_conn(db_url) as (conn, cur):
             cur.execute("SELECT ...", params)
             row = cur.fetchone()

@@ -143,7 +143,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         # Shield the cleanup from anyio cancel-scope cancellation so that
         # db operations and db.close() always run to completion.  Without
         # the shield, a cancelled cancel scope (e.g. TestClient teardown)
-        # raises Cancelled inside the aiosqlite layer, which then propagates
+        # raises Cancelled inside the asyncpg layer, which then propagates
         # as an unhandled exception from this task and causes the anyio task
         # group to cancel sibling connections.
         with anyio.CancelScope(shield=True):
@@ -206,7 +206,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     )
             finally:
                 # If a cancellation was delivered inside a handler (e.g.
-                # handle_worker_disconnect) the underlying aiosqlite connection
+                # handle_worker_disconnect) the underlying asyncpg connection
                 # may already be closed, making the implicit rollback inside
                 # db.close() raise ValueError("Connection closed").  Swallow
                 # that so the teardown error doesn't propagate to the test
