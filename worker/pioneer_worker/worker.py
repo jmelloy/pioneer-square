@@ -57,7 +57,7 @@ REPO_REFRESH_INTERVAL_SECONDS = 20 * 60
 
 
 class Agent:
-    """An execution slot owned by this worker.
+    """An agent owned by a Worker.
 
     Each Worker creates a fixed pool of Agent instances at startup and keeps
     them for its entire lifetime — agents are born and die with the worker
