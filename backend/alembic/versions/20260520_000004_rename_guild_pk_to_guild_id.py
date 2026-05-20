@@ -20,7 +20,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260520_000004_rename_guild_pk_to_guild_id"
-down_revision: str | Sequence[str] | None = "20260520_000006_merge_nullable_worker_and_locks_fix"
+down_revision: str | Sequence[str] | None = "20260520_000003_merge_locking_and_messages"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

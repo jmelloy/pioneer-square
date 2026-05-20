@@ -54,8 +54,8 @@ class Agent(SQLModel, table=True):
     guild_id: int = Field(foreign_key="guilds.id")
     worker_id: str | None = Field(default=None, foreign_key="workers.id")
     name: str
-    type: str = Field(default="worker")
-    state: str = Field(default="idle")
+    type: str = Field(default="worker", sa_column_kwargs={"server_default": "'worker'"})
+    state: str = Field(default="idle", sa_column_kwargs={"server_default": "'idle'"})
     activity: str | None = None
     # Task this agent is currently executing (NULL when idle/offline). Set
     # from worker-emitted agent-state messages; lets the UI map a task row
@@ -91,11 +91,11 @@ class Worker(SQLModel, table=True):
     id: str = Field(primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
-    repos: str = Field(default="[]")
+    repos: str = Field(default="[]", sa_column_kwargs={"server_default": "'[]'"})
     # Optional GitHub org; when set the worker accepts any task targeting <org>/*
     # and clones repos lazily. NULL for workers that use an explicit repos list only.
     org: str | None = None
-    state: str = Field(default="idle")
+    state: str = Field(default="idle", sa_column_kwargs={"server_default": "'idle'"})
     created_at: str
     last_seen: str | None = None
     # Identity of the human user this worker process runs on behalf of.
@@ -122,10 +122,10 @@ class Task(SQLModel, table=True):
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
     description: str
-    tool: str = Field(default="claude")
+    tool: str = Field(default="claude", sa_column_kwargs={"server_default": "'claude'"})
     issue_number: int | None = None
     issue_repo: str | None = None
-    state: str = Field(default="pending")
+    state: str = Field(default="pending", sa_column_kwargs={"server_default": "'pending'"})
     branch: str | None = None
     worktree_path: str | None = None
     pr_url: str | None = None
@@ -138,7 +138,7 @@ class Task(SQLModel, table=True):
     finished_at: str | None = None
     name: str | None = None
     parent_task_id: str | None = None
-    phase: str | None = Field(default="execute")
+    phase: str | None = Field(default="execute", sa_column_kwargs={"server_default": "'execute'"})
     # ISO-8601 UTC timestamp at which this task is considered soft-deleted.
     # NULL = live; once `now() > deleted_at`, list/get queries hide the row.
     deleted_at: str | None = None
@@ -154,7 +154,7 @@ class GithubToken(SQLModel, table=True):
     github_user_id: str = Field(primary_key=True)
     github_username: str | None = None
     access_token: str
-    token_type: str = Field(default="bearer")
+    token_type: str = Field(default="bearer", sa_column_kwargs={"server_default": "'bearer'"})
     scope: str | None = None
     created_at: str
     updated_at: str
@@ -191,7 +191,7 @@ class GuildMember(SQLModel, table=True):
     guild_id: int = Field(foreign_key="guilds.id", primary_key=True)
     user_id: str = Field(foreign_key="users.id", primary_key=True)
     # owner | member | viewer
-    role: str = Field(default="member")
+    role: str = Field(default="member", sa_column_kwargs={"server_default": "'member'"})
     created_at: str
 
 
@@ -244,7 +244,7 @@ class ForemanTurn(SQLModel, table=True):
     role: str  # "user" | "assistant" | "system"
     content_json: str  # JSON-serialized content blocks
     # 1 if this "user" turn carries tool_results (not human input); 0 otherwise
-    is_tool_response: int = Field(default=0)
+    is_tool_response: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
     # For tool_result turns: id of the assistant turn whose tool_use blocks this answers
     parent_id: int | None = Field(default=None, foreign_key="foreman_turns.id")
     created_at: str
