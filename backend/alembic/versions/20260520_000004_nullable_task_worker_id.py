@@ -8,9 +8,9 @@ constraint on PostgreSQL).  NULL is the correct representation for
 
 Backfills existing 'foreman' rows to NULL on upgrade.
 
-Revision ID: 20260520_000003_nullable_task_worker_id
-Revises: 20260520_000002_add_role_and_meta_to_messages
-Create Date: 2026-05-20 00:00:03.000000
+Revision ID: 20260520_000004_nullable_task_worker_id
+Revises: 20260520_000003_merge_locking_and_messages
+Create Date: 2026-05-20 00:00:04.000000
 
 """
 
@@ -19,8 +19,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "20260520_000003_nullable_task_worker_id"
-down_revision: str | Sequence[str] | None = "20260520_000002_add_role_and_meta_to_messages"
+revision: str = "20260520_000004_nullable_task_worker_id"
+down_revision: str | Sequence[str] | None = "20260520_000003_merge_locking_and_messages"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
