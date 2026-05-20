@@ -518,7 +518,9 @@ async def run_foreman_ai(
     if not user_id:
         user_id = await _get_guild_user_id(guild_id) or guild_id
 
-    # Build live context for the system prompt
+    # Build live context for the system prompt.  The session is kept open until
+    # the end of the function so the tool_use / tool_result Message rows and the
+    # final chat Message can all be written without opening fresh connections.
     db = await get_db()
     try:
         guild_result = await db.execute(
@@ -551,71 +553,68 @@ async def run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.fetchall()
         ]
-        guild_result = await db.execute(
-            select(Guild.primary_repo).where(Guild.guild_id == guild_id)
-        )
-        primary_repo: str | None = guild_result.scalar_one_or_none()
-    finally:
+    except Exception:
         await db.close()
-
-    workers_block = json.dumps(
-        [
-            {
-                "id": r["id"],
-                "state": r["worker_state"] or "idle",
-                "repos": json.loads(r["repos"] or "[]"),
-                **({"org": r["org"]} if r.get("org") else {}),
-                "agent_count": r["agent_count"] or 0,
-            }
-            for r in worker_rows
-        ],
-        indent=2,
-    )
-    cutoff_ts = datetime.now(UTC).timestamp() - _24H_SECS
-    summarized_tasks = [
-        s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
-    ]
-    tasks_block = json.dumps(summarized_tasks, indent=2)
-    system_blocks = build_system_blocks(primary_repo=primary_repo)
-    state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
-    # Legacy single-string render — persisted for audit only, not sent to the API.
-    audit_system = build_system_prompt(
-        workers_block, tasks_block, extra_context, primary_repo=primary_repo
-    )
-
-    logger.info(
-        "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
-        "system_chars=%d state_chars=%d extra_context_chars=%d",
-        guild_id,
-        len(worker_rows),
-        len(summarized_tasks),
-        len(system_blocks[0]["text"]),
-        len(state_preamble),
-        len(extra_context),
-    )
-    logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
-    logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
-
-    # Persist the rendered prompt + human turn for auditing; the API receives
-    # `system_blocks` (cacheable) and the state preamble injected at send time.
-    await _save_turn(guild_id, user_id, "system", audit_system)
-    await _save_turn(guild_id, user_id, "user", human_message)
-    messages = await _load_history(guild_id, user_id)
-
-    logger.info(
-        "guild=%s run_foreman_ai: %d messages loaded from history; human_message_chars=%d",
-        guild_id,
-        len(messages),
-        len(human_message),
-    )
-
-    # Inject live state into the just-loaded current human turn so it travels
-    # with this call only — the DB still holds just the human's literal text.
-    _inject_state_preamble(messages, state_preamble)
-
-    client = _get_anthropic_client()
+        raise
 
     try:
+        workers_block = json.dumps(
+            [
+                {
+                    "id": r["id"],
+                    "state": r["worker_state"] or "idle",
+                    "repos": json.loads(r["repos"] or "[]"),
+                    **({"org": r["org"]} if r.get("org") else {}),
+                    "agent_count": r["agent_count"] or 0,
+                }
+                for r in worker_rows
+            ],
+            indent=2,
+        )
+        cutoff_ts = datetime.now(UTC).timestamp() - _24H_SECS
+        summarized_tasks = [
+            s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
+        ]
+        tasks_block = json.dumps(summarized_tasks, indent=2)
+        system_blocks = build_system_blocks(primary_repo=primary_repo)
+        state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
+        # Legacy single-string render — persisted for audit only, not sent to the API.
+        audit_system = build_system_prompt(
+            workers_block, tasks_block, extra_context, primary_repo=primary_repo
+        )
+
+        logger.info(
+            "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
+            "system_chars=%d state_chars=%d extra_context_chars=%d",
+            guild_id,
+            len(worker_rows),
+            len(summarized_tasks),
+            len(system_blocks[0]["text"]),
+            len(state_preamble),
+            len(extra_context),
+        )
+        logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
+        logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
+
+        # Persist the rendered prompt + human turn for auditing; the API receives
+        # `system_blocks` (cacheable) and the state preamble injected at send time.
+        await _save_turn(guild_id, user_id, "system", audit_system)
+        await _save_turn(guild_id, user_id, "user", human_message)
+        messages = await _load_history(guild_id, user_id)
+
+        logger.info(
+            "guild=%s run_foreman_ai: %d messages loaded from history; human_message_chars=%d",
+            guild_id,
+            len(messages),
+            len(human_message),
+        )
+
+        # Inject live state into the just-loaded current human turn so it travels
+        # with this call only — the DB still holds just the human's literal text.
+        _inject_state_preamble(messages, state_preamble)
+
+        client = _get_anthropic_client()
+
         text_parts = []
         for round_num in range(MAX_FOREMAN_ROUNDS):
             messages = prune_history(messages)
@@ -695,11 +694,16 @@ async def run_foreman_ai(
                     },
                 )
 
+            _tool_use_ts = _now  # capture before exec_tools may raise
+
             tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
-            # Truncate verbose results before storing/sending
+            # Truncate verbose results; filter to only IDs in the current batch so
+            # stale results that survived history trimming are never persisted.
+            current_tool_use_ids = {tu.id for tu in tool_uses}
             trimmed = [
                 {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r
                 for r in tool_results
+                if r.get("tool_use_id") in current_tool_use_ids
             ]
 
             # Broadcast tool-result events
@@ -719,6 +723,52 @@ async def run_foreman_ai(
                         "createdAt": _now,
                     },
                 )
+
+            # Persist tool_use and tool_result together in one transaction
+            # so exec_tools raising never leaves tool_use rows without their results.
+            try:
+                for tu in tool_uses:
+                    db.add(
+                        Message(
+                            guild_pk=guild_pk_val,
+                            from_agent="foreman",
+                            to_agent="user",
+                            content=f"▶ {tu.name}",
+                            message_type="chat",
+                            role="tool_use",
+                            meta=json.dumps(
+                                {
+                                    "toolId": tu.id,
+                                    "toolName": tu.name,
+                                    "toolInput": dict(tu.input) if tu.input else {},
+                                }
+                            ),
+                            created_at=_tool_use_ts,
+                        )
+                    )
+                for result in trimmed:
+                    db.add(
+                        Message(
+                            guild_pk=guild_pk_val,
+                            from_agent="foreman",
+                            to_agent="user",
+                            content=result.get("content", "") or "",
+                            message_type="chat",
+                            role="tool_result",
+                            meta=json.dumps(
+                                {
+                                    "toolId": result.get("tool_use_id"),
+                                    "isError": result.get("is_error", False),
+                                }
+                            ),
+                            created_at=_now,
+                        )
+                    )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+
             # Persist tool_result turn as a child of the assistant turn
             await _save_turn(
                 guild_id,
@@ -810,22 +860,17 @@ async def run_foreman_ai(
         response_text = "\n".join(text_parts).strip()
         if response_text:
             now = datetime.now(UTC).isoformat()
-            db = await get_db()
-            try:
-                msg_guild_pk = await get_guild_pk(db, guild_id)
-                db.add(
-                    Message(
-                        guild_pk=msg_guild_pk,
-                        from_agent="foreman",
-                        to_agent="user",
-                        content=response_text,
-                        message_type="chat",
-                        created_at=now,
-                    )
+            db.add(
+                Message(
+                    guild_pk=guild_pk_val,
+                    from_agent="foreman",
+                    to_agent="user",
+                    content=response_text,
+                    message_type="chat",
+                    created_at=now,
                 )
-                await db.commit()
-            finally:
-                await db.close()
+            )
+            await db.commit()
 
     except Exception as exc:
         now = datetime.now(UTC).isoformat()
@@ -839,6 +884,8 @@ async def run_foreman_ai(
                 "createdAt": now,
             },
         )
+    finally:
+        await db.close()
 
 
 async def clear_foreman_history(guild_id: str, user_id: str) -> int:
