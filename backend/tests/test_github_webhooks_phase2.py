@@ -365,6 +365,14 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
 class TestDebounce:
     """Per-PR debounce timer: rapid events coalesce; separated events deliver separately."""
 
+    @pytest.fixture(autouse=True)
+    def reset_debounce(self):
+        import routes.webhooks as wh
+
+        wh.clear_debounce_state()
+        yield
+        wh.clear_debounce_state()
+
     def _patched_env(self, wh):
         """Context manager: tiny debounce window + captured foreman calls."""
         self._foreman_calls: list[tuple[str, str, str | None]] = []
@@ -383,9 +391,6 @@ class TestDebounce:
         """Three events within the 0.05 s window → one combined foreman invocation."""
         import routes.webhooks as wh
 
-        wh._debounce_buffers.clear()
-        wh._debounce_tasks.clear()
-
         p1, p2, p3, p4 = self._patched_env(wh)
         with p1, p2, p3, p4:
             wh._schedule_debounced_foreman("g-rapid:t-r1", "g-rapid", "event A", "u1")
@@ -403,9 +408,6 @@ class TestDebounce:
         """Events separated by > debounce window → two independent foreman calls."""
         import routes.webhooks as wh
 
-        wh._debounce_buffers.clear()
-        wh._debounce_tasks.clear()
-
         p1, p2, p3, p4 = self._patched_env(wh)
         with p1, p2, p3, p4:
             wh._schedule_debounced_foreman("g-slow:t-s1", "g-slow", "event X", "u2")
@@ -420,9 +422,6 @@ class TestDebounce:
     async def test_reset_cancels_previous_timer(self):
         """New event before timer fires cancels the old timer (no early delivery)."""
         import routes.webhooks as wh
-
-        wh._debounce_buffers.clear()
-        wh._debounce_tasks.clear()
 
         p1, p2, p3, p4 = self._patched_env(wh)
         with p1, p2, p3, p4:
@@ -440,9 +439,6 @@ class TestDebounce:
     async def test_independent_prs_not_merged(self):
         """Events on different PR keys have independent timers and fire separately."""
         import routes.webhooks as wh
-
-        wh._debounce_buffers.clear()
-        wh._debounce_tasks.clear()
 
         p1, p2, p3, p4 = self._patched_env(wh)
         with p1, p2, p3, p4:

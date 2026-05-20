@@ -65,6 +65,19 @@ def _debounce_key(guild_id: str, task_id: str) -> str:
     return f"{guild_id}:{task_id}"
 
 
+def clear_debounce_state() -> None:
+    """Cancel all in-flight debounce timers and clear accumulated buffers.
+
+    Call this on server shutdown and in test teardown to prevent state from
+    bleeding between restarts or test cases.
+    """
+    for task in _debounce_tasks.values():
+        if not task.done():
+            task.cancel()
+    _debounce_tasks.clear()
+    _debounce_buffers.clear()
+
+
 async def _debounce_fire(key: str, guild_id: str) -> None:
     """Sleep for the debounce window then deliver all buffered events.
 
