@@ -3,15 +3,9 @@ import { computed, ref } from 'vue'
 import { api } from '../utils/api'
 import type { LogEntry, Task, TaskState, WSInbound } from '../types'
 
-export function taskTabId(id: string): string {
-  return 'task-' + id
-}
-
 // Cap on setTimeout delay to avoid the 32-bit overflow that fires the timer
 // immediately on long horizons (e.g. a 3-day finalize window).
 const MAX_TIMEOUT_MS = 2_147_483_647
-
-const TERMINAL_STATES = new Set<string>(['done', 'failed', 'cancelled'])
 
 const STATE_LABELS: Record<string, string> = {
   pending: 'pending',
@@ -104,18 +98,10 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function sendFollowup(guildId: string, taskId: string, instructions: string) {
-    const task = tasks.value.find((t) => t.id === taskId)
-    const prevState = task?.state
-    if (task) task.state = 'followup'
-    try {
-      return await api(`/guilds/${guildId}/tasks/${taskId}/followup`, {
-        method: 'POST',
-        json: { instructions },
-      })
-    } catch (err) {
-      if (task) task.state = prevState!
-      throw err
-    }
+    return api(`/guilds/${guildId}/tasks/${taskId}/followup`, {
+      method: 'POST',
+      json: { instructions },
+    })
   }
 
   async function finalizeTask(guildId: string, taskId: string) {
@@ -123,22 +109,7 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function cancelTask(guildId: string, taskId: string) {
-    const task = tasks.value.find((t) => t.id === taskId)
-    const prevState = task?.state
-    const prevFinishedAt = task?.finished_at
-    if (task) {
-      task.state = 'cancelled'
-      task.finished_at = new Date().toISOString()
-    }
-    try {
-      await api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
-    } catch (err) {
-      if (task) {
-        task.state = prevState!
-        task.finished_at = prevFinishedAt
-      }
-      throw err
-    }
+    return api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
   }
 
   async function redirectTask(guildId: string, taskId: string, instructions: string) {
@@ -195,13 +166,13 @@ export const useTasksStore = defineStore('tasks', () => {
       }
     } else if (data.type === 'task-complete') {
       const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task && !TERMINAL_STATES.has(task.state)) {
+      if (task) {
         task.state = 'awaiting-review'
         if (data.branch) task.branch = data.branch
       }
     } else if (data.type === 'task-followup-done') {
       const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task && !TERMINAL_STATES.has(task.state)) task.state = 'awaiting-review'
+      if (task) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
       const { taskId, line, timestamp, detail } = data
       if (line) {

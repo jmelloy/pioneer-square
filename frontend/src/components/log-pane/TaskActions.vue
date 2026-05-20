@@ -23,12 +23,10 @@
         {{ cancelling ? '…' : '✕ Cancel' }}
       </button>
     </div>
-    <div v-if="cancelError" class="cancel-error redirect-cancel-error">{{ cancelError }}</div>
   </div>
 
   <!-- Task: cancel button for pending/awaiting-review tasks -->
   <div v-if="canCancel && taskState !== 'working'" class="cancel-panel">
-    <span v-if="cancelError" class="cancel-error">{{ cancelError }}</span>
     <button class="pixel-btn cancel-task-btn" @click="cancelTaskAction" :disabled="cancelling">
       {{ cancelling ? '…' : '✕ Cancel Task' }}
     </button>
@@ -44,7 +42,6 @@
         :placeholder="followupPlaceholder"
         rows="2"
         @keydown.ctrl.enter="sendFollowupAction"
-        @input="followupError = ''"
       />
     </div>
     <div class="followup-actions">
@@ -63,7 +60,6 @@
         ✓ Finalize
       </button>
     </div>
-    <div v-if="followupError" class="followup-error">{{ followupError }}</div>
   </div>
 </template>
 
@@ -109,23 +105,21 @@ const canCancel = computed(() => {
 })
 
 const followupText = ref('')
-const followupError = ref('')
 const redirectText = ref('')
 const cancelling = ref(false)
-const cancelError = ref('')
 const redirecting = ref(false)
 
-function sendFollowupAction() {
+async function sendFollowupAction() {
   const text = followupText.value.trim()
   if (!text) return
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
-  followupText.value = ''
-  followupError.value = ''
-  tasksStore.sendFollowup(guildId, props.taskId, text).catch((e) => {
-    followupError.value = e instanceof Error ? e.message : 'Follow-up failed'
+  try {
+    await tasksStore.sendFollowup(guildId, props.taskId, text)
+    followupText.value = ''
+  } catch (e) {
     console.error('Follow-up failed', e)
-  })
+  }
 }
 
 async function finalizeTaskAction() {
@@ -142,11 +136,9 @@ async function cancelTaskAction() {
   const guildId = guildStore.currentGuild?.id
   if (!guildId || cancelling.value) return
   cancelling.value = true
-  cancelError.value = ''
   try {
     await tasksStore.cancelTask(guildId, props.taskId)
   } catch (e) {
-    cancelError.value = e instanceof Error ? e.message : 'Cancellation failed'
     console.error('Cancel failed', e)
   } finally {
     cancelling.value = false
@@ -244,21 +236,7 @@ async function sendRedirect() {
   padding: 6px 14px;
   border-top: 1px solid var(--color-brass-dark);
   display: flex;
-  align-items: center;
-  gap: 8px;
   justify-content: flex-end;
-}
-
-.cancel-error {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--color-red);
-  flex: 1;
-}
-
-.redirect-cancel-error {
-  margin-top: 4px;
-  padding: 0 2px;
 }
 
 .cancel-task-btn {
@@ -322,12 +300,5 @@ async function sendRedirect() {
 .finalize-btn:hover {
   background: linear-gradient(180deg, rgba(0, 187, 170, 0.4) 0%, rgba(0, 150, 140, 0.5) 100%);
   box-shadow: 0 0 8px rgba(0, 187, 170, 0.3);
-}
-
-.followup-error {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--color-red);
-  margin-top: 6px;
 }
 </style>

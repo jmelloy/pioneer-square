@@ -3,7 +3,6 @@ import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
 import { api } from '../utils/api'
 import { formatWorkerId } from '../utils/format'
-import { taskTabId } from './tasks'
 import type { Agent, AgentActivity, AgentState, LogDetail, LogEntry, Worker, WSInbound } from '../types'
 
 const STATE_RANK: Record<string, number> = {
@@ -158,10 +157,6 @@ export const useAgentsStore = defineStore('agents', () => {
     if (activeTab.value === 'agent-' + agentId) activeTab.value = 'factory'
   }
 
-  function openTaskTab(taskId: string) {
-    activeTab.value = taskTabId(taskId)
-  }
-
   function sendMessage(agentId: string, content: string) {
     const guildStore = useGuildStore()
     guildStore.sendMessage({
@@ -309,7 +304,6 @@ export const useAgentsStore = defineStore('agents', () => {
     closeWorker,
     selectAgent,
     closeAgent,
-    openTaskTab,
     sendMessage,
     runAgent,
     stopAgent,

@@ -161,9 +161,6 @@ const groupedTasks = computed(() => {
 .dot-failed {
   background: var(--color-red);
 }
-.dot-cancelled {
-  background: var(--color-text-dim);
-}
 .dot-follow-up,
 .dot-followup {
   background: var(--color-orange);
