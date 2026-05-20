@@ -267,6 +267,7 @@ def test_webhook_dispatches_to_foreman_when_task_matches(client):
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="pull_request", delivery="d-disp-1")
     with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
         resp = test_client.post("/webhooks/github/gd1", content=body, headers=headers)
     assert resp.status_code == 202
     # _debounce_queue.schedule called once with the right guild + user
@@ -349,6 +350,7 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="check_run", delivery="d-ci-1")
     with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
         resp = test_client.post("/webhooks/github/gd4", content=body, headers=headers)
     assert resp.status_code == 202
     assert mock_q.schedule.call_count == 1
@@ -392,9 +394,9 @@ class TestDebounce:
         import routes.webhooks as wh
 
         with self._patched_env(wh):
-            wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event A", "u1")
-            wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event B", "u1")
-            wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event C", "u1")
+            await wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event A", "u1")
+            await wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event B", "u1")
+            await wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event C", "u1")
             await asyncio.sleep(0.2)
 
         assert len(self._foreman_calls) == 1, f"expected 1 call, got {self._foreman_calls}"
@@ -408,9 +410,9 @@ class TestDebounce:
         import routes.webhooks as wh
 
         with self._patched_env(wh):
-            wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event X", "u2")
+            await wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event X", "u2")
             await asyncio.sleep(0.2)  # first timer fires
-            wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event Y", "u2")
+            await wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event Y", "u2")
             await asyncio.sleep(0.2)  # second timer fires
 
         assert len(self._foreman_calls) == 2
@@ -422,9 +424,9 @@ class TestDebounce:
         import routes.webhooks as wh
 
         with self._patched_env(wh):
-            wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "first", "u3")
+            await wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "first", "u3")
             await asyncio.sleep(0.02)  # less than the 0.05 s window
-            wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "second", "u3")
+            await wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "second", "u3")
             await asyncio.sleep(0.2)  # let the reset timer fire
 
         # Only one delivery; the first timer was cancelled before it could fire
@@ -438,8 +440,8 @@ class TestDebounce:
         import routes.webhooks as wh
 
         with self._patched_env(wh):
-            wh._debounce_queue.schedule("g-ind:t-pr1", "g-ind", "pr1 event", "u4")
-            wh._debounce_queue.schedule("g-ind:t-pr2", "g-ind", "pr2 event", "u4")
+            await wh._debounce_queue.schedule("g-ind:t-pr1", "g-ind", "pr1 event", "u4")
+            await wh._debounce_queue.schedule("g-ind:t-pr2", "g-ind", "pr2 event", "u4")
             await asyncio.sleep(0.2)
 
         assert len(self._foreman_calls) == 2
@@ -463,8 +465,8 @@ class TestDebounce:
 
         with self._patched_env(wh):
             # Buffer two events
-            wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "first event", "u5")
-            wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "second event", "u5")
+            await wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "first event", "u5")
+            await wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "second event", "u5")
 
             # Externally cancel the pending timer (simulates shutdown or test teardown)
             task = wh._debounce_queue._tasks.get("g-cl:t-cl1")
@@ -476,7 +478,7 @@ class TestDebounce:
             assert len(wh._debounce_queue._buffers.get("g-cl:t-cl1", [])) == 2
 
             # Scheduling a third event re-uses the preserved buffer and delivers all three
-            wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "third event", "u5")
+            await wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "third event", "u5")
             await asyncio.sleep(0.2)
 
         assert len(self._foreman_calls) == 1
@@ -484,6 +486,72 @@ class TestDebounce:
         assert "first event" in summary
         assert "second event" in summary
         assert "third event" in summary
+
+    async def test_superseded_task_does_not_deliver(self):
+        """Stale-task guard: a _fire task whose key was reassigned does not deliver.
+
+        This directly exercises the ``_tasks.get(key) is not asyncio.current_task()``
+        guard that closes the race where task.cancel() arrives too late because
+        asyncio.sleep's internal future was already resolved before cancel() ran.
+        """
+        import routes.webhooks as wh
+
+        with self._patched_env(wh):
+            queue = wh._debounce_queue
+
+            # Schedule event A — creates a task that sleeps for the debounce window.
+            await queue.schedule("g-sup:t-1", "g-sup", "event A", "u1")
+
+            # Simulate the race: swap the registered task pointer to a long-lived
+            # sentinel *without* cancelling the original task.  This mimics the
+            # window where schedule() has called cancel() but the sleep future was
+            # already resolved so the cancellation will not take effect.
+            sentinel = asyncio.create_task(asyncio.sleep(1000))
+            queue._tasks["g-sup:t-1"] = sentinel
+
+            # Let task_a's window expire and its coroutine run.  The stale-task
+            # guard should detect that _tasks["g-sup:t-1"] is sentinel (not task_a)
+            # and return without calling _deliver.
+            await asyncio.sleep(0.2)
+
+            sentinel.cancel()
+            try:
+                await sentinel
+            except asyncio.CancelledError:
+                pass
+
+        # task_a should have delivered nothing — the sentinel held the slot.
+        assert self._foreman_calls == [], (
+            f"stale task delivered unexpectedly: {self._foreman_calls}"
+        )
+
+    async def test_new_event_just_before_timer_fires_no_double_delivery(self):
+        """New event arriving just before the debounce window expires causes no double delivery.
+
+        This is the canonical race: the first task's sleep is nearly done when a
+        second schedule() call cancels it and creates a replacement.  Only one
+        foreman invocation should occur, containing all buffered events.
+        """
+        import routes.webhooks as wh
+
+        with self._patched_env(wh):
+            # Schedule event A.
+            await wh._debounce_queue.schedule("g-race:t-1", "g-race", "event A", "u1")
+
+            # Wait 80 % of the window, then schedule event B.  The first task
+            # is cancelled while its sleep is almost complete.
+            await asyncio.sleep(0.04)  # window is 0.05 s
+            await wh._debounce_queue.schedule("g-race:t-1", "g-race", "event B", "u1")
+
+            # Let the replacement timer fire.
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 1, (
+            f"expected 1 foreman call, got {len(self._foreman_calls)}"
+        )
+        _, summary, _ = self._foreman_calls[0]
+        assert "event A" in summary
+        assert "event B" in summary
 
 
 # ---------------------------------------------------------------------------

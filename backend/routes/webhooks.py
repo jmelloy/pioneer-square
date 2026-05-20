@@ -41,8 +41,8 @@ router = APIRouter()
 # delivering the buffered batch to the foreman.  GitHub often sends several
 # check_run completions and a review comment within a second of each other;
 # this window lets them coalesce into a single foreman invocation.
-# Configurable via WEBHOOK_DEBOUNCE_SECONDS environment variable (default: 60).
-DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "60"))
+# Configurable via WEBHOOK_DEBOUNCE_SECONDS environment variable (default: 3).
+DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "3"))
 
 
 # Cap on stored payloads. GitHub webhook payloads are typically <50 KB but
@@ -118,12 +118,30 @@ class DebounceQueue:
     async def _fire(self, key: str, guild_id: str) -> None:
         """Sleep for the debounce window then deliver all buffered events.
 
-        If cancelled (because schedule() restarted the timer for a new event),
-        swallow the error and return — the replacement task owns the buffer.
+        On CancelledError the buffer is always preserved so a subsequent
+        schedule() call can re-use it.  If we are still the registered timer
+        (external cancellation rather than a schedule() reset) we also remove
+        our stale reference from _tasks; on a schedule()-driven reset,
+        _tasks[key] already points to the replacement so the pop is a no-op.
+
+        Stale-task guard: task.cancel() is not synchronous — CancelledError is
+        injected at the next await point.  If schedule() calls cancel() after
+        asyncio.sleep has already resolved its internal future (timer fired),
+        the cancel may arrive too late and this coroutine resumes normally.
+        The _tasks identity check below catches that window and prevents
+        double delivery.
         """
         try:
             await asyncio.sleep(self._window)
         except asyncio.CancelledError:
+            # Re-raise so the asyncio Task is properly marked cancelled.
+            # Clean up our _tasks entry only when we are still the registered
+            # timer (i.e. external cancellation with no replacement).
+            if self._tasks.get(key) is asyncio.current_task():
+                self._tasks.pop(key, None)
+            raise
+        # If schedule() replaced us before we could run, bail out without delivering.
+        if self._tasks.get(key) is not asyncio.current_task():
             return
         items = self._buffers.pop(key, [])
         self._tasks.pop(key, None)
@@ -131,7 +149,7 @@ class DebounceQueue:
             return
         self._deliver(key, guild_id, items)
 
-    def schedule(
+    async def schedule(
         self,
         key: str,
         guild_id: str,
@@ -141,11 +159,14 @@ class DebounceQueue:
         """Buffer *summary* and (re)start the per-PR debounce timer.
 
         Each call resets the window so the foreman is only invoked after
-        _window seconds of silence on this PR.
+        _window seconds of silence on this PR.  The old timer is cancelled
+        and awaited before the new one starts so there is never a window
+        where two timers for the same key are both live.
         """
         existing = self._tasks.pop(key, None)
         if existing and not existing.done():
             existing.cancel()
+            await asyncio.gather(existing, return_exceptions=True)
         self._buffers.setdefault(key, []).append((summary, user_id))
         self._tasks[key] = spawn(
             self._fire(key, guild_id),
@@ -588,7 +609,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
             event_type, action, payload, repo, pr_number, task_id, sender_login
         )
         key = f"{guild_id}:{task_id}"
-        _debounce_queue.schedule(key, guild_id, summary, task_user_id)
+        await _debounce_queue.schedule(key, guild_id, summary, task_user_id)
     else:
         logger.info(
             "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",
