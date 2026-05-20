@@ -57,7 +57,12 @@ def upgrade() -> None:
         """)
     )
 
-    op.drop_table("guilds")
+    # PostgreSQL enforces FK constraints: messages, workers, and agents all
+    # reference guilds.id with a TEXT FK from the initial schema.  We're
+    # intentionally abandoning those old text-FK columns (migration 000001
+    # will add proper guild_pk INTEGER FK columns to each table), so CASCADE
+    # is correct here.
+    op.execute(sa.text("DROP TABLE guilds CASCADE"))
     op.rename_table("guilds_new", "guilds")
 
     # Partial unique index: only one active (deleted_at IS NULL) guild per guild_id.

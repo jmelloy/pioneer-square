@@ -96,7 +96,10 @@ def upgrade() -> None:
             "FROM workers"
         )
     )
-    op.drop_table("workers")
+    # agents.worker_id and tasks.worker_id FK reference workers.id; CASCADE
+    # drops those constraints so the table can be dropped in PostgreSQL.
+    # Migration 000002 recreates both tables with proper FK columns.
+    op.execute(sa.text("DROP TABLE workers CASCADE"))
     op.rename_table("workers_new", "workers")
 
     # agents
@@ -164,7 +167,10 @@ def upgrade() -> None:
             "finished_at, name, parent_task_id, phase, deleted_at, user_id FROM tasks"
         )
     )
-    op.drop_table("tasks")
+    # task_logs.task_id FK references tasks.id; CASCADE drops it so the table
+    # can be replaced.  task_logs is not touched by this migration so its
+    # task_id column persists (just without the FK constraint).
+    op.execute(sa.text("DROP TABLE tasks CASCADE"))
     op.rename_table("tasks_new", "tasks")
 
     # messages
