@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
+from _test_config import TEST_DATABASE_URL  # noqa: E402
 from foreman.prompt import FOREMAN_SYSTEM, build_system_prompt
 from foreman.runner import (
     MAX_HISTORY_MESSAGES,
@@ -37,11 +38,6 @@ from foreman.runner import (
 )
 from foreman.tools import exec_tools
 from helpers import create_db, insert_guild, raw_conn
-
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test",
-)
 
 # ---------------------------------------------------------------------------
 # Fixtures

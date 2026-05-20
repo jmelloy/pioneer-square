@@ -21,17 +21,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
+from _test_config import TEST_DATABASE_URL  # noqa: E402
 from foreman.tools import exec_tools
 from helpers import create_db, insert_guild, truncate_all
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test",
-)
 
 
 @pytest.fixture()

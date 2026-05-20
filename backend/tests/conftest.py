@@ -20,12 +20,7 @@ from starlette.testclient import TestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-# Hardcoded default is intentional — test/local-dev environment only.
-# In CI, set TEST_DATABASE_URL and DATABASE_URL to the postgres service URL.
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test",
-)
+from _test_config import TEST_DATABASE_URL  # noqa: E402
 
 # database.py raises if DATABASE_URL is unset; populate it before the import.
 # Tests override AsyncSessionLocal after import, so this value is only used as

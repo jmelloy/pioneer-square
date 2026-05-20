@@ -30,14 +30,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
+from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import create_db as _create_db  # noqa: E402
 from helpers import raw_conn, truncate_all
 from starlette.testclient import TestClient  # noqa: E402
-
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test",
-)
 
 
 @pytest.fixture(scope="module")
