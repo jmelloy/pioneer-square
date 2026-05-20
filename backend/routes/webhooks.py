@@ -68,6 +68,7 @@ class DebounceQueue:
         self._window = window_seconds
         self._buffers: dict[str, list[tuple[str, str | None]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+        self._generation: dict[str, int] = {}
 
     def reset(self) -> None:
         """Cancel all in-flight timers and clear state (sync, no await).
@@ -80,6 +81,7 @@ class DebounceQueue:
                 task.cancel()
         self._tasks.clear()
         self._buffers.clear()
+        self._generation.clear()
 
     async def shutdown(self) -> None:
         """Cancel all in-flight timers and wait for them to finish.
@@ -95,6 +97,7 @@ class DebounceQueue:
             await asyncio.gather(*pending, return_exceptions=True)
         self._tasks.clear()
         self._buffers.clear()
+        self._generation.clear()
 
     def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None]]) -> None:
         summaries = [s for s, _ in items]
@@ -115,33 +118,40 @@ class DebounceQueue:
             guild_id,
         )
 
-    async def _fire(self, key: str, guild_id: str) -> None:
+    async def _fire(self, key: str, guild_id: str, gen: int) -> None:
         """Sleep for the debounce window then deliver all buffered events.
+
+        ``gen`` is the generation counter captured when this timer was created.
+        schedule() bumps the generation *before* cancelling the old task, so if
+        the old task's sleep resolves during the cancel window and the task runs
+        during ``await gather()``, it will see a stale generation and bail out
+        without delivering — reliably distinguishing a timer-reset from an
+        external cancellation.
 
         On CancelledError the buffer is always preserved so a subsequent
         schedule() call can re-use it.  If we are still the registered timer
         (external cancellation rather than a schedule() reset) we also remove
         our stale reference from _tasks; on a schedule()-driven reset,
-        _tasks[key] already points to the replacement so the pop is a no-op.
-
-        Stale-task guard: task.cancel() is not synchronous — CancelledError is
-        injected at the next await point.  If schedule() calls cancel() after
-        asyncio.sleep has already resolved its internal future (timer fired),
-        the cancel may arrive too late and this coroutine resumes normally.
-        The _tasks identity check below catches that window and prevents
-        double delivery.
+        _tasks[key] was already popped synchronously before cancel so the
+        identity check returns False and the pop is correctly skipped.
         """
         try:
             await asyncio.sleep(self._window)
         except asyncio.CancelledError:
             # Re-raise so the asyncio Task is properly marked cancelled.
             # Clean up our _tasks entry only when we are still the registered
-            # timer (i.e. external cancellation with no replacement).
+            # timer (i.e. external cancellation — shutdown(), test teardown).
+            # On a schedule()-driven reset, _tasks[key] was already popped
+            # synchronously before cancel, so the check is False.
             if self._tasks.get(key) is asyncio.current_task():
                 self._tasks.pop(key, None)
             raise
-        # If schedule() replaced us before we could run, bail out without delivering.
-        if self._tasks.get(key) is not asyncio.current_task():
+        # Stale-generation guard: if schedule() ran after our sleep started it
+        # bumped the generation counter before cancelling us.  If the cancel
+        # arrived too late (sleep future already resolved) and this coroutine
+        # resumed normally, the generation mismatch catches the stale timer and
+        # prevents double delivery.
+        if self._generation.get(key) != gen:
             return
         items = self._buffers.pop(key, [])
         self._tasks.pop(key, None)
@@ -164,12 +174,17 @@ class DebounceQueue:
         where two timers for the same key are both live.
         """
         existing = self._tasks.pop(key, None)
+        # Bump the generation BEFORE cancelling so that even if the old task's
+        # sleep has already resolved and the task runs during ``await gather()``,
+        # it will see a stale generation and bail out without delivering.
+        gen = self._generation.get(key, 0) + 1
+        self._generation[key] = gen
         if existing and not existing.done():
             existing.cancel()
             await asyncio.gather(existing, return_exceptions=True)
         self._buffers.setdefault(key, []).append((summary, user_id))
         self._tasks[key] = spawn(
-            self._fire(key, guild_id),
+            self._fire(key, guild_id, gen),
             name=f"foreman.debounce:{key}",
         )
         logger.info(

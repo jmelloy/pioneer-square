@@ -458,10 +458,11 @@ class TestDebounce:
         import routes.webhooks as wh
 
         async with self._patched_env(wh):
-            # Brand-new instance — buffers and tasks are empty regardless of
+            # Brand-new instance — buffers, tasks, and generation are empty regardless of
             # what any other test scheduled.
             assert wh._debounce_queue._buffers == {}
             assert wh._debounce_queue._tasks == {}
+            assert wh._debounce_queue._generation == {}
 
     async def test_shutdown_cancels_pending_timers(self):
         """shutdown() cancels in-flight timers and clears all state without delivering."""
@@ -475,6 +476,7 @@ class TestDebounce:
             assert len(self._foreman_calls) == 0
             assert wh._debounce_queue._buffers == {}
             assert wh._debounce_queue._tasks == {}
+            assert wh._debounce_queue._generation == {}
 
     async def test_cancelled_events_not_lost(self):
         """Events buffered before an external cancellation are preserved for re-delivery."""
@@ -503,6 +505,63 @@ class TestDebounce:
         assert "first event" in summary
         assert "second event" in summary
         assert "third event" in summary
+
+    async def test_generation_counter_increments_on_each_reset(self):
+        """Each schedule() call increments the generation; external cancel does not."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            key = "g-gci:t-gci1"
+            assert wh._debounce_queue._generation.get(key) is None
+
+            await wh._debounce_queue.schedule(key, "g-gci", "event 1", "u9")
+            assert wh._debounce_queue._generation[key] == 1
+
+            await wh._debounce_queue.schedule(key, "g-gci", "event 2", "u9")
+            assert wh._debounce_queue._generation[key] == 2
+
+            await wh._debounce_queue.schedule(key, "g-gci", "event 3", "u9")
+            assert wh._debounce_queue._generation[key] == 3
+
+            # External cancel must NOT change the generation
+            task = wh._debounce_queue._tasks[key]
+            task.cancel()
+            await asyncio.sleep(0.0)
+            assert wh._debounce_queue._generation[key] == 3
+
+            await asyncio.sleep(0.2)  # nothing fires — timer was externally cancelled
+
+        assert len(self._foreman_calls) == 0
+
+    async def test_external_cancel_preserves_buffer_for_redelivery(self):
+        """External cancellation leaves generation + buffer intact so the next
+        schedule() increments the generation and delivers all coalesced events."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            key = "g-ecr:t-ecr1"
+
+            await wh._debounce_queue.schedule(key, "g-ecr", "event A", "u10")
+            assert wh._debounce_queue._generation[key] == 1
+
+            # External cancellation (simulates shutdown / test teardown)
+            task = wh._debounce_queue._tasks[key]
+            task.cancel()
+            await asyncio.sleep(0.0)
+
+            # Generation unchanged; buffer preserved
+            assert wh._debounce_queue._generation[key] == 1
+            assert len(wh._debounce_queue._buffers.get(key, [])) == 1
+
+            # Next schedule() increments generation and appends to the preserved buffer
+            await wh._debounce_queue.schedule(key, "g-ecr", "event B", "u10")
+            assert wh._debounce_queue._generation[key] == 2
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 1
+        _, summary, _ = self._foreman_calls[0]
+        assert "event A" in summary
+        assert "event B" in summary
 
 
 # ---------------------------------------------------------------------------
