@@ -657,14 +657,27 @@ async def run_foreman_ai(
             # Re-parse so messages stays as plain dicts (not SDK objects)
             messages[-1]["content"] = json.loads(messages[-1]["content"])
 
-            text_parts += [b.text for b in resp.content if b.type == "text" and b.text.strip()]
+            # Emit text blocks immediately so narration appears inline with tool calls,
+            # not batched at the end of the turn.
+            _now = datetime.now(UTC).isoformat()
+            for b in resp.content:
+                if b.type == "text" and b.text.strip():
+                    await broadcast(
+                        guild_id,
+                        {
+                            "type": "chat",
+                            "from": "foreman",
+                            "to": "user",
+                            "content": b.text.strip(),
+                            "createdAt": _now,
+                        },
+                    )
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
                 break  # end_turn — foreman is done
 
             # Broadcast tool-use events so the frontend chat shows them live
-            _now = datetime.now(UTC).isoformat()
             for tu in tool_uses:
                 await broadcast(
                     guild_id,
