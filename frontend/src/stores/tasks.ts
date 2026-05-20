@@ -7,6 +7,8 @@ import type { LogEntry, Task, TaskState, WSInbound } from '../types'
 // immediately on long horizons (e.g. a 3-day finalize window).
 const MAX_TIMEOUT_MS = 2_147_483_647
 
+const TERMINAL_STATES = new Set<string>(['done', 'failed', 'cancelled'])
+
 const STATE_LABELS: Record<string, string> = {
   pending: 'pending',
   planning: 'planning',
@@ -109,7 +111,22 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function cancelTask(guildId: string, taskId: string) {
-    return api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
+    const task = tasks.value.find((t) => t.id === taskId)
+    const prevState = task?.state
+    const prevFinishedAt = task?.finished_at
+    if (task) {
+      task.state = 'cancelled'
+      task.finished_at = new Date().toISOString()
+    }
+    try {
+      await api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
+    } catch (err) {
+      if (task) {
+        task.state = prevState!
+        task.finished_at = prevFinishedAt
+      }
+      throw err
+    }
   }
 
   async function redirectTask(guildId: string, taskId: string, instructions: string) {
@@ -166,13 +183,13 @@ export const useTasksStore = defineStore('tasks', () => {
       }
     } else if (data.type === 'task-complete') {
       const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task) {
+      if (task && !TERMINAL_STATES.has(task.state)) {
         task.state = 'awaiting-review'
         if (data.branch) task.branch = data.branch
       }
     } else if (data.type === 'task-followup-done') {
       const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task) task.state = 'awaiting-review'
+      if (task && !TERMINAL_STATES.has(task.state)) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
       const { taskId, line, timestamp, detail } = data
       if (line) {

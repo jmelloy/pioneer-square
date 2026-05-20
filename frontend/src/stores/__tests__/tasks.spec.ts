@@ -108,6 +108,28 @@ describe('useTasksStore', () => {
       expect(store.tasks[0].state).toBe('awaiting-review')
     })
 
+    it('does not override cancelled state on task-complete (race condition guard)', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'cancelled' })
+
+      store.handleWebSocketMessage({
+        type: 'task-complete',
+        taskId: 't-1',
+        branch: 'claude/done',
+      })
+
+      expect(store.tasks[0].state).toBe('cancelled')
+    })
+
+    it('does not override cancelled state on task-followup-done', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'cancelled' })
+
+      store.handleWebSocketMessage({ type: 'task-followup-done', taskId: 't-1' })
+
+      expect(store.tasks[0].state).toBe('cancelled')
+    })
+
     it('appends terminal-output lines into taskLogs', () => {
       const store = useTasksStore()
 
@@ -388,6 +410,39 @@ describe('useTasksStore', () => {
           method: 'POST',
         }),
       )
+    })
+
+    it('cancelTask optimistically marks the task cancelled before API resolves', async () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'working' })
+      let resolveApi!: () => void
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockReturnValue(
+          new Promise<{ ok: boolean; json: () => Promise<object> }>((res) => {
+            resolveApi = () => res({ ok: true, json: () => Promise.resolve({}) })
+          }),
+        ),
+      )
+
+      const promise = store.cancelTask('g-1', 't-1')
+      // State must be updated before the API call resolves
+      expect(store.tasks[0].state).toBe('cancelled')
+      expect(store.tasks[0].finished_at).toBeDefined()
+
+      resolveApi()
+      await promise
+      expect(store.tasks[0].state).toBe('cancelled')
+    })
+
+    it('cancelTask rolls back state and re-throws on API failure', async () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'working' })
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
+
+      await expect(store.cancelTask('g-1', 't-1')).rejects.toThrow('HTTP 500')
+      expect(store.tasks[0].state).toBe('working')
+      expect(store.tasks[0].finished_at).toBeUndefined()
     })
 
     it('throws when the API returns non-2xx', async () => {
