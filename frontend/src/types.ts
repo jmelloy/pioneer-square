@@ -102,6 +102,12 @@ export interface ChatMessage {
   prUrl?: string | null
   createdAt?: string
   created_at?: string
+  role?: 'tool_use' | 'tool_result' | string
+  toolId?: string
+  toolName?: string
+  toolInput?: Record<string, unknown>
+  isError?: boolean
+  from_agent?: string
   [key: string]: unknown
 }
 

@@ -77,6 +77,8 @@ class Message(Base):
     user_id = Column(
         Text, nullable=True
     )  # github_user_id of the sender; NULL for system/worker messages
+    role = Column(Text, nullable=True)  # "tool_use" | "tool_result" | NULL for plain chat
+    meta = Column(Text, nullable=True)  # JSON blob with extra WS fields (toolId, toolName, …)
 
 
 class Worker(Base):
