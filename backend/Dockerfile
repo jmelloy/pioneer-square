@@ -35,7 +35,7 @@ ENV PYTHONUNBUFFERED=1 \
     DNSID_SDK_BIN=/usr/local/bin/dnsid-sdk
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends sqlite3 \
+    && apt-get install -y --no-install-recommends postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./
@@ -48,9 +48,6 @@ COPY --from=frontend-build /frontend/dist ./static
 
 # dnsid CLI for A2A / DNSid auth signing
 COPY --from=dnsid-build /usr/local/bin/dnsid-sdk /usr/local/bin/dnsid-sdk
-
-ENV DB_PATH=/data/pioneer_square.db
-RUN mkdir -p /data
 
 EXPOSE 8000
 

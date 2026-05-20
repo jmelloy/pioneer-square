@@ -2,7 +2,8 @@ cryptography
 fastapi
 uvicorn[standard]
 websockets
-aiosqlite
+asyncpg
+psycopg2-binary
 sqlalchemy[asyncio]
 alembic
 python-multipart

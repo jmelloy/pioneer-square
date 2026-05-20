@@ -10,7 +10,6 @@ Covers:
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
 
@@ -19,37 +18,36 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from helpers import insert_guild, make_auth_token  # noqa: E402
+from helpers import insert_guild, make_auth_token, raw_conn  # noqa: E402
 
 
-def _auth(db_path: str) -> dict:
-    return {"Authorization": f"Bearer {make_auth_token(db_path)}"}
+def _auth(db_url: str) -> dict:
+    return {"Authorization": f"Bearer {make_auth_token(db_url)}"}
 
 
 def _create_worker(test_client, guild_id: str) -> str:
     return test_client.post(f"/guilds/{guild_id}/workers", json={"repos": []}).json()["id"]
 
 
-def _create_task(test_client, guild_id: str, worker_id: str, desc: str, db_path: str) -> str:
+def _create_task(test_client, guild_id: str, worker_id: str, desc: str, db_url: str) -> str:
     resp = test_client.post(
         f"/guilds/{guild_id}/workers/{worker_id}/tasks",
         json={"description": desc, "tool": "claude"},
-        headers=_auth(db_path),
+        headers=_auth(db_url),
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["id"]
 
 
-def _set_deleted_at(db_path: str, task_id: str, deleted_at: str | None) -> None:
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("UPDATE tasks SET deleted_at = ? WHERE id = ?", (deleted_at, task_id))
-        conn.commit()
+def _set_deleted_at(db_url: str, task_id: str, deleted_at: str | None) -> None:
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute("UPDATE tasks SET deleted_at = %s WHERE id = %s", (deleted_at, task_id))
 
 
-def _read_task(db_path: str, task_id: str) -> dict:
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+def _read_task(db_url: str, task_id: str) -> dict:
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute("SELECT * FROM tasks WHERE id = %s", (task_id,))
+        row = cur.fetchone()
     return dict(row) if row else {}
 
 
@@ -60,10 +58,14 @@ def _read_task(db_path: str, task_id: str) -> dict:
 
 def test_migration_adds_deleted_at_column(client):
     """The Alembic head must add tasks.deleted_at."""
-    _, db_path = client
-    with sqlite3.connect(db_path) as conn:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
-    assert "deleted_at" in cols
+    _, db_url = client
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'tasks' AND column_name = 'deleted_at'
+        """)
+        row = cur.fetchone()
+    assert row is not None, "tasks.deleted_at column must exist"
 
 
 # ---------------------------------------------------------------------------
@@ -159,19 +161,19 @@ def test_resolve_finalize_deleted_at_wins_over_seconds():
 
 
 def test_list_guild_tasks_hides_past_deleted_at(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gsd01")
+    test_client, db_url = client
+    insert_guild(db_url, "gsd01")
     worker_id = _create_worker(test_client, "gsd01")
-    t_live = _create_task(test_client, "gsd01", worker_id, "live task", db_path)
-    t_dead = _create_task(test_client, "gsd01", worker_id, "dead task", db_path)
-    t_future = _create_task(test_client, "gsd01", worker_id, "future task", db_path)
+    t_live = _create_task(test_client, "gsd01", worker_id, "live task", db_url)
+    t_dead = _create_task(test_client, "gsd01", worker_id, "dead task", db_url)
+    t_future = _create_task(test_client, "gsd01", worker_id, "future task", db_url)
 
     past = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
     future = (datetime.now(UTC) + timedelta(days=1)).isoformat()
-    _set_deleted_at(db_path, t_dead, past)
-    _set_deleted_at(db_path, t_future, future)
+    _set_deleted_at(db_url, t_dead, past)
+    _set_deleted_at(db_url, t_future, future)
 
-    resp = test_client.get("/guilds/gsd01/tasks", headers=_auth(db_path))
+    resp = test_client.get("/guilds/gsd01/tasks", headers=_auth(db_url))
     assert resp.status_code == 200
     ids = {t["id"] for t in resp.json()}
     assert t_live in ids
@@ -180,12 +182,12 @@ def test_list_guild_tasks_hides_past_deleted_at(client):
 
 
 def test_list_worker_tasks_hides_past_deleted_at(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gsd02")
+    test_client, db_url = client
+    insert_guild(db_url, "gsd02")
     worker_id = _create_worker(test_client, "gsd02")
-    t_live = _create_task(test_client, "gsd02", worker_id, "live", db_path)
-    t_dead = _create_task(test_client, "gsd02", worker_id, "dead", db_path)
-    _set_deleted_at(db_path, t_dead, (datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    t_live = _create_task(test_client, "gsd02", worker_id, "live", db_url)
+    t_dead = _create_task(test_client, "gsd02", worker_id, "dead", db_url)
+    _set_deleted_at(db_url, t_dead, (datetime.now(UTC) - timedelta(minutes=1)).isoformat())
 
     resp = test_client.get(f"/guilds/gsd02/workers/{worker_id}/tasks")
     assert resp.status_code == 200
@@ -194,13 +196,13 @@ def test_list_worker_tasks_hides_past_deleted_at(client):
 
 
 def test_get_task_logs_404_on_soft_deleted(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gsd03")
+    test_client, db_url = client
+    insert_guild(db_url, "gsd03")
     worker_id = _create_worker(test_client, "gsd03")
-    task_id = _create_task(test_client, "gsd03", worker_id, "task", db_path)
-    _set_deleted_at(db_path, task_id, (datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    task_id = _create_task(test_client, "gsd03", worker_id, "task", db_url)
+    _set_deleted_at(db_url, task_id, (datetime.now(UTC) - timedelta(minutes=1)).isoformat())
 
-    resp = test_client.get(f"/guilds/gsd03/tasks/{task_id}/logs", headers=_auth(db_path))
+    resp = test_client.get(f"/guilds/gsd03/tasks/{task_id}/logs", headers=_auth(db_url))
     assert resp.status_code == 404
 
 
@@ -210,32 +212,32 @@ def test_get_task_logs_404_on_soft_deleted(client):
 
 
 def test_finalize_endpoint_default_sets_three_day_window(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gsd04")
+    test_client, db_url = client
+    insert_guild(db_url, "gsd04")
     worker_id = _create_worker(test_client, "gsd04")
-    task_id = _create_task(test_client, "gsd04", worker_id, "task", db_path)
+    task_id = _create_task(test_client, "gsd04", worker_id, "task", db_url)
 
     before = datetime.now(UTC)
-    resp = test_client.post(f"/guilds/gsd04/tasks/{task_id}/finalize", headers=_auth(db_path))
+    resp = test_client.post(f"/guilds/gsd04/tasks/{task_id}/finalize", headers=_auth(db_url))
     assert resp.status_code == 200, resp.text
     deleted_at = resp.json()["deletedAt"]
     parsed = datetime.fromisoformat(deleted_at)
     # Should be roughly 3 days from now (allow ±1 minute slack for slow machines).
     assert timedelta(days=3, minutes=-1) <= parsed - before <= timedelta(days=3, minutes=1)
-    assert _read_task(db_path, task_id)["deleted_at"] == deleted_at
+    assert _read_task(db_url, task_id)["deleted_at"].isoformat() == deleted_at
 
 
 def test_finalize_endpoint_explicit_expires_in_seconds(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gsd05")
+    test_client, db_url = client
+    insert_guild(db_url, "gsd05")
     worker_id = _create_worker(test_client, "gsd05")
-    task_id = _create_task(test_client, "gsd05", worker_id, "task", db_path)
+    task_id = _create_task(test_client, "gsd05", worker_id, "task", db_url)
 
     before = datetime.now(UTC)
     resp = test_client.post(
         f"/guilds/gsd05/tasks/{task_id}/finalize",
         json={"expires_in_seconds": 1200},
-        headers=_auth(db_path),
+        headers=_auth(db_url),
     )
     assert resp.status_code == 200, resp.text
     parsed = datetime.fromisoformat(resp.json()["deletedAt"])
@@ -243,51 +245,51 @@ def test_finalize_endpoint_explicit_expires_in_seconds(client):
 
 
 def test_finalize_endpoint_explicit_deleted_at(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gsd06")
+    test_client, db_url = client
+    insert_guild(db_url, "gsd06")
     worker_id = _create_worker(test_client, "gsd06")
-    task_id = _create_task(test_client, "gsd06", worker_id, "task", db_path)
+    task_id = _create_task(test_client, "gsd06", worker_id, "task", db_url)
 
     target = "2026-12-25T00:00:00+00:00"
     resp = test_client.post(
         f"/guilds/gsd06/tasks/{task_id}/finalize",
         json={"deleted_at": target},
-        headers=_auth(db_path),
+        headers=_auth(db_url),
     )
     assert resp.status_code == 200
     assert datetime.fromisoformat(resp.json()["deletedAt"]) == datetime.fromisoformat(target)
 
 
 def test_finalize_endpoint_rejects_bad_deleted_at(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gsd07")
+    test_client, db_url = client
+    insert_guild(db_url, "gsd07")
     worker_id = _create_worker(test_client, "gsd07")
-    task_id = _create_task(test_client, "gsd07", worker_id, "task", db_path)
+    task_id = _create_task(test_client, "gsd07", worker_id, "task", db_url)
 
     resp = test_client.post(
         f"/guilds/gsd07/tasks/{task_id}/finalize",
         json={"deleted_at": "garbage"},
-        headers=_auth(db_path),
+        headers=_auth(db_url),
     )
     assert resp.status_code == 400
 
 
 def test_finalize_then_list_hides_after_window_passes(client):
     """End-to-end: finalize with a tiny window, list excludes after it elapses."""
-    test_client, db_path = client
-    insert_guild(db_path, "gsd08")
+    test_client, db_url = client
+    insert_guild(db_url, "gsd08")
     worker_id = _create_worker(test_client, "gsd08")
-    task_id = _create_task(test_client, "gsd08", worker_id, "task", db_path)
+    task_id = _create_task(test_client, "gsd08", worker_id, "task", db_url)
 
     test_client.post(
         f"/guilds/gsd08/tasks/{task_id}/finalize",
         json={"expires_in_seconds": 0},
-        headers=_auth(db_path),
+        headers=_auth(db_url),
     )
     # Backdate by 1 second so the strict `>` comparison hides it.
     past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
-    _set_deleted_at(db_path, task_id, past)
-    resp = test_client.get("/guilds/gsd08/tasks", headers=_auth(db_path))
+    _set_deleted_at(db_url, task_id, past)
+    resp = test_client.get("/guilds/gsd08/tasks", headers=_auth(db_url))
     ids = {t["id"] for t in resp.json()}
     assert task_id not in ids
 

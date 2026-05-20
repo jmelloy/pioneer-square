@@ -18,7 +18,6 @@ multiple TestClient instances start against the same singleton FastAPI app.
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime
 
@@ -31,18 +30,17 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
+from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import create_db as _create_db  # noqa: E402
+from helpers import raw_conn, truncate_all
 from starlette.testclient import TestClient  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def client(tmp_path_factory):
-    tmp_path = tmp_path_factory.mktemp("pr_url_ws_db")
-    db_path = str(tmp_path / "test.db")
-    db_url = f"sqlite+aiosqlite:///{db_path}"
-
-    os.environ["DATABASE_URL"] = db_url
-    _create_db(db_path)
+def client():
+    _create_db(TEST_DATABASE_URL)
+    truncate_all(TEST_DATABASE_URL)
+    db_url = TEST_DATABASE_URL
 
     new_engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
     new_session = async_sessionmaker(new_engine, expire_on_commit=False, class_=AsyncSession)
@@ -56,45 +54,41 @@ def client(tmp_path_factory):
 
     mp.setattr(main_module, "reset_connection_state", _stubbed_reset_connection_state)
     mp.setenv("DATABASE_URL", db_url)
-    mp.setenv("DB_PATH", db_path)
 
     with TestClient(main_module.app) as c:
-        yield c, db_path
+        yield c, db_url
 
     mp.undo()
-    os.environ.pop("DATABASE_URL", None)
 
 
 def _insert_guild_worker_task(
-    db_path: str,
+    db_url: str,
     *,
     guild_id: str,
     worker_id: str,
     task_id: str,
 ) -> None:
     now = datetime.now(UTC).isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
             (guild_id, now, "Test Guild"),
         )
-        row = conn.execute(
-            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
-        ).fetchone()
-        guild_pk = row[0]
-        conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at)"
-            " VALUES (?, ?, '[]', 'online', ?)",
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
+        row = cur.fetchone()
+        guild_pk = row["id"]
+        cur.execute(
+            "INSERT INTO workers (id, guild_pk, repos, state, created_at)"
+            " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
             (worker_id, guild_pk, now),
         )
         # Use "awaiting-review" so the join handler does not replay the task as
         # task-assigned (it only replays "pending" and "working" tasks).
-        conn.execute(
-            "INSERT OR IGNORE INTO tasks (id, worker_id, guild_pk, description, tool, state, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        cur.execute(
+            "INSERT INTO tasks (id, worker_id, guild_pk, description, tool, state, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
             (task_id, worker_id, guild_pk, "test task", "claude", "awaiting-review", now),
         )
-        conn.commit()
 
 
 def _join_ws(ws, agent_id: str, worker_id: str) -> None:
@@ -122,11 +116,11 @@ def test_task_complete_persists_pr_url(client):
     DB commit happens before the broadcast; we check the DB while the WS
     connections are still open so we don't race the post-broadcast background tasks.
     """
-    test_client, db_path = client
+    test_client, db_url = client
     guild_id, worker_id, task_id = "gwspr1", "w-wspr1", "t-wspr1"
     agent_id = "a-wspr1"
 
-    _insert_guild_worker_task(db_path, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
+    _insert_guild_worker_task(db_url, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
@@ -154,28 +148,28 @@ def test_task_complete_persists_pr_url(client):
             assert msg["type"] == "task-complete"
 
             # Check DB while connections are still open to avoid racing background tasks.
-            with sqlite3.connect(db_path) as conn:
-                row = conn.execute(
-                    "SELECT pr_url, pr_number, pr_repo, state FROM tasks WHERE id = ?",
+            with raw_conn(db_url) as (conn, cur):
+                cur.execute(
+                    "SELECT pr_url, pr_number, pr_repo, state FROM tasks WHERE id = %s",
                     (task_id,),
-                ).fetchone()
+                )
+                row = cur.fetchone()
 
     assert row is not None
-    pr_url, pr_number, pr_repo, state = row
-    assert pr_url == "https://github.com/owner/repo/pull/42"
-    assert pr_number == 42
-    assert pr_repo == "owner/repo"
+    assert row["pr_url"] == "https://github.com/owner/repo/pull/42"
+    assert row["pr_number"] == 42
+    assert row["pr_repo"] == "owner/repo"
     # state stays "awaiting-review" (the .where(state=="working") guard is a no-op here)
-    assert state == "awaiting-review"
+    assert row["state"] == "awaiting-review"
 
 
 def test_task_complete_without_pr_url_leaves_pr_url_null(client):
     """task-complete without prUrl must not write anything to pr_url."""
-    test_client, db_path = client
+    test_client, db_url = client
     guild_id, worker_id, task_id = "gwspr2", "w-wspr2", "t-wspr2"
     agent_id = "a-wspr2"
 
-    _insert_guild_worker_task(db_path, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
+    _insert_guild_worker_task(db_url, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
@@ -198,15 +192,16 @@ def test_task_complete_without_pr_url_leaves_pr_url_null(client):
             )
             ws_obs.receive_json()
 
-            with sqlite3.connect(db_path) as conn:
-                row = conn.execute(
-                    "SELECT pr_url, pr_number, pr_repo FROM tasks WHERE id = ?", (task_id,)
-                ).fetchone()
+            with raw_conn(db_url) as (conn, cur):
+                cur.execute(
+                    "SELECT pr_url, pr_number, pr_repo FROM tasks WHERE id = %s", (task_id,)
+                )
+                row = cur.fetchone()
 
     assert row is not None
-    assert row[0] is None  # pr_url stays NULL
-    assert row[1] is None  # pr_number stays NULL
-    assert row[2] is None  # pr_repo stays NULL
+    assert row["pr_url"] is None  # pr_url stays NULL
+    assert row["pr_number"] is None  # pr_number stays NULL
+    assert row["pr_repo"] is None  # pr_repo stays NULL
 
 
 # ---------------------------------------------------------------------------
@@ -216,11 +211,11 @@ def test_task_complete_without_pr_url_leaves_pr_url_null(client):
 
 def test_task_followup_done_persists_pr_url(client):
     """task-followup-done with prUrl writes pr_url, pr_number, pr_repo to the task row."""
-    test_client, db_path = client
+    test_client, db_url = client
     guild_id, worker_id, task_id = "gwspr3", "w-wspr3", "t-wspr3"
     agent_id = "a-wspr3"
 
-    _insert_guild_worker_task(db_path, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
+    _insert_guild_worker_task(db_url, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
@@ -244,15 +239,15 @@ def test_task_followup_done_persists_pr_url(client):
             msg = ws_obs.receive_json()
             assert msg["type"] == "task-followup-done"
 
-            with sqlite3.connect(db_path) as conn:
-                row = conn.execute(
-                    "SELECT pr_url, pr_number, pr_repo, state FROM tasks WHERE id = ?",
+            with raw_conn(db_url) as (conn, cur):
+                cur.execute(
+                    "SELECT pr_url, pr_number, pr_repo, state FROM tasks WHERE id = %s",
                     (task_id,),
-                ).fetchone()
+                )
+                row = cur.fetchone()
 
     assert row is not None
-    pr_url, pr_number, pr_repo, state = row
-    assert pr_url == "https://github.com/owner/repo/pull/99"
-    assert pr_number == 99
-    assert pr_repo == "owner/repo"
-    assert state == "awaiting-review"
+    assert row["pr_url"] == "https://github.com/owner/repo/pull/99"
+    assert row["pr_number"] == 99
+    assert row["pr_repo"] == "owner/repo"
+    assert row["state"] == "awaiting-review"

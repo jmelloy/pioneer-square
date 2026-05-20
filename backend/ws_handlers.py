@@ -28,7 +28,7 @@ from events import (
 from fastapi import WebSocket
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
 from sqlalchemy import delete, select, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from util.tasks import spawn
 from utils import worker_display_name
 
@@ -211,7 +211,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     agent_type = data.get("agentType", "worker")
     worker_id = data.get("workerId")
     joined_at = datetime.now(UTC).isoformat()
-    stmt = sqlite_insert(Agent).values(
+    stmt = pg_insert(Agent).values(
         id=agent_id,
         guild_pk=ctx.guild_pk,
         worker_id=worker_id,

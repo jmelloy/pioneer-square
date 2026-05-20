@@ -24,7 +24,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
-App (backend + SPA): http://localhost:8056. SQLite is persisted in the `backend-data` volume.
+App (backend + SPA): http://localhost:8056. PostgreSQL data is persisted in the `postgres-data` volume.
+
+`docker compose up` starts a `postgres:17` container automatically. The backend waits for it
+to pass its health-check, then runs `alembic upgrade head` before accepting connections.
 
 The worker is opt-in (it needs a `pioneer-worker.toml`):
 
@@ -113,13 +116,33 @@ pioneer-worker
 
 See [`worker/README.md`](worker/README.md) for details.
 
+## Migrating from SQLite
+
+If you have an existing Pioneer Square SQLite database (`pioneer_square.db`)
+and want to move its data to PostgreSQL, use the included migration script:
+
+```bash
+# Ensure the target PostgreSQL schema is up-to-date first:
+cd backend && alembic upgrade head && cd ..
+
+pip install psycopg2-binary
+
+python scripts/migrate_sqlite_to_postgres.py \
+    --sqlite-path /path/to/pioneer_square.db \
+    --postgres-url postgresql://pioneer:pioneer_password@localhost/pioneer_square
+```
+
+The script accepts `SQLITE_PATH` and `DATABASE_URL` env vars as alternatives
+to the flags. It is idempotent — running it multiple times is safe; rows that
+already exist in PostgreSQL are silently skipped.
+
 ## Architecture
 
-- **Backend**: FastAPI + aiosqlite + WebSocket signaling
+- **Backend**: FastAPI + asyncpg + WebSocket signaling
 - **Frontend**: Vue 3 + Pinia + Vue Router + WebRTC
 - **Worker**: Standalone Python process (`pioneer-worker` CLI) that runs
   Claude on assigned tasks and opens GitHub PRs.
-- **Database**: SQLite (sessions, agents, messages, workers, tasks)
+- **Database**: PostgreSQL (guilds, agents, messages, workers, tasks)
 
 ## Connecting Agents
 
