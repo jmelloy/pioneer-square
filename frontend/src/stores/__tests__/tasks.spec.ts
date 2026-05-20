@@ -450,5 +450,20 @@ describe('useTasksStore', () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
       await expect(store.finalizeTask('g-1', 't-1')).rejects.toThrow('HTTP 500')
     })
+
+    it('sendFollowup throws on API failure', async () => {
+      const store = useTasksStore()
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }))
+      await expect(store.sendFollowup('g-1', 't-1', 'retry')).rejects.toThrow('HTTP 409')
+    })
+
+    it('sendFollowup resolves and does not throw on success', async () => {
+      const store = useTasksStore()
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ queued: true }) }),
+      )
+      await expect(store.sendFollowup('g-1', 't-1', 'update tests')).resolves.not.toThrow()
+    })
   })
 })
