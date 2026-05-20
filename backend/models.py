@@ -1,5 +1,4 @@
 from datetime import UTC, datetime
-from typing import Optional
 
 from sqlalchemy import Index, or_, text
 from sqlmodel import Field, SQLModel
@@ -28,23 +27,23 @@ class Guild(SQLModel, table=True):
         ),
     )
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     guild_id: str
     created_at: str
-    name: Optional[str] = None
-    github_user_id: Optional[str] = None
-    primary_repo: Optional[str] = None
+    name: str | None = None
+    github_user_id: str | None = None
+    primary_repo: str | None = None
     # HMAC-SHA256 shared secret used to verify GitHub webhook deliveries for
     # this guild. NULL until an owner first requests one via the
     # webhook-secret endpoint.
-    webhook_secret: Optional[str] = None
+    webhook_secret: str | None = None
     # A2A AgentCard fields — used to populate /.well-known/agent.json
-    description: Optional[str] = None
-    url: Optional[str] = None
-    version: Optional[str] = None
+    description: str | None = None
+    url: str | None = None
+    version: str | None = None
     # ISO-8601 UTC timestamp at which this guild is considered soft-deleted.
     # NULL = active; partial unique index enforces one active row per guild_id.
-    deleted_at: Optional[str] = None
+    deleted_at: str | None = None
 
 
 class Agent(SQLModel, table=True):
@@ -53,37 +52,37 @@ class Agent(SQLModel, table=True):
     id: str = Field(primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
-    worker_id: Optional[str] = Field(default=None, foreign_key="workers.id")
+    worker_id: str | None = Field(default=None, foreign_key="workers.id")
     name: str
     type: str = Field(default="worker")
     state: str = Field(default="idle")
-    activity: Optional[str] = None
+    activity: str | None = None
     # Task this agent is currently executing (NULL when idle/offline). Set
     # from worker-emitted agent-state messages; lets the UI map a task row
     # to its agent unambiguously when a worker runs concurrent slots that
     # share a worker_id.
-    current_task_id: Optional[str] = None
+    current_task_id: str | None = None
     joined_at: str
     # ISO-8601 UTC timestamp of the last message received from this agent over
     # the WebSocket. Refreshed by every inbound frame (incl. application-level
     # `ping`); the sweeper marks the agent offline when this gets stale.
-    last_seen: Optional[str] = None
+    last_seen: str | None = None
 
 
 class Message(SQLModel, table=True):
     __tablename__ = "messages"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
-    from_agent: Optional[str] = None
-    to_agent: Optional[str] = None
+    from_agent: str | None = None
+    to_agent: str | None = None
     content: str
     message_type: str
     created_at: str
-    user_id: Optional[str] = None  # github_user_id of the sender; NULL for system/worker messages
-    role: Optional[str] = None  # "tool_use" | "tool_result" | NULL for plain chat
-    meta: Optional[str] = None  # JSON blob with extra WS fields (toolId, toolName, …)
+    user_id: str | None = None  # github_user_id of the sender; NULL for system/worker messages
+    role: str | None = None  # "tool_use" | "tool_result" | NULL for plain chat
+    meta: str | None = None  # JSON blob with extra WS fields (toolId, toolName, …)
 
 
 class Worker(SQLModel, table=True):
@@ -95,22 +94,22 @@ class Worker(SQLModel, table=True):
     repos: str = Field(default="[]")
     # Optional GitHub org; when set the worker accepts any task targeting <org>/*
     # and clones repos lazily. NULL for workers that use an explicit repos list only.
-    org: Optional[str] = None
+    org: str | None = None
     state: str = Field(default="idle")
     created_at: str
-    last_seen: Optional[str] = None
+    last_seen: str | None = None
     # Identity of the human user this worker process runs on behalf of.
     # NULL for legacy/unattributed workers.
-    user_id: Optional[str] = Field(default=None, foreign_key="users.id")
+    user_id: str | None = Field(default=None, foreign_key="users.id")
     # Bearer token issued at registration; required for fetching guild secrets
     # (Claude credentials, GitHub token) over REST. NULL on legacy rows that
     # predate the auth requirement — those workers must re-register to get a
     # token before they can fetch credentials.
-    auth_token: Optional[str] = None
+    auth_token: str | None = None
     # Human-readable label: ``hostname[:3]/worker_id`` (e.g. ``tok/w-g2otus``).
     # NULL on rows created before this column was added; the API falls back to
     # worker_id for those legacy rows.
-    name: Optional[str] = None
+    name: str | None = None
 
 
 class Task(SQLModel, table=True):
@@ -122,39 +121,39 @@ class Task(SQLModel, table=True):
     guild_id: int = Field(foreign_key="guilds.id")
     description: str
     tool: str = Field(default="claude")
-    issue_number: Optional[int] = None
-    issue_repo: Optional[str] = None
+    issue_number: int | None = None
+    issue_repo: str | None = None
     state: str = Field(default="pending")
-    branch: Optional[str] = None
-    worktree_path: Optional[str] = None
-    pr_url: Optional[str] = None
+    branch: str | None = None
+    worktree_path: str | None = None
+    pr_url: str | None = None
     # Explicit PR coordinates extracted from pr_url at PR-creation time, so
     # github webhook events can be linked back to the task without fragile
     # URL substring matching. Both NULL until the worker reports a PR.
-    pr_number: Optional[int] = None
-    pr_repo: Optional[str] = None
+    pr_number: int | None = None
+    pr_repo: str | None = None
     created_at: str
-    finished_at: Optional[str] = None
-    name: Optional[str] = None
-    parent_task_id: Optional[str] = None
-    phase: Optional[str] = Field(default="execute")
+    finished_at: str | None = None
+    name: str | None = None
+    parent_task_id: str | None = None
+    phase: str | None = Field(default="execute")
     # ISO-8601 UTC timestamp at which this task is considered soft-deleted.
     # NULL = live; once `now() > deleted_at`, list/get queries hide the row.
-    deleted_at: Optional[str] = None
+    deleted_at: str | None = None
     # github_user_id of the human who initiated this task. Used to route
     # worker-driven foreman events (task-complete, etc.) back to the originator's
     # foreman thread in multi-user guilds. NULL on legacy/system tasks.
-    user_id: Optional[str] = None
+    user_id: str | None = None
 
 
 class GithubToken(SQLModel, table=True):
     __tablename__ = "github_tokens"
 
     github_user_id: str = Field(primary_key=True)
-    github_username: Optional[str] = None
+    github_username: str | None = None
     access_token: str
     token_type: str = Field(default="bearer")
-    scope: Optional[str] = None
+    scope: str | None = None
     created_at: str
     updated_at: str
 
@@ -175,10 +174,10 @@ class User(SQLModel, table=True):
     # guilds.github_user_id, etc).
     id: str = Field(primary_key=True)
     github_id: str = Field(unique=True)
-    github_login: Optional[str] = None
-    email: Optional[str] = None
-    display_name: Optional[str] = None
-    avatar_url: Optional[str] = None
+    github_login: str | None = None
+    email: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
     created_at: str
     updated_at: str
 
@@ -197,19 +196,19 @@ class GuildMember(SQLModel, table=True):
 class TaskLog(SQLModel, table=True):
     __tablename__ = "task_logs"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
-    task_id: Optional[str] = Field(default=None, foreign_key="tasks.id")
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: str | None = Field(default=None, foreign_key="tasks.id")
     timestamp: str
     line: str
-    worker_id: Optional[str] = None
-    agent_id: Optional[str] = None
-    data: Optional[str] = None  # JSON: full tool input/output for click-to-expand
+    worker_id: str | None = None
+    agent_id: str | None = None
+    data: str | None = None  # JSON: full tool input/output for click-to-expand
 
 
 class ClaudeCredentials(SQLModel, table=True):
     __tablename__ = "claude_credentials"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id", unique=True)
     credentials_blob: str  # base64-encoded tar.gz of ~/.claude/
@@ -219,7 +218,7 @@ class ClaudeCredentials(SQLModel, table=True):
 class GuildKey(SQLModel, table=True):
     __tablename__ = "guild_keys"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id", unique=True)
     key_id: str  # "kid" in JWK
@@ -228,15 +227,15 @@ class GuildKey(SQLModel, table=True):
     created_at: str
     # When set, served verbatim at /.well-known/jwks.json instead of the
     # auto-generated key. Stored as JSON text ({"keys": [...]}).
-    custom_jwks: Optional[str] = None
+    custom_jwks: str | None = None
     # Private key in JWK format for backend signing; never served publicly.
-    private_key_jwk: Optional[str] = None
+    private_key_jwk: str | None = None
 
 
 class ForemanTurn(SQLModel, table=True):
     __tablename__ = "foreman_turns"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
     user_id: str
@@ -245,30 +244,30 @@ class ForemanTurn(SQLModel, table=True):
     # 1 if this "user" turn carries tool_results (not human input); 0 otherwise
     is_tool_response: int = Field(default=0)
     # For tool_result turns: id of the assistant turn whose tool_use blocks this answers
-    parent_id: Optional[int] = Field(default=None, foreign_key="foreman_turns.id")
+    parent_id: int | None = Field(default=None, foreign_key="foreman_turns.id")
     created_at: str
     # Token usage from the API response (assistant turns only; NULL for user/system turns)
-    input_tokens: Optional[int] = None
-    output_tokens: Optional[int] = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 class GithubEvent(SQLModel, table=True):
     __tablename__ = "github_events"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
     # task_id is nullable because an event may arrive before we've linked the
     # PR to a task (e.g. webhook fires for a manually-opened PR).
-    task_id: Optional[str] = Field(default=None, foreign_key="tasks.id")
+    task_id: str | None = Field(default=None, foreign_key="tasks.id")
     # X-GitHub-Delivery header value; UNIQUE so GitHub redelivery is a no-op.
     delivery_id: str = Field(unique=True)
     event_type: str
-    action: Optional[str] = None
+    action: str | None = None
     repo: str  # owner/repo
-    pr_number: Optional[int] = None
-    pr_url: Optional[str] = None
-    sender_login: Optional[str] = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    sender_login: str | None = None
     payload_json: str
     created_at: str
 
@@ -296,7 +295,7 @@ class TaskEvent(SQLModel, table=True):
 
     __tablename__ = "task_events"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     task_id: str = Field(foreign_key="tasks.id")
     # "pending-followup" is the only event_type currently; reserved for future use.
     event_type: str

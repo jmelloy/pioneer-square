@@ -113,7 +113,9 @@ async def _sweep_stale_workers_once() -> int:
 
         stale_agents = (
             await db.execute(
-                select(Agent.id, Agent.guild_id, Agent.worker_id, Guild.guild_id.label("guild_slug"))
+                select(
+                    Agent.id, Agent.guild_id, Agent.worker_id, Guild.guild_id.label("guild_slug")
+                )
                 .join(Guild, Guild.id == Agent.guild_id)
                 .where(Agent.state != "offline")
                 .where(Agent.last_seen.isnot(None))

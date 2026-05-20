@@ -40,7 +40,7 @@ async def set_agent_state(guild_id: str, agent_id: str, state: str) -> None:
         guild_pk = await get_guild_pk(db, guild_id)
         await db.execute(
             update(Agent)
-            .where(Agent.id == agent_id, Agent.guild_pk == guild_pk)
+            .where(Agent.id == agent_id, Agent.guild_id == guild_pk)
             .values(state=state, activity=None)
         )
         await db.commit()

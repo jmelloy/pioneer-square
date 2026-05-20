@@ -136,8 +136,8 @@ def insert_guild(
                 (owner_user_id, owner_user_id, owner_user_id, now, now),
             )
             cur.execute(
-                "INSERT INTO guild_members (guild_pk, user_id, role, created_at) "
-                "VALUES (%s, %s, %s, %s) ON CONFLICT (guild_pk, user_id) DO NOTHING",
+                "INSERT INTO guild_members (guild_id, user_id, role, created_at) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (guild_id, user_id) DO NOTHING",
                 (guild_pk, owner_user_id, "owner", now),
             )
 
@@ -156,7 +156,7 @@ def insert_member(db_url: str, guild_id: str, user_id: str, role: str = "member"
         guild_pk = row["id"] if row else None
         if guild_pk:
             cur.execute(
-                "INSERT INTO guild_members (guild_pk, user_id, role, created_at) "
-                "VALUES (%s, %s, %s, %s) ON CONFLICT (guild_pk, user_id) DO UPDATE SET role = EXCLUDED.role",
+                "INSERT INTO guild_members (guild_id, user_id, role, created_at) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT (guild_id, user_id) DO UPDATE SET role = EXCLUDED.role",
                 (guild_pk, user_id, role, now),
             )

@@ -19,7 +19,7 @@ def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, co
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
-            "INSERT INTO foreman_turns (guild_pk, user_id, role, content_json, is_tool_response, created_at) "
+            "INSERT INTO foreman_turns (guild_id, user_id, role, content_json, is_tool_response, created_at) "
             "VALUES (%s, %s, %s, %s, %s, %s)",
             (guild_pk, user_id, role, f'"{content}"', 0, now),
         )

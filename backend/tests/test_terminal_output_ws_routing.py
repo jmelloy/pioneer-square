@@ -61,7 +61,7 @@ def _insert_guild_worker(db_url: str, *, guild_id: str, worker_id: str) -> None:
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
-            "INSERT INTO workers (id, guild_pk, repos, state, created_at)"
+            "INSERT INTO workers (id, guild_id, repos, state, created_at)"
             " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
             (worker_id, guild_pk, now),
         )

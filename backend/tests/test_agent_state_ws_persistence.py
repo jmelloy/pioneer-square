@@ -73,7 +73,7 @@ def _insert_guild_worker_task(
         )
         guild_pk = cur.fetchone()["id"]
         cur.execute(
-            "INSERT INTO workers (id, guild_pk, repos, state, created_at)"
+            "INSERT INTO workers (id, guild_id, repos, state, created_at)"
             " VALUES (%s, %s, '[]', 'online', %s)",
             (worker_id, guild_pk, now),
         )
@@ -82,7 +82,7 @@ def _insert_guild_worker_task(
         # these tests the task state is incidental — we're checking the
         # agent-state path, not the task lifecycle.
         cur.execute(
-            "INSERT INTO tasks (id, worker_id, guild_pk, description, tool, state, created_at)"
+            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, created_at)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (task_id, worker_id, guild_pk, "test task", "claude", "awaiting-review", now),
         )
@@ -279,8 +279,8 @@ def test_guild_get_returns_current_task_id(client):
         cur.execute("SELECT id FROM guilds WHERE guild_id = %s", (guild_id,))
         guild_pk = cur.fetchone()["id"]
         cur.execute(
-            "INSERT INTO guild_members (guild_pk, user_id, role, created_at)"
-            " VALUES (%s, %s, 'member', %s) ON CONFLICT (guild_pk, user_id) DO NOTHING",
+            "INSERT INTO guild_members (guild_id, user_id, role, created_at)"
+            " VALUES (%s, %s, 'member', %s) ON CONFLICT (guild_id, user_id) DO NOTHING",
             (guild_pk, "u-gas4", now),
         )
 

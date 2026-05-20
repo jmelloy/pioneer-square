@@ -68,7 +68,7 @@ def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
-            "INSERT INTO workers (id, guild_pk, repos, state, created_at)"
+            "INSERT INTO workers (id, guild_id, repos, state, created_at)"
             " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
             (worker_id, guild_pk, now),
         )
@@ -206,7 +206,7 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
         guild_pk = row["id"]
         cur.execute(
             "INSERT INTO agents "
-            "(id, guild_pk, worker_id, name, type, state, joined_at, last_seen) "
+            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen) "
             "VALUES (%s, %s, %s, 'Test', 'worker', 'idle', %s, %s)",
             (agent_id, guild_pk, worker_id, now, now),
         )
@@ -279,7 +279,7 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
         # the buggy WS close handler ran: agent marked offline, worker not.
         cur.execute(
             "INSERT INTO agents "
-            "(id, guild_pk, worker_id, name, type, state, joined_at, last_seen) "
+            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen) "
             "VALUES (%s, %s, %s, 'Test', 'worker', 'offline', %s, %s)",
             (agent_id, guild_pk, worker_id, now, old),
         )
@@ -322,7 +322,7 @@ def test_sweeper_skips_fresh_workers(client):
         guild_pk = row["id"]
         cur.execute(
             "INSERT INTO agents "
-            "(id, guild_pk, worker_id, name, type, state, joined_at, last_seen) "
+            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen) "
             "VALUES (%s, %s, %s, 'Test', 'worker', 'idle', %s, %s)",
             (agent_id, guild_pk, worker_id, now, now),
         )
@@ -367,7 +367,7 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
         # Task stuck in "working".
         cur.execute(
             "INSERT INTO tasks "
-            "(id, worker_id, guild_pk, description, tool, state, created_at)"
+            "(id, worker_id, guild_id, description, tool, state, created_at)"
             " VALUES (%s, %s, %s, 'stuck task', 'claude', 'working', %s)"
             " ON CONFLICT DO NOTHING",
             (task_id, worker_id, guild_pk, now),
@@ -375,7 +375,7 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
         # Agent is idle (finished), not actively running anything.
         cur.execute(
             "INSERT INTO agents "
-            "(id, guild_pk, worker_id, name, type, state, joined_at, last_seen, current_task_id)"
+            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen, current_task_id)"
             " VALUES (%s, %s, %s, 'Test', 'worker', 'idle', %s, %s, NULL)"
             " ON CONFLICT DO NOTHING",
             (agent_id, guild_pk, worker_id, now, now),

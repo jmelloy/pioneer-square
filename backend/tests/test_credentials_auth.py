@@ -32,9 +32,9 @@ def _seed_claude_credentials(db_url: str, guild_id: str, blob: str = "BLOB") -> 
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
-            "INSERT INTO claude_credentials (guild_pk, credentials_blob, updated_at) "
+            "INSERT INTO claude_credentials (guild_id, credentials_blob, updated_at) "
             "VALUES (%s, %s, %s) "
-            "ON CONFLICT (guild_pk) DO UPDATE"
+            "ON CONFLICT (guild_id) DO UPDATE"
             " SET credentials_blob = EXCLUDED.credentials_blob,"
             " updated_at = EXCLUDED.updated_at",
             (guild_pk, blob, now),
@@ -154,7 +154,7 @@ def test_post_claude_credentials_accepts_worker_token(client):
     with raw_conn(db_url) as (conn, cur):
         cur.execute(
             "SELECT cc.credentials_blob FROM claude_credentials cc "
-            "JOIN guilds g ON g.id = cc.guild_pk "
+            "JOIN guilds g ON g.id = cc.guild_id "
             "WHERE g.guild_id = %s AND g.deleted_at IS NULL",
             ("g-write",),
         )

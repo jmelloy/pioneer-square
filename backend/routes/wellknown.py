@@ -409,7 +409,7 @@ async def set_jwks_config(
         if not row:
             pub_pem, priv_pem = _generate_ed25519_pems()
             row = GuildKey(
-                guild_pk=guild_pk,
+                guild_id=guild_pk,
                 key_id=secrets.token_urlsafe(16),
                 public_key_pem=pub_pem,
                 private_key_pem=priv_pem,

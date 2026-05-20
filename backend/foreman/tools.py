@@ -676,7 +676,7 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
         result = await db.execute(
             select(GithubToken.access_token, GithubToken.github_username)
             .join(GuildMember, GuildMember.user_id == GithubToken.github_user_id)
-            .where(GuildMember.guild_pk == guild_pk, GuildMember.role == "owner")
+            .where(GuildMember.guild_id == guild_pk, GuildMember.role == "owner")
             .limit(1)
         )
         row = result.first()
@@ -695,7 +695,7 @@ async def _guild_private_key_pem(guild_id: str) -> str | None:
         if guild_pk is None:
             return None
         result = await db.execute(
-            select(GuildKey.private_key_pem).where(GuildKey.guild_pk == guild_pk)
+            select(GuildKey.private_key_pem).where(GuildKey.guild_id == guild_pk)
         )
         return result.scalar_one_or_none()
     finally:
@@ -743,7 +743,7 @@ async def _select_followup_worker(
     result = await db.execute(
         select(Agent.worker_id)
         .where(
-            Agent.guild_pk == guild_pk,
+            Agent.guild_id == guild_pk,
             Agent.state == "idle",
             Agent.worker_id.is_not(None),
         )
@@ -1077,7 +1077,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     Task(
                         id=task_id,
                         worker_id=None,
-                        guild_pk=guild_pk,
+                        guild_id=guild_pk,
                         name=name,
                         description=desc,
                         tool="claude",
@@ -1117,7 +1117,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 repos: list[str] = inp.get("repos") or ([primary_repo] if primary_repo else [])
                 worker_result = await db.execute(
                     select(Worker.id, Worker.repos, Worker.org).where(
-                        Worker.id == wid, Worker.guild_pk == guild_pk
+                        Worker.id == wid, Worker.guild_id == guild_pk
                     )
                 )
                 worker_row = worker_result.one_or_none()
@@ -1159,7 +1159,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         update_values["issue_repo"] = inp["issue_repo"]
                     await db.execute(
                         update(Task)
-                        .where(Task.id == existing_task_id, Task.guild_pk == guild_pk)
+                        .where(Task.id == existing_task_id, Task.guild_id == guild_pk)
                         .values(**update_values)
                     )
                     await db.commit()
@@ -1195,7 +1195,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         Task(
                             id=task_id,
                             worker_id=wid,
-                            guild_pk=guild_pk,
+                            guild_id=guild_pk,
                             name=name,
                             description=desc,
                             tool=tool,
@@ -1241,7 +1241,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         Task.tool,
                         Task.issue_number,
                         Task.issue_repo,
-                    ).where(Task.id == task_id, Task.guild_pk == guild_pk)
+                    ).where(Task.id == task_id, Task.guild_id == guild_pk)
                 )
                 row = result.one_or_none()
                 if not row:
@@ -1368,7 +1368,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     is_error = True
                 else:
                     result = await db.execute(
-                        select(Task.worker_id).where(Task.id == task_id, Task.guild_pk == guild_pk)
+                        select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_pk)
                     )
                     worker_id_val = result.scalar_one_or_none()
                     if not worker_id_val:
@@ -1427,7 +1427,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 instructions = inp["instructions"]
                 result = await db.execute(
                     select(Task.worker_id, Task.state).where(
-                        Task.id == task_id, Task.guild_pk == guild_pk
+                        Task.id == task_id, Task.guild_id == guild_pk
                     )
                 )
                 row = result.one_or_none()
@@ -1466,7 +1466,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 reason = inp.get("reason", "")
                 result = await db.execute(
                     select(Task.worker_id, Task.state).where(
-                        Task.id == task_id, Task.guild_pk == guild_pk
+                        Task.id == task_id, Task.guild_id == guild_pk
                     )
                 )
                 row = result.one_or_none()
@@ -1513,7 +1513,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 wid = inp["worker_id"]
                 reason = inp.get("reason", "")
                 worker_result = await db.execute(
-                    select(Worker.id).where(Worker.id == wid, Worker.guild_pk == guild_pk)
+                    select(Worker.id).where(Worker.id == wid, Worker.guild_id == guild_pk)
                 )
                 if worker_result.scalar_one_or_none() is None:
                     result_text = f"Worker {wid} not found."
@@ -1530,7 +1530,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 task_id = inp["task_id"]
                 limit = min(int(inp.get("log_lines", 10)), 50)
                 task_result = await db.execute(
-                    select(Task).where(Task.id == task_id, Task.guild_pk == guild_pk)
+                    select(Task).where(Task.id == task_id, Task.guild_id == guild_pk)
                 )
                 task = task_result.scalar_one_or_none()
                 if not task:

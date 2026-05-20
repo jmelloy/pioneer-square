@@ -97,7 +97,7 @@ async def list_guild_tasks(
                 Task.finished_at,
                 Task.deleted_at,
             )
-            .where(Task.guild_pk == guild_pk, live_tasks_filter())
+            .where(Task.guild_id == guild_pk, live_tasks_filter())
             .order_by(Task.created_at.desc())
             .limit(100)
         )
@@ -121,7 +121,7 @@ async def get_task_logs(
         result = await db.execute(
             select(Task.id).where(
                 Task.id == task_id,
-                Task.guild_pk == guild_pk,
+                Task.guild_id == guild_pk,
                 live_tasks_filter(),
             )
         )
@@ -218,7 +218,7 @@ async def create_task_followup(
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
             select(Task.worker_id, Task.state, Task.branch).where(
-                Task.id == task_id, Task.guild_pk == guild_pk
+                Task.id == task_id, Task.guild_id == guild_pk
             )
         )
         row = result.one_or_none()
@@ -263,7 +263,7 @@ async def finalize_task_endpoint(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Task.worker_id).where(Task.id == task_id, Task.guild_pk == guild_pk)
+            select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_pk)
         )
         worker_id = result.scalar_one_or_none()
         if not worker_id:
@@ -312,7 +312,7 @@ async def cancel_task_endpoint(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_pk == guild_pk)
+            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_id == guild_pk)
         )
         row = result.one_or_none()
         if not row:
@@ -367,7 +367,7 @@ async def redirect_task_endpoint(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_pk == guild_pk)
+            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_id == guild_pk)
         )
         row = result.one_or_none()
         if not row:
