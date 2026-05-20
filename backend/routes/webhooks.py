@@ -14,10 +14,12 @@ can decide whether to send_followup, finalize, or no-op.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import logging
+import os
 from datetime import UTC, datetime
 
 from database import get_db
@@ -27,13 +29,19 @@ from models import GithubEvent, Guild, Message, Task
 from sqlalchemy import select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
-from util.tasks import spawn
 
 from foreman import reset_foreman_poll, run_foreman_ai
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# How long (seconds) to wait for further events on the same PR before
+# delivering the buffered batch to the foreman.  GitHub often sends several
+# check_run completions and a review comment within a second of each other;
+# this window lets them coalesce into a single foreman invocation.
+# Configurable via WEBHOOK_DEBOUNCE_SECONDS (default: 3 seconds).
+DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "3"))
 
 
 # Cap on stored payloads. GitHub webhook payloads are typically <50 KB but
@@ -46,6 +54,157 @@ _MAX_PAYLOAD_BYTES = 64 * 1024
 # most CI/automation traffic — filtering them out would silence the very
 # events we want to react to.
 _BOT_OK_EVENTS = frozenset({"check_run", "check_suite", "status"})
+
+
+class DebounceQueue:
+    """Per-PR debounce queue that coalesces rapid webhook events.
+
+    State is scoped to the instance so tests can create an isolated copy
+    without touching the module-level singleton.
+    """
+
+    def __init__(self, window_seconds: float = DEBOUNCE_WINDOW_SECONDS) -> None:
+        self._window = window_seconds
+        self._buffers: dict[str, list[tuple[str, str | None]]] = {}
+        self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+        self._generation: dict[str, int] = {}
+
+    def reset(self) -> None:
+        """Cancel all in-flight timers and clear state (sync, no await).
+
+        Prefer ``shutdown()`` in async contexts — this variant exists for
+        synchronous helpers that cannot await.
+        """
+        for task in self._tasks.values():
+            if not task.done():
+                task.cancel()
+        self._tasks.clear()
+        self._buffers.clear()
+        self._generation.clear()
+
+    async def shutdown(self) -> None:
+        """Cancel all in-flight timers and wait for them to finish.
+
+        Awaiting the cancelled tasks lets them complete cleanly and prevents
+        "Task destroyed but pending" warnings.  Call this at server shutdown
+        and in async test teardown.
+        """
+        pending = [t for t in self._tasks.values() if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._tasks.clear()
+        self._buffers.clear()
+        self._generation.clear()
+
+    @staticmethod
+    def _log_fire_error(task: asyncio.Task) -> None:  # type: ignore[type-arg]
+        """Done callback: log any unexpected error from a _fire task."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.exception(
+                "Debounce fire task %s raised an unexpected error",
+                task.get_name(),
+                exc_info=exc,
+            )
+
+    async def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None]]) -> None:
+        summaries = [s for s, _ in items]
+        combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
+        # Use the last event's user_id: in typical bursts the final event is a
+        # human action (review, comment) that arrives after CI bot events,
+        # so this attribution is usually more meaningful than the first event's.
+        user_id = items[-1][1]
+        await run_foreman_ai(guild_id, combined, user_id=user_id)
+        reset_foreman_poll(guild_id)
+        logger.info(
+            "github webhook debounce fired key=%s events=%d guild=%s",
+            key,
+            len(items),
+            guild_id,
+        )
+
+    async def _fire(self, key: str, guild_id: str, gen: int) -> None:
+        """Sleep for the debounce window then deliver all buffered events.
+
+        ``gen`` is the generation counter captured when this timer was created.
+        schedule() bumps the generation *before* cancelling the old task, so
+        even if the old task's sleep resolves during the cancel window and the
+        task runs during ``await gather()``, it will see a stale generation
+        and bail out without delivering — eliminating the task-identity race.
+        """
+        try:
+            await asyncio.sleep(self._window)
+        except asyncio.CancelledError:
+            # External cancellation (shutdown or test teardown): preserve the
+            # buffer so the next schedule() can re-use it, and exit cleanly.
+            raise
+        # Stale-generation guard: if schedule() ran after our sleep started it
+        # bumped the generation counter before cancelling us.  If the cancel
+        # arrived too late (sleep future already resolved) and this coroutine
+        # resumed normally, the generation mismatch catches the stale timer
+        # and prevents double delivery.
+        if self._generation.get(key) != gen:
+            return
+        items = self._buffers.pop(key, [])
+        self._tasks.pop(key, None)
+        self._generation.pop(key, None)
+        if not items:
+            return
+        await self._deliver(key, guild_id, items)
+
+    async def schedule(
+        self,
+        key: str,
+        guild_id: str,
+        summary: str,
+        user_id: str | None,
+    ) -> None:
+        """Buffer *summary* and (re)start the per-PR debounce timer.
+
+        Each call resets the window so the foreman is only invoked after
+        _window seconds of silence on this PR.  The old timer is cancelled
+        and awaited before the new one starts so there is never a window
+        where two timers for the same key are both live.
+        """
+        existing = self._tasks.pop(key, None)
+        # Bump the generation BEFORE cancelling so that even if the old task's
+        # sleep has already resolved and the task runs during ``await gather()``,
+        # it will see a stale generation and bail out without delivering.
+        gen = self._generation.get(key, 0) + 1
+        self._generation[key] = gen
+        if existing and not existing.done():
+            existing.cancel()
+            await asyncio.gather(existing, return_exceptions=True)
+        self._buffers.setdefault(key, []).append((summary, user_id))
+        # Use asyncio.create_task directly: the task is kept alive by
+        # self._tasks[key] (a strong reference), so GC is not a concern.
+        # _log_fire_error handles unexpected exceptions via the done callback.
+        task = asyncio.create_task(
+            self._fire(key, guild_id, gen),
+            name=f"foreman.debounce:{key}",
+        )
+        task.add_done_callback(DebounceQueue._log_fire_error)
+        self._tasks[key] = task
+        logger.info(
+            "github webhook debounce scheduled key=%s buffered=%d",
+            key,
+            len(self._buffers[key]),
+        )
+
+
+_debounce_queue = DebounceQueue()
+
+
+async def shutdown_debouncer() -> None:
+    """Cancel all in-flight debounce timers and wait for them to complete.
+
+    Call at server shutdown and in async test teardown fixtures.
+    """
+    await _debounce_queue.shutdown()
 
 
 def _verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
@@ -466,11 +625,8 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         summary = _build_foreman_summary(
             event_type, action, payload, repo, pr_number, task_id, sender_login
         )
-        spawn(
-            run_foreman_ai(guild_id, summary, user_id=task_user_id),
-            name=f"foreman.github-event:{delivery_id}",
-        )
-        reset_foreman_poll(guild_id)
+        key = f"{guild_id}:{task_id}"
+        await _debounce_queue.schedule(key, guild_id, summary, task_user_id)
     else:
         logger.info(
             "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",

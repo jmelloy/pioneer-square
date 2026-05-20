@@ -11,12 +11,14 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import os
 import sqlite3
 import sys
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -264,19 +266,17 @@ def test_webhook_dispatches_to_foreman_when_task_matches(client):
     )
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="pull_request", delivery="d-disp-1")
-    with (
-        patch("routes.webhooks.spawn") as mock_spawn,
-        patch("routes.webhooks.reset_foreman_poll") as mock_reset,
-    ):
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
         resp = test_client.post("/webhooks/github/gd1", content=body, headers=headers)
     assert resp.status_code == 202
-    # spawn() called once, with run_foreman_ai coroutine
-    assert mock_spawn.call_count == 1
-    call_kwargs = mock_spawn.call_args
-    coro = call_kwargs.args[0]
-    assert hasattr(coro, "send")  # it's a coroutine
-    coro.close()  # so asyncio doesn't whine about a never-awaited coroutine
-    assert mock_reset.call_count == 1
+    # _debounce_queue.schedule called once with the right guild + user
+    assert mock_q.schedule.call_count == 1
+    key_arg, guild_arg, summary_arg, user_arg = mock_q.schedule.call_args.args
+    assert "gd1" in key_arg
+    assert guild_arg == "gd1"
+    assert "pull_request" in summary_arg
+    assert user_arg == "user-42"
 
 
 def test_webhook_skips_foreman_when_no_task_match(client):
@@ -286,10 +286,11 @@ def test_webhook_skips_foreman_when_no_task_match(client):
     payload = _pr_payload(action="opened", repo="o/r", number=99)
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="pull_request", delivery="d-disp-2")
-    with patch("routes.webhooks.spawn") as mock_spawn:
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
         resp = test_client.post("/webhooks/github/gd2", content=body, headers=headers)
     assert resp.status_code == 202
-    assert mock_spawn.call_count == 0
+    assert mock_q.schedule.call_count == 0
 
 
 def test_webhook_skips_foreman_for_bot_on_non_ci(client):
@@ -317,10 +318,11 @@ def test_webhook_skips_foreman_for_bot_on_non_ci(client):
     }
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="issue_comment", delivery="d-bot")
-    with patch("routes.webhooks.spawn") as mock_spawn:
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
         resp = test_client.post("/webhooks/github/gd3", content=body, headers=headers)
     assert resp.status_code == 202
-    assert mock_spawn.call_count == 0
+    assert mock_q.schedule.call_count == 0
 
 
 def test_webhook_dispatches_for_ci_bot_check_run(client):
@@ -349,15 +351,249 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
     }
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="check_run", delivery="d-ci-1")
-    with (
-        patch("routes.webhooks.spawn") as mock_spawn,
-        patch("routes.webhooks.reset_foreman_poll"),
-    ):
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
         resp = test_client.post("/webhooks/github/gd4", content=body, headers=headers)
     assert resp.status_code == 202
-    assert mock_spawn.call_count == 1
-    coro = mock_spawn.call_args.args[0]
-    coro.close()
+    assert mock_q.schedule.call_count == 1
+    key_arg, guild_arg, summary_arg, _user_arg = mock_q.schedule.call_args.args
+    assert "gd4" in key_arg
+    assert guild_arg == "gd4"
+    assert "rspec" in summary_arg
+
+
+# ---------------------------------------------------------------------------
+# Debounce behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestDebounce:
+    """Per-PR debounce timer: rapid events coalesce; separated events deliver separately."""
+
+    @asynccontextmanager
+    async def _patched_env(self, wh):
+        """Async context manager: fresh DebounceQueue instance + captured foreman calls.
+
+        Each call creates a brand-new DebounceQueue so tests cannot bleed state
+        into or out of the module-level singleton.  The queue is shut down on
+        exit so any in-flight timers are cancelled and awaited cleanly.
+        """
+        self._foreman_calls: list[tuple[str, str, str | None]] = []
+
+        async def fake_run_foreman(guild_id, summary, *, user_id=None):
+            self._foreman_calls.append((guild_id, summary, user_id))
+
+        queue = wh.DebounceQueue(window_seconds=0.05)
+        with (
+            patch.object(wh, "_debounce_queue", queue),
+            patch.object(wh, "run_foreman_ai", new=fake_run_foreman),
+            patch.object(wh, "reset_foreman_poll"),
+        ):
+            try:
+                yield
+            finally:
+                await queue.shutdown()
+
+    async def test_rapid_events_single_foreman_call(self):
+        """Three events within the 0.05 s window → one combined foreman invocation."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            await wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event A", "u1")
+            await wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event B", "u1")
+            await wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event C", "u1")
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 1, f"expected 1 call, got {self._foreman_calls}"
+        _, summary, _ = self._foreman_calls[0]
+        assert "event A" in summary
+        assert "event B" in summary
+        assert "event C" in summary
+
+    async def test_slow_events_separate_foreman_calls(self):
+        """Events separated by > debounce window → two independent foreman calls."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            await wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event X", "u2")
+            await asyncio.sleep(0.2)  # first timer fires
+            await wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event Y", "u2")
+            await asyncio.sleep(0.2)  # second timer fires
+
+        assert len(self._foreman_calls) == 2
+        assert "event X" in self._foreman_calls[0][1]
+        assert "event Y" in self._foreman_calls[1][1]
+
+    async def test_reset_cancels_previous_timer(self):
+        """New event before timer fires cancels the old timer (no early delivery)."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            await wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "first", "u3")
+            await asyncio.sleep(0.02)  # less than the 0.05 s window
+            await wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "second", "u3")
+            await asyncio.sleep(0.2)  # let the reset timer fire
+
+        # Only one delivery; the first timer was cancelled before it could fire
+        assert len(self._foreman_calls) == 1
+        _, summary, _ = self._foreman_calls[0]
+        assert "first" in summary
+        assert "second" in summary
+
+    async def test_independent_prs_not_merged(self):
+        """Events on different PR keys have independent timers and fire separately."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            await wh._debounce_queue.schedule("g-ind:t-pr1", "g-ind", "pr1 event", "u4")
+            await wh._debounce_queue.schedule("g-ind:t-pr2", "g-ind", "pr2 event", "u4")
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 2
+        summaries = {c[1] for c in self._foreman_calls}
+        assert any("pr1 event" in s for s in summaries)
+        assert any("pr2 event" in s for s in summaries)
+
+    async def test_state_isolation_between_tests(self):
+        """Each _patched_env provides a fresh DebounceQueue with no state from prior tests."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            assert wh._debounce_queue._buffers == {}
+            assert wh._debounce_queue._tasks == {}
+            assert wh._debounce_queue._generation == {}
+
+    async def test_shutdown_cancels_pending_timers(self):
+        """shutdown() cancels in-flight timers and clears all state without delivering."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            await wh._debounce_queue.schedule("g-sd:t-sd1", "g-sd", "pending event", "u6")
+            await wh._debounce_queue.shutdown()
+            assert len(self._foreman_calls) == 0
+            assert wh._debounce_queue._buffers == {}
+            assert wh._debounce_queue._tasks == {}
+            assert wh._debounce_queue._generation == {}
+
+    async def test_stale_generation_does_not_deliver(self):
+        """_fire coroutine with stale generation must not deliver even if sleep completes."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            q = wh._debounce_queue
+            key = "g-stalegen:t-sg1"
+
+            # State as if a newer timer (gen=2) has taken over
+            q._buffers[key] = [("stale event", "u8")]
+            q._generation[key] = 2
+
+            # Run _fire with the old gen (1) — stale coroutine waking up
+            await q._fire(key, "g-stalegen", 1)
+
+            assert len(self._foreman_calls) == 0
+            assert q._buffers.get(key) == [("stale event", "u8")]
+
+    async def test_cancelled_events_not_lost(self):
+        """Events buffered before an external cancellation are preserved for re-delivery."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            await wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "first event", "u5")
+            await wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "second event", "u5")
+
+            # Externally cancel the pending timer
+            task = wh._debounce_queue._tasks.get("g-cl:t-cl1")
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(0.0)
+
+            # Buffer must still hold both events
+            assert len(wh._debounce_queue._buffers.get("g-cl:t-cl1", [])) == 2
+
+            # Scheduling a third event re-uses the preserved buffer and delivers all three
+            await wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "third event", "u5")
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 1
+        _, summary, _ = self._foreman_calls[0]
+        assert "first event" in summary
+        assert "second event" in summary
+        assert "third event" in summary
+
+    async def test_generation_counter_increments_on_each_reset(self):
+        """Each schedule() call increments the generation; external cancel does not."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            key = "g-gci:t-gci1"
+            assert wh._debounce_queue._generation.get(key) is None
+
+            await wh._debounce_queue.schedule(key, "g-gci", "event 1", "u9")
+            assert wh._debounce_queue._generation[key] == 1
+
+            await wh._debounce_queue.schedule(key, "g-gci", "event 2", "u9")
+            assert wh._debounce_queue._generation[key] == 2
+
+            await wh._debounce_queue.schedule(key, "g-gci", "event 3", "u9")
+            assert wh._debounce_queue._generation[key] == 3
+
+            # External cancel must NOT change the generation
+            task = wh._debounce_queue._tasks[key]
+            task.cancel()
+            await asyncio.sleep(0.0)
+            assert wh._debounce_queue._generation[key] == 3
+
+            await asyncio.sleep(0.2)  # nothing fires — timer was externally cancelled
+
+        assert len(self._foreman_calls) == 0
+
+    async def test_external_cancel_preserves_buffer_for_redelivery(self):
+        """External cancellation leaves generation + buffer intact for the next schedule()."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            key = "g-ecr:t-ecr1"
+
+            await wh._debounce_queue.schedule(key, "g-ecr", "event A", "u10")
+            assert wh._debounce_queue._generation[key] == 1
+
+            task = wh._debounce_queue._tasks[key]
+            task.cancel()
+            await asyncio.sleep(0.0)
+
+            assert wh._debounce_queue._generation[key] == 1
+            assert len(wh._debounce_queue._buffers.get(key, [])) == 1
+
+            await wh._debounce_queue.schedule(key, "g-ecr", "event B", "u10")
+            assert wh._debounce_queue._generation[key] == 2
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 1
+        _, summary, _ = self._foreman_calls[0]
+        assert "event A" in summary
+        assert "event B" in summary
+
+    async def test_race_condition_no_events_dropped(self):
+        """Rapid schedule() cancellation must not silently drop events.
+
+        Sequence: schedule A (gen=1), yield, schedule B (gen=2, cancels timer-1),
+        let timer-2 fire → both A and B must be delivered together.
+        """
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            key = "g-race:t-rc1"
+            await wh._debounce_queue.schedule(key, "g-race", "event A", "u-race")
+            await asyncio.sleep(0)
+            await wh._debounce_queue.schedule(key, "g-race", "event B", "u-race")
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 1, (
+            f"expected exactly one delivery, got {len(self._foreman_calls)}"
+        )
+        _, summary, _ = self._foreman_calls[0]
+        assert "event A" in summary
+        assert "event B" in summary
 
 
 # ---------------------------------------------------------------------------
