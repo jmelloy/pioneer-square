@@ -1349,10 +1349,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     "issueRepo": task_issue_repo,
                                 },
                             )
-                            if (
-                                target_worker_id != original_worker_id
-                                and original_worker_id
-                            ):
+                            if target_worker_id != original_worker_id and original_worker_id:
                                 result_text = (
                                     f"Follow-up reassigned from {original_worker_id} "
                                     f"to {target_worker_id} (task {task_id} on branch {branch})."
