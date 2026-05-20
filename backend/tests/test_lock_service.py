@@ -19,20 +19,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
-from helpers import create_db
+from _test_config import TEST_DATABASE_URL
+from helpers import truncate_all
 from lock_service import LockService
 
 
 @pytest.fixture()
-def db_session(tmp_path, monkeypatch):
-    db_path = str(tmp_path / "test_locks.db")
-    db_url = f"sqlite+aiosqlite:///{db_path}"
-    monkeypatch.setenv("DATABASE_URL", db_url)
-    monkeypatch.setenv("DB_PATH", db_path)
-    create_db(db_path)
-    engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
+def db_session(_setup_schema):
+    """Fresh PostgreSQL session factory for each test."""
+    truncate_all(TEST_DATABASE_URL)
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-    monkeypatch.setattr(database_module, "AsyncSessionLocal", session_factory)
     yield session_factory
 
 

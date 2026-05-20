@@ -18,7 +18,6 @@ per-test guild ids, DB checked while the connections are still open
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
 
@@ -305,22 +304,23 @@ def test_guild_get_returns_current_task_id(client):
 def test_agent_idle_releases_task_lock(client):
     """When an agent transitions to idle, the task lock is released and the
     task is moved out of 'working' so a new follow-up can be dispatched."""
-    test_client, db_path = client
+    test_client, db_url = client
     guild_id, worker_id, task_id, agent_id = "gas-5", "w-gas5", "t-gas5", "a-gas5"
-    _insert_guild_worker_task(db_path, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
+    _insert_guild_worker_task(db_url, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
 
-    now = datetime.now(UTC).isoformat()
-    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-    with sqlite3.connect(db_path) as conn:
-        # Set task to 'working' state (as if a follow-up was dispatched).
-        conn.execute("UPDATE tasks SET state='working' WHERE id=?", (task_id,))
-        # Insert the follow-up lock to simulate a dispatch in progress.
-        conn.execute(
-            "INSERT OR REPLACE INTO locks (key, owner, acquired_at, expires_at)"
-            " VALUES (?, ?, ?, ?)",
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")
+    future = (datetime.now(UTC) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%f")
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute("UPDATE tasks SET state = 'working' WHERE id = %s", (task_id,))
+        cur.execute(
+            "INSERT INTO locks (key, owner, acquired_at, expires_at)"
+            " VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT (key) DO UPDATE"
+            " SET owner = EXCLUDED.owner,"
+            " acquired_at = EXCLUDED.acquired_at,"
+            " expires_at = EXCLUDED.expires_at",
             (f"task:{task_id}", "some-lock-holder", now, future),
         )
-        conn.commit()
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
@@ -353,11 +353,12 @@ def test_agent_idle_releases_task_lock(client):
             msg = ws_obs.receive_json()
             assert msg["state"] == "idle"
 
-    with sqlite3.connect(db_path) as conn:
-        lock_row = conn.execute(
-            "SELECT key FROM locks WHERE key=?", (f"task:{task_id}",)
-        ).fetchone()
-        task_state = conn.execute("SELECT state FROM tasks WHERE id=?", (task_id,)).fetchone()[0]
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute("SELECT key FROM locks WHERE key = %s", (f"task:{task_id}",))
+        lock_row = cur.fetchone()
+        cur.execute("SELECT state FROM tasks WHERE id = %s", (task_id,))
+        task_row = cur.fetchone()
+        task_state = task_row["state"] if task_row else None
 
     assert lock_row is None, "lock should be released when agent goes idle"
     assert task_state == "awaiting-review", (

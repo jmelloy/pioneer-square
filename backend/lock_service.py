@@ -21,8 +21,7 @@ from datetime import UTC, datetime, timedelta
 
 from models import Lock
 from sqlalchemy import delete, select
-from sqlalchemy import insert as sa_insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -58,27 +57,14 @@ class LockService:
             )
         )
 
-        # Use a savepoint so a primary-key conflict rolls back only this
-        # attempt without aborting the enclosing transaction.  The only
-        # IntegrityError expected here is a UNIQUE/PK violation on ``key``
-        # (meaning another caller holds the lock); all other constraint
-        # errors are re-raised.
-        try:
-            async with self._db.begin_nested():
-                await self._db.execute(
-                    sa_insert(Lock).values(
-                        key=key, owner=owner, acquired_at=now_iso, expires_at=expires_at
-                    )
-                )
-            return True
-        except IntegrityError as exc:
-            # Only swallow primary-key / UNIQUE conflicts.  Any other
-            # constraint violation (e.g. a NULL in a NOT NULL column) is
-            # a programming error and should propagate.
-            orig_msg = str(exc.orig).lower() if exc.orig else ""
-            if "unique" not in orig_msg and "primary key" not in orig_msg:
-                raise
-            return False
+        # INSERT ... ON CONFLICT DO NOTHING returns rowcount=1 when the row is
+        # newly inserted and rowcount=0 when the key already exists (lock held).
+        result = await self._db.execute(
+            pg_insert(Lock)
+            .values(key=key, owner=owner, acquired_at=now_iso, expires_at=expires_at)
+            .on_conflict_do_nothing()
+        )
+        return result.rowcount > 0
 
     async def release(self, key: str) -> None:
         """Release *key*. Safe to call even if the lock is not held (idempotent)."""

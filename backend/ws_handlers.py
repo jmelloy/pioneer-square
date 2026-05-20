@@ -373,13 +373,17 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     # so the task doesn't stay stuck in "working" indefinitely.  We must read
     # current_task_id from the DB *before* the update clears it.
     task_id_to_release: str | None = None
+    agent_worker_id_for_release: str | None = None
     if state in _LOCK_RELEASE_AGENT_STATES and agent_id:
         row = await ctx.db.execute(
-            select(Agent.current_task_id).where(
+            select(Agent.current_task_id, Agent.worker_id).where(
                 Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk
             )
         )
-        task_id_to_release = row.scalar_one_or_none()
+        agent_row = row.one_or_none()
+        if agent_row is not None:
+            task_id_to_release = agent_row[0]
+            agent_worker_id_for_release = agent_row[1]
 
     await ctx.db.execute(
         update(Agent)
@@ -387,14 +391,21 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
         .values(**update_vals)
     )
 
-    if task_id_to_release:
-        # Move the task out of "working" so the foreman can decide next steps.
-        await ctx.db.execute(
+    if task_id_to_release and agent_worker_id_for_release:
+        # Guard: only transition the task when the agent's worker is the one
+        # assigned to it.  Prevents a stale current_task_id from releasing a
+        # lock that belongs to a different worker's active execution.
+        res = await ctx.db.execute(
             update(Task)
-            .where(Task.id == task_id_to_release, Task.state == "working")
+            .where(
+                Task.id == task_id_to_release,
+                Task.state == "working",
+                Task.worker_id == agent_worker_id_for_release,
+            )
             .values(state="awaiting-review")
         )
-        await LockService(ctx.db).release(f"task:{task_id_to_release}")
+        if res.rowcount:
+            await LockService(ctx.db).release(f"task:{task_id_to_release}")
 
     await ctx.db.commit()
     msg: dict = {"type": "agent-state", "agentId": agent_id, "state": state}
