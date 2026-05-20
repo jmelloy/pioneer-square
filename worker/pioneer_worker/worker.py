@@ -1647,6 +1647,20 @@ class Worker:
             if is_followup:
                 logger.info("Task %s: attaching worktree %s to branch %s", task_id, wt_path, branch)
                 ok = await git_ops.attach_worktree(repo_path, wt_path, branch)
+                if not ok:
+                    # Branch never reached origin (e.g. original task failed before push).
+                    # Fall back to creating a fresh branch so the follow-up can still run.
+                    logger.warning(
+                        "Task %s: attach failed for %s — branch %s not found on origin; "
+                        "falling back to create_worktree",
+                        task_id,
+                        repo_full,
+                        branch,
+                    )
+                    await emit(
+                        f"[worker] Branch not found on origin; creating fresh branch {branch[:50]}"
+                    )
+                    ok = await git_ops.create_worktree(repo_path, wt_path, branch)
             else:
                 logger.info("Task %s: creating worktree %s on branch %s", task_id, wt_path, branch)
                 ok = await git_ops.create_worktree(repo_path, wt_path, branch)
