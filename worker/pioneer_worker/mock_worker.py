@@ -359,7 +359,7 @@ class MockWorker(Worker):
         return {"ok": True, "taskId": task_id, "kind": outcome.get("kind")}
 
     def _status_snapshot(self) -> dict:
-        return {
+        snap = {
             "workerId": self.cfg.worker_id,
             "workerName": self._worker_name,
             "guildId": self.cfg.guild_id,
@@ -376,6 +376,10 @@ class MockWorker(Worker):
             "activeTasks": list(self._task_outcomes.keys()),
             "queueDepth": self.task_queue.qsize(),
         }
+        # DEPRECATED: "slots" was renamed to "agents". Keep it for one release
+        # so external consumers don't hard-break; will be removed next release.
+        snap["slots"] = snap["agents"]
+        return snap
 
 
 # ────────────────────────────────────────────────────────────────────────────
