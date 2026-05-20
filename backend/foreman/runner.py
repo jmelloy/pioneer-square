@@ -520,43 +520,40 @@ async def run_foreman_ai(
 
     # Build live context for the system prompt
     db = await get_db()
-    try:
-        guild_result = await db.execute(
-            select(Guild.name, Guild.primary_repo).where(Guild.guild_id == guild_id)
-        )
-        guild_row = guild_result.one_or_none()
-        primary_repo = guild_row.primary_repo if guild_row else None
+    guild_result = await db.execute(
+        select(Guild.name, Guild.primary_repo).where(Guild.guild_id == guild_id)
+    )
+    guild_row = guild_result.one_or_none()
+    primary_repo = guild_row.primary_repo if guild_row else None
 
-        worker_rows = await _fetch_online_workers(db, guild_id)
-        guild_pk_val = await get_guild_pk(db, guild_id)
-        task_result = await db.execute(
-            select(
-                Task.id,
-                Task.worker_id,
-                Task.name,
-                Task.description,
-                Task.state,
-                Task.branch,
-                Task.pr_url,
-                Task.finished_at,
-            )
-            .where(
-                Task.guild_pk == guild_pk_val,
-                ~Task.state.in_(list(_TERMINAL_STATES)),
-                live_tasks_filter(),
-            )
-            .order_by(Task.created_at.desc())
+    worker_rows = await _fetch_online_workers(db, guild_id)
+    guild_pk_val = await get_guild_pk(db, guild_id)
+    task_result = await db.execute(
+        select(
+            Task.id,
+            Task.worker_id,
+            Task.name,
+            Task.description,
+            Task.state,
+            Task.branch,
+            Task.pr_url,
+            Task.finished_at,
         )
-        task_rows = [
-            {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
-            for r in task_result.fetchall()
-        ]
-        guild_result = await db.execute(
-            select(Guild.primary_repo).where(Guild.guild_id == guild_id)
+        .where(
+            Task.guild_pk == guild_pk_val,
+            ~Task.state.in_(list(_TERMINAL_STATES)),
+            live_tasks_filter(),
         )
-        primary_repo: str | None = guild_result.scalar_one_or_none()
-    finally:
-        await db.close()
+        .order_by(Task.created_at.desc())
+    )
+    task_rows = [
+        {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
+        for r in task_result.fetchall()
+    ]
+    guild_result = await db.execute(
+        select(Guild.primary_repo).where(Guild.guild_id == guild_id)
+    )
+    primary_repo: str | None = guild_result.scalar_one_or_none()
 
     workers_block = json.dumps(
         [
