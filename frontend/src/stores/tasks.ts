@@ -3,6 +3,10 @@ import { computed, ref } from 'vue'
 import { api } from '../utils/api'
 import type { LogEntry, Task, TaskState, WSInbound } from '../types'
 
+export function taskTabId(id: string): string {
+  return 'task-' + id
+}
+
 // Cap on setTimeout delay to avoid the 32-bit overflow that fires the timer
 // immediately on long horizons (e.g. a 3-day finalize window).
 const MAX_TIMEOUT_MS = 2_147_483_647

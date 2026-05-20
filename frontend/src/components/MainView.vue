@@ -36,9 +36,9 @@
       <!-- Task tabs — only shown when explicitly opened -->
       <button
         v-for="task in visibleTaskTabs"
-        :key="'task-' + task.id"
+        :key="taskTabId(task.id)"
         class="tab task-tab"
-        :class="{ active: agentsStore.activeTab === 'task-' + task.id }"
+        :class="{ active: agentsStore.activeTab === taskTabId(task.id) }"
         @click="onTabClick($event, task.id)"
       >
         <span class="task-dot" :class="'task-dot-' + task.state.replace(/[^a-z]/g, '-')"></span>
@@ -58,7 +58,7 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents'
-import { useTasksStore } from '../stores/tasks'
+import { useTasksStore, taskTabId } from '../stores/tasks'
 import FactoryFloor from './FactoryFloor.vue'
 import LogPane from './LogPane.vue'
 
@@ -107,7 +107,7 @@ function onAgentTabClick(event: MouseEvent, agentId: string) {
 function onTabClick(event: MouseEvent, taskId: string) {
   if ((event.target as HTMLElement).closest('.tab-close')) {
     tasksStore.closeTask(taskId)
-    if (agentsStore.activeTab === 'task-' + taskId) agentsStore.activeTab = 'factory'
+    if (agentsStore.activeTab === taskTabId(taskId)) agentsStore.activeTab = 'factory'
   } else {
     agentsStore.openTaskTab(taskId)
   }
