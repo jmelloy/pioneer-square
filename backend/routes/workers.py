@@ -18,9 +18,9 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db
 from events import broadcast, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeCredentials, Task, Worker, live_tasks_filter
+from models import Agent, ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from utils import (
     build_spawn_worker_env,
     decode_claude_oauth_token,
@@ -329,3 +329,125 @@ async def message_worker(
         },
     )
     return {"status": "delivered"}
+
+
+class AgentRun(BaseModel):
+    tool: str = "claude"
+    prompt: str
+    model: str | None = None
+    provider: str | None = None
+
+
+@router.post("/guilds/{guild_id}/agents/{agent_id}/run")
+async def run_agent(
+    guild_id: str,
+    agent_id: str,
+    data: AgentRun,
+    github_user_id: str = Depends(require_member()),
+):
+    """Start an ad-hoc run on a specific agent by creating a task for its worker."""
+    db = await get_db()
+    try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
+        result = await db.execute(
+            select(Agent.worker_id).where(Agent.id == agent_id, Agent.guild_pk == guild_pk)
+        )
+        worker_id = result.scalar_one_or_none()
+        if worker_id is None:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        created_at = datetime.now(UTC).isoformat()
+        name = data.prompt[:60]
+        db.add(
+            Task(
+                id=task_id,
+                worker_id=worker_id,
+                guild_pk=guild_pk,
+                name=name,
+                description=data.prompt,
+                tool=data.tool,
+                state="pending",
+                phase="execute",
+                created_at=created_at,
+            )
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-assigned",
+            "workerId": worker_id,
+            "taskId": task_id,
+            "name": name,
+            "description": data.prompt,
+            "tool": data.tool,
+            "phase": "execute",
+            "parentTaskId": None,
+            "issueNumber": None,
+            "issueRepo": None,
+            "repos": [],
+            "model": data.model,
+            "provider": data.provider,
+        },
+    )
+    return {"id": task_id, "worker_id": worker_id, "state": "pending"}
+
+
+@router.delete("/guilds/{guild_id}/agents/{agent_id}/run")
+async def stop_agent(
+    guild_id: str,
+    agent_id: str,
+    github_user_id: str = Depends(require_member()),
+):
+    """Cancel the current running task for an agent."""
+    db = await get_db()
+    try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
+        result = await db.execute(
+            select(Agent.worker_id, Agent.current_task_id).where(
+                Agent.id == agent_id, Agent.guild_pk == guild_pk
+            )
+        )
+        row = result.one_or_none()
+        if not row:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        worker_id, task_id = row
+        if not task_id:
+            return {"status": "idle"}
+
+        finished_at = datetime.now(UTC).isoformat()
+        await db.execute(
+            update(Task)
+            .where(Task.id == task_id, Task.state.notin_(["done", "failed", "cancelled"]))
+            .values(state="cancelled", finished_at=finished_at)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-cancel",
+            "workerId": worker_id,
+            "taskId": task_id,
+        },
+    )
+    await broadcast(
+        guild_id,
+        {
+            "type": "task-update",
+            "taskId": task_id,
+            "state": "cancelled",
+            "finishedAt": finished_at,
+        },
+    )
+    return {"status": "cancelled", "taskId": task_id}
