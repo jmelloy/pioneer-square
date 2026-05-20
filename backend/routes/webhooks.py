@@ -84,9 +84,9 @@ class DebounceQueue:
     async def shutdown(self) -> None:
         """Cancel all in-flight timers and wait for them to finish.
 
-        Awaiting the cancelled tasks ensures they run their CancelledError
-        handler and the event loop does not emit "Task destroyed but pending"
-        warnings.  Call this at server shutdown and in async test teardown.
+        Awaiting the cancelled tasks lets them complete cleanly and prevents
+        "Task destroyed but pending" warnings.  Call this at server shutdown
+        and in async test teardown.
         """
         pending = [t for t in self._tasks.values() if not t.done()]
         for task in pending:
@@ -118,23 +118,13 @@ class DebounceQueue:
     async def _fire(self, key: str, guild_id: str) -> None:
         """Sleep for the debounce window then deliver all buffered events.
 
-        On CancelledError: if a replacement timer was scheduled, the buffer
-        stays intact for that timer to deliver.  If we are still the
-        registered task (external cancellation with no replacement), deliver
-        immediately so the buffer is not silently dropped.
+        If cancelled (because schedule() restarted the timer for a new event),
+        swallow the error and return — the replacement task owns the buffer.
         """
         try:
             await asyncio.sleep(self._window)
         except asyncio.CancelledError:
-            # _schedule_debounced_foreman pops + replaces self._tasks[key]
-            # synchronously before the event loop injects CancelledError here,
-            # so if we are still the registered task no replacement exists.
-            if self._tasks.get(key) is asyncio.current_task():
-                items = self._buffers.pop(key, [])
-                self._tasks.pop(key, None)
-                if items:
-                    self._deliver(key, guild_id, items)
-            raise
+            return
         items = self._buffers.pop(key, [])
         self._tasks.pop(key, None)
         if not items:
