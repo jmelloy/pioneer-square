@@ -7,7 +7,7 @@ import type { LogEntry, Task, TaskState, WSInbound } from '../types'
 // immediately on long horizons (e.g. a 3-day finalize window).
 const MAX_TIMEOUT_MS = 2_147_483_647
 
-const _TERMINAL_STATES = new Set<string>(['done', 'failed', 'cancelled'])
+const TERMINAL_STATES = new Set<string>(['done', 'failed', 'cancelled'])
 
 const STATE_LABELS: Record<string, string> = {
   pending: 'pending',
@@ -111,22 +111,13 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function cancelTask(guildId: string, taskId: string) {
+    const result = await api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
     const task = tasks.value.find((t) => t.id === taskId)
-    const prevState = task?.state
-    const prevFinishedAt = task?.finished_at
     if (task) {
       task.state = 'cancelled'
       task.finished_at = new Date().toISOString()
     }
-    try {
-      return await api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
-    } catch (e) {
-      if (task) {
-        task.state = prevState!
-        task.finished_at = prevFinishedAt ?? null
-      }
-      throw e
-    }
+    return result
   }
 
   async function redirectTask(guildId: string, taskId: string, instructions: string) {
@@ -183,13 +174,13 @@ export const useTasksStore = defineStore('tasks', () => {
       }
     } else if (data.type === 'task-complete') {
       const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task && !_TERMINAL_STATES.has(task.state)) {
+      if (task && !TERMINAL_STATES.has(task.state)) {
         task.state = 'awaiting-review'
         if (data.branch) task.branch = data.branch
       }
     } else if (data.type === 'task-followup-done') {
       const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task && !_TERMINAL_STATES.has(task.state)) task.state = 'awaiting-review'
+      if (task && !TERMINAL_STATES.has(task.state)) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
       const { taskId, line, timestamp, detail } = data
       if (line) {
