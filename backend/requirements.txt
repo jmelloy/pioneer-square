@@ -5,6 +5,7 @@ websockets
 asyncpg
 psycopg2-binary
 sqlalchemy[asyncio]
+sqlmodel
 alembic
 python-multipart
 anthropic

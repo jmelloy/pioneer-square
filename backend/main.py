@@ -97,8 +97,8 @@ async def _sweep_stale_workers_once() -> int:
         # and handled via the agent cascade below.
         zombie_workers = (
             await db.execute(
-                select(Worker.id, Worker.guild_pk, Guild.guild_id)
-                .join(Guild, Guild.id == Worker.guild_pk)
+                select(Worker.id, Worker.guild_id, Guild.guild_id.label("guild_slug"))
+                .join(Guild, Guild.id == Worker.guild_id)
                 .where(Worker.state != "offline")
                 .where(Worker.last_seen.isnot(None))
                 .where(Worker.last_seen < cutoff)
@@ -113,8 +113,8 @@ async def _sweep_stale_workers_once() -> int:
 
         stale_agents = (
             await db.execute(
-                select(Agent.id, Agent.guild_pk, Agent.worker_id, Guild.guild_id)
-                .join(Guild, Guild.id == Agent.guild_pk)
+                select(Agent.id, Agent.guild_id, Agent.worker_id, Guild.guild_id.label("guild_slug"))
+                .join(Guild, Guild.id == Agent.guild_id)
                 .where(Agent.state != "offline")
                 .where(Agent.last_seen.isnot(None))
                 .where(Agent.last_seen < cutoff)
@@ -124,21 +124,21 @@ async def _sweep_stale_workers_once() -> int:
         for row in stale_agents:
             await db.execute(
                 update(Agent)
-                .where(Agent.id == row.id, Agent.guild_pk == row.guild_pk)
+                .where(Agent.id == row.id, Agent.guild_id == row.guild_id)
                 .values(state="offline", activity=None, current_task_id=None)
             )
             if row.worker_id:
-                stale_worker_keys.add((row.worker_id, row.guild_pk))
+                stale_worker_keys.add((row.worker_id, row.guild_id))
                 agent_cascade_wids.add(row.worker_id)
             agent_owners.pop(row.id, None)
 
         for row in zombie_workers:
-            stale_worker_keys.add((row.id, row.guild_pk))
+            stale_worker_keys.add((row.id, row.guild_id))
 
         for worker_id, gpk in stale_worker_keys:
             await db.execute(
                 update(Worker)
-                .where(Worker.id == worker_id, Worker.guild_pk == gpk)
+                .where(Worker.id == worker_id, Worker.guild_id == gpk)
                 .values(state="offline")
             )
         if stale_agents or zombie_workers:
@@ -214,10 +214,10 @@ async def _sweep_stale_workers_once() -> int:
             "Marking %s offline: no ping in over %.0fs (guild=%s)",
             row.id,
             WORKER_OFFLINE_AFTER_SECONDS,
-            row.guild_id,
+            row.guild_slug,
         )
         await broadcast(
-            row.guild_id,
+            row.guild_slug,
             {"type": "agent-state", "agentId": row.id, "state": "offline"},
         )
     # Log zombie workers not already covered by the per-agent log above.
@@ -228,7 +228,7 @@ async def _sweep_stale_workers_once() -> int:
                 " no active agents (guild=%s)",
                 row.id,
                 WORKER_OFFLINE_AFTER_SECONDS,
-                row.guild_id,
+                row.guild_slug,
             )
     return len(stale_agents) + len(zombie_workers)
 

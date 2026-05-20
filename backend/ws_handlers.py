@@ -214,7 +214,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     joined_at = datetime.now(UTC).isoformat()
     stmt = pg_insert(Agent).values(
         id=agent_id,
-        guild_pk=ctx.guild_pk,
+        guild_id=ctx.guild_pk,
         worker_id=worker_id,
         name=agent_name,
         type=agent_type,
@@ -226,7 +226,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     stmt = stmt.on_conflict_do_update(
         index_elements=["id"],
         set_={
-            "guild_pk": stmt.excluded.guild_pk,
+            "guild_id": stmt.excluded.guild_id,
             "worker_id": stmt.excluded.worker_id,
             "name": stmt.excluded.name,
             "type": stmt.excluded.type,
@@ -240,7 +240,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     if agent_type == "worker" and worker_id:
         await ctx.db.execute(
             update(Worker)
-            .where(Worker.id == worker_id, Worker.guild_pk == ctx.guild_pk)
+            .where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
             .values(state="online", last_seen=joined_at)
         )
     await ctx.db.commit()
@@ -298,7 +298,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         if worker_id:
             result = await ctx.db.execute(
                 select(Task).where(
-                    Task.guild_pk == ctx.guild_pk,
+                    Task.guild_id == ctx.guild_pk,
                     Task.worker_id == worker_id,
                     Task.state.in_(["pending", "working"]),
                 )
@@ -333,7 +333,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     }
     if worker_id:
         r = await ctx.db.execute(
-            select(Worker.name).where(Worker.id == worker_id, Worker.guild_pk == ctx.guild_pk)
+            select(Worker.name).where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
         )
         stored_name = r.scalar_one_or_none()
         broadcast_payload["workerName"] = stored_name or worker_display_name(worker_id)
@@ -377,7 +377,7 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     if state in _LOCK_RELEASE_AGENT_STATES and agent_id:
         row = await ctx.db.execute(
             select(Agent.current_task_id, Agent.worker_id).where(
-                Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk
+                Agent.id == agent_id, Agent.guild_id == ctx.guild_pk
             )
         )
         agent_row = row.one_or_none()
@@ -387,7 +387,7 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
 
     await ctx.db.execute(
         update(Agent)
-        .where(Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk)
+        .where(Agent.id == agent_id, Agent.guild_id == ctx.guild_pk)
         .values(**update_vals)
     )
 
@@ -433,7 +433,7 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
     created_at = datetime.now(UTC).isoformat()
     ctx.db.add(
         Message(
-            guild_pk=ctx.guild_pk,
+            guild_id=ctx.guild_pk,
             from_agent=from_agent,
             to_agent=to_agent,
             content=content,
@@ -536,7 +536,7 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
             update_vals["user_id"] = resolved
     await ctx.db.execute(
         update(Worker)
-        .where(Worker.id == worker_id, Worker.guild_pk == ctx.guild_pk)
+        .where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
         .values(**update_vals)
     )
     await ctx.db.commit()
@@ -547,13 +547,13 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
     for agent_id in ctx.joined_agents:
         await ctx.db.execute(
             update(Agent)
-            .where(Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk)
+            .where(Agent.id == agent_id, Agent.guild_id == ctx.guild_pk)
             .values(state="offline", activity=None, current_task_id=None)
         )
     if worker_id:
         await ctx.db.execute(
             update(Worker)
-            .where(Worker.id == worker_id, Worker.guild_pk == ctx.guild_pk)
+            .where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
             .values(state="offline")
         )
     if ctx.joined_agents or worker_id:

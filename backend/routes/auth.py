@@ -95,7 +95,7 @@ async def get_github_token(
             raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")
         owner_res = await db.execute(
             select(GuildMember.user_id)
-            .where(GuildMember.guild_pk == guild_pk, GuildMember.role == "owner")
+            .where(GuildMember.guild_id == guild_pk, GuildMember.role == "owner")
             .limit(1)
         )
         owner_user_id = owner_res.scalar_one_or_none()
@@ -131,7 +131,7 @@ async def get_claude_credentials(
                 status_code=404, detail="No Claude credentials stored for this guild"
             )
         result = await db.execute(
-            select(ClaudeCredentials).where(ClaudeCredentials.guild_pk == guild_pk)
+            select(ClaudeCredentials).where(ClaudeCredentials.guild_id == guild_pk)
         )
         row = result.scalar_one_or_none()
         if not row:
@@ -161,7 +161,7 @@ async def store_claude_credentials(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(ClaudeCredentials).where(ClaudeCredentials.guild_pk == guild_pk)
+            select(ClaudeCredentials).where(ClaudeCredentials.guild_id == guild_pk)
         )
         row = result.scalar_one_or_none()
         if row:
@@ -170,7 +170,7 @@ async def store_claude_credentials(
         else:
             db.add(
                 ClaudeCredentials(
-                    guild_pk=guild_pk,
+                    guild_id=guild_pk,
                     credentials_blob=data.credentials_blob,
                     updated_at=now,
                 )
@@ -217,7 +217,7 @@ async def api_me(github_user_id: str = Depends(require_user)):
 
         members_res = await db.execute(
             select(Guild.guild_id, GuildMember.role, Guild.name)
-            .join(Guild, Guild.id == GuildMember.guild_pk)
+            .join(Guild, Guild.id == GuildMember.guild_id)
             .where(GuildMember.user_id == github_user_id)
         )
         memberships = [
@@ -318,7 +318,7 @@ async def guest_login():
             await db.flush()
             db.add(
                 GuildMember(
-                    guild_pk=new_guild.id,
+                    guild_id=new_guild.id,
                     user_id=guest_user_id,
                     role="owner",
                     created_at=now,
