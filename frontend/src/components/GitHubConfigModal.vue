@@ -58,8 +58,8 @@
         <div class="confirm-box">
           <div class="confirm-title">Disconnect {{ providerLabel(confirmProvider) }}?</div>
           <div class="confirm-body">
-            This will remove your {{ providerLabel(confirmProvider) }} login and invalidate all
-            active sessions. You will be signed out.
+            This will remove your {{ providerLabel(confirmProvider) }} login. You will be signed
+            out of this session.
           </div>
           <div class="confirm-actions">
             <button class="pixel-btn confirm-cancel" @click="confirmProvider = null">Cancel</button>
