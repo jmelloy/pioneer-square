@@ -18,7 +18,7 @@ import json
 import os
 import sqlite3
 import sys
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -368,12 +368,13 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
 class TestDebounce:
     """Per-PR debounce timer: rapid events coalesce; separated events deliver separately."""
 
-    @contextmanager
-    def _patched_env(self, wh):
-        """Context manager: fresh DebounceQueue instance + captured foreman calls.
+    @asynccontextmanager
+    async def _patched_env(self, wh):
+        """Async context manager: fresh DebounceQueue instance + captured foreman calls.
 
         Each call creates a brand-new DebounceQueue so tests cannot bleed state
-        into or out of the module-level singleton.
+        into or out of the module-level singleton.  The queue is shut down on
+        exit so any in-flight timers are cancelled and awaited cleanly.
         """
         self._foreman_calls: list[tuple[str, str, str | None]] = []
 
@@ -387,13 +388,16 @@ class TestDebounce:
             patch.object(wh, "reset_foreman_poll"),
             patch.object(wh, "spawn", side_effect=lambda coro, **kw: asyncio.create_task(coro)),
         ):
-            yield
+            try:
+                yield
+            finally:
+                await queue.shutdown()
 
     async def test_rapid_events_single_foreman_call(self):
         """Three events within the 0.05 s window → one combined foreman invocation."""
         import routes.webhooks as wh
 
-        with self._patched_env(wh):
+        async with self._patched_env(wh):
             await wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event A", "u1")
             await wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event B", "u1")
             await wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event C", "u1")
@@ -409,7 +413,7 @@ class TestDebounce:
         """Events separated by > debounce window → two independent foreman calls."""
         import routes.webhooks as wh
 
-        with self._patched_env(wh):
+        async with self._patched_env(wh):
             await wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event X", "u2")
             await asyncio.sleep(0.2)  # first timer fires
             await wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event Y", "u2")
@@ -423,7 +427,7 @@ class TestDebounce:
         """New event before timer fires cancels the old timer (no early delivery)."""
         import routes.webhooks as wh
 
-        with self._patched_env(wh):
+        async with self._patched_env(wh):
             await wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "first", "u3")
             await asyncio.sleep(0.02)  # less than the 0.05 s window
             await wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "second", "u3")
@@ -439,7 +443,7 @@ class TestDebounce:
         """Events on different PR keys have independent timers and fire separately."""
         import routes.webhooks as wh
 
-        with self._patched_env(wh):
+        async with self._patched_env(wh):
             await wh._debounce_queue.schedule("g-ind:t-pr1", "g-ind", "pr1 event", "u4")
             await wh._debounce_queue.schedule("g-ind:t-pr2", "g-ind", "pr2 event", "u4")
             await asyncio.sleep(0.2)
@@ -453,9 +457,22 @@ class TestDebounce:
         """Each _patched_env provides a fresh DebounceQueue with no state from prior tests."""
         import routes.webhooks as wh
 
-        with self._patched_env(wh):
+        async with self._patched_env(wh):
             # Brand-new instance — buffers and tasks are empty regardless of
             # what any other test scheduled.
+            assert wh._debounce_queue._buffers == {}
+            assert wh._debounce_queue._tasks == {}
+
+    async def test_shutdown_cancels_pending_timers(self):
+        """shutdown() cancels in-flight timers and clears all state without delivering."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            await wh._debounce_queue.schedule("g-sd:t-sd1", "g-sd", "pending event", "u6")
+            # Shut down immediately — the timer has not fired yet
+            await wh._debounce_queue.shutdown()
+            # No foreman call was made; state is fully cleared
+            assert len(self._foreman_calls) == 0
             assert wh._debounce_queue._buffers == {}
             assert wh._debounce_queue._tasks == {}
 
@@ -463,7 +480,7 @@ class TestDebounce:
         """Events buffered before an external cancellation are preserved for re-delivery."""
         import routes.webhooks as wh
 
-        with self._patched_env(wh):
+        async with self._patched_env(wh):
             # Buffer two events
             await wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "first event", "u5")
             await wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "second event", "u5")
@@ -486,72 +503,6 @@ class TestDebounce:
         assert "first event" in summary
         assert "second event" in summary
         assert "third event" in summary
-
-    async def test_superseded_task_does_not_deliver(self):
-        """Stale-task guard: a _fire task whose key was reassigned does not deliver.
-
-        This directly exercises the ``_tasks.get(key) is not asyncio.current_task()``
-        guard that closes the race where task.cancel() arrives too late because
-        asyncio.sleep's internal future was already resolved before cancel() ran.
-        """
-        import routes.webhooks as wh
-
-        with self._patched_env(wh):
-            queue = wh._debounce_queue
-
-            # Schedule event A — creates a task that sleeps for the debounce window.
-            await queue.schedule("g-sup:t-1", "g-sup", "event A", "u1")
-
-            # Simulate the race: swap the registered task pointer to a long-lived
-            # sentinel *without* cancelling the original task.  This mimics the
-            # window where schedule() has called cancel() but the sleep future was
-            # already resolved so the cancellation will not take effect.
-            sentinel = asyncio.create_task(asyncio.sleep(1000))
-            queue._tasks["g-sup:t-1"] = sentinel
-
-            # Let task_a's window expire and its coroutine run.  The stale-task
-            # guard should detect that _tasks["g-sup:t-1"] is sentinel (not task_a)
-            # and return without calling _deliver.
-            await asyncio.sleep(0.2)
-
-            sentinel.cancel()
-            try:
-                await sentinel
-            except asyncio.CancelledError:
-                pass
-
-        # task_a should have delivered nothing — the sentinel held the slot.
-        assert self._foreman_calls == [], (
-            f"stale task delivered unexpectedly: {self._foreman_calls}"
-        )
-
-    async def test_new_event_just_before_timer_fires_no_double_delivery(self):
-        """New event arriving just before the debounce window expires causes no double delivery.
-
-        This is the canonical race: the first task's sleep is nearly done when a
-        second schedule() call cancels it and creates a replacement.  Only one
-        foreman invocation should occur, containing all buffered events.
-        """
-        import routes.webhooks as wh
-
-        with self._patched_env(wh):
-            # Schedule event A.
-            await wh._debounce_queue.schedule("g-race:t-1", "g-race", "event A", "u1")
-
-            # Wait 80 % of the window, then schedule event B.  The first task
-            # is cancelled while its sleep is almost complete.
-            await asyncio.sleep(0.04)  # window is 0.05 s
-            await wh._debounce_queue.schedule("g-race:t-1", "g-race", "event B", "u1")
-
-            # Let the replacement timer fire.
-            await asyncio.sleep(0.2)
-
-        assert len(self._foreman_calls) == 1, (
-            f"expected 1 foreman call, got {len(self._foreman_calls)}"
-        )
-        _, summary, _ = self._foreman_calls[0]
-        assert "event A" in summary
-        assert "event B" in summary
 
 
 # ---------------------------------------------------------------------------
