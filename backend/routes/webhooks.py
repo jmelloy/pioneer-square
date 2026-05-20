@@ -175,6 +175,11 @@ class DebounceQueue:
         where two timers for the same key are both live.
         """
         existing = self._tasks.pop(key, None)
+        # Snapshot the buffer BEFORE bumping the generation or cancelling.
+        # If _fire had already consumed the buffer (completed mid-deliver and
+        # was then cancelled), the snapshot lets us recover those events so
+        # they are coalesced with the new one rather than silently dropped.
+        snapshot = list(self._buffers.get(key, []))
         # Bump the generation BEFORE cancelling so that even if the old task's
         # sleep has already resolved and the task runs during ``await gather()``,
         # it will see a stale generation and bail out without delivering.
@@ -183,13 +188,13 @@ class DebounceQueue:
         if existing and not existing.done():
             existing.cancel()
             await asyncio.gather(existing, return_exceptions=True)
-        # Invariant: if _fire already ran before this pop (i.e. it cleared
-        # _buffers[key] and removed _tasks[key] itself), existing is None,
-        # setdefault creates a fresh list, and the new event is correctly
-        # appended.  The old events were already delivered by _fire — no events
-        # are lost.  If _fire had NOT yet run, its buffer is still present and
-        # setdefault returns it so the new event extends the existing batch.
-        self._buffers.setdefault(key, []).append((summary, user_id))
+        # Seed the new buffer from the snapshot so events accumulated in the
+        # old window are never lost regardless of whether the old fire task
+        # was cancelled mid-sleep or ran to completion.  The generation bump
+        # above ensures the old task cannot also deliver the same events, so
+        # there is no risk of double delivery.
+        self._buffers[key] = snapshot
+        self._buffers[key].append((summary, user_id))
         # Use asyncio.create_task directly: the task is kept alive by
         # self._tasks[key] (a strong reference), so GC is not a concern.
         # _log_fire_error handles unexpected exceptions via the done callback.
