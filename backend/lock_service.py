@@ -13,8 +13,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from models import Lock
-from sqlalchemy import delete, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import delete, insert as sa_insert, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -39,12 +39,18 @@ class LockService:
             )
         )
 
-        result = await self._db.execute(
-            sqlite_insert(Lock)
-            .values(key=key, owner=owner, acquired_at=now_iso, expires_at=expires_at)
-            .on_conflict_do_nothing()
-        )
-        return result.rowcount == 1
+        # Use a savepoint so a primary-key conflict rolls back only this
+        # attempt without aborting the enclosing transaction.
+        try:
+            async with self._db.begin_nested():
+                await self._db.execute(
+                    sa_insert(Lock).values(
+                        key=key, owner=owner, acquired_at=now_iso, expires_at=expires_at
+                    )
+                )
+            return True
+        except IntegrityError:
+            return False
 
     async def release(self, key: str) -> None:
         """Release *key*. Safe to call even if the lock is not held (idempotent)."""

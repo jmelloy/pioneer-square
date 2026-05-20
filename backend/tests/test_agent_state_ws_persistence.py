@@ -109,8 +109,12 @@ def _join_ws(ws, agent_id: str, worker_id: str) -> None:
             "workerId": worker_id,
         }
     )
-    msg = ws.receive_json()
-    assert msg["type"] == "agent-joined"
+    # The join handler replays any pending/working tasks via task-assigned
+    # *before* the agent-joined broadcast, so drain those first.
+    while True:
+        msg = ws.receive_json()
+        if msg["type"] == "agent-joined":
+            break
 
 
 def test_agent_state_persists_current_task_id(client):
