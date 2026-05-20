@@ -94,9 +94,10 @@ async def _sweep_stale_workers_once() -> int:
                 .where(Agent.last_seen < cutoff)
             )
         ).all()
-        if not stale_agents:
-            return 0
         stale_worker_keys: set[tuple[str, int]] = set()
+        # Track which workers were already caught via the agent-cascade path so
+        # the zombie-worker log below can skip them (they're already logged).
+        agent_cascade_wids: set[str] = set()
         for row in stale_agents:
             await db.execute(
                 update(Agent)
@@ -105,14 +106,35 @@ async def _sweep_stale_workers_once() -> int:
             )
             if row.worker_id:
                 stale_worker_keys.add((row.worker_id, row.guild_pk))
+                agent_cascade_wids.add(row.worker_id)
             agent_owners.pop(row.id, None)
+
+        # Also sweep zombie workers directly.  A worker can be stuck in
+        # "online" with no non-offline agents when the WS close handler had
+        # the agent_id/worker_id bug and failed to update the Worker row.
+        # The agent cascade above only runs for non-offline stale agents;
+        # a worker whose agents are already "offline" (but whose own row was
+        # never flipped) would be missed without this direct pass.
+        zombie_workers = (
+            await db.execute(
+                select(Worker.id, Worker.guild_pk, Guild.guild_id)
+                .join(Guild, Guild.id == Worker.guild_pk)
+                .where(Worker.state != "offline")
+                .where(Worker.last_seen.isnot(None))
+                .where(Worker.last_seen < cutoff)
+            )
+        ).all()
+        for row in zombie_workers:
+            stale_worker_keys.add((row.id, row.guild_pk))
+
         for worker_id, gpk in stale_worker_keys:
             await db.execute(
                 update(Worker)
                 .where(Worker.id == worker_id, Worker.guild_pk == gpk)
                 .values(state="offline")
             )
-        await db.commit()
+        if stale_agents or zombie_workers:
+            await db.commit()
     for row in stale_agents:
         logger.warning(
             "Marking %s offline: no ping in over %.0fs (guild=%s)",
@@ -124,6 +146,16 @@ async def _sweep_stale_workers_once() -> int:
             row.guild_id,
             {"type": "agent-state", "agentId": row.id, "state": "offline"},
         )
+    # Log zombie workers not already covered by the per-agent log above.
+    for row in zombie_workers:
+        if row.id not in agent_cascade_wids:
+            logger.warning(
+                "Marking zombie worker %s offline: no ping in over %.0fs,"
+                " no active agents (guild=%s)",
+                row.id,
+                WORKER_OFFLINE_AFTER_SECONDS,
+                row.guild_id,
+            )
     return len(stale_agents)
 
 

@@ -298,6 +298,68 @@ def test_migration_backfills_last_seen_for_existing_rows(tmp_path, monkeypatch):
     assert datetime.fromisoformat(w["last_seen"]) >= datetime.now(UTC) - timedelta(minutes=5)
 
 
+def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client, monkeypatch):
+    """The sweeper must mark a zombie worker offline even when all of its
+    agents are already in the 'offline' state.
+
+    Regression test for the scenario where:
+    1. A worker's WS drops and the close handler marks its *agents* offline
+       (correctly), but fails to mark the *Worker* row offline (due to the
+       agent_id/worker_id bug that was fixed in websocket.py).
+    2. The sweeper's agent-cascade path finds no non-offline stale agents,
+       so it used to return early without ever touching the Worker row.
+
+    With the fix, the sweeper also queries the workers table directly and
+    marks any worker with a stale ``last_seen`` offline regardless of its
+    agents' states.
+    """
+    test_client, db_path = client
+    guild_id = "lvg006"
+    worker_id = "w-lvf006"
+    agent_id = "a-lvf006"
+
+    _setup_guild_and_worker(db_path, guild_id, worker_id)
+    now = datetime.now(UTC).isoformat()
+    old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
+        # Insert an agent that is *already* offline — simulates the state after
+        # the buggy WS close handler ran: agent marked offline, worker not.
+        conn.execute(
+            "INSERT INTO agents "
+            "(id, guild_pk, worker_id, name, type, state, joined_at, last_seen) "
+            "VALUES (?, ?, ?, 'Test', 'worker', 'offline', ?, ?)",
+            (agent_id, guild_pk, worker_id, now, old),
+        )
+        # Worker is still "online" (the buggy state) with a stale last_seen.
+        conn.execute(
+            "UPDATE workers SET state = 'online', last_seen = ? WHERE id = ?",
+            (old, worker_id),
+        )
+        conn.commit()
+
+    with test_client.websocket_connect(f"/ws/{guild_id}"):
+        monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
+
+        async def _drive() -> int:
+            return await main_module._sweep_stale_workers_once()
+
+        marked = asyncio.run(_drive())
+        # No non-offline agents were swept (agent was already offline).
+        assert marked == 0
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        w = conn.execute("SELECT state FROM workers WHERE id = ?", (worker_id,)).fetchone()
+    assert w["state"] == "offline", (
+        f"worker.state={w['state']!r}, expected 'offline' — "
+        "sweeper did not catch zombie worker with no active agents"
+    )
+
+
 def test_sweeper_skips_fresh_workers(client):
     """Agents whose last_seen is recent must not be touched by the sweeper."""
     test_client, db_path = client
