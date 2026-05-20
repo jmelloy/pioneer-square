@@ -30,16 +30,19 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
-from helpers import create_db as _create_db, raw_conn, truncate_all  # noqa: E402
+from helpers import create_db as _create_db  # noqa: E402
+from helpers import raw_conn, truncate_all
 from starlette.testclient import TestClient  # noqa: E402
 
+# Hardcoded default is intentional — test/local-dev environment only.
+# In CI, set TEST_DATABASE_URL to the postgres service URL.
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test",
 )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def client():
     _create_db(TEST_DATABASE_URL)
     truncate_all(TEST_DATABASE_URL)
@@ -74,17 +77,13 @@ def _insert_guild_worker_task(
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
         cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) RETURNING id",
             (guild_id, now, "Test Guild"),
         )
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
-        row = cur.fetchone()
-        guild_pk = row["id"]
+        guild_pk = cur.fetchone()["id"]
         cur.execute(
             "INSERT INTO workers (id, guild_pk, repos, state, created_at)"
-            " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
+            " VALUES (%s, %s, '[]', 'online', %s)",
             (worker_id, guild_pk, now),
         )
         # Use "awaiting-review" so the join handler does not replay the task as
@@ -93,7 +92,7 @@ def _insert_guild_worker_task(
         # agent-state path, not the task lifecycle.
         cur.execute(
             "INSERT INTO tasks (id, worker_id, guild_pk, description, tool, state, created_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (task_id, worker_id, guild_pk, "test task", "claude", "awaiting-review", now),
         )
 
@@ -243,9 +242,7 @@ def test_agent_state_explicit_task_id_null_clears(client):
             assert msg["taskId"] is None
 
             with raw_conn(db_url) as (conn, cur):
-                cur.execute(
-                    "SELECT current_task_id FROM agents WHERE id = %s", (agent_id,)
-                )
+                cur.execute("SELECT current_task_id FROM agents WHERE id = %s", (agent_id,))
                 row = cur.fetchone()
 
     assert row["current_task_id"] is None

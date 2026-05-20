@@ -21,8 +21,12 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-# Allow DATABASE_URL env var to override alembic.ini for testing / CI.
+# DATABASE_URL env var is required; no hardcoded fallback.
 _db_url = os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+if not _db_url:
+    raise RuntimeError(
+        "DATABASE_URL environment variable is not set. Set it before running alembic commands."
+    )
 config.set_main_option("sqlalchemy.url", _db_url)
 
 

@@ -20,21 +20,26 @@ def create_db(db_url: str) -> None:
 
 
 def truncate_all(db_url: str) -> None:
-    """Truncate all application tables and restart sequences."""
+    """Truncate all public tables and restart sequences."""
     import psycopg2
+    import psycopg2.extras
 
     sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
     conn = psycopg2.connect(sync_url)
     conn.autocommit = True
-    cur = conn.cursor()
-    cur.execute("""
-        TRUNCATE TABLE
-            github_events, foreman_turns, task_logs, guild_keys,
-            claude_credentials, guild_members, agents, messages,
-            tasks, workers, guilds, github_tokens, user_sessions, users
-        RESTART IDENTITY CASCADE
-    """)
-    conn.close()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    try:
+        cur.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+        tables = [row["tablename"] for row in cur.fetchall()]
+        if tables:
+            cur.execute(
+                "TRUNCATE TABLE {} RESTART IDENTITY CASCADE".format(
+                    ", ".join(f'"{t}"' for t in tables)
+                )
+            )
+    finally:
+        cur.close()
+        conn.close()
 
 
 @contextlib.contextmanager
@@ -96,13 +101,14 @@ def insert_guild(
     """
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
+        # Upsert on the partial unique index (active rows only) and return the id.
         cur.execute(
             "INSERT INTO guilds (guild_id, created_at, name, github_user_id) "
-            "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (guild_id) WHERE deleted_at IS NULL "
+            "DO UPDATE SET name = EXCLUDED.name "
+            "RETURNING id",
             (guild_id, now, name, owner_user_id),
-        )
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
         )
         row = cur.fetchone()
         guild_pk = row["id"] if row else None
@@ -128,9 +134,7 @@ def insert_member(db_url: str, guild_id: str, user_id: str, role: str = "member"
             "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
             (user_id, user_id, user_id, now, now),
         )
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"] if row else None
         if guild_pk:

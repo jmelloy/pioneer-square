@@ -9,7 +9,6 @@ startup query).
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 
@@ -21,13 +20,20 @@ from starlette.testclient import TestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-import database as database_module  # noqa: E402
-import main as main_module  # noqa: E402
-
+# Hardcoded default is intentional — test/local-dev environment only.
+# In CI, set TEST_DATABASE_URL and DATABASE_URL to the postgres service URL.
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test",
 )
+
+# database.py raises if DATABASE_URL is unset; populate it before the import.
+# Tests override AsyncSessionLocal after import, so this value is only used as
+# a placeholder during module load — never for actual connections in test code.
+os.environ.setdefault("DATABASE_URL", TEST_DATABASE_URL)
+
+import database as database_module  # noqa: E402
+import main as main_module  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -62,7 +68,3 @@ def client(monkeypatch, _setup_schema):
 
     with TestClient(main_module.app) as c:
         yield c, db_url
-
-    # NullPool means connections are not pooled; disposal is a no-op but kept
-    # for clarity.
-    asyncio.run(new_engine.dispose())
