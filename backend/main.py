@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from lock_service import LockService
 from models import Agent, Guild, Lock, Task, Worker
-from sqlalchemy import func, select, update
+from sqlalchemy import func, literal, select, update
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -159,7 +159,7 @@ async def _sweep_stale_workers_once() -> int:
     async with AsyncSessionLocal() as db:
         cutoff_lock = (
             datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)
-        ).isoformat()
+        ).strftime("%Y-%m-%dT%H:%M:%S.%f")
         # Tasks in "working" state that have no agent actively running them
         # (i.e. no agent with current_task_id = task.id in a live state) and
         # whose lock was acquired long enough ago to not be a new dispatch.
@@ -170,9 +170,12 @@ async def _sweep_stale_workers_once() -> int:
                         Task.state == "working",
                         # Lock exists for this task and has been held long enough
                         # that we can assume it's not a brand-new dispatch.
+                        # Use the || operator for string concat — SQLite does not
+                        # have a concat() function; this is dialect-neutral for
+                        # single-DB deployments and avoids func.concat().
                         select(Lock.key)
                         .where(
-                            Lock.key == func.concat("task:", Task.id),
+                            Lock.key == literal("task:").op("||")(Task.id),
                             Lock.acquired_at < cutoff_lock,
                         )
                         .exists(),

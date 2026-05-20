@@ -107,10 +107,15 @@ async def test_is_locked_false_after_release(db_session):
     assert locked is False
 
 
+def _ts(dt) -> str:
+    """Format a datetime the same way LockService does (timezone-free UTC ISO)."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+
 @pytest.mark.anyio
 async def test_expired_lock_can_be_reacquired(db_session):
     """A lock with an already-elapsed TTL should be treated as free on the next acquire."""
-    expired_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    expired_ts = _ts(datetime.now(UTC) - timedelta(minutes=5))
 
     async with db_session() as db:
         # Insert expired lock directly via raw SQL to bypass the service layer.
@@ -134,9 +139,9 @@ async def test_expired_lock_can_be_reacquired(db_session):
 async def test_cleanup_expired_removes_stale_locks(db_session):
     import sqlalchemy
 
-    expired_ts = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-    future_ts = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-    now_ts = datetime.now(UTC).isoformat()
+    expired_ts = _ts(datetime.now(UTC) - timedelta(hours=1))
+    future_ts = _ts(datetime.now(UTC) + timedelta(hours=1))
+    now_ts = _ts(datetime.now(UTC))
 
     async with db_session() as db:
         # Insert one expired and one active lock.

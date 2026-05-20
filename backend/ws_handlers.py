@@ -340,7 +340,15 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     await broadcast(ctx.guild_id, broadcast_payload)
 
 
-_LOCK_RELEASE_AGENT_STATES = frozenset({"idle", "offline", "error", "cancelled", "timeout", "done"})
+# States that indicate the agent is no longer actively running a task and
+# should trigger a lock release.  "done" and "cancelled" are intentionally
+# excluded: those transitions go through handle_task_complete /
+# handle_task_followup_done / cancel_task_endpoint which already release the
+# lock.  Including them here risks a race where this handler fires *after* the
+# task has already been moved to a terminal state (done, cancelled, failed) and
+# overwrites it with "awaiting-review".  The Task.state == "working" guard
+# below is the primary safety net; the restricted set is defence-in-depth.
+_LOCK_RELEASE_AGENT_STATES = frozenset({"idle", "offline", "error", "timeout"})
 
 
 async def handle_agent_state(ctx: WSContext, data: dict) -> None:
