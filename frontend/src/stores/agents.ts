@@ -282,11 +282,12 @@ export const useAgentsStore = defineStore('agents', () => {
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
       if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)
-      // Route to per-worker log buffer; fall back to agent's workerId if backend didn't send it
+      // Route to per-worker log buffer; worker-wide lines may arrive with only
+      // workerId, while agent/task lines include both workerId and agentId.
       const wid =
         data.workerId ||
         (data.agentId ? agents.value.find((a) => a.id === data.agentId)?.workerId : null)
-      if (wid && !data.taskId) addWorkerLog(wid, data.line, data.timestamp, data.detail)
+      if (wid) addWorkerLog(wid, data.line, data.timestamp, data.detail)
     }
   }
 

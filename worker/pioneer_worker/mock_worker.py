@@ -339,6 +339,7 @@ class MockWorker(Worker):
             return {"error": f"unknown agentId {agent_id!r}"}
         msg: dict = {
             "type": "terminal-output",
+            "workerId": self.cfg.worker_id,
             "agentId": slot.id,
             "line": line,
             "timestamp": _now_iso(),
