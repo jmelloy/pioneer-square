@@ -99,17 +99,14 @@ class DebounceQueue:
         self._buffers.clear()
         self._generation.clear()
 
-    def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None]]) -> None:
+    async def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None]]) -> None:
         summaries = [s for s, _ in items]
         combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
         # Use the last event's user_id: in typical bursts the final event is a
         # human action (review, comment) that arrives after the CI bot events,
         # so this attribution is usually more meaningful than the first event's.
         user_id = items[-1][1]
-        spawn(
-            run_foreman_ai(guild_id, combined, user_id=user_id),
-            name=f"foreman.github-debounced:{key}",
-        )
+        await run_foreman_ai(guild_id, combined, user_id=user_id)
         reset_foreman_poll(guild_id)
         logger.info(
             "github webhook debounce fired key=%s events=%d guild=%s",
@@ -143,7 +140,7 @@ class DebounceQueue:
         self._generation.pop(key, None)
         if not items:
             return
-        self._deliver(key, guild_id, items)
+        await self._deliver(key, guild_id, items)
 
     async def schedule(
         self,
