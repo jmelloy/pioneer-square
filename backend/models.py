@@ -116,7 +116,9 @@ class Task(SQLModel, table=True):
     __tablename__ = "tasks"
 
     id: str = Field(primary_key=True)
-    worker_id: Optional[str] = Field(default=None, foreign_key="workers.id")  # NULL for foreman-owned tasks
+    worker_id: str | None = Field(
+        default=None, foreign_key="workers.id"
+    )  # NULL for foreman-owned tasks
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
     description: str
@@ -277,11 +279,11 @@ class Lock(SQLModel, table=True):
 
     __tablename__ = "locks"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     key: str = Field(index=True)
-    owner: Optional[str] = None
+    owner: str | None = None
     acquired_at: datetime
-    expires_at: Optional[datetime] = None
+    expires_at: datetime | None = None
 
 
 class TaskEvent(SQLModel, table=True):
