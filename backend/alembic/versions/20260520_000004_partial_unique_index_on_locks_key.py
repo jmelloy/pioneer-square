@@ -10,7 +10,7 @@ needing now() in the predicate (which PostgreSQL rejects because now() is not
 IMMUTABLE).
 
 Revision ID: 20260520_000004_partial_unique_index_on_locks_key
-Revises: 20260520_000003_merge_locking_and_messages
+Revises: 20260520_000004_nullable_task_worker_id
 Create Date: 2026-05-20 00:00:04.000000
 
 """
