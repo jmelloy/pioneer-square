@@ -162,6 +162,23 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     stale_agents = [
                         aid for aid in joined_agents if agent_owners.get(aid) is websocket
                     ]
+                    # Look up the worker_ids for all stale agents *before* we
+                    # modify their rows, so we can update the Worker table with
+                    # the correct IDs (worker IDs are "w-…"; agent IDs are
+                    # "a-…" — using agent_id as a Worker.id filter never
+                    # matched and left zombie workers stuck in "online").
+                    stale_worker_ids: set[str] = set()
+                    if stale_agents:
+                        wid_rows = (
+                            await db.execute(
+                                select(Agent.worker_id).where(
+                                    Agent.id.in_(stale_agents),
+                                    Agent.guild_pk == _guild_pk,
+                                    Agent.worker_id.isnot(None),
+                                )
+                            )
+                        ).all()
+                        stale_worker_ids = {r[0] for r in wid_rows}
                     for agent_id in stale_agents:
                         agent_owners.pop(agent_id, None)
                         await db.execute(
@@ -169,10 +186,11 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                             .where(Agent.id == agent_id, Agent.guild_pk == _guild_pk)
                             .values(state="offline", activity=None, current_task_id=None)
                         )
-                        # Mirror into workers table so foreman sees the worker as offline.
+                    # Mirror into workers table using the real worker IDs.
+                    for wid in stale_worker_ids:
                         await db.execute(
                             update(Worker)
-                            .where(Worker.id == agent_id, Worker.guild_pk == _guild_pk)
+                            .where(Worker.id == wid, Worker.guild_pk == _guild_pk)
                             .values(state="offline")
                         )
                     if stale_agents:

@@ -217,3 +217,41 @@ def test_worker_disconnect_without_prior_join_is_harmless(client):
                 "workerId": worker_id,
             }
         )
+
+
+def test_abrupt_disconnect_marks_worker_offline(client):
+    """When the WebSocket drops without a graceful worker-disconnect, the
+    server's finally-block cleanup must mark both the agent AND the worker
+    offline.
+
+    Regression test for the bug where the finally block used ``agent_id``
+    (e.g. "a-…") as the filter for ``Worker.id`` (which stores "w-…" IDs),
+    causing the Worker row to stay "online" after an abrupt container death.
+    """
+    test_client, db_path = client
+    guild_id = "gld004"
+    worker_id = "w-abrupt04"
+    agent_id = "a-abrupt04"
+
+    _setup_guild_and_worker(db_path, guild_id, worker_id)
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+        ws.send_json(
+            {
+                "type": "join",
+                "agentId": agent_id,
+                "agentName": "Test Worker",
+                "agentType": "worker",
+                "workerId": worker_id,
+            }
+        )
+        ws.receive_json()  # agent-joined broadcast
+        # Close without sending worker-disconnect — simulates abrupt container death.
+
+    # The finally block must have marked both offline.
+    agent_state, worker_state = _get_states(db_path, agent_id, worker_id)
+    assert agent_state == "offline", f"agent.state={agent_state!r}, expected 'offline'"
+    assert worker_state == "offline", (
+        f"worker.state={worker_state!r}, expected 'offline' — "
+        "finally block likely used agent_id instead of worker_id for Worker update"
+    )
