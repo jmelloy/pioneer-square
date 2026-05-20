@@ -157,9 +157,7 @@ async def _sweep_stale_workers_once() -> int:
     # on tasks that were just dispatched a moment ago.
     stale_task_ids: list[str] = []
     async with AsyncSessionLocal() as db:
-        cutoff_lock = (
-            datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)
-        ).strftime("%Y-%m-%dT%H:%M:%S.%f")
+        cutoff_lock = datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)
         # Tasks in "working" state that have no agent actively running them
         # (i.e. no agent with current_task_id = task.id in a live state) and
         # whose lock was acquired long enough ago to not be a new dispatch.
