@@ -32,6 +32,7 @@ import logging
 import os
 import socket
 import sys
+from dataclasses import dataclass
 
 import httpx
 import websockets
@@ -43,6 +44,13 @@ from pioneer_foreman.runner import reset_foreman_poll, run_foreman_ai
 logger = logging.getLogger("pioneer_foreman")
 
 
+@dataclass
+class _RuntimeState:
+    """Mutable runtime state kept separate from the immutable Config."""
+
+    auth_token: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -51,9 +59,7 @@ logger = logging.getLogger("pioneer_foreman")
 async def _register(http: httpx.AsyncClient, guild_id: str) -> str:
     """Register as a worker to obtain an auth_token for REST calls.
 
-    Returns the auth_token string.  The returned token is stored in
-    Config.auth_token so subsequent restarts can skip re-registration when
-    PIONEER_FOREMAN_AUTH_TOKEN is set.
+    Returns the auth_token string.
     """
     hostname = socket.gethostname()
     resp = await http.post(
@@ -76,7 +82,7 @@ async def _register(http: httpx.AsyncClient, guild_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _run_guild(cfg) -> bool:
+async def _run_guild(cfg, state: _RuntimeState) -> bool:
     """Connect to the backend WS and handle foreman triggers until evicted.
 
     Returns True if evicted (caller should back off), False for other exits.
@@ -86,11 +92,14 @@ async def _run_guild(cfg) -> bool:
     # Bare httpx client without auth for the registration step (no auth needed
     # for POST /guilds/{guild_id}/workers — it's an open endpoint).
     async with httpx.AsyncClient(base_url=cfg.http_url, timeout=30.0) as anon_http:
-        if cfg.auth_token:
+        if state.auth_token:
+            auth_token = state.auth_token
+        elif cfg.auth_token:
             auth_token = cfg.auth_token
+            state.auth_token = auth_token
         else:
             auth_token = await _register(anon_http, guild_id)
-            cfg.auth_token = auth_token  # cache so next restart can reuse via env
+            state.auth_token = auth_token  # cache for reconnects within this process lifetime
 
     # Authenticated client — all subsequent REST calls use this.
     async with httpx.AsyncClient(
@@ -216,9 +225,10 @@ async def _run_guild(cfg) -> bool:
 
 async def _run(cfg) -> None:
     retry_delay = 5
+    state = _RuntimeState(auth_token=None)
     while True:
         try:
-            evicted = await _run_guild(cfg)
+            evicted = await _run_guild(cfg, state)
             if evicted:
                 logger.info("Evicted; waiting %ds before reconnecting", retry_delay)
                 await asyncio.sleep(retry_delay)

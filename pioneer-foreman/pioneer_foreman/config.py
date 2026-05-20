@@ -20,7 +20,6 @@ class Config:
     backend_url: str
     guild_id: str
     # Bearer token for REST API calls (worker auth_token from registration).
-    # Populated by Foreman.run() after _register() when not pre-configured.
     # Pre-configure via PIONEER_FOREMAN_AUTH_TOKEN or the auth_token TOML key
     # to skip re-registration on each restart.
     auth_token: str | None = None
