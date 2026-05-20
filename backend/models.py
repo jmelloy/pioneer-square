@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, ForeignKey, Integer, Text, or_
+from sqlalchemy import Column, ForeignKey, Index, Integer, Text, or_
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -81,6 +81,7 @@ class Message(Base):
 
 class Worker(Base):
     __tablename__ = "workers"
+    __table_args__ = (Index("ix_workers_state_last_seen", "state", "last_seen"),)
 
     id = Column(Text, primary_key=True)
     guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False)

@@ -196,8 +196,8 @@ def test_any_inbound_frame_touches_sibling_agents(client):
 
 
 def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
-    """The sweeper marks any agent whose last_seen is past the cutoff offline,
-    cascades to the worker row, and emits an agent-state offline broadcast."""
+    """The sweeper marks any agent whose last_seen is past the cutoff offline
+    and cascades the state change to the parent worker row."""
     test_client, db_path = client
     guild_id = "lvg004"
     worker_id = "w-lvd004"
