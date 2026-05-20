@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Index, or_, text
+from sqlalchemy import Column, DateTime, Index, or_, text
 from sqlmodel import Field, SQLModel
 
 
@@ -282,8 +282,8 @@ class Lock(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     key: str = Field(index=True)
     owner: str | None = None
-    acquired_at: datetime
-    expires_at: datetime | None = None
+    acquired_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    expires_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
 
 
 class TaskEvent(SQLModel, table=True):
