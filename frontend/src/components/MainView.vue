@@ -84,7 +84,7 @@ const visibleTaskTabs = computed(() =>
 watch(
   () => tasksStore.selectedTaskId,
   (id) => {
-    if (id) agentsStore.activeTab = 'task-' + id
+    if (id) agentsStore.openTaskTab(id)
   },
 )
 
@@ -109,7 +109,7 @@ function onTabClick(event: MouseEvent, taskId: string) {
     tasksStore.closeTask(taskId)
     if (agentsStore.activeTab === 'task-' + taskId) agentsStore.activeTab = 'factory'
   } else {
-    agentsStore.activeTab = 'task-' + taskId
+    agentsStore.openTaskTab(taskId)
   }
 }
 </script>
