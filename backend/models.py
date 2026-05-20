@@ -138,13 +138,6 @@ class Task(Base):
     # worker-driven foreman events (task-complete, etc.) back to the originator's
     # foreman thread in multi-user guilds. NULL on legacy/system tasks.
     user_id = Column(Text, nullable=True)
-    # Follow-up dispatch lock. Set to a UTC ISO-8601 timestamp when a follow-up
-    # is dispatched; cleared when the follow-up worker reports done (or on
-    # finalize). Prevents two concurrent foreman runs from both dispatching a
-    # follow-up for the same task. Locks older than 1 hour are treated as stale
-    # and overridden automatically.
-    locked_at = Column(Text, nullable=True)
-    lock_holder = Column(Text, nullable=True)
 
 
 class GithubToken(Base):
@@ -266,6 +259,17 @@ class GithubEvent(Base):
     sender_login = Column(Text, nullable=True)
     payload_json = Column(Text, nullable=False)
     created_at = Column(Text, nullable=False)
+
+
+class Lock(Base):
+    """Standalone key-value lock table. See lock_service.LockService for usage."""
+
+    __tablename__ = "locks"
+
+    key = Column(Text, primary_key=True, nullable=False)
+    owner = Column(Text, nullable=True)
+    acquired_at = Column(Text, nullable=False)
+    expires_at = Column(Text, nullable=True)
 
 
 class TaskEvent(Base):

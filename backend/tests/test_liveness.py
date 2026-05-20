@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
 
@@ -337,3 +338,68 @@ def test_sweeper_skips_fresh_workers(client):
         cur.execute("SELECT state FROM agents WHERE id = %s", (agent_id,))
         a = cur.fetchone()
     assert a["state"] == "idle"
+
+
+def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypatch):
+    """Stale-task watchdog: a task stuck in 'working' whose agent is idle and
+    whose lock is old enough must be moved to 'awaiting-review' and unlocked.
+
+    Scenario: agent finished and went idle but never sent task-complete (crash,
+    edge-case code path, etc.) — the lock is orphaned.  The sweeper should
+    detect the mismatch and recover the task automatically.
+    """
+    test_client, db_path = client
+    guild_id = "lvg007"
+    worker_id = "w-lvg007"
+    agent_id = "a-lvg007"
+    task_id = "t-lvg007"
+
+    _setup_guild_and_worker(db_path, guild_id, worker_id)
+    now = datetime.now(UTC).isoformat()
+    # Lock acquired long ago — older than WORKER_OFFLINE_AFTER_SECONDS (set to 1s below).
+    old_lock_ts = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
+    future_exp = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
+        ).fetchone()
+        guild_pk = row[0]
+
+        # Task stuck in "working".
+        conn.execute(
+            "INSERT OR IGNORE INTO tasks "
+            "(id, worker_id, guild_pk, description, tool, state, created_at)"
+            " VALUES (?, ?, ?, 'stuck task', 'claude', 'working', ?)",
+            (task_id, worker_id, guild_pk, now),
+        )
+        # Agent is idle (finished), not actively running anything.
+        conn.execute(
+            "INSERT OR IGNORE INTO agents "
+            "(id, guild_pk, worker_id, name, type, state, joined_at, last_seen, current_task_id)"
+            " VALUES (?, ?, ?, 'Test', 'worker', 'idle', ?, ?, NULL)",
+            (agent_id, guild_pk, worker_id, now, now),
+        )
+        # Stale lock for the task.
+        conn.execute(
+            "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+            (f"task:{task_id}", worker_id, old_lock_ts, future_exp),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
+
+    async def _drive() -> int:
+        return await main_module._sweep_stale_workers_once()
+
+    asyncio.run(_drive())
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        t = conn.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        lock = conn.execute("SELECT key FROM locks WHERE key = ?", (f"task:{task_id}",)).fetchone()
+
+    assert t["state"] == "awaiting-review", (
+        f"task.state={t['state']!r} — watchdog should have moved it to 'awaiting-review'"
+    )
+    assert lock is None, "lock should have been released by the watchdog"
