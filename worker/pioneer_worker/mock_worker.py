@@ -311,7 +311,7 @@ class MockWorker(Worker):
     async def _http_set_state(
         self, agent_id: str, state: str, activity: str | None, task_id: str | None
     ) -> dict:
-        slot = next((s for s in self.slots if s.id == agent_id), None)
+        slot = next((s for s in self.agents if s.id == agent_id), None)
         if slot is None:
             return {"error": f"unknown agentId {agent_id!r}"}
         if task_id is not None:
@@ -334,7 +334,7 @@ class MockWorker(Worker):
     async def _http_emit_output(
         self, agent_id: str, line: str, task_id: str | None, detail: dict | None
     ) -> dict:
-        slot = next((s for s in self.slots if s.id == agent_id), None)
+        slot = next((s for s in self.agents if s.id == agent_id), None)
         if slot is None:
             return {"error": f"unknown agentId {agent_id!r}"}
         msg: dict = {
@@ -359,11 +359,11 @@ class MockWorker(Worker):
         return {"ok": True, "taskId": task_id, "kind": outcome.get("kind")}
 
     def _status_snapshot(self) -> dict:
-        return {
+        snap = {
             "workerId": self.cfg.worker_id,
             "workerName": self._worker_name,
             "guildId": self.cfg.guild_id,
-            "slots": [
+            "agents": [
                 {
                     "agentId": s.id,
                     "agentName": s.name,
@@ -371,11 +371,15 @@ class MockWorker(Worker):
                     "activity": s.activity,
                     "taskId": s.current_task_id,
                 }
-                for s in self.slots
+                for s in self.agents
             ],
             "activeTasks": list(self._task_outcomes.keys()),
             "queueDepth": self.task_queue.qsize(),
         }
+        # DEPRECATED: "slots" was renamed to "agents". Keep it for one release
+        # so external consumers don't hard-break; will be removed next release.
+        snap["slots"] = snap["agents"]
+        return snap
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -440,7 +444,7 @@ def _make_handler(worker: MockWorker) -> type[BaseHTTPRequestHandler]:
                 return
             if self.path == "/agents":
                 snap = _call_sync(worker._status_snapshot)
-                self._send_json(200, {"agents": snap.get("slots", [])})
+                self._send_json(200, {"agents": snap.get("agents", [])})
                 return
             self._send_json(404, {"error": "not found"})
 

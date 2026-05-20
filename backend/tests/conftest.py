@@ -29,6 +29,8 @@ os.environ.setdefault("DATABASE_URL", TEST_DATABASE_URL)
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
+from helpers import create_db as _create_db  # noqa: E402
+from routes.webhooks import shutdown_debouncer  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -63,3 +65,11 @@ def client(monkeypatch, _setup_schema):
 
     with TestClient(main_module.app) as c:
         yield c, db_url
+
+
+@pytest.fixture(autouse=True)
+async def cleanup_debouncer():
+    """Ensure the module-level debounce queue is empty before and after each test."""
+    await shutdown_debouncer()
+    yield
+    await shutdown_debouncer()

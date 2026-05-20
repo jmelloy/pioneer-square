@@ -57,6 +57,17 @@ REPO_REFRESH_INTERVAL_SECONDS = 20 * 60
 
 
 class Agent:
+    """An agent owned by a Worker.
+
+    Each Worker creates a fixed pool of Agent instances at startup and keeps
+    them for its entire lifetime — agents are born and die with the worker
+    process.  The agent holds a live subprocess reference (``current_claude``)
+    and the ID of the task it is currently executing.  ``current_task_id`` on
+    an agent means *this task is running here right now*; it does not imply
+    ownership — the task record itself lives in the backend and can be picked
+    up by a different agent on the next run.
+    """
+
     def __init__(self, *, id: str | None = None, name: str | None = None) -> None:
         self.id: str = id if id is not None else _gen_id("a-")
         self.name: str = name if name is not None else _droid_name(self.id)
@@ -74,22 +85,56 @@ class Agent:
 
 
 class Worker:
+    """Registers with the backend, maintains a pool of agents, and executes tasks.
+
+    Two key ownership relationships:
+
+    *Agents are parented to this worker.*  The ``agents`` pool is created at
+    startup and torn down at shutdown.  The worker is responsible for their
+    entire lifecycle.
+
+    *Tasks are NOT owned by this worker.*  Tasks are external work items
+    managed by the backend/foreman.  The worker and its agents are the
+    execution environment: the worker receives tasks, runs them on an agent,
+    and reports results.  Task-tracking state (``_known_task_ids``,
+    ``_cancelled_tasks``, ``_redirect_queues``, ``_task_worktrees``) is
+    routing/bookkeeping infrastructure that lives here only because this
+    worker is the current execution context — the authoritative task record
+    lives in the backend.
+    """
+
     def __init__(self, cfg: config_mod.Config) -> None:
         self.cfg = cfg
         self.ws = WSClient(cfg.ws_url)
+        self._shutdown_event = asyncio.Event()
+        self._worker_name: str = ""
+
+        # ── Agent pool ──────────────────────────────────────────────────────
+        # Agents are owned by this worker.  Created once at startup, destroyed
+        # at shutdown.  Each agent runs one task at a time; the pool enables
+        # concurrent execution up to cfg.max_agents.
+        self.agents: list[Agent] = [Agent() for _ in range(cfg.max_agents)]
+
+        # ── Task execution infrastructure ────────────────────────────────────
+        # Tasks are NOT owned by the worker.  The fields below are routing and
+        # bookkeeping state that exists only while tasks are executing here.
+        # The authoritative task record lives in the backend.
+
+        # Shared queue: all agents drain from here; the listener pushes into it.
         self.task_queue: asyncio.Queue[dict] = asyncio.Queue()
+        # Guards against re-queueing the same task-id on reconnect or poll.
         self._known_task_ids: set[str] = set()
-        # Tasks that have been cancelled (by foreman or human); checked before/during execution
+        # Tasks cancelled by the foreman or a human; checked before/during execution.
         self._cancelled_tasks: set[str] = set()
-        # Per-task queues for mid-run redirect instructions (SIGTERM + --resume)
+        # Per-task redirect-instruction queues (SIGTERM + --resume flow).
         self._redirect_queues: dict[str, asyncio.Queue] = {}
-        # Worktrees this worker has materialised, keyed by task_id. Each entry
-        # is a list of (repo_path, wt_path, created_monotonic) tuples. The
-        # sweeper prunes entries older than ``WORKTREE_TTL_SECONDS`` so a
-        # follow-up arriving inside the TTL window can reuse an existing
-        # checkout instead of attaching a fresh one.
+        # Worktrees materialised for each task, kept alive within the TTL window
+        # so follow-ups can reuse the existing checkout without a re-clone.
+        # Keyed by task_id; each entry is a list of (repo_path, wt_path, last_used_monotonic).
         self._task_worktrees: dict[str, list[tuple[str, str, float]]] = {}
-        # Queue for auth codes received from the UI during claude auth login
+
+        # ── Auth / repo state ────────────────────────────────────────────────
+        # Queue for auth codes received from the UI during claude auth login.
         self._auth_code_queue: asyncio.Queue[str] | None = None
         # Set to True once _join() has been called the first time so that
         # _on_ws_reconnect doesn't prematurely join before auth completes.
@@ -101,13 +146,6 @@ class Worker:
         # plus API-discovered repos). Never used for task execution — only for
         # telling the backend/UI how many repos this worker can see.
         self._broadcast_repos: list[str] = list(cfg.repos)
-
-        self.slots: list[Agent] = [Agent() for i in range(cfg.max_agents)]
-        # Set when graceful shutdown is requested (via WS or signal). Idle
-        # agents stop immediately; busy agents finish their current task and
-        # skip the follow-up window.
-        self._shutdown_event = asyncio.Event()
-        self._worker_name: str = ""
 
     # ------------------------------------------------------------------ HTTP
     async def _http(self, *, authed: bool = False) -> httpx.AsyncClient:
@@ -147,7 +185,7 @@ class Worker:
             "Registered as worker %s (name=%s, %d agents) user=%s",
             wid,
             self._worker_name,
-            len(self.slots),
+            len(self.agents),
             self.cfg.user or "<unattributed>",
         )
 
@@ -722,7 +760,7 @@ class Worker:
         await self._emit_agent_state(slot)
 
     async def _join(self) -> None:
-        for slot in self.slots:
+        for slot in self.agents:
             await self._send(
                 {
                     "type": "join",
@@ -756,7 +794,7 @@ class Worker:
         await self._join()
         # `join` resets each agent to idle in the backend. Re-send the actual
         # state so a mid-task reconnect doesn't show us as idle while we work.
-        for slot in self.slots:
+        for slot in self.agents:
             if slot.state and slot.state != "idle":
                 await self._emit_agent_state(slot)
         # Re-fetch any tasks that were assigned while the WS was down; without
@@ -828,7 +866,7 @@ class Worker:
         except Exception as exc:
             logger.debug("emit during shutdown failed (ignored): %s", exc)
         # Wake idle agents waiting on task_queue.get()
-        for _ in self.slots:
+        for _ in self.agents:
             self.task_queue.put_nowait(_SHUTDOWN_SENTINEL)
 
     def _install_signal_handlers(self) -> None:
@@ -955,7 +993,7 @@ class Worker:
             "Joined guild %s — worker_id=%s agents=%d",
             self.cfg.guild_id,
             self.cfg.worker_id,
-            len(self.slots),
+            len(self.agents),
         )
 
         if self.cfg.repos:
@@ -968,7 +1006,7 @@ class Worker:
             )
 
         await self._emit("[worker] Online. Watching for tasks.")
-        for slot in self.slots:
+        for slot in self.agents:
             await self._set_state("idle", slot)
 
         # Reclaim any worktrees the previous incarnation of this worker left
@@ -988,7 +1026,7 @@ class Worker:
             self._known_task_ids.add(task["id"])
             await self.task_queue.put(task)
 
-        runners = [asyncio.create_task(self._agent_loop(slot)) for slot in self.slots]
+        runners = [asyncio.create_task(self._agent_loop(slot)) for slot in self.agents]
         puller = asyncio.create_task(self._idle_puller())
         heartbeat = asyncio.create_task(self._heartbeat())
         sweeper = asyncio.create_task(self._worktree_sweeper())
@@ -1094,7 +1132,7 @@ class Worker:
                         )
                         await self._emit("[worker] Auth code received and forwarded to login flow")
                     else:
-                        active = next((s for s in self.slots if s.current_claude), None)
+                        active = next((s for s in self.agents if s.current_claude), None)
                         if active:
                             delivered = await active.current_claude.send_message(text)
                             if delivered:
@@ -1185,7 +1223,7 @@ class Worker:
                 logger.info("Cancel signal for task %s", task_id)
                 self._cancelled_tasks.add(task_id)
                 # Kill subprocess if this task is currently running
-                active = next((s for s in self.slots if s.current_task_id == task_id), None)
+                active = next((s for s in self.agents if s.current_task_id == task_id), None)
                 if active and active.current_claude:
                     await active.current_claude.terminate()
                     logger.info("Terminated subprocess for cancelled task %s", task_id)
@@ -1211,7 +1249,7 @@ class Worker:
                 if not task_id or not instructions:
                     continue
                 logger.info("Redirect for task %s: %s", task_id, instructions[:80])
-                active = next((s for s in self.slots if s.current_task_id == task_id), None)
+                active = next((s for s in self.agents if s.current_task_id == task_id), None)
                 if active and active.current_claude:
                     # Subprocess running — SIGTERM it and queue redirect for the
                     # in-flight redirect loop, which resumes claude with the
@@ -1437,7 +1475,7 @@ class Worker:
                 pass
             now = asyncio.get_event_loop().time()
             stale: list[str] = []
-            active_task_ids = {s.current_task_id for s in self.slots if s.current_task_id}
+            active_task_ids = {s.current_task_id for s in self.agents if s.current_task_id}
             for task_id, entries in list(self._task_worktrees.items()):
                 if task_id in active_task_ids:
                     continue
@@ -1478,7 +1516,7 @@ class Worker:
                 and now - self._last_repo_refresh > REPO_REFRESH_INTERVAL_SECONDS
             ):
                 await self._refresh_github_repos()
-            all_idle = all(s.current_claude is None for s in self.slots)
+            all_idle = all(s.current_claude is None for s in self.agents)
             if self.task_queue.empty() and all_idle:
                 known = self._known_repos()
                 if known:
