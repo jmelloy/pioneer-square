@@ -36,6 +36,8 @@ from foreman import maybe_post_plan_comment, reset_foreman_poll, run_foreman_ai
 
 logger = logging.getLogger(__name__)
 
+_TERMINAL_STATES = ("done", "failed", "cancelled")
+
 
 # ---------------------------------------------------------------------------
 # Helpers (pure DB lookups; live here because main.py + ws_handlers both use
@@ -539,6 +541,9 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         update_values["pr_number"] = pr_number
         update_values["pr_repo"] = pr_repo
     if update_values:
+        if update_values.get("state") in _TERMINAL_STATES:
+            update_values["locked_at"] = None
+            update_values["lock_holder"] = None
         await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_values))
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
@@ -605,13 +610,23 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     worker_id_msg = data.get("workerId", "")
     if task_id:
         pr_url_fud = data.get("prUrl", "")
-        update_vals: dict = {"state": "awaiting-review", "locked_at": None, "lock_holder": None}
+        lock_release: dict = {"locked_at": None, "lock_holder": None}
         if pr_url_fud:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url_fud)
-            update_vals.update(
+            lock_release.update(
                 {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
             )
-        await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_vals))
+        # Move to awaiting-review and release lock unless task is already terminal.
+        await ctx.db.execute(
+            update(Task)
+            .where(Task.id == task_id, Task.state.not_in(_TERMINAL_STATES))
+            .values(**lock_release, state="awaiting-review")
+        )
+        await ctx.db.execute(
+            update(Task)
+            .where(Task.id == task_id, Task.state.in_(_TERMINAL_STATES))
+            .values(**lock_release)
+        )
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if not task_id:
