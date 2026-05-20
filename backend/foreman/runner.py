@@ -657,14 +657,28 @@ async def run_foreman_ai(
             # Re-parse so messages stays as plain dicts (not SDK objects)
             messages[-1]["content"] = json.loads(messages[-1]["content"])
 
-            text_parts += [b.text for b in resp.content if b.type == "text" and b.text.strip()]
+            # Emit text blocks immediately so narration appears inline with tool calls,
+            # not batched at the end of the turn.
+            _now = datetime.now(UTC).isoformat()
+            for b in resp.content:
+                if b.type == "text" and b.text.strip():
+                    text_parts.append(b.text.strip())
+                    await broadcast(
+                        guild_id,
+                        {
+                            "type": "chat",
+                            "from": "foreman",
+                            "to": "user",
+                            "content": b.text.strip(),
+                            "createdAt": _now,
+                        },
+                    )
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
                 break  # end_turn — foreman is done
 
             # Broadcast tool-use events so the frontend chat shows them live
-            _now = datetime.now(UTC).isoformat()
             for tu in tool_uses:
                 await broadcast(
                     guild_id,
@@ -766,22 +780,36 @@ async def run_foreman_ai(
             )
             wrap_turn_id = await _save_turn(guild_id, user_id, "assistant", wrap_resp.content)
             await _update_turn_tokens(wrap_turn_id, _wrap_input, _wrap_output)
-            text_parts += [b.text for b in wrap_resp.content if b.type == "text" and b.text.strip()]
-            text_parts.append(f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_")
-
-        response_text = "\n".join(text_parts).strip()
-        if response_text:
-            now = datetime.now(UTC).isoformat()
+            _now = datetime.now(UTC).isoformat()
+            for b in wrap_resp.content:
+                if b.type == "text" and b.text.strip():
+                    text_parts.append(b.text.strip())
+                    await broadcast(
+                        guild_id,
+                        {
+                            "type": "chat",
+                            "from": "foreman",
+                            "to": "user",
+                            "content": b.text.strip(),
+                            "createdAt": _now,
+                        },
+                    )
+            cap_note = f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_"
+            text_parts.append(cap_note)
             await broadcast(
                 guild_id,
                 {
                     "type": "chat",
                     "from": "foreman",
                     "to": "user",
-                    "content": response_text,
-                    "createdAt": now,
+                    "content": cap_note,
+                    "createdAt": _now,
                 },
             )
+
+        response_text = "\n".join(text_parts).strip()
+        if response_text:
+            now = datetime.now(UTC).isoformat()
             db = await get_db()
             try:
                 msg_guild_pk = await get_guild_pk(db, guild_id)
