@@ -26,10 +26,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Backfill: the 'foreman' sentinel → NULL (satisfies the FK; NULL is always valid).
-    op.execute(sa.text("UPDATE tasks SET worker_id = NULL WHERE worker_id = 'foreman'"))
     # Drop NOT NULL — foreman tasks have no real worker, FK constraint stays.
     op.alter_column("tasks", "worker_id", existing_type=sa.Text(), nullable=True)
+
+    # Backfill: the 'foreman' sentinel → NULL (satisfies the FK; NULL is always valid).
+    op.execute(sa.text("UPDATE tasks SET worker_id = NULL WHERE worker_id = 'foreman'"))
 
 
 def downgrade() -> None:
