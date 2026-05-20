@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from lock_service import LockService
 from models import Agent, Guild, Lock, Task, Worker
-from sqlalchemy import func, literal, select, update
+from sqlalchemy import literal, select, update
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
