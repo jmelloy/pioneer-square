@@ -108,6 +108,28 @@ describe('useTasksStore', () => {
       expect(store.tasks[0].state).toBe('awaiting-review')
     })
 
+    it('does not override cancelled state on task-complete (race condition guard)', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'cancelled' })
+
+      store.handleWebSocketMessage({
+        type: 'task-complete',
+        taskId: 't-1',
+        branch: 'claude/done',
+      })
+
+      expect(store.tasks[0].state).toBe('cancelled')
+    })
+
+    it('does not override cancelled state on task-followup-done', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'cancelled' })
+
+      store.handleWebSocketMessage({ type: 'task-followup-done', taskId: 't-1' })
+
+      expect(store.tasks[0].state).toBe('cancelled')
+    })
+
     it('appends terminal-output lines into taskLogs', () => {
       const store = useTasksStore()
 
@@ -388,6 +410,20 @@ describe('useTasksStore', () => {
           method: 'POST',
         }),
       )
+    })
+
+    it('cancelTask optimistically marks the task cancelled after API succeeds', async () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'working' })
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }),
+      )
+
+      await store.cancelTask('g-1', 't-1')
+
+      expect(store.tasks[0].state).toBe('cancelled')
+      expect(store.tasks[0].finished_at).toBeDefined()
     })
 
     it('throws when the API returns non-2xx', async () => {
