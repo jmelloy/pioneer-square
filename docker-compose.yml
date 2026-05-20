@@ -90,6 +90,7 @@ services:
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-INFO}
     volumes:
       # Provide pioneer-worker.toml at ./worker/pioneer-worker.toml

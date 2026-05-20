@@ -41,6 +41,10 @@ class Config:
     codex_path: str = "codex"
     codex_args: list[str] = field(default_factory=list)
     codex_doctor: bool = True
+    # OpenAI API key for Codex tasks. Falls back to OPENAI_API_KEY env var at
+    # startup; set here to avoid exposing the secret in the process environment
+    # before the worker has a chance to forward it.
+    openai_api_key: str | None = None
     pi_path: str = "pi"
     pull_interval: float = 300.0
     claude_max_turns: int = 50
@@ -160,6 +164,29 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     if not isinstance(_codex_args, list) or not all(isinstance(arg, str) for arg in _codex_args):
         raise ValueError("codex args must be a list of strings.")
 
+    _openai_api_key = overrides.get("openai_api_key")
+    if _openai_api_key is None:
+        raw_key = codex_block.get("api_key")
+        if isinstance(raw_key, str) and raw_key.startswith("env:"):
+            _var_name = raw_key[4:].strip()
+            _env_val = os.environ.get(_var_name)
+            if _env_val == "":
+                raise ValueError(
+                    f"[codex] api_key references env:{_var_name!r} but the variable is set to an"
+                    " empty string. Provide a valid OpenAI API key or unset the variable."
+                )
+            _openai_api_key = _env_val  # None if var is absent, key string if present
+        elif raw_key:
+            _openai_api_key = raw_key
+    if _openai_api_key is None:
+        _env_val = os.environ.get("OPENAI_API_KEY")
+        if _env_val == "":
+            raise ValueError(
+                "OPENAI_API_KEY is set to an empty string. Provide a valid OpenAI API key or"
+                " unset the variable."
+            )
+        _openai_api_key = _env_val  # None if not set
+
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
@@ -195,6 +222,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             if overrides.get("codex_doctor") is not None
             else codex_block.get("doctor", True)
         ),
+        openai_api_key=_openai_api_key,
         pi_path=overrides.get("pi_path") or paths_block.get("pi", "pi"),
         pull_interval=float(
             overrides.get("pull_interval")
