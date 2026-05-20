@@ -222,7 +222,17 @@ def migrate_guilds(sq: sqlite3.Connection, pg: Any) -> dict[str, int]:
         return {gid: pg_id for pg_id, gid in cur.fetchall()}
 
 
-def _lookup_guild_pk(d: dict[str, Any], guild_map: dict[str, int]) -> int | None:
+def _lookup_guild_pk(
+    d: dict[str, Any],
+    guild_map: dict[str, int],
+    sq_int_map: dict[int, int] | None = None,
+) -> int | None:
+    # New SQLite schema: tables carry guild_pk (INTEGER FK to guilds.id).
+    # IDs match between SQLite and PG since guilds were migrated in the same order.
+    sq_pk = d.get("guild_pk")
+    if sq_pk is not None:
+        return sq_pk
+    # Old SQLite schema: tables carry guild_id (TEXT).
     guild_id = d.get("guild_id")
     if guild_id is None:
         return None
