@@ -11,6 +11,20 @@ from alembic import command
 from alembic.config import Config as AlembicConfig
 
 
+def _psycopg2_kwargs(db_url: str) -> dict:
+    """Parse a SQLAlchemy URL and return kwargs suitable for psycopg2.connect()."""
+    from sqlalchemy.engine.url import make_url
+
+    u = make_url(db_url).set(drivername="postgresql+psycopg2")
+    return {
+        "host": u.host,
+        "port": u.port or 5432,
+        "user": u.username,
+        "password": u.password,
+        "dbname": u.database,
+    }
+
+
 def create_db(db_url: str) -> None:
     """Run Alembic migrations to create all tables."""
     alembic_ini = os.path.join(os.path.dirname(__file__), "..", "alembic.ini")
@@ -20,16 +34,18 @@ def create_db(db_url: str) -> None:
 
 
 def truncate_all(db_url: str) -> None:
-    """Truncate all public tables and restart sequences."""
+    """Truncate all public tables (except alembic_version) and restart sequences."""
     import psycopg2
     import psycopg2.extras
 
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-    conn = psycopg2.connect(sync_url)
+    conn = psycopg2.connect(**_psycopg2_kwargs(db_url))
     conn.autocommit = True
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
-        cur.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+        cur.execute(
+            "SELECT tablename FROM pg_tables "
+            "WHERE schemaname = 'public' AND tablename != 'alembic_version'"
+        )
         tables = [row["tablename"] for row in cur.fetchall()]
         if tables:
             cur.execute(
@@ -55,8 +71,7 @@ def raw_conn(db_url: str):
     import psycopg2
     import psycopg2.extras
 
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-    conn = psycopg2.connect(sync_url)
+    conn = psycopg2.connect(**_psycopg2_kwargs(db_url))
     conn.autocommit = False
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -66,6 +81,7 @@ def raw_conn(db_url: str):
         conn.rollback()
         raise
     finally:
+        cur.close()
         conn.close()
 
 
@@ -112,7 +128,8 @@ def insert_guild(
         )
         row = cur.fetchone()
         guild_pk = row["id"] if row else None
-        if owner_user_id and guild_pk:
+        assert guild_pk is not None, f"Failed to insert or find guild {guild_id!r}"
+        if owner_user_id:
             cur.execute(
                 "INSERT INTO users (id, github_id, github_login, created_at, updated_at) "
                 "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
