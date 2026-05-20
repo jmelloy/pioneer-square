@@ -127,7 +127,7 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
                 & (Agent.state != "offline"),
             )
             .where(GuildMember.user_id == github_user_id)
-            .group_by(Guild.guild_id)
+            .group_by(Guild.guild_id, Guild.created_at, Guild.name)
             .order_by(Guild.created_at.desc())
         )
         return [dict(r._mapping) for r in result.fetchall()]
