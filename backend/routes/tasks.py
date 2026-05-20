@@ -323,7 +323,7 @@ async def cancel_task_endpoint(
         await db.execute(
             update(Task)
             .where(Task.id == task_id)
-            .values(state="cancelled", finished_at=finished_at)
+            .values(state="cancelled", finished_at=finished_at, locked_at=None, lock_holder=None)
         )
         await db.commit()
     finally:

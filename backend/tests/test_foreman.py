@@ -8,11 +8,12 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
 import sys
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -827,6 +828,212 @@ class TestExecToolsDispatching:
         assert row[1] == "Specific name"
         assert row[2] == "review"
         assert row[3] == "codex"
+
+    # -----------------------------------------------------------------------
+    # Task locking — prevent concurrent follow-up races
+    # -----------------------------------------------------------------------
+
+    async def test_send_followup_acquires_lock(self, db_session):
+        """Successful send_followup sets locked_at / lock_holder on the task."""
+        insert_guild(db_session, "g-lock-set")
+        _insert_worker(db_session, "g-lock-set", "w-lock1")
+        _insert_agent(db_session, "g-lock-set", "w-lock1", "a-lock1")
+        _insert_task(db_session, "t-lock1", "g-lock-set", "w-lock1")
+
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-lock-set",
+                [
+                    _fake_tool_use(
+                        "send_followup", {"task_id": "t-lock1", "instructions": "Fix tests"}
+                    )
+                ],
+            )
+        assert "t-lock1" in results[0]["content"]
+        with sqlite3.connect(db_session) as conn:
+            row = conn.execute(
+                "SELECT locked_at, lock_holder FROM tasks WHERE id='t-lock1'"
+            ).fetchone()
+        assert row[0] is not None, "locked_at should be set after dispatch"
+        assert row[1] is not None, "lock_holder should be set after dispatch"
+
+    async def test_send_followup_while_locked_queues_event(self, db_session):
+        """A second send_followup on a locked task queues the instructions instead of dispatching."""
+        insert_guild(db_session, "g-lock-queue")
+        _insert_worker(db_session, "g-lock-queue", "w-lq1")
+        _insert_agent(db_session, "g-lock-queue", "w-lq1", "a-lq1")
+        # Pre-lock the task to simulate a concurrent dispatch already in flight.
+        _insert_task(db_session, "t-lq1", "g-lock-queue", "w-lq1")
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(db_session) as conn:
+            conn.execute(
+                "UPDATE tasks SET locked_at=?, lock_holder='existing-holder' WHERE id='t-lq1'",
+                (now,),
+            )
+            conn.commit()
+
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-lock-queue",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {"task_id": "t-lq1", "instructions": "Add integration tests"},
+                    )
+                ],
+            )
+
+        # No task-followup broadcast — we didn't dispatch
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 0
+        # The result should mention queued / locked
+        assert (
+            "queued" in results[0]["content"].lower() or "locked" in results[0]["content"].lower()
+        )
+        # A task_event row should exist
+        with sqlite3.connect(db_session) as conn:
+            row = conn.execute(
+                "SELECT event_type, payload_json FROM task_events WHERE task_id='t-lq1'"
+            ).fetchone()
+        assert row is not None, "A task_event row should have been inserted"
+        assert row[0] == "pending-followup"
+        payload = json.loads(row[1])
+        assert payload["instructions"] == "Add integration tests"
+
+    async def test_two_concurrent_followups_only_one_dispatched(self, db_session):
+        """Simulate two simultaneous send_followup calls — exactly one dispatches, one queues."""
+        insert_guild(db_session, "g-race")
+        _insert_worker(db_session, "g-race", "w-race1")
+        _insert_agent(db_session, "g-race", "w-race1", "a-race1")
+        _insert_task(db_session, "t-race1", "g-race", "w-race1")
+
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            # Fire both concurrently, matching what two async foreman runs would do.
+            results = await asyncio.gather(
+                exec_tools(
+                    "g-race",
+                    [
+                        _fake_tool_use(
+                            "send_followup",
+                            {"task_id": "t-race1", "instructions": "Fix lint"},
+                            "tid-1",
+                        )
+                    ],
+                ),
+                exec_tools(
+                    "g-race",
+                    [
+                        _fake_tool_use(
+                            "send_followup",
+                            {"task_id": "t-race1", "instructions": "Fix tests"},
+                            "tid-2",
+                        )
+                    ],
+                ),
+            )
+
+        all_results = results[0] + results[1]
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        # Exactly one task-followup must have been broadcast
+        assert len(followup_msgs) == 1
+
+        # Exactly one result should indicate queued/locked; the other is success
+        queued = [
+            r
+            for r in all_results
+            if "queued" in r["content"].lower() or "locked" in r["content"].lower()
+        ]
+        dispatched = [
+            r
+            for r in all_results
+            if "follow-up sent" in r["content"].lower() or "reassigned" in r["content"].lower()
+        ]
+        assert len(queued) == 1, f"Expected 1 queued, got: {[r['content'] for r in queued]}"
+        assert len(dispatched) == 1, (
+            f"Expected 1 dispatched, got: {[r['content'] for r in dispatched]}"
+        )
+
+        # One task_event row should exist with the queued instructions
+        with sqlite3.connect(db_session) as conn:
+            rows = conn.execute(
+                "SELECT payload_json FROM task_events WHERE task_id='t-race1'"
+            ).fetchall()
+        assert len(rows) == 1
+
+    async def test_finalize_task_clears_lock_and_queued_events(self, db_session):
+        """finalize_task releases the lock and discards any queued task_events."""
+        insert_guild(db_session, "g-fin-lock")
+        _insert_worker(db_session, "g-fin-lock", "w-fin-lk")
+        _insert_task(db_session, "t-fin-lk", "g-fin-lock", "w-fin-lk")
+        now = datetime.now(UTC).isoformat()
+        with sqlite3.connect(db_session) as conn:
+            conn.execute(
+                "UPDATE tasks SET locked_at=?, lock_holder='h1' WHERE id='t-fin-lk'", (now,)
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, event_type, payload_json, created_at) "
+                "VALUES ('t-fin-lk', 'pending-followup', '{\"instructions\": \"stale\"}', ?)",
+                (now,),
+            )
+            conn.commit()
+
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-fin-lock", [_fake_tool_use("finalize_task", {"task_id": "t-fin-lk"})]
+            )
+        assert "finalized" in results[0]["content"].lower()
+        with sqlite3.connect(db_session) as conn:
+            task_row = conn.execute(
+                "SELECT state, locked_at, lock_holder FROM tasks WHERE id='t-fin-lk'"
+            ).fetchone()
+            event_count = conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id='t-fin-lk'"
+            ).fetchone()[0]
+        assert task_row[0] == "done"
+        assert task_row[1] is None, "locked_at should be cleared on finalize"
+        assert task_row[2] is None, "lock_holder should be cleared on finalize"
+        assert event_count == 0, "Queued events should be deleted on finalize"
+
+    async def test_stale_lock_overridden(self, db_session):
+        """A lock older than 1 hour is treated as stale and can be overridden."""
+        insert_guild(db_session, "g-stale-lock")
+        _insert_worker(db_session, "g-stale-lock", "w-stale")
+        _insert_agent(db_session, "g-stale-lock", "w-stale", "a-stale")
+        _insert_task(db_session, "t-stale", "g-stale-lock", "w-stale")
+        # Set locked_at to 2 hours ago
+        stale_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+        with sqlite3.connect(db_session) as conn:
+            conn.execute(
+                "UPDATE tasks SET locked_at=?, lock_holder='old-holder' WHERE id='t-stale'",
+                (stale_ts,),
+            )
+            conn.commit()
+
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            await exec_tools(
+                "g-stale-lock",
+                [_fake_tool_use("send_followup", {"task_id": "t-stale", "instructions": "Retry"})],
+            )
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 1, "Stale lock should be overridden and follow-up dispatched"
+        with sqlite3.connect(db_session) as conn:
+            row = conn.execute("SELECT lock_holder FROM tasks WHERE id='t-stale'").fetchone()
+        assert row[0] != "old-holder", "Lock holder should have been replaced"
 
 
 # ---------------------------------------------------------------------------

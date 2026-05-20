@@ -26,8 +26,8 @@ from events import (
     pending_claude_auth,
 )
 from fastapi import WebSocket
-from models import Agent, Message, Task, TaskLog, User, Worker
-from sqlalchemy import select, update
+from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from util.tasks import spawn
 from utils import worker_display_name
@@ -35,6 +35,8 @@ from utils import worker_display_name
 from foreman import maybe_post_plan_comment, reset_foreman_poll, run_foreman_ai
 
 logger = logging.getLogger(__name__)
+
+_TERMINAL_STATES = ("done", "failed", "cancelled")
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +541,9 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         update_values["pr_number"] = pr_number
         update_values["pr_repo"] = pr_repo
     if update_values:
+        if update_values.get("state") in _TERMINAL_STATES:
+            update_values["locked_at"] = None
+            update_values["lock_holder"] = None
         await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_values))
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
@@ -605,23 +610,67 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     worker_id_msg = data.get("workerId", "")
     if task_id:
         pr_url_fud = data.get("prUrl", "")
-        update_vals: dict = {"state": "awaiting-review"}
+        lock_release: dict = {"locked_at": None, "lock_holder": None}
         if pr_url_fud:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url_fud)
-            update_vals.update(
+            lock_release.update(
                 {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
             )
-        await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_vals))
+        # Move to awaiting-review and release lock unless task is already terminal.
+        await ctx.db.execute(
+            update(Task)
+            .where(Task.id == task_id, Task.state.not_in(_TERMINAL_STATES))
+            .values(**lock_release, state="awaiting-review")
+        )
+        await ctx.db.execute(
+            update(Task)
+            .where(Task.id == task_id, Task.state.in_(_TERMINAL_STATES))
+            .values(**lock_release)
+        )
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if not task_id:
         return
+
+    # Collect and drain any follow-up requests that were queued while the task
+    # was locked, then re-trigger the foreman with their instructions so it can
+    # decide whether to dispatch them.
+    queued_payloads: list[dict] = []
+    result = await ctx.db.execute(
+        select(TaskEvent.id, TaskEvent.payload_json)
+        .where(TaskEvent.task_id == task_id, TaskEvent.event_type == "pending-followup")
+        .order_by(TaskEvent.id)
+    )
+    rows = result.all()
+    if rows:
+        event_ids = [r[0] for r in rows]
+        queued_payloads = [json.loads(r[1]) for r in rows]
+        await ctx.db.execute(delete(TaskEvent).where(TaskEvent.id.in_(event_ids)))
+        await ctx.db.commit()
+
     task_uid = await _task_user_id(ctx.db, task_id)
+
+    if queued_payloads:
+        queued_summary = "\n".join(
+            f"  {i + 1}. {p.get('instructions', '')}" for i, p in enumerate(queued_payloads)
+        )
+        human_msg = (
+            f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
+            f"While the task was locked, {len(queued_payloads)} follow-up request(s) were queued:\n"
+            f"{queued_summary}\n"
+            "Review the queued instructions and call send_followup with the relevant ones "
+            "(or a combined version), or call finalize_task if the work is done."
+        )
+    else:
+        human_msg = (
+            f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
+            "Decide: call send_followup for more work, or call finalize_task to mark it done."
+        )
+
     await _trigger_foreman(
         ctx.guild_id,
         "followup-done",
-        f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
-        "Decide: call send_followup for more work, or call finalize_task to mark it done.",
+        human_msg,
         user_id=task_uid,
         task_id=task_id,
         task_name=f"foreman.followup-done:{task_id}",
