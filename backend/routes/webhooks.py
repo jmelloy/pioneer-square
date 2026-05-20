@@ -127,12 +127,6 @@ class DebounceQueue:
         try:
             await asyncio.sleep(self._window)
         except asyncio.CancelledError:
-            # External cancellation (shutdown/test teardown): _tasks[key] was never
-            # popped, so clean it up.  During a schedule() reset, _tasks[key] was
-            # already popped before cancel() was called, so we won't find this task
-            # there and the check is a safe no-op.
-            if self._tasks.get(key) is asyncio.current_task():
-                self._tasks.pop(key, None)
             raise
         # Stale-generation guard: if schedule() ran after our sleep started it
         # bumped the generation counter before cancelling us.  If the cancel
