@@ -16,7 +16,6 @@ Create Date: 2026-05-20 00:00:04.000000
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260520_000004_rename_guild_pk_to_guild_id"
@@ -24,24 +23,57 @@ down_revision: str | Sequence[str] | None = "20260520_000003_merge_locking_and_m
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_TABLES = [
+# Tables with a single FK on guild_pk (no extra unique constraints).
+# guild_members also has guild_pk as part of the composite PK; PostgreSQL
+# keeps the PK constraint valid across the rename automatically.
+_SIMPLE_FK_TABLES = [
     "agents",
     "messages",
     "workers",
     "tasks",
     "guild_members",
-    "claude_credentials",
-    "guild_keys",
     "foreman_turns",
     "github_events",
 ]
 
+# Tables where guild_pk carries both a FK and a UNIQUE constraint.
+_UNIQUE_FK_TABLES = [
+    "claude_credentials",
+    "guild_keys",
+]
+
 
 def upgrade() -> None:
-    for table in _TABLES:
-        op.execute(sa.text(f"ALTER TABLE {table} RENAME COLUMN guild_pk TO guild_id"))
+    for table in _SIMPLE_FK_TABLES:
+        op.drop_constraint(f"{table}_guild_pk_fkey", table, type_="foreignkey")
+        op.alter_column(table, "guild_pk", new_column_name="guild_id")
+        op.create_foreign_key(
+            f"{table}_guild_id_fkey", table, "guilds", ["guild_id"], ["id"]
+        )
+
+    for table in _UNIQUE_FK_TABLES:
+        op.drop_constraint(f"{table}_guild_pk_fkey", table, type_="foreignkey")
+        op.drop_constraint(f"{table}_guild_pk_key", table, type_="unique")
+        op.alter_column(table, "guild_pk", new_column_name="guild_id")
+        op.create_unique_constraint(f"{table}_guild_id_key", table, ["guild_id"])
+        op.create_foreign_key(
+            f"{table}_guild_id_fkey", table, "guilds", ["guild_id"], ["id"]
+        )
 
 
 def downgrade() -> None:
-    for table in reversed(_TABLES):
-        op.execute(sa.text(f"ALTER TABLE {table} RENAME COLUMN guild_id TO guild_pk"))
+    for table in reversed(_UNIQUE_FK_TABLES):
+        op.drop_constraint(f"{table}_guild_id_fkey", table, type_="foreignkey")
+        op.drop_constraint(f"{table}_guild_id_key", table, type_="unique")
+        op.alter_column(table, "guild_id", new_column_name="guild_pk")
+        op.create_unique_constraint(f"{table}_guild_pk_key", table, ["guild_pk"])
+        op.create_foreign_key(
+            f"{table}_guild_pk_fkey", table, "guilds", ["guild_pk"], ["id"]
+        )
+
+    for table in reversed(_SIMPLE_FK_TABLES):
+        op.drop_constraint(f"{table}_guild_id_fkey", table, type_="foreignkey")
+        op.alter_column(table, "guild_id", new_column_name="guild_pk")
+        op.create_foreign_key(
+            f"{table}_guild_pk_fkey", table, "guilds", ["guild_pk"], ["id"]
+        )

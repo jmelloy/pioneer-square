@@ -122,6 +122,8 @@ async def _sweep_stale_workers_once() -> int:
                 .where(Agent.last_seen < cutoff)
             )
         ).all()
+        # stale_worker_keys stores (worker_id, guild_id) where guild_id is the
+        # integer FK to guilds.id (not the text slug guild_slug selected above).
         stale_worker_keys: set[tuple[str, int]] = set()
         for row in stale_agents:
             await db.execute(
