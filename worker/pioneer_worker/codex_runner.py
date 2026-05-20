@@ -81,9 +81,7 @@ async def run_codex_auto(
         # explicit prompt argument is the only task input.
         master_fd, slave_fd = pty.openpty()
         env = dict(os.environ)
-        if openai_api_key is not None:
-            if not openai_api_key:
-                raise ValueError("openai_api_key must be a non-empty string")
+        if openai_api_key:
             env["OPENAI_API_KEY"] = openai_api_key
         proc = await asyncio.create_subprocess_exec(
             *cmd,
