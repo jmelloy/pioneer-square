@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from lock_service import LockService
 from models import Agent, Guild, Lock, Task, Worker
-from sqlalchemy import literal, select, update
+from sqlalchemy import func, select, update
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -172,7 +172,7 @@ async def _sweep_stale_workers_once() -> int:
                         # that we can assume it's not a brand-new dispatch.
                         select(Lock.key)
                         .where(
-                            Lock.key == literal("task:").op("||")(Task.id),
+                            Lock.key == func.concat("task:", Task.id),
                             Lock.acquired_at < cutoff_lock,
                         )
                         .exists(),

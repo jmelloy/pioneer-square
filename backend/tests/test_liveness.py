@@ -428,8 +428,7 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
         )
         # Stale lock for the task.
         conn.execute(
-            "INSERT INTO locks (key, owner, acquired_at, expires_at)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
             (f"task:{task_id}", worker_id, old_lock_ts, future_exp),
         )
         conn.commit()
@@ -444,9 +443,7 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         t = conn.execute("SELECT state FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        lock = conn.execute(
-            "SELECT key FROM locks WHERE key = ?", (f"task:{task_id}",)
-        ).fetchone()
+        lock = conn.execute("SELECT key FROM locks WHERE key = ?", (f"task:{task_id}",)).fetchone()
 
     assert t["state"] == "awaiting-review", (
         f"task.state={t['state']!r} — watchdog should have moved it to 'awaiting-review'"

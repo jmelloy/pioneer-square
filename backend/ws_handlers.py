@@ -340,7 +340,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     await broadcast(ctx.guild_id, broadcast_payload)
 
 
-_LOCK_RELEASE_AGENT_STATES = frozenset({"idle", "offline", "error", "cancelled", "timeout"})
+_LOCK_RELEASE_AGENT_STATES = frozenset({"idle", "offline", "error", "cancelled", "timeout", "done"})
 
 
 async def handle_agent_state(ctx: WSContext, data: dict) -> None:

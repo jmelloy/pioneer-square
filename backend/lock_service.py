@@ -13,7 +13,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from models import Lock
-from sqlalchemy import delete, insert as sa_insert, select
+from sqlalchemy import delete, select
+from sqlalchemy import insert as sa_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
