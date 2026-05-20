@@ -105,8 +105,8 @@ async def test_is_locked_false_after_release(db_session):
 
 
 def _ts(dt) -> str:
-    """Format a datetime the same way LockService does (timezone-free UTC ISO)."""
-    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")
+    """Format a UTC datetime as an ISO-8601 string with timezone for raw SQL inserts."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
 
 
 @pytest.mark.anyio

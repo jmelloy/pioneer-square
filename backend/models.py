@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, ForeignKey, Integer, Text, or_
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, Text, or_
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -269,8 +269,8 @@ class Lock(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     key = Column(Text, nullable=False, index=True)
     owner = Column(Text, nullable=True)
-    acquired_at = Column(Text, nullable=False)
-    expires_at = Column(Text, nullable=True)
+    acquired_at = Column(DateTime(timezone=True), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class TaskEvent(Base):
