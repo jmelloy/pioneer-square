@@ -47,6 +47,10 @@ token = "env:GITHUB_TOKEN"
 max_turns = 50
 
 [codex]
+# OpenAI API key for Codex tasks. Use "env:VAR_NAME" to read from an
+# environment variable (recommended), or set OPENAI_API_KEY in the environment.
+# api_key = "env:OPENAI_API_KEY"
+
 # Extra args passed to `codex exec` before the prompt. Keep approval policy
 # non-interactive for unattended workers.
 # args = ["--sandbox", "workspace-write", "--ask-for-approval", "never"]

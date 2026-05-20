@@ -242,6 +242,21 @@ class Worker:
         else:
             logger.warning("codex doctor: failed (rc=%d)\n%s", proc.returncode, output)
 
+    async def _ensure_codex_api_key(self) -> None:
+        """Warn early if no OpenAI API key is available for Codex tasks.
+
+        The key is passed explicitly to each run_codex_auto call (via the
+        openai_api_key parameter) rather than being injected into os.environ,
+        so this method only checks and logs — it does not mutate global state.
+        """
+        if self.cfg.openai_api_key is not None:
+            logger.info("OPENAI_API_KEY configured — Codex tasks will use it")
+        else:
+            logger.warning(
+                "OPENAI_API_KEY not configured — Codex tasks will fail. "
+                "Set openai_api_key in the [codex] config block or the OPENAI_API_KEY env var."
+            )
+
     async def _claude_is_authenticated(self) -> bool:
         """Return True if `claude auth status --json` reports loggedIn=true.
 
@@ -921,6 +936,7 @@ class Worker:
         await self._refresh_github_repos()
         await self._check_gh_auth()
         await self._check_codex_doctor()
+        await self._ensure_codex_api_key()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         self.ws.on_reconnect = self._on_ws_reconnect
@@ -1673,6 +1689,7 @@ class Worker:
                         emit=emit,
                         codex_path=self.cfg.codex_path,
                         codex_args=self.cfg.codex_args,
+                        openai_api_key=self.cfg.openai_api_key,
                     )
                 elif tool == "pi":
                     logger.info("Task %s: launching pi in %s", task_id, primary_wt)
