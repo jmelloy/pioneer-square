@@ -32,7 +32,7 @@ from models import (
 )
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from utils import generate_guild_id
 
@@ -402,6 +402,22 @@ async def delete_login(provider: str, github_user_id: str = Depends(require_user
             raise HTTPException(
                 status_code=404,
                 detail=f"No {provider!r} login found for this user.",
+            )
+
+        # Lockout guard: prevent the user from removing their last login method.
+        # Count all active login tokens for this user across all providers.
+        # If there are no other providers beyond the one being disconnected,
+        # block the request — the user would be locked out with no way back in.
+        count_res = await db.execute(
+            select(func.count())
+            .select_from(GithubToken)
+            .where(GithubToken.github_user_id == github_user_id)
+        )
+        total_logins = count_res.scalar_one()
+        if total_logins <= 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot disconnect your only login method.",
             )
 
         # Delete only the token row for the specified provider and user.
