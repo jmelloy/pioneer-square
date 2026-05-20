@@ -695,6 +695,33 @@ async def run_foreman_ai(
                     },
                 )
 
+            # Persist tool-use messages so they survive a page refresh
+            _tu_db = await get_db()
+            try:
+                _tu_guild_pk = await get_guild_pk(_tu_db, guild_id)
+                for tu in tool_uses:
+                    _tu_db.add(
+                        Message(
+                            guild_pk=_tu_guild_pk,
+                            from_agent="foreman",
+                            to_agent="user",
+                            content=f"▶ {tu.name}",
+                            message_type="chat",
+                            role="tool_use",
+                            meta=json.dumps(
+                                {
+                                    "toolId": tu.id,
+                                    "toolName": tu.name,
+                                    "toolInput": dict(tu.input) if tu.input else {},
+                                }
+                            ),
+                            created_at=_now,
+                        )
+                    )
+                await _tu_db.commit()
+            finally:
+                await _tu_db.close()
+
             tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
             # Truncate verbose results before storing/sending
             trimmed = [
@@ -719,6 +746,33 @@ async def run_foreman_ai(
                         "createdAt": _now,
                     },
                 )
+
+            # Persist tool-result messages so they survive a page refresh
+            _tr_db = await get_db()
+            try:
+                _tr_guild_pk = await get_guild_pk(_tr_db, guild_id)
+                for result in trimmed:
+                    _tr_db.add(
+                        Message(
+                            guild_pk=_tr_guild_pk,
+                            from_agent="foreman",
+                            to_agent="user",
+                            content=result.get("content", "") or "",
+                            message_type="chat",
+                            role="tool_result",
+                            meta=json.dumps(
+                                {
+                                    "toolId": result.get("tool_use_id"),
+                                    "isError": result.get("is_error", False),
+                                }
+                            ),
+                            created_at=_now,
+                        )
+                    )
+                await _tr_db.commit()
+            finally:
+                await _tr_db.close()
+
             # Persist tool_result turn as a child of the assistant turn
             await _save_turn(
                 guild_id,

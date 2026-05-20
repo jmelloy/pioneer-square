@@ -6,6 +6,7 @@ Owns ``/guilds`` (create/list) and ``/guilds/{id}`` (read/update), plus the
 
 from __future__ import annotations
 
+import json
 import secrets
 from datetime import UTC, datetime
 
@@ -23,8 +24,18 @@ from ws_handlers import _resolve_user_identifier
 
 router = APIRouter()
 
-
 _VALID_ROLES = {"owner", "member", "viewer"}
+
+
+def _message_dict(m: Message) -> dict:
+    """Serialize a Message row, merging any JSON stored in the `meta` column."""
+    d = row_to_dict(m)
+    if m.meta:
+        try:
+            d.update(json.loads(m.meta))
+        except Exception:
+            pass
+    return d
 
 
 class GuildCreate(BaseModel):
@@ -190,7 +201,7 @@ async def get_guild(guild_id: str, github_user_id: str = Depends(require_member(
         result = await db.execute(
             select(Message)
             .where(Message.guild_pk == guild_pk)
-            .order_by(Message.created_at.desc())
+            .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(100)
         )
         messages = result.scalars().all()
@@ -200,7 +211,7 @@ async def get_guild(guild_id: str, github_user_id: str = Depends(require_member(
             "agents": [
                 {**row_to_dict(row.Agent), "worker_name": row.worker_name} for row in agent_rows
             ],
-            "messages": [row_to_dict(m) for m in reversed(messages)],
+            "messages": [_message_dict(m) for m in reversed(messages)],
         }
     finally:
         await db.close()
