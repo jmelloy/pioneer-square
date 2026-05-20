@@ -112,7 +112,7 @@ async def test_on_ws_reconnect_resends_join_and_register():
     register_msgs = [m for m in sent if m.get("type") == "worker-register"]
     assert len(join_msgs) == 2, f"Expected one join per slot, got {sent}"
     assert len(register_msgs) == 1, f"Expected one worker-register, got {sent}"
-    assert {m["agentId"] for m in join_msgs} == {s.agent_id for s in worker.slots}
+    assert {m["agentId"] for m in join_msgs} == {s.agent_id for s in worker.agents}
 
 
 async def test_join_assigns_distinct_names_per_slot():
@@ -152,8 +152,8 @@ async def test_on_ws_reconnect_resends_non_idle_agent_state():
     cfg.max_agents = 2
     worker = Worker(cfg)
     worker._joined = True  # simulate post-auth state
-    worker.slots[0].state = "working"
-    worker.slots[1].state = "idle"
+    worker.agents[0].state = "working"
+    worker.agents[1].state = "idle"
     sent: list[dict] = []
     worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
 
@@ -163,7 +163,7 @@ async def test_on_ws_reconnect_resends_non_idle_agent_state():
     assert len(state_msgs) == 1, (
         f"Only the non-idle slot should resend agent-state, got: {state_msgs}"
     )
-    assert state_msgs[0]["agentId"] == worker.slots[0].agent_id
+    assert state_msgs[0]["agentId"] == worker.agents[0].agent_id
     assert state_msgs[0]["state"] == "working"
 
 
@@ -171,7 +171,7 @@ async def test_set_state_tracks_state_on_slot():
     """_set_state must record the current state so reconnect can restore it."""
     worker = Worker(_make_cfg())
     worker._send = AsyncMock()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     assert slot.state == "idle"
 
     await worker._set_state("working", slot)

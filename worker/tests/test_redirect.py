@@ -71,7 +71,7 @@ async def test_redirect_buffered_in_redirect_queue_when_subprocess_just_exited()
     worker._send = AsyncMock()
 
     task_id = "t-window1"
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     slot.current_task_id = task_id
     slot.current_claude = None
 
