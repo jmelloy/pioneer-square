@@ -157,6 +157,10 @@ export const useAgentsStore = defineStore('agents', () => {
     if (activeTab.value === 'agent-' + agentId) activeTab.value = 'factory'
   }
 
+  function openTaskTab(taskId: string) {
+    activeTab.value = 'task-' + taskId
+  }
+
   function sendMessage(agentId: string, content: string) {
     const guildStore = useGuildStore()
     guildStore.sendMessage({
@@ -304,6 +308,7 @@ export const useAgentsStore = defineStore('agents', () => {
     closeWorker,
     selectAgent,
     closeAgent,
+    openTaskTab,
     sendMessage,
     runAgent,
     stopAgent,
