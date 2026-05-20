@@ -122,39 +122,25 @@ class DebounceQueue:
         """Sleep for the debounce window then deliver all buffered events.
 
         ``gen`` is the generation counter captured when this timer was created.
-        schedule() bumps the generation *before* cancelling the old task, so if
-        the old task's sleep resolves during the cancel window and the task runs
-        during ``await gather()``, it will see a stale generation and bail out
-        without delivering — reliably distinguishing a timer-reset from an
-        external cancellation.
-
-        On CancelledError the buffer is always preserved so a subsequent
-        schedule() call can re-use it.  If we are still the registered timer
-        (external cancellation rather than a schedule() reset) we also remove
-        our stale reference from _tasks; on a schedule()-driven reset,
-        _tasks[key] was already popped synchronously before cancel so the
-        identity check returns False and the pop is correctly skipped.
+        schedule() bumps the generation *before* cancelling the old task, so
+        even if the old task's sleep resolves during the cancel window and the
+        task runs during ``await gather()``, it will see a stale generation
+        and bail out without delivering — eliminating the task-identity race.
         """
         try:
             await asyncio.sleep(self._window)
         except asyncio.CancelledError:
-            # Re-raise so the asyncio Task is properly marked cancelled.
-            # Clean up our _tasks entry only when we are still the registered
-            # timer (i.e. external cancellation — shutdown(), test teardown).
-            # On a schedule()-driven reset, _tasks[key] was already popped
-            # synchronously before cancel, so the check is False.
-            if self._tasks.get(key) is asyncio.current_task():
-                self._tasks.pop(key, None)
             raise
         # Stale-generation guard: if schedule() ran after our sleep started it
         # bumped the generation counter before cancelling us.  If the cancel
         # arrived too late (sleep future already resolved) and this coroutine
-        # resumed normally, the generation mismatch catches the stale timer and
-        # prevents double delivery.
+        # resumed normally, the generation mismatch catches the stale timer
+        # and prevents double delivery.
         if self._generation.get(key) != gen:
             return
         items = self._buffers.pop(key, [])
         self._tasks.pop(key, None)
+        self._generation.pop(key, None)
         if not items:
             return
         self._deliver(key, guild_id, items)
