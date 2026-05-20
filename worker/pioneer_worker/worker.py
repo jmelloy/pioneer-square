@@ -242,6 +242,25 @@ class Worker:
         else:
             logger.warning("codex doctor: failed (rc=%d)\n%s", proc.returncode, output)
 
+    async def _ensure_codex_api_key(self) -> None:
+        """Set OPENAI_API_KEY in the process environment for Codex tasks.
+
+        Priority: env var already set → config openai_api_key → warn and skip.
+        The env var is inherited by every spawned codex subprocess; the runner
+        also accepts it explicitly for extra safety.
+        """
+        if os.environ.get("OPENAI_API_KEY"):
+            logger.info("OPENAI_API_KEY already in env — Codex tasks will use it")
+            return
+        if self.cfg.openai_api_key:
+            os.environ["OPENAI_API_KEY"] = self.cfg.openai_api_key
+            logger.info("OPENAI_API_KEY set from config for Codex tasks")
+        else:
+            logger.warning(
+                "OPENAI_API_KEY not configured — Codex tasks will fail. "
+                "Set openai_api_key in the [codex] config block or the OPENAI_API_KEY env var."
+            )
+
     async def _claude_is_authenticated(self) -> bool:
         """Return True if `claude auth status --json` reports loggedIn=true.
 
@@ -921,6 +940,7 @@ class Worker:
         await self._refresh_github_repos()
         await self._check_gh_auth()
         await self._check_codex_doctor()
+        await self._ensure_codex_api_key()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         self.ws.on_reconnect = self._on_ws_reconnect
@@ -1673,6 +1693,7 @@ class Worker:
                         emit=emit,
                         codex_path=self.cfg.codex_path,
                         codex_args=self.cfg.codex_args,
+                        openai_api_key=self.cfg.openai_api_key,
                     )
                 elif tool == "pi":
                     logger.info("Task %s: launching pi in %s", task_id, primary_wt)

@@ -32,7 +32,7 @@ from models import (
 )
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from utils import generate_guild_id
 
@@ -337,6 +337,73 @@ async def guest_login():
         "gh_name": "Dev Guest",
         "gh_avatar": "",
     }
+
+
+@router.get("/api/user/logins")
+async def list_logins(github_user_id: str = Depends(require_user)):
+    """Return the list of connected OAuth providers for the current user.
+
+    Currently GitHub is the only supported provider; the response is structured
+    as a provider list so additional providers can be added without breaking the
+    API shape.
+    """
+    db = await get_db()
+    try:
+        result = await db.execute(
+            select(
+                GithubToken.github_username,
+                GithubToken.scope,
+                GithubToken.created_at,
+                GithubToken.updated_at,
+            ).where(GithubToken.github_user_id == github_user_id)
+        )
+        row = result.first()
+        logins = []
+        if row:
+            logins.append(
+                {
+                    "provider": "github",
+                    "username": row.github_username,
+                    "scope": row.scope,
+                    "connected_at": row.created_at,
+                    "updated_at": row.updated_at,
+                }
+            )
+        return {"logins": logins}
+    finally:
+        await db.close()
+
+
+@router.delete("/api/user/logins/{provider}")
+async def delete_login(provider: str, github_user_id: str = Depends(require_user)):
+    """Disconnect an OAuth provider from the current user's account.
+
+    Guards against removing the last login — if this is the only connected
+    provider the user would be permanently locked out, so we return HTTP 400.
+    Currently only ``github`` is supported; passing any other provider returns
+    HTTP 404.
+    """
+    if provider != "github":
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider!r}")
+
+    db = await get_db()
+    try:
+        count_res = await db.execute(
+            select(func.count())
+            .select_from(GithubToken)
+            .where(GithubToken.github_user_id == github_user_id)
+        )
+        if (count_res.scalar_one() or 0) <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot disconnect your only login method — you would be locked out.",
+            )
+        await db.execute(delete(GithubToken).where(GithubToken.github_user_id == github_user_id))
+        await db.execute(delete(UserSession).where(UserSession.github_user_id == github_user_id))
+        await db.commit()
+    finally:
+        await db.close()
+    return {"ok": True}
 
 
 @router.delete("/auth/logout")

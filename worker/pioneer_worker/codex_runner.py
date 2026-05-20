@@ -42,8 +42,15 @@ async def run_codex_auto(
     emit: EmitFn,
     codex_path: str = "codex",
     codex_args: list[str] | None = None,
+    openai_api_key: str | None = None,
 ) -> tuple[bool, str, str]:
-    """Run codex on *description* in *cwd*. Returns (success, stop_reason, last_text)."""
+    """Run codex on *description* in *cwd*. Returns (success, stop_reason, last_text).
+
+    *openai_api_key* is injected as OPENAI_API_KEY into the subprocess environment
+    when provided, overriding whatever is in the current process env. This lets
+    the worker forward the key without requiring it to be set globally before
+    import time.
+    """
     last_message_file = tempfile.NamedTemporaryFile(
         prefix="pioneer-codex-last-", suffix=".txt", delete=False
     )
@@ -73,12 +80,16 @@ async def run_codex_auto(
         # prompt content and tries to drain it. Give it an idle TTY so the
         # explicit prompt argument is the only task input.
         master_fd, slave_fd = pty.openpty()
+        env = dict(os.environ)
+        if openai_api_key:
+            env["OPENAI_API_KEY"] = openai_api_key
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
             stdin=slave_fd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         os.close(slave_fd)
         slave_fd = None
