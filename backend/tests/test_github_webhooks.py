@@ -32,9 +32,7 @@ def _insert_task(
 ) -> None:
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         # Workers FK is NOT NULL; insert a placeholder worker row first.
@@ -267,9 +265,7 @@ def test_webhook_check_run_extracts_pr_from_pull_requests_array(client):
     resp = test_client.post("/webhooks/github/g8", content=body, headers=headers)
     assert resp.status_code == 202
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT task_id, event_type, action, pr_number FROM github_events"
-        )
+        cur.execute("SELECT task_id, event_type, action, pr_number FROM github_events")
         row = cur.fetchone()
     assert row["task_id"] == "t-2"
     assert row["event_type"] == "check_run"
@@ -318,9 +314,7 @@ def test_webhook_emits_foreman_chat_message(client):
     resp = test_client.post("/webhooks/github/gchat1", content=body, headers=headers)
     assert resp.status_code == 202
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT from_agent, to_agent, content, message_type FROM messages"
-        )
+        cur.execute("SELECT from_agent, to_agent, content, message_type FROM messages")
         row = cur.fetchone()
     assert row is not None
     assert row["from_agent"] == "github"

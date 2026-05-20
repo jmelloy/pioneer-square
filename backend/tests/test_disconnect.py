@@ -26,7 +26,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
-from helpers import create_db as _create_db, raw_conn, truncate_all  # noqa: E402
+from helpers import create_db as _create_db  # noqa: E402
+from helpers import raw_conn, truncate_all
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -68,9 +69,7 @@ def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
             "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
             (guild_id, now, "Test Guild"),
         )
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(

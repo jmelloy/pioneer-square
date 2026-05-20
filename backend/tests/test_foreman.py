@@ -78,9 +78,7 @@ def _fake_tool_use(name: str, inputs: dict, tool_id: str = "tool-abc123") -> Sim
 def _insert_worker(db_url: str, guild_id: str, worker_id: str) -> None:
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
@@ -103,9 +101,7 @@ def _insert_task(
 ) -> None:
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
@@ -139,9 +135,7 @@ def _insert_agent(
     """Add a worker-attached agent (defaults to idle) so send_followup has a target."""
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
@@ -234,9 +228,7 @@ class TestBuildSystemPrompt:
 def _insert_worker_with_state(db_url: str, guild_id: str, worker_id: str, state: str) -> None:
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(

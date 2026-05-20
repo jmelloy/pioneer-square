@@ -12,14 +12,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, insert_member, make_auth_token, raw_conn
 
 
-def _insert_foreman_turn(
-    db_url: str, guild_id: str, user_id: str, role: str, content: str
-) -> None:
+def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, content: str) -> None:
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(

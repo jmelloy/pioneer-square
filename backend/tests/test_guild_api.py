@@ -236,9 +236,7 @@ def test_guild_partial_unique_index(client):
             "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s)",
             (shared_id, now, "Third"),
         )
-        cur.execute(
-            "SELECT COUNT(*) FROM guilds WHERE guild_id = %s", (shared_id,)
-        )
+        cur.execute("SELECT COUNT(*) FROM guilds WHERE guild_id = %s", (shared_id,))
         row = cur.fetchone()
     assert row["count"] == 2, "should have one deleted and one active row for the same guild_id"
 

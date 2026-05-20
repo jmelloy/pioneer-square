@@ -24,7 +24,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
-from helpers import create_db as _create_db, raw_conn, truncate_all  # noqa: E402
+from helpers import create_db as _create_db  # noqa: E402
+from helpers import raw_conn, truncate_all
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -67,9 +68,7 @@ def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
             "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
             (guild_id, now, "Test Guild"),
         )
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
@@ -206,9 +205,7 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
     _setup_guild_and_worker(db_url, guild_id, worker_id)
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
@@ -279,9 +276,7 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
     now = datetime.now(UTC).isoformat()
     old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         # Insert an agent that is *already* offline — simulates the state after
@@ -326,9 +321,7 @@ def test_sweeper_skips_fresh_workers(client):
     _setup_guild_and_worker(db_url, guild_id, worker_id)
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(

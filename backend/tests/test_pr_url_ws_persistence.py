@@ -30,7 +30,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
-from helpers import create_db as _create_db, raw_conn, truncate_all  # noqa: E402
+from helpers import create_db as _create_db  # noqa: E402
+from helpers import raw_conn, truncate_all
 from starlette.testclient import TestClient  # noqa: E402
 
 TEST_DATABASE_URL = os.environ.get(
@@ -77,9 +78,7 @@ def _insert_guild_worker_task(
             "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
             (guild_id, now, "Test Guild"),
         )
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
@@ -204,9 +203,9 @@ def test_task_complete_without_pr_url_leaves_pr_url_null(client):
                 row = cur.fetchone()
 
     assert row is not None
-    assert row["pr_url"] is None   # pr_url stays NULL
+    assert row["pr_url"] is None  # pr_url stays NULL
     assert row["pr_number"] is None  # pr_number stays NULL
-    assert row["pr_repo"] is None    # pr_repo stays NULL
+    assert row["pr_repo"] is None  # pr_repo stays NULL
 
 
 # ---------------------------------------------------------------------------

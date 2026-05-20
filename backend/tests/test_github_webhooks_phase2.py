@@ -65,9 +65,7 @@ def _insert_task(
 ) -> None:
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(

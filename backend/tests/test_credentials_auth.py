@@ -28,9 +28,7 @@ def _register_worker(test_client, guild_id: str) -> dict:
 def _seed_claude_credentials(db_url: str, guild_id: str, blob: str = "BLOB") -> None:
     now = datetime.now(UTC).isoformat()
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
-        )
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
@@ -44,9 +42,7 @@ def _seed_github_token(db_url: str, user_id: str = "gh-user-test") -> None:
     """The default test user already has a github_tokens row via make_auth_token —
     this is a no-op that just ensures it's there for clarity."""
     with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT 1 FROM github_tokens WHERE github_user_id = %s", (user_id,)
-        )
+        cur.execute("SELECT 1 FROM github_tokens WHERE github_user_id = %s", (user_id,))
         row = cur.fetchone()
         if row:
             return
