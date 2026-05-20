@@ -36,7 +36,7 @@ async def test_cancelled_task_releases_worktrees_immediately(tmp_path):
     worker._task_update = AsyncMock()
 
     task_id = "t-cancel-wt1"
-    slot = worker.slots[0]
+    slot = worker.agents[0]
 
     released: list[str] = []
 
@@ -78,7 +78,7 @@ async def test_cancel_sentinel_releases_worktrees_immediately(tmp_path):
     worker._task_update = AsyncMock()
 
     task_id = "t-cancel-wt2"
-    slot = worker.slots[0]
+    slot = worker.agents[0]
 
     released: list[str] = []
 

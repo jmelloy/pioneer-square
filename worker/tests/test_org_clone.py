@@ -65,7 +65,7 @@ async def test_org_repo_cloned_on_first_task(tmp_path):
     worker._send = AsyncMock()
     worker._task_update = AsyncMock()
 
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     task = _task("t-org001", issue_repo="myorg/newrepo")
 
     cloned: list[str] = []
@@ -122,7 +122,7 @@ async def test_already_cloned_repo_skips_clone(tmp_path):
     worker._send = AsyncMock()
     worker._task_update = AsyncMock()
 
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     task_id = "t-org002"
     task = _task(task_id, issue_repo="myorg/existingrepo")
 
@@ -185,7 +185,7 @@ async def test_repos_only_worker_no_org(tmp_path):
     worker._send = AsyncMock()
     worker._task_update = AsyncMock()
 
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     task = _task("t-norg01")  # no issue_repo
 
     cloned: list[str] = []

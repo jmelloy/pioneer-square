@@ -104,7 +104,7 @@ async def test_execute_task_waits_for_http_complete():
     """No MOCK_SCRIPT → task parks on the future until /tasks/{id}/complete."""
     worker = _make_worker()
     worker._loop = asyncio.get_running_loop()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     task = {"id": "t-abc123", "description": "Fix the thing", "name": "Fix"}
 
     async def _drive() -> None:
@@ -139,7 +139,7 @@ async def test_execute_task_waits_for_http_complete():
 async def test_execute_task_followup_sends_followup_done():
     worker = _make_worker()
     worker._loop = asyncio.get_running_loop()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     task = {
         "id": "t-fu1",
         "description": "Follow up",
@@ -169,7 +169,7 @@ async def test_execute_task_followup_sends_followup_done():
 async def test_execute_task_http_fail_emits_needs_input_and_error():
     worker = _make_worker()
     worker._loop = asyncio.get_running_loop()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     task = {"id": "t-fail1", "description": "Will fail"}
 
     async def _drive() -> None:
@@ -208,7 +208,7 @@ async def test_execute_task_http_fail_emits_needs_input_and_error():
 async def test_scripted_task_runs_to_completion_without_http():
     worker = _make_worker()
     worker._loop = asyncio.get_running_loop()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     script = [
         {"state": "thinking", "delay_ms": 0},
         {"output": "[mock] reading source"},
@@ -252,7 +252,7 @@ async def test_scripted_task_runs_to_completion_without_http():
 async def test_scripted_task_can_fail():
     worker = _make_worker()
     worker._loop = asyncio.get_running_loop()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     script = [{"fail": {"stopReason": "boom", "lastMessage": "scripted failure"}}]
     task = {"id": "t-script-fail", "description": f"MOCK_SCRIPT: {json.dumps(script)}"}
 
@@ -283,7 +283,7 @@ async def test_http_api_set_state_emits_agent_state():
     worker._start_http_server()
     try:
         port = worker.mock_api_port
-        agent_id = worker.slots[0].id
+        agent_id = worker.agents[0].id
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
             resp = await client.post(
                 f"/agents/{agent_id}/state",
@@ -297,7 +297,7 @@ async def test_http_api_set_state_emits_agent_state():
 
             status = (await client.get("/")).json()
             assert status["workerId"] == "w-mock01"
-            slot_info = next(s for s in status["slots"] if s["agentId"] == agent_id)
+            slot_info = next(s for s in status["agents"] if s["agentId"] == agent_id)
             assert slot_info["state"] == "thinking"
             assert slot_info["activity"] == "reading"
 
@@ -320,7 +320,7 @@ async def test_http_api_emit_output_includes_task_id():
     worker._start_http_server()
     try:
         port = worker.mock_api_port
-        agent_id = worker.slots[1].id
+        agent_id = worker.agents[1].id
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
             resp = await client.post(
                 f"/agents/{agent_id}/output",
@@ -345,7 +345,7 @@ async def test_http_api_complete_resolves_waiting_task():
     worker._start_http_server()
     try:
         port = worker.mock_api_port
-        slot = worker.slots[0]
+        slot = worker.agents[0]
         task = {"id": "t-http-c1", "description": "Wait for HTTP"}
         exec_task = asyncio.create_task(worker._execute_task(task, slot))
 
@@ -410,7 +410,7 @@ async def test_http_api_set_state_requires_state_field():
     worker._start_http_server()
     try:
         port = worker.mock_api_port
-        agent_id = worker.slots[0].id
+        agent_id = worker.agents[0].id
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
             resp = await client.post(f"/agents/{agent_id}/state", json={})
             assert resp.status_code == 400

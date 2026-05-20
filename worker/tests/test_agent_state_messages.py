@@ -47,7 +47,7 @@ def _last_sent(worker: Worker) -> dict:
 async def test_set_state_working_emits_all_three_ids():
     """`working` state must broadcast workerId, agentId, taskId together."""
     worker = _make_worker()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     slot.current_task_id = "t-abc123"
 
     await worker._set_state("working", slot)
@@ -64,7 +64,7 @@ async def test_set_state_working_emits_all_three_ids():
 async def test_set_state_idle_clears_task_id_on_slot_and_message():
     """Transitioning to idle must null the slot's task link and the message."""
     worker = _make_worker()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     slot.current_task_id = "t-abc123"
     slot.activity = "editing"
 
@@ -85,7 +85,7 @@ async def test_set_state_idle_clears_task_id_on_slot_and_message():
 async def test_set_state_offline_clears_task_id_on_slot_and_message():
     """Offline transitions (shutdown) must also drop the stale task link."""
     worker = _make_worker()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     slot.current_task_id = "t-zzz"
 
     await worker._set_state("offline", slot)
@@ -100,7 +100,7 @@ async def test_set_state_offline_clears_task_id_on_slot_and_message():
 async def test_set_state_error_preserves_task_id():
     """Error state is still tied to the task that failed; don't drop it."""
     worker = _make_worker()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     slot.current_task_id = "t-failing"
 
     await worker._set_state("error", slot)
@@ -120,7 +120,7 @@ async def test_task_emit_activity_change_includes_ids():
     to keep the agent-to-task mapping in sync after a reconnect.
     """
     worker = _make_worker()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     slot.current_task_id = "t-emit1"
     slot.state = "working"
     slot.activity = "reading"
@@ -144,7 +144,7 @@ async def test_task_emit_activity_change_includes_ids():
 async def test_task_emit_no_activity_change_does_not_send_state():
     """Same activity → no spurious agent-state emit (only terminal-output)."""
     worker = _make_worker()
-    slot = worker.slots[0]
+    slot = worker.agents[0]
     slot.current_task_id = "t-emit2"
     slot.state = "working"
     slot.activity = "editing"
@@ -164,7 +164,7 @@ async def test_concurrent_slots_emit_distinct_ids():
     as 'working' on one bench depended on slots being indistinguishable
     on the wire."""
     worker = _make_worker()
-    slot_a, slot_b = worker.slots
+    slot_a, slot_b = worker.agents
     slot_a.current_task_id = "t-A"
     slot_b.current_task_id = "t-B"
 
