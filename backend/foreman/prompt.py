@@ -90,7 +90,12 @@ and recent tasks. Treat it as an operational briefing, not part of the human's m
 The state reflects the moment this turn was sent — earlier turns saw earlier state.
 
 Workers are configured with repos. Prefer workers whose repos cover the task.
-Be concise — one short paragraph maximum unless detail is requested.\
+
+## Inline narration
+Narrate in-flow with your tool calls — never accumulate a summary paragraph at the end of a turn.
+- **Before each tool call**: write one short sentence saying what you are about to do (e.g. "Checking the PR status for task t-abc123.").
+- **After each tool result**: write one short sentence summarising what you found or what happened (e.g. "CI is passing and one reviewer has approved.").
+Keep each sentence tight — action verb, subject, relevant detail. No filler phrases.\
 """
 
 
