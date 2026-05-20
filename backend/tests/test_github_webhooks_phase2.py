@@ -18,6 +18,7 @@ import json
 import os
 import sqlite3
 import sys
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -365,8 +366,9 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
 class TestDebounce:
     """Per-PR debounce timer: rapid events coalesce; separated events deliver separately."""
 
+    @contextmanager
     def _patched_env(self, wh):
-        """Return context managers: fresh DebounceQueue instance + captured foreman calls.
+        """Context manager: fresh DebounceQueue instance + captured foreman calls.
 
         Each call creates a brand-new DebounceQueue so tests cannot bleed state
         into or out of the module-level singleton.
@@ -377,19 +379,19 @@ class TestDebounce:
             self._foreman_calls.append((guild_id, summary, user_id))
 
         queue = wh.DebounceQueue(window_seconds=0.05)
-        return (
+        with (
             patch.object(wh, "_debounce_queue", queue),
             patch.object(wh, "run_foreman_ai", new=fake_run_foreman),
             patch.object(wh, "reset_foreman_poll"),
             patch.object(wh, "spawn", side_effect=lambda coro, **kw: asyncio.create_task(coro)),
-        )
+        ):
+            yield
 
     async def test_rapid_events_single_foreman_call(self):
         """Three events within the 0.05 s window → one combined foreman invocation."""
         import routes.webhooks as wh
 
-        p1, p2, p3, p4 = self._patched_env(wh)
-        with p1, p2, p3, p4:
+        with self._patched_env(wh):
             wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event A", "u1")
             wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event B", "u1")
             wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event C", "u1")
@@ -405,8 +407,7 @@ class TestDebounce:
         """Events separated by > debounce window → two independent foreman calls."""
         import routes.webhooks as wh
 
-        p1, p2, p3, p4 = self._patched_env(wh)
-        with p1, p2, p3, p4:
+        with self._patched_env(wh):
             wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event X", "u2")
             await asyncio.sleep(0.2)  # first timer fires
             wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event Y", "u2")
@@ -420,8 +421,7 @@ class TestDebounce:
         """New event before timer fires cancels the old timer (no early delivery)."""
         import routes.webhooks as wh
 
-        p1, p2, p3, p4 = self._patched_env(wh)
-        with p1, p2, p3, p4:
+        with self._patched_env(wh):
             wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "first", "u3")
             await asyncio.sleep(0.02)  # less than the 0.05 s window
             wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "second", "u3")
@@ -437,8 +437,7 @@ class TestDebounce:
         """Events on different PR keys have independent timers and fire separately."""
         import routes.webhooks as wh
 
-        p1, p2, p3, p4 = self._patched_env(wh)
-        with p1, p2, p3, p4:
+        with self._patched_env(wh):
             wh._debounce_queue.schedule("g-ind:t-pr1", "g-ind", "pr1 event", "u4")
             wh._debounce_queue.schedule("g-ind:t-pr2", "g-ind", "pr2 event", "u4")
             await asyncio.sleep(0.2)
@@ -452,8 +451,7 @@ class TestDebounce:
         """Each _patched_env provides a fresh DebounceQueue with no state from prior tests."""
         import routes.webhooks as wh
 
-        p1, p2, p3, p4 = self._patched_env(wh)
-        with p1, p2, p3, p4:
+        with self._patched_env(wh):
             # Brand-new instance — buffers and tasks are empty regardless of
             # what any other test scheduled.
             assert wh._debounce_queue._buffers == {}
@@ -463,8 +461,7 @@ class TestDebounce:
         """Events buffered before an external cancellation are preserved for re-delivery."""
         import routes.webhooks as wh
 
-        p1, p2, p3, p4 = self._patched_env(wh)
-        with p1, p2, p3, p4:
+        with self._patched_env(wh):
             # Buffer two events
             wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "first event", "u5")
             wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "second event", "u5")
