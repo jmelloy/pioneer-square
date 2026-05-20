@@ -31,15 +31,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import create_db as _create_db  # noqa: E402
-from helpers import raw_conn, truncate_all
+from helpers import raw_conn  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def client():
-    _create_db(TEST_DATABASE_URL)
-    truncate_all(TEST_DATABASE_URL)
+def client(_setup_schema):
     db_url = TEST_DATABASE_URL
 
     new_engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
@@ -91,18 +88,25 @@ def _insert_guild_worker_task(
         )
 
 
-def _join_ws(ws, agent_id: str, worker_id: str) -> None:
-    ws.send_json(
-        {
-            "type": "join",
-            "agentId": agent_id,
-            "agentName": "Test Worker",
-            "agentType": "worker",
-            "workerId": worker_id,
-        }
-    )
-    msg = ws.receive_json()
-    assert msg["type"] == "agent-joined"
+def _join_ws(ws, agent_id: str, worker_id: str | None = None) -> None:
+    """Join a guild WebSocket.
+
+    Pass ``worker_id`` to join as a worker (FK-safe: must exist in workers
+    table).  Omit it to join as a browser observer — no workers row needed.
+    """
+    msg: dict = {
+        "type": "join",
+        "agentId": agent_id,
+        "agentName": "Test Worker",
+        "agentType": "worker" if worker_id else "browser",
+    }
+    if worker_id:
+        msg["workerId"] = worker_id
+    ws.send_json(msg)
+    while True:
+        recv = ws.receive_json()
+        if recv["type"] == "agent-joined":
+            break
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +132,7 @@ def test_task_complete_persists_pr_url(client):
         # Open a second connection to capture the broadcast (task-complete goes to
         # all except the sender, so an observer drives the async handler forward).
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
-            _join_ws(ws_obs, "a-obs1", "w-obs1")
+            _join_ws(ws_obs, "a-obs1")
             ws_worker.receive_json()  # observer's agent-joined broadcast to worker
 
             ws_worker.send_json(
@@ -175,7 +179,7 @@ def test_task_complete_without_pr_url_leaves_pr_url_null(client):
         _join_ws(ws_worker, agent_id, worker_id)
 
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
-            _join_ws(ws_obs, "a-obs2", "w-obs2")
+            _join_ws(ws_obs, "a-obs2")
             ws_worker.receive_json()
 
             ws_worker.send_json(
@@ -221,7 +225,7 @@ def test_task_followup_done_persists_pr_url(client):
         _join_ws(ws_worker, agent_id, worker_id)
 
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
-            _join_ws(ws_obs, "a-obs3", "w-obs3")
+            _join_ws(ws_obs, "a-obs3")
             ws_worker.receive_json()
 
             ws_worker.send_json(

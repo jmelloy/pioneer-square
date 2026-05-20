@@ -33,7 +33,10 @@ def _seed_claude_credentials(db_url: str, guild_id: str, blob: str = "BLOB") -> 
         guild_pk = row["id"]
         cur.execute(
             "INSERT INTO claude_credentials (guild_pk, credentials_blob, updated_at) "
-            "VALUES (%s, %s, %s)",
+            "VALUES (%s, %s, %s) "
+            "ON CONFLICT (guild_pk) DO UPDATE"
+            " SET credentials_blob = EXCLUDED.credentials_blob,"
+            " updated_at = EXCLUDED.updated_at",
             (guild_pk, blob, now),
         )
 
