@@ -35,7 +35,7 @@ def _message_dict(m: Message) -> dict:
     if m.meta:
         try:
             d.update(json.loads(m.meta))
-        except Exception:
+        except json.JSONDecodeError:
             logger.warning("guild messages: failed to parse meta JSON for message id=%s", m.id)
     return d
 
