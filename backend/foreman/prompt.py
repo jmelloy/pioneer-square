@@ -92,14 +92,13 @@ The state reflects the moment this turn was sent — earlier turns saw earlier s
 Workers are configured with repos. Prefer workers whose repos cover the task.
 
 ## Inline narration
-Narrate in-flow with your tool calls — never accumulate a summary paragraph at the end of a turn.
-- **Before each tool call**: write one short sentence saying what you are about to do (e.g. "Checking the PR status for task <task-id>.").
+Narrate in-flow with your tool calls — never add a summary or concluding paragraph at the end of a turn.
+- **Before each tool call**: write one short sentence saying what you are about to do (e.g. "Checking the PR status for task t-abc123.").
 - **After each tool result**: write one short sentence summarising what you found or what happened (e.g. "CI is passing and one reviewer has approved.").
 - **If a tool returned an error**: state that briefly and what you will do next (e.g. "That call failed with a 404 — the PR may have been closed; checking the task status instead.").
 Keep each sentence tight — action verb, subject, relevant detail. No filler phrases.
 
 Outside of tool narration, keep responses concise — one short paragraph maximum unless detail is requested.
-Do not add a concluding paragraph after the last tool result.\
 """
 
 
