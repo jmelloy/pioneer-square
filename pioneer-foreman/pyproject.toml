@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pioneer-foreman"
+version = "0.1.0"
+description = "Standalone foreman agent for Pioneer Square: coordinates workers via Claude AI over REST/WebSocket."
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40",
+    "websockets>=12.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23", "anyio[trio]>=4.0"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[project.scripts]
+pioneer-foreman = "pioneer_foreman.main:main"
+
+[tool.setuptools.packages.find]
+include = ["pioneer_foreman*"]

@@ -51,6 +51,36 @@ services:
       - backend
     restart: unless-stopped
 
+  # Standalone foreman (Phase 3) — no direct DB access; uses REST API only.
+  # To use this service instead of the Phase 2 foreman above, run:
+  #   PIONEER_GUILD_ID=abc123 docker compose --profile pioneer-foreman up pioneer-foreman
+  #
+  # Provide the config either via environment variables or by mounting a
+  # pioneer-foreman.toml at /config/pioneer-foreman.toml.
+  pioneer-foreman:
+    build:
+      context: ./pioneer-foreman
+    profiles: ["pioneer-foreman"]
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Backend base URL — ws:// or http://, foreman normalises the scheme.
+      PIONEER_BACKEND_URL: ${PIONEER_BACKEND_URL:-ws://backend:8000}
+      # 6-char guild ID this foreman manages (required).
+      PIONEER_GUILD_ID: ${PIONEER_GUILD_ID:-}
+      # Optional: pre-registered worker auth_token to skip re-registration.
+      PIONEER_FOREMAN_AUTH_TOKEN: ${PIONEER_FOREMAN_AUTH_TOKEN:-}
+      # Optional: GitHub token; fetched from backend at first use if absent.
+      PIONEER_GITHUB_TOKEN: ${PIONEER_GITHUB_TOKEN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      FOREMAN_MODEL: ${FOREMAN_MODEL:-claude-sonnet-4-6}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      # Optional: mount a pioneer-foreman.toml for full config control.
+      # - ./pioneer-foreman/pioneer-foreman.toml:/config/pioneer-foreman.toml:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   worker:
     build:
       context: ./worker
