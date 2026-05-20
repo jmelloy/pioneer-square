@@ -5,12 +5,15 @@ Reads a TOML file (default: ``./pioneer-worker.toml``).
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_NAME = "pioneer-worker.toml"
 
@@ -173,11 +176,13 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
                 raise ValueError("env: directive has a blank variable name")
             _env_val = os.environ.get(_var_name)
             if _env_val == "":
-                raise ValueError(
-                    f"[codex] api_key references env:{_var_name!r} but the variable is set to an"
-                    " empty string. Provide a valid OpenAI API key or unset the variable."
+                logger.warning(
+                    "[codex] api_key references env:%r but the variable is set to an empty"
+                    " string; treating as absent",
+                    _var_name,
                 )
-            _openai_api_key = _env_val  # None if var is absent, key string if present
+            else:
+                _openai_api_key = _env_val  # None if var is absent, key string if present
         elif isinstance(raw_key, str) and raw_key.strip():
             _openai_api_key = raw_key.strip()
     if _openai_api_key is None:
