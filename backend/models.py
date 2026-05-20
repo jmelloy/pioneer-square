@@ -283,7 +283,9 @@ class Lock(SQLModel, table=True):
     key: str = Field(index=True)
     owner: str | None = None
     acquired_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    expires_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    expires_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
 
 
 class TaskEvent(SQLModel, table=True):
