@@ -75,14 +75,14 @@ def _insert_guild_worker_task(
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
-            "INSERT INTO workers (id, guild_pk, repos, state, created_at)"
+            "INSERT INTO workers (id, guild_id, repos, state, created_at)"
             " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
             (worker_id, guild_pk, now),
         )
         # Use "awaiting-review" so the join handler does not replay the task as
         # task-assigned (it only replays "pending" and "working" tasks).
         cur.execute(
-            "INSERT INTO tasks (id, worker_id, guild_pk, description, tool, state, created_at)"
+            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, created_at)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
             (task_id, worker_id, guild_pk, "test task", "claude", "awaiting-review", now),
         )

@@ -49,7 +49,7 @@ def test_create_worker_appears_in_list(client):
     assert resp.status_code == 200
     workers = resp.json()
     assert len(workers) == 1
-    assert isinstance(workers[0]["guild_pk"], int)
+    assert isinstance(workers[0]["guild_id"], int)
 
 
 def test_create_worker_does_not_insert_agent_row(client):

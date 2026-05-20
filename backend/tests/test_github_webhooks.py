@@ -34,21 +34,21 @@ def _insert_task(
     with raw_conn(db_url) as (conn, cur):
         cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
-        guild_pk = row["id"]
+        guild_id = row["id"]
         # Workers FK is NOT NULL; insert a placeholder worker row first.
         cur.execute(
-            "INSERT INTO workers (id, guild_pk, repos, state, created_at) "
+            "INSERT INTO workers (id, guild_id, repos, state, created_at) "
             "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (f"w-{task_id}", guild_pk, "[]", "online", now),
+            (f"w-{task_id}", guild_id, "[]", "online", now),
         )
         cur.execute(
-            "INSERT INTO tasks (id, worker_id, guild_pk, description, tool, state, "
+            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, "
             "pr_url, pr_number, pr_repo, created_at) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 task_id,
                 f"w-{task_id}",
-                guild_pk,
+                guild_id,
                 "test task",
                 "claude",
                 "awaiting-review",
@@ -169,7 +169,7 @@ def test_webhook_accepts_ping(client):
     with raw_conn(db_url) as (conn, cur):
         cur.execute(
             "SELECT COUNT(*) FROM github_events"
-            " WHERE guild_pk = (SELECT id FROM guilds WHERE guild_id = 'g4' AND deleted_at IS NULL)"
+            " WHERE guild_id = (SELECT id FROM guilds WHERE guild_id = 'g4' AND deleted_at IS NULL)"
         )
         rows = cur.fetchone()
     assert rows["count"] == 0
@@ -323,7 +323,7 @@ def test_webhook_emits_foreman_chat_message(client):
     with raw_conn(db_url) as (conn, cur):
         cur.execute(
             "SELECT from_agent, to_agent, content, message_type FROM messages"
-            " WHERE guild_pk = (SELECT id FROM guilds WHERE guild_id = 'gchat1' AND deleted_at IS NULL)"
+            " WHERE guild_id = (SELECT id FROM guilds WHERE guild_id = 'gchat1' AND deleted_at IS NULL)"
         )
         row = cur.fetchone()
     assert row is not None
@@ -357,7 +357,7 @@ def test_webhook_chat_line_includes_merged_status(client):
     with raw_conn(db_url) as (conn, cur):
         cur.execute(
             "SELECT content FROM messages"
-            " WHERE guild_pk = (SELECT id FROM guilds WHERE guild_id = 'gchat2' AND deleted_at IS NULL)"
+            " WHERE guild_id = (SELECT id FROM guilds WHERE guild_id = 'gchat2' AND deleted_at IS NULL)"
         )
         row = cur.fetchone()
     assert row is not None
@@ -377,7 +377,7 @@ def test_webhook_chat_line_not_emitted_for_duplicate(client):
     with raw_conn(db_url) as (conn, cur):
         cur.execute(
             "SELECT COUNT(*) FROM messages"
-            " WHERE guild_pk = (SELECT id FROM guilds WHERE guild_id = 'gchat3' AND deleted_at IS NULL)"
+            " WHERE guild_id = (SELECT id FROM guilds WHERE guild_id = 'gchat3' AND deleted_at IS NULL)"
         )
         count = cur.fetchone()["count"]
     assert count == 1  # second delivery is a duplicate; no second message

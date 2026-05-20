@@ -85,7 +85,7 @@ async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
             return None
 
         row = (
-            await db.execute(select(GuildKey).where(GuildKey.guild_pk == guild_pk))
+            await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
         ).scalar_one_or_none()
 
         if row:
@@ -99,7 +99,7 @@ async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
 
         pub_pem, priv_pem = _generate_ed25519_pems()
         row = GuildKey(
-            guild_pk=guild_pk,
+            guild_id=guild_pk,
             key_id=secrets.token_urlsafe(16),
             public_key_pem=pub_pem,
             private_key_pem=priv_pem,
@@ -155,7 +155,7 @@ async def get_jwks_config(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         row = (
-            await db.execute(select(GuildKey).where(GuildKey.guild_pk == guild_pk))
+            await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
         ).scalar_one_or_none()
     finally:
         await db.close()
@@ -341,7 +341,7 @@ async def agent_card(request: Request) -> JSONResponse:
                 await db.execute(select(Guild).where(Guild.guild_id == guild_id))
             ).scalar_one_or_none()
             if guild:
-                rows = await db.execute(select(Worker).where(Worker.guild_pk == guild.id))
+                rows = await db.execute(select(Worker).where(Worker.guild_id == guild.id))
                 workers = list(rows.scalars().all())
         finally:
             await db.close()
@@ -371,7 +371,7 @@ async def guild_agent_card(
         ).scalar_one_or_none()
         if not guild:
             raise HTTPException(404, detail="Guild not found")
-        rows = await db.execute(select(Worker).where(Worker.guild_pk == guild.id))
+        rows = await db.execute(select(Worker).where(Worker.guild_id == guild.id))
         workers = list(rows.scalars().all())
     finally:
         await db.close()
@@ -403,13 +403,13 @@ async def set_jwks_config(
             raise HTTPException(404, detail="Guild not found")
 
         row = (
-            await db.execute(select(GuildKey).where(GuildKey.guild_pk == guild_pk))
+            await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
         ).scalar_one_or_none()
 
         if not row:
             pub_pem, priv_pem = _generate_ed25519_pems()
             row = GuildKey(
-                guild_pk=guild_pk,
+                guild_id=guild_pk,
                 key_id=secrets.token_urlsafe(16),
                 public_key_pem=pub_pem,
                 private_key_pem=priv_pem,

@@ -67,12 +67,12 @@ def _insert_task(
         row = cur.fetchone()
         guild_pk = row["id"]
         cur.execute(
-            "INSERT INTO workers (id, guild_pk, repos, state, created_at) "
+            "INSERT INTO workers (id, guild_id, repos, state, created_at) "
             "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
             (f"w-{task_id}", guild_pk, "[]", "online", now),
         )
         cur.execute(
-            "INSERT INTO tasks (id, worker_id, guild_pk, description, tool, state, "
+            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, "
             "pr_url, pr_number, pr_repo, user_id, created_at) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (

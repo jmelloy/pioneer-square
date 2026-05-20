@@ -46,18 +46,18 @@ async def _touch_agent(
     if worker_id:
         await db.execute(
             update(Worker)
-            .where(Worker.id == worker_id, Worker.guild_pk == guild_pk)
+            .where(Worker.id == worker_id, Worker.guild_id == guild_pk)
             .values(last_seen=now)
         )
         await db.execute(
             update(Agent)
-            .where(Agent.worker_id == worker_id, Agent.guild_pk == guild_pk)
+            .where(Agent.worker_id == worker_id, Agent.guild_id == guild_pk)
             .values(last_seen=now)
         )
     elif agent_id:
         await db.execute(
             update(Agent)
-            .where(Agent.id == agent_id, Agent.guild_pk == guild_pk)
+            .where(Agent.id == agent_id, Agent.guild_id == guild_pk)
             .values(last_seen=now)
         )
     await db.commit()
@@ -81,12 +81,12 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
             _gp_res = await _gp_db.execute(select(Guild.id).where(Guild.guild_id == guild_id))
             _guild_pk = _gp_res.scalar_one_or_none()
         except Exception:
-            logger.exception("WS guild_pk lookup failed for guild %s", guild_id)
+            logger.exception("WS guild id lookup failed for guild %s", guild_id)
         finally:
             try:
                 await _gp_db.close()
             except Exception:
-                logger.debug("WS _gp_db close error during guild_pk lookup", exc_info=True)
+                logger.debug("WS _gp_db close error during guild id lookup", exc_info=True)
 
         # Identify the browser user from the optional ?token= query param.
         # Workers don't pass a token; ws_user_id stays None for them.
@@ -173,7 +173,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                             await db.execute(
                                 select(Agent.worker_id).where(
                                     Agent.id.in_(stale_agents),
-                                    Agent.guild_pk == _guild_pk,
+                                    Agent.guild_id == _guild_pk,
                                     Agent.worker_id.isnot(None),
                                 )
                             )
@@ -183,14 +183,14 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         agent_owners.pop(agent_id, None)
                         await db.execute(
                             update(Agent)
-                            .where(Agent.id == agent_id, Agent.guild_pk == _guild_pk)
+                            .where(Agent.id == agent_id, Agent.guild_id == _guild_pk)
                             .values(state="offline", activity=None, current_task_id=None)
                         )
                     # Mirror into workers table using the real worker IDs.
                     for wid in stale_worker_ids:
                         await db.execute(
                             update(Worker)
-                            .where(Worker.id == wid, Worker.guild_pk == _guild_pk)
+                            .where(Worker.id == wid, Worker.guild_id == _guild_pk)
                             .values(state="offline")
                         )
                     if stale_agents:

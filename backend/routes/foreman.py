@@ -167,15 +167,15 @@ async def get_foreman_state(
                 " STRING_AGG(a.id || ':' || a.state, ',') as agents"
                 " FROM workers w"
                 " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
-                " WHERE w.guild_pk = :guild_pk AND w.state = 'online'"
+                " WHERE w.guild_id = :guild_id AND w.state = 'online'"
                 " GROUP BY w.id"
                 " UNION ALL"
                 " SELECT a.id, '[]', NULL, a.state, 1, a.id || ':' || a.state"
                 " FROM agents a"
-                " WHERE a.guild_pk = :guild_pk AND a.type = 'worker'"
+                " WHERE a.guild_id = :guild_id AND a.type = 'worker'"
                 " AND a.worker_id IS NULL AND a.state != 'offline'"
             ),
-            {"guild_pk": guild_pk},
+            {"guild_id": guild_pk},
         )
         worker_rows = [dict(r._mapping) for r in workers_res.fetchall()]
         workers_data = [
@@ -207,7 +207,7 @@ async def get_foreman_state(
                 Task.user_id,
             )
             .where(
-                Task.guild_pk == guild_pk,
+                Task.guild_id == guild_pk,
                 ~Task.state.in_(list(_TERMINAL)),
                 live_tasks_filter(),
             )
@@ -261,7 +261,7 @@ async def get_foreman_history_for_user(
                 ForemanTurn.parent_id,
                 ForemanTurn.created_at,
             )
-            .where(ForemanTurn.guild_pk == guild_pk, ForemanTurn.user_id == user_id)
+            .where(ForemanTurn.guild_id == guild_pk, ForemanTurn.user_id == user_id)
             .order_by(ForemanTurn.id)
         )
         if limit is not None and limit > 0:
@@ -304,7 +304,7 @@ async def get_guild_key(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(GuildKey.key_id, GuildKey.private_key_pem).where(GuildKey.guild_pk == guild_pk)
+            select(GuildKey.key_id, GuildKey.private_key_pem).where(GuildKey.guild_id == guild_pk)
         )
         row = result.one_or_none()
     finally:
@@ -350,7 +350,7 @@ async def create_foreman_turn(
             raise HTTPException(status_code=404, detail="Guild not found")
         created_at = datetime.now(UTC).isoformat()
         turn = ForemanTurn(
-            guild_pk=guild_pk,
+            guild_id=guild_pk,
             user_id=body.user_id,
             role=body.role,
             content_json=body.content_json,
@@ -403,7 +403,7 @@ async def create_foreman_task(
             Task(
                 id=task_id,
                 worker_id=None,
-                guild_pk=guild_pk,
+                guild_id=guild_pk,
                 name=name,
                 description=body.description,
                 tool="claude",
@@ -500,7 +500,7 @@ async def patch_task(
 
         # Verify task exists in this guild
         exists = await db.execute(
-            select(Task.id).where(Task.id == task_id, Task.guild_pk == guild_pk)
+            select(Task.id).where(Task.id == task_id, Task.guild_id == guild_pk)
         )
         if exists.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -563,7 +563,7 @@ async def create_message(
 
         created_at = datetime.now(UTC).isoformat()
         msg = Message(
-            guild_pk=guild_pk,
+            guild_id=guild_pk,
             from_agent=body.from_agent,
             to_agent=body.to_agent,
             content=body.content,

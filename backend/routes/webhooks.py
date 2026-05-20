@@ -275,7 +275,7 @@ async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None)
     res = await db.execute(
         select(Task.id, Task.user_id)
         .where(
-            Task.guild_pk == guild_pk,
+            Task.guild_id == guild_pk,
             Task.pr_repo == repo,
             Task.pr_number == pr_number,
         )
@@ -534,7 +534,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         stmt = (
             pg_insert(GithubEvent)
             .values(
-                guild_pk=guild_pk,
+                guild_id=guild_pk,
                 task_id=task_id,
                 delivery_id=delivery_id,
                 event_type=event_type,
@@ -622,7 +622,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
     try:
         msg_db.add(
             Message(
-                guild_pk=guild_pk,
+                guild_id=guild_pk,
                 from_agent="github",
                 to_agent="foreman",
                 content=chat_line,

@@ -88,7 +88,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
         db.add(
             Worker(
                 id=worker_id,
-                guild_pk=guild_pk,
+                guild_id=guild_pk,
                 repos=json.dumps(data.repos),
                 org=data.org,
                 state="offline",
@@ -137,7 +137,7 @@ async def spawn_worker_container(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(ClaudeCredentials.credentials_blob).where(ClaudeCredentials.guild_pk == guild_pk)
+            select(ClaudeCredentials.credentials_blob).where(ClaudeCredentials.guild_id == guild_pk)
         )
         stored_blob = result.scalar_one_or_none()
     finally:
@@ -217,7 +217,7 @@ async def list_workers(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Worker).where(Worker.guild_pk == guild_pk).order_by(Worker.created_at.desc())
+            select(Worker).where(Worker.guild_id == guild_pk).order_by(Worker.created_at.desc())
         )
         return [row_to_dict(w) for w in result.scalars().all()]
     finally:
@@ -241,7 +241,7 @@ async def assign_task(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Worker.id).where(Worker.id == worker_id, Worker.guild_pk == guild_pk)
+            select(Worker.id).where(Worker.id == worker_id, Worker.guild_id == guild_pk)
         )
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Worker not found")
@@ -250,7 +250,7 @@ async def assign_task(
             Task(
                 id=task_id,
                 worker_id=worker_id,
-                guild_pk=guild_pk,
+                guild_id=guild_pk,
                 name=name,
                 description=data.description,
                 tool=data.tool,
@@ -297,7 +297,7 @@ async def list_tasks(guild_id: str, worker_id: str):
             select(Task)
             .where(
                 Task.worker_id == worker_id,
-                Task.guild_pk == guild_pk,
+                Task.guild_id == guild_pk,
                 live_tasks_filter(),
             )
             .order_by(Task.created_at.desc())

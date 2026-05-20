@@ -64,7 +64,7 @@ async def ensure_membership(db, guild_id: str, user_id: str) -> str:
 
     res = await db.execute(
         select(GuildMember.role).where(
-            GuildMember.guild_pk == guild_pk, GuildMember.user_id == user_id
+            GuildMember.guild_id == guild_pk, GuildMember.user_id == user_id
         )
     )
     role = res.scalar_one_or_none()
@@ -109,7 +109,7 @@ async def authorize_worker_or_member(guild_id: str, token: str | None) -> str:
             raise HTTPException(status_code=404, detail="Guild not found")
 
         worker_res = await db.execute(
-            select(Worker.id).where(Worker.guild_pk == guild_pk, Worker.auth_token == token)
+            select(Worker.id).where(Worker.guild_id == guild_pk, Worker.auth_token == token)
         )
         worker_id = worker_res.scalar_one_or_none()
         if worker_id:
