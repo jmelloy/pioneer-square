@@ -50,9 +50,9 @@
       <button
         class="pixel-btn followup-btn"
         @click="sendFollowupAction"
-        :disabled="!followupText.trim() || followingUp"
+        :disabled="!followupText.trim()"
       >
-        {{ followingUp ? '…' : '↺ Follow-up' }}
+        ↺ Follow-up
       </button>
       <button
         v-if="taskState === 'awaiting-review'"
@@ -111,22 +111,16 @@ const redirectText = ref('')
 const cancelling = ref(false)
 const cancelError = ref('')
 const redirecting = ref(false)
-const followingUp = ref(false)
 
-async function sendFollowupAction() {
+function sendFollowupAction() {
   const text = followupText.value.trim()
-  if (!text || followingUp.value) return
+  if (!text) return
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
-  followingUp.value = true
-  try {
-    await tasksStore.sendFollowup(guildId, props.taskId, text)
-    followupText.value = ''
-  } catch (e) {
+  followupText.value = ''
+  tasksStore.sendFollowup(guildId, props.taskId, text).catch((e) => {
     console.error('Follow-up failed', e)
-  } finally {
-    followingUp.value = false
-  }
+  })
 }
 
 async function finalizeTaskAction() {
