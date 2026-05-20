@@ -76,11 +76,11 @@ def _insert_worker(db_url: str, guild_id: str, worker_id: str) -> None:
     with raw_conn(db_url) as (conn, cur):
         cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
-        guild_pk = row["id"]
+        guild_id = row["id"]
         cur.execute(
             "INSERT INTO workers (id, guild_id, repos, state, created_at) "
             "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (worker_id, guild_pk, "[]", "idle", now),
+            (worker_id, guild_id, "[]", "idle", now),
         )
 
 
@@ -99,16 +99,16 @@ def _insert_task(
     with raw_conn(db_url) as (conn, cur):
         cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
-        guild_pk = row["id"]
+        guild_id = row["id"]
         cur.execute(
             "INSERT INTO tasks "
-            "(id, worker_id, guild_pk, description, tool, state, phase, created_at, "
+            "(id, worker_id, guild_id, description, tool, state, phase, created_at, "
             " issue_number, issue_repo, branch) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
             (
                 task_id,
                 worker_id,
-                guild_pk,
+                guild_id,
                 "do the thing",
                 "claude",
                 state,
@@ -133,12 +133,12 @@ def _insert_agent(
     with raw_conn(db_url) as (conn, cur):
         cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
-        guild_pk = row["id"]
+        guild_id = row["id"]
         cur.execute(
             "INSERT INTO agents "
-            "(id, guild_pk, worker_id, name, type, state, joined_at) "
+            "(id, guild_id, worker_id, name, type, state, joined_at) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (agent_id, guild_pk, worker_id, agent_id.upper(), "worker", state, now),
+            (agent_id, guild_id, worker_id, agent_id.upper(), "worker", state, now),
         )
 
 
@@ -226,11 +226,11 @@ def _insert_worker_with_state(db_url: str, guild_id: str, worker_id: str, state:
     with raw_conn(db_url) as (conn, cur):
         cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
         row = cur.fetchone()
-        guild_pk = row["id"]
+        guild_id = row["id"]
         cur.execute(
             "INSERT INTO workers (id, guild_id, repos, state, created_at) "
             "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (worker_id, guild_pk, "[]", state, now),
+            (worker_id, guild_id, "[]", state, now),
         )
 
 
