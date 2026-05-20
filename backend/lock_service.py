@@ -20,8 +20,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from models import Lock
-from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import delete, insert, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -57,14 +57,19 @@ class LockService:
             )
         )
 
-        # INSERT ... ON CONFLICT DO NOTHING returns rowcount=1 when the row is
-        # newly inserted and rowcount=0 when the key already exists (lock held).
-        result = await self._db.execute(
-            pg_insert(Lock)
-            .values(key=key, owner=owner, acquired_at=now_iso, expires_at=expires_at)
-            .on_conflict_do_nothing()
-        )
-        return result.rowcount > 0
+        # Use a savepoint so an IntegrityError from the partial unique index
+        # (locks_key_active_unique) rolls back only the insert, leaving the
+        # expired-lock eviction above intact.
+        try:
+            async with self._db.begin_nested():
+                await self._db.execute(
+                    insert(Lock).values(
+                        key=key, owner=owner, acquired_at=now_iso, expires_at=expires_at
+                    )
+                )
+            return True
+        except IntegrityError:
+            return False
 
     async def release(self, key: str) -> None:
         """Release *key*. Safe to call even if the lock is not held (idempotent)."""

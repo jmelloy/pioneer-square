@@ -266,7 +266,8 @@ class Lock(Base):
 
     __tablename__ = "locks"
 
-    key = Column(Text, primary_key=True, nullable=False)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(Text, nullable=False, index=True)
     owner = Column(Text, nullable=True)
     acquired_at = Column(Text, nullable=False)
     expires_at = Column(Text, nullable=True)

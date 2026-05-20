@@ -177,3 +177,18 @@ async def test_concurrent_acquire_only_one_wins(db_session):
         try_acquire("task:t-race", "w-two"),
     )
     assert sorted(results) == [False, True]
+
+
+@pytest.mark.anyio
+async def test_unique_index_rejects_second_active_lock(db_session):
+    """Partial unique index rejects a second active lock for the same key across sessions."""
+    async with db_session() as db:
+        first = await LockService(db).acquire("task:t-idx", owner="w-first")
+        await db.commit()
+
+    async with db_session() as db:
+        second = await LockService(db).acquire("task:t-idx", owner="w-second")
+        await db.commit()
+
+    assert first is True
+    assert second is False
