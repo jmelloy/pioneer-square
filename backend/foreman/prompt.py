@@ -90,6 +90,7 @@ and recent tasks. Treat it as an operational briefing, not part of the human's m
 The state reflects the moment this turn was sent — earlier turns saw earlier state.
 
 Workers are configured with repos. Prefer workers whose repos cover the task.
+Be concise — one short paragraph maximum unless detail is requested.
 """
 
 
