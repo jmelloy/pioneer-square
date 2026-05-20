@@ -8,7 +8,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pioneer}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pioneer} -d ${POSTGRES_DB:-pioneer_square}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -52,7 +52,7 @@ services:
     build:
       context: .
       dockerfile: foreman/Dockerfile
-    profiles: ["foreman"]
+    profiles: [ "foreman" ]
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD:-pioneer_password}@postgres/${POSTGRES_DB:-pioneer_square}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -77,7 +77,7 @@ services:
   pioneer-foreman:
     build:
       context: ./pioneer-foreman
-    profiles: ["pioneer-foreman"]
+    profiles: [ "pioneer-foreman" ]
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Backend base URL — ws:// or http://, foreman normalises the scheme.
@@ -102,7 +102,7 @@ services:
     build:
       context: ./worker
     image: pioneer-square-worker
-    profiles: ["worker"]
+    profiles: [ "worker" ]
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
@@ -123,7 +123,7 @@ services:
 
   postgres-test:
     image: postgres:17
-    profiles: ["test"]
+    profiles: [ "test" ]
     environment:
       POSTGRES_DB: pioneer_test
       POSTGRES_USER: pioneer
@@ -131,7 +131,7 @@ services:
     ports:
       - "5433:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pioneer"]
+      test: [ "CMD-SHELL", "pg_isready -U pioneer" ]
       interval: 5s
       timeout: 5s
       retries: 5
