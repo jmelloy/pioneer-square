@@ -44,6 +44,7 @@
         :placeholder="followupPlaceholder"
         rows="2"
         @keydown.ctrl.enter="sendFollowupAction"
+        @input="followupError = ''"
       />
     </div>
     <div class="followup-actions">
@@ -62,6 +63,7 @@
         ✓ Finalize
       </button>
     </div>
+    <div v-if="followupError" class="followup-error">{{ followupError }}</div>
   </div>
 </template>
 
@@ -107,6 +109,7 @@ const canCancel = computed(() => {
 })
 
 const followupText = ref('')
+const followupError = ref('')
 const redirectText = ref('')
 const cancelling = ref(false)
 const cancelError = ref('')
@@ -118,7 +121,9 @@ function sendFollowupAction() {
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
   followupText.value = ''
+  followupError.value = ''
   tasksStore.sendFollowup(guildId, props.taskId, text).catch((e) => {
+    followupError.value = e instanceof Error ? e.message : 'Follow-up failed'
     console.error('Follow-up failed', e)
   })
 }
@@ -317,5 +322,12 @@ async function sendRedirect() {
 .finalize-btn:hover {
   background: linear-gradient(180deg, rgba(0, 187, 170, 0.4) 0%, rgba(0, 150, 140, 0.5) 100%);
   box-shadow: 0 0 8px rgba(0, 187, 170, 0.3);
+}
+
+.followup-error {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-red);
+  margin-top: 6px;
 }
 </style>
