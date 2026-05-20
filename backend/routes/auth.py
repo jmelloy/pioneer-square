@@ -400,23 +400,17 @@ async def delete_login(provider: str, github_user_id: str = Depends(require_user
                     detail=f"No {provider!r} login found for this user.",
                 )
 
-        # Count how many logins would remain after removing this provider.
-        # "Remaining" = logins from all other providers (not the one being deleted).
-        # Add counts from future provider tables here as they are implemented.
+        # Count total logins across all providers. If <= 1, removing this one
+        # would lock the user out. Add counts from future provider tables here.
         github_count_res = await db.execute(
             select(func.count())
             .select_from(GithubToken)
             .where(GithubToken.github_user_id == github_user_id)
         )
-        github_logins = github_count_res.scalar_one() or 0
+        total_logins = github_count_res.scalar_one() or 0
+        # When new providers are added: total_logins += new_provider_count
 
-        # Sum up logins from providers OTHER than the one being deleted.
-        remaining = 0
-        if provider != "github":
-            remaining += github_logins
-        # When new providers are added: if provider != "new_provider": remaining += new_provider_count
-
-        if remaining == 0:
+        if total_logins <= 1:
             raise HTTPException(
                 status_code=400,
                 detail="Cannot disconnect your only login method — you would be locked out.",
