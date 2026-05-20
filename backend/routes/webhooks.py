@@ -42,12 +42,6 @@ router = APIRouter()
 # this window lets them coalesce into a single foreman invocation.
 DEBOUNCE_WINDOW_SECONDS: float = 3.0
 
-# Per-key debounce state.  Key format: "{guild_id}:{task_id}".
-# _debounce_buffers accumulates (summary, user_id) pairs until the timer fires.
-# _debounce_tasks holds the in-flight asyncio Task for each key.
-_debounce_buffers: dict[str, list[tuple[str, str | None]]] = {}
-_debounce_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
-
 
 # Cap on stored payloads. GitHub webhook payloads are typically <50 KB but
 # review-comment diff hunks can balloon — 64 KB is a safe upper bound that
@@ -61,75 +55,88 @@ _MAX_PAYLOAD_BYTES = 64 * 1024
 _BOT_OK_EVENTS = frozenset({"check_run", "check_suite", "status"})
 
 
-def _debounce_key(guild_id: str, task_id: str) -> str:
-    return f"{guild_id}:{task_id}"
+class DebounceQueue:
+    """Per-PR debounce queue that coalesces rapid webhook events.
 
-
-def clear_debounce_state() -> None:
-    """Cancel all in-flight debounce timers and clear accumulated buffers.
-
-    Call this on server shutdown and in test teardown to prevent state from
-    bleeding between restarts or test cases.
+    State is scoped to the instance so tests can create an isolated copy
+    without touching the module-level singleton.
     """
-    for task in _debounce_tasks.values():
-        if not task.done():
-            task.cancel()
-    _debounce_tasks.clear()
-    _debounce_buffers.clear()
+
+    def __init__(self, window_seconds: float = DEBOUNCE_WINDOW_SECONDS) -> None:
+        self._window = window_seconds
+        self._buffers: dict[str, list[tuple[str, str | None]]] = {}
+        self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+
+    def reset(self) -> None:
+        """Cancel all in-flight timers and clear state.
+
+        Call between tests or at server shutdown to prevent state bleed.
+        """
+        for task in self._tasks.values():
+            if not task.done():
+                task.cancel()
+        self._tasks.clear()
+        self._buffers.clear()
+
+    async def _fire(self, key: str, guild_id: str) -> None:
+        """Sleep for the debounce window then deliver all buffered events.
+
+        On CancelledError (a new event reset the timer) the exception is
+        re-raised so asyncio marks the task cancelled.  The buffer is left
+        intact in self._buffers[key] so the replacement timer picks it up —
+        no events are silently dropped.
+        """
+        try:
+            await asyncio.sleep(self._window)
+        except asyncio.CancelledError:
+            raise  # buffer preserved; replacement timer will deliver it
+        items = self._buffers.pop(key, [])
+        self._tasks.pop(key, None)
+        if not items:
+            return
+        summaries = [s for s, _ in items]
+        combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
+        user_id = items[-1][1]
+        spawn(
+            run_foreman_ai(guild_id, combined, user_id=user_id),
+            name=f"foreman.github-debounced:{key}",
+        )
+        reset_foreman_poll(guild_id)
+        logger.info(
+            "github webhook debounce fired key=%s events=%d guild=%s",
+            key,
+            len(items),
+            guild_id,
+        )
+
+    def schedule(
+        self,
+        key: str,
+        guild_id: str,
+        summary: str,
+        user_id: str | None,
+    ) -> None:
+        """Buffer *summary* and (re)start the per-PR debounce timer.
+
+        Each call resets the window so the foreman is only invoked after
+        _window seconds of silence on this PR.
+        """
+        existing = self._tasks.pop(key, None)
+        if existing and not existing.done():
+            existing.cancel()
+        self._buffers.setdefault(key, []).append((summary, user_id))
+        self._tasks[key] = spawn(
+            self._fire(key, guild_id),
+            name=f"foreman.debounce:{key}",
+        )
+        logger.info(
+            "github webhook debounce scheduled key=%s buffered=%d",
+            key,
+            len(self._buffers[key]),
+        )
 
 
-async def _debounce_fire(key: str, guild_id: str) -> None:
-    """Sleep for the debounce window then deliver all buffered events.
-
-    If this task is cancelled before the window expires (because a new event
-    arrived and reset the timer), the CancelledError propagates normally and
-    nothing is delivered — the replacement timer carries the full buffer.
-    """
-    await asyncio.sleep(DEBOUNCE_WINDOW_SECONDS)
-    items = _debounce_buffers.pop(key, [])
-    _debounce_tasks.pop(key, None)
-    if not items:
-        return
-    summaries = [s for s, _ in items]
-    combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
-    user_id = items[-1][1]
-    spawn(
-        run_foreman_ai(guild_id, combined, user_id=user_id),
-        name=f"foreman.github-debounced:{key}",
-    )
-    reset_foreman_poll(guild_id)
-    logger.info(
-        "github webhook debounce fired key=%s events=%d guild=%s",
-        key,
-        len(items),
-        guild_id,
-    )
-
-
-def _schedule_debounced_foreman(
-    key: str,
-    guild_id: str,
-    summary: str,
-    user_id: str | None,
-) -> None:
-    """Buffer *summary* and (re)start the per-PR debounce timer.
-
-    Each call resets the window so the foreman is only invoked after
-    DEBOUNCE_WINDOW_SECONDS of silence on this PR.
-    """
-    existing = _debounce_tasks.pop(key, None)
-    if existing and not existing.done():
-        existing.cancel()
-    _debounce_buffers.setdefault(key, []).append((summary, user_id))
-    _debounce_tasks[key] = spawn(
-        _debounce_fire(key, guild_id),
-        name=f"foreman.debounce:{key}",
-    )
-    logger.info(
-        "github webhook debounce scheduled key=%s buffered=%d",
-        key,
-        len(_debounce_buffers[key]),
-    )
+_debounce_queue = DebounceQueue()
 
 
 def _verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
@@ -550,8 +557,8 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         summary = _build_foreman_summary(
             event_type, action, payload, repo, pr_number, task_id, sender_login
         )
-        key = _debounce_key(guild_id, task_id)
-        _schedule_debounced_foreman(key, guild_id, summary, task_user_id)
+        key = f"{guild_id}:{task_id}"
+        _debounce_queue.schedule(key, guild_id, summary, task_user_id)
     else:
         logger.info(
             "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",

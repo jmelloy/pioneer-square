@@ -265,12 +265,12 @@ def test_webhook_dispatches_to_foreman_when_task_matches(client):
     )
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="pull_request", delivery="d-disp-1")
-    with patch("routes.webhooks._schedule_debounced_foreman") as mock_schedule:
+    with patch("routes.webhooks._debounce_queue") as mock_q:
         resp = test_client.post("/webhooks/github/gd1", content=body, headers=headers)
     assert resp.status_code == 202
-    # _schedule_debounced_foreman called once with the right guild + user
-    assert mock_schedule.call_count == 1
-    key_arg, guild_arg, summary_arg, user_arg = mock_schedule.call_args.args
+    # _debounce_queue.schedule called once with the right guild + user
+    assert mock_q.schedule.call_count == 1
+    key_arg, guild_arg, summary_arg, user_arg = mock_q.schedule.call_args.args
     assert "gd1" in key_arg
     assert guild_arg == "gd1"
     assert "pull_request" in summary_arg
@@ -347,11 +347,11 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
     }
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="check_run", delivery="d-ci-1")
-    with patch("routes.webhooks._schedule_debounced_foreman") as mock_schedule:
+    with patch("routes.webhooks._debounce_queue") as mock_q:
         resp = test_client.post("/webhooks/github/gd4", content=body, headers=headers)
     assert resp.status_code == 202
-    assert mock_schedule.call_count == 1
-    key_arg, guild_arg, summary_arg, _user_arg = mock_schedule.call_args.args
+    assert mock_q.schedule.call_count == 1
+    key_arg, guild_arg, summary_arg, _user_arg = mock_q.schedule.call_args.args
     assert "gd4" in key_arg
     assert guild_arg == "gd4"
     assert "rspec" in summary_arg
@@ -365,23 +365,20 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
 class TestDebounce:
     """Per-PR debounce timer: rapid events coalesce; separated events deliver separately."""
 
-    @pytest.fixture(autouse=True)
-    def reset_debounce(self):
-        import routes.webhooks as wh
-
-        wh.clear_debounce_state()
-        yield
-        wh.clear_debounce_state()
-
     def _patched_env(self, wh):
-        """Context manager: tiny debounce window + captured foreman calls."""
+        """Return context managers: fresh DebounceQueue instance + captured foreman calls.
+
+        Each call creates a brand-new DebounceQueue so tests cannot bleed state
+        into or out of the module-level singleton.
+        """
         self._foreman_calls: list[tuple[str, str, str | None]] = []
 
         async def fake_run_foreman(guild_id, summary, *, user_id=None):
             self._foreman_calls.append((guild_id, summary, user_id))
 
+        queue = wh.DebounceQueue(window_seconds=0.05)
         return (
-            patch.object(wh, "DEBOUNCE_WINDOW_SECONDS", 0.05),
+            patch.object(wh, "_debounce_queue", queue),
             patch.object(wh, "run_foreman_ai", new=fake_run_foreman),
             patch.object(wh, "reset_foreman_poll"),
             patch.object(wh, "spawn", side_effect=lambda coro, **kw: asyncio.create_task(coro)),
@@ -393,9 +390,9 @@ class TestDebounce:
 
         p1, p2, p3, p4 = self._patched_env(wh)
         with p1, p2, p3, p4:
-            wh._schedule_debounced_foreman("g-rapid:t-r1", "g-rapid", "event A", "u1")
-            wh._schedule_debounced_foreman("g-rapid:t-r1", "g-rapid", "event B", "u1")
-            wh._schedule_debounced_foreman("g-rapid:t-r1", "g-rapid", "event C", "u1")
+            wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event A", "u1")
+            wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event B", "u1")
+            wh._debounce_queue.schedule("g-rapid:t-r1", "g-rapid", "event C", "u1")
             await asyncio.sleep(0.2)
 
         assert len(self._foreman_calls) == 1, f"expected 1 call, got {self._foreman_calls}"
@@ -410,9 +407,9 @@ class TestDebounce:
 
         p1, p2, p3, p4 = self._patched_env(wh)
         with p1, p2, p3, p4:
-            wh._schedule_debounced_foreman("g-slow:t-s1", "g-slow", "event X", "u2")
+            wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event X", "u2")
             await asyncio.sleep(0.2)  # first timer fires
-            wh._schedule_debounced_foreman("g-slow:t-s1", "g-slow", "event Y", "u2")
+            wh._debounce_queue.schedule("g-slow:t-s1", "g-slow", "event Y", "u2")
             await asyncio.sleep(0.2)  # second timer fires
 
         assert len(self._foreman_calls) == 2
@@ -425,9 +422,9 @@ class TestDebounce:
 
         p1, p2, p3, p4 = self._patched_env(wh)
         with p1, p2, p3, p4:
-            wh._schedule_debounced_foreman("g-cancel:t-c1", "g-cancel", "first", "u3")
+            wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "first", "u3")
             await asyncio.sleep(0.02)  # less than the 0.05 s window
-            wh._schedule_debounced_foreman("g-cancel:t-c1", "g-cancel", "second", "u3")
+            wh._debounce_queue.schedule("g-cancel:t-c1", "g-cancel", "second", "u3")
             await asyncio.sleep(0.2)  # let the reset timer fire
 
         # Only one delivery; the first timer was cancelled before it could fire
@@ -442,14 +439,54 @@ class TestDebounce:
 
         p1, p2, p3, p4 = self._patched_env(wh)
         with p1, p2, p3, p4:
-            wh._schedule_debounced_foreman("g-ind:t-pr1", "g-ind", "pr1 event", "u4")
-            wh._schedule_debounced_foreman("g-ind:t-pr2", "g-ind", "pr2 event", "u4")
+            wh._debounce_queue.schedule("g-ind:t-pr1", "g-ind", "pr1 event", "u4")
+            wh._debounce_queue.schedule("g-ind:t-pr2", "g-ind", "pr2 event", "u4")
             await asyncio.sleep(0.2)
 
         assert len(self._foreman_calls) == 2
         summaries = {c[1] for c in self._foreman_calls}
         assert any("pr1 event" in s for s in summaries)
         assert any("pr2 event" in s for s in summaries)
+
+    async def test_state_isolation_between_tests(self):
+        """Each _patched_env provides a fresh DebounceQueue with no state from prior tests."""
+        import routes.webhooks as wh
+
+        p1, p2, p3, p4 = self._patched_env(wh)
+        with p1, p2, p3, p4:
+            # Brand-new instance — buffers and tasks are empty regardless of
+            # what any other test scheduled.
+            assert wh._debounce_queue._buffers == {}
+            assert wh._debounce_queue._tasks == {}
+
+    async def test_cancelled_events_not_lost(self):
+        """Events buffered before an external cancellation are preserved for re-delivery."""
+        import routes.webhooks as wh
+
+        p1, p2, p3, p4 = self._patched_env(wh)
+        with p1, p2, p3, p4:
+            # Buffer two events
+            wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "first event", "u5")
+            wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "second event", "u5")
+
+            # Externally cancel the pending timer (simulates shutdown or test teardown)
+            task = wh._debounce_queue._tasks.get("g-cl:t-cl1")
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(0.0)  # yield so CancelledError propagates into the task
+
+            # Buffer must still hold both events — nothing was silently dropped
+            assert len(wh._debounce_queue._buffers.get("g-cl:t-cl1", [])) == 2
+
+            # Scheduling a third event re-uses the preserved buffer and delivers all three
+            wh._debounce_queue.schedule("g-cl:t-cl1", "g-cl", "third event", "u5")
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 1
+        _, summary, _ = self._foreman_calls[0]
+        assert "first event" in summary
+        assert "second event" in summary
+        assert "third event" in summary
 
 
 # ---------------------------------------------------------------------------
