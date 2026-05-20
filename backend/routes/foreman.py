@@ -164,7 +164,7 @@ async def get_foreman_state(
             text(
                 "SELECT w.id, w.repos, w.org, w.state as worker_state,"
                 " COUNT(a.id) as agent_count,"
-                " GROUP_CONCAT(a.id || ':' || a.state) as agents"
+                " STRING_AGG(a.id || ':' || a.state, ',') as agents"
                 " FROM workers w"
                 " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
                 " WHERE w.guild_pk = :guild_pk AND w.state = 'online'"

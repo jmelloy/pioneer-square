@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils import format_worker_id, worker_display_name
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import insert_guild, make_auth_token
+from helpers import insert_guild, make_auth_token, raw_conn
 
 # ---------------------------------------------------------------------------
 # format_worker_id unit tests
@@ -93,14 +93,14 @@ def test_worker_display_name_with_hostname_format():
 # ---------------------------------------------------------------------------
 
 
-def _auth(db_path: str) -> dict:
-    return {"Authorization": f"Bearer {make_auth_token(db_path)}"}
+def _auth(db_url: str) -> dict:
+    return {"Authorization": f"Bearer {make_auth_token(db_url)}"}
 
 
 def test_register_worker_name_without_hostname(client):
     """Name is the droid-formatted worker ID even without a hostname."""
-    test_client, db_path = client
-    insert_guild(db_path, "wname01")
+    test_client, db_url = client
+    insert_guild(db_url, "wname01")
     resp = test_client.post("/guilds/wname01/workers", json={"repos": []})
     assert resp.status_code == 200
     data = resp.json()
@@ -109,8 +109,8 @@ def test_register_worker_name_without_hostname(client):
 
 def test_register_worker_name_with_hostname(client):
     """Name is ``hostname/droid-ID`` when a hostname is provided."""
-    test_client, db_path = client
-    insert_guild(db_path, "wname02")
+    test_client, db_url = client
+    insert_guild(db_url, "wname02")
     resp = test_client.post(
         "/guilds/wname02/workers",
         json={"repos": [], "hostname": "pioneer-box"},
@@ -122,8 +122,8 @@ def test_register_worker_name_with_hostname(client):
 
 def test_register_worker_name_short_hostname(client):
     """Short hostnames are still prepended."""
-    test_client, db_path = client
-    insert_guild(db_path, "wname03")
+    test_client, db_url = client
+    insert_guild(db_url, "wname03")
     resp = test_client.post(
         "/guilds/wname03/workers",
         json={"repos": [], "hostname": "ab"},
@@ -135,8 +135,8 @@ def test_register_worker_name_short_hostname(client):
 
 def test_list_workers_includes_name(client):
     """GET /workers response includes a ``name`` field for each worker."""
-    test_client, db_path = client
-    insert_guild(db_path, "wname04")
+    test_client, db_url = client
+    insert_guild(db_url, "wname04")
     create_resp = test_client.post(
         "/guilds/wname04/workers",
         json={"repos": [], "hostname": "testhost"},
@@ -144,7 +144,7 @@ def test_list_workers_includes_name(client):
     assert create_resp.status_code == 200
     wid = create_resp.json()["id"]
 
-    list_resp = test_client.get("/guilds/wname04/workers", headers=_auth(db_path))
+    list_resp = test_client.get("/guilds/wname04/workers", headers=_auth(db_url))
     assert list_resp.status_code == 200
     workers = list_resp.json()
     assert len(workers) == 1
@@ -154,10 +154,8 @@ def test_list_workers_includes_name(client):
 
 def test_list_workers_name_persisted_correctly(client):
     """The name stored in the DB matches what was returned at registration."""
-    import sqlite3
-
-    test_client, db_path = client
-    insert_guild(db_path, "wname05")
+    test_client, db_url = client
+    insert_guild(db_url, "wname05")
     resp = test_client.post(
         "/guilds/wname05/workers",
         json={"repos": [], "hostname": "myhost"},
@@ -165,7 +163,8 @@ def test_list_workers_name_persisted_correctly(client):
     wid = resp.json()["id"]
     expected_name = f"myhost/{format_worker_id(wid)}"
 
-    with sqlite3.connect(db_path) as conn:
-        row = conn.execute("SELECT name FROM workers WHERE id = ?", (wid,)).fetchone()
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute("SELECT name FROM workers WHERE id = %s", (wid,))
+        row = cur.fetchone()
     assert row is not None
-    assert row[0] == expected_name
+    assert row["name"] == expected_name

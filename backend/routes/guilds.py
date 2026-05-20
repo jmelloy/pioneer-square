@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from utils import generate_guild_id, row_to_dict
 from ws_handlers import _resolve_user_identifier
@@ -127,7 +127,7 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
                 & (Agent.state != "offline"),
             )
             .where(GuildMember.user_id == github_user_id)
-            .group_by(Guild.guild_id)
+            .group_by(Guild.guild_id, Guild.created_at, Guild.name)
             .order_by(Guild.created_at.desc())
         )
         return [dict(r._mapping) for r in result.fetchall()]
@@ -276,7 +276,7 @@ async def add_guild_member(
                 ),
             )
         now = datetime.now(UTC).isoformat()
-        stmt = sqlite_insert(GuildMember).values(
+        stmt = pg_insert(GuildMember).values(
             guild_pk=guild_pk,
             user_id=target_id,
             role=data.role,

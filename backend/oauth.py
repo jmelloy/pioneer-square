@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from database import get_db
 from fastapi import HTTPException
 from models import GithubToken, User, UserSession
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 # ---------------------------------------------------------------------------
 # Config (read at import time from environment)
@@ -160,7 +160,7 @@ async def create_session(code: str, state: str) -> dict:
 
     db = await get_db()
     try:
-        stmt = sqlite_insert(GithubToken).values(
+        stmt = pg_insert(GithubToken).values(
             github_user_id=github_user_id,
             github_username=github_username,
             access_token=access_token,
@@ -181,7 +181,7 @@ async def create_session(code: str, state: str) -> dict:
         )
         await db.execute(stmt)
 
-        user_stmt = sqlite_insert(User).values(
+        user_stmt = pg_insert(User).values(
             id=github_user_id,
             github_id=github_user_id,
             github_login=github_username,

@@ -1,10 +1,10 @@
 """Shared pytest fixtures for backend tests.
 
-Each test gets a fresh temporary SQLite database so tests are fully isolated.
-The DB is created synchronously via Alembic before the TestClient starts, which
-avoids the anyio/asyncio.to_thread interaction that can deadlock in pytest.
-AsyncSessionLocal is patched in both the `database` module (used by get_db)
-and in `main` (used directly inside reset_connection_state's startup query).
+Each test gets a fresh PostgreSQL database (tables truncated) so tests are
+fully isolated. The DB schema is created once per session via Alembic
+migrations. AsyncSessionLocal is patched in both the `database` module (used
+by get_db) and in `main` (used directly inside reset_connection_state's
+startup query).
 """
 
 from __future__ import annotations
@@ -20,43 +20,51 @@ from starlette.testclient import TestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
+from _test_config import TEST_DATABASE_URL  # noqa: E402
+
+# database.py raises if DATABASE_URL is unset; populate it before the import.
+# Tests override AsyncSessionLocal after import, so this value is only used as
+# a placeholder during module load — never for actual connections in test code.
+os.environ.setdefault("DATABASE_URL", TEST_DATABASE_URL)
+
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from helpers import create_db as _create_db  # noqa: E402
 from routes.webhooks import shutdown_debouncer  # noqa: E402
 
 
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    """TestClient backed by a fresh temporary SQLite database."""
-    db_path = str(tmp_path / "test.db")
-    db_url = f"sqlite+aiosqlite:///{db_path}"
+@pytest.fixture(scope="session", autouse=True)
+def _setup_schema():
+    """Run migrations once for the whole test session."""
+    from helpers import create_db
 
-    # Create DB tables synchronously before the TestClient starts.
-    # This avoids any asyncio.to_thread calls during startup
-    # which can deadlock under pytest's anyio event loop.
-    os.environ["DATABASE_URL"] = db_url
-    _create_db(db_path)
+    create_db(TEST_DATABASE_URL)
+
+
+@pytest.fixture()
+def client(monkeypatch, _setup_schema):
+    """Fresh test DB (tables truncated) + TestClient for each test."""
+    from helpers import truncate_all
+
+    truncate_all(TEST_DATABASE_URL)
+    db_url = TEST_DATABASE_URL
 
     new_engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
     new_session = async_sessionmaker(new_engine, expire_on_commit=False, class_=AsyncSession)
     monkeypatch.setattr(database_module, "AsyncSessionLocal", new_session)
     monkeypatch.setattr(main_module, "AsyncSessionLocal", new_session)
 
-    # Stub out reset_connection_state: tables already exist (we just created them
-    # above) and there are no workers to reset in a fresh DB, so the stub is a no-op.
+    # Stub out reset_connection_state: tables already exist (we just truncated
+    # them above) and there are no workers to reset in a fresh DB, so the stub
+    # is a no-op.
     async def _stubbed_reset_connection_state() -> None:
         pass
 
     monkeypatch.setattr(main_module, "reset_connection_state", _stubbed_reset_connection_state)
     monkeypatch.setenv("DATABASE_URL", db_url)
-    monkeypatch.setenv("DB_PATH", db_path)
 
     with TestClient(main_module.app) as c:
-        yield c, db_path
-
-    # Restore DATABASE_URL after test
-    os.environ.pop("DATABASE_URL", None)
+        yield c, db_url
 
 
 @pytest.fixture(autouse=True)

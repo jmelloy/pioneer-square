@@ -121,9 +121,9 @@ def test_agent_card_endpoint_no_subdomain(client):
 
 def test_guild_agent_card_endpoint_authenticated(client):
     """GET /guilds/{id}/agent-card returns card with guild fields."""
-    test_client, db_path = client
-    insert_guild(db_path, "gld001", name="My Factory")
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    insert_guild(db_url, "gld001", name="My Factory")
+    token = make_auth_token(db_url)
 
     resp = test_client.get(
         "/guilds/gld001/agent-card",
@@ -137,8 +137,8 @@ def test_guild_agent_card_endpoint_authenticated(client):
 
 def test_guild_agent_card_requires_auth(client):
     """GET /guilds/{id}/agent-card is auth-gated."""
-    test_client, db_path = client
-    insert_guild(db_path, "gld002", name="Private Guild")
+    test_client, db_url = client
+    insert_guild(db_url, "gld002", name="Private Guild")
 
     resp = test_client.get("/guilds/gld002/agent-card")
     assert resp.status_code == 401
@@ -146,8 +146,8 @@ def test_guild_agent_card_requires_auth(client):
 
 def test_guild_agent_card_not_found(client):
     """GET /guilds/{id}/agent-card returns 404 for unknown guild."""
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
 
     resp = test_client.get(
         "/guilds/nonexistent/agent-card",
@@ -158,9 +158,9 @@ def test_guild_agent_card_not_found(client):
 
 def test_guild_update_a2a_fields(client):
     """PATCH /guilds/{id} persists description/url/version."""
-    test_client, db_path = client
-    insert_guild(db_path, "gld003", name="Factory")
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    insert_guild(db_url, "gld003", name="Factory")
+    token = make_auth_token(db_url)
 
     resp = test_client.patch(
         "/guilds/gld003",

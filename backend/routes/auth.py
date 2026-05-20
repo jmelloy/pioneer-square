@@ -33,7 +33,7 @@ from models import (
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
 from sqlalchemy import delete, select, text
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from utils import generate_guild_id
 
 router = APIRouter()
@@ -256,7 +256,7 @@ async def guest_login():
     db = await get_db()
     try:
         # Upsert github_tokens (required FK target for user_sessions)
-        gh_stmt = sqlite_insert(GithubToken).values(
+        gh_stmt = pg_insert(GithubToken).values(
             github_user_id=guest_user_id,
             github_username="dev-guest",
             access_token="dev-no-token",
@@ -272,7 +272,7 @@ async def guest_login():
         await db.execute(gh_stmt)
 
         # Upsert user
-        user_stmt = sqlite_insert(User).values(
+        user_stmt = pg_insert(User).values(
             id=guest_user_id,
             github_id=guest_user_id,
             github_login="dev-guest",

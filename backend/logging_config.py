@@ -12,7 +12,7 @@ The config covers:
   don't double-log through the root handler
 - foreman forced to DEBUG so A2A client request/response lines are
   visible when LOG_LEVEL=DEBUG
-- Noisy third-party loggers (aiosqlite, httpx, websockets, …) capped
+- Noisy third-party loggers (asyncpg, httpx, websockets, …) capped
   at WARNING to avoid drowning out application logs
 """
 
@@ -87,7 +87,7 @@ class JSONFormatter(logging.Formatter):
 # Third-party loggers that produce excessive DEBUG/INFO chatter.  We cap them
 # at WARNING so application logs remain readable at LOG_LEVEL=DEBUG.
 _SUPPRESSED_LOGGERS = [
-    "aiosqlite",
+    "asyncpg",
     "asyncio",
     "httpcore",
     "httpx",
