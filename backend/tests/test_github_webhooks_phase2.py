@@ -478,6 +478,32 @@ class TestDebounce:
             assert wh._debounce_queue._tasks == {}
             assert wh._debounce_queue._generation == {}
 
+    async def test_stale_generation_does_not_deliver(self):
+        """_fire coroutine with stale generation must not deliver even if sleep completes.
+
+        This directly exercises the race-window fix: if schedule() bumped the
+        generation to 2 and a gen=1 _fire somehow completes its sleep (cancel
+        arrived too late), it must bail out at the generation check rather than
+        double-delivering.
+        """
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            q = wh._debounce_queue
+            key = "g-stalegen:t-sg1"
+
+            # Set state as if a newer timer (gen=2) has taken over
+            q._buffers[key] = [("stale event", "u8")]
+            q._generation[key] = 2
+
+            # Run _fire with the old gen (1) — simulates the stale coroutine waking up
+            await q._fire(key, "g-stalegen", 1)
+
+            # Stale fire must not invoke the foreman
+            assert len(self._foreman_calls) == 0
+            # Buffer must be untouched so the legitimate gen-2 timer can still deliver it
+            assert q._buffers.get(key) == [("stale event", "u8")]
+
     async def test_cancelled_events_not_lost(self):
         """Events buffered before an external cancellation are preserved for re-delivery."""
         import routes.webhooks as wh
@@ -562,6 +588,34 @@ class TestDebounce:
         _, summary, _ = self._foreman_calls[0]
         assert "event A" in summary
         assert "event B" in summary
+
+    async def test_shutdown_no_delivery_vs_reset_eventual_delivery(self):
+        """Explicit combined: shutdown-cancelled timer delivers nothing; reset-cancelled delivers once.
+
+        This is the definitive test for the generation-counter contract:
+        - schedule()-driven cancellation (timer reset) must eventually deliver when the
+          final window expires.
+        - shutdown()-driven cancellation must never deliver, even if events were buffered.
+        """
+        import routes.webhooks as wh
+
+        # --- Part 1: timer reset by a new schedule() → single delivery at final expiry ---
+        async with self._patched_env(wh):
+            await wh._debounce_queue.schedule("g-sv:t-A", "g-sv", "event A", "ua")
+            await asyncio.sleep(0.02)  # within the 0.05 s window — first timer still running
+            await wh._debounce_queue.schedule("g-sv:t-A", "g-sv", "event B", "ua")
+            await asyncio.sleep(0.2)  # let the second (final) timer fire
+
+        assert len(self._foreman_calls) == 1, "reset-cancelled timer should deliver exactly once"
+        _, summary, _ = self._foreman_calls[0]
+        assert "event A" in summary and "event B" in summary
+
+        # --- Part 2: shutdown() before the timer fires → no delivery ---
+        async with self._patched_env(wh):
+            await wh._debounce_queue.schedule("g-sv:t-B", "g-sv", "should-not-deliver", "ub")
+            await wh._debounce_queue.shutdown()  # externally cancel before window expires
+
+        assert len(self._foreman_calls) == 0, "shutdown must not deliver any events"
 
 
 # ---------------------------------------------------------------------------
