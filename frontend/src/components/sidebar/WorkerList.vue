@@ -75,7 +75,10 @@ function currentTaskForWorker(workerId: string) {
 
 function openAgentTask(workerId: string) {
   const task = currentTaskForWorker(workerId)
-  if (task) tasksStore.selectTask(task.id)
+  if (task) {
+    tasksStore.selectTask(task.id)
+    agentsStore.openTaskTab(task.id)
+  }
 }
 </script>
 
