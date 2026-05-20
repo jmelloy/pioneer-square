@@ -101,7 +101,6 @@ async function initGuild(guildId: string) {
           agentName: a.name,
           agentType: a.type,
           workerId: a.worker_id || null,
-          workerName: a.worker_name || undefined,
           state: a.state,
           taskId: a.current_task_id ?? null,
           joinedAt: a.joined_at,
@@ -177,6 +176,24 @@ watch(
   display: flex;
   min-height: 0;
   overflow: hidden;
+}
+
+@media (min-width: 1025px) {
+  .app-body {
+    padding: 0 16px;
+  }
+}
+
+@media (min-width: 1400px) {
+  .app-body {
+    padding: 0 40px;
+  }
+}
+
+@media (min-width: 1800px) {
+  .app-body {
+    padding: 0 80px;
+  }
 }
 
 .mobile-tab-bar {
