@@ -32,7 +32,7 @@ from models import (
 )
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from utils import generate_guild_id
 
@@ -379,8 +379,6 @@ async def delete_login(provider: str, github_user_id: str = Depends(require_user
     """Disconnect an OAuth provider from the current user's account.
 
     Returns HTTP 404 if the user has no login for the requested provider.
-    Guards against removing the last login — if this would leave the user with
-    zero logins they would be permanently locked out, so we return HTTP 400.
     Currently only ``github`` is supported; passing any other provider returns
     HTTP 404.
 
@@ -406,27 +404,7 @@ async def delete_login(provider: str, github_user_id: str = Depends(require_user
                 detail=f"No {provider!r} login found for this user.",
             )
 
-        # Count total logins across all providers for this user.  If removing
-        # this provider would leave zero logins the user would be permanently
-        # locked out, so we block the operation.
-        # When new providers are added: total_logins += new_provider_count
-        github_count_res = await db.execute(
-            select(func.count())
-            .select_from(GithubToken)
-            .where(GithubToken.github_user_id == github_user_id)
-        )
-        github_count = github_count_res.scalar_one() or 0
-        total_logins = github_count  # add future provider counts here
-
-        remaining_after_delete = total_logins - 1
-        if remaining_after_delete <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot disconnect your only login method — you would be locked out.",
-            )
-
         # Delete only the token row for the specified provider and user.
-        # Other providers (future) are intentionally not touched.
         await db.execute(delete(GithubToken).where(GithubToken.github_user_id == github_user_id))
         await db.commit()
     finally:
