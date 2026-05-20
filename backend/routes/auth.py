@@ -388,17 +388,24 @@ async def delete_login(provider: str, github_user_id: str = Depends(require_user
 
     db = await get_db()
     try:
+        # Count total logins across all providers before touching anything.
+        # (Only GitHub exists today; expand this query when new providers land.)
         count_res = await db.execute(
             select(func.count())
             .select_from(GithubToken)
             .where(GithubToken.github_user_id == github_user_id)
         )
-        if (count_res.scalar_one() or 0) <= 1:
+        total_logins = count_res.scalar_one() or 0
+        if total_logins <= 1:
             raise HTTPException(
                 status_code=400,
                 detail="Cannot disconnect your only login method — you would be locked out.",
             )
-        await db.execute(delete(GithubToken).where(GithubToken.github_user_id == github_user_id))
+        # Delete only the token(s) belonging to the requested provider.
+        if provider == "github":
+            await db.execute(
+                delete(GithubToken).where(GithubToken.github_user_id == github_user_id)
+            )
         await db.execute(delete(UserSession).where(UserSession.github_user_id == github_user_id))
         await db.commit()
     finally:

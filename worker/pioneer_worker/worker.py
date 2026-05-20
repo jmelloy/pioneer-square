@@ -243,18 +243,14 @@ class Worker:
             logger.warning("codex doctor: failed (rc=%d)\n%s", proc.returncode, output)
 
     async def _ensure_codex_api_key(self) -> None:
-        """Set OPENAI_API_KEY in the process environment for Codex tasks.
+        """Warn early if no OpenAI API key is available for Codex tasks.
 
-        Priority: env var already set → config openai_api_key → warn and skip.
-        The env var is inherited by every spawned codex subprocess; the runner
-        also accepts it explicitly for extra safety.
+        The key is passed explicitly to each run_codex_auto call (via the
+        openai_api_key parameter) rather than being injected into os.environ,
+        so this method only checks and logs — it does not mutate global state.
         """
-        if os.environ.get("OPENAI_API_KEY"):
-            logger.info("OPENAI_API_KEY already in env — Codex tasks will use it")
-            return
-        if self.cfg.openai_api_key:
-            os.environ["OPENAI_API_KEY"] = self.cfg.openai_api_key
-            logger.info("OPENAI_API_KEY set from config for Codex tasks")
+        if os.environ.get("OPENAI_API_KEY") or self.cfg.openai_api_key:
+            logger.info("OPENAI_API_KEY configured — Codex tasks will use it")
         else:
             logger.warning(
                 "OPENAI_API_KEY not configured — Codex tasks will fail. "
