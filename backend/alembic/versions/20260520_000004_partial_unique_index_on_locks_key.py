@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260520_000004_partial_unique_index_on_locks_key"
-down_revision: str | Sequence[str] | None = "20260520_000003_merge_locking_and_messages"
+down_revision: str | Sequence[str] | None = "20260520_000004_nullable_task_worker_id"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
