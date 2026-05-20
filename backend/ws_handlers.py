@@ -26,6 +26,7 @@ from events import (
     pending_claude_auth,
 )
 from fastapi import WebSocket
+from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -339,6 +340,17 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     await broadcast(ctx.guild_id, broadcast_payload)
 
 
+# States that indicate the agent is no longer actively running a task and
+# should trigger a lock release.  "done" and "cancelled" are intentionally
+# excluded: those transitions go through handle_task_complete /
+# handle_task_followup_done / cancel_task_endpoint which already release the
+# lock.  Including them here risks a race where this handler fires *after* the
+# task has already been moved to a terminal state (done, cancelled, failed) and
+# overwrites it with "awaiting-review".  The Task.state == "working" guard
+# below is the primary safety net; the restricted set is defence-in-depth.
+_LOCK_RELEASE_AGENT_STATES = frozenset({"idle", "offline", "error", "timeout"})
+
+
 async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     agent_id = data.get("agentId")
     worker_id = data.get("workerId")
@@ -356,11 +368,34 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
         update_vals["current_task_id"] = data.get("taskId")
     elif state in ("idle", "offline"):
         update_vals["current_task_id"] = None
+
+    # When the agent transitions to a non-working state, release the task lock
+    # so the task doesn't stay stuck in "working" indefinitely.  We must read
+    # current_task_id from the DB *before* the update clears it.
+    task_id_to_release: str | None = None
+    if state in _LOCK_RELEASE_AGENT_STATES and agent_id:
+        row = await ctx.db.execute(
+            select(Agent.current_task_id).where(
+                Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk
+            )
+        )
+        task_id_to_release = row.scalar_one_or_none()
+
     await ctx.db.execute(
         update(Agent)
         .where(Agent.id == agent_id, Agent.guild_pk == ctx.guild_pk)
         .values(**update_vals)
     )
+
+    if task_id_to_release:
+        # Move the task out of "working" so the foreman can decide next steps.
+        await ctx.db.execute(
+            update(Task)
+            .where(Task.id == task_id_to_release, Task.state == "working")
+            .values(state="awaiting-review")
+        )
+        await LockService(ctx.db).release(f"task:{task_id_to_release}")
+
     await ctx.db.commit()
     msg: dict = {"type": "agent-state", "agentId": agent_id, "state": state}
     if worker_id:
@@ -542,10 +577,9 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         update_values["pr_number"] = pr_number
         update_values["pr_repo"] = pr_repo
     if update_values:
-        if update_values.get("state") in _TERMINAL_STATES:
-            update_values["locked_at"] = None
-            update_values["lock_holder"] = None
         await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_values))
+        if update_values.get("state") in _TERMINAL_STATES:
+            await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if "state" in update_values:
@@ -575,6 +609,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
             .where(Task.id == task_id, Task.state == "working")
             .values(state="awaiting-review")
         )
+        await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if task_id:
@@ -611,23 +646,23 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     worker_id_msg = data.get("workerId", "")
     if task_id:
         pr_url_fud = data.get("prUrl", "")
-        lock_release: dict = {"locked_at": None, "lock_holder": None}
+        pr_update: dict = {}
         if pr_url_fud:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url_fud)
-            lock_release.update(
-                {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
-            )
-        # Move to awaiting-review and release lock unless task is already terminal.
+            pr_update = {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
+        # Move to awaiting-review unless task is already terminal.
         await ctx.db.execute(
             update(Task)
             .where(Task.id == task_id, Task.state.not_in(_TERMINAL_STATES))
-            .values(**lock_release, state="awaiting-review")
+            .values(**pr_update, state="awaiting-review")
         )
-        await ctx.db.execute(
-            update(Task)
-            .where(Task.id == task_id, Task.state.in_(_TERMINAL_STATES))
-            .values(**lock_release)
-        )
+        if pr_update:
+            await ctx.db.execute(
+                update(Task)
+                .where(Task.id == task_id, Task.state.in_(_TERMINAL_STATES))
+                .values(**pr_update)
+            )
+        await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if not task_id:

@@ -18,8 +18,9 @@ per-test guild ids, DB checked while the connections are still open
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -99,8 +100,12 @@ def _join_ws(ws, agent_id: str, worker_id: str) -> None:
             "workerId": worker_id,
         }
     )
-    msg = ws.receive_json()
-    assert msg["type"] == "agent-joined"
+    # The join handler replays any pending/working tasks via task-assigned
+    # *before* the agent-joined broadcast, so drain those first.
+    while True:
+        msg = ws.receive_json()
+        if msg["type"] == "agent-joined":
+            break
 
 
 def test_agent_state_persists_current_task_id(client):
@@ -295,3 +300,66 @@ def test_guild_get_returns_current_task_id(client):
             assert agents_by_id[agent_id]["current_task_id"] == task_id
             assert agents_by_id[agent_id]["state"] == "working"
             assert agents_by_id[agent_id]["activity"] == "editing"
+
+
+def test_agent_idle_releases_task_lock(client):
+    """When an agent transitions to idle, the task lock is released and the
+    task is moved out of 'working' so a new follow-up can be dispatched."""
+    test_client, db_path = client
+    guild_id, worker_id, task_id, agent_id = "gas-5", "w-gas5", "t-gas5", "a-gas5"
+    _insert_guild_worker_task(db_path, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
+
+    now = datetime.now(UTC).isoformat()
+    future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        # Set task to 'working' state (as if a follow-up was dispatched).
+        conn.execute("UPDATE tasks SET state='working' WHERE id=?", (task_id,))
+        # Insert the follow-up lock to simulate a dispatch in progress.
+        conn.execute(
+            "INSERT OR REPLACE INTO locks (key, owner, acquired_at, expires_at)"
+            " VALUES (?, ?, ?, ?)",
+            (f"task:{task_id}", "some-lock-holder", now, future),
+        )
+        conn.commit()
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+        _join_ws(ws_worker, agent_id, worker_id)
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
+            _join_ws(ws_obs, "a-obs5", "w-obs5")
+            ws_worker.receive_json()  # drain obs's join broadcast
+
+            # Seed the agent row with current_task_id so handle_agent_state
+            # knows which lock to release when the idle signal arrives.
+            ws_worker.send_json(
+                {
+                    "type": "agent-state",
+                    "workerId": worker_id,
+                    "agentId": agent_id,
+                    "taskId": task_id,
+                    "state": "working",
+                }
+            )
+            ws_obs.receive_json()
+
+            # Now the agent transitions to idle (finished but forgot task-followup-done).
+            ws_worker.send_json(
+                {
+                    "type": "agent-state",
+                    "workerId": worker_id,
+                    "agentId": agent_id,
+                    "state": "idle",
+                }
+            )
+            msg = ws_obs.receive_json()
+            assert msg["state"] == "idle"
+
+    with sqlite3.connect(db_path) as conn:
+        lock_row = conn.execute(
+            "SELECT key FROM locks WHERE key=?", (f"task:{task_id}",)
+        ).fetchone()
+        task_state = conn.execute("SELECT state FROM tasks WHERE id=?", (task_id,)).fetchone()[0]
+
+    assert lock_row is None, "lock should be released when agent goes idle"
+    assert task_state == "awaiting-review", (
+        "task should move to awaiting-review when its agent goes idle"
+    )

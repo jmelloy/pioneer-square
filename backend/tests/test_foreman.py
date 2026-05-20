@@ -833,7 +833,7 @@ class TestExecToolsDispatching:
     # -----------------------------------------------------------------------
 
     async def test_send_followup_acquires_lock(self, db_session):
-        """Successful send_followup sets locked_at / lock_holder on the task."""
+        """Successful send_followup creates a row in the locks table for the task."""
         insert_guild(db_session, "g-lock-set")
         _insert_worker(db_session, "g-lock-set", "w-lock1")
         _insert_agent(db_session, "g-lock-set", "w-lock1", "a-lock1")
@@ -850,10 +850,10 @@ class TestExecToolsDispatching:
             )
         assert "t-lock1" in results[0]["content"]
         with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT locked_at, lock_holder FROM tasks WHERE id='t-lock1'")
+            cur.execute("SELECT owner FROM locks WHERE key='task:t-lock1'")
             row = cur.fetchone()
-        assert row["locked_at"] is not None, "locked_at should be set after dispatch"
-        assert row["lock_holder"] is not None, "lock_holder should be set after dispatch"
+        assert row is not None, "A lock row should exist in the locks table after dispatch"
+        assert row["owner"] is not None, "Lock owner should be set after dispatch"
 
     async def test_send_followup_while_locked_queues_event(self, db_session):
         """A second send_followup on a locked task queues the instructions instead of dispatching."""
@@ -863,10 +863,11 @@ class TestExecToolsDispatching:
         # Pre-lock the task to simulate a concurrent dispatch already in flight.
         _insert_task(db_session, "t-lq1", "g-lock-queue", "w-lq1")
         now = datetime.now(UTC).isoformat()
+        expires = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
         with raw_conn(db_session) as (conn, cur):
             cur.execute(
-                "UPDATE tasks SET locked_at=%s, lock_holder='existing-holder' WHERE id='t-lq1'",
-                (now,),
+                "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (%s, %s, %s, %s)",
+                ("task:t-lq1", "existing-holder", now, expires),
             )
 
         broadcast_calls = []
@@ -971,9 +972,11 @@ class TestExecToolsDispatching:
         _insert_worker(db_session, "g-fin-lock", "w-fin-lk")
         _insert_task(db_session, "t-fin-lk", "g-fin-lock", "w-fin-lk")
         now = datetime.now(UTC).isoformat()
+        expires = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
         with raw_conn(db_session) as (conn, cur):
             cur.execute(
-                "UPDATE tasks SET locked_at=%s, lock_holder='h1' WHERE id='t-fin-lk'", (now,)
+                "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (%s, %s, %s, %s)",
+                ("task:t-fin-lk", "h1", now, expires),
             )
             cur.execute(
                 "INSERT INTO task_events (task_id, event_type, payload_json, created_at) "
@@ -987,27 +990,28 @@ class TestExecToolsDispatching:
             )
         assert "finalized" in results[0]["content"].lower()
         with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT state, locked_at, lock_holder FROM tasks WHERE id='t-fin-lk'")
+            cur.execute("SELECT state FROM tasks WHERE id='t-fin-lk'")
             task_row = cur.fetchone()
             cur.execute("SELECT COUNT(*) FROM task_events WHERE task_id='t-fin-lk'")
             event_count = cur.fetchone()["count"]
+            cur.execute("SELECT key FROM locks WHERE key='task:t-fin-lk'")
+            lock_row = cur.fetchone()
         assert task_row["state"] == "done"
-        assert task_row["locked_at"] is None, "locked_at should be cleared on finalize"
-        assert task_row["lock_holder"] is None, "lock_holder should be cleared on finalize"
+        assert lock_row is None, "Lock should be released on finalize"
         assert event_count == 0, "Queued events should be deleted on finalize"
 
     async def test_stale_lock_overridden(self, db_session):
-        """A lock older than 1 hour is treated as stale and can be overridden."""
+        """An expired lock (past its TTL) is evicted on the next acquire attempt."""
         insert_guild(db_session, "g-stale-lock")
         _insert_worker(db_session, "g-stale-lock", "w-stale")
         _insert_agent(db_session, "g-stale-lock", "w-stale", "a-stale")
         _insert_task(db_session, "t-stale", "g-stale-lock", "w-stale")
-        # Set locked_at to 2 hours ago
+        # Insert a lock with an already-expired TTL (2 hours ago).
         stale_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
         with raw_conn(db_session) as (conn, cur):
             cur.execute(
-                "UPDATE tasks SET locked_at=%s, lock_holder='old-holder' WHERE id='t-stale'",
-                (stale_ts,),
+                "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (%s, %s, %s, %s)",
+                ("task:t-stale", "old-holder", stale_ts, stale_ts),
             )
 
         broadcast_calls = []
@@ -1023,9 +1027,10 @@ class TestExecToolsDispatching:
         followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
         assert len(followup_msgs) == 1, "Stale lock should be overridden and follow-up dispatched"
         with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT lock_holder FROM tasks WHERE id='t-stale'")
+            cur.execute("SELECT owner FROM locks WHERE key='task:t-stale'")
             row = cur.fetchone()
-        assert row["lock_holder"] != "old-holder", "Lock holder should have been replaced"
+        assert row is not None, "A new lock should have been acquired"
+        assert row["owner"] != "old-holder", "Lock owner should have been replaced"
 
 
 # ---------------------------------------------------------------------------
