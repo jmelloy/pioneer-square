@@ -697,10 +697,13 @@ async def run_foreman_ai(
             _tool_use_ts = _now  # capture before exec_tools may raise
 
             tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
-            # Truncate verbose results before storing/sending
+            # Truncate verbose results; filter to only IDs in the current batch so
+            # stale results that survived history trimming are never persisted.
+            current_tool_use_ids = {tu.id for tu in tool_uses}
             trimmed = [
                 {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r
                 for r in tool_results
+                if r.get("tool_use_id") in current_tool_use_ids
             ]
 
             # Broadcast tool-result events
