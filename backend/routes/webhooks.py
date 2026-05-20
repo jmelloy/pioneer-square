@@ -78,22 +78,7 @@ class DebounceQueue:
         self._tasks.clear()
         self._buffers.clear()
 
-    async def _fire(self, key: str, guild_id: str) -> None:
-        """Sleep for the debounce window then deliver all buffered events.
-
-        On CancelledError (a new event reset the timer) the exception is
-        re-raised so asyncio marks the task cancelled.  The buffer is left
-        intact in self._buffers[key] so the replacement timer picks it up —
-        no events are silently dropped.
-        """
-        try:
-            await asyncio.sleep(self._window)
-        except asyncio.CancelledError:
-            raise  # buffer preserved; replacement timer will deliver it
-        items = self._buffers.pop(key, [])
-        self._tasks.pop(key, None)
-        if not items:
-            return
+    def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None]]) -> None:
         summaries = [s for s, _ in items]
         combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
         user_id = items[-1][1]
@@ -108,6 +93,32 @@ class DebounceQueue:
             len(items),
             guild_id,
         )
+
+    async def _fire(self, key: str, guild_id: str) -> None:
+        """Sleep for the debounce window then deliver all buffered events.
+
+        On CancelledError: if a replacement timer was scheduled, the buffer
+        stays intact for that timer to deliver.  If we are still the
+        registered task (external cancellation with no replacement), deliver
+        immediately so the buffer is not silently dropped.
+        """
+        try:
+            await asyncio.sleep(self._window)
+        except asyncio.CancelledError:
+            # _schedule_debounced_foreman pops + replaces self._tasks[key]
+            # synchronously before the event loop injects CancelledError here,
+            # so if we are still the registered task no replacement exists.
+            if self._tasks.get(key) is asyncio.current_task():
+                items = self._buffers.pop(key, [])
+                self._tasks.pop(key, None)
+                if items:
+                    self._deliver(key, guild_id, items)
+            raise
+        items = self._buffers.pop(key, [])
+        self._tasks.pop(key, None)
+        if not items:
+            return
+        self._deliver(key, guild_id, items)
 
     def schedule(
         self,
@@ -137,6 +148,14 @@ class DebounceQueue:
 
 
 _debounce_queue = DebounceQueue()
+
+
+def clear_debounce_state() -> None:
+    """Cancel all in-flight debounce timers and clear accumulated buffers.
+
+    Called from the server lifespan hook on startup and in test teardown.
+    """
+    _debounce_queue.reset()
 
 
 def _verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
