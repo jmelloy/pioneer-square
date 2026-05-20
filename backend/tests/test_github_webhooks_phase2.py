@@ -617,6 +617,45 @@ class TestDebounce:
 
         assert len(self._foreman_calls) == 0, "shutdown must not deliver any events"
 
+    async def test_race_condition_no_events_dropped(self):
+        """Regression: rapid schedule() cancellation must not silently drop events.
+
+        The old task-identity guard was racy: by the time the CancelledError
+        handler ran, the _tasks dict might already hold the *new* task, so the
+        identity check could misclassify a reset-cancel as an external cancel
+        and skip delivery.  The generation counter fix eliminates that race —
+        this test verifies the contract directly.
+
+        Sequence:
+          1. Schedule event A  → gen=1, Timer-1 starts sleeping
+          2. Yield with sleep(0) so Timer-1 is scheduled and its sleep begins
+          3. Schedule event B immediately → gen=2, Timer-1 is cancelled, Timer-2 starts
+          4. Timer-2 fires after the window → must deliver *both* A and B
+        """
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            key = "g-race:t-rc1"
+            await wh._debounce_queue.schedule(key, "g-race", "event A", "u-race")
+            # Yield once so the asyncio task for Timer-1 actually enters its sleep.
+            # This puts us in the narrow race window where the old task-identity
+            # guard could misfire.
+            await asyncio.sleep(0)
+            # Immediately reset — this bumps the generation (gen=2), cancels Timer-1,
+            # and starts Timer-2.  Under the old code, if Timer-1's sleep had already
+            # resolved at the moment of cancellation, the task-identity dict look-up
+            # would find the *new* task and incorrectly suppress delivery, dropping
+            # event A.  The generation counter prevents that.
+            await wh._debounce_queue.schedule(key, "g-race", "event B", "u-race")
+            await asyncio.sleep(0.2)  # let Timer-2 fire
+
+        assert len(self._foreman_calls) == 1, (
+            f"expected exactly one delivery, got {len(self._foreman_calls)}"
+        )
+        _, summary, _ = self._foreman_calls[0]
+        assert "event A" in summary, "event A must not be dropped by rapid cancellation"
+        assert "event B" in summary, "event B must appear in the same delivery"
+
 
 # ---------------------------------------------------------------------------
 # get_pr_status tool
