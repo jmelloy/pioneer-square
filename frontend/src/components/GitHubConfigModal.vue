@@ -137,13 +137,18 @@ async function doDisconnect() {
   disconnecting.value = provider
   try {
     await api(`/api/user/logins/${provider}`, { method: 'DELETE' })
-    setStatus(`${providerLabel(provider)} disconnected. You will be signed out.`, true)
-    await authStore.logout()
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Disconnect failed'
     setStatus(msg, false)
-  } finally {
     disconnecting.value = null
+    return
+  }
+  setStatus(`${providerLabel(provider)} disconnected. You will be signed out.`, true)
+  disconnecting.value = null
+  try {
+    await authStore.logout()
+  } catch {
+    setStatus('Disconnected, but session logout failed — please refresh.', false)
   }
 }
 
