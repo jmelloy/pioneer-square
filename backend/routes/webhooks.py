@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 from datetime import UTC, datetime
 
 from database import get_db
@@ -40,7 +41,8 @@ router = APIRouter()
 # delivering the buffered batch to the foreman.  GitHub often sends several
 # check_run completions and a review comment within a second of each other;
 # this window lets them coalesce into a single foreman invocation.
-DEBOUNCE_WINDOW_SECONDS: float = 3.0
+# Configurable via WEBHOOK_DEBOUNCE_SECONDS environment variable (default: 60).
+DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "60"))
 
 
 # Cap on stored payloads. GitHub webhook payloads are typically <50 KB but
