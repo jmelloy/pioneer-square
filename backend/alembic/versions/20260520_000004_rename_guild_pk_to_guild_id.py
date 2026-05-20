@@ -16,6 +16,7 @@ Create Date: 2026-05-20 00:00:04.000000
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260520_000004_rename_guild_pk_to_guild_id"
@@ -43,22 +44,63 @@ _UNIQUE_FK_TABLES = [
 ]
 
 
+def _drop_fk(table: str, col: str) -> None:
+    """Drop the FK on *col* from *table*, robust to auto-generated constraint names.
+
+    Migration 20260512_000002 recreated tables as ``{table}_new`` then renamed
+    them.  PostgreSQL keeps the original auto-generated constraint name
+    (e.g. ``agents_new_guild_pk_fkey``) after a table rename, so we cannot
+    assume the conventional ``{table}_{col}_fkey`` pattern.  We query
+    ``pg_constraint`` at migration time to find and drop whatever name exists.
+    """
+    op.execute(
+        sa.text(f"""
+        DO $$ DECLARE cname TEXT; BEGIN
+            SELECT c.conname INTO cname
+              FROM pg_constraint c
+              JOIN pg_class t ON t.oid = c.conrelid
+             WHERE t.relname = '{table}'
+               AND c.contype = 'f'
+               AND c.conname LIKE '%{col}_fkey';
+            IF cname IS NOT NULL THEN
+                EXECUTE format('ALTER TABLE {table} DROP CONSTRAINT %I', cname);
+            END IF;
+        END $$
+        """)
+    )
+
+
+def _drop_unique(table: str, col: str) -> None:
+    """Drop the UNIQUE constraint on *col* from *table*, robust to auto-generated names."""
+    op.execute(
+        sa.text(f"""
+        DO $$ DECLARE cname TEXT; BEGIN
+            SELECT c.conname INTO cname
+              FROM pg_constraint c
+              JOIN pg_class t ON t.oid = c.conrelid
+             WHERE t.relname = '{table}'
+               AND c.contype = 'u'
+               AND c.conname LIKE '%{col}_key';
+            IF cname IS NOT NULL THEN
+                EXECUTE format('ALTER TABLE {table} DROP CONSTRAINT %I', cname);
+            END IF;
+        END $$
+        """)
+    )
+
+
 def upgrade() -> None:
     for table in _SIMPLE_FK_TABLES:
-        op.drop_constraint(f"{table}_guild_pk_fkey", table, type_="foreignkey")
+        _drop_fk(table, "guild_pk")
         op.alter_column(table, "guild_pk", new_column_name="guild_id")
-        op.create_foreign_key(
-            f"{table}_guild_id_fkey", table, "guilds", ["guild_id"], ["id"]
-        )
+        op.create_foreign_key(f"{table}_guild_id_fkey", table, "guilds", ["guild_id"], ["id"])
 
     for table in _UNIQUE_FK_TABLES:
-        op.drop_constraint(f"{table}_guild_pk_fkey", table, type_="foreignkey")
-        op.drop_constraint(f"{table}_guild_pk_key", table, type_="unique")
+        _drop_fk(table, "guild_pk")
+        _drop_unique(table, "guild_pk")
         op.alter_column(table, "guild_pk", new_column_name="guild_id")
         op.create_unique_constraint(f"{table}_guild_id_key", table, ["guild_id"])
-        op.create_foreign_key(
-            f"{table}_guild_id_fkey", table, "guilds", ["guild_id"], ["id"]
-        )
+        op.create_foreign_key(f"{table}_guild_id_fkey", table, "guilds", ["guild_id"], ["id"])
 
 
 def downgrade() -> None:
@@ -67,13 +109,9 @@ def downgrade() -> None:
         op.drop_constraint(f"{table}_guild_id_key", table, type_="unique")
         op.alter_column(table, "guild_id", new_column_name="guild_pk")
         op.create_unique_constraint(f"{table}_guild_pk_key", table, ["guild_pk"])
-        op.create_foreign_key(
-            f"{table}_guild_pk_fkey", table, "guilds", ["guild_pk"], ["id"]
-        )
+        op.create_foreign_key(f"{table}_guild_pk_fkey", table, "guilds", ["guild_pk"], ["id"])
 
     for table in reversed(_SIMPLE_FK_TABLES):
         op.drop_constraint(f"{table}_guild_id_fkey", table, type_="foreignkey")
         op.alter_column(table, "guild_id", new_column_name="guild_pk")
-        op.create_foreign_key(
-            f"{table}_guild_pk_fkey", table, "guilds", ["guild_pk"], ["id"]
-        )
+        op.create_foreign_key(f"{table}_guild_pk_fkey", table, "guilds", ["guild_pk"], ["id"])
