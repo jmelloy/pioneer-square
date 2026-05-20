@@ -114,10 +114,11 @@ class DebounceQueue:
     async def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None]]) -> None:
         summaries = [s for s, _ in items]
         combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
-        # Use the last event's user_id: in typical bursts the final event is a
-        # human action (review, comment) that arrives after CI bot events,
-        # so this attribution is usually more meaningful than the first event's.
-        user_id = items[-1][1]
+        # All items in a buffer share the same task (keyed by guild+task_id) and
+        # therefore the same task owner (user_id).  Use the first non-None value;
+        # fall back to the last item's user_id if all are None (shouldn't occur
+        # in practice because dispatch is gated on a task match, but be safe).
+        user_id = next((uid for _, uid in items if uid is not None), items[-1][1])
         await run_foreman_ai(guild_id, combined, user_id=user_id)
         reset_foreman_poll(guild_id)
         logger.info(
