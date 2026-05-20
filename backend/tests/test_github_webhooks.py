@@ -167,7 +167,10 @@ def test_webhook_accepts_ping(client):
     assert resp.status_code == 204
     # Ping deliveries are not persisted
     with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT COUNT(*) FROM github_events")
+        cur.execute(
+            "SELECT COUNT(*) FROM github_events"
+            " WHERE guild_pk = (SELECT id FROM guilds WHERE guild_id = 'g4' AND deleted_at IS NULL)"
+        )
         rows = cur.fetchone()
     assert rows["count"] == 0
 
@@ -193,6 +196,7 @@ def test_webhook_persists_event_and_links_task(client):
         cur.execute(
             "SELECT task_id, delivery_id, event_type, action, repo, "
             "pr_number, pr_url, sender_login FROM github_events"
+            " WHERE delivery_id = 'd-evt-1'"
         )
         row = cur.fetchone()
     assert row["task_id"] == "t-1"
@@ -215,7 +219,7 @@ def test_webhook_event_without_matching_task(client):
     resp = test_client.post("/webhooks/github/g6", content=body, headers=headers)
     assert resp.status_code == 202
     with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT task_id, pr_number FROM github_events")
+        cur.execute("SELECT task_id, pr_number FROM github_events WHERE delivery_id = 'd-evt-2'")
         row = cur.fetchone()
     assert row["task_id"] is None
     assert row["pr_number"] == 7
@@ -233,7 +237,7 @@ def test_webhook_dedupes_redelivery(client):
     assert r1.status_code == 202
     assert r2.status_code == 202
     with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT COUNT(*) FROM github_events")
+        cur.execute("SELECT COUNT(*) FROM github_events WHERE delivery_id = 'dup-1'")
         n = cur.fetchone()["count"]
     assert n == 1
 
@@ -265,7 +269,10 @@ def test_webhook_check_run_extracts_pr_from_pull_requests_array(client):
     resp = test_client.post("/webhooks/github/g8", content=body, headers=headers)
     assert resp.status_code == 202
     with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT task_id, event_type, action, pr_number FROM github_events")
+        cur.execute(
+            "SELECT task_id, event_type, action, pr_number FROM github_events"
+            " WHERE delivery_id = 'cr-1'"
+        )
         row = cur.fetchone()
     assert row["task_id"] == "t-2"
     assert row["event_type"] == "check_run"
@@ -314,7 +321,10 @@ def test_webhook_emits_foreman_chat_message(client):
     resp = test_client.post("/webhooks/github/gchat1", content=body, headers=headers)
     assert resp.status_code == 202
     with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT from_agent, to_agent, content, message_type FROM messages")
+        cur.execute(
+            "SELECT from_agent, to_agent, content, message_type FROM messages"
+            " WHERE guild_pk = (SELECT id FROM guilds WHERE guild_id = 'gchat1' AND deleted_at IS NULL)"
+        )
         row = cur.fetchone()
     assert row is not None
     assert row["from_agent"] == "github"
@@ -345,7 +355,10 @@ def test_webhook_chat_line_includes_merged_status(client):
     resp = test_client.post("/webhooks/github/gchat2", content=body, headers=headers)
     assert resp.status_code == 202
     with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT content FROM messages")
+        cur.execute(
+            "SELECT content FROM messages"
+            " WHERE guild_pk = (SELECT id FROM guilds WHERE guild_id = 'gchat2' AND deleted_at IS NULL)"
+        )
         row = cur.fetchone()
     assert row is not None
     assert "merged=true" in row["content"]
@@ -362,7 +375,10 @@ def test_webhook_chat_line_not_emitted_for_duplicate(client):
     test_client.post("/webhooks/github/gchat3", content=body, headers=headers)
     test_client.post("/webhooks/github/gchat3", content=body, headers=headers)
     with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT COUNT(*) FROM messages")
+        cur.execute(
+            "SELECT COUNT(*) FROM messages"
+            " WHERE guild_pk = (SELECT id FROM guilds WHERE guild_id = 'gchat3' AND deleted_at IS NULL)"
+        )
         count = cur.fetchone()["count"]
     assert count == 1  # second delivery is a duplicate; no second message
 

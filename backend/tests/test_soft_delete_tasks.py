@@ -224,7 +224,7 @@ def test_finalize_endpoint_default_sets_three_day_window(client):
     parsed = datetime.fromisoformat(deleted_at)
     # Should be roughly 3 days from now (allow ±1 minute slack for slow machines).
     assert timedelta(days=3, minutes=-1) <= parsed - before <= timedelta(days=3, minutes=1)
-    assert _read_task(db_url, task_id)["deleted_at"].isoformat() == deleted_at
+    assert _read_task(db_url, task_id)["deleted_at"] == deleted_at
 
 
 def test_finalize_endpoint_explicit_expires_in_seconds(client):

@@ -27,15 +27,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import create_db as _create_db  # noqa: E402
-from helpers import raw_conn, truncate_all
+from helpers import raw_conn  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def client():
+def client(_setup_schema):
     """Module-scoped TestClient — one TestClient for all disconnect tests."""
-    _create_db(TEST_DATABASE_URL)
-    truncate_all(TEST_DATABASE_URL)
     db_url = TEST_DATABASE_URL
 
     new_engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
@@ -91,7 +88,7 @@ def _get_states(db_url: str, agent_id: str, worker_id: str) -> tuple[str, str]:
 def test_worker_disconnect_marks_agent_and_worker_offline(client):
     """Server marks agent and worker offline on receiving worker-disconnect."""
     test_client, db_url = client
-    guild_id = "gld001"
+    guild_id = "dco001"
     worker_id = "w-abc001"
     agent_id = "a-abc001"
 
@@ -140,7 +137,7 @@ def test_reconnect_does_not_get_clobbered_by_old_finally(client):
     agent offline. Otherwise the frontend shows the worker offline forever
     after a reconnect."""
     test_client, db_url = client
-    guild_id = "gld003"
+    guild_id = "dco003"
     worker_id = "w-rec001"
     agent_id = "a-rec001"
 
@@ -199,7 +196,7 @@ def test_worker_disconnect_without_prior_join_is_harmless(client):
     to create a synchronization point via the broadcast response.
     """
     test_client, db_url = client
-    guild_id = "gld002"
+    guild_id = "dco002"
     worker_id = "w-xyz002"
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)

@@ -8,7 +8,6 @@ carry both workerId and agentId so the frontend can render both views.
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime
 
@@ -21,18 +20,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
-from helpers import create_db as _create_db  # noqa: E402
+from _test_config import TEST_DATABASE_URL  # noqa: E402
+from helpers import raw_conn  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def client(tmp_path_factory):
-    tmp_path = tmp_path_factory.mktemp("terminal_output_ws_db")
-    db_path = str(tmp_path / "test.db")
-    db_url = f"sqlite+aiosqlite:///{db_path}"
-
-    os.environ["DATABASE_URL"] = db_url
-    _create_db(db_path)
+def client(_setup_schema):
+    """Module-scoped TestClient against the shared PostgreSQL test database."""
+    db_url = TEST_DATABASE_URL
 
     new_engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
     new_session = async_sessionmaker(new_engine, expire_on_commit=False, class_=AsyncSession)
@@ -46,57 +42,61 @@ def client(tmp_path_factory):
 
     mp.setattr(main_module, "reset_connection_state", _stubbed_reset_connection_state)
     mp.setenv("DATABASE_URL", db_url)
-    mp.setenv("DB_PATH", db_path)
 
     with TestClient(main_module.app) as c:
-        yield c, db_path
+        yield c, db_url
 
     mp.undo()
-    os.environ.pop("DATABASE_URL", None)
 
 
-def _insert_guild_worker(db_path: str, *, guild_id: str, worker_id: str) -> None:
+def _insert_guild_worker(db_url: str, *, guild_id: str, worker_id: str) -> None:
     now = datetime.now(UTC).isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s)"
+            " ON CONFLICT DO NOTHING",
             (guild_id, now, "Test Guild"),
         )
-        row = conn.execute(
-            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
-        ).fetchone()
-        guild_pk = row[0]
-        conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at)"
-            " VALUES (?, ?, '[]', 'online', ?)",
+        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
+        row = cur.fetchone()
+        guild_pk = row["id"]
+        cur.execute(
+            "INSERT INTO workers (id, guild_pk, repos, state, created_at)"
+            " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
             (worker_id, guild_pk, now),
         )
-        conn.commit()
 
 
-def _join_ws(ws, agent_id: str, worker_id: str) -> None:
-    ws.send_json(
-        {
-            "type": "join",
-            "agentId": agent_id,
-            "agentName": "Test Slot",
-            "agentType": "worker",
-            "workerId": worker_id,
-        }
-    )
-    msg = ws.receive_json()
-    assert msg["type"] == "agent-joined"
+def _join_ws(ws, agent_id: str, worker_id: str | None = None) -> None:
+    """Join a guild WebSocket.
+
+    Pass ``worker_id`` to join as a worker (FK-safe: must exist in workers
+    table).  Omit it to join as a browser observer — no workers row needed.
+    """
+    msg: dict = {
+        "type": "join",
+        "agentId": agent_id,
+        "agentName": "Test Slot",
+        "agentType": "worker" if worker_id else "browser",
+    }
+    if worker_id:
+        msg["workerId"] = worker_id
+    ws.send_json(msg)
+    while True:
+        recv = ws.receive_json()
+        if recv["type"] == "agent-joined":
+            break
 
 
 def test_worker_only_terminal_output_uses_worker_id_only(client):
-    test_client, db_path = client
+    test_client, db_url = client
     guild_id, worker_id, agent_id = "gto-1", "w-gto1", "a-gto1"
-    _insert_guild_worker(db_path, guild_id=guild_id, worker_id=worker_id)
+    _insert_guild_worker(db_url, guild_id=guild_id, worker_id=worker_id)
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
-            _join_ws(ws_obs, "a-obs1", "w-obs1")
+            _join_ws(ws_obs, "a-obs1")  # browser observer — no workerId needed
             ws_worker.receive_json()  # drain observer join broadcast
 
             ws_worker.send_json(
@@ -113,9 +113,14 @@ def test_worker_only_terminal_output_uses_worker_id_only(client):
             assert msg.get("agentId") is None
             assert msg.get("taskId") is None
 
-            with sqlite3.connect(db_path) as conn:
-                row = conn.execute(
-                    "SELECT worker_id, agent_id, task_id, line FROM task_logs ORDER BY id DESC LIMIT 1"
-                ).fetchone()
+            with raw_conn(db_url) as (conn, cur):
+                cur.execute(
+                    "SELECT worker_id, agent_id, task_id, line FROM task_logs"
+                    " ORDER BY id DESC LIMIT 1"
+                )
+                row = cur.fetchone()
 
-    assert row == (worker_id, None, None, "[worker] Pulled repo")
+    assert row["worker_id"] == worker_id
+    assert row["agent_id"] is None
+    assert row["task_id"] is None
+    assert row["line"] == "[worker] Pulled repo"
