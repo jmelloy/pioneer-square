@@ -13,4 +13,5 @@ docker
 httpx
 pytest
 pytest-asyncio
+pytest-timeout
 ruff

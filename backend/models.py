@@ -111,7 +111,7 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id = Column(Text, primary_key=True)
-    worker_id = Column(Text, ForeignKey("workers.id"), nullable=False)
+    worker_id = Column(Text, ForeignKey("workers.id"), nullable=True)  # NULL for foreman-owned tasks
     guild_pk = Column(Integer, ForeignKey("guilds.id"), nullable=False)
     description = Column(Text, nullable=False)
     tool = Column(Text, nullable=False, server_default="claude")
