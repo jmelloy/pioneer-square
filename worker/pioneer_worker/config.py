@@ -169,6 +169,8 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         raw_key = codex_block.get("api_key")
         if isinstance(raw_key, str) and raw_key.startswith("env:"):
             _var_name = raw_key[4:].strip()
+            if not _var_name:
+                raise ValueError("env: directive has a blank variable name")
             _env_val = os.environ.get(_var_name)
             if _env_val == "":
                 raise ValueError(

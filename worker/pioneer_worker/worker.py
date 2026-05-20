@@ -249,7 +249,7 @@ class Worker:
         openai_api_key parameter) rather than being injected into os.environ,
         so this method only checks and logs — it does not mutate global state.
         """
-        if os.environ.get("OPENAI_API_KEY") or self.cfg.openai_api_key:
+        if self.cfg.openai_api_key:
             logger.info("OPENAI_API_KEY configured — Codex tasks will use it")
         else:
             logger.warning(
