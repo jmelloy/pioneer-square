@@ -13,7 +13,6 @@ second TestClient tries to start against the same singleton app instance.
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime, timezone
 
@@ -27,18 +26,20 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
-from helpers import create_db as _create_db  # noqa: E402
+from helpers import create_db as _create_db, raw_conn, truncate_all  # noqa: E402
+
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test",
+)
 
 
 @pytest.fixture(scope="module")
-def client(tmp_path_factory):
+def client():
     """Module-scoped TestClient — one TestClient for all disconnect tests."""
-    tmp_path = tmp_path_factory.mktemp("disconnect_db")
-    db_path = str(tmp_path / "test.db")
-    db_url = f"sqlite+aiosqlite:///{db_path}"
-
-    os.environ["DATABASE_URL"] = db_url
-    _create_db(db_path)
+    _create_db(TEST_DATABASE_URL)
+    truncate_all(TEST_DATABASE_URL)
+    db_url = TEST_DATABASE_URL
 
     new_engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
     new_session = async_sessionmaker(new_engine, expire_on_commit=False, class_=AsyncSession)
@@ -52,41 +53,40 @@ def client(tmp_path_factory):
 
     mp.setattr(main_module, "reset_connection_state", _stubbed_reset_connection_state)
     mp.setenv("DATABASE_URL", db_url)
-    mp.setenv("DB_PATH", db_path)
 
     with TestClient(main_module.app) as c:
-        yield c, db_path
+        yield c, db_url
 
     mp.undo()
-    os.environ.pop("DATABASE_URL", None)
 
 
-def _setup_guild_and_worker(db_path: str, guild_id: str, worker_id: str) -> None:
+def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
     """Insert a test guild and worker directly into the DB."""
     now = datetime.now(UTC).isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
             (guild_id, now, "Test Guild"),
         )
-        row = conn.execute(
-            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
-        ).fetchone()
-        guild_pk = row[0]
-        conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at)"
-            " VALUES (?, ?, '[]', 'online', ?)",
+        cur.execute(
+            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
+        )
+        row = cur.fetchone()
+        guild_pk = row["id"]
+        cur.execute(
+            "INSERT INTO workers (id, guild_pk, repos, state, created_at)"
+            " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
             (worker_id, guild_pk, now),
         )
-        conn.commit()
 
 
-def _get_states(db_path: str, agent_id: str, worker_id: str) -> tuple[str, str]:
+def _get_states(db_url: str, agent_id: str, worker_id: str) -> tuple[str, str]:
     """Return (agent_state, worker_state) from the DB."""
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        agent_row = conn.execute("SELECT state FROM agents WHERE id = ?", (agent_id,)).fetchone()
-        worker_row = conn.execute("SELECT state FROM workers WHERE id = ?", (worker_id,)).fetchone()
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute("SELECT state FROM agents WHERE id = %s", (agent_id,))
+        agent_row = cur.fetchone()
+        cur.execute("SELECT state FROM workers WHERE id = %s", (worker_id,))
+        worker_row = cur.fetchone()
     return (
         agent_row["state"] if agent_row else None,
         worker_row["state"] if worker_row else None,
@@ -95,12 +95,12 @@ def _get_states(db_path: str, agent_id: str, worker_id: str) -> tuple[str, str]:
 
 def test_worker_disconnect_marks_agent_and_worker_offline(client):
     """Server marks agent and worker offline on receiving worker-disconnect."""
-    test_client, db_path = client
+    test_client, db_url = client
     guild_id = "gld001"
     worker_id = "w-abc001"
     agent_id = "a-abc001"
 
-    _setup_guild_and_worker(db_path, guild_id, worker_id)
+    _setup_guild_and_worker(db_url, guild_id, worker_id)
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
         # Join so the server knows this agent belongs to this connection.
@@ -134,7 +134,7 @@ def test_worker_disconnect_marks_agent_and_worker_offline(client):
         assert offline_msg["state"] == "offline"
 
     # After the connection closes, both agent and worker should be offline.
-    agent_state, worker_state = _get_states(db_path, agent_id, worker_id)
+    agent_state, worker_state = _get_states(db_url, agent_id, worker_id)
     assert agent_state == "offline", f"agent.state={agent_state!r}, expected 'offline'"
     assert worker_state == "offline", f"worker.state={worker_state!r}, expected 'offline'"
 
@@ -144,12 +144,12 @@ def test_reconnect_does_not_get_clobbered_by_old_finally(client):
     teardown finishes, the old WS's cleanup must not mark the freshly-online
     agent offline. Otherwise the frontend shows the worker offline forever
     after a reconnect."""
-    test_client, db_path = client
+    test_client, db_url = client
     guild_id = "gld003"
     worker_id = "w-rec001"
     agent_id = "a-rec001"
 
-    _setup_guild_and_worker(db_path, guild_id, worker_id)
+    _setup_guild_and_worker(db_url, guild_id, worker_id)
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws2:
         # First connection joins as the agent.
@@ -184,7 +184,7 @@ def test_reconnect_does_not_get_clobbered_by_old_finally(client):
 
         # After ws1 closes, but ws2 (the new owner) is still connected, the
         # agent should still be online in the DB.
-        agent_state, worker_state = _get_states(db_path, agent_id, worker_id)
+        agent_state, worker_state = _get_states(db_url, agent_id, worker_id)
         assert agent_state != "offline", (
             f"Old WS's cleanup wrongly marked the reconnected agent offline: "
             f"agent.state={agent_state!r}"
@@ -203,11 +203,11 @@ def test_worker_disconnect_without_prior_join_is_harmless(client):
     The worker-row DB update is covered by the first test, which uses join
     to create a synchronization point via the broadcast response.
     """
-    test_client, db_path = client
+    test_client, db_url = client
     guild_id = "gld002"
     worker_id = "w-xyz002"
 
-    _setup_guild_and_worker(db_path, guild_id, worker_id)
+    _setup_guild_and_worker(db_url, guild_id, worker_id)
 
     # Should complete without raising any exception.
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
@@ -228,12 +228,12 @@ def test_abrupt_disconnect_marks_worker_offline(client):
     (e.g. "a-…") as the filter for ``Worker.id`` (which stores "w-…" IDs),
     causing the Worker row to stay "online" after an abrupt container death.
     """
-    test_client, db_path = client
+    test_client, db_url = client
     guild_id = "gld004"
     worker_id = "w-abrupt04"
     agent_id = "a-abrupt04"
 
-    _setup_guild_and_worker(db_path, guild_id, worker_id)
+    _setup_guild_and_worker(db_url, guild_id, worker_id)
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
         ws.send_json(
@@ -249,7 +249,7 @@ def test_abrupt_disconnect_marks_worker_offline(client):
         # Close without sending worker-disconnect — simulates abrupt container death.
 
     # The finally block must have marked both offline.
-    agent_state, worker_state = _get_states(db_path, agent_id, worker_id)
+    agent_state, worker_state = _get_states(db_url, agent_id, worker_id)
     assert agent_state == "offline", f"agent.state={agent_state!r}, expected 'offline'"
     assert worker_state == "offline", (
         f"worker.state={worker_state!r}, expected 'offline' — "

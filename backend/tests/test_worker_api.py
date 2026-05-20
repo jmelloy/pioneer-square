@@ -6,12 +6,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import insert_guild, make_auth_token
+from helpers import insert_guild, insert_member, make_auth_token, raw_conn
 
 
-def _auth(db_path: str) -> dict:
+def _auth(db_url: str) -> dict:
     """Helper: return Authorization header for the default test user."""
-    return {"Authorization": f"Bearer {make_auth_token(db_path)}"}
+    return {"Authorization": f"Bearer {make_auth_token(db_url)}"}
 
 
 # ---------------------------------------------------------------------------
@@ -20,16 +20,16 @@ def _auth(db_path: str) -> dict:
 
 
 def test_list_workers_empty(client):
-    test_client, db_path = client
-    insert_guild(db_path, "guild01")
-    resp = test_client.get("/guilds/guild01/workers", headers=_auth(db_path))
+    test_client, db_url = client
+    insert_guild(db_url, "guild01")
+    resp = test_client.get("/guilds/guild01/workers", headers=_auth(db_url))
     assert resp.status_code == 200
     assert resp.json() == []
 
 
 def test_create_worker_returns_id(client):
-    test_client, db_path = client
-    insert_guild(db_path, "guild02")
+    test_client, db_url = client
+    insert_guild(db_url, "guild02")
     resp = test_client.post(
         "/guilds/guild02/workers",
         json={"repos": ["owner/repo-a"]},
@@ -42,10 +42,10 @@ def test_create_worker_returns_id(client):
 
 
 def test_create_worker_appears_in_list(client):
-    test_client, db_path = client
-    insert_guild(db_path, "guild03")
+    test_client, db_url = client
+    insert_guild(db_url, "guild03")
     test_client.post("/guilds/guild03/workers", json={"repos": ["org/backend"]})
-    resp = test_client.get("/guilds/guild03/workers", headers=_auth(db_path))
+    resp = test_client.get("/guilds/guild03/workers", headers=_auth(db_url))
     assert resp.status_code == 200
     workers = resp.json()
     assert len(workers) == 1
@@ -58,53 +58,48 @@ def test_create_worker_does_not_insert_agent_row(client):
     Agent rows are created only when the worker process sends a ``join``
     message over WebSocket, not during REST-based registration.
     """
-    import sqlite3
-
-    test_client, db_path = client
-    insert_guild(db_path, "guild03b")
+    test_client, db_url = client
+    insert_guild(db_url, "guild03b")
     resp = test_client.post("/guilds/guild03b/workers", json={"repos": []})
     assert resp.status_code == 200
     worker_id = resp.json()["id"]
 
-    with sqlite3.connect(db_path) as conn:
-        row = conn.execute("SELECT id FROM agents WHERE id = ?", (worker_id,)).fetchone()
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute("SELECT id FROM agents WHERE id = %s", (worker_id,))
+        row = cur.fetchone()
     assert row is None, f"create_worker must not insert an agent row, but found: {row}"
 
 
 def test_create_multiple_workers(client):
-    test_client, db_path = client
-    insert_guild(db_path, "guild04")
+    test_client, db_url = client
+    insert_guild(db_url, "guild04")
     test_client.post("/guilds/guild04/workers", json={"repos": []})
     test_client.post("/guilds/guild04/workers", json={"repos": ["x/y"]})
-    resp = test_client.get("/guilds/guild04/workers", headers=_auth(db_path))
+    resp = test_client.get("/guilds/guild04/workers", headers=_auth(db_url))
     assert len(resp.json()) == 2
 
 
 def test_create_worker_attributes_to_user(client):
     """Worker registration with `user` resolves to a users.id and stores it on workers.user_id."""
-    import sqlite3
-
-    from helpers import insert_member
-
-    test_client, db_path = client
-    insert_guild(db_path, "guildusr")
-    insert_member(db_path, "guildusr", "user-bob", role="member")
+    test_client, db_url = client
+    insert_guild(db_url, "guildusr")
+    insert_member(db_url, "guildusr", "user-bob", role="member")
     # Bob's users row was created by insert_member; reference by login should also work.
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE users SET github_login = ? WHERE id = ?",
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "UPDATE users SET github_login = %s WHERE id = %s",
             ("bobby", "user-bob"),
         )
-        conn.commit()
     resp = test_client.post(
         "/guilds/guildusr/workers",
         json={"repos": [], "user": "bobby"},
     )
     assert resp.status_code == 200
     worker_id = resp.json()["id"]
-    with sqlite3.connect(db_path) as conn:
-        row = conn.execute("SELECT user_id FROM workers WHERE id = ?", (worker_id,)).fetchone()
-    assert row[0] == "user-bob"
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute("SELECT user_id FROM workers WHERE id = %s", (worker_id,))
+        row = cur.fetchone()
+    assert row["user_id"] == "user-bob"
 
 
 # ---------------------------------------------------------------------------
@@ -118,8 +113,8 @@ def _create_worker(test_client, guild_id: str) -> str:
 
 
 def test_list_tasks_empty(client):
-    test_client, db_path = client
-    insert_guild(db_path, "guild05")
+    test_client, db_url = client
+    insert_guild(db_url, "guild05")
     worker_id = _create_worker(test_client, "guild05")
     resp = test_client.get(f"/guilds/guild05/workers/{worker_id}/tasks")
     assert resp.status_code == 200
@@ -127,25 +122,25 @@ def test_list_tasks_empty(client):
 
 
 def test_assign_task_unknown_worker(client):
-    test_client, db_path = client
-    insert_guild(db_path, "guild06")
+    test_client, db_url = client
+    insert_guild(db_url, "guild06")
     resp = test_client.post(
         "/guilds/guild06/workers/w-nosuch/tasks",
         json={"description": "do something", "tool": "claude"},
-        headers=_auth(db_path),
+        headers=_auth(db_url),
     )
     assert resp.status_code == 404
 
 
 def test_assign_task_returns_pending(client):
-    test_client, db_path = client
-    insert_guild(db_path, "guild07")
+    test_client, db_url = client
+    insert_guild(db_url, "guild07")
     worker_id = _create_worker(test_client, "guild07")
 
     resp = test_client.post(
         f"/guilds/guild07/workers/{worker_id}/tasks",
         json={"description": "Write a hello-world script", "tool": "claude"},
-        headers=_auth(db_path),
+        headers=_auth(db_url),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -155,10 +150,10 @@ def test_assign_task_returns_pending(client):
 
 
 def test_assign_task_appears_in_list(client):
-    test_client, db_path = client
-    insert_guild(db_path, "guild08")
+    test_client, db_url = client
+    insert_guild(db_url, "guild08")
     worker_id = _create_worker(test_client, "guild08")
-    headers = _auth(db_path)
+    headers = _auth(db_url)
 
     test_client.post(
         f"/guilds/guild08/workers/{worker_id}/tasks",
@@ -352,11 +347,11 @@ def test_decode_claude_oauth_token_missing_key():
 
 def test_guild_task_list(client):
     """GET /guilds/{id}/tasks lists tasks across all workers in the guild."""
-    test_client, db_path = client
-    insert_guild(db_path, "guild09")
+    test_client, db_url = client
+    insert_guild(db_url, "guild09")
     w1 = _create_worker(test_client, "guild09")
     w2 = _create_worker(test_client, "guild09")
-    headers = _auth(db_path)
+    headers = _auth(db_url)
 
     test_client.post(
         f"/guilds/guild09/workers/{w1}/tasks",

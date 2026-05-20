@@ -171,7 +171,7 @@ def upgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE messages_new (
-            id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id              SERIAL PRIMARY KEY,
             guild_pk        INTEGER NOT NULL REFERENCES guilds(id),
             from_agent      TEXT,
             to_agent        TEXT,
@@ -265,7 +265,7 @@ def upgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE github_events_new (
-            id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id              SERIAL PRIMARY KEY,
             guild_pk        INTEGER NOT NULL REFERENCES guilds(id),
             task_id         TEXT REFERENCES tasks(id),
             delivery_id     TEXT NOT NULL UNIQUE,
@@ -297,7 +297,7 @@ def upgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE foreman_turns_new (
-            id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id              SERIAL PRIMARY KEY,
             guild_pk        INTEGER NOT NULL REFERENCES guilds(id),
             user_id         TEXT NOT NULL,
             role            TEXT NOT NULL,
@@ -328,7 +328,7 @@ def downgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE foreman_turns_old (
-            id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id              SERIAL PRIMARY KEY,
             guild_id        TEXT NOT NULL,
             user_id         TEXT NOT NULL,
             role            TEXT NOT NULL,
@@ -356,7 +356,7 @@ def downgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE github_events_old (
-            id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id              SERIAL PRIMARY KEY,
             guild_id        TEXT NOT NULL,
             guild_pk        INTEGER REFERENCES guilds(id),
             task_id         TEXT REFERENCES tasks(id),
@@ -464,7 +464,7 @@ def downgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE messages_old (
-            id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id              SERIAL PRIMARY KEY,
             guild_id        TEXT NOT NULL,
             guild_pk        INTEGER REFERENCES guilds(id),
             from_agent      TEXT,

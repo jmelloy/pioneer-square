@@ -25,7 +25,7 @@ from events import broadcast
 from fastapi import APIRouter, HTTPException, Request, Response
 from models import GithubEvent, Guild, Message, Task
 from sqlalchemy import select, update
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from util.tasks import spawn
 
@@ -357,7 +357,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
 
         created_at = datetime.now(UTC).isoformat()
         stmt = (
-            sqlite_insert(GithubEvent)
+            pg_insert(GithubEvent)
             .values(
                 guild_pk=guild_pk,
                 task_id=task_id,

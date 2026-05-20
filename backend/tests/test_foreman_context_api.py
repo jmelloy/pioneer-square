@@ -3,31 +3,30 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from helpers import insert_guild, insert_member, make_auth_token
+from helpers import insert_guild, insert_member, make_auth_token, raw_conn
 
 
 def _insert_foreman_turn(
-    db_path: str, guild_id: str, user_id: str, role: str, content: str
+    db_url: str, guild_id: str, user_id: str, role: str, content: str
 ) -> None:
     now = datetime.now(UTC).isoformat()
-    with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
-        ).fetchone()
-        guild_pk = row[0]
-        conn.execute(
-            "INSERT INTO foreman_turns (guild_pk, user_id, role, content_json, is_tool_response, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (guild_pk, user_id, role, f'"{content}"', 0, now),
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
         )
-        conn.commit()
+        row = cur.fetchone()
+        guild_pk = row["id"]
+        cur.execute(
+            "INSERT INTO foreman_turns (guild_pk, user_id, role, content_json, is_tool_response, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (guild_pk, user_id, role, f'"{content}"', False, now),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -36,22 +35,22 @@ def _insert_foreman_turn(
 
 
 def test_get_foreman_context_requires_auth(client):
-    test_client, db_path = client
-    insert_guild(db_path, "g-auth")
+    test_client, db_url = client
+    insert_guild(db_url, "g-auth")
     resp = test_client.get("/guilds/g-auth/foreman/context")
     assert resp.status_code == 401
 
 
 def test_clear_foreman_context_requires_auth(client):
-    test_client, db_path = client
-    insert_guild(db_path, "g-auth2")
+    test_client, db_url = client
+    insert_guild(db_url, "g-auth2")
     resp = test_client.post("/guilds/g-auth2/foreman/clear-context")
     assert resp.status_code == 401
 
 
 def test_get_foreman_context_guild_not_found(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     resp = test_client.get(
         "/guilds/doesnotexist/foreman/context",
         headers={"Authorization": f"Bearer {token}"},
@@ -60,8 +59,8 @@ def test_get_foreman_context_guild_not_found(client):
 
 
 def test_clear_foreman_context_guild_not_found(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     resp = test_client.post(
         "/guilds/doesnotexist/foreman/clear-context",
         headers={"Authorization": f"Bearer {token}"},
@@ -76,15 +75,15 @@ def test_clear_foreman_context_guild_not_found(client):
 
 def test_get_foreman_context_returns_only_requesting_users_turns(client):
     """Each user only sees their own foreman turns, not other users'."""
-    test_client, db_path = client
-    insert_guild(db_path, "g-scope")
-    token_a = make_auth_token(db_path, user_id="user-alice", username="alice")
-    token_b = make_auth_token(db_path, user_id="user-bob", username="bob")
-    insert_member(db_path, "g-scope", "user-alice", role="member")
-    insert_member(db_path, "g-scope", "user-bob", role="member")
+    test_client, db_url = client
+    insert_guild(db_url, "g-scope")
+    token_a = make_auth_token(db_url, user_id="user-alice", username="alice")
+    token_b = make_auth_token(db_url, user_id="user-bob", username="bob")
+    insert_member(db_url, "g-scope", "user-alice", role="member")
+    insert_member(db_url, "g-scope", "user-bob", role="member")
 
-    _insert_foreman_turn(db_path, "g-scope", "user-alice", "user", "Hello from Alice")
-    _insert_foreman_turn(db_path, "g-scope", "user-bob", "user", "Hello from Bob")
+    _insert_foreman_turn(db_url, "g-scope", "user-alice", "user", "Hello from Alice")
+    _insert_foreman_turn(db_url, "g-scope", "user-bob", "user", "Hello from Bob")
 
     resp_a = test_client.get(
         "/guilds/g-scope/foreman/context",
@@ -107,9 +106,9 @@ def test_get_foreman_context_returns_only_requesting_users_turns(client):
 
 def test_get_foreman_context_empty_for_new_user(client):
     """A user with no conversation turns gets an empty list."""
-    test_client, db_path = client
-    insert_guild(db_path, "g-empty")
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    insert_guild(db_url, "g-empty")
+    token = make_auth_token(db_url)
 
     resp = test_client.get(
         "/guilds/g-empty/foreman/context",
@@ -123,15 +122,15 @@ def test_get_foreman_context_empty_for_new_user(client):
 
 def test_clear_foreman_context_only_clears_requesting_users_turns(client):
     """Clearing context only removes the requesting user's turns."""
-    test_client, db_path = client
-    insert_guild(db_path, "g-clear")
-    token_a = make_auth_token(db_path, user_id="user-alice2", username="alice2")
-    token_b = make_auth_token(db_path, user_id="user-bob2", username="bob2")
-    insert_member(db_path, "g-clear", "user-alice2", role="member")
-    insert_member(db_path, "g-clear", "user-bob2", role="member")
+    test_client, db_url = client
+    insert_guild(db_url, "g-clear")
+    token_a = make_auth_token(db_url, user_id="user-alice2", username="alice2")
+    token_b = make_auth_token(db_url, user_id="user-bob2", username="bob2")
+    insert_member(db_url, "g-clear", "user-alice2", role="member")
+    insert_member(db_url, "g-clear", "user-bob2", role="member")
 
-    _insert_foreman_turn(db_path, "g-clear", "user-alice2", "user", "Alice message")
-    _insert_foreman_turn(db_path, "g-clear", "user-bob2", "user", "Bob message")
+    _insert_foreman_turn(db_url, "g-clear", "user-alice2", "user", "Alice message")
+    _insert_foreman_turn(db_url, "g-clear", "user-bob2", "user", "Bob message")
 
     # Alice clears her context
     resp = test_client.post(
@@ -159,12 +158,12 @@ def test_clear_foreman_context_only_clears_requesting_users_turns(client):
 
 def test_get_foreman_context_isolates_across_guilds(client):
     """Turns from a different guild are not returned even for the same user."""
-    test_client, db_path = client
-    insert_guild(db_path, "g-iso1")
-    insert_guild(db_path, "g-iso2")
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    insert_guild(db_url, "g-iso1")
+    insert_guild(db_url, "g-iso2")
+    token = make_auth_token(db_url)
 
-    _insert_foreman_turn(db_path, "g-iso1", "gh-user-test", "user", "Guild 1 message")
+    _insert_foreman_turn(db_url, "g-iso1", "gh-user-test", "user", "Guild 1 message")
 
     resp = test_client.get(
         "/guilds/g-iso2/foreman/context",

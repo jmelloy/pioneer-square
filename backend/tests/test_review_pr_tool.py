@@ -21,24 +21,28 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
 from foreman.tools import exec_tools
-from helpers import create_db, insert_guild
+from helpers import create_db, insert_guild, truncate_all
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test",
+)
+
 
 @pytest.fixture()
-def db_session(tmp_path, monkeypatch):
-    db_path = str(tmp_path / "test_review_pr.db")
-    db_url = f"sqlite+aiosqlite:///{db_path}"
+def db_session(monkeypatch):
+    create_db(TEST_DATABASE_URL)
+    truncate_all(TEST_DATABASE_URL)
+    db_url = TEST_DATABASE_URL
     monkeypatch.setenv("DATABASE_URL", db_url)
-    monkeypatch.setenv("DB_PATH", db_path)
-    create_db(db_path)
     engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     monkeypatch.setattr(database_module, "AsyncSessionLocal", session_factory)
-    yield db_path
+    yield db_url
 
 
 def _fake_tu(name: str, inputs: dict, tool_id: str = "tool-rev1") -> SimpleNamespace:

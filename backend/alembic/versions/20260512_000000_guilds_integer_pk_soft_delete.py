@@ -24,16 +24,14 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # SQLite does not allow altering primary key columns, so we recreate the
-    # table.  Child-table FK constraints reference guilds.guild_id (text) and
-    # their data values are unchanged, so no child-table rows need to move.
-    # SQLite does not enforce FK constraints by default, so the drop/rename is
-    # safe without disabling foreign keys.
+    # PostgreSQL supports ALTER TABLE for most column changes, but changing the
+    # primary key type from TEXT to INTEGER requires table recreation.
+    # We create a new table, copy data, drop the old one, and rename.
 
     op.execute(
         sa.text("""
             CREATE TABLE guilds_new (
-                id         INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                id         SERIAL PRIMARY KEY,
                 guild_id   TEXT    NOT NULL,
                 created_at TEXT    NOT NULL,
                 name       TEXT,
@@ -68,7 +66,7 @@ def upgrade() -> None:
         "guilds",
         ["guild_id"],
         unique=True,
-        sqlite_where=sa.text("deleted_at IS NULL"),
+        postgresql_where=sa.text("deleted_at IS NULL"),
     )
 
 

@@ -24,7 +24,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
-App (backend + SPA): http://localhost:8056. SQLite is persisted in the `backend-data` volume.
+App (backend + SPA): http://localhost:8056. PostgreSQL data is persisted in the `postgres-data` volume.
+
+`docker compose up` starts a `postgres:16` container automatically. The backend waits for it
+to pass its health-check, then runs `alembic upgrade head` before accepting connections.
 
 The worker is opt-in (it needs a `pioneer-worker.toml`):
 

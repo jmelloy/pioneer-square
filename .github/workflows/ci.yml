@@ -32,6 +32,25 @@ jobs:
     defaults:
       run:
         working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: pioneer_test
+          POSTGRES_USER: pioneer
+          POSTGRES_PASSWORD: pioneer_password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test
+
     steps:
       - uses: actions/checkout@v6
 

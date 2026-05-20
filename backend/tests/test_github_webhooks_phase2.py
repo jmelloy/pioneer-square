@@ -15,7 +15,6 @@ import hashlib
 import hmac
 import json
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -30,10 +29,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 from foreman.tools import exec_tools  # noqa: E402
-from helpers import create_db, insert_guild, make_auth_token  # noqa: E402
+from helpers import create_db, insert_guild, make_auth_token, raw_conn  # noqa: E402
 from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
     _should_dispatch_to_foreman,
+)
+
+TEST_DATABASE_URL = os.environ.get(
+    "TEST_DATABASE_URL",
+    "postgresql+asyncpg://pioneer:pioneer_password@localhost/pioneer_test",
 )
 
 # ---------------------------------------------------------------------------
@@ -41,17 +45,16 @@ from routes.webhooks import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def _set_webhook_secret(db_path: str, guild_id: str, secret: str) -> None:
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE guilds SET webhook_secret = ? WHERE guild_id = ?",
+def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "UPDATE guilds SET webhook_secret = %s WHERE guild_id = %s",
             (secret, guild_id),
         )
-        conn.commit()
 
 
 def _insert_task(
-    db_path: str,
+    db_url: str,
     *,
     task_id: str,
     guild_id: str,
@@ -61,20 +64,21 @@ def _insert_task(
     user_id: str | None = None,
 ) -> None:
     now = datetime.now(UTC).isoformat()
-    with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT id FROM guilds WHERE guild_id = ? AND deleted_at IS NULL", (guild_id,)
-        ).fetchone()
-        guild_pk = row[0]
-        conn.execute(
-            "INSERT OR IGNORE INTO workers (id, guild_pk, repos, state, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,)
+        )
+        row = cur.fetchone()
+        guild_pk = row["id"]
+        cur.execute(
+            "INSERT INTO workers (id, guild_pk, repos, state, created_at) "
+            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
             (f"w-{task_id}", guild_pk, "[]", "online", now),
         )
-        conn.execute(
+        cur.execute(
             "INSERT INTO tasks (id, worker_id, guild_pk, description, tool, state, "
             "pr_url, pr_number, pr_repo, user_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 task_id,
                 f"w-{task_id}",
@@ -89,7 +93,6 @@ def _insert_task(
                 now,
             ),
         )
-        conn.commit()
 
 
 def _signed_headers(secret: str, body: bytes, *, event: str, delivery: str) -> dict[str, str]:
@@ -247,11 +250,11 @@ class TestBuildSummary:
 
 
 def test_webhook_dispatches_to_foreman_when_task_matches(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gd1")
-    _set_webhook_secret(db_path, "gd1", "ssecret")
+    test_client, db_url = client
+    insert_guild(db_url, "gd1")
+    _set_webhook_secret(db_url, "gd1", "ssecret")
     _insert_task(
-        db_path,
+        db_url,
         task_id="t-dispatch-1",
         guild_id="gd1",
         pr_url="https://github.com/o/r/pull/3",
@@ -280,9 +283,9 @@ def test_webhook_dispatches_to_foreman_when_task_matches(client):
 
 
 def test_webhook_skips_foreman_when_no_task_match(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gd2")
-    _set_webhook_secret(db_path, "gd2", "ssecret")
+    test_client, db_url = client
+    insert_guild(db_url, "gd2")
+    _set_webhook_secret(db_url, "gd2", "ssecret")
     payload = _pr_payload(action="opened", repo="o/r", number=99)
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="pull_request", delivery="d-disp-2")
@@ -293,11 +296,11 @@ def test_webhook_skips_foreman_when_no_task_match(client):
 
 
 def test_webhook_skips_foreman_for_bot_on_non_ci(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gd3")
-    _set_webhook_secret(db_path, "gd3", "ssecret")
+    test_client, db_url = client
+    insert_guild(db_url, "gd3")
+    _set_webhook_secret(db_url, "gd3", "ssecret")
     _insert_task(
-        db_path,
+        db_url,
         task_id="t-bot",
         guild_id="gd3",
         pr_url="https://github.com/o/r/pull/5",
@@ -324,11 +327,11 @@ def test_webhook_skips_foreman_for_bot_on_non_ci(client):
 
 
 def test_webhook_dispatches_for_ci_bot_check_run(client):
-    test_client, db_path = client
-    insert_guild(db_path, "gd4")
-    _set_webhook_secret(db_path, "gd4", "ssecret")
+    test_client, db_url = client
+    insert_guild(db_url, "gd4")
+    _set_webhook_secret(db_url, "gd4", "ssecret")
     _insert_task(
-        db_path,
+        db_url,
         task_id="t-ci",
         guild_id="gd4",
         pr_url="https://github.com/o/r/pull/7",
@@ -366,16 +369,18 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
 
 
 @pytest.fixture()
-def db_session(tmp_path, monkeypatch):
-    db_path = str(tmp_path / "test_phase2.db")
-    db_url = f"sqlite+aiosqlite:///{db_path}"
+def db_session(monkeypatch):
+    from helpers import truncate_all
+
+    create_db(TEST_DATABASE_URL)
+    truncate_all(TEST_DATABASE_URL)
+    db_url = TEST_DATABASE_URL
+
     monkeypatch.setenv("DATABASE_URL", db_url)
-    monkeypatch.setenv("DB_PATH", db_path)
-    create_db(db_path)
     engine = create_async_engine(db_url, echo=False, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     monkeypatch.setattr(database_module, "AsyncSessionLocal", session_factory)
-    yield db_path
+    yield db_url
 
 
 def _fake_tool_use(name: str, inputs: dict, tool_id: str = "tool-1"):

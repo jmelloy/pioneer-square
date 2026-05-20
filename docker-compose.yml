@@ -1,4 +1,19 @@
 services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pioneer_square}
+      POSTGRES_USER: ${POSTGRES_USER:-pioneer}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pioneer_password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pioneer}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   backend:
     build:
       context: .
@@ -8,8 +23,7 @@ services:
     ports:
       - "8056:8000"
     environment:
-      DB_PATH: /data/pioneer_square.db
-      DATABASE_URL: sqlite+aiosqlite:////data/pioneer_square.db
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD:-pioneer_password}@postgres/${POSTGRES_DB:-pioneer_square}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-https://pioneer-square.melloy.life/auth/github/callback}
@@ -27,9 +41,11 @@ services:
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-}
       TEST_MODE: ${TEST_MODE:-}
     volumes:
-      - backend-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
     command: sh -c "alembic upgrade head && python main.py"
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   foreman:
@@ -38,18 +54,18 @@ services:
       dockerfile: foreman/Dockerfile
     profiles: ["foreman"]
     environment:
-      DB_PATH: /data/pioneer_square.db
-      DATABASE_URL: sqlite+aiosqlite:////data/pioneer_square.db
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD:-pioneer_password}@postgres/${POSTGRES_DB:-pioneer_square}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # WebSocket base URL of the backend service (no trailing slash)
       BACKEND_WS_URL: ${BACKEND_WS_URL:-ws://backend:8000}
       # 6-char guild ID this foreman instance manages (required)
       GUILD_ID: ${GUILD_ID:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    volumes:
-      - backend-data:/data
     depends_on:
-      - backend
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_started
     restart: unless-stopped
 
   # Standalone foreman (Phase 3) — no direct DB access; uses REST API only.
@@ -106,7 +122,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  backend-data:
+  postgres-data:
   worker-repos:
   worker-worktrees:
 

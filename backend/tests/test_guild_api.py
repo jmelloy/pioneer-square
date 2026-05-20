@@ -3,28 +3,26 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import insert_guild, make_auth_token
+from helpers import insert_guild, make_auth_token, raw_conn
 
 
-def _insert_guild_legacy_only(db_path: str, guild_id: str, user_id: str) -> None:
+def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
     """Insert a guild with github_user_id set but NO guild_members row.
 
     Simulates a pre-migration guild to verify the legacy fallback is gone.
     """
     now = datetime.now(UTC).isoformat()
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO guilds (guild_id, created_at, name, github_user_id) VALUES (?, ?, ?, ?)",
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "INSERT INTO guilds (guild_id, created_at, name, github_user_id) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
             (guild_id, now, "Legacy Guild", user_id),
         )
-        conn.commit()
 
 
 def test_get_guild_requires_auth(client):
@@ -34,8 +32,8 @@ def test_get_guild_requires_auth(client):
 
 
 def test_get_guild_not_found(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     resp = test_client.get(
         "/guilds/doesnotexist",
         headers={"Authorization": f"Bearer {token}"},
@@ -44,9 +42,9 @@ def test_get_guild_not_found(client):
 
 
 def test_get_guild_found(client):
-    test_client, db_path = client
-    insert_guild(db_path, "abc123", name="My Guild")
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    insert_guild(db_url, "abc123", name="My Guild")
+    token = make_auth_token(db_url)
     resp = test_client.get(
         "/guilds/abc123",
         headers={"Authorization": f"Bearer {token}"},
@@ -60,9 +58,9 @@ def test_get_guild_found(client):
 
 
 def test_get_guild_forbidden_for_non_member(client):
-    test_client, db_path = client
-    insert_guild(db_path, "private01", name="Private")
-    other_token = make_auth_token(db_path, user_id="other-user", username="outsider")
+    test_client, db_url = client
+    insert_guild(db_url, "private01", name="Private")
+    other_token = make_auth_token(db_url, user_id="other-user", username="outsider")
     resp = test_client.get(
         "/guilds/private01",
         headers={"Authorization": f"Bearer {other_token}"},
@@ -77,8 +75,8 @@ def test_create_guild_requires_auth(client):
 
 
 def test_create_guild_returns_id(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     resp = test_client.post(
         "/guilds",
         json={"name": "Test Guild"},
@@ -92,8 +90,8 @@ def test_create_guild_returns_id(client):
 
 
 def test_create_guild_default_name(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     resp = test_client.post(
         "/guilds",
         json={},
@@ -111,8 +109,8 @@ def test_list_guilds_requires_auth(client):
 
 
 def test_list_guilds_returns_created_guild(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     headers = {"Authorization": f"Bearer {token}"}
 
     test_client.post("/guilds", json={"name": "Guild A"}, headers=headers)
@@ -126,8 +124,8 @@ def test_list_guilds_returns_created_guild(client):
 
 
 def test_update_guild_name(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     headers = {"Authorization": f"Bearer {token}"}
 
     create_resp = test_client.post("/guilds", json={"name": "Old Name"}, headers=headers)
@@ -146,8 +144,8 @@ def test_update_guild_name(client):
 
 
 def test_update_guild_not_found(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     resp = test_client.patch(
         "/guilds/nosuchguild",
         json={"name": "X"},
@@ -157,8 +155,8 @@ def test_update_guild_not_found(client):
 
 
 def test_update_guild_primary_repo(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     headers = {"Authorization": f"Bearer {token}"}
 
     create_resp = test_client.post("/guilds", json={"name": "Repo Guild"}, headers=headers)
@@ -177,8 +175,8 @@ def test_update_guild_primary_repo(client):
 
 
 def test_update_guild_clear_primary_repo(client):
-    test_client, db_path = client
-    token = make_auth_token(db_path)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
     headers = {"Authorization": f"Bearer {token}"}
 
     create_resp = test_client.post("/guilds", json={"name": "Clear Repo Guild"}, headers=headers)
@@ -198,50 +196,51 @@ def test_update_guild_clear_primary_repo(client):
 
 def test_guild_partial_unique_index(client):
     """guild_id must be unique among active guilds but reusable after soft-delete."""
-    import sqlite3
+    import psycopg2
 
-    test_client, db_path = client  # noqa: F841 — db_path used directly
+    test_client, db_url = client  # noqa: F841 — db_url used directly
 
     shared_id = "reuse-me-001"
     now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
 
-    with sqlite3.connect(db_path) as conn:
+    with raw_conn(db_url) as (conn, cur):
         # Insert the first active guild.
-        conn.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
+        cur.execute(
+            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s)",
             (shared_id, now, "First"),
         )
-        conn.commit()
 
-        # A second guild with the same guild_id (both active) must violate the
-        # partial unique index.
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
+    # A second guild with the same guild_id (both active) must violate the
+    # partial unique index.
+    with pytest.raises(Exception) as exc_info:
+        with raw_conn(db_url) as (conn, cur):
+            cur.execute(
+                "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s)",
                 (shared_id, now, "Duplicate"),
             )
-            conn.commit()
+    # Verify it is an integrity/uniqueness violation
+    assert exc_info.type.__name__ in ("UniqueViolation", "IntegrityError") or (
+        "unique" in str(exc_info.value).lower() or "duplicate" in str(exc_info.value).lower()
+    )
 
     # Soft-delete the first guild.
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE guilds SET deleted_at = ? WHERE guild_id = ? AND deleted_at IS NULL",
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "UPDATE guilds SET deleted_at = %s WHERE guild_id = %s AND deleted_at IS NULL",
             (now, shared_id),
         )
-        conn.commit()
 
     # After soft-delete the same guild_id can be inserted again.
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (?, ?, ?)",
+    with raw_conn(db_url) as (conn, cur):
+        cur.execute(
+            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s)",
             (shared_id, now, "Third"),
         )
-        conn.commit()
-
-        row = conn.execute(
-            "SELECT COUNT(*) FROM guilds WHERE guild_id = ?", (shared_id,)
-        ).fetchone()
-    assert row[0] == 2, "should have one deleted and one active row for the same guild_id"
+        cur.execute(
+            "SELECT COUNT(*) FROM guilds WHERE guild_id = %s", (shared_id,)
+        )
+        row = cur.fetchone()
+    assert row["count"] == 2, "should have one deleted and one active row for the same guild_id"
 
 
 def test_primary_repo_in_foreman_prompt():
@@ -278,9 +277,9 @@ def test_primary_repo_in_foreman_prompt():
 def test_list_guilds_excludes_legacy_owner(client):
     """Guilds where guilds.github_user_id matches but no guild_members row exists
     must NOT appear in the list; the legacy OR-clause has been removed."""
-    test_client, db_path = client
-    token = make_auth_token(db_path)  # user_id="gh-user-test"
-    _insert_guild_legacy_only(db_path, "g-legacy", "gh-user-test")
+    test_client, db_url = client
+    token = make_auth_token(db_url)  # user_id="gh-user-test"
+    _insert_guild_legacy_only(db_url, "g-legacy", "gh-user-test")
     resp = test_client.get("/guilds", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     guild_ids = [g["id"] for g in resp.json()]
@@ -290,8 +289,8 @@ def test_list_guilds_excludes_legacy_owner(client):
 def test_get_guild_rejects_legacy_owner(client):
     """A user whose id is only in guilds.github_user_id (no guild_members row)
     must get 403, not 200 — the ensure_membership legacy fallback is gone."""
-    test_client, db_path = client
-    token = make_auth_token(db_path)  # user_id="gh-user-test"
-    _insert_guild_legacy_only(db_path, "g-leg2", "gh-user-test")
+    test_client, db_url = client
+    token = make_auth_token(db_url)  # user_id="gh-user-test"
+    _insert_guild_legacy_only(db_url, "g-leg2", "gh-user-test")
     resp = test_client.get("/guilds/g-leg2", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403

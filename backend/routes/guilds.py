@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, text
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from utils import generate_guild_id, row_to_dict
 from ws_handlers import _resolve_user_identifier
@@ -276,7 +276,7 @@ async def add_guild_member(
                 ),
             )
         now = datetime.now(UTC).isoformat()
-        stmt = sqlite_insert(GuildMember).values(
+        stmt = pg_insert(GuildMember).values(
             guild_pk=guild_pk,
             user_id=target_id,
             role=data.role,
