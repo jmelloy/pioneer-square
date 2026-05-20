@@ -31,14 +31,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import create_db as _create_db  # noqa: E402
 from helpers import raw_conn, truncate_all
 from starlette.testclient import TestClient  # noqa: E402
 
 
 @pytest.fixture(scope="function")
-def client():
-    _create_db(TEST_DATABASE_URL)
+def client(_setup_schema):
     truncate_all(TEST_DATABASE_URL)
     db_url = TEST_DATABASE_URL
 

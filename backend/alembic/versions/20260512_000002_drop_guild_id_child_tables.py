@@ -218,7 +218,7 @@ def upgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE claude_credentials_new (
-            id                  INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id                  SERIAL PRIMARY KEY,
             guild_pk            INTEGER NOT NULL UNIQUE REFERENCES guilds(id),
             credentials_blob    TEXT NOT NULL,
             updated_at          TEXT NOT NULL
@@ -238,7 +238,7 @@ def upgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE guild_keys_new (
-            id                  INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id                  SERIAL PRIMARY KEY,
             guild_pk            INTEGER NOT NULL UNIQUE REFERENCES guilds(id),
             key_id              TEXT NOT NULL,
             public_key_pem      TEXT NOT NULL,
@@ -390,7 +390,7 @@ def downgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE guild_keys_old (
-            id                  INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id                  SERIAL PRIMARY KEY,
             guild_id            TEXT NOT NULL UNIQUE,
             guild_pk            INTEGER REFERENCES guilds(id),
             key_id              TEXT NOT NULL,
@@ -419,7 +419,7 @@ def downgrade() -> None:
     op.execute(
         sa.text("""
         CREATE TABLE claude_credentials_old (
-            id                  INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+            id                  SERIAL PRIMARY KEY,
             guild_id            TEXT NOT NULL UNIQUE,
             guild_pk            INTEGER REFERENCES guilds(id),
             credentials_blob    TEXT NOT NULL,

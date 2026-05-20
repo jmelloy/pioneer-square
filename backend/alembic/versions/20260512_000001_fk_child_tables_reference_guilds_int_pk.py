@@ -79,7 +79,7 @@ def downgrade() -> None:
         """,
         "messages": """
             CREATE TABLE messages_old (
-                id           INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                id           SERIAL PRIMARY KEY,
                 guild_id     TEXT NOT NULL REFERENCES guilds(guild_id),
                 from_agent   TEXT,
                 to_agent     TEXT,
@@ -113,7 +113,7 @@ def downgrade() -> None:
         """,
         "claude_credentials": """
             CREATE TABLE claude_credentials_old (
-                id                INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                id                SERIAL PRIMARY KEY,
                 guild_id          TEXT NOT NULL UNIQUE REFERENCES guilds(guild_id),
                 credentials_blob  TEXT NOT NULL,
                 updated_at        TEXT NOT NULL
@@ -121,7 +121,7 @@ def downgrade() -> None:
         """,
         "guild_keys": """
             CREATE TABLE guild_keys_old (
-                id              INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                id              SERIAL PRIMARY KEY,
                 guild_id        TEXT NOT NULL UNIQUE REFERENCES guilds(guild_id),
                 key_id          TEXT NOT NULL,
                 public_key_pem  TEXT NOT NULL,
@@ -133,7 +133,7 @@ def downgrade() -> None:
         """,
         "github_events": """
             CREATE TABLE github_events_old (
-                id           INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                id           SERIAL PRIMARY KEY,
                 guild_id     TEXT NOT NULL REFERENCES guilds(guild_id),
                 task_id      TEXT REFERENCES tasks(id),
                 delivery_id  TEXT NOT NULL UNIQUE,
