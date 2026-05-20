@@ -111,13 +111,22 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function cancelTask(guildId: string, taskId: string) {
-    const result = await api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
     const task = tasks.value.find((t) => t.id === taskId)
+    const prevState = task?.state
+    const prevFinishedAt = task?.finished_at
     if (task) {
       task.state = 'cancelled'
       task.finished_at = new Date().toISOString()
     }
-    return result
+    try {
+      await api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
+    } catch (err) {
+      if (task) {
+        task.state = prevState!
+        task.finished_at = prevFinishedAt
+      }
+      throw err
+    }
   }
 
   async function redirectTask(guildId: string, taskId: string, instructions: string) {
