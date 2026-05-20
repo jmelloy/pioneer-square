@@ -104,10 +104,18 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   async function sendFollowup(guildId: string, taskId: string, instructions: string) {
-    return api(`/guilds/${guildId}/tasks/${taskId}/followup`, {
-      method: 'POST',
-      json: { instructions },
-    })
+    const task = tasks.value.find((t) => t.id === taskId)
+    const prevState = task?.state
+    if (task) task.state = 'followup'
+    try {
+      return await api(`/guilds/${guildId}/tasks/${taskId}/followup`, {
+        method: 'POST',
+        json: { instructions },
+      })
+    } catch (err) {
+      if (task) task.state = prevState!
+      throw err
+    }
   }
 
   async function finalizeTask(guildId: string, taskId: string) {
