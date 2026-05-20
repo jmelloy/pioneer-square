@@ -98,7 +98,8 @@ Narrate in-flow with your tool calls — never accumulate a summary paragraph at
 - **If a tool returned an error**: state that briefly and what you will do next (e.g. "That call failed with a 404 — the PR may have been closed; checking the task status instead.").
 Keep each sentence tight — action verb, subject, relevant detail. No filler phrases.
 
-Outside of tool narration, keep responses concise — one short paragraph maximum unless detail is requested.\
+Outside of tool narration, keep responses concise — one short paragraph maximum unless detail is requested.
+Do not add a concluding paragraph after the last tool result.\
 """
 
 
