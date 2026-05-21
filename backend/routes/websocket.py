@@ -204,6 +204,13 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                             "state": "offline",
                         },
                     )
+                for wid in stale_worker_ids:
+                    await ws_handlers._trigger_foreman(
+                        guild_id,
+                        "worker-offline",
+                        f"[worker-offline] worker_id={wid} reason=disconnect",
+                        task_name=f"foreman.worker-offline:{wid}",
+                    )
             finally:
                 # If a cancellation was delivered inside a handler (e.g.
                 # handle_worker_disconnect) the underlying asyncpg connection

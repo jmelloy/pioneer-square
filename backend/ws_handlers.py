@@ -540,6 +540,14 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
         .values(**update_vals)
     )
     await ctx.db.commit()
+    repos_str = ",".join(repos) if repos else ""
+    agent_count = len(ctx.joined_agents)
+    await _trigger_foreman(
+        ctx.guild_id,
+        "worker-online",
+        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}",
+        task_name=f"foreman.worker-online:{worker_id}",
+    )
 
 
 async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
@@ -564,6 +572,13 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
             {"type": "agent-state", "agentId": agent_id, "state": "offline"},
         )
     reset_foreman_poll(ctx.guild_id)
+    if worker_id:
+        await _trigger_foreman(
+            ctx.guild_id,
+            "worker-offline",
+            f"[worker-offline] worker_id={worker_id} reason=shutdown",
+            task_name=f"foreman.worker-offline:{worker_id}",
+        )
 
 
 async def handle_task_update(ctx: WSContext, data: dict) -> None:
