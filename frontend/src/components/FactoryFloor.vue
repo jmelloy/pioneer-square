@@ -21,20 +21,13 @@
         />
       </svg>
 
-      <!-- Work stations — one per active task. -->
+      <!-- Active-task tags — one per active task. -->
       <div
         v-for="station in activeStations"
         :key="station.task.id"
-        class="work-station occupied"
+        class="work-station"
         :style="`left: ${station.x * 100}%; top: ${station.y * 100}%; z-index: ${zIndex(station.y)}`"
       >
-        <div class="station-monitor">
-          <div class="monitor-screen">
-            <div class="screen-active">
-              <div v-for="l in 3" :key="l" class="screen-line"></div>
-            </div>
-          </div>
-        </div>
         <div class="station-label">{{ truncate(station.task.name || station.task.id, 12) }}</div>
         <div class="task-badge" :class="`state-${station.task.state}`">
           {{ stateLabel(station.task.state) }}
@@ -403,7 +396,7 @@ function stateLabel(state: string) {
   stroke-dasharray: 1.4 1;
 }
 
-/* ── Work stations ───────────────────────────────────────────────────────── */
+/* ── Active-task tags ────────────────────────────────────────────────────── */
 .work-station {
   position: absolute;
   width: 22cqw;
@@ -413,60 +406,6 @@ function stateLabel(state: string) {
   align-items: center;
   gap: 1cqw;
   pointer-events: none;
-}
-.station-monitor {
-  width: 13cqw;
-  height: 10cqw;
-  background: #0d0600;
-  border: 2px solid var(--color-brass-dark);
-  border-radius: 2px;
-  display: flex;
-  overflow: hidden;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
-}
-.monitor-screen {
-  flex: 1;
-  background: #080400;
-  border: 2px solid #1c1000;
-  padding: 1.4cqw;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.screen-active {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 0.8cqw;
-}
-.screen-line {
-  height: 0.9cqw;
-  opacity: 0.85;
-  animation: screenScroll 2s infinite linear;
-  border-radius: 1px;
-}
-.screen-line:nth-child(1) {
-  background: var(--color-teal);
-}
-.screen-line:nth-child(2) {
-  background: var(--color-sky);
-  animation-delay: -0.7s;
-  opacity: 0.5;
-}
-.screen-line:nth-child(3) {
-  background: var(--color-green);
-  animation-delay: -1.4s;
-  opacity: 0.3;
-  width: 60%;
-}
-@keyframes screenScroll {
-  0%,
-  100% {
-    opacity: 0.85;
-  }
-  50% {
-    opacity: 0.3;
-  }
 }
 
 .station-label {
