@@ -107,17 +107,17 @@ async def test_is_locked_false_after_release(db_session):
 @pytest.mark.anyio
 async def test_expired_lock_can_be_reacquired(db_session):
     """A lock with an already-elapsed TTL should be treated as free on the next acquire."""
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from models import Lock
+
     expired_dt = datetime.now(UTC) - timedelta(minutes=5)
 
     async with db_session() as db:
-        # Insert expired lock directly via raw SQL to bypass the service layer.
-        await db.execute(
-            __import__("sqlalchemy").text(
-                "INSERT INTO locks (key, owner, acquired_at, expires_at) "
-                "VALUES ('task:t-007', 'w-old', :acq, :exp)"
-            ),
-            {"acq": expired_dt, "exp": expired_dt},
-        )
+        # Insert expired lock directly via ORM to bypass the service layer.
+        db.add(Lock(key="task:t-007", owner="w-old", acquired_at=expired_dt, expires_at=expired_dt))
         await db.commit()
 
         svc = LockService(db)
@@ -129,7 +129,8 @@ async def test_expired_lock_can_be_reacquired(db_session):
 
 @pytest.mark.anyio
 async def test_cleanup_expired_removes_stale_locks(db_session):
-    import sqlalchemy
+    from models import Lock
+    from sqlalchemy import func, select
 
     expired_dt = datetime.now(UTC) - timedelta(hours=1)
     future_dt = datetime.now(UTC) + timedelta(hours=1)
@@ -137,20 +138,14 @@ async def test_cleanup_expired_removes_stale_locks(db_session):
 
     async with db_session() as db:
         # Insert one expired and one active lock.
-        await db.execute(
-            sqlalchemy.text(
-                "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES "
-                "('task:stale', 'w-s', :now, :exp), "
-                "('task:active', 'w-a', :now, :fut)"
-            ),
-            {"now": now_dt, "exp": expired_dt, "fut": future_dt},
-        )
+        db.add(Lock(key="task:stale", owner="w-s", acquired_at=now_dt, expires_at=expired_dt))
+        db.add(Lock(key="task:active", owner="w-a", acquired_at=now_dt, expires_at=future_dt))
         await db.commit()
 
         removed = await LockService.cleanup_expired(db)
         await db.commit()
 
-        remaining = (await db.execute(sqlalchemy.text("SELECT COUNT(*) FROM locks"))).scalar_one()
+        remaining = await db.scalar(select(func.count()).select_from(Lock))
 
     assert removed == 1
     assert remaining == 1  # only the active lock survives

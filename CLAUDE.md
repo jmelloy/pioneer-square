@@ -11,8 +11,8 @@ Pioneer Square is a real-time multi-agent workspace: a pixel-art steampunk facto
 ### Backend
 ```bash
 cd backend
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+uv venv && source .venv/bin/activate
+uv pip install -r requirements.txt
 # Requires GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET (see README) or backend/.env
 uvicorn main:app --reload --port 8000
 ```
@@ -28,8 +28,8 @@ npm run build     # production build
 ### Worker
 ```bash
 cd worker
-python -m venv venv && source venv/bin/activate
-pip install -e .
+uv venv && source .venv/bin/activate
+uv pip install -e .
 cp pioneer-worker.toml.example pioneer-worker.toml
 # Edit: backend_url, guild_id, [github] repos and token
 pioneer-worker
@@ -76,6 +76,9 @@ the backend falls back to the embedded foreman automatically.
 ### Tests and lint
 
 ```bash
+# Backend tests require the postgres-test container (localhost:5433):
+docker compose up -d postgres-test
+
 # Backend (pytest, in backend/)
 python -m pytest                       # 119 tests
 # Worker (pytest, in worker/)

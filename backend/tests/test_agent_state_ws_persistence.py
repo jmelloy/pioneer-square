@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import raw_conn
+from helpers import _sync_session, insert_guild, insert_task, insert_worker
 from starlette.testclient import TestClient  # noqa: E402
 
 
@@ -65,27 +65,11 @@ def _insert_guild_worker_task(
     worker_id: str,
     task_id: str,
 ) -> None:
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) RETURNING id",
-            (guild_id, now, "Test Guild"),
-        )
-        guild_pk = cur.fetchone()["id"]
-        cur.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at)"
-            " VALUES (%s, %s, '[]', 'online', %s)",
-            (worker_id, guild_pk, now),
-        )
-        # Use "awaiting-review" so the join handler does not replay the task as
-        # task-assigned (it only replays "pending" and "working" tasks). For
-        # these tests the task state is incidental — we're checking the
-        # agent-state path, not the task lifecycle.
-        cur.execute(
-            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, created_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (task_id, worker_id, guild_pk, "test task", "claude", "awaiting-review", now),
-        )
+    # Use "awaiting-review" so the join handler does not replay the task as
+    # task-assigned (it only replays "pending" and "working" tasks).
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="awaiting-review")
 
 
 def _join_ws(ws, agent_id: str, worker_id: str | None = None) -> None:
@@ -142,16 +126,19 @@ def test_agent_state_persists_current_task_id(client):
             assert msg["state"] == "working"
             assert msg["activity"] == "editing"
 
-            with raw_conn(db_url) as (conn, cur):
-                cur.execute(
-                    "SELECT state, activity, current_task_id FROM agents WHERE id = %s",
-                    (agent_id,),
-                )
-                row = cur.fetchone()
+            from models import Agent
+            from sqlalchemy import select
 
-    assert row["state"] == "working"
-    assert row["activity"] == "editing"
-    assert row["current_task_id"] == task_id
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(Agent.state, Agent.activity, Agent.current_task_id).where(
+                        Agent.id == agent_id
+                    )
+                ).first()
+
+    assert row.state == "working"
+    assert row.activity == "editing"
+    assert row.current_task_id == task_id
 
 
 def test_agent_state_idle_clears_current_task_id(client):
@@ -192,16 +179,19 @@ def test_agent_state_idle_clears_current_task_id(client):
             assert msg["taskId"] is None
             assert msg["activity"] is None
 
-            with raw_conn(db_url) as (conn, cur):
-                cur.execute(
-                    "SELECT state, activity, current_task_id FROM agents WHERE id = %s",
-                    (agent_id,),
-                )
-                row = cur.fetchone()
+            from models import Agent
+            from sqlalchemy import select
 
-    assert row["state"] == "idle"
-    assert row["activity"] is None
-    assert row["current_task_id"] is None
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(Agent.state, Agent.activity, Agent.current_task_id).where(
+                        Agent.id == agent_id
+                    )
+                ).first()
+
+    assert row.state == "idle"
+    assert row.activity is None
+    assert row.current_task_id is None
 
 
 def test_agent_state_explicit_task_id_null_clears(client):
@@ -241,11 +231,15 @@ def test_agent_state_explicit_task_id_null_clears(client):
             msg = ws_obs.receive_json()
             assert msg["taskId"] is None
 
-            with raw_conn(db_url) as (conn, cur):
-                cur.execute("SELECT current_task_id FROM agents WHERE id = %s", (agent_id,))
-                row = cur.fetchone()
+            from models import Agent
+            from sqlalchemy import select
 
-    assert row["current_task_id"] is None
+            with _sync_session(db_url) as session:
+                current_task_id = session.scalar(
+                    select(Agent.current_task_id).where(Agent.id == agent_id)
+                )
+
+    assert current_task_id is None
 
 
 def test_guild_get_returns_current_task_id(client):
@@ -257,32 +251,53 @@ def test_guild_get_returns_current_task_id(client):
 
     headers = {"Authorization": "Bearer test-token"}
     # Seed the test token & guild membership the way other tests do.
+    from models import GithubToken, Guild, GuildMember, User, UserSession
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)"
-            " VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING",
-            ("u-gas4", "999004", "tester", now, now),
+    with _sync_session(db_url) as session:
+        session.execute(
+            pg_insert(User)
+            .values(
+                id="u-gas4",
+                github_id="999004",
+                github_login="tester",
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing()
         )
-        # github_tokens is the parent of user_sessions.github_user_id FK
-        cur.execute(
-            "INSERT INTO github_tokens"
-            " (github_user_id, github_username, access_token, token_type, scope, created_at, updated_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (github_user_id) DO NOTHING",
-            ("u-gas4", "tester", "gh_tok_fake", "bearer", "repo", now, now),
+        session.execute(
+            pg_insert(GithubToken)
+            .values(
+                github_user_id="u-gas4",
+                github_username="tester",
+                access_token="gh_tok_fake",
+                token_type="bearer",
+                scope="repo",
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing()
         )
-        cur.execute(
-            "INSERT INTO user_sessions (token, github_user_id, created_at)"
-            " VALUES (%s, %s, %s) ON CONFLICT (token) DO UPDATE SET github_user_id = EXCLUDED.github_user_id",
-            ("test-token", "u-gas4", now),
+        session.execute(
+            pg_insert(UserSession)
+            .values(token="test-token", github_user_id="u-gas4", created_at=now)
+            .on_conflict_do_update(
+                index_elements=["token"],
+                set_={"github_user_id": "u-gas4"},
+            )
         )
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s", (guild_id,))
-        guild_pk = cur.fetchone()["id"]
-        cur.execute(
-            "INSERT INTO guild_members (guild_id, user_id, role, created_at)"
-            " VALUES (%s, %s, 'member', %s) ON CONFLICT (guild_id, user_id) DO NOTHING",
-            (guild_pk, "u-gas4", now),
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
         )
+        session.execute(
+            pg_insert(GuildMember)
+            .values(guild_id=guild_pk, user_id="u-gas4", role="member", created_at=now)
+            .on_conflict_do_nothing()
+        )
+        session.commit()
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
@@ -319,19 +334,32 @@ def test_agent_idle_releases_task_lock(client):
     guild_id, worker_id, task_id, agent_id = "gas-5", "w-gas5", "t-gas5", "a-gas5"
     _insert_guild_worker_task(db_url, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
 
-    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")
-    future = (datetime.now(UTC) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%f")
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("UPDATE tasks SET state = 'working' WHERE id = %s", (task_id,))
-        cur.execute(
-            "INSERT INTO locks (key, owner, acquired_at, expires_at)"
-            " VALUES (%s, %s, %s, %s)"
-            " ON CONFLICT (key) DO UPDATE"
-            " SET owner = EXCLUDED.owner,"
-            " acquired_at = EXCLUDED.acquired_at,"
-            " expires_at = EXCLUDED.expires_at",
-            (f"task:{task_id}", "some-lock-holder", now, future),
+    from models import Lock, Task
+    from sqlalchemy import select, update
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    now_dt = datetime.now(UTC)
+    future_dt = now_dt + timedelta(hours=1)
+    with _sync_session(db_url) as session:
+        session.execute(update(Task).where(Task.id == task_id).values(state="working"))
+        session.execute(
+            pg_insert(Lock)
+            .values(
+                key=f"task:{task_id}",
+                owner="some-lock-holder",
+                acquired_at=now_dt,
+                expires_at=future_dt,
+            )
+            .on_conflict_do_update(
+                index_elements=["key"],
+                set_={
+                    "owner": "some-lock-holder",
+                    "acquired_at": now_dt,
+                    "expires_at": future_dt,
+                },
+            )
         )
+        session.commit()
 
     with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
         _join_ws(ws_worker, agent_id, worker_id)
@@ -364,14 +392,11 @@ def test_agent_idle_releases_task_lock(client):
             msg = ws_obs.receive_json()
             assert msg["state"] == "idle"
 
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT key FROM locks WHERE key = %s", (f"task:{task_id}",))
-        lock_row = cur.fetchone()
-        cur.execute("SELECT state FROM tasks WHERE id = %s", (task_id,))
-        task_row = cur.fetchone()
-        task_state = task_row["state"] if task_row else None
+    with _sync_session(db_url) as session:
+        lock_key = session.scalar(select(Lock.key).where(Lock.key == f"task:{task_id}"))
+        task_state = session.scalar(select(Task.state).where(Task.id == task_id))
 
-    assert lock_row is None, "lock should be released when agent goes idle"
+    assert lock_key is None, "lock should be released when agent goes idle"
     assert task_state == "awaiting-review", (
         "task should move to awaiting-review when its agent goes idle"
     )

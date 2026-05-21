@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import UTC, datetime, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -27,7 +26,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import raw_conn  # noqa: E402
+from helpers import _sync_session, insert_guild, insert_worker  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -56,33 +55,19 @@ def client(_setup_schema):
 
 def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
     """Insert a test guild and worker directly into the DB."""
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-            (guild_id, now, "Test Guild"),
-        )
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-        cur.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at)"
-            " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
-            (worker_id, guild_pk, now),
-        )
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
 
 
 def _get_states(db_url: str, agent_id: str, worker_id: str) -> tuple[str, str]:
     """Return (agent_state, worker_state) from the DB."""
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT state FROM agents WHERE id = %s", (agent_id,))
-        agent_row = cur.fetchone()
-        cur.execute("SELECT state FROM workers WHERE id = %s", (worker_id,))
-        worker_row = cur.fetchone()
-    return (
-        agent_row["state"] if agent_row else None,
-        worker_row["state"] if worker_row else None,
-    )
+    from models import Agent, Worker
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        agent_state = session.scalar(select(Agent.state).where(Agent.id == agent_id))
+        worker_state = session.scalar(select(Worker.state).where(Worker.id == worker_id))
+    return (agent_state, worker_state)
 
 
 def test_worker_disconnect_marks_agent_and_worker_offline(client):

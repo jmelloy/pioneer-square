@@ -13,9 +13,8 @@ GitHub token.
 
 ```bash
 cd worker
-python -m venv venv
-source venv/bin/activate
-pip install -e .
+uv venv && source .venv/bin/activate
+uv pip install -e .
 ```
 
 This installs the `pioneer-worker` console script.

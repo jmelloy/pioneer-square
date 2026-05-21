@@ -1,9 +1,13 @@
 """Centralised test-database URL — single source of truth for all test modules.
 
-Set TEST_DATABASE_URL (or DATABASE_URL as a fallback) before running the
-backend test suite, e.g.:
+Defaults to the postgres-test container from docker-compose.yml
+(localhost:5433, DB=pioneer_test).  Start it with:
 
-    TEST_DATABASE_URL=postgresql+asyncpg://user:pass@localhost/pioneer_test pytest tests/
+    docker compose up -d postgres-test
+
+Override the URL when needed:
+
+    TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host/db pytest tests/
 
 Or place the variable in backend/.env and it will be loaded automatically.
 """
@@ -21,9 +25,14 @@ if _env_file.exists():
     except ImportError:
         pass
 
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
-if not TEST_DATABASE_URL:
-    raise RuntimeError(
-        "Set TEST_DATABASE_URL (or DATABASE_URL) to run backend tests. "
-        "Example: postgresql+asyncpg://user:pass@localhost/pioneer_test"
-    )
+# Default points at the postgres-test container from docker-compose.yml
+# (postgres:17 on localhost:5433, pioneer_test DB).  Override with env vars.
+_DEFAULT_TEST_DATABASE_URL = (
+    "postgresql+asyncpg://pioneer:pioneer_password@localhost:5433/pioneer_test"
+)
+
+TEST_DATABASE_URL = (
+    os.environ.get("TEST_DATABASE_URL")
+    or os.environ.get("DATABASE_URL")
+    or _DEFAULT_TEST_DATABASE_URL
+)

@@ -7,21 +7,23 @@ import hmac
 import json
 import os
 import sys
-from datetime import UTC, datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import insert_guild, make_auth_token, raw_conn
+from helpers import _sync_session, insert_guild, insert_task, insert_worker, make_auth_token
 
 
 def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "UPDATE guilds SET webhook_secret = %s WHERE guild_id = %s",
-            (secret, guild_id),
+    from models import Guild
+    from sqlalchemy import update
+
+    with _sync_session(db_url) as session:
+        session.execute(
+            update(Guild).where(Guild.guild_id == guild_id).values(webhook_secret=secret)
         )
+        session.commit()
 
 
-def _insert_task(
+def _insert_task_with_worker(
     db_url: str,
     *,
     task_id: str,
@@ -30,34 +32,20 @@ def _insert_task(
     pr_number: int | None = None,
     pr_repo: str | None = None,
 ) -> None:
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_id = row["id"]
-        # Workers FK is NOT NULL; insert a placeholder worker row first.
-        cur.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at) "
-            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (f"w-{task_id}", guild_id, "[]", "online", now),
-        )
-        cur.execute(
-            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, "
-            "pr_url, pr_number, pr_repo, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                task_id,
-                f"w-{task_id}",
-                guild_id,
-                "test task",
-                "claude",
-                "awaiting-review",
-                pr_url,
-                pr_number,
-                pr_repo,
-                now,
-            ),
-        )
+    """Insert a task (with a placeholder worker) for webhook tests."""
+    worker_id = f"w-{task_id}"
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        task_id,
+        worker_id=worker_id,
+        description="test task",
+        state="awaiting-review",
+        pr_url=pr_url,
+        pr_number=pr_number,
+        pr_repo=pr_repo,
+    )
 
 
 def _signed_headers(secret: str, body: bytes, *, event: str, delivery: str) -> dict[str, str]:
@@ -166,20 +154,24 @@ def test_webhook_accepts_ping(client):
     resp = test_client.post("/webhooks/github/g4", content=body, headers=headers)
     assert resp.status_code == 204
     # Ping deliveries are not persisted
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT COUNT(*) FROM github_events"
-            " WHERE guild_id = (SELECT id FROM guilds WHERE guild_id = 'g4' AND deleted_at IS NULL)"
+    from models import GithubEvent, Guild
+    from sqlalchemy import func, select
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == "g4", Guild.deleted_at.is_(None))
         )
-        rows = cur.fetchone()
-    assert rows["count"] == 0
+        count = session.scalar(
+            select(func.count()).select_from(GithubEvent).where(GithubEvent.guild_id == guild_pk)
+        )
+    assert count == 0
 
 
 def test_webhook_persists_event_and_links_task(client):
     test_client, db_url = client
     insert_guild(db_url, "g5")
     _set_webhook_secret(db_url, "g5", "s5")
-    _insert_task(
+    _insert_task_with_worker(
         db_url,
         task_id="t-1",
         guild_id="g5",
@@ -192,21 +184,22 @@ def test_webhook_persists_event_and_links_task(client):
     headers = _signed_headers("s5", body, event="pull_request", delivery="d-evt-1")
     resp = test_client.post("/webhooks/github/g5", content=body, headers=headers)
     assert resp.status_code == 202
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT task_id, delivery_id, event_type, action, repo, "
-            "pr_number, pr_url, sender_login FROM github_events"
-            " WHERE delivery_id = 'd-evt-1'"
-        )
-        row = cur.fetchone()
-    assert row["task_id"] == "t-1"
-    assert row["delivery_id"] == "d-evt-1"
-    assert row["event_type"] == "pull_request"
-    assert row["action"] == "opened"
-    assert row["repo"] == "owner/repo"
-    assert row["pr_number"] == 42
-    assert row["pr_url"] == "https://github.com/owner/repo/pull/42"
-    assert row["sender_login"] == "octocat"
+    from models import GithubEvent
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        row = session.execute(
+            select(GithubEvent).where(GithubEvent.delivery_id == "d-evt-1")
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.task_id == "t-1"
+    assert row.delivery_id == "d-evt-1"
+    assert row.event_type == "pull_request"
+    assert row.action == "opened"
+    assert row.repo == "owner/repo"
+    assert row.pr_number == 42
+    assert row.pr_url == "https://github.com/owner/repo/pull/42"
+    assert row.sender_login == "octocat"
 
 
 def test_webhook_event_without_matching_task(client):
@@ -218,11 +211,16 @@ def test_webhook_event_without_matching_task(client):
     headers = _signed_headers("s6", body, event="pull_request", delivery="d-evt-2")
     resp = test_client.post("/webhooks/github/g6", content=body, headers=headers)
     assert resp.status_code == 202
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT task_id, pr_number FROM github_events WHERE delivery_id = 'd-evt-2'")
-        row = cur.fetchone()
-    assert row["task_id"] is None
-    assert row["pr_number"] == 7
+    from models import GithubEvent
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        row = session.execute(
+            select(GithubEvent).where(GithubEvent.delivery_id == "d-evt-2")
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.task_id is None
+    assert row.pr_number == 7
 
 
 def test_webhook_dedupes_redelivery(client):
@@ -236,9 +234,13 @@ def test_webhook_dedupes_redelivery(client):
     r2 = test_client.post("/webhooks/github/g7", content=body, headers=headers)
     assert r1.status_code == 202
     assert r2.status_code == 202
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT COUNT(*) FROM github_events WHERE delivery_id = 'dup-1'")
-        n = cur.fetchone()["count"]
+    from models import GithubEvent
+    from sqlalchemy import func, select
+
+    with _sync_session(db_url) as session:
+        n = session.scalar(
+            select(func.count()).select_from(GithubEvent).where(GithubEvent.delivery_id == "dup-1")
+        )
     assert n == 1
 
 
@@ -246,7 +248,7 @@ def test_webhook_check_run_extracts_pr_from_pull_requests_array(client):
     test_client, db_url = client
     insert_guild(db_url, "g8")
     _set_webhook_secret(db_url, "g8", "s8")
-    _insert_task(
+    _insert_task_with_worker(
         db_url,
         task_id="t-2",
         guild_id="g8",
@@ -268,16 +270,18 @@ def test_webhook_check_run_extracts_pr_from_pull_requests_array(client):
     headers = _signed_headers("s8", body, event="check_run", delivery="cr-1")
     resp = test_client.post("/webhooks/github/g8", content=body, headers=headers)
     assert resp.status_code == 202
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT task_id, event_type, action, pr_number FROM github_events"
-            " WHERE delivery_id = 'cr-1'"
-        )
-        row = cur.fetchone()
-    assert row["task_id"] == "t-2"
-    assert row["event_type"] == "check_run"
-    assert row["action"] == "completed"
-    assert row["pr_number"] == 9
+    from models import GithubEvent
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        row = session.execute(
+            select(GithubEvent).where(GithubEvent.delivery_id == "cr-1")
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.task_id == "t-2"
+    assert row.event_type == "check_run"
+    assert row.action == "completed"
+    assert row.pr_number == 9
 
 
 def test_webhook_rejects_invalid_json(client):
@@ -307,7 +311,7 @@ def test_webhook_emits_foreman_chat_message(client):
     test_client, db_url = client
     insert_guild(db_url, "gchat1")
     _set_webhook_secret(db_url, "gchat1", "schat1")
-    _insert_task(
+    _insert_task_with_worker(
         db_url,
         task_id="t-chat1",
         guild_id="gchat1",
@@ -320,20 +324,24 @@ def test_webhook_emits_foreman_chat_message(client):
     headers = _signed_headers("schat1", body, event="pull_request", delivery="d-chat-1")
     resp = test_client.post("/webhooks/github/gchat1", content=body, headers=headers)
     assert resp.status_code == 202
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT from_agent, to_agent, content, message_type FROM messages"
-            " WHERE guild_id = (SELECT id FROM guilds WHERE guild_id = 'gchat1' AND deleted_at IS NULL)"
+    from models import Guild, Message
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == "gchat1", Guild.deleted_at.is_(None))
         )
-        row = cur.fetchone()
+        row = session.execute(
+            select(Message).where(Message.guild_id == guild_pk)
+        ).scalar_one_or_none()
     assert row is not None
-    assert row["from_agent"] == "github"
-    assert row["to_agent"] == "foreman"
-    assert row["content"].startswith("[github-event]")
-    assert "pull_request/opened" in row["content"]
-    assert "owner/repo#10" in row["content"]
-    assert "task: t-chat1" in row["content"]
-    assert row["message_type"] == "chat"
+    assert row.from_agent == "github"
+    assert row.to_agent == "foreman"
+    assert row.content.startswith("[github-event]")
+    assert "pull_request/opened" in row.content
+    assert "owner/repo#10" in row.content
+    assert "task: t-chat1" in row.content
+    assert row.message_type == "chat"
 
 
 def test_webhook_chat_line_includes_merged_status(client):
@@ -354,15 +362,19 @@ def test_webhook_chat_line_includes_merged_status(client):
     headers = _signed_headers("schat2", body, event="pull_request", delivery="d-chat-2")
     resp = test_client.post("/webhooks/github/gchat2", content=body, headers=headers)
     assert resp.status_code == 202
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT content FROM messages"
-            " WHERE guild_id = (SELECT id FROM guilds WHERE guild_id = 'gchat2' AND deleted_at IS NULL)"
+    from models import Guild, Message
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == "gchat2", Guild.deleted_at.is_(None))
         )
-        row = cur.fetchone()
+        row = session.execute(
+            select(Message).where(Message.guild_id == guild_pk)
+        ).scalar_one_or_none()
     assert row is not None
-    assert "merged=true" in row["content"]
-    assert "task:" not in row["content"]  # no task linked
+    assert "merged=true" in row.content
+    assert "task:" not in row.content  # no task linked
 
 
 def test_webhook_chat_line_not_emitted_for_duplicate(client):
@@ -374,12 +386,16 @@ def test_webhook_chat_line_not_emitted_for_duplicate(client):
     headers = _signed_headers("schat3", body, event="pull_request", delivery="d-chat-dup")
     test_client.post("/webhooks/github/gchat3", content=body, headers=headers)
     test_client.post("/webhooks/github/gchat3", content=body, headers=headers)
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT COUNT(*) FROM messages"
-            " WHERE guild_id = (SELECT id FROM guilds WHERE guild_id = 'gchat3' AND deleted_at IS NULL)"
+    from models import Guild, Message
+    from sqlalchemy import func, select
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == "gchat3", Guild.deleted_at.is_(None))
         )
-        count = cur.fetchone()["count"]
+        count = session.scalar(
+            select(func.count()).select_from(Message).where(Message.guild_id == guild_pk)
+        )
     assert count == 1  # second delivery is a duplicate; no second message
 
 
@@ -475,7 +491,7 @@ def test_webhook_backfills_task_pr_url(client):
     insert_guild(db_url, "gbf1")
     _set_webhook_secret(db_url, "gbf1", "sbf1")
     # Task has pr_number + pr_repo (set when the branch was pushed) but pr_url is NULL.
-    _insert_task(
+    _insert_task_with_worker(
         db_url,
         task_id="t-bf1",
         guild_id="gbf1",
@@ -496,11 +512,12 @@ def test_webhook_backfills_task_pr_url(client):
     headers = _signed_headers("sbf1", body, event="pull_request", delivery="bf-1")
     resp = test_client.post("/webhooks/github/gbf1", content=body, headers=headers)
     assert resp.status_code == 202
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT pr_url FROM tasks WHERE id = 't-bf1'")
-        row = cur.fetchone()
-    assert row is not None
-    assert row["pr_url"] == "https://github.com/org/my-repo/pull/55"
+    from models import Task
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        pr_url = session.scalar(select(Task.pr_url).where(Task.id == "t-bf1"))
+    assert pr_url == "https://github.com/org/my-repo/pull/55"
 
 
 def test_webhook_does_not_overwrite_existing_pr_url(client):
@@ -508,7 +525,7 @@ def test_webhook_does_not_overwrite_existing_pr_url(client):
     test_client, db_url = client
     insert_guild(db_url, "gbf2")
     _set_webhook_secret(db_url, "gbf2", "sbf2")
-    _insert_task(
+    _insert_task_with_worker(
         db_url,
         task_id="t-bf2",
         guild_id="gbf2",
@@ -529,8 +546,9 @@ def test_webhook_does_not_overwrite_existing_pr_url(client):
     headers = _signed_headers("sbf2", body, event="pull_request", delivery="bf-2")
     resp = test_client.post("/webhooks/github/gbf2", content=body, headers=headers)
     assert resp.status_code == 202
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT pr_url FROM tasks WHERE id = 't-bf2'")
-        row = cur.fetchone()
-    assert row is not None
-    assert row["pr_url"] == "https://github.com/org/my-repo/pull/77"
+    from models import Task
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        pr_url = session.scalar(select(Task.pr_url).where(Task.id == "t-bf2"))
+    assert pr_url == "https://github.com/org/my-repo/pull/77"

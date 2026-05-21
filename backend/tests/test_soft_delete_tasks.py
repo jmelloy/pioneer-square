@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from helpers import insert_guild, make_auth_token, raw_conn  # noqa: E402
+from helpers import _sync_session, insert_guild, make_auth_token, raw_conn  # noqa: E402
 
 
 def _auth(db_url: str) -> dict:
@@ -40,15 +40,21 @@ def _create_task(test_client, guild_id: str, worker_id: str, desc: str, db_url: 
 
 
 def _set_deleted_at(db_url: str, task_id: str, deleted_at: str | None) -> None:
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("UPDATE tasks SET deleted_at = %s WHERE id = %s", (deleted_at, task_id))
+    from models import Task
+    from sqlalchemy import update
+
+    with _sync_session(db_url) as session:
+        session.execute(update(Task).where(Task.id == task_id).values(deleted_at=deleted_at))
+        session.commit()
 
 
 def _read_task(db_url: str, task_id: str) -> dict:
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT * FROM tasks WHERE id = %s", (task_id,))
-        row = cur.fetchone()
-    return dict(row) if row else {}
+    from models import Task
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        row = session.execute(select(Task).where(Task.id == task_id)).scalar_one_or_none()
+    return dict(row.model_dump()) if row else {}
 
 
 # ---------------------------------------------------------------------------

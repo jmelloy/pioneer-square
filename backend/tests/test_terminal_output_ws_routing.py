@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -21,7 +20,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import raw_conn  # noqa: E402
+from helpers import insert_guild, insert_worker  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
@@ -50,21 +49,8 @@ def client(_setup_schema):
 
 
 def _insert_guild_worker(db_url: str, *, guild_id: str, worker_id: str) -> None:
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s)"
-            " ON CONFLICT DO NOTHING",
-            (guild_id, now, "Test Guild"),
-        )
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-        cur.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at)"
-            " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
-            (worker_id, guild_pk, now),
-        )
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
 
 
 def _join_ws(ws, agent_id: str, worker_id: str | None = None) -> None:
@@ -113,14 +99,18 @@ def test_worker_only_terminal_output_uses_worker_id_only(client):
             assert msg.get("agentId") is None
             assert msg.get("taskId") is None
 
-            with raw_conn(db_url) as (conn, cur):
-                cur.execute(
-                    "SELECT worker_id, agent_id, task_id, line FROM task_logs"
-                    " ORDER BY id DESC LIMIT 1"
-                )
-                row = cur.fetchone()
+            from helpers import _sync_session
+            from models import TaskLog
+            from sqlalchemy import select
 
-    assert row["worker_id"] == worker_id
-    assert row["agent_id"] is None
-    assert row["task_id"] is None
-    assert row["line"] == "[worker] Pulled repo"
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(TaskLog.worker_id, TaskLog.agent_id, TaskLog.task_id, TaskLog.line)
+                    .order_by(TaskLog.id.desc())
+                    .limit(1)
+                ).first()
+
+    assert row.worker_id == worker_id
+    assert row.agent_id is None
+    assert row.task_id is None
+    assert row.line == "[worker] Pulled repo"

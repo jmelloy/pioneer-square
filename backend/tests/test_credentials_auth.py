@@ -13,7 +13,7 @@ import sys
 from datetime import UTC, datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import insert_guild, make_auth_token, raw_conn
+from helpers import _sync_session, insert_guild, make_auth_token
 
 
 def _register_worker(test_client, guild_id: str) -> dict:
@@ -26,36 +26,63 @@ def _register_worker(test_client, guild_id: str) -> dict:
 
 
 def _seed_claude_credentials(db_url: str, guild_id: str, blob: str = "BLOB") -> None:
+    from models import ClaudeCredentials, Guild
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-        cur.execute(
-            "INSERT INTO claude_credentials (guild_id, credentials_blob, updated_at) "
-            "VALUES (%s, %s, %s) "
-            "ON CONFLICT (guild_id) DO UPDATE"
-            " SET credentials_blob = EXCLUDED.credentials_blob,"
-            " updated_at = EXCLUDED.updated_at",
-            (guild_pk, blob, now),
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
         )
+        stmt = (
+            pg_insert(ClaudeCredentials)
+            .values(
+                guild_id=guild_pk,
+                credentials_blob=blob,
+                updated_at=now,
+            )
+            .on_conflict_do_update(
+                index_elements=["guild_id"],
+                set_={
+                    "credentials_blob": pg_insert(ClaudeCredentials).excluded.credentials_blob,
+                    "updated_at": pg_insert(ClaudeCredentials).excluded.updated_at,
+                },
+            )
+        )
+        session.execute(stmt)
+        session.commit()
 
 
 def _seed_github_token(db_url: str, user_id: str = "gh-user-test") -> None:
     """The default test user already has a github_tokens row via make_auth_token —
     this is a no-op that just ensures it's there for clarity."""
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT 1 FROM github_tokens WHERE github_user_id = %s", (user_id,))
-        row = cur.fetchone()
-        if row:
-            return
-        now = datetime.now(UTC).isoformat()
-        cur.execute(
-            "INSERT INTO github_tokens "
-            "(github_user_id, github_username, access_token, token_type, scope, created_at, updated_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (user_id, "tester", "gh_tok", "bearer", "repo", now, now),
+    from models import GithubToken
+    from sqlalchemy import select
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    now = datetime.now(UTC).isoformat()
+    with _sync_session(db_url) as session:
+        existing = session.scalar(
+            select(GithubToken.github_user_id).where(GithubToken.github_user_id == user_id)
         )
+        if existing:
+            return
+        stmt = (
+            pg_insert(GithubToken)
+            .values(
+                github_user_id=user_id,
+                github_username="tester",
+                access_token="gh_tok",
+                token_type="bearer",
+                scope="repo",
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=["github_user_id"])
+        )
+        session.execute(stmt)
+        session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -151,15 +178,16 @@ def test_post_claude_credentials_accepts_worker_token(client):
         headers={"Authorization": f"Bearer {worker['auth_token']}"},
     )
     assert resp.status_code == 200
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "SELECT cc.credentials_blob FROM claude_credentials cc "
-            "JOIN guilds g ON g.id = cc.guild_id "
-            "WHERE g.guild_id = %s AND g.deleted_at IS NULL",
-            ("g-write",),
+    from models import ClaudeCredentials, Guild
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        blob = session.scalar(
+            select(ClaudeCredentials.credentials_blob)
+            .join(Guild, Guild.id == ClaudeCredentials.guild_id)
+            .where(Guild.guild_id == "g-write", Guild.deleted_at.is_(None))
         )
-        row = cur.fetchone()
-    assert row["credentials_blob"] == "NEW"
+    assert blob == "NEW"
 
 
 # ---------------------------------------------------------------------------
@@ -211,14 +239,25 @@ def test_get_github_token_no_owner_in_guild_members(client):
     """Returns 404 when no owner exists in guild_members (legacy-only guild)."""
     from datetime import UTC, datetime
 
+    from models import Guild
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     test_client, db_url = client
     now = datetime.now(UTC).isoformat()
     # Insert a guild with github_user_id but no guild_members row
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name, github_user_id) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            ("g-noowner", now, "No Owner", "gh-user-test"),
+    with _sync_session(db_url) as session:
+        stmt = (
+            pg_insert(Guild)
+            .values(
+                guild_id="g-noowner",
+                created_at=now,
+                name="No Owner",
+                github_user_id="gh-user-test",
+            )
+            .on_conflict_do_nothing()
         )
+        session.execute(stmt)
+        session.commit()
     # Register a worker (bypasses membership check via auth_token)
     worker = _register_worker(test_client, "g-noowner")
     resp = test_client.get(

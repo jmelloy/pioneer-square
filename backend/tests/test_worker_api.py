@@ -6,7 +6,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import insert_guild, insert_member, make_auth_token, raw_conn
+from helpers import _sync_session, insert_guild, insert_member, make_auth_token
 
 
 def _auth(db_url: str) -> dict:
@@ -58,15 +58,17 @@ def test_create_worker_does_not_insert_agent_row(client):
     Agent rows are created only when the worker process sends a ``join``
     message over WebSocket, not during REST-based registration.
     """
+    from models import Agent
+    from sqlalchemy import select
+
     test_client, db_url = client
     insert_guild(db_url, "guild03b")
     resp = test_client.post("/guilds/guild03b/workers", json={"repos": []})
     assert resp.status_code == 200
     worker_id = resp.json()["id"]
 
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM agents WHERE id = %s", (worker_id,))
-        row = cur.fetchone()
+    with _sync_session(db_url) as session:
+        row = session.scalar(select(Agent.id).where(Agent.id == worker_id))
     assert row is None, f"create_worker must not insert an agent row, but found: {row}"
 
 
@@ -81,25 +83,25 @@ def test_create_multiple_workers(client):
 
 def test_create_worker_attributes_to_user(client):
     """Worker registration with `user` resolves to a users.id and stores it on workers.user_id."""
+    from models import User, Worker
+    from sqlalchemy import select, update
+
     test_client, db_url = client
     insert_guild(db_url, "guildusr")
     insert_member(db_url, "guildusr", "user-bob", role="member")
     # Bob's users row was created by insert_member; reference by login should also work.
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "UPDATE users SET github_login = %s WHERE id = %s",
-            ("bobby", "user-bob"),
-        )
+    with _sync_session(db_url) as session:
+        session.execute(update(User).where(User.id == "user-bob").values(github_login="bobby"))
+        session.commit()
     resp = test_client.post(
         "/guilds/guildusr/workers",
         json={"repos": [], "user": "bobby"},
     )
     assert resp.status_code == 200
     worker_id = resp.json()["id"]
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT user_id FROM workers WHERE id = %s", (worker_id,))
-        row = cur.fetchone()
-    assert row["user_id"] == "user-bob"
+    with _sync_session(db_url) as session:
+        user_id = session.scalar(select(Worker.user_id).where(Worker.id == worker_id))
+    assert user_id == "user-bob"
 
 
 # ---------------------------------------------------------------------------

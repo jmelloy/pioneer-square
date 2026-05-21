@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import insert_guild, make_auth_token, raw_conn
+from helpers import _sync_session, insert_guild, make_auth_token
 
 
 def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
@@ -17,12 +17,17 @@ def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
 
     Simulates a pre-migration guild to verify the legacy fallback is gone.
     """
+    from models import Guild
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name, github_user_id) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (guild_id, now, "Legacy Guild", user_id),
+    with _sync_session(db_url) as session:
+        session.execute(
+            pg_insert(Guild)
+            .values(guild_id=guild_id, created_at=now, name="Legacy Guild", github_user_id=user_id)
+            .on_conflict_do_nothing()
         )
+        session.commit()
 
 
 def test_get_guild_requires_auth(client):
@@ -196,49 +201,48 @@ def test_update_guild_clear_primary_repo(client):
 
 def test_guild_partial_unique_index(client):
     """guild_id must be unique among active guilds but reusable after soft-delete."""
-    import psycopg2
+    from models import Guild
+    from sqlalchemy import func, select, update
+    from sqlalchemy.exc import IntegrityError
 
     test_client, db_url = client  # noqa: F841 — db_url used directly
 
     shared_id = "reuse-me-001"
-    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
-    with raw_conn(db_url) as (conn, cur):
+    with _sync_session(db_url) as session:
         # Insert the first active guild.
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s)",
-            (shared_id, now, "First"),
-        )
+        session.add(Guild(guild_id=shared_id, created_at=now, name="First"))
+        session.commit()
 
     # A second guild with the same guild_id (both active) must violate the
     # partial unique index.
     with pytest.raises(Exception) as exc_info:
-        with raw_conn(db_url) as (conn, cur):
-            cur.execute(
-                "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s)",
-                (shared_id, now, "Duplicate"),
-            )
+        with _sync_session(db_url) as session:
+            session.add(Guild(guild_id=shared_id, created_at=now, name="Duplicate"))
+            session.commit()
     # Verify it is an integrity/uniqueness violation
     assert exc_info.type.__name__ in ("UniqueViolation", "IntegrityError") or (
         "unique" in str(exc_info.value).lower() or "duplicate" in str(exc_info.value).lower()
     )
 
     # Soft-delete the first guild.
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "UPDATE guilds SET deleted_at = %s WHERE guild_id = %s AND deleted_at IS NULL",
-            (now, shared_id),
+    with _sync_session(db_url) as session:
+        session.execute(
+            update(Guild)
+            .where(Guild.guild_id == shared_id, Guild.deleted_at.is_(None))
+            .values(deleted_at=now)
         )
+        session.commit()
 
     # After soft-delete the same guild_id can be inserted again.
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s)",
-            (shared_id, now, "Third"),
+    with _sync_session(db_url) as session:
+        session.add(Guild(guild_id=shared_id, created_at=now, name="Third"))
+        session.commit()
+        count = session.scalar(
+            select(func.count()).select_from(Guild).where(Guild.guild_id == shared_id)
         )
-        cur.execute("SELECT COUNT(*) FROM guilds WHERE guild_id = %s", (shared_id,))
-        row = cur.fetchone()
-    assert row["count"] == 2, "should have one deleted and one active row for the same guild_id"
+    assert count == 2, "should have one deleted and one active row for the same guild_id"
 
 
 def test_primary_repo_in_foreman_prompt():
