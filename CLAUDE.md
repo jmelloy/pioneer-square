@@ -63,6 +63,9 @@ the backend falls back to the embedded foreman automatically.
 ### Tests and lint
 
 ```bash
+# Backend tests require the postgres-test container (localhost:5433):
+docker compose up -d postgres-test
+
 # Backend (pytest, in backend/)
 python -m pytest                       # 119 tests
 # Worker (pytest, in worker/)
