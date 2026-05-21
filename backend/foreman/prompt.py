@@ -100,6 +100,8 @@ process joins or leaves the guild.
   unexpectedly (crash or network failure). Escalate to the human if no other workers
   are available or if critical tasks were actively running on this worker. Use
   get_task_status to inspect affected tasks before deciding to reassign.
+  A single message may contain multiple `[worker-offline]` lines when several
+  workers disconnect simultaneously — handle each line independently.
 
 ## Issue-first workflow
 **Skip issue creation entirely** for: follow-ups, CI fixes, lint fixes, test fixes, or any

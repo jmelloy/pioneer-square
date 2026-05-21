@@ -138,7 +138,8 @@ async def _trigger_foreman(
 
     ``event`` mirrors the plan's trigger-type vocabulary:
     ``chat``, ``task-complete``, ``followup-done``, ``needs-input``,
-    ``claude-auth``, ``periodic-check``.
+    ``claude-auth``, ``periodic-check``, ``worker-online``,
+    ``worker-offline``.
     """
     ws = foreman_connections.get(guild_id)
     if ws is not None:
