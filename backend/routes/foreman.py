@@ -365,7 +365,7 @@ async def create_foreman_task(
     body: ForemanTaskCreate,
     _caller: str = Depends(require_worker_or_member_path),
 ):
-    """Create a foreman-owned task (worker_id='foreman').
+    """Create a foreman-owned task (worker_id=None — unassigned until a worker picks it up).
 
     Used by the standalone foreman's ``create_task`` tool in place of the
     direct DB insert currently in ``foreman/tools.py``.

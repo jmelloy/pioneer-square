@@ -25,7 +25,7 @@ describe('useTasksStore', () => {
         id: 't-1',
         name: 'Fix bug',
         state: 'pending',
-        worker_id: 'foreman',
+        worker_id: null,
       })
     })
 
