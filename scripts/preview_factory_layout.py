@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Overlay the factory-floor layout on the background image for tuning.
 
-The walkable polygon, points of interest (with their gravitation boxes) and
-work-station slots all come from
-``frontend/src/components/factory-layout.json`` — the same file FactoryFloor.vue
-reads — so editing that JSON and re-running this script previews exactly what
-the app will render.
+The walkable polygon, patrol loop, points of interest and work-station slots
+all come from ``frontend/src/components/factory-layout.json`` — the same file
+FactoryFloor.vue reads — so editing that JSON and re-running this script
+previews exactly what the app will render.
 
 Usage:
     pip install Pillow
@@ -18,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import sys
 from pathlib import Path
@@ -42,24 +42,20 @@ PALETTE = [
     (238, 119, 34),
     (255, 204, 0),
 ]
+MAX_TILT = 9.0
 
 
-def draw_robot(d: ImageDraw.ImageDraw, cx: float, cy: float, h: float, color):
-    """Draw a simple robot with its feet anchored at (cx, cy)."""
+def robot_shape(d: ImageDraw.ImageDraw, cx: float, cy: float, h: float, color):
+    """Draw a chunky robot with its feet anchored at (cx, cy)."""
     hw = h * 0.42
     top = cy - h
     d.rectangle([cx - hw * 0.5, cy - h * 0.32, cx - hw * 0.08, cy], fill=color)
     d.rectangle([cx + hw * 0.08, cy - h * 0.32, cx + hw * 0.5, cy], fill=color)
-    d.rounded_rectangle(
-        [cx - hw, cy - h * 0.62, cx + hw, cy - h * 0.30],
-        5,
-        fill=(20, 12, 4),
-        outline=color,
-        width=3,
+    d.rectangle(
+        [cx - hw, cy - h * 0.62, cx + hw, cy - h * 0.30], fill=(20, 12, 4), outline=color, width=3
     )
-    d.rounded_rectangle(
+    d.rectangle(
         [cx - hw * 0.78, top, cx + hw * 0.78, cy - h * 0.62],
-        4,
         fill=(20, 12, 4),
         outline=color,
         width=3,
@@ -70,6 +66,16 @@ def draw_robot(d: ImageDraw.ImageDraw, cx: float, cy: float, h: float, color):
     d.rectangle(
         [cx + hw * 0.15, top + h * 0.10, cx + hw * 0.5, top + h * 0.21], fill=(255, 232, 192)
     )
+
+
+def draw_robot(im: Image.Image, cx: float, cy: float, h: float, color, tilt: float = 0.0):
+    """Composite a robot, leaning `tilt` degrees into its direction of travel."""
+    pad = int(h)
+    layer = Image.new("RGBA", (pad * 2, pad + int(h) + 4), (0, 0, 0, 0))
+    robot_shape(ImageDraw.Draw(layer), pad, pad + int(h), h, color)
+    if tilt:
+        layer = layer.rotate(-tilt, center=(pad, pad + int(h)), resample=Image.NEAREST)
+    im.paste(layer, (int(cx - pad), int(cy - pad - h)), layer)
 
 
 def draw_station(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float):
@@ -85,6 +91,19 @@ def draw_station(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float):
     for k, c in enumerate(bars):
         y = cy - s * 0.58 + k * s * 0.25
         d.rectangle([cx - s * 0.74, y, cx + s * 0.74, y + s * 0.12], fill=c)
+
+
+def draw_arrow(d: ImageDraw.ImageDraw, p0, p1, color, width=3):
+    """Draw a line from p0 to p1 with a direction arrowhead at its midpoint."""
+    d.line([p0, p1], fill=color, width=width)
+    ang = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
+    mx, my = (p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2
+    for off in (2.6, -2.6):
+        d.line(
+            [(mx, my), (mx + 13 * math.cos(ang + off), my + 13 * math.sin(ang + off))],
+            fill=color,
+            width=width,
+        )
 
 
 def label(d: ImageDraw.ImageDraw, x: float, y: float, text: str, color):
@@ -105,7 +124,7 @@ def main() -> None:
         "--scale", type=float, default=1.0, help="upscale the output image (default: 1.0)"
     )
     ap.add_argument(
-        "--robots", type=int, default=0, help="scatter N sample idle robots across the POIs"
+        "--robots", type=int, default=0, help="scatter N sample robots around the patrol loop"
     )
     args = ap.parse_args()
 
@@ -120,7 +139,9 @@ def main() -> None:
     floor = layout["walkableFloor"]
     pois = layout["pointsOfInterest"]
     slots = layout["stationSlots"]
+    patrol = layout["patrolPath"]
     radius = layout["gravitateRadius"]
+    pjit = layout["patrolJitter"]
 
     # Walkable polygon — robots stay inside this.
     pts = [(fx * W, fy * H) for fx, fy in floor]
@@ -128,6 +149,14 @@ def main() -> None:
     for i, (px, py) in enumerate(pts):
         d.ellipse([px - 6, py - 6, px + 6, py + 6], fill=(0, 255, 130, 255))
         label(d, px + 9, py - 7, f"v{i} ({floor[i][0]:.2f},{floor[i][1]:.2f})", (0, 255, 130))
+
+    # Patrol loop — idle robots step along this, bouncing at the ends.
+    pp = [(fx * W, fy * H) for fx, fy in patrol]
+    for a, b in zip(pp, pp[1:], strict=False):
+        draw_arrow(d, a, b, (120, 190, 255, 235))
+    for i, (px, py) in enumerate(pp):
+        d.ellipse([px - 7, py - 7, px + 7, py + 7], fill=(120, 190, 255, 255))
+        label(d, px + 10, py - 7, f"p{i} ({patrol[i][0]:.2f},{patrol[i][1]:.2f})", (170, 215, 255))
 
     # Work-station slots.
     for i, (fx, fy) in enumerate(slots):
@@ -145,13 +174,20 @@ def main() -> None:
             d, cx + 11, cy - 8, f"{poi['label']} ({poi['x']:.2f},{poi['y']:.2f})", (255, 220, 120)
         )
 
-    # Optional sample robots, gravitating to a random POI like idle agents do.
+    # Sample robots spread around the patrol loop, leaning into their heading.
     rng = random.Random(7)
     for n in range(args.robots):
-        poi = pois[n % len(pois)]
-        fx = poi["x"] + (rng.random() - 0.5) * 2 * radius
-        fy = poi["y"] + (rng.random() - 0.5) * 2 * radius
-        draw_robot(d, fx * W, fy * H, H * 0.07, PALETTE[n % len(PALETTE)])
+        seg = n * (len(patrol) - 1) / max(1, args.robots)
+        i0 = int(seg)
+        i1 = min(i0 + 1, len(patrol) - 1)
+        f = seg - i0
+        fx = patrol[i0][0] * (1 - f) + patrol[i1][0] * f + (rng.random() - 0.5) * 2 * pjit
+        fy = patrol[i0][1] * (1 - f) + patrol[i1][1] * f + (rng.random() - 0.5) * 2 * pjit
+        dx = (patrol[i1][0] - patrol[i0][0]) * W
+        dy = (patrol[i1][1] - patrol[i0][1]) * H
+        dist = math.hypot(dx, dy) or 1.0
+        tilt = max(-MAX_TILT, min(MAX_TILT, dx / dist * MAX_TILT))
+        draw_robot(im, fx * W, fy * H, H * 0.07, PALETTE[n % len(PALETTE)], tilt)
 
     out = Path(args.out)
     im.save(out)
@@ -160,11 +196,10 @@ def main() -> None:
         f"image   : {img_path.relative_to(REPO)} ({layout['image']['width']}x"
         f"{layout['image']['height']})"
     )
-    print(f"polygon : {len(floor)} vertices, gravitate radius {radius}")
+    print(f"polygon : {len(floor)} vertices")
+    print(f"patrol  : {len(patrol)} waypoints, jitter {pjit}")
     for poi in pois:
         print(f"  POI   {poi['id']:<9} ({poi['x']:.2f}, {poi['y']:.2f})  {poi['label']}")
-    for i, (fx, fy) in enumerate(slots):
-        print(f"  slot {i}          ({fx:.2f}, {fy:.2f})")
     print(f"wrote   : {out}")
 
 

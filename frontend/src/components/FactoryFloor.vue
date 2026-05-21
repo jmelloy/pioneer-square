@@ -3,7 +3,7 @@
     <!-- Pixel-art workshop. The stage keeps the image's aspect ratio and is
          centred; everything inside is positioned as a fraction of it. -->
     <div class="floor-stage" :style="stageStyle">
-      <!-- Coordinate-tuning overlay: walkable polygon + points of interest. -->
+      <!-- Coordinate-tuning overlay: walkable polygon, patrol loop, POIs. -->
       <svg
         v-if="SHOW_FLOOR_DEBUG"
         class="floor-debug"
@@ -11,6 +11,7 @@
         preserveAspectRatio="none"
       >
         <polygon :points="debugPolygon" />
+        <polyline class="patrol" :points="debugPatrol" />
         <circle
           v-for="p in POINTS_OF_INTEREST"
           :key="p.id"
@@ -40,8 +41,8 @@
         </div>
       </div>
 
-      <!-- Agents — walk to their task station, or drift between the
-           points of interest when idle. -->
+      <!-- Agents — walk to their task station, or patrol the loop around
+           the tables when idle, leaning into their direction of travel. -->
       <div
         v-for="agent in agents"
         :key="agent.id"
@@ -50,7 +51,9 @@
           agentPos(agent.id).y * 100
         }%; z-index: ${zIndex(agentPos(agent.id).y)}`"
       >
-        <AgentAvatar :agent="agent" :walking="isWalking(agent.id)" />
+        <div class="agent-tilt" :style="`transform: rotate(${agentTilt(agent.id)}deg)`">
+          <AgentAvatar :agent="agent" :walking="isWalking(agent.id)" />
+        </div>
         <div class="agent-nametag">{{ agent.name }}</div>
       </div>
     </div>
@@ -98,6 +101,13 @@ const STATION_POSITIONS = layout.stationSlots as [number, number][]
 const GRAVITATE_RADIUS = layout.gravitateRadius
 const MAX_STATIONS = STATION_POSITIONS.length
 
+// Ordered loop of waypoints that hugs the open floor around the two tables.
+// Idle robots step along it (bouncing at the ends) so they circle the tables
+// rather than standing on them.
+const PATROL_PATH = layout.patrolPath as [number, number][]
+const PATROL_JITTER = layout.patrolJitter
+const MAX_TILT = 9
+
 const FLOOR_BBOX = {
   minX: Math.min(...FLOOR_POLYGON.map((p) => p[0])),
   maxX: Math.max(...FLOOR_POLYGON.map((p) => p[0])),
@@ -106,6 +116,7 @@ const FLOOR_BBOX = {
 }
 
 const debugPolygon = FLOOR_POLYGON.map(([x, y]) => `${x * 100},${y * 100}`).join(' ')
+const debugPatrol = PATROL_PATH.map(([x, y]) => `${x * 100},${y * 100}`).join(' ')
 
 function pointInFloor(x: number, y: number) {
   let inside = false
@@ -170,10 +181,16 @@ const activeStations = computed<Station[]>(() =>
 
 // ─── Agent positions ───────────────────────────────────────────────────────
 // Positions are fractions of the stage. `walking` is set briefly while an
-// agent moves so RobotWorker runs its walk animation.
+// agent moves so RobotWorker runs its walk animation. `tilt` is a small lean
+// in the agent's current direction of travel.
 const agentPositions = reactive<Record<string, { x: number; y: number }>>({})
 const walking = reactive<Record<string, boolean>>({})
+const tilt = reactive<Record<string, number>>({})
 const walkTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+
+// Each patrolling agent tracks where it is on PATROL_PATH and which way it
+// is heading; it reverses at the ends so the loop never teleports.
+const patrolState = reactive<Record<string, { idx: number; dir: number }>>({})
 
 function agentPos(agentId: string) {
   return agentPositions[agentId] || { x: 0.4, y: 0.64 }
@@ -183,8 +200,33 @@ function isWalking(agentId: string) {
   return !!walking[agentId]
 }
 
+function agentTilt(agentId: string) {
+  return tilt[agentId] || 0
+}
+
 function zIndex(y: number) {
   return Math.round(y * 1000)
+}
+
+function patrolStep(agentId: string) {
+  let st = patrolState[agentId]
+  if (!st) {
+    st = {
+      idx: Math.floor(Math.random() * PATROL_PATH.length),
+      dir: Math.random() < 0.5 ? 1 : -1,
+    }
+    patrolState[agentId] = st
+  }
+  st.idx += st.dir
+  if (st.idx > PATROL_PATH.length - 1) {
+    st.dir = -1
+    st.idx = PATROL_PATH.length - 2
+  } else if (st.idx < 0) {
+    st.dir = 1
+    st.idx = 1
+  }
+  const [x, y] = PATROL_PATH[st.idx]
+  return jitterAround({ x, y }, PATROL_JITTER)
 }
 
 function jitterAround(p: { x: number; y: number }, radius = GRAVITATE_RADIUS) {
@@ -223,6 +265,16 @@ function isAgentAtWork(agent: Agent) {
 function moveTo(agentId: string, pos: { x: number; y: number }) {
   const cur = agentPositions[agentId]
   if (cur && cur.x === pos.x && cur.y === pos.y) return
+  if (cur) {
+    // Lean into the direction of travel, measured in screen pixels so the
+    // stage's portrait aspect ratio doesn't skew the angle.
+    const dx = (pos.x - cur.x) * (stage.w || STAGE_RATIO)
+    const dy = (pos.y - cur.y) * (stage.h || 1)
+    const dist = Math.hypot(dx, dy)
+    if (dist > 0) {
+      tilt[agentId] = Math.max(-MAX_TILT, Math.min(MAX_TILT, (dx / dist) * MAX_TILT))
+    }
+  }
   agentPositions[agentId] = pos
   walking[agentId] = true
   clearTimeout(walkTimers[agentId])
@@ -237,7 +289,7 @@ function syncPositions() {
       const station = stationForAgent(agent)!
       moveTo(agent.id, { x: station.x, y: station.y + 0.07 })
     } else if (!agentPositions[agent.id]) {
-      agentPositions[agent.id] = poiTarget()
+      agentPositions[agent.id] = patrolStep(agent.id)
     }
   })
 }
@@ -251,8 +303,11 @@ function tickWalk() {
   if (idle.length === 0) return
   const agent = idle[walkIdx % idle.length]
   walkIdx++
-  // Mostly drift toward a point of interest; occasionally roam open floor.
-  moveTo(agent.id, Math.random() < 0.8 ? poiTarget() : randomFloorPos())
+  // Mostly patrol the loop around the tables; occasionally drift to a
+  // wall feature or roam the open floor.
+  const roll = Math.random()
+  const target = roll < 0.85 ? patrolStep(agent.id) : roll < 0.95 ? poiTarget() : randomFloorPos()
+  moveTo(agent.id, target)
 }
 
 onMounted(() => {
@@ -340,6 +395,12 @@ function stateLabel(state: string) {
 }
 .floor-debug circle {
   fill: rgba(255, 60, 60, 0.95);
+}
+.floor-debug polyline.patrol {
+  fill: none;
+  stroke: rgba(120, 190, 255, 0.95);
+  stroke-width: 0.6;
+  stroke-dasharray: 1.4 1;
 }
 
 /* ── Work stations ───────────────────────────────────────────────────────── */
@@ -474,6 +535,12 @@ function stateLabel(state: string) {
 .floating-agent :deep(.robot-sprite) {
   width: 9cqw;
   height: auto;
+}
+.agent-tilt {
+  display: flex;
+  justify-content: center;
+  transform-origin: 50% 88%;
+  transition: transform 1.2s ease-in-out;
 }
 .agent-nametag {
   font-size: 1.7cqw;
