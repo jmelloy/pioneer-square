@@ -45,7 +45,7 @@ export const useGitHubStore = defineStore('github', () => {
     loading.value = true
     try {
       const res = await fetch(
-        `${GH_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator`,
+        `${GH_API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member`,
         {
           headers: ghHeaders(token.value),
         },
