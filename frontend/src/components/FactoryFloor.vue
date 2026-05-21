@@ -107,6 +107,10 @@ const FLOOR_BBOX = {
   minY: Math.min(...FLOOR_POLYGON.map((p) => p[1])),
   maxY: Math.max(...FLOOR_POLYGON.map((p) => p[1])),
 }
+const FLOOR_CENTROID = {
+  x: FLOOR_POLYGON.reduce((s, p) => s + p[0], 0) / FLOOR_POLYGON.length,
+  y: FLOOR_POLYGON.reduce((s, p) => s + p[1], 0) / FLOOR_POLYGON.length,
+}
 
 const debugPolygon = FLOOR_POLYGON.map(([x, y]) => `${x * 100},${y * 100}`).join(' ')
 const debugPatrol = PATROL_PATH.map(([x, y]) => `${x * 100},${y * 100}`).join(' ')
@@ -122,6 +126,19 @@ function pointInFloor(x: number, y: number) {
     }
   }
   return inside
+}
+
+// Pull a point onto the walkable floor by stepping it toward the centroid.
+// POIs may sit just off the floor (a wall feature, the coffee table), so a
+// robot heading there should still land on a valid tile.
+function toFloor(p: { x: number; y: number }) {
+  if (pointInFloor(p.x, p.y)) return p
+  for (let t = 0.15; t <= 1; t += 0.15) {
+    const x = p.x + (FLOOR_CENTROID.x - p.x) * t
+    const y = p.y + (FLOOR_CENTROID.y - p.y) * t
+    if (pointInFloor(x, y)) return { x, y }
+  }
+  return { ...FLOOR_CENTROID }
 }
 
 // ─── Stage sizing ──────────────────────────────────────────────────────────
@@ -228,7 +245,7 @@ function jitterAround(p: { x: number; y: number }, radius = GRAVITATE_RADIUS) {
     const y = p.y + (Math.random() - 0.5) * 2 * radius
     if (pointInFloor(x, y)) return { x, y }
   }
-  return { x: p.x, y: p.y }
+  return toFloor(p)
 }
 
 function poiTarget() {

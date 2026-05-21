@@ -19,8 +19,8 @@
   "pointsOfInterest": [
     { "id": "table-a", "label": "Workbench A", "x": 0.3, "y": 0.62 },
     { "id": "table-b", "label": "Workbench B", "x": 0.49, "y": 0.77 },
-    { "id": "bulletin", "label": "Bulletin Board", "x": 0.6, "y": 0.5 },
-    { "id": "coffee", "label": "Coffee Pot", "x": 0.64, "y": 0.58 }
+    { "id": "bulletin", "label": "Bulletin Board", "x": 0.6, "y": 0.46 },
+    { "id": "coffee", "label": "Coffee Pot", "x": 0.67, "y": 0.53 }
   ],
   "patrolPath": [
     [0.17, 0.58],
@@ -33,11 +33,13 @@
     [0.56, 0.5]
   ],
   "stationSlots": [
-    [0.31, 0.6],
-    [0.5, 0.67],
-    [0.2, 0.66],
-    [0.62, 0.58],
-    [0.4, 0.81],
-    [0.56, 0.75]
+    [0.24, 0.53],
+    [0.41, 0.6],
+    [0.31, 0.52],
+    [0.49, 0.59],
+    [0.38, 0.5],
+    [0.57, 0.57],
+    [0.45, 0.49],
+    [0.64, 0.55]
   ]
 }

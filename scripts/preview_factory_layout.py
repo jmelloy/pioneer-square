@@ -79,18 +79,16 @@ def draw_robot(im: Image.Image, cx: float, cy: float, h: float, color, tilt: flo
 
 
 def draw_station(d: ImageDraw.ImageDraw, cx: float, cy: float, s: float):
-    """Draw a work-station monitor centred on (cx, cy)."""
+    """Draw an active-task tag (label bar + state badge) centred on (cx, cy)."""
     d.rounded_rectangle(
-        [cx - s, cy - s * 0.8, cx + s, cy + s * 0.1],
-        4,
-        fill=(13, 6, 0),
-        outline=(150, 90, 30),
+        [cx - s * 0.9, cy - s * 0.5, cx + s * 0.9, cy + s * 0.5],
+        3,
+        fill=(12, 7, 0, 235),
+        outline=(210, 150, 60),
         width=3,
     )
-    bars = [(0, 187, 170), (68, 170, 238), (136, 221, 34)]
-    for k, c in enumerate(bars):
-        y = cy - s * 0.58 + k * s * 0.25
-        d.rectangle([cx - s * 0.74, y, cx + s * 0.74, y + s * 0.12], fill=c)
+    d.rectangle([cx - s * 0.6, cy - s * 0.24, cx + s * 0.6, cy - s * 0.05], fill=(230, 200, 120))
+    d.rectangle([cx - s * 0.45, cy + s * 0.08, cx + s * 0.45, cy + s * 0.27], fill=(255, 190, 70))
 
 
 def draw_arrow(d: ImageDraw.ImageDraw, p0, p1, color, width=3):
