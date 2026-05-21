@@ -37,6 +37,7 @@ from auth_deps import get_guild_pk, require_member, require_worker_or_member_pat
 from database import get_db
 from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException, Query
+from foreman.runner import _fetch_online_workers
 from models import (
     ForemanTurn,
     Guild,
@@ -46,7 +47,7 @@ from models import (
     live_tasks_filter,
 )
 from pydantic import BaseModel
-from sqlalchemy import select, text, update
+from sqlalchemy import select, update
 
 from foreman import clear_foreman_history, get_foreman_history
 
@@ -160,24 +161,7 @@ async def get_foreman_state(
         }
 
         # Online workers with their active agents
-        workers_res = await db.execute(
-            text(
-                "SELECT w.id, w.repos, w.org, w.state as worker_state,"
-                " COUNT(a.id) as agent_count,"
-                " STRING_AGG(a.id || ':' || a.state, ',') as agents"
-                " FROM workers w"
-                " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
-                " WHERE w.guild_id = :guild_id AND w.state = 'online'"
-                " GROUP BY w.id"
-                " UNION ALL"
-                " SELECT a.id, '[]', NULL, a.state, 1, a.id || ':' || a.state"
-                " FROM agents a"
-                " WHERE a.guild_id = :guild_id AND a.type = 'worker'"
-                " AND a.worker_id IS NULL AND a.state != 'offline'"
-            ),
-            {"guild_id": guild_pk},
-        )
-        worker_rows = [dict(r._mapping) for r in workers_res.fetchall()]
+        worker_rows = await _fetch_online_workers(db, guild_id)
         workers_data = [
             {
                 "id": r["id"],

@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk
 from database import get_db
 from events import broadcast
-from models import ForemanTurn, Guild, GuildMember, Message, Task, live_tasks_filter
-from sqlalchemy import delete, select
+from models import Agent, ForemanTurn, Guild, GuildMember, Message, Task, Worker, live_tasks_filter
+from sqlalchemy import delete, func, select
 from util.tasks import spawn
 
 from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
@@ -465,31 +465,25 @@ def reset_foreman_poll(guild_id: str) -> None:
 
 
 async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
-    """Return workers visible to the Foreman: only those whose ``state == 'online'``.
+    """Return online workers for the Foreman, with their active agent count and summary.
 
-    Offline workers can't accept task assignments, so listing them in the system
-    prompt just invites bad routing decisions. Orphan agents (no ``worker_id``)
-    that are non-offline are still surfaced for legacy compatibility.
+    Offline workers can't accept task assignments, so they are excluded.
+    Each row's ``agents`` field is a comma-separated ``agentId:state`` string
+    (empty string when a worker has no non-offline agents).
     """
-    from sqlalchemy import text
-
     guild_pk_val = await get_guild_pk(db, guild_id)
     result = await db.execute(
-        text(
-            "SELECT w.id, w.repos, w.org, w.state as worker_state,"
-            " COUNT(a.id) as agent_count,"
-            " STRING_AGG(a.id || ':' || a.state, ',') as agents"
-            " FROM workers w"
-            " LEFT JOIN agents a ON a.worker_id = w.id AND a.state != 'offline'"
-            " WHERE w.guild_id = :guild_id AND w.state = 'online'"
-            " GROUP BY w.id"
-            " UNION ALL"
-            " SELECT a.id, '[]', NULL, a.state, 1, a.id || ':' || a.state"
-            " FROM agents a"
-            " WHERE a.guild_id = :guild_id AND a.type = 'worker'"
-            " AND a.worker_id IS NULL AND a.state != 'offline'"
-        ),
-        {"guild_id": guild_pk_val},
+        select(
+            Worker.id,
+            Worker.repos,
+            Worker.org,
+            Worker.state.label("worker_state"),
+            func.count(Agent.id).label("agent_count"),
+            func.string_agg(Agent.id + ":" + Agent.state, ",").label("agents"),
+        )
+        .outerjoin(Agent, (Agent.worker_id == Worker.id) & (Agent.state != "offline"))
+        .where(Worker.guild_id == guild_pk_val, Worker.state == "online")
+        .group_by(Worker.id)
     )
     return [dict(r._mapping) for r in result.fetchall()]
 
