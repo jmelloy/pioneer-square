@@ -1,0 +1,22 @@
+backend_url = "ws://localhost:8000"    # same base as workers
+guild_id    = "abc123"
+
+# Shared HMAC secret for JWT authentication.
+# Set the same value as PIONEER_FOREMAN_KEY on the backend.
+# The foreman mints short-lived tokens automatically — no manual refresh needed.
+backend_key = ""
+
+# Static token fallback — only needed when backend_key is not set.
+# Use a member login_token (from browser dev tools after login) or a worker
+# auth_token. Ignored when backend_key is provided.
+# auth_token = ""
+
+[claude]
+model         = "claude-sonnet-4-6"
+api_key       = ""                     # falls back to ANTHROPIC_API_KEY env var
+max_rounds    = 10
+history_limit = 40
+
+[poll]
+min_interval = 60     # seconds (doubles each cycle up to max_interval)
+max_interval = 3600
