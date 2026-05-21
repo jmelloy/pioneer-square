@@ -21,7 +21,11 @@ DEFAULT_CONFIG_NAME = "pioneer-foreman.toml"
 class Config:
     backend_url: str
     guild_id: str
-    # Auth token (member login_token or worker auth_token)
+    # JWT auth — shared HS256 secret (PIONEER_FOREMAN_KEY on the backend side).
+    # Preferred over auth_token: the foreman mints short-lived tokens automatically.
+    backend_key: str | None = None
+    # Static token fallback — a member login_token or worker auth_token.
+    # Used only when backend_key is not set.
     auth_token: str | None = None
     # Claude settings
     model: str = "claude-sonnet-4-6"
@@ -105,6 +109,12 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     if not guild_id:
         raise ValueError("guild_id is required.")
 
+    backend_key = (
+        overrides.get("backend_key")
+        or raw.get("backend_key")
+        or os.environ.get("PIONEER_FOREMAN_KEY")
+    ) or None
+
     auth_token = (
         overrides.get("auth_token")
         or raw.get("auth_token")
@@ -136,6 +146,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
+        backend_key=backend_key,
         auth_token=auth_token,
         model=model,
         api_key=api_key,

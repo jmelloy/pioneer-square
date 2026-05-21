@@ -7,10 +7,13 @@ FastAPI app, the DB session helper, or anything else heavy.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import random
 import re
 import string
+import time
 import unicodedata
 
 _VOWELS = frozenset("aeiou")
@@ -162,6 +165,79 @@ def decode_claude_oauth_token(blob: str | None) -> str | None:
         return None
     token = payload.get("oauth_token") if isinstance(payload, dict) else None
     return token if isinstance(token, str) and token else None
+
+
+# ---------------------------------------------------------------------------
+# Foreman JWT helpers (HS256, stdlib-only)
+# ---------------------------------------------------------------------------
+
+_FOREMAN_JWT_SUB = "pioneer-foreman"
+_FOREMAN_JWT_TTL = 3600  # seconds; foreman refreshes before expiry
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _b64url_decode(s: str) -> bytes:
+    padding = 4 - len(s) % 4
+    if padding != 4:
+        s += "=" * padding
+    return base64.urlsafe_b64decode(s)
+
+
+def make_foreman_jwt(guild_id: str, secret: str, ttl: int = _FOREMAN_JWT_TTL) -> str:
+    """Create a short-lived HS256 JWT for the standalone foreman.
+
+    Both the foreman (via ``backend_key`` in its TOML) and the backend
+    (via ``PIONEER_FOREMAN_KEY`` env var) must share the same *secret*.
+    The token is valid for *ttl* seconds (default 1 hour).
+    """
+    header = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    now = int(time.time())
+    payload = _b64url_encode(
+        json.dumps(
+            {
+                "sub": _FOREMAN_JWT_SUB,
+                "guild_id": guild_id,
+                "iat": now,
+                "exp": now + ttl,
+            }
+        ).encode()
+    )
+    signing_input = f"{header}.{payload}"
+    sig = _b64url_encode(hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).digest())
+    return f"{signing_input}.{sig}"
+
+
+def verify_foreman_jwt(token: str, secret: str, guild_id: str) -> bool:
+    """Return True iff *token* is a valid foreman JWT for *guild_id*.
+
+    Checks: HS256 signature, ``sub`` == ``"pioneer-foreman"``, ``guild_id``
+    matches, and the token has not expired.  Returns False (never raises) on
+    any validation failure so callers can safely fall through to other auth checks.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return False
+        signing_input = f"{parts[0]}.{parts[1]}"
+        expected_sig = _b64url_encode(
+            hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).digest()
+        )
+        if not hmac.compare_digest(expected_sig, parts[2]):
+            return False
+        payload = json.loads(_b64url_decode(parts[1]))
+        if payload.get("sub") != _FOREMAN_JWT_SUB:
+            return False
+        if payload.get("guild_id") != guild_id:
+            return False
+        exp = payload.get("exp", 0)
+        if time.time() > exp:
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def build_spawn_worker_env(

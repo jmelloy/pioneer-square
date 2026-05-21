@@ -30,7 +30,8 @@ class Foreman:
         self._http = ForemanHTTPClient(
             self._config.http_url,
             self._config.guild_id,
-            self._config.auth_token,
+            backend_key=self._config.backend_key,
+            auth_token=self._config.auth_token,
         )
         retry_delay = 5
         try:

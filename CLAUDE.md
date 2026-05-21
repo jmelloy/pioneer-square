@@ -48,14 +48,14 @@ cd foreman
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 cp pioneer-foreman.toml.example pioneer-foreman.toml
-# Edit: backend_url, guild_id, auth_token (member login_token or worker auth_token)
+# Edit: backend_url, guild_id, backend_key (matches PIONEER_FOREMAN_KEY on backend)
 pioneer-foreman
 pioneer-foreman --log-level DEBUG   # verbose
 
 # Or via environment variables (no config file needed):
 PIONEER_BACKEND_URL=ws://localhost:8000 \
 PIONEER_GUILD_ID=<your-6-char-guild-id> \
-PIONEER_AUTH_TOKEN=<login_token> \
+PIONEER_FOREMAN_KEY=<shared-secret> \
 ANTHROPIC_API_KEY=<key> \
 pioneer-foreman
 

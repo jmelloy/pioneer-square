@@ -2,6 +2,19 @@
 
 The standalone foreman uses this to read guild state and write mutations
 without direct database access.
+
+Authentication
+--------------
+Two modes, in priority order:
+
+1. **JWT (preferred)** — ``backend_key`` is set in ``pioneer-foreman.toml``
+   (matches ``PIONEER_FOREMAN_KEY`` on the backend).  A short-lived HS256 JWT
+   is minted automatically and refreshed before expiry.  No manual token
+   management required.
+
+2. **Static token (fallback)** — ``auth_token`` is set to a member
+   login_token or worker auth_token.  Sent as-is; the caller is responsible
+   for keeping it valid.
 """
 
 from __future__ import annotations
@@ -10,6 +23,8 @@ import logging
 from typing import Any
 
 import httpx
+
+from .jwt_auth import JWTTokenManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,36 +39,60 @@ class BackendError(Exception):
 
 
 class ForemanHTTPClient:
-    """Thin async httpx wrapper scoped to a guild."""
+    """Thin async httpx wrapper scoped to a guild.
 
-    def __init__(self, http_url: str, guild_id: str, auth_token: str | None = None):
+    Pass ``backend_key`` (shared HMAC secret) for JWT auth, or ``auth_token``
+    (member login_token / worker auth_token) for static token auth.
+    At least one must be provided; ``backend_key`` takes priority.
+    """
+
+    def __init__(
+        self,
+        http_url: str,
+        guild_id: str,
+        *,
+        backend_key: str | None = None,
+        auth_token: str | None = None,
+    ):
         self._base = http_url.rstrip("/")
         self._guild_id = guild_id
-        headers = {}
-        if auth_token:
-            headers["Authorization"] = f"Bearer {auth_token}"
-        self._client = httpx.AsyncClient(
-            headers=headers,
-            timeout=30.0,
+        self._jwt_mgr: JWTTokenManager | None = (
+            JWTTokenManager(guild_id, backend_key) if backend_key else None
         )
+        self._static_token: str | None = auth_token
+        if not backend_key and not auth_token:
+            logger.warning(
+                "ForemanHTTPClient created without auth credentials — "
+                "REST calls will fail with 401. "
+                "Set backend_key (PIONEER_FOREMAN_KEY) or auth_token."
+            )
+        self._client = httpx.AsyncClient(timeout=30.0)
 
     # ── Internals ──────────────────────────────────────────────────────────
 
     def _guild_url(self, path: str) -> str:
         return f"{self._base}/guilds/{self._guild_id}{path}"
 
+    def _auth_header(self) -> dict[str, str]:
+        """Return an Authorization header, preferring a fresh JWT over a static token."""
+        if self._jwt_mgr is not None:
+            return {"Authorization": f"Bearer {self._jwt_mgr.token()}"}
+        if self._static_token:
+            return {"Authorization": f"Bearer {self._static_token}"}
+        return {}
+
     async def _get(self, url: str, **params) -> Any:
-        resp = await self._client.get(url, params=params or None)
+        resp = await self._client.get(url, params=params or None, headers=self._auth_header())
         self._raise_for_status(resp)
         return resp.json()
 
     async def _post(self, url: str, body: dict) -> Any:
-        resp = await self._client.post(url, json=body)
+        resp = await self._client.post(url, json=body, headers=self._auth_header())
         self._raise_for_status(resp)
         return resp.json()
 
     async def _patch(self, url: str, body: dict) -> Any:
-        resp = await self._client.patch(url, json=body)
+        resp = await self._client.patch(url, json=body, headers=self._auth_header())
         self._raise_for_status(resp)
         return resp.json()
 
