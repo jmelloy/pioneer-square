@@ -27,6 +27,8 @@ import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_worker  # noqa: E402
+from models import Agent, Worker  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -61,9 +63,6 @@ def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
 
 def _get_states(db_url: str, agent_id: str, worker_id: str) -> tuple[str, str]:
     """Return (agent_state, worker_state) from the DB."""
-    from models import Agent, Worker
-    from sqlalchemy import select
-
     with _sync_session(db_url) as session:
         agent_state = session.scalar(select(Agent.state).where(Agent.id == agent_id))
         worker_state = session.scalar(select(Worker.state).where(Worker.id == worker_id))

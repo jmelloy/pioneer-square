@@ -12,14 +12,19 @@ from datetime import UTC, datetime
 # sets up sys.path, so we need to add the backend dir ourselves).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import psycopg2
+import psycopg2.extras
 from alembic import command
 from alembic.config import Config as AlembicConfig
+from models import Agent, GithubToken, Guild, GuildMember, Task, User, UserSession, Worker
+from sqlalchemy import create_engine, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine.url import make_url
+from sqlalchemy.orm import Session
 
 
 def _psycopg2_kwargs(db_url: str) -> dict:
     """Parse a SQLAlchemy URL and return kwargs suitable for psycopg2.connect()."""
-    from sqlalchemy.engine.url import make_url
-
     u = make_url(db_url).set(drivername="postgresql+psycopg2")
     return {
         "host": u.host,
@@ -40,9 +45,6 @@ def create_db(db_url: str) -> None:
 
 def truncate_all(db_url: str) -> None:
     """Truncate all public tables (except alembic_version) and restart sequences."""
-    import psycopg2
-    import psycopg2.extras
-
     conn = psycopg2.connect(**_psycopg2_kwargs(db_url))
     conn.autocommit = True
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -73,9 +75,6 @@ def raw_conn(db_url: str):
             row = cur.fetchone()
             conn.commit()
     """
-    import psycopg2
-    import psycopg2.extras
-
     conn = psycopg2.connect(**_psycopg2_kwargs(db_url))
     conn.autocommit = False
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -93,10 +92,6 @@ def raw_conn(db_url: str):
 @contextlib.contextmanager
 def _sync_session(db_url: str):
     """Synchronous SQLAlchemy ORM session for test DB access."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.engine.url import make_url
-    from sqlalchemy.orm import Session
-
     sync_url = make_url(db_url).set(drivername="postgresql+psycopg2")
     engine = create_engine(sync_url)
     try:
@@ -108,9 +103,6 @@ def _sync_session(db_url: str):
 
 def make_auth_token(db_url: str, user_id: str = "gh-user-test", username: str = "testuser") -> str:
     """Insert a test GitHub user + session into the DB and return the token."""
-    from models import GithubToken, UserSession
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     token = "test-session-" + secrets.token_hex(8)
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
@@ -145,10 +137,6 @@ def insert_guild(
     default ``make_auth_token()`` user satisfies ``require_member`` checks.
     Pass ``owner_user_id=None`` to skip that.
     """
-    from models import Guild, GuildMember, User
-    from sqlalchemy import select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
         stmt = (
@@ -161,11 +149,10 @@ def insert_guild(
             )
             .returning(Guild.id)
         )
-        result = session.execute(stmt)
-        guild_pk = result.scalar_one()
+        guild_pk = session.execute(stmt).scalar_one()
 
         if owner_user_id:
-            user_stmt = (
+            session.execute(
                 pg_insert(User)
                 .values(
                     id=owner_user_id,
@@ -176,32 +163,20 @@ def insert_guild(
                 )
                 .on_conflict_do_nothing(index_elements=["id"])
             )
-            session.execute(user_stmt)
-
-            member_stmt = (
+            session.execute(
                 pg_insert(GuildMember)
-                .values(
-                    guild_id=guild_pk,
-                    user_id=owner_user_id,
-                    role="owner",
-                    created_at=now,
-                )
+                .values(guild_id=guild_pk, user_id=owner_user_id, role="owner", created_at=now)
                 .on_conflict_do_nothing(index_elements=["guild_id", "user_id"])
             )
-            session.execute(member_stmt)
 
         session.commit()
 
 
 def insert_member(db_url: str, guild_id: str, user_id: str, role: str = "member") -> None:
     """Add a user as a member of a guild (creating a users row if needed)."""
-    from models import Guild, GuildMember, User
-    from sqlalchemy import select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
-        user_stmt = (
+        session.execute(
             pg_insert(User)
             .values(
                 id=user_id,
@@ -212,27 +187,18 @@ def insert_member(db_url: str, guild_id: str, user_id: str, role: str = "member"
             )
             .on_conflict_do_nothing(index_elements=["id"])
         )
-        session.execute(user_stmt)
-
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
         )
         if guild_pk:
-            member_stmt = (
+            session.execute(
                 pg_insert(GuildMember)
-                .values(
-                    guild_id=guild_pk,
-                    user_id=user_id,
-                    role=role,
-                    created_at=now,
-                )
+                .values(guild_id=guild_pk, user_id=user_id, role=role, created_at=now)
                 .on_conflict_do_update(
                     index_elements=["guild_id", "user_id"],
                     set_={"role": pg_insert(GuildMember).excluded.role},
                 )
             )
-            session.execute(member_stmt)
-
         session.commit()
 
 
@@ -245,29 +211,19 @@ def insert_worker(
     org: str | None = None,
 ) -> None:
     """Insert a worker row for a guild."""
-    from models import Guild, Worker
-    from sqlalchemy import select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
         )
         assert guild_pk is not None, f"Guild {guild_id!r} not found"
-        stmt = (
+        session.execute(
             pg_insert(Worker)
             .values(
-                id=worker_id,
-                guild_id=guild_pk,
-                repos=repos,
-                state=state,
-                org=org,
-                created_at=now,
+                id=worker_id, guild_id=guild_pk, repos=repos, state=state, org=org, created_at=now
             )
             .on_conflict_do_nothing(index_elements=["id"])
         )
-        session.execute(stmt)
         session.commit()
 
 
@@ -283,17 +239,13 @@ def insert_agent(
     current_task_id: str | None = None,
 ) -> None:
     """Insert an agent row for a guild."""
-    from models import Agent, Guild
-    from sqlalchemy import select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
         )
         assert guild_pk is not None, f"Guild {guild_id!r} not found"
-        stmt = (
+        session.execute(
             pg_insert(Agent)
             .values(
                 id=agent_id,
@@ -308,7 +260,6 @@ def insert_agent(
             )
             .on_conflict_do_nothing(index_elements=["id"])
         )
-        session.execute(stmt)
         session.commit()
 
 
@@ -331,17 +282,13 @@ def insert_task(
     user_id: str | None = None,
 ) -> None:
     """Insert a task row for a guild."""
-    from models import Guild, Task
-    from sqlalchemy import select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
         )
         assert guild_pk is not None, f"Guild {guild_id!r} not found"
-        stmt = (
+        session.execute(
             pg_insert(Task)
             .values(
                 id=task_id,
@@ -362,5 +309,4 @@ def insert_task(
             )
             .on_conflict_do_nothing(index_elements=["id"])
         )
-        session.execute(stmt)
         session.commit()

@@ -31,6 +31,8 @@ import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_task, insert_worker  # noqa: E402
+from models import Task  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
@@ -135,8 +137,6 @@ def test_task_complete_persists_pr_url(client):
             assert msg["type"] == "task-complete"
 
             # Check DB while connections are still open to avoid racing background tasks.
-            from models import Task
-            from sqlalchemy import select
 
             with _sync_session(db_url) as session:
                 row = session.execute(
@@ -181,9 +181,6 @@ def test_task_complete_without_pr_url_leaves_pr_url_null(client):
                 }
             )
             ws_obs.receive_json()
-
-            from models import Task
-            from sqlalchemy import select
 
             with _sync_session(db_url) as session:
                 row = session.execute(
@@ -230,9 +227,6 @@ def test_task_followup_done_persists_pr_url(client):
             )
             msg = ws_obs.receive_json()
             assert msg["type"] == "task-followup-done"
-
-            from models import Task
-            from sqlalchemy import select
 
             with _sync_session(db_url) as session:
                 row = session.execute(

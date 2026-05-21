@@ -10,12 +10,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
+from models import Guild, User
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
 def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
     """Insert a guild with github_user_id but no guild_members row."""
-    from models import Guild
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
@@ -29,8 +29,6 @@ def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
 
 def _seed_user(db_url: str, user_id: str, login: str) -> None:
     """Insert a users row directly so it can be referenced as a member."""
-    from models import User
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:

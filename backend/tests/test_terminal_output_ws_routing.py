@@ -21,6 +21,8 @@ import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import insert_guild, insert_worker  # noqa: E402
+from models import TaskLog  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
@@ -100,8 +102,6 @@ def test_worker_only_terminal_output_uses_worker_id_only(client):
             assert msg.get("taskId") is None
 
             from helpers import _sync_session
-            from models import TaskLog
-            from sqlalchemy import select
 
             with _sync_session(db_url) as session:
                 row = session.execute(

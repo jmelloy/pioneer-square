@@ -22,6 +22,8 @@ import database as database_module
 from _test_config import TEST_DATABASE_URL
 from helpers import truncate_all
 from lock_service import LockService
+from models import Lock
+from sqlalchemy import func, select
 
 
 @pytest.fixture()
@@ -107,11 +109,6 @@ async def test_is_locked_false_after_release(db_session):
 @pytest.mark.anyio
 async def test_expired_lock_can_be_reacquired(db_session):
     """A lock with an already-elapsed TTL should be treated as free on the next acquire."""
-    import os
-    import sys
-
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from models import Lock
 
     expired_dt = datetime.now(UTC) - timedelta(minutes=5)
 
@@ -129,8 +126,6 @@ async def test_expired_lock_can_be_reacquired(db_session):
 
 @pytest.mark.anyio
 async def test_cleanup_expired_removes_stale_locks(db_session):
-    from models import Lock
-    from sqlalchemy import func, select
 
     expired_dt = datetime.now(UTC) - timedelta(hours=1)
     future_dt = datetime.now(UTC) + timedelta(hours=1)
