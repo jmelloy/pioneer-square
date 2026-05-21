@@ -80,9 +80,9 @@ GITHUB_CLIENT_SECRET=your_client_secret_here
 
 ```bash
 cd backend
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+uv venv                              # creates .venv/
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+uv pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
@@ -104,9 +104,8 @@ and access to the configured repos.
 
 ```bash
 cd worker
-python -m venv venv
-source venv/bin/activate
-pip install -e .
+uv venv && source .venv/bin/activate
+uv pip install -e .
 cp pioneer-worker.toml.example pioneer-worker.toml
 # edit pioneer-worker.toml: backend_url, session_id, repos
 # github_token is optional — if omitted, the worker fetches the OAuth token
