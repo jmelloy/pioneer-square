@@ -212,38 +212,40 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     agent_type = data.get("agentType", "worker")
     worker_id = data.get("workerId")
     joined_at = datetime.now(UTC).isoformat()
-    stmt = pg_insert(Agent).values(
-        id=agent_id,
-        guild_id=ctx.guild_pk,
-        worker_id=worker_id,
-        name=agent_name,
-        type=agent_type,
-        state="idle",
-        current_task_id=None,
-        joined_at=joined_at,
-        last_seen=joined_at,
-    )
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["id"],
-        set_={
-            "guild_id": stmt.excluded.guild_id,
-            "worker_id": stmt.excluded.worker_id,
-            "name": stmt.excluded.name,
-            "type": stmt.excluded.type,
-            "state": stmt.excluded.state,
-            "current_task_id": stmt.excluded.current_task_id,
-            "joined_at": stmt.excluded.joined_at,
-            "last_seen": stmt.excluded.last_seen,
-        },
-    )
-    await ctx.db.execute(stmt)
-    if agent_type == "worker" and worker_id:
-        await ctx.db.execute(
-            update(Worker)
-            .where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
-            .values(state="online", last_seen=joined_at)
+    is_external_foreman = agent_type == "foreman" and data.get("external") is True
+    if not is_external_foreman:
+        stmt = pg_insert(Agent).values(
+            id=agent_id,
+            guild_id=ctx.guild_pk,
+            worker_id=worker_id,
+            name=agent_name,
+            type=agent_type,
+            state="idle",
+            current_task_id=None,
+            joined_at=joined_at,
+            last_seen=joined_at,
         )
-    await ctx.db.commit()
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "guild_id": stmt.excluded.guild_id,
+                "worker_id": stmt.excluded.worker_id,
+                "name": stmt.excluded.name,
+                "type": stmt.excluded.type,
+                "state": stmt.excluded.state,
+                "current_task_id": stmt.excluded.current_task_id,
+                "joined_at": stmt.excluded.joined_at,
+                "last_seen": stmt.excluded.last_seen,
+            },
+        )
+        await ctx.db.execute(stmt)
+        if agent_type == "worker" and worker_id:
+            await ctx.db.execute(
+                update(Worker)
+                .where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
+                .values(state="online", last_seen=joined_at)
+            )
+        await ctx.db.commit()
     if agent_id:
         ctx.joined_agents.add(agent_id)
         # Take the per-guild ownership lock so a concurrent disconnect-cleanup
