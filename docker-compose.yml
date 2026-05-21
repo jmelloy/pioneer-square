@@ -61,6 +61,18 @@ services:
       # 6-char guild ID this foreman instance manages (required)
       GUILD_ID: ${GUILD_ID:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Model and provider — set FOREMAN_PROVIDER=bedrock to use Amazon Bedrock.
+      # Bedrock model IDs use the cross-region inference prefix, e.g.:
+      #   us.anthropic.claude-sonnet-4-5-20251001-v2:0
+      FOREMAN_MODEL: ${FOREMAN_MODEL:-claude-sonnet-4-6}
+      FOREMAN_PROVIDER: ${FOREMAN_PROVIDER:-anthropic}
+      # AWS credentials for Bedrock (ignored when FOREMAN_PROVIDER=anthropic).
+      # Supply either a bearer token OR access key + secret (+ optional session token).
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_BEARER_TOKEN_BEDROCK: ${AWS_BEARER_TOKEN_BEDROCK:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

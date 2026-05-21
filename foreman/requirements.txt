@@ -8,8 +8,8 @@
 # Note: Phase 3 will replace the sys.path import with a proper REST client,
 # after which sqlmodel/fastapi/aiosqlite/sqlalchemy can be dropped here.
 
-# Claude API
-anthropic>=0.40.0
+# Claude API (bedrock extra adds boto3 for FOREMAN_PROVIDER=bedrock support)
+anthropic[bedrock]>=0.40.0
 
 # WebSocket client (foreman/main.py WS connection to backend)
 websockets>=12.0
@@ -29,11 +29,9 @@ cryptography>=42.0
 # .env file loading (optional; convenient for local dev)
 python-dotenv>=1.0
 
-# ── Optional: Amazon Bedrock ──────────────────────────────────────────────────
-# Uncomment (or install separately) to use FOREMAN_PROVIDER=bedrock.
-# Requires AWS credentials in env / IAM role and Bedrock model access enabled.
-#
-# anthropic[bedrock]>=0.40.0
+# ── Amazon Bedrock ────────────────────────────────────────────────────────────
+# Enabled via FOREMAN_PROVIDER=bedrock. Requires AWS credentials in env /
+# IAM role and Bedrock model access enabled in your AWS account.
 
 # ── Development / testing ─────────────────────────────────────────────────────
 # pytest>=8.0
