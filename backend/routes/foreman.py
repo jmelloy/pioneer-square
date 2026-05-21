@@ -42,6 +42,7 @@ from models import (
     ForemanTurn,
     Guild,
     GuildKey,
+    GuildMember,
     Message,
     Task,
     live_tasks_filter,
@@ -155,9 +156,19 @@ async def get_foreman_state(
             select(Guild.name, Guild.primary_repo).where(Guild.guild_id == guild_id)
         )
         guild_row = guild_res.one_or_none()
+
+        # Fetch guild owner user_id for the standalone foreman
+        owner_res = await db.execute(
+            select(GuildMember.user_id)
+            .where(GuildMember.guild_id == guild_pk, GuildMember.role == "owner")
+            .limit(1)
+        )
+        owner_user_id = owner_res.scalar_one_or_none()
+
         guild_data = {
             "name": guild_row.name if guild_row else None,
             "primary_repo": guild_row.primary_repo if guild_row else None,
+            "owner_user_id": owner_user_id,
         }
 
         # Online workers with their active agents
@@ -574,3 +585,70 @@ async def create_message(
         },
     )
     return {"message_id": msg_id, "created_at": created_at}
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Token counts + tool execution for standalone foreman
+# ---------------------------------------------------------------------------
+
+
+class TurnTokensUpdate(BaseModel):
+    input_tokens: int
+    output_tokens: int
+
+
+@router.patch("/guilds/{guild_id}/foreman/turns/{turn_id}/tokens")
+async def update_turn_tokens(
+    guild_id: str,
+    turn_id: int,
+    body: TurnTokensUpdate,
+    _caller: str = Depends(require_worker_or_member_path),
+):
+    """Update token counts for a saved foreman turn. Used by the standalone foreman."""
+    from sqlalchemy import update as sa_update
+
+    db = await get_db()
+    try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
+        await db.execute(
+            sa_update(ForemanTurn)
+            .where(ForemanTurn.id == turn_id)
+            .values(input_tokens=body.input_tokens, output_tokens=body.output_tokens)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+    return {"ok": True}
+
+
+class ToolExecRequest(BaseModel):
+    tool_name: str
+    tool_id: str
+    tool_input: dict
+    user_id: str | None = None
+
+
+@router.post("/guilds/{guild_id}/foreman/exec_tool")
+async def exec_tool(
+    guild_id: str,
+    body: ToolExecRequest,
+    _caller: str = Depends(require_worker_or_member_path),
+):
+    """Execute a single foreman tool call. Used by the standalone foreman process.
+
+    This delegates to _exec_one_tool() in foreman/tools.py, keeping all business
+    logic (locks, worker selection, DB writes, WS broadcasts) in the backend.
+
+    Returns a tool_result block: {"type": "tool_result", "tool_use_id": str, "content": str, "is_error": bool}
+    """
+    from foreman.tools import _exec_one_tool
+
+    class _FakeToolUse:
+        def __init__(self):
+            self.name = body.tool_name
+            self.id = body.tool_id
+            self.input = body.tool_input
+
+    return await _exec_one_tool(guild_id, _FakeToolUse(), body.user_id)

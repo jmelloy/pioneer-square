@@ -93,7 +93,7 @@ def require_member(*allowed_roles: str):
     return _dep
 
 
-async def authorize_worker_or_member(guild_id: str, token: str | None) -> str:
+async def authorize_worker_or_member(guild_id: str, token: str | None) -> str:  # noqa: C901
     """Validate *token* against worker auth_tokens or member login_tokens.
 
     Returns ``"worker:<worker_id>"`` or ``"user:<github_user_id>"`` so callers
@@ -102,6 +102,17 @@ async def authorize_worker_or_member(guild_id: str, token: str | None) -> str:
     """
     if not token:
         raise HTTPException(status_code=401, detail="Authentication required")
+
+    # Foreman JWT — validated without a DB round-trip when PIONEER_FOREMAN_KEY is set.
+    # Checked first so the foreman never waits for a DB session on the hot path.
+    import os
+
+    from utils import verify_foreman_jwt
+
+    _foreman_key = os.environ.get("PIONEER_FOREMAN_KEY", "")
+    if _foreman_key and verify_foreman_jwt(token, _foreman_key, guild_id):
+        return "foreman:jwt"
+
     db = await get_db()
     try:
         guild_pk = await get_guild_pk(db, guild_id)

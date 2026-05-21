@@ -42,9 +42,23 @@ AI out of the backend process — useful if you want to scale or restart the for
 independently.  The backend falls back to its embedded foreman when no external one
 is connected.
 
+The foreman authenticates to the backend with a shared HMAC secret
+(`PIONEER_FOREMAN_KEY`).  Generate one with:
+
 ```bash
-# Get your guild ID from the URL bar (6 chars after /g/)
-GUILD_ID=abc123 docker compose --profile foreman up --build foreman
+openssl rand -hex 32
+```
+
+Set the **same value** on both sides — `PIONEER_FOREMAN_KEY` on the backend and
+`GUILD_ID` + the key for the foreman:
+
+```bash
+# Backend (.env or shell):
+PIONEER_FOREMAN_KEY=<your-secret>
+
+# Foreman (docker compose):
+GUILD_ID=abc123 PIONEER_FOREMAN_KEY=<your-secret> \
+  docker compose --profile foreman up --build foreman
 ```
 
 ### GitHub OAuth App
@@ -107,13 +121,39 @@ cd worker
 uv venv && source .venv/bin/activate
 uv pip install -e .
 cp pioneer-worker.toml.example pioneer-worker.toml
-# edit pioneer-worker.toml: backend_url, session_id, repos
+# edit pioneer-worker.toml: backend_url, guild_id, repos
 # github_token is optional — if omitted, the worker fetches the OAuth token
 # stored in the backend DB (set after the user connects via GitHub OAuth)
 pioneer-worker
 ```
 
 See [`worker/README.md`](worker/README.md) for details.
+
+### Standalone Foreman (local, no Docker)
+
+```bash
+cd foreman
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+cp pioneer-foreman.toml.example pioneer-foreman.toml
+# edit pioneer-foreman.toml: backend_url, guild_id, backend_key
+pioneer-foreman
+```
+
+Or with environment variables only (no config file):
+
+```bash
+PIONEER_BACKEND_URL=ws://localhost:8000 \
+PIONEER_GUILD_ID=<your-guild-id> \
+PIONEER_FOREMAN_KEY=<your-secret> \
+ANTHROPIC_API_KEY=<key> \
+pioneer-foreman
+```
+
+`PIONEER_FOREMAN_KEY` must match the same variable set on the backend.  When an
+external foreman is connected the backend routes all `foreman-trigger` events to
+it; if it disconnects the backend's embedded foreman takes over automatically.
 
 ## Migrating from SQLite
 
