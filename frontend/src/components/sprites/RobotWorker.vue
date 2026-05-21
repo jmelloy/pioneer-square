@@ -4,6 +4,7 @@
     viewBox="0 0 40 56"
     xmlns="http://www.w3.org/2000/svg"
     overflow="visible"
+    shape-rendering="crispEdges"
   >
     <!-- HEAD GROUP — tilt/shake animations target this whole group -->
     <g class="head-group">
@@ -94,7 +95,7 @@
       rx="0"
       fill="rgba(0,0,0,0.35)"
       stroke="var(--agent-color)"
-      stroke-width="0.5"
+      stroke-width="1"
     />
 
     <!-- Left arm -->
