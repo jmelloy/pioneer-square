@@ -37,7 +37,7 @@ Correct and complete. The docstring now enumerates all actual callers of `_trigg
 +  workers disconnect simultaneously — handle each line independently.
 ```
 
-Accurate. The batch code in `routes/websocket.py` joins lines with `\n` and sends them as a single trigger:
+Accurate. The batch code in `routes/websocket.py` joins lines with `\n` and sends them as a single trigger (`routes/websocket.py:L211`):
 
 ```python
 offline_lines = "\n".join(
@@ -60,7 +60,7 @@ The prompt now correctly prepares the foreman for this multi-line format.
 
 **Prompt guidance could be more explicit.** "Handle each line independently" is correct but terse. Stating "apply the same assessment you would for a single-worker disconnect to each line" would be more actionable for the model. The surrounding bullet text provides enough context to infer the right behaviour, so this is not a blocker.
 
-**`worker-online`/`worker-offline` absent from CLAUDE.md protocol table.** The WS message-type table documents wire messages, not internal trigger names, so omitting them is defensible. A note as `[foreman-trigger]` sub-types would help future contributors. Low priority.
+**`worker-online`/`worker-offline` absent from CLAUDE.md protocol table.** The WS message-type table documents wire messages, not internal trigger names, so omitting them is defensible. However, a contributor unfamiliar with the codebase cannot discover these internal trigger sub-types from CLAUDE.md alone. **Recommendation:** open a follow-up ticket to add a `[foreman-trigger]` sub-type column (or subsection) to the CLAUDE.md protocol table, listing `worker-online`, `worker-offline`, and any other internal trigger names that do not map 1-to-1 to a wire message type. This closes the discoverability gap without changing the protocol.
 
 **Re-registration noise (carried forward from #435).** Every `worker-register` fires `worker-online`, including routine re-registrations. Called out in the PR description as a known acceptable trade-off — tracking first-registration state per agent would add complexity without clear payoff.
 
