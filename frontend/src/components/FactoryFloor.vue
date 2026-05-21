@@ -75,6 +75,7 @@ import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import AgentAvatar from './AgentAvatar.vue'
+import layout from './factory-layout.json'
 import type { Agent, Task } from '../types'
 
 const agentsStore = useAgentsStore()
@@ -85,51 +86,16 @@ const agents = computed(() => agentsStore.agents.filter((a) => a.state !== 'offl
 const SHOW_FLOOR_DEBUG = false
 
 // ─── Image-derived layout ──────────────────────────────────────────────────
-// All coordinates are fractions (0-1) of the floor stage, read off the
-// pixel-art room in assets/factory-floor.jpg (896×1152).
+// Coordinates are fractions (0-1) of the floor stage. They live in
+// factory-layout.json so the same numbers drive scripts/preview_factory_layout.py.
+// `walkableFloor` is the open tiled area: its first edges are the two back
+// wall bases, the rest hug the machinery in the front corners.
 
-const STAGE_RATIO = 896 / 1152
-
-// The two back walls. Everything above this polyline is wall, not floor:
-//   left wall base : (0.14, 0.54) → corner (0.42, 0.45)
-//   right wall base: corner (0.42, 0.45) → (0.62, 0.49)
-// The walkable floor is the open tiled area enclosed by those walls and the
-// steampunk machinery clustered in the front-left and front-right corners.
-const FLOOR_POLYGON: [number, number][] = [
-  [0.14, 0.54],
-  [0.42, 0.45],
-  [0.62, 0.49],
-  [0.66, 0.6],
-  [0.56, 0.78],
-  [0.42, 0.86],
-  [0.27, 0.74],
-  [0.14, 0.64],
-]
-
-// Floor spots robots gravitate to when idle: the two workbenches, the
-// bulletin board on the brick wall, and the coffee machine on its side table.
-interface Poi {
-  id: string
-  label: string
-  x: number
-  y: number
-}
-const POINTS_OF_INTEREST: Poi[] = [
-  { id: 'table-a', label: 'Workbench A', x: 0.3, y: 0.62 },
-  { id: 'table-b', label: 'Workbench B', x: 0.49, y: 0.77 },
-  { id: 'bulletin', label: 'Bulletin Board', x: 0.6, y: 0.5 },
-  { id: 'coffee', label: 'Coffee Pot', x: 0.64, y: 0.58 },
-]
-
-// Slots active-task work stations occupy, spread over the open floor.
-const STATION_POSITIONS: [number, number][] = [
-  [0.31, 0.6],
-  [0.5, 0.67],
-  [0.2, 0.66],
-  [0.62, 0.58],
-  [0.4, 0.81],
-  [0.56, 0.75],
-]
+const STAGE_RATIO = layout.image.width / layout.image.height
+const FLOOR_POLYGON = layout.walkableFloor as [number, number][]
+const POINTS_OF_INTEREST = layout.pointsOfInterest
+const STATION_POSITIONS = layout.stationSlots as [number, number][]
+const GRAVITATE_RADIUS = layout.gravitateRadius
 const MAX_STATIONS = STATION_POSITIONS.length
 
 const FLOOR_BBOX = {
@@ -221,7 +187,7 @@ function zIndex(y: number) {
   return Math.round(y * 1000)
 }
 
-function jitterAround(p: { x: number; y: number }, radius = 0.05) {
+function jitterAround(p: { x: number; y: number }, radius = GRAVITATE_RADIUS) {
   for (let i = 0; i < 20; i++) {
     const x = p.x + (Math.random() - 0.5) * 2 * radius
     const y = p.y + (Math.random() - 0.5) * 2 * radius
