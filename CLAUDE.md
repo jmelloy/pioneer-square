@@ -116,7 +116,7 @@ Worker ──WebSocket──────────┘
 - **Guild**: a workspace (was called "session" — DB migration renames the table; the 6-char ID appears in URLs and `pioneer-worker.toml` as `guild_id`).
 - **Worker**: a registered worker entity in the DB (`workers` table, id prefix `w-`). Persisted across restarts.
 - **Agent**: a WebSocket participant (`agents` table, id prefix `a-`). A worker process creates one `agent_id` per process lifetime (stable within a run, not across restarts). The `worker_id` is for DB routing; `agent_id` is the live WebSocket identity.
-- **Task**: a unit of work (`tasks` table, id prefix `t-`). Foreman tasks have `worker_id='foreman'`; worker tasks are owned by a real worker.
+- **Task**: a unit of work (`tasks` table, id prefix `t-`). Foreman-created tasks have `worker_id=NULL` (unassigned) until the foreman's `assign_task` tool sets a real worker; worker tasks are owned by a real worker.
 
 ### Task lifecycle
 

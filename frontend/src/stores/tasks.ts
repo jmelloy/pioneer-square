@@ -157,7 +157,7 @@ export const useTasksStore = defineStore('tasks', () => {
         description: data.description,
         phase: data.phase,
         state: data.state,
-        worker_id: 'foreman',
+        worker_id: null,
         created_at: data.createdAt,
       })
     } else if (data.type === 'task-assigned') {
