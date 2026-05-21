@@ -32,7 +32,7 @@ from models import (
 )
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from utils import generate_guild_id
 
@@ -292,20 +292,16 @@ async def guest_login():
         db.add(UserSession(token=login_token, github_user_id=guest_user_id, created_at=now))
 
         # Find or create the persistent dev guild
+        _not_deleted = or_(Guild.deleted_at.is_(None), Guild.deleted_at == "")
         guild_res = await db.execute(
-            text(
-                "SELECT guild_id FROM guilds"
-                " WHERE github_user_id = :uid AND (deleted_at IS NULL OR deleted_at = '')"
-                " LIMIT 1"
-            ),
-            {"uid": guest_user_id},
+            select(Guild.guild_id)
+            .where(Guild.github_user_id == guest_user_id, _not_deleted)
+            .limit(1)
         )
         guild_id = guild_res.scalar_one_or_none()
 
         if not guild_id:
-            existing_res = await db.execute(
-                text("SELECT guild_id FROM guilds WHERE deleted_at IS NULL OR deleted_at = ''")
-            )
+            existing_res = await db.execute(select(Guild.guild_id).where(_not_deleted))
             existing_ids = {row[0] for row in existing_res.fetchall()}
             guild_id = generate_guild_id(name="dev", existing_ids=existing_ids)
             new_guild = Guild(

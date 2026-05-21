@@ -17,7 +17,7 @@ from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from utils import generate_guild_id, row_to_dict
@@ -74,7 +74,7 @@ async def create_guild(
     created_at = datetime.now(UTC).isoformat()
     db = await get_db()
     try:
-        result = await db.execute(text("SELECT guild_id FROM guilds WHERE deleted_at IS NULL"))
+        result = await db.execute(select(Guild.guild_id).where(Guild.deleted_at.is_(None)))
         existing_ids = {row[0] for row in result.fetchall()}
         guild_id = generate_guild_id(name=data.name or "", existing_ids=existing_ids)
         guild_name = data.name or f"Guild {guild_id}"
