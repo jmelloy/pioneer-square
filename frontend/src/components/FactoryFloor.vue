@@ -1,120 +1,58 @@
 <template>
   <div class="factory-floor" ref="floorEl">
-    <!-- Background grid -->
-    <div class="floor-grid"></div>
-
-    <!-- Warm floating sparkles -->
-    <div class="sparkle-field">
-      <div
-        v-for="n in 14"
-        :key="`sp${n}`"
-        class="sparkle"
-        :style="`left: ${(n * 73 + 11) % 93}%; top: ${(n * 59 + 17) % 80}%; font-size: ${
-          8 + (n % 3) * 3
-        }px; animation-delay: ${((n * 0.37) % 2.8).toFixed(1)}s; animation-duration: ${
-          2.5 + (n % 3) * 0.8
-        }s;`"
+    <!-- Pixel-art workshop. The stage keeps the image's aspect ratio and is
+         centred; everything inside is positioned as a fraction of it. -->
+    <div class="floor-stage" :style="stageStyle">
+      <!-- Coordinate-tuning overlay: walkable polygon + points of interest. -->
+      <svg
+        v-if="SHOW_FLOOR_DEBUG"
+        class="floor-debug"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
       >
-        {{ ['✦', '★', '✧', '⋆', '✩'][n % 5] }}
-      </div>
-    </div>
+        <polygon :points="debugPolygon" />
+        <circle
+          v-for="p in POINTS_OF_INTEREST"
+          :key="p.id"
+          :cx="p.x * 100"
+          :cy="p.y * 100"
+          r="1.6"
+        />
+      </svg>
 
-    <!-- Ceiling pipes -->
-    <div class="ceiling-pipe pipe-h pipe1"></div>
-    <div class="ceiling-pipe pipe-h pipe2"></div>
-    <div class="ceiling-pipe pipe-v pipe3"></div>
-    <div class="ceiling-pipe pipe-v pipe4"></div>
-
-    <!-- Pipe joints -->
-    <div class="pipe-joint j1"></div>
-    <div class="pipe-joint j2"></div>
-
-    <!-- Steam vents -->
-    <div class="steam-vent vent1">
-      <div v-for="n in 4" :key="n" class="steam-particle" :style="`--delay: ${n * 0.3}s`"></div>
-    </div>
-    <div class="steam-vent vent2">
-      <div v-for="n in 4" :key="n" class="steam-particle" :style="`--delay: ${n * 0.4}s`"></div>
-    </div>
-    <div class="steam-vent vent3">
-      <div v-for="n in 3" :key="n" class="steam-particle" :style="`--delay: ${n * 0.5}s`"></div>
-    </div>
-
-    <!-- Ambient gears -->
-    <div class="gear gear-large g1">⚙</div>
-    <div class="gear gear-medium g2">⚙</div>
-    <div class="gear gear-small g3">⚙</div>
-    <div class="gear gear-medium g4">⚙</div>
-    <div class="gear gear-small g5">⚙</div>
-
-    <!-- Furnace -->
-    <div class="furnace">
-      <div class="furnace-body">
-        <div class="furnace-door">
-          <div class="furnace-fire">🔥</div>
-        </div>
-        <div class="furnace-gauge">
-          <div class="gauge-needle"></div>
-        </div>
-      </div>
-      <div class="furnace-chimney">
-        <div v-for="n in 5" :key="n" class="smoke-particle" :style="`--delay: ${n * 0.6}s`"></div>
-      </div>
-      <div class="furnace-label">FURNACE</div>
-    </div>
-
-    <!-- Conveyor belt -->
-    <div class="conveyor-belt">
-      <div class="belt-track">
-        <div
-          v-for="(item, n) in beltItems"
-          :key="n"
-          class="belt-item"
-          :style="`--offset: ${n * 60}px`"
-        >
-          {{ item }}
-        </div>
-      </div>
-      <div class="belt-roller left"></div>
-      <div class="belt-roller right"></div>
-    </div>
-
-    <!-- Work stations — one per active task slot -->
-    <div
-      v-for="(station, i) in visibleStations"
-      :key="i"
-      class="work-station"
-      :class="{ occupied: station.task }"
-      :style="`left: ${station.x}px; top: ${station.y}px`"
-    >
-      <div class="station-desk">
+      <!-- Work stations — one per active task. -->
+      <div
+        v-for="station in activeStations"
+        :key="station.task.id"
+        class="work-station occupied"
+        :style="`left: ${station.x * 100}%; top: ${station.y * 100}%; z-index: ${zIndex(station.y)}`"
+      >
         <div class="station-monitor">
           <div class="monitor-screen">
-            <div v-if="station.task" class="screen-active">
+            <div class="screen-active">
               <div v-for="l in 3" :key="l" class="screen-line"></div>
             </div>
-            <div v-else class="screen-idle">--</div>
           </div>
         </div>
-        <div class="station-table"></div>
+        <div class="station-label">{{ truncate(station.task.name || station.task.id, 12) }}</div>
+        <div class="task-badge" :class="`state-${station.task.state}`">
+          {{ stateLabel(station.task.state) }}
+        </div>
       </div>
-      <div class="station-label">
-        {{ station.task ? truncate(station.task.name || station.task.id, 10) : `WS-${i + 1}` }}
-      </div>
-      <div v-if="station.task" class="task-badge" :class="`state-${station.task.state}`">
-        {{ stateLabel(station.task.state) }}
-      </div>
-    </div>
 
-    <!-- Floating agents — walk to their task station or wander when idle -->
-    <div
-      v-for="agent in agents"
-      :key="agent.id"
-      class="floating-agent"
-      :style="`left: ${agentPos(agent.id).x}px; top: ${agentPos(agent.id).y}px`"
-    >
-      <AgentAvatar :agent="agent" :walking="isWalking(agent.id)" />
-      <div class="agent-nametag">{{ agent.name }}</div>
+      <!-- Agents — walk to their task station, or drift between the
+           points of interest when idle. -->
+      <div
+        v-for="agent in agents"
+        :key="agent.id"
+        class="floating-agent"
+        :style="`left: ${agentPos(agent.id).x * 100}%; top: ${
+          agentPos(agent.id).y * 100
+        }%; z-index: ${zIndex(agentPos(agent.id).y)}`"
+      >
+        <AgentAvatar :agent="agent" :walking="isWalking(agent.id)" />
+        <div class="agent-nametag">{{ agent.name }}</div>
+      </div>
     </div>
 
     <!-- Info overlay -->
@@ -143,45 +81,102 @@ const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
 const agents = computed(() => agentsStore.agents.filter((a) => a.state !== 'offline'))
 
-const beltItems = ['🔩', '⚙️', '🔧', '🪙', '⭐', '🔨']
+// Flip to true to render the walkable polygon + POI markers while tuning.
+const SHOW_FLOOR_DEBUG = false
 
-const floorEl = ref<HTMLElement | null>(null)
-const containerWidth = ref(640)
-let _ro: ResizeObserver | null = null
+// ─── Image-derived layout ──────────────────────────────────────────────────
+// All coordinates are fractions (0-1) of the floor stage, read off the
+// pixel-art room in assets/factory-floor.jpg (896×1152).
 
-// 4-column on wide screens, 2-column on phones. Computed so agents re-sync on resize.
-const stationPositions = computed(() => {
-  const w = containerWidth.value
-  if (w < 480) {
-    const col1 = 16
-    const col2 = w - 136  // 16px margin + 120px station width
-    return [
-      { x: col1, y: 170 }, { x: col2, y: 170 },
-      { x: col1, y: 350 }, { x: col2, y: 350 },
-      { x: col1, y: 530 }, { x: col2, y: 530 },
-    ]
-  }
-  return [
-    { x: 60, y: 100 }, { x: 220, y: 100 }, { x: 380, y: 100 },
-    { x: 60, y: 340 }, { x: 220, y: 340 }, { x: 380, y: 340 },
-  ]
-})
+const STAGE_RATIO = 896 / 1152
 
-const WALK_AREA = computed(() => {
-  const w = containerWidth.value
-  return w < 480
-    ? { xMin: 16, xMax: w - 36, yMin: 170, yMax: 610 }
-    : { xMin: 30, xMax: 480, yMin: 80, yMax: 330 }
-})
+// The two back walls. Everything above this polyline is wall, not floor:
+//   left wall base : (0.14, 0.54) → corner (0.42, 0.45)
+//   right wall base: corner (0.42, 0.45) → (0.62, 0.49)
+// The walkable floor is the open tiled area enclosed by those walls and the
+// steampunk machinery clustered in the front-left and front-right corners.
+const FLOOR_POLYGON: [number, number][] = [
+  [0.14, 0.54],
+  [0.42, 0.45],
+  [0.62, 0.49],
+  [0.66, 0.6],
+  [0.56, 0.78],
+  [0.42, 0.86],
+  [0.27, 0.74],
+  [0.14, 0.64],
+]
 
-const MAX_STATIONS = 6
-
-interface Station {
+// Floor spots robots gravitate to when idle: the two workbenches, the
+// bulletin board on the brick wall, and the coffee machine on its side table.
+interface Poi {
+  id: string
+  label: string
   x: number
   y: number
-  task: Task | null
+}
+const POINTS_OF_INTEREST: Poi[] = [
+  { id: 'table-a', label: 'Workbench A', x: 0.3, y: 0.62 },
+  { id: 'table-b', label: 'Workbench B', x: 0.49, y: 0.77 },
+  { id: 'bulletin', label: 'Bulletin Board', x: 0.6, y: 0.5 },
+  { id: 'coffee', label: 'Coffee Pot', x: 0.64, y: 0.58 },
+]
+
+// Slots active-task work stations occupy, spread over the open floor.
+const STATION_POSITIONS: [number, number][] = [
+  [0.31, 0.6],
+  [0.5, 0.67],
+  [0.2, 0.66],
+  [0.62, 0.58],
+  [0.4, 0.81],
+  [0.56, 0.75],
+]
+const MAX_STATIONS = STATION_POSITIONS.length
+
+const FLOOR_BBOX = {
+  minX: Math.min(...FLOOR_POLYGON.map((p) => p[0])),
+  maxX: Math.max(...FLOOR_POLYGON.map((p) => p[0])),
+  minY: Math.min(...FLOOR_POLYGON.map((p) => p[1])),
+  maxY: Math.max(...FLOOR_POLYGON.map((p) => p[1])),
 }
 
+const debugPolygon = FLOOR_POLYGON.map(([x, y]) => `${x * 100},${y * 100}`).join(' ')
+
+function pointInFloor(x: number, y: number) {
+  let inside = false
+  const p = FLOOR_POLYGON
+  for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+    const [xi, yi] = p[i]
+    const [xj, yj] = p[j]
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      inside = !inside
+    }
+  }
+  return inside
+}
+
+// ─── Stage sizing ──────────────────────────────────────────────────────────
+const floorEl = ref<HTMLElement | null>(null)
+const stage = reactive({ w: 0, h: 0 })
+let _ro: ResizeObserver | null = null
+
+const stageStyle = computed(() => ({ width: `${stage.w}px`, height: `${stage.h}px` }))
+
+function measureStage() {
+  const el = floorEl.value
+  if (!el) return
+  const cw = el.clientWidth
+  const ch = el.clientHeight
+  if (cw <= 0 || ch <= 0) return
+  if (cw / ch > STAGE_RATIO) {
+    stage.h = ch
+    stage.w = ch * STAGE_RATIO
+  } else {
+    stage.w = cw
+    stage.h = cw / STAGE_RATIO
+  }
+}
+
+// ─── Work stations ─────────────────────────────────────────────────────────
 const activeTasks = computed<Task[]>(() =>
   tasksStore.tasks
     .filter(
@@ -193,39 +188,66 @@ const activeTasks = computed<Task[]>(() =>
     .slice(0, MAX_STATIONS),
 )
 
-const visibleStations = computed<Station[]>(() =>
-  stationPositions.value.map((pos, i) => ({ ...pos, task: activeTasks.value[i] || null })),
+interface Station {
+  x: number
+  y: number
+  task: Task
+}
+
+const activeStations = computed<Station[]>(() =>
+  activeTasks.value.map((task, i) => ({
+    x: STATION_POSITIONS[i][0],
+    y: STATION_POSITIONS[i][1],
+    task,
+  })),
 )
 
-// Per-agent position + walking-flag. Walking is set briefly when the agent
-// moves so RobotWorker can run its walk animation; cleared after the CSS
-// transition ends.
+// ─── Agent positions ───────────────────────────────────────────────────────
+// Positions are fractions of the stage. `walking` is set briefly while an
+// agent moves so RobotWorker runs its walk animation.
 const agentPositions = reactive<Record<string, { x: number; y: number }>>({})
 const walking = reactive<Record<string, boolean>>({})
 const walkTimers: Record<string, ReturnType<typeof setTimeout>> = {}
 
 function agentPos(agentId: string) {
-  return agentPositions[agentId] || { x: 100, y: 220 }
+  return agentPositions[agentId] || { x: 0.4, y: 0.64 }
 }
 
 function isWalking(agentId: string) {
   return !!walking[agentId]
 }
 
-function randomPos() {
-  const { xMin, xMax, yMin, yMax } = WALK_AREA.value
-  return {
-    x: xMin + Math.random() * (xMax - xMin),
-    y: yMin + Math.random() * (yMax - yMin),
+function zIndex(y: number) {
+  return Math.round(y * 1000)
+}
+
+function jitterAround(p: { x: number; y: number }, radius = 0.05) {
+  for (let i = 0; i < 20; i++) {
+    const x = p.x + (Math.random() - 0.5) * 2 * radius
+    const y = p.y + (Math.random() - 0.5) * 2 * radius
+    if (pointInFloor(x, y)) return { x, y }
   }
+  return { x: p.x, y: p.y }
+}
+
+function poiTarget() {
+  const poi = POINTS_OF_INTEREST[Math.floor(Math.random() * POINTS_OF_INTEREST.length)]
+  return jitterAround(poi)
+}
+
+function randomFloorPos() {
+  for (let i = 0; i < 40; i++) {
+    const x = FLOOR_BBOX.minX + Math.random() * (FLOOR_BBOX.maxX - FLOOR_BBOX.minX)
+    const y = FLOOR_BBOX.minY + Math.random() * (FLOOR_BBOX.maxY - FLOOR_BBOX.minY)
+    if (pointInFloor(x, y)) return { x, y }
+  }
+  return { x: 0.4, y: 0.64 }
 }
 
 // An agent is "at work" when it owns one of the visible task stations.
-// taskId is the source of truth — workerId would collapse concurrent slots
-// onto the same bench.
 function stationForAgent(agent: Agent): Station | null {
   if (!agent.taskId) return null
-  return visibleStations.value.find((s) => s.task && s.task.id === agent.taskId) || null
+  return activeStations.value.find((s) => s.task.id === agent.taskId) || null
 }
 
 function isAgentAtWork(agent: Agent) {
@@ -247,9 +269,9 @@ function syncPositions() {
   agents.value.forEach((agent) => {
     if (isAgentAtWork(agent)) {
       const station = stationForAgent(agent)!
-      moveTo(agent.id, { x: station.x + 25, y: station.y + 90 })
+      moveTo(agent.id, { x: station.x, y: station.y + 0.07 })
     } else if (!agentPositions[agent.id]) {
-      agentPositions[agent.id] = randomPos()
+      agentPositions[agent.id] = poiTarget()
     }
   })
 }
@@ -263,19 +285,18 @@ function tickWalk() {
   if (idle.length === 0) return
   const agent = idle[walkIdx % idle.length]
   walkIdx++
-  moveTo(agent.id, randomPos())
+  // Mostly drift toward a point of interest; occasionally roam open floor.
+  moveTo(agent.id, Math.random() < 0.8 ? poiTarget() : randomFloorPos())
 }
 
 onMounted(() => {
+  measureStage()
   if (floorEl.value) {
-    containerWidth.value = floorEl.value.clientWidth
-    _ro = new ResizeObserver(([entry]) => {
-      containerWidth.value = entry.contentRect.width
-    })
+    _ro = new ResizeObserver(measureStage)
     _ro.observe(floorEl.value)
   }
   syncPositions()
-  walkTimer = setInterval(tickWalk, 2000)
+  walkTimer = setInterval(tickWalk, 3200)
 })
 
 onUnmounted(() => {
@@ -285,8 +306,7 @@ onUnmounted(() => {
 })
 
 watch(agents, syncPositions, { deep: true })
-watch(visibleStations, syncPositions)
-watch(containerWidth, syncPositions)
+watch(activeStations, syncPositions)
 
 const tickerMessages = computed(() => {
   const msgs: string[] = []
@@ -318,439 +338,70 @@ function stateLabel(state: string) {
 .factory-floor {
   width: 100%;
   height: 100%;
-  background: linear-gradient(180deg, #0d0600 0%, #120900 40%, #1c1000 100%);
+  background: #0b0500;
   position: relative;
   overflow: hidden;
-  font-family: var(--font-pixel);
-}
-
-.floor-grid {
-  position: absolute;
-  inset: 0;
-  background-image:
-    linear-gradient(rgba(232, 170, 0, 0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(232, 170, 0, 0.06) 1px, transparent 1px);
-  background-size: 40px 40px;
-}
-
-.sparkle-field {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: 1;
-}
-.sparkle {
-  position: absolute;
-  animation: sparkleFade 2.5s infinite ease-in-out;
-}
-.sparkle:nth-child(5n + 1) {
-  color: var(--color-gold);
-}
-.sparkle:nth-child(5n + 2) {
-  color: var(--color-teal);
-}
-.sparkle:nth-child(5n + 3) {
-  color: var(--color-amber);
-}
-.sparkle:nth-child(5n + 4) {
-  color: var(--color-cream);
-}
-.sparkle:nth-child(5n) {
-  color: var(--color-orange);
-}
-@keyframes sparkleFade {
-  0%,
-  100% {
-    opacity: 0;
-    transform: scale(0.3) rotate(0deg);
-  }
-  40%,
-  60% {
-    opacity: 0.85;
-    transform: scale(1.1) rotate(180deg);
-  }
-}
-
-.ceiling-pipe {
-  position: absolute;
-  background: linear-gradient(180deg, #7a3c00 0%, #cc5500 35%, #ee7722 55%, #8a4400 100%);
-  border: 1px solid #7a3c00;
-  box-shadow: 0 0 6px rgba(204, 85, 0, 0.4);
-}
-.pipe-h {
-  height: 12px;
-}
-.pipe-v {
-  width: 12px;
-}
-.pipe1 {
-  top: 20px;
-  left: 0;
-  right: 0;
-}
-.pipe2 {
-  top: 50px;
-  left: 100px;
-  width: 200px;
-}
-.pipe3 {
-  top: 0;
-  left: 150px;
-  height: 80px;
-}
-.pipe4 {
-  top: 0;
-  left: 400px;
-  height: 60px;
-}
-
-.pipe-joint {
-  position: absolute;
-  width: 18px;
-  height: 18px;
-  background: radial-gradient(
-    circle,
-    var(--color-brass-light) 20%,
-    var(--color-brass) 60%,
-    var(--color-brass-dark) 100%
-  );
-  border: 2px solid var(--color-brass-dark);
-  border-radius: 50%;
-  box-shadow: 0 0 5px rgba(232, 170, 0, 0.5);
-}
-.j1 {
-  top: 14px;
-  left: 147px;
-}
-.j2 {
-  top: 14px;
-  left: 397px;
-}
-
-.steam-vent {
-  position: absolute;
-  width: 14px;
-}
-.vent1 {
-  top: 32px;
-  left: 155px;
-}
-.vent2 {
-  top: 32px;
-  left: 405px;
-}
-.vent3 {
-  top: 62px;
-  left: 230px;
-}
-.steam-particle {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  background: radial-gradient(circle, rgba(255, 232, 176, 0.85) 0%, transparent 70%);
-  border-radius: 50%;
-  animation: steamRise 2s var(--delay, 0s) infinite ease-out;
-}
-@keyframes steamRise {
-  0% {
-    transform: translateY(0) scale(0.5);
-    opacity: 0.8;
-  }
-  50% {
-    transform: translateY(-30px) scale(1.5) translateX(5px);
-    opacity: 0.4;
-  }
-  100% {
-    transform: translateY(-60px) scale(2) translateX(-5px);
-    opacity: 0;
-  }
-}
-
-.gear {
-  position: absolute;
-  user-select: none;
-  line-height: 1;
-}
-.gear-large {
-  font-size: 56px;
-  animation: gearSpin 8s linear infinite;
-}
-.gear-medium {
-  font-size: 36px;
-  animation: gearSpin 5s linear infinite reverse;
-}
-.gear-small {
-  font-size: 22px;
-  animation: gearSpin 3s linear infinite;
-}
-.g1 {
-  right: 30px;
-  top: 60px;
-  color: var(--color-gold);
-  text-shadow:
-    0 0 10px var(--color-gold),
-    0 0 20px rgba(255, 214, 68, 0.4);
-}
-.g2 {
-  right: 75px;
-  top: 80px;
-  color: var(--color-teal);
-  text-shadow:
-    0 0 10px var(--color-teal),
-    0 0 20px rgba(0, 187, 170, 0.4);
-}
-.g3 {
-  right: 55px;
-  top: 100px;
-  color: var(--color-orange);
-  text-shadow:
-    0 0 10px var(--color-orange),
-    0 0 20px rgba(255, 119, 0, 0.4);
-}
-.g4 {
-  left: 620px;
-  top: 40px;
-  color: var(--color-sky);
-  text-shadow:
-    0 0 10px var(--color-sky),
-    0 0 20px rgba(68, 170, 238, 0.4);
-}
-.g5 {
-  left: 650px;
-  top: 65px;
-  color: var(--color-amber);
-  text-shadow:
-    0 0 10px var(--color-amber),
-    0 0 20px rgba(255, 204, 0, 0.4);
-}
-@keyframes gearSpin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.furnace {
-  position: absolute;
-  right: 120px;
-  top: 60px;
-}
-.furnace-body {
-  width: 60px;
-  height: 80px;
-  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
-  border: 3px solid var(--color-copper);
-  border-radius: 4px 4px 0 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-around;
-  padding: 6px;
-  box-shadow:
-    0 0 14px rgba(204, 85, 0, 0.4),
-    inset 0 0 8px rgba(255, 119, 0, 0.1);
-}
-.furnace-door {
-  width: 36px;
-  height: 36px;
-  background: #0d0400;
-  border: 2px solid var(--color-copper-light);
-  border-radius: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
-  animation: flicker 0.3s infinite alternate;
-  box-shadow: inset 0 0 10px rgba(255, 100, 0, 0.5);
-}
-@keyframes flicker {
-  from {
-    opacity: 0.85;
-    box-shadow: inset 0 0 8px rgba(255, 80, 0, 0.4);
-  }
-  to {
-    opacity: 1;
-    box-shadow: inset 0 0 14px rgba(255, 120, 0, 0.7);
-  }
-}
-.furnace-gauge {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: #0d0400;
-  border: 2px solid var(--color-brass);
-  position: relative;
-  overflow: hidden;
-  box-shadow: 0 0 4px var(--color-brass-dark);
-}
-.gauge-needle {
-  position: absolute;
-  left: 50%;
-  bottom: 50%;
-  width: 2px;
-  height: 8px;
-  background: var(--color-red);
-  transform-origin: bottom center;
-  animation: needleSpin 3s ease-in-out infinite alternate;
-  box-shadow: 0 0 4px var(--color-red);
-}
-@keyframes needleSpin {
-  from {
-    transform: rotate(-60deg);
-  }
-  to {
-    transform: rotate(60deg);
-  }
-}
-.furnace-chimney {
-  position: absolute;
-  top: -30px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 16px;
-  height: 30px;
-  background: linear-gradient(180deg, #2a1200 0%, #180900 100%);
-  border: 2px solid var(--color-copper);
-  border-bottom: none;
-}
-.smoke-particle {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  width: 10px;
-  height: 10px;
-  background: radial-gradient(circle, rgba(160, 100, 40, 0.7) 0%, transparent 70%);
-  border-radius: 50%;
-  animation: smokeRise 3s var(--delay, 0s) infinite ease-out;
-}
-@keyframes smokeRise {
-  0% {
-    transform: translate(-50%, 0) scale(0.5);
-    opacity: 0.8;
-  }
-  100% {
-    transform: translate(calc(-50% + 20px), -50px) scale(3);
-    opacity: 0;
-  }
-}
-.furnace-label {
-  position: absolute;
-  bottom: -18px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 5px;
-  color: var(--color-copper);
-  white-space: nowrap;
-  letter-spacing: 1px;
-  text-shadow: 0 0 4px var(--color-copper);
+  font-family: var(--font-pixel);
 }
 
-.conveyor-belt {
-  position: absolute;
-  bottom: 80px;
-  left: 60px;
-  right: 200px;
-  height: 28px;
+.floor-stage {
+  position: relative;
+  container-type: size;
+  background-image: url('../assets/factory-floor.jpg');
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  box-shadow:
+    0 0 24px rgba(0, 0, 0, 0.8),
+    inset 0 0 60px rgba(0, 0, 0, 0.35);
 }
-.belt-track {
+
+.floor-debug {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  height: 18px;
-  background: repeating-linear-gradient(
-    90deg,
-    #2a1800 0px,
-    #2a1800 18px,
-    #3a2200 18px,
-    #3a2200 36px
-  );
-  border: 2px solid var(--color-copper-light);
-  position: relative;
-  overflow: hidden;
+  height: 100%;
+  pointer-events: none;
+  z-index: 900;
 }
-.belt-item {
-  position: absolute;
-  font-size: 13px;
-  top: 1px;
-  animation: beltMove 4s linear infinite;
-  animation-delay: calc(var(--offset, 0) * -1ms / 10);
+.floor-debug polygon {
+  fill: rgba(0, 255, 120, 0.16);
+  stroke: rgba(0, 255, 120, 0.9);
+  stroke-width: 0.4;
 }
-.belt-item:nth-child(6n + 1) {
-  filter: drop-shadow(0 0 3px var(--color-gold));
-}
-.belt-item:nth-child(6n + 2) {
-  filter: drop-shadow(0 0 3px var(--color-teal));
-}
-.belt-item:nth-child(6n + 3) {
-  filter: drop-shadow(0 0 3px var(--color-amber));
-}
-.belt-item:nth-child(6n + 4) {
-  filter: drop-shadow(0 0 3px var(--color-sky));
-}
-.belt-item:nth-child(6n + 5) {
-  filter: drop-shadow(0 0 3px var(--color-orange));
-}
-.belt-item:nth-child(6n) {
-  filter: drop-shadow(0 0 3px var(--color-gold));
-}
-@keyframes beltMove {
-  from {
-    transform: translateX(120%);
-  }
-  to {
-    transform: translateX(-100px);
-  }
-}
-.belt-roller {
-  position: absolute;
-  bottom: 0;
-  width: 28px;
-  height: 28px;
-  background: radial-gradient(
-    circle,
-    var(--color-copper-light) 20%,
-    var(--color-copper) 55%,
-    var(--color-brass-dark) 100%
-  );
-  border-radius: 50%;
-  border: 3px solid var(--color-brass-dark);
-  box-shadow: 0 0 6px rgba(204, 85, 0, 0.5);
-}
-.belt-roller.left {
-  left: -14px;
-}
-.belt-roller.right {
-  right: -14px;
+.floor-debug circle {
+  fill: rgba(255, 60, 60, 0.95);
 }
 
+/* ── Work stations ───────────────────────────────────────────────────────── */
 .work-station {
   position: absolute;
-  width: 100px;
+  width: 22cqw;
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-}
-.station-desk {
-  width: 100%;
-  position: relative;
+  gap: 1cqw;
+  pointer-events: none;
 }
 .station-monitor {
-  width: 60px;
-  height: 48px;
+  width: 13cqw;
+  height: 10cqw;
   background: #0d0600;
-  border: 3px solid var(--color-brass-dark);
+  border: 2px solid var(--color-brass-dark);
   border-radius: 2px;
-  margin: 0 auto;
   display: flex;
-  align-items: stretch;
   overflow: hidden;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
 }
 .monitor-screen {
   flex: 1;
   background: #080400;
   border: 2px solid #1c1000;
-  padding: 4px;
+  padding: 1.4cqw;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -759,10 +410,10 @@ function stateLabel(state: string) {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 0.8cqw;
 }
 .screen-line {
-  height: 3px;
+  height: 0.9cqw;
   opacity: 0.85;
   animation: screenScroll 2s infinite linear;
   border-radius: 1px;
@@ -782,50 +433,33 @@ function stateLabel(state: string) {
   width: 60%;
 }
 @keyframes screenScroll {
-  0% {
+  0%,
+  100% {
     opacity: 0.85;
   }
   50% {
     opacity: 0.3;
   }
-  100% {
-    opacity: 0.85;
-  }
-}
-.screen-idle {
-  font-family: var(--font-pixel);
-  font-size: 8px;
-  color: #3a2510;
-}
-
-.station-table {
-  width: 100%;
-  height: 14px;
-  background: linear-gradient(180deg, #5a3818 0%, #3a2010 100%);
-  border: 2px solid var(--color-copper-light);
-  border-top: 3px solid var(--color-brass);
-}
-.work-station.occupied .station-table {
-  border-top-color: var(--color-brass-light);
-  background: linear-gradient(180deg, #6a4820 0%, #4a2e12 100%);
 }
 
 .station-label {
-  font-size: 5px;
-  color: var(--color-brass-dark);
+  font-size: 1.7cqw;
+  color: var(--color-brass-light);
   letter-spacing: 1px;
-  max-width: 100px;
+  max-width: 22cqw;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
 }
 
 .task-badge {
-  font-size: 5px;
-  padding: 1px 4px;
+  font-size: 1.7cqw;
+  padding: 0.3cqw 1cqw;
   border-radius: 2px;
   letter-spacing: 1px;
   text-transform: uppercase;
+  background: rgba(12, 7, 0, 0.85);
 }
 .state-working {
   color: var(--color-green);
@@ -859,9 +493,10 @@ function stateLabel(state: string) {
   text-shadow: 0 0 4px var(--color-red);
 }
 
+/* ── Agents ──────────────────────────────────────────────────────────────── */
 .floating-agent {
   position: absolute;
-  z-index: 5;
+  transform: translate(-50%, -82%);
   transition:
     left 2.4s ease-in-out,
     top 2.4s ease-in-out;
@@ -870,15 +505,22 @@ function stateLabel(state: string) {
   align-items: center;
   pointer-events: none;
 }
+.floating-agent :deep(.robot-sprite) {
+  width: 9cqw;
+  height: auto;
+}
 .agent-nametag {
-  font-size: 5px;
-  color: var(--color-brass);
-  margin-top: 2px;
+  font-size: 1.7cqw;
+  color: var(--color-brass-light);
+  margin-top: 0.4cqw;
   white-space: nowrap;
-  text-shadow: 0 0 4px rgba(232, 170, 0, 0.5);
+  text-shadow:
+    0 0 4px rgba(0, 0, 0, 0.95),
+    0 0 6px rgba(232, 170, 0, 0.4);
   letter-spacing: 1px;
 }
 
+/* ── HUD ─────────────────────────────────────────────────────────────────── */
 .factory-info {
   position: absolute;
   top: 8px;
@@ -939,6 +581,7 @@ function stateLabel(state: string) {
   overflow: hidden;
   display: flex;
   align-items: center;
+  z-index: 10;
 }
 .ticker-content {
   display: flex;
@@ -969,41 +612,6 @@ function stateLabel(state: string) {
   }
   to {
     transform: translateX(-100%);
-  }
-}
-
-@media (max-width: 479px) {
-  .g4,
-  .g5 {
-    display: none;
-  }
-  .conveyor-belt {
-    display: none;
-  }
-  .factory-info {
-    padding: 3px 8px;
-    gap: 8px;
-  }
-  .factory-title {
-    font-size: 5px;
-    letter-spacing: 1px;
-  }
-  .work-station {
-    width: 120px;
-  }
-  .station-monitor {
-    width: 76px;
-    height: 60px;
-  }
-  .station-table {
-    height: 18px;
-  }
-  .station-label {
-    font-size: 6px;
-    max-width: 120px;
-  }
-  .task-badge {
-    font-size: 6px;
   }
 }
 </style>
