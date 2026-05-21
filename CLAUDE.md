@@ -43,14 +43,27 @@ foreman and takes over trigger handling for a specific guild, allowing independe
 scaling and model changes without restarting the backend.
 
 ```bash
-# Requires backend + ANTHROPIC_API_KEY
-# Install backend deps (foreman/main.py imports backend modules directly):
-cd backend && pip install -r requirements.txt && cd ..
+cd foreman
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+# Bedrock support (optional): pip install "anthropic[bedrock]"
 
+# foreman/main.py imports backend/ modules directly, so the backend source
+# must be on the path.  Set DATABASE_URL to the same DB the backend uses.
+DATABASE_URL=sqlite+aiosqlite:///path/to/pioneer_square.db \
 BACKEND_WS_URL=ws://localhost:8000 \
 GUILD_ID=<your-6-char-guild-id> \
 ANTHROPIC_API_KEY=<key> \
-python foreman/main.py
+python main.py
+
+# Amazon Bedrock instead of Anthropic API:
+DATABASE_URL=sqlite+aiosqlite:///... \
+BACKEND_WS_URL=ws://localhost:8000 \
+GUILD_ID=<your-6-char-guild-id> \
+FOREMAN_PROVIDER=bedrock \
+AWS_DEFAULT_REGION=us-east-1 \
+FOREMAN_MODEL=us.anthropic.claude-sonnet-4-5-20251001-v2:0 \
+python main.py
 
 # Or via docker compose (profile "foreman"):
 GUILD_ID=abc123 docker compose --profile foreman up --build foreman

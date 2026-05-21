@@ -1,0 +1,40 @@
+# Foreman runtime dependencies
+#
+# The standalone foreman process imports backend/ source directly (via a
+# sys.path insert in main.py). These packages cover that full dependency
+# chain without pulling in backend-only extras like uvicorn, alembic, or
+# asyncpg that the foreman process never uses.
+#
+# Note: Phase 3 will replace the sys.path import with a proper REST client,
+# after which sqlmodel/fastapi/aiosqlite/sqlalchemy can be dropped here.
+
+# Claude API
+anthropic>=0.40.0
+
+# WebSocket client (foreman/main.py WS connection to backend)
+websockets>=12.0
+
+# ORM + async SQLite driver (backend modules: database.py, models.py, runner.py)
+sqlalchemy[asyncio]>=2.0
+sqlmodel>=0.0.18
+aiosqlite>=0.20
+
+# FastAPI is needed at import time (events.py uses `from fastapi import WebSocket`)
+# — only the core package, no uvicorn or extras required
+fastapi>=0.110.0
+
+# Ed25519 signing for dnsid tool (foreman/oidc.py)
+cryptography>=42.0
+
+# .env file loading (optional; convenient for local dev)
+python-dotenv>=1.0
+
+# ── Optional: Amazon Bedrock ──────────────────────────────────────────────────
+# Uncomment (or install separately) to use FOREMAN_PROVIDER=bedrock.
+# Requires AWS credentials in env / IAM role and Bedrock model access enabled.
+#
+# anthropic[bedrock]>=0.40.0
+
+# ── Development / testing ─────────────────────────────────────────────────────
+# pytest>=8.0
+# pytest-asyncio>=0.23

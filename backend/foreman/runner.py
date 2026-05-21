@@ -27,6 +27,15 @@ logger = logging.getLogger(__name__)
 
 FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 
+# Set FOREMAN_PROVIDER=bedrock to use Amazon Bedrock instead of the Anthropic API.
+# Requires: pip install "anthropic[bedrock]"  +  AWS credentials in env / IAM role.
+# On Bedrock, model IDs use the "anthropic." prefix, e.g.:
+#   anthropic.claude-sonnet-4-5   (Sonnet 4.x on Bedrock)
+#   anthropic.claude-opus-4-5     (Opus 4.x on Bedrock)
+# Check your Bedrock console for exact IDs available in your region.
+FOREMAN_PROVIDER = os.environ.get("FOREMAN_PROVIDER", "anthropic").lower()
+_BEDROCK_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
 MAX_TOOL_RESULT_CHARS = 8_000  # ~2 k tokens; cap per-result content before storing/sending
 MAX_HISTORY_MESSAGES = 20  # sliding window cap on messages sent to Anthropic
 MAX_FOREMAN_ROUNDS = 10  # safety cap on tool-call rounds per invocation
@@ -42,14 +51,22 @@ _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 
 # Module-level client — reused across calls so the underlying httpx connection
 # pool isn't thrown away every invocation. Lazily initialised so import works
-# without an API key.
-_anthropic_client: "_anthropic.AsyncAnthropic | None" = None
+# without an API key (Anthropic) or AWS credentials (Bedrock).
+_anthropic_client: "_anthropic.AsyncAnthropic | _anthropic.AsyncAnthropicBedrock | None" = None
 
 
-def _get_anthropic_client() -> "_anthropic.AsyncAnthropic":
+def _get_anthropic_client() -> "_anthropic.AsyncAnthropic | _anthropic.AsyncAnthropicBedrock":
     global _anthropic_client
     if _anthropic_client is None:
-        _anthropic_client = _anthropic.AsyncAnthropic()
+        if FOREMAN_PROVIDER == "bedrock":
+            _anthropic_client = _anthropic.AsyncAnthropicBedrock(
+                aws_region=_BEDROCK_REGION,
+            )
+            logger.info(
+                "Foreman using Amazon Bedrock (region=%s, model=%s)", _BEDROCK_REGION, FOREMAN_MODEL
+            )
+        else:
+            _anthropic_client = _anthropic.AsyncAnthropic()
     return _anthropic_client
 
 
