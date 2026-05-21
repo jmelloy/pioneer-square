@@ -32,10 +32,12 @@ import database as database_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from foreman.tools import exec_tools  # noqa: E402
 from helpers import _sync_session, create_db, insert_guild, insert_task, insert_worker  # noqa: E402
+from models import Guild  # noqa: E402
 from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
     _should_dispatch_to_foreman,
 )
+from sqlalchemy import update  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers (mirror test_github_webhooks.py to keep these focused on Phase 2)
@@ -43,8 +45,6 @@ from routes.webhooks import (  # noqa: E402
 
 
 def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
-    from models import Guild
-    from sqlalchemy import update
 
     with _sync_session(db_url) as session:
         session.execute(

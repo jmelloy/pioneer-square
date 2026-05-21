@@ -32,6 +32,18 @@ import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_task, insert_worker
+from models import (  # noqa: E402
+    Agent,
+    GithubToken,
+    Guild,
+    GuildMember,
+    Lock,
+    Task,
+    User,
+    UserSession,
+)
+from sqlalchemy import select, update  # noqa: E402
+from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
@@ -126,9 +138,6 @@ def test_agent_state_persists_current_task_id(client):
             assert msg["state"] == "working"
             assert msg["activity"] == "editing"
 
-            from models import Agent
-            from sqlalchemy import select
-
             with _sync_session(db_url) as session:
                 row = session.execute(
                     select(Agent.state, Agent.activity, Agent.current_task_id).where(
@@ -179,9 +188,6 @@ def test_agent_state_idle_clears_current_task_id(client):
             assert msg["taskId"] is None
             assert msg["activity"] is None
 
-            from models import Agent
-            from sqlalchemy import select
-
             with _sync_session(db_url) as session:
                 row = session.execute(
                     select(Agent.state, Agent.activity, Agent.current_task_id).where(
@@ -231,9 +237,6 @@ def test_agent_state_explicit_task_id_null_clears(client):
             msg = ws_obs.receive_json()
             assert msg["taskId"] is None
 
-            from models import Agent
-            from sqlalchemy import select
-
             with _sync_session(db_url) as session:
                 current_task_id = session.scalar(
                     select(Agent.current_task_id).where(Agent.id == agent_id)
@@ -251,9 +254,6 @@ def test_guild_get_returns_current_task_id(client):
 
     headers = {"Authorization": "Bearer test-token"}
     # Seed the test token & guild membership the way other tests do.
-    from models import GithubToken, Guild, GuildMember, User, UserSession
-    from sqlalchemy import select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
@@ -333,10 +333,6 @@ def test_agent_idle_releases_task_lock(client):
     test_client, db_url = client
     guild_id, worker_id, task_id, agent_id = "gas-5", "w-gas5", "t-gas5", "a-gas5"
     _insert_guild_worker_task(db_url, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
-
-    from models import Lock, Task
-    from sqlalchemy import select, update
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     now_dt = datetime.now(UTC)
     future_dt = now_dt + timedelta(hours=1)

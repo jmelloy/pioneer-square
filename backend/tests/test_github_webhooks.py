@@ -10,11 +10,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import _sync_session, insert_guild, insert_task, insert_worker, make_auth_token
+from models import GithubEvent, Guild, Message, Task
+from sqlalchemy import func, select, update
 
 
 def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
-    from models import Guild
-    from sqlalchemy import update
 
     with _sync_session(db_url) as session:
         session.execute(
@@ -154,8 +154,6 @@ def test_webhook_accepts_ping(client):
     resp = test_client.post("/webhooks/github/g4", content=body, headers=headers)
     assert resp.status_code == 204
     # Ping deliveries are not persisted
-    from models import GithubEvent, Guild
-    from sqlalchemy import func, select
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
@@ -184,8 +182,6 @@ def test_webhook_persists_event_and_links_task(client):
     headers = _signed_headers("s5", body, event="pull_request", delivery="d-evt-1")
     resp = test_client.post("/webhooks/github/g5", content=body, headers=headers)
     assert resp.status_code == 202
-    from models import GithubEvent
-    from sqlalchemy import select
 
     with _sync_session(db_url) as session:
         row = session.execute(
@@ -211,8 +207,6 @@ def test_webhook_event_without_matching_task(client):
     headers = _signed_headers("s6", body, event="pull_request", delivery="d-evt-2")
     resp = test_client.post("/webhooks/github/g6", content=body, headers=headers)
     assert resp.status_code == 202
-    from models import GithubEvent
-    from sqlalchemy import select
 
     with _sync_session(db_url) as session:
         row = session.execute(
@@ -234,8 +228,6 @@ def test_webhook_dedupes_redelivery(client):
     r2 = test_client.post("/webhooks/github/g7", content=body, headers=headers)
     assert r1.status_code == 202
     assert r2.status_code == 202
-    from models import GithubEvent
-    from sqlalchemy import func, select
 
     with _sync_session(db_url) as session:
         n = session.scalar(
@@ -270,8 +262,6 @@ def test_webhook_check_run_extracts_pr_from_pull_requests_array(client):
     headers = _signed_headers("s8", body, event="check_run", delivery="cr-1")
     resp = test_client.post("/webhooks/github/g8", content=body, headers=headers)
     assert resp.status_code == 202
-    from models import GithubEvent
-    from sqlalchemy import select
 
     with _sync_session(db_url) as session:
         row = session.execute(
@@ -324,8 +314,6 @@ def test_webhook_emits_foreman_chat_message(client):
     headers = _signed_headers("schat1", body, event="pull_request", delivery="d-chat-1")
     resp = test_client.post("/webhooks/github/gchat1", content=body, headers=headers)
     assert resp.status_code == 202
-    from models import Guild, Message
-    from sqlalchemy import select
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
@@ -362,8 +350,6 @@ def test_webhook_chat_line_includes_merged_status(client):
     headers = _signed_headers("schat2", body, event="pull_request", delivery="d-chat-2")
     resp = test_client.post("/webhooks/github/gchat2", content=body, headers=headers)
     assert resp.status_code == 202
-    from models import Guild, Message
-    from sqlalchemy import select
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
@@ -386,8 +372,6 @@ def test_webhook_chat_line_not_emitted_for_duplicate(client):
     headers = _signed_headers("schat3", body, event="pull_request", delivery="d-chat-dup")
     test_client.post("/webhooks/github/gchat3", content=body, headers=headers)
     test_client.post("/webhooks/github/gchat3", content=body, headers=headers)
-    from models import Guild, Message
-    from sqlalchemy import func, select
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
@@ -512,8 +496,6 @@ def test_webhook_backfills_task_pr_url(client):
     headers = _signed_headers("sbf1", body, event="pull_request", delivery="bf-1")
     resp = test_client.post("/webhooks/github/gbf1", content=body, headers=headers)
     assert resp.status_code == 202
-    from models import Task
-    from sqlalchemy import select
 
     with _sync_session(db_url) as session:
         pr_url = session.scalar(select(Task.pr_url).where(Task.id == "t-bf1"))
@@ -546,8 +528,6 @@ def test_webhook_does_not_overwrite_existing_pr_url(client):
     headers = _signed_headers("sbf2", body, event="pull_request", delivery="bf-2")
     resp = test_client.post("/webhooks/github/gbf2", content=body, headers=headers)
     assert resp.status_code == 202
-    from models import Task
-    from sqlalchemy import select
 
     with _sync_session(db_url) as session:
         pr_url = session.scalar(select(Task.pr_url).where(Task.id == "t-bf2"))

@@ -10,6 +10,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import _sync_session, insert_guild, make_auth_token
+from models import Guild
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
 def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
@@ -17,8 +20,6 @@ def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
 
     Simulates a pre-migration guild to verify the legacy fallback is gone.
     """
-    from models import Guild
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
@@ -201,8 +202,6 @@ def test_update_guild_clear_primary_repo(client):
 
 def test_guild_partial_unique_index(client):
     """guild_id must be unique among active guilds but reusable after soft-delete."""
-    from models import Guild
-    from sqlalchemy import func, select, update
     from sqlalchemy.exc import IntegrityError
 
     test_client, db_url = client  # noqa: F841 — db_url used directly
@@ -246,10 +245,7 @@ def test_guild_partial_unique_index(client):
 
 
 def test_primary_repo_in_foreman_prompt():
-    import os
-    import sys
 
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from foreman.prompt import build_system_prompt
 
     # Primary repo is included when set

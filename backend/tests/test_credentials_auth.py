@@ -14,6 +14,9 @@ from datetime import UTC, datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import _sync_session, insert_guild, make_auth_token
+from models import ClaudeCredentials, GithubToken, Guild
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 
 def _register_worker(test_client, guild_id: str) -> dict:
@@ -26,9 +29,6 @@ def _register_worker(test_client, guild_id: str) -> dict:
 
 
 def _seed_claude_credentials(db_url: str, guild_id: str, blob: str = "BLOB") -> None:
-    from models import ClaudeCredentials, Guild
-    from sqlalchemy import select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
@@ -57,9 +57,6 @@ def _seed_claude_credentials(db_url: str, guild_id: str, blob: str = "BLOB") -> 
 def _seed_github_token(db_url: str, user_id: str = "gh-user-test") -> None:
     """The default test user already has a github_tokens row via make_auth_token —
     this is a no-op that just ensures it's there for clarity."""
-    from models import GithubToken
-    from sqlalchemy import select
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
@@ -178,8 +175,6 @@ def test_post_claude_credentials_accepts_worker_token(client):
         headers={"Authorization": f"Bearer {worker['auth_token']}"},
     )
     assert resp.status_code == 200
-    from models import ClaudeCredentials, Guild
-    from sqlalchemy import select
 
     with _sync_session(db_url) as session:
         blob = session.scalar(
@@ -238,9 +233,6 @@ def test_get_github_token_uses_guild_members_owner(client):
 def test_get_github_token_no_owner_in_guild_members(client):
     """Returns 404 when no owner exists in guild_members (legacy-only guild)."""
     from datetime import UTC, datetime
-
-    from models import Guild
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     test_client, db_url = client
     now = datetime.now(UTC).isoformat()

@@ -10,11 +10,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
+from models import ForemanTurn, Guild
+from sqlalchemy import select
 
 
 def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, content: str) -> None:
-    from models import ForemanTurn, Guild
-    from sqlalchemy import select
 
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:

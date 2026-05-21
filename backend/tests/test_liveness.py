@@ -27,6 +27,8 @@ import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_worker, truncate_all  # noqa: E402
 from helpers import create_db as _create_db
+from models import Agent, Guild, Lock, Task, Worker  # noqa: E402
+from sqlalchemy import select, update  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -63,8 +65,6 @@ def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
 
 
 def _read_last_seen(db_url: str, agent_id: str, worker_id: str) -> tuple[str | None, str | None]:
-    from models import Agent, Worker
-    from sqlalchemy import select
 
     with _sync_session(db_url) as session:
         agent_seen = session.scalar(select(Agent.last_seen).where(Agent.id == agent_id))
@@ -124,8 +124,6 @@ def test_ping_message_replies_pong_and_refreshes_last_seen(client):
 
         # Force last_seen artificially old so we can detect the refresh.
         old_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
-        from models import Agent, Worker
-        from sqlalchemy import update
 
         with _sync_session(db_url) as session:
             session.execute(update(Agent).where(Agent.id == agent_id).values(last_seen=old_ts))
@@ -169,8 +167,6 @@ def test_any_inbound_frame_touches_sibling_agents(client):
             ws.receive_json()  # broadcast for each join
 
         old_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
-        from models import Agent
-        from sqlalchemy import update
 
         with _sync_session(db_url) as session:
             session.execute(
@@ -196,8 +192,6 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
     agent_id = "a-lvd004"
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)
-    from models import Agent, Guild, Worker
-    from sqlalchemy import select, update
 
     now = datetime.now(UTC).isoformat()
     old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
@@ -272,8 +266,6 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
     agent_id = "a-lvf006"
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)
-    from models import Agent, Guild, Worker
-    from sqlalchemy import select, update
 
     now = datetime.now(UTC).isoformat()
     old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
@@ -326,8 +318,6 @@ def test_sweeper_skips_fresh_workers(client):
     agent_id = "a-lve005"
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)
-    from models import Agent, Guild
-    from sqlalchemy import select
 
     now = datetime.now(UTC).isoformat()
     with _sync_session(db_url) as session:
@@ -375,9 +365,6 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
 
     _setup_guild_and_worker(db_path, guild_id, worker_id)
     from datetime import timezone
-
-    from models import Agent, Guild, Lock, Task
-    from sqlalchemy import select
 
     now = datetime.now(UTC).isoformat()
     # Lock acquired long ago — older than WORKER_OFFLINE_AFTER_SECONDS (set to 1s below).

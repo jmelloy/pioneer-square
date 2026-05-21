@@ -29,6 +29,7 @@ from foreman.prompt import FOREMAN_SYSTEM, build_system_prompt
 from foreman.runner import (
     MAX_HISTORY_MESSAGES,
     MAX_TOOL_RESULT_CHARS,
+    _fetch_online_workers,  # noqa: E402
     _load_history,
     _save_turn,
     _serialize_content,
@@ -38,6 +39,8 @@ from foreman.runner import (
 )
 from foreman.tools import exec_tools
 from helpers import _sync_session, create_db, insert_agent, insert_guild, insert_task, insert_worker
+from models import Guild, Lock, Task, TaskEvent, TaskLog  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -310,8 +313,6 @@ class TestExecToolsDispatching:
             )
         # Task row should have phase=execute (not specified → default)
         task_id = results[0]["content"].split()[1]
-        from models import Task
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             phase = session.scalar(select(Task.phase).where(Task.id == task_id))
@@ -329,8 +330,6 @@ class TestExecToolsDispatching:
                 user_id="gh-user-42",
             )
         task_id = results[0]["content"].split()[1]
-        from models import Task
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             user_id = session.scalar(select(Task.user_id).where(Task.id == task_id))
@@ -353,8 +352,6 @@ class TestExecToolsDispatching:
         # exec_tools returns "Task t-XXXXXX queued for w-stamp1." — extract the id.
         content = results[0]["content"]
         task_id = next(tok for tok in content.split() if tok.startswith("t-"))
-        from models import Task
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             user_id = session.scalar(select(Task.user_id).where(Task.id == task_id))
@@ -373,8 +370,6 @@ class TestExecToolsDispatching:
                 ],
             )
         task_id = results[0]["content"].split()[1]
-        from models import Task
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             phase = session.scalar(select(Task.phase).where(Task.id == task_id))
@@ -502,8 +497,6 @@ class TestExecToolsDispatching:
         assert len(followup_msgs) == 1
         assert followup_msgs[0]["workerId"] == "w-other"
         assert "reassigned" in results[0]["content"].lower()
-        from models import Task
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             wid = session.scalar(select(Task.worker_id).where(Task.id == "t-flwup-fb"))
@@ -551,8 +544,6 @@ class TestExecToolsDispatching:
                 "g-finalize-ok", [_fake_tool_use("finalize_task", {"task_id": "t-fin1"})]
             )
         assert "finalized" in results[0]["content"].lower()
-        from models import Task
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             state = session.scalar(select(Task.state).where(Task.id == "t-fin1"))
@@ -659,8 +650,6 @@ class TestExecToolsDispatching:
             )
         assert "cancelled" in results[0]["content"].lower()
         assert "No longer needed" in results[0]["content"]
-        from models import Task
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             state = session.scalar(select(Task.state).where(Task.id == "t-cpend"))
@@ -793,8 +782,6 @@ class TestExecToolsDispatching:
                     )
                 ],
             )
-        from models import Task
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             row = session.execute(
@@ -827,8 +814,6 @@ class TestExecToolsDispatching:
                 ],
             )
         assert "t-lock1" in results[0]["content"]
-        from models import Lock
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             lock = session.execute(
@@ -844,7 +829,6 @@ class TestExecToolsDispatching:
         _insert_agent(db_session, "g-lock-queue", "w-lq1", "a-lq1")
         # Pre-lock the task to simulate a concurrent dispatch already in flight.
         _insert_task(db_session, "t-lq1", "g-lock-queue", "w-lq1")
-        from models import Lock
 
         now_dt = datetime.now(UTC)
         expires_dt = datetime.now(UTC) + timedelta(minutes=30)
@@ -883,8 +867,6 @@ class TestExecToolsDispatching:
             "queued" in results[0]["content"].lower() or "locked" in results[0]["content"].lower()
         )
         # A task_event row should exist
-        from models import TaskEvent
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             ev = session.execute(
@@ -954,8 +936,6 @@ class TestExecToolsDispatching:
         )
 
         # One task_event row should exist with the queued instructions
-        from models import TaskEvent
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             rows = (
@@ -970,7 +950,6 @@ class TestExecToolsDispatching:
         insert_guild(db_session, "g-fin-lock")
         _insert_worker(db_session, "g-fin-lock", "w-fin-lk")
         _insert_task(db_session, "t-fin-lk", "g-fin-lock", "w-fin-lk")
-        from models import Lock, TaskEvent
 
         now_dt = datetime.now(UTC)
         expires_dt = datetime.now(UTC) + timedelta(minutes=30)
@@ -999,8 +978,6 @@ class TestExecToolsDispatching:
                 "g-fin-lock", [_fake_tool_use("finalize_task", {"task_id": "t-fin-lk"})]
             )
         assert "finalized" in results[0]["content"].lower()
-        from models import Task
-        from sqlalchemy import func, select
 
         with _sync_session(db_session) as session:
             task_state = session.scalar(select(Task.state).where(Task.id == "t-fin-lk"))
@@ -1019,7 +996,6 @@ class TestExecToolsDispatching:
         _insert_agent(db_session, "g-stale-lock", "w-stale", "a-stale")
         _insert_task(db_session, "t-stale", "g-stale-lock", "w-stale")
         # Insert a lock with an already-expired TTL (2 hours ago).
-        from models import Lock
 
         stale_dt = datetime.now(UTC) - timedelta(hours=2)
         with _sync_session(db_session) as session:
@@ -1045,8 +1021,6 @@ class TestExecToolsDispatching:
             )
         followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
         assert len(followup_msgs) == 1, "Stale lock should be overridden and follow-up dispatched"
-        from models import Lock
-        from sqlalchemy import select
 
         with _sync_session(db_session) as session:
             lock = session.execute(
@@ -1309,7 +1283,6 @@ class TestExecToolsResultHandling:
         _insert_worker(db_session, "g-large-res", "w-large")
         _insert_task(db_session, "t-large1", "g-large-res", "w-large")
         # Insert many log lines
-        from models import TaskLog
 
         now = datetime.now(UTC).isoformat()
         with _sync_session(db_session) as session:
