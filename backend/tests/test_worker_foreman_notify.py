@@ -99,10 +99,10 @@ def test_worker_online_notifies_foreman(client):
                     "repos": ["org/repo1", "org/repo2"],
                 }
             )
-            # handler runs synchronously; give the event loop a tick so the
-            # awaited fake_trigger coroutine completes before we exit
-            ws.send_json({"type": "ping"})
-            ws.receive_json()  # pong
+            # No explicit sync needed: _trigger_foreman is directly awaited
+            # inside handle_worker_register, so triggered is populated before
+            # the handler returns. The WS context exit (close frame) ensures
+            # the server processes worker-register before we reach assertions.
 
     online = [(e, m) for e, m in triggered if e == "worker-online"]
     assert online, f"Expected worker-online trigger, got: {triggered}"

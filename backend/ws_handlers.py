@@ -28,7 +28,7 @@ from events import (
 from fastapi import WebSocket
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from util.tasks import spawn
 from utils import worker_display_name
@@ -541,7 +541,17 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     )
     await ctx.db.commit()
     repos_str = ",".join(repos) if repos else ""
-    agent_count = len(ctx.joined_agents)
+    # Query the DB for agents belonging to this specific worker so the count
+    # is accurate even when multiple workers share the same WS connection or
+    # agents from previous sessions are still tracked in joined_agents.
+    count_res = await ctx.db.execute(
+        select(func.count(Agent.id)).where(
+            Agent.worker_id == worker_id,
+            Agent.guild_id == ctx.guild_pk,
+            Agent.state != "offline",
+        )
+    )
+    agent_count = count_res.scalar_one()
     await _trigger_foreman(
         ctx.guild_id,
         "worker-online",
@@ -571,7 +581,6 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
             ctx.guild_id,
             {"type": "agent-state", "agentId": agent_id, "state": "offline"},
         )
-    reset_foreman_poll(ctx.guild_id)
     if worker_id:
         await _trigger_foreman(
             ctx.guild_id,
@@ -579,6 +588,7 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
             f"[worker-offline] worker_id={worker_id} reason=shutdown",
             task_name=f"foreman.worker-offline:{worker_id}",
         )
+    reset_foreman_poll(ctx.guild_id)
 
 
 async def handle_task_update(ctx: WSContext, data: dict) -> None:
