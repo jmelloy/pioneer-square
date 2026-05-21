@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pioneer-foreman"
+version = "0.1.0"
+description = "Standalone foreman AI process for Pioneer Square: receives triggers from the backend, runs Claude, and coordinates workers."
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40.0",
+    "websockets>=12.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "sqlmodel>=0.0.18",
+    "aiosqlite>=0.20",
+    "fastapi>=0.110.0",
+    "cryptography>=42.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+bedrock = ["anthropic[bedrock]>=0.40.0"]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+# Phase 3: once pioneer_foreman/ package exists this will work as a CLI entry point.
+# For now, run directly: python foreman/main.py
+# pioneer-foreman = "pioneer_foreman.cli:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

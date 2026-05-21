@@ -16,9 +16,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install backend requirements (includes anthropic, sqlalchemy, websockets, …)
-COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install -r /app/backend/requirements.txt
+# Install foreman requirements (trimmed subset of backend deps — no uvicorn,
+# alembic, asyncpg, docker, etc. that the foreman process never needs).
+COPY foreman/requirements.txt /app/foreman/requirements.txt
+RUN pip install -r /app/foreman/requirements.txt
 
 # Backend source — foreman/main.py imports models, database, events, and the
 # foreman sub-package from here.
