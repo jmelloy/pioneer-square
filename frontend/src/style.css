@@ -94,7 +94,7 @@ html, body {
    Add `padding` inside to push content clear of the decorative border. */
 .panel-bg {
   border: var(--panel-frame-border) solid transparent;
-  border-image-source: url('./assets/panel-bg.png');
+  border-image-source: url('./assets/panel-bg.jpg');
   border-image-slice: var(--panel-frame-slice) fill;
   border-image-width: var(--panel-frame-border);
   border-image-outset: 0;

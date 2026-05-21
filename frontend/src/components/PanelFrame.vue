@@ -14,7 +14,7 @@ defineProps({
 <style scoped>
 .panel-frame {
   border: v-bind('borderWidth + "px"') solid transparent;
-  border-image-source: url('@/assets/panel-bg.png');
+  border-image-source: url('@/assets/panel-bg.jpg');
   border-image-slice: 9% fill;
   border-image-width: v-bind('borderWidth + "px"');
   border-image-outset: 0;
