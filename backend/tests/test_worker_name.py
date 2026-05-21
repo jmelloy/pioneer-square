@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils import format_worker_id, worker_display_name
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import insert_guild, make_auth_token, raw_conn
+from helpers import _sync_session, insert_guild, make_auth_token
 
 # ---------------------------------------------------------------------------
 # format_worker_id unit tests
@@ -163,8 +163,10 @@ def test_list_workers_name_persisted_correctly(client):
     wid = resp.json()["id"]
     expected_name = f"myhost/{format_worker_id(wid)}"
 
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT name FROM workers WHERE id = %s", (wid,))
-        row = cur.fetchone()
-    assert row is not None
-    assert row["name"] == expected_name
+    from models import Worker
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        name = session.scalar(select(Worker.name).where(Worker.id == wid))
+    assert name is not None
+    assert name == expected_name

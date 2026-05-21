@@ -18,9 +18,8 @@ import json
 import os
 import sys
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -32,7 +31,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from foreman.tools import exec_tools  # noqa: E402
-from helpers import create_db, insert_guild, make_auth_token, raw_conn  # noqa: E402
+from helpers import _sync_session, create_db, insert_guild, insert_task, insert_worker  # noqa: E402
 from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
     _should_dispatch_to_foreman,
@@ -44,14 +43,17 @@ from routes.webhooks import (  # noqa: E402
 
 
 def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "UPDATE guilds SET webhook_secret = %s WHERE guild_id = %s",
-            (secret, guild_id),
+    from models import Guild
+    from sqlalchemy import update
+
+    with _sync_session(db_url) as session:
+        session.execute(
+            update(Guild).where(Guild.guild_id == guild_id).values(webhook_secret=secret)
         )
+        session.commit()
 
 
-def _insert_task(
+def _insert_task_with_worker(
     db_url: str,
     *,
     task_id: str,
@@ -61,34 +63,19 @@ def _insert_task(
     pr_repo: str | None = None,
     user_id: str | None = None,
 ) -> None:
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-        cur.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at) "
-            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (f"w-{task_id}", guild_pk, "[]", "online", now),
-        )
-        cur.execute(
-            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, "
-            "pr_url, pr_number, pr_repo, user_id, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                task_id,
-                f"w-{task_id}",
-                guild_pk,
-                "test task",
-                "claude",
-                "awaiting-review",
-                pr_url,
-                pr_number,
-                pr_repo,
-                user_id,
-                now,
-            ),
-        )
+    worker_id = f"w-{task_id}"
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        task_id,
+        worker_id=worker_id,
+        state="awaiting-review",
+        pr_url=pr_url,
+        pr_number=pr_number,
+        pr_repo=pr_repo,
+        user_id=user_id,
+    )
 
 
 def _signed_headers(secret: str, body: bytes, *, event: str, delivery: str) -> dict[str, str]:
@@ -249,7 +236,7 @@ def test_webhook_dispatches_to_foreman_when_task_matches(client):
     test_client, db_url = client
     insert_guild(db_url, "gd1")
     _set_webhook_secret(db_url, "gd1", "ssecret")
-    _insert_task(
+    _insert_task_with_worker(
         db_url,
         task_id="t-dispatch-1",
         guild_id="gd1",
@@ -294,7 +281,7 @@ def test_webhook_skips_foreman_for_bot_on_non_ci(client):
     test_client, db_url = client
     insert_guild(db_url, "gd3")
     _set_webhook_secret(db_url, "gd3", "ssecret")
-    _insert_task(
+    _insert_task_with_worker(
         db_url,
         task_id="t-bot",
         guild_id="gd3",
@@ -326,7 +313,7 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
     test_client, db_url = client
     insert_guild(db_url, "gd4")
     _set_webhook_secret(db_url, "gd4", "ssecret")
-    _insert_task(
+    _insert_task_with_worker(
         db_url,
         task_id="t-ci",
         guild_id="gd4",

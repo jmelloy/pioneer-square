@@ -25,8 +25,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import create_db as _create_db  # noqa: E402
-from helpers import raw_conn, truncate_all
+from helpers import _sync_session, insert_guild, insert_worker, truncate_all  # noqa: E402
+from helpers import create_db as _create_db
 
 
 @pytest.fixture(scope="module")
@@ -58,29 +58,18 @@ def client():
 
 
 def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-            (guild_id, now, "Test Guild"),
-        )
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-        cur.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at)"
-            " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
-            (worker_id, guild_pk, now),
-        )
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
 
 
 def _read_last_seen(db_url: str, agent_id: str, worker_id: str) -> tuple[str | None, str | None]:
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT last_seen FROM agents WHERE id = %s", (agent_id,))
-        agent = cur.fetchone()
-        cur.execute("SELECT last_seen FROM workers WHERE id = %s", (worker_id,))
-        worker = cur.fetchone()
-    return (agent["last_seen"] if agent else None, worker["last_seen"] if worker else None)
+    from models import Agent, Worker
+    from sqlalchemy import select
+
+    with _sync_session(db_url) as session:
+        agent_seen = session.scalar(select(Agent.last_seen).where(Agent.id == agent_id))
+        worker_seen = session.scalar(select(Worker.last_seen).where(Worker.id == worker_id))
+    return (agent_seen, worker_seen)
 
 
 def test_join_initialises_last_seen(client):
@@ -135,9 +124,13 @@ def test_ping_message_replies_pong_and_refreshes_last_seen(client):
 
         # Force last_seen artificially old so we can detect the refresh.
         old_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
-        with raw_conn(db_url) as (conn, cur):
-            cur.execute("UPDATE agents SET last_seen = %s WHERE id = %s", (old_ts, agent_id))
-            cur.execute("UPDATE workers SET last_seen = %s WHERE id = %s", (old_ts, worker_id))
+        from models import Agent, Worker
+        from sqlalchemy import update
+
+        with _sync_session(db_url) as session:
+            session.execute(update(Agent).where(Agent.id == agent_id).values(last_seen=old_ts))
+            session.execute(update(Worker).where(Worker.id == worker_id).values(last_seen=old_ts))
+            session.commit()
 
         # Heartbeat ping carries only workerId — backend looks up agents from
         # the worker_id and refreshes them all together.
@@ -176,10 +169,14 @@ def test_any_inbound_frame_touches_sibling_agents(client):
             ws.receive_json()  # broadcast for each join
 
         old_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
-        with raw_conn(db_url) as (conn, cur):
-            cur.execute(
-                "UPDATE agents SET last_seen = %s WHERE worker_id = %s", (old_ts, worker_id)
+        from models import Agent
+        from sqlalchemy import update
+
+        with _sync_session(db_url) as session:
+            session.execute(
+                update(Agent).where(Agent.worker_id == worker_id).values(last_seen=old_ts)
             )
+            session.commit()
 
         ws.send_json({"type": "ping", "workerId": worker_id})
         ws.receive_json()  # pong
@@ -199,21 +196,29 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
     agent_id = "a-lvd004"
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)
+    from models import Agent, Guild, Worker
+    from sqlalchemy import select, update
+
     now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-        cur.execute(
-            "INSERT INTO agents "
-            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen) "
-            "VALUES (%s, %s, %s, 'Test', 'worker', 'idle', %s, %s)",
-            (agent_id, guild_pk, worker_id, now, now),
+    old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
         )
-        # Backdate last_seen so the sweeper considers it stale.
-        old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
-        cur.execute("UPDATE agents SET last_seen = %s WHERE id = %s", (old, agent_id))
-        cur.execute("UPDATE workers SET last_seen = %s WHERE id = %s", (old, worker_id))
+        session.add(
+            Agent(
+                id=agent_id,
+                guild_id=guild_pk,
+                worker_id=worker_id,
+                name="Test",
+                type="worker",
+                state="idle",
+                joined_at=now,
+                last_seen=old,
+            )
+        )
+        session.execute(update(Worker).where(Worker.id == worker_id).values(last_seen=old))
+        session.commit()
 
     # Tighten the threshold so the sweep triggers immediately for this test.
     monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
@@ -224,13 +229,11 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
     marked = asyncio.run(_drive())
     assert marked == 1
 
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT state FROM agents WHERE id = %s", (agent_id,))
-        a = cur.fetchone()
-        cur.execute("SELECT state FROM workers WHERE id = %s", (worker_id,))
-        w = cur.fetchone()
-    assert a["state"] == "offline"
-    assert w["state"] == "offline"
+    with _sync_session(db_url) as session:
+        a_state = session.scalar(select(Agent.state).where(Agent.id == agent_id))
+        w_state = session.scalar(select(Worker.state).where(Worker.id == worker_id))
+    assert a_state == "offline"
+    assert w_state == "offline"
 
 
 def test_migration_backfills_last_seen_for_existing_rows(monkeypatch):
@@ -269,25 +272,34 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
     agent_id = "a-lvf006"
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)
+    from models import Agent, Guild, Worker
+    from sqlalchemy import select, update
+
     now = datetime.now(UTC).isoformat()
     old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+        )
         # Insert an agent that is *already* offline — simulates the state after
         # the buggy WS close handler ran: agent marked offline, worker not.
-        cur.execute(
-            "INSERT INTO agents "
-            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen) "
-            "VALUES (%s, %s, %s, 'Test', 'worker', 'offline', %s, %s)",
-            (agent_id, guild_pk, worker_id, now, old),
+        session.add(
+            Agent(
+                id=agent_id,
+                guild_id=guild_pk,
+                worker_id=worker_id,
+                name="Test",
+                type="worker",
+                state="offline",
+                joined_at=now,
+                last_seen=old,
+            )
         )
         # Worker is still "online" (the buggy state) with a stale last_seen.
-        cur.execute(
-            "UPDATE workers SET state = 'online', last_seen = %s WHERE id = %s",
-            (old, worker_id),
+        session.execute(
+            update(Worker).where(Worker.id == worker_id).values(state="online", last_seen=old)
         )
+        session.commit()
 
     monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
 
@@ -298,11 +310,10 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
     # 0 stale agents (agent was already offline) + 1 zombie worker evicted.
     assert marked == 1
 
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT state FROM workers WHERE id = %s", (worker_id,))
-        w = cur.fetchone()
-    assert w["state"] == "offline", (
-        f"worker.state={w['state']!r}, expected 'offline' — "
+    with _sync_session(db_url) as session:
+        w_state = session.scalar(select(Worker.state).where(Worker.id == worker_id))
+    assert w_state == "offline", (
+        f"worker.state={w_state!r}, expected 'offline' — "
         "sweeper did not catch zombie worker with no active agents"
     )
 
@@ -315,17 +326,27 @@ def test_sweeper_skips_fresh_workers(client):
     agent_id = "a-lve005"
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)
+    from models import Agent, Guild
+    from sqlalchemy import select
+
     now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-        cur.execute(
-            "INSERT INTO agents "
-            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen) "
-            "VALUES (%s, %s, %s, 'Test', 'worker', 'idle', %s, %s)",
-            (agent_id, guild_pk, worker_id, now, now),
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
         )
+        session.add(
+            Agent(
+                id=agent_id,
+                guild_id=guild_pk,
+                worker_id=worker_id,
+                name="Test",
+                type="worker",
+                state="idle",
+                joined_at=now,
+                last_seen=now,
+            )
+        )
+        session.commit()
 
     async def _drive() -> int:
         return await main_module._sweep_stale_workers_once()
@@ -333,10 +354,9 @@ def test_sweeper_skips_fresh_workers(client):
     marked = asyncio.run(_drive())
     assert marked == 0
 
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT state FROM agents WHERE id = %s", (agent_id,))
-        a = cur.fetchone()
-    assert a["state"] == "idle"
+    with _sync_session(db_url) as session:
+        a_state = session.scalar(select(Agent.state).where(Agent.id == agent_id))
+    assert a_state == "idle"
 
 
 def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypatch):
@@ -354,38 +374,56 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
     task_id = "t-lvg007"
 
     _setup_guild_and_worker(db_path, guild_id, worker_id)
+    from datetime import timezone
+
+    from models import Agent, Guild, Lock, Task
+    from sqlalchemy import select
+
     now = datetime.now(UTC).isoformat()
     # Lock acquired long ago — older than WORKER_OFFLINE_AFTER_SECONDS (set to 1s below).
-    old_lock_ts = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
-    future_exp = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    old_lock_dt = datetime.now(UTC) - timedelta(seconds=300)
+    future_exp_dt = datetime.now(UTC) + timedelta(hours=1)
 
-    with raw_conn(db_path) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-
+    with _sync_session(db_path) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+        )
         # Task stuck in "working".
-        cur.execute(
-            "INSERT INTO tasks "
-            "(id, worker_id, guild_id, description, tool, state, created_at)"
-            " VALUES (%s, %s, %s, 'stuck task', 'claude', 'working', %s)"
-            " ON CONFLICT DO NOTHING",
-            (task_id, worker_id, guild_pk, now),
+        session.add(
+            Task(
+                id=task_id,
+                worker_id=worker_id,
+                guild_id=guild_pk,
+                description="stuck task",
+                tool="claude",
+                state="working",
+                created_at=now,
+            )
         )
         # Agent is idle (finished), not actively running anything.
-        cur.execute(
-            "INSERT INTO agents "
-            "(id, guild_id, worker_id, name, type, state, joined_at, last_seen, current_task_id)"
-            " VALUES (%s, %s, %s, 'Test', 'worker', 'idle', %s, %s, NULL)"
-            " ON CONFLICT DO NOTHING",
-            (agent_id, guild_pk, worker_id, now, now),
+        session.add(
+            Agent(
+                id=agent_id,
+                guild_id=guild_pk,
+                worker_id=worker_id,
+                name="Test",
+                type="worker",
+                state="idle",
+                joined_at=now,
+                last_seen=now,
+                current_task_id=None,
+            )
         )
         # Stale lock for the task.
-        cur.execute(
-            "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (%s, %s, %s, %s)"
-            " ON CONFLICT DO NOTHING",
-            (f"task:{task_id}", worker_id, old_lock_ts, future_exp),
+        session.add(
+            Lock(
+                key=f"task:{task_id}",
+                owner=worker_id,
+                acquired_at=old_lock_dt,
+                expires_at=future_exp_dt,
+            )
         )
+        session.commit()
 
     monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
 
@@ -394,13 +432,11 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
 
     asyncio.run(_drive())
 
-    with raw_conn(db_path) as (conn, cur):
-        cur.execute("SELECT state FROM tasks WHERE id = %s", (task_id,))
-        t = cur.fetchone()
-        cur.execute("SELECT key FROM locks WHERE key = %s", (f"task:{task_id}",))
-        lock = cur.fetchone()
+    with _sync_session(db_path) as session:
+        t_state = session.scalar(select(Task.state).where(Task.id == task_id))
+        lock_key = session.scalar(select(Lock.key).where(Lock.key == f"task:{task_id}"))
 
-    assert t["state"] == "awaiting-review", (
-        f"task.state={t['state']!r} — watchdog should have moved it to 'awaiting-review'"
+    assert t_state == "awaiting-review", (
+        f"task.state={t_state!r} — watchdog should have moved it to 'awaiting-review'"
     )
-    assert lock is None, "lock should have been released by the watchdog"
+    assert lock_key is None, "lock should have been released by the watchdog"

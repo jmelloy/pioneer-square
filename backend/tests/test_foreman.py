@@ -37,7 +37,7 @@ from foreman.runner import (
     truncate_tool_result,
 )
 from foreman.tools import exec_tools
-from helpers import create_db, insert_guild, raw_conn
+from helpers import _sync_session, create_db, insert_agent, insert_guild, insert_task, insert_worker
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -72,16 +72,7 @@ def _fake_tool_use(name: str, inputs: dict, tool_id: str = "tool-abc123") -> Sim
 
 
 def _insert_worker(db_url: str, guild_id: str, worker_id: str) -> None:
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_id = row["id"]
-        cur.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at) "
-            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (worker_id, guild_id, "[]", "idle", now),
-        )
+    insert_worker(db_url, guild_id, worker_id, state="idle")
 
 
 def _insert_task(
@@ -95,30 +86,19 @@ def _insert_task(
     issue_repo: str | None = None,
     branch: str | None = "claude/test-branch-abc123",
 ) -> None:
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_id = row["id"]
-        cur.execute(
-            "INSERT INTO tasks "
-            "(id, worker_id, guild_id, description, tool, state, phase, created_at, "
-            " issue_number, issue_repo, branch) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (
-                task_id,
-                worker_id,
-                guild_id,
-                "do the thing",
-                "claude",
-                state,
-                phase,
-                now,
-                issue_number,
-                issue_repo,
-                branch,
-            ),
-        )
+    insert_task(
+        db_url,
+        guild_id,
+        task_id,
+        worker_id=worker_id,
+        description="do the thing",
+        state=state,
+        phase=phase,
+        tool="claude",
+        branch=branch,
+        issue_number=issue_number,
+        issue_repo=issue_repo,
+    )
 
 
 def _insert_agent(
@@ -129,17 +109,7 @@ def _insert_agent(
     state: str = "idle",
 ) -> None:
     """Add a worker-attached agent (defaults to idle) so send_followup has a target."""
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_id = row["id"]
-        cur.execute(
-            "INSERT INTO agents "
-            "(id, guild_id, worker_id, name, type, state, joined_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (agent_id, guild_id, worker_id, agent_id.upper(), "worker", state, now),
-        )
+    insert_agent(db_url, guild_id, agent_id, worker_id=worker_id, state=state)
 
 
 # ---------------------------------------------------------------------------
@@ -222,16 +192,7 @@ class TestBuildSystemPrompt:
 
 
 def _insert_worker_with_state(db_url: str, guild_id: str, worker_id: str, state: str) -> None:
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_id = row["id"]
-        cur.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at) "
-            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (worker_id, guild_id, "[]", state, now),
-        )
+    insert_worker(db_url, guild_id, worker_id, state=state)
 
 
 class TestFetchOnlineWorkers:
@@ -349,10 +310,12 @@ class TestExecToolsDispatching:
             )
         # Task row should have phase=execute (not specified → default)
         task_id = results[0]["content"].split()[1]
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT phase FROM tasks WHERE id = %s", (task_id,))
-            row = cur.fetchone()
-        assert row["phase"] == "execute"
+        from models import Task
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            phase = session.scalar(select(Task.phase).where(Task.id == task_id))
+        assert phase == "execute"
 
     async def test_create_task_stamps_user_id(self, db_session):
         """Tasks created via the foreman remember which user initiated them so
@@ -366,10 +329,12 @@ class TestExecToolsDispatching:
                 user_id="gh-user-42",
             )
         task_id = results[0]["content"].split()[1]
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT user_id FROM tasks WHERE id = %s", (task_id,))
-            row = cur.fetchone()
-        assert row["user_id"] == "gh-user-42"
+        from models import Task
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            user_id = session.scalar(select(Task.user_id).where(Task.id == task_id))
+        assert user_id == "gh-user-42"
 
     async def test_assign_task_new_stamps_user_id(self, db_session):
         insert_guild(db_session, "g-stamp-assign")
@@ -388,10 +353,12 @@ class TestExecToolsDispatching:
         # exec_tools returns "Task t-XXXXXX queued for w-stamp1." — extract the id.
         content = results[0]["content"]
         task_id = next(tok for tok in content.split() if tok.startswith("t-"))
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT user_id FROM tasks WHERE id = %s", (task_id,))
-            row = cur.fetchone()
-        assert row["user_id"] == "gh-user-99"
+        from models import Task
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            user_id = session.scalar(select(Task.user_id).where(Task.id == task_id))
+        assert user_id == "gh-user-99"
 
     async def test_create_task_custom_phase(self, db_session):
         insert_guild(db_session, "g-planphase")
@@ -406,10 +373,12 @@ class TestExecToolsDispatching:
                 ],
             )
         task_id = results[0]["content"].split()[1]
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT phase FROM tasks WHERE id = %s", (task_id,))
-            row = cur.fetchone()
-        assert row["phase"] == "plan"
+        from models import Task
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            phase = session.scalar(select(Task.phase).where(Task.id == task_id))
+        assert phase == "plan"
 
     async def test_assign_task_unknown_worker(self, db_session):
         insert_guild(db_session, "g-assign-bad")
@@ -533,10 +502,12 @@ class TestExecToolsDispatching:
         assert len(followup_msgs) == 1
         assert followup_msgs[0]["workerId"] == "w-other"
         assert "reassigned" in results[0]["content"].lower()
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT worker_id FROM tasks WHERE id = 't-flwup-fb'")
-            row = cur.fetchone()
-        assert row["worker_id"] == "w-other"
+        from models import Task
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            wid = session.scalar(select(Task.worker_id).where(Task.id == "t-flwup-fb"))
+        assert wid == "w-other"
 
     async def test_send_followup_errors_when_no_idle_worker(self, db_session):
         insert_guild(db_session, "g-followup-noidle")
@@ -580,10 +551,12 @@ class TestExecToolsDispatching:
                 "g-finalize-ok", [_fake_tool_use("finalize_task", {"task_id": "t-fin1"})]
             )
         assert "finalized" in results[0]["content"].lower()
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT state FROM tasks WHERE id = 't-fin1'")
-            row = cur.fetchone()
-        assert row["state"] == "done"
+        from models import Task
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            state = session.scalar(select(Task.state).where(Task.id == "t-fin1"))
+        assert state == "done"
 
     async def test_message_worker_dispatches(self, db_session):
         insert_guild(db_session, "g-msgwkr")
@@ -686,10 +659,12 @@ class TestExecToolsDispatching:
             )
         assert "cancelled" in results[0]["content"].lower()
         assert "No longer needed" in results[0]["content"]
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT state FROM tasks WHERE id = 't-cpend'")
-            row = cur.fetchone()
-        assert row["state"] == "cancelled"
+        from models import Task
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            state = session.scalar(select(Task.state).where(Task.id == "t-cpend"))
+        assert state == "cancelled"
 
     async def test_shutdown_worker_not_found(self, db_session):
         insert_guild(db_session, "g-sd-missing")
@@ -818,15 +793,18 @@ class TestExecToolsDispatching:
                     )
                 ],
             )
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute(
-                "SELECT description, name, phase, tool FROM tasks WHERE worker_id = 'w-inputcheck'"
-            )
-            row = cur.fetchone()
-        assert row["description"] == "Specific description text"
-        assert row["name"] == "Specific name"
-        assert row["phase"] == "review"
-        assert row["tool"] == "codex"
+        from models import Task
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            row = session.execute(
+                select(Task).where(Task.worker_id == "w-inputcheck")
+            ).scalar_one_or_none()
+        assert row is not None
+        assert row.description == "Specific description text"
+        assert row.name == "Specific name"
+        assert row.phase == "review"
+        assert row.tool == "codex"
 
     # -----------------------------------------------------------------------
     # Task locking — prevent concurrent follow-up races
@@ -849,11 +827,15 @@ class TestExecToolsDispatching:
                 ],
             )
         assert "t-lock1" in results[0]["content"]
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT owner FROM locks WHERE key='task:t-lock1'")
-            row = cur.fetchone()
-        assert row is not None, "A lock row should exist in the locks table after dispatch"
-        assert row["owner"] is not None, "Lock owner should be set after dispatch"
+        from models import Lock
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            lock = session.execute(
+                select(Lock).where(Lock.key == "task:t-lock1")
+            ).scalar_one_or_none()
+        assert lock is not None, "A lock row should exist in the locks table after dispatch"
+        assert lock.owner is not None, "Lock owner should be set after dispatch"
 
     async def test_send_followup_while_locked_queues_event(self, db_session):
         """A second send_followup on a locked task queues the instructions instead of dispatching."""
@@ -862,13 +844,20 @@ class TestExecToolsDispatching:
         _insert_agent(db_session, "g-lock-queue", "w-lq1", "a-lq1")
         # Pre-lock the task to simulate a concurrent dispatch already in flight.
         _insert_task(db_session, "t-lq1", "g-lock-queue", "w-lq1")
-        now = datetime.now(UTC).isoformat()
-        expires = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute(
-                "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (%s, %s, %s, %s)",
-                ("task:t-lq1", "existing-holder", now, expires),
+        from models import Lock
+
+        now_dt = datetime.now(UTC)
+        expires_dt = datetime.now(UTC) + timedelta(minutes=30)
+        with _sync_session(db_session) as session:
+            session.add(
+                Lock(
+                    key="task:t-lq1",
+                    owner="existing-holder",
+                    acquired_at=now_dt,
+                    expires_at=expires_dt,
+                )
             )
+            session.commit()
 
         broadcast_calls = []
 
@@ -894,12 +883,16 @@ class TestExecToolsDispatching:
             "queued" in results[0]["content"].lower() or "locked" in results[0]["content"].lower()
         )
         # A task_event row should exist
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT event_type, payload_json FROM task_events WHERE task_id='t-lq1'")
-            row = cur.fetchone()
-        assert row is not None, "A task_event row should have been inserted"
-        assert row["event_type"] == "pending-followup"
-        payload = json.loads(row["payload_json"])
+        from models import TaskEvent
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            ev = session.execute(
+                select(TaskEvent).where(TaskEvent.task_id == "t-lq1")
+            ).scalar_one_or_none()
+        assert ev is not None, "A task_event row should have been inserted"
+        assert ev.event_type == "pending-followup"
+        payload = json.loads(ev.payload_json)
         assert payload["instructions"] == "Add integration tests"
 
     async def test_two_concurrent_followups_only_one_dispatched(self, db_session):
@@ -961,9 +954,15 @@ class TestExecToolsDispatching:
         )
 
         # One task_event row should exist with the queued instructions
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT payload_json FROM task_events WHERE task_id='t-race1'")
-            rows = cur.fetchall()
+        from models import TaskEvent
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            rows = (
+                session.execute(select(TaskEvent).where(TaskEvent.task_id == "t-race1"))
+                .scalars()
+                .all()
+            )
         assert len(rows) == 1
 
     async def test_finalize_task_clears_lock_and_queued_events(self, db_session):
@@ -971,33 +970,46 @@ class TestExecToolsDispatching:
         insert_guild(db_session, "g-fin-lock")
         _insert_worker(db_session, "g-fin-lock", "w-fin-lk")
         _insert_task(db_session, "t-fin-lk", "g-fin-lock", "w-fin-lk")
-        now = datetime.now(UTC).isoformat()
-        expires = (datetime.now(UTC) + timedelta(minutes=30)).isoformat()
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute(
-                "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (%s, %s, %s, %s)",
-                ("task:t-fin-lk", "h1", now, expires),
+        from models import Lock, TaskEvent
+
+        now_dt = datetime.now(UTC)
+        expires_dt = datetime.now(UTC) + timedelta(minutes=30)
+        now_iso = now_dt.isoformat()
+        with _sync_session(db_session) as session:
+            session.add(
+                Lock(
+                    key="task:t-fin-lk",
+                    owner="h1",
+                    acquired_at=now_dt,
+                    expires_at=expires_dt,
+                )
             )
-            cur.execute(
-                "INSERT INTO task_events (task_id, event_type, payload_json, created_at) "
-                "VALUES ('t-fin-lk', 'pending-followup', '{\"instructions\": \"stale\"}', %s)",
-                (now,),
+            session.add(
+                TaskEvent(
+                    task_id="t-fin-lk",
+                    event_type="pending-followup",
+                    payload_json='{"instructions": "stale"}',
+                    created_at=now_iso,
+                )
             )
+            session.commit()
 
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
             results = await exec_tools(
                 "g-fin-lock", [_fake_tool_use("finalize_task", {"task_id": "t-fin-lk"})]
             )
         assert "finalized" in results[0]["content"].lower()
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT state FROM tasks WHERE id='t-fin-lk'")
-            task_row = cur.fetchone()
-            cur.execute("SELECT COUNT(*) FROM task_events WHERE task_id='t-fin-lk'")
-            event_count = cur.fetchone()["count"]
-            cur.execute("SELECT key FROM locks WHERE key='task:t-fin-lk'")
-            lock_row = cur.fetchone()
-        assert task_row["state"] == "done"
-        assert lock_row is None, "Lock should be released on finalize"
+        from models import Task
+        from sqlalchemy import func, select
+
+        with _sync_session(db_session) as session:
+            task_state = session.scalar(select(Task.state).where(Task.id == "t-fin-lk"))
+            event_count = session.scalar(
+                select(func.count()).select_from(TaskEvent).where(TaskEvent.task_id == "t-fin-lk")
+            )
+            lock_key = session.scalar(select(Lock.key).where(Lock.key == "task:t-fin-lk"))
+        assert task_state == "done"
+        assert lock_key is None, "Lock should be released on finalize"
         assert event_count == 0, "Queued events should be deleted on finalize"
 
     async def test_stale_lock_overridden(self, db_session):
@@ -1007,12 +1019,19 @@ class TestExecToolsDispatching:
         _insert_agent(db_session, "g-stale-lock", "w-stale", "a-stale")
         _insert_task(db_session, "t-stale", "g-stale-lock", "w-stale")
         # Insert a lock with an already-expired TTL (2 hours ago).
-        stale_ts = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute(
-                "INSERT INTO locks (key, owner, acquired_at, expires_at) VALUES (%s, %s, %s, %s)",
-                ("task:t-stale", "old-holder", stale_ts, stale_ts),
+        from models import Lock
+
+        stale_dt = datetime.now(UTC) - timedelta(hours=2)
+        with _sync_session(db_session) as session:
+            session.add(
+                Lock(
+                    key="task:t-stale",
+                    owner="old-holder",
+                    acquired_at=stale_dt,
+                    expires_at=stale_dt,
+                )
             )
+            session.commit()
 
         broadcast_calls = []
 
@@ -1026,11 +1045,15 @@ class TestExecToolsDispatching:
             )
         followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
         assert len(followup_msgs) == 1, "Stale lock should be overridden and follow-up dispatched"
-        with raw_conn(db_session) as (conn, cur):
-            cur.execute("SELECT owner FROM locks WHERE key='task:t-stale'")
-            row = cur.fetchone()
-        assert row is not None, "A new lock should have been acquired"
-        assert row["owner"] != "old-holder", "Lock owner should have been replaced"
+        from models import Lock
+        from sqlalchemy import select
+
+        with _sync_session(db_session) as session:
+            lock = session.execute(
+                select(Lock).where(Lock.key == "task:t-stale")
+            ).scalar_one_or_none()
+        assert lock is not None, "A new lock should have been acquired"
+        assert lock.owner != "old-holder", "Lock owner should have been replaced"
 
 
 # ---------------------------------------------------------------------------
@@ -1286,13 +1309,20 @@ class TestExecToolsResultHandling:
         _insert_worker(db_session, "g-large-res", "w-large")
         _insert_task(db_session, "t-large1", "g-large-res", "w-large")
         # Insert many log lines
+        from models import TaskLog
+
         now = datetime.now(UTC).isoformat()
-        with raw_conn(db_session) as (conn, cur):
-            for i in range(50):
-                cur.execute(
-                    "INSERT INTO task_logs (task_id, timestamp, line, worker_id) VALUES (%s, %s, %s, %s)",
-                    ("t-large1", now, "x" * 200, "w-large"),
+        with _sync_session(db_session) as session:
+            for _i in range(50):
+                session.add(
+                    TaskLog(
+                        task_id="t-large1",
+                        timestamp=now,
+                        line="x" * 200,
+                        worker_id="w-large",
+                    )
                 )
+            session.commit()
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
             results = await exec_tools(
                 "g-large-res",

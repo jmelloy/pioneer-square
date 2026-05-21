@@ -4,25 +4,34 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from helpers import insert_guild, insert_member, make_auth_token, raw_conn
+from helpers import _sync_session, insert_guild, insert_member, make_auth_token
 
 
 def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, content: str) -> None:
+    from models import ForemanTurn, Guild
+    from sqlalchemy import select
+
     now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-        cur.execute(
-            "INSERT INTO foreman_turns (guild_id, user_id, role, content_json, is_tool_response, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (guild_pk, user_id, role, f'"{content}"', 0, now),
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
         )
+        session.add(
+            ForemanTurn(
+                guild_id=guild_pk,
+                user_id=user_id,
+                role=role,
+                content_json=f'"{content}"',
+                is_tool_response=0,
+                created_at=now,
+            )
+        )
+        session.commit()
 
 
 # ---------------------------------------------------------------------------

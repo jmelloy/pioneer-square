@@ -9,30 +9,46 @@ from datetime import UTC, datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from helpers import insert_guild, insert_member, make_auth_token, raw_conn
+from helpers import _sync_session, insert_guild, insert_member, make_auth_token
 
 
 def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
     """Insert a guild with github_user_id but no guild_members row."""
+    from models import Guild
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name, github_user_id) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (guild_id, now, "Legacy", user_id),
+    with _sync_session(db_url) as session:
+        session.execute(
+            pg_insert(Guild)
+            .values(guild_id=guild_id, created_at=now, name="Legacy", github_user_id=user_id)
+            .on_conflict_do_nothing()
         )
+        session.commit()
 
 
 def _seed_user(db_url: str, user_id: str, login: str) -> None:
     """Insert a users row directly so it can be referenced as a member."""
+    from models import User
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO users "
-            "(id, github_id, github_login, created_at, updated_at) "
-            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (id) DO UPDATE SET "
-            "github_login = EXCLUDED.github_login",
-            (user_id, user_id, login, now, now),
+    with _sync_session(db_url) as session:
+        session.execute(
+            pg_insert(User)
+            .values(
+                id=user_id,
+                github_id=user_id,
+                github_login=login,
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={"github_login": login},
+            )
         )
+        session.commit()
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -31,7 +30,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import raw_conn  # noqa: E402
+from helpers import _sync_session, insert_guild, insert_task, insert_worker  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
@@ -65,27 +64,11 @@ def _insert_guild_worker_task(
     worker_id: str,
     task_id: str,
 ) -> None:
-    now = datetime.now(UTC).isoformat()
-    with raw_conn(db_url) as (conn, cur):
-        cur.execute(
-            "INSERT INTO guilds (guild_id, created_at, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-            (guild_id, now, "Test Guild"),
-        )
-        cur.execute("SELECT id FROM guilds WHERE guild_id = %s AND deleted_at IS NULL", (guild_id,))
-        row = cur.fetchone()
-        guild_pk = row["id"]
-        cur.execute(
-            "INSERT INTO workers (id, guild_id, repos, state, created_at)"
-            " VALUES (%s, %s, '[]', 'online', %s) ON CONFLICT DO NOTHING",
-            (worker_id, guild_pk, now),
-        )
-        # Use "awaiting-review" so the join handler does not replay the task as
-        # task-assigned (it only replays "pending" and "working" tasks).
-        cur.execute(
-            "INSERT INTO tasks (id, worker_id, guild_id, description, tool, state, created_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            (task_id, worker_id, guild_pk, "test task", "claude", "awaiting-review", now),
-        )
+    # Use "awaiting-review" so the join handler does not replay the task as
+    # task-assigned (it only replays "pending" and "working" tasks).
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="awaiting-review")
 
 
 def _join_ws(ws, agent_id: str, worker_id: str | None = None) -> None:
@@ -152,19 +135,22 @@ def test_task_complete_persists_pr_url(client):
             assert msg["type"] == "task-complete"
 
             # Check DB while connections are still open to avoid racing background tasks.
-            with raw_conn(db_url) as (conn, cur):
-                cur.execute(
-                    "SELECT pr_url, pr_number, pr_repo, state FROM tasks WHERE id = %s",
-                    (task_id,),
-                )
-                row = cur.fetchone()
+            from models import Task
+            from sqlalchemy import select
+
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(Task.pr_url, Task.pr_number, Task.pr_repo, Task.state).where(
+                        Task.id == task_id
+                    )
+                ).first()
 
     assert row is not None
-    assert row["pr_url"] == "https://github.com/owner/repo/pull/42"
-    assert row["pr_number"] == 42
-    assert row["pr_repo"] == "owner/repo"
+    assert row.pr_url == "https://github.com/owner/repo/pull/42"
+    assert row.pr_number == 42
+    assert row.pr_repo == "owner/repo"
     # state stays "awaiting-review" (the .where(state=="working") guard is a no-op here)
-    assert row["state"] == "awaiting-review"
+    assert row.state == "awaiting-review"
 
 
 def test_task_complete_without_pr_url_leaves_pr_url_null(client):
@@ -196,16 +182,18 @@ def test_task_complete_without_pr_url_leaves_pr_url_null(client):
             )
             ws_obs.receive_json()
 
-            with raw_conn(db_url) as (conn, cur):
-                cur.execute(
-                    "SELECT pr_url, pr_number, pr_repo FROM tasks WHERE id = %s", (task_id,)
-                )
-                row = cur.fetchone()
+            from models import Task
+            from sqlalchemy import select
+
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(Task.pr_url, Task.pr_number, Task.pr_repo).where(Task.id == task_id)
+                ).first()
 
     assert row is not None
-    assert row["pr_url"] is None  # pr_url stays NULL
-    assert row["pr_number"] is None  # pr_number stays NULL
-    assert row["pr_repo"] is None  # pr_repo stays NULL
+    assert row.pr_url is None  # pr_url stays NULL
+    assert row.pr_number is None  # pr_number stays NULL
+    assert row.pr_repo is None  # pr_repo stays NULL
 
 
 # ---------------------------------------------------------------------------
@@ -243,15 +231,18 @@ def test_task_followup_done_persists_pr_url(client):
             msg = ws_obs.receive_json()
             assert msg["type"] == "task-followup-done"
 
-            with raw_conn(db_url) as (conn, cur):
-                cur.execute(
-                    "SELECT pr_url, pr_number, pr_repo, state FROM tasks WHERE id = %s",
-                    (task_id,),
-                )
-                row = cur.fetchone()
+            from models import Task
+            from sqlalchemy import select
+
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(Task.pr_url, Task.pr_number, Task.pr_repo, Task.state).where(
+                        Task.id == task_id
+                    )
+                ).first()
 
     assert row is not None
-    assert row["pr_url"] == "https://github.com/owner/repo/pull/99"
-    assert row["pr_number"] == 99
-    assert row["pr_repo"] == "owner/repo"
-    assert row["state"] == "awaiting-review"
+    assert row.pr_url == "https://github.com/owner/repo/pull/99"
+    assert row.pr_number == 99
+    assert row.pr_repo == "owner/repo"
+    assert row.state == "awaiting-review"
