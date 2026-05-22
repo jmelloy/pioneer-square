@@ -99,10 +99,14 @@ def test_worker_online_notifies_foreman(client):
                     "repos": ["org/repo1", "org/repo2"],
                 }
             )
-            # No explicit sync needed: _trigger_foreman is directly awaited
-            # inside handle_worker_register, so triggered is populated before
-            # the handler returns. The WS context exit (close frame) ensures
-            # the server processes worker-register before we reach assertions.
+            # Sync: ping/pong ensures the server has fully processed
+            # worker-register (including db.commit()) before we close the
+            # WebSocket.  Without this, the close frame can arrive while
+            # handle_worker_register is still awaiting inside db.commit(),
+            # which delivers a CancelledError that corrupts the asyncpg
+            # connection and causes InterfaceError in the finally block.
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong
 
     online = [(e, m) for e, m in triggered if e == "worker-online"]
     assert online, f"Expected worker-online trigger, got: {triggered}"
