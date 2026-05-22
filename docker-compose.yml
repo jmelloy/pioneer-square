@@ -40,6 +40,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-}
       TEST_MODE: ${TEST_MODE:-}
+      PIONEER_FOREMAN_KEY: ${PIONEER_FOREMAN_KEY:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: sh -c "alembic upgrade head && python main.py"
@@ -66,6 +67,8 @@ services:
       #   us.anthropic.claude-sonnet-4-5-20251001-v2:0
       FOREMAN_MODEL: ${FOREMAN_MODEL:-claude-sonnet-4-6}
       FOREMAN_PROVIDER: ${FOREMAN_PROVIDER:-anthropic}
+      # Shared HMAC secret for JWT auth between the foreman and backend.
+      PIONEER_FOREMAN_KEY: ${PIONEER_FOREMAN_KEY:-}
       # AWS credentials for Bedrock (ignored when FOREMAN_PROVIDER=anthropic).
       # Supply either a bearer token OR access key + secret (+ optional session token).
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
@@ -98,6 +101,8 @@ services:
       PIONEER_GUILD_ID: ${PIONEER_GUILD_ID:-}
       # Optional: pre-registered worker auth_token to skip re-registration.
       PIONEER_FOREMAN_AUTH_TOKEN: ${PIONEER_FOREMAN_AUTH_TOKEN:-}
+      # Shared HMAC secret for JWT auth — must match PIONEER_FOREMAN_KEY on backend.
+      PIONEER_FOREMAN_KEY: ${PIONEER_FOREMAN_KEY:-}
       # Optional: GitHub token; fetched from backend at first use if absent.
       PIONEER_GITHUB_TOKEN: ${PIONEER_GITHUB_TOKEN:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
