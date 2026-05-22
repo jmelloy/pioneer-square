@@ -375,7 +375,8 @@ def test_task_complete_clears_agent_state(client):
             # received messages to find it regardless of broadcast order.
             received = [ws_obs.receive_json(), ws_obs.receive_json()]
             idle_msgs = [
-                m for m in received
+                m
+                for m in received
                 if m.get("type") == "agent-state"
                 and m.get("agentId") == agent_id
                 and m.get("state") == "idle"
@@ -440,7 +441,8 @@ def test_task_followup_done_clears_agent_state(client):
             # received messages to find it regardless of broadcast order.
             received = [ws_obs.receive_json(), ws_obs.receive_json()]
             idle_msgs = [
-                m for m in received
+                m
+                for m in received
                 if m.get("type") == "agent-state"
                 and m.get("agentId") == agent_id
                 and m.get("state") == "idle"
