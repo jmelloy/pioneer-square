@@ -606,6 +606,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 wid = inp["worker_id"]
                 desc = inp.get("description", "")
                 phase = inp.get("phase", "execute")
+                if (phase or "").lower() == "review":
+                    logger.warning(
+                        "assign_task called with phase='review' for worker %s — "
+                        "review tasks must use review_pr_internal or review_pr, not assign_task. "
+                        "The worker will commit findings and open a new PR instead of posting "
+                        "review comments on the original PR.",
+                        wid,
+                    )
                 tool = inp.get("tool", "claude")
                 existing_task_id = inp.get("task_id")
                 guild_result = await db.execute(

@@ -1722,9 +1722,17 @@ class Worker:
                 if tool == "claude":
                     pr_title = (task.get("name") or desc)[:72].replace('"', "'")
                     closes = f" Closes #{task['issue_number']}" if task.get("issue_number") else ""
-                    if task.get("phase") == "review":
+                    if (task.get("phase") or "").lower() == "review":
                         # Review-phase tasks must post findings as GitHub PR review
                         # comments — NEVER by committing files and opening a new PR.
+                        _pr_repo = task.get("issue_repo") or ""
+                        _pr_num = task.get("issue_number")
+                        if _pr_repo and _pr_num:
+                            _pr_ref = f"https://github.com/{_pr_repo}/pull/{_pr_num}"
+                            _api_ref = f"repos/{_pr_repo}/pulls/{_pr_num}"
+                        else:
+                            _pr_ref = "<PR-URL>"
+                            _api_ref = "repos/OWNER/REPO/pulls/NUMBER"
                         current_desc = (
                             f"{desc}\n\n"
                             "IMPORTANT — this is a review-phase task.\n"
@@ -1732,12 +1740,12 @@ class Worker:
                             "  - Post your findings directly as a GitHub PR review using the gh CLI or API.\n"
                             "  - NEVER create a new branch, commit review findings to files, or open a new PR.\n"
                             "  - The review is complete when you post it, for example:\n"
-                            "      gh pr review <PR-URL> --comment --body '<your findings>'\n"
+                            f"      gh pr review {_pr_ref} --comment --body '<your findings>'\n"
                             "    or for APPROVE/REQUEST_CHANGES:\n"
-                            "      gh pr review <PR-URL> --approve --body '<comment>'\n"
-                            "      gh pr review <PR-URL> --request-changes --body '<what needs fixing>'\n"
+                            f"      gh pr review {_pr_ref} --approve --body '<comment>'\n"
+                            f"      gh pr review {_pr_ref} --request-changes --body '<what needs fixing>'\n"
                             "    or via the API for inline comments:\n"
-                            "      gh api repos/OWNER/REPO/pulls/NUMBER/reviews \\\n"
+                            f"      gh api {_api_ref}/reviews \\\n"
                             "        -f body='...' -f event='COMMENT|APPROVE|REQUEST_CHANGES' \\\n"
                             "        -f 'comments[][path]=file.py' -f 'comments[][line]=42' \\\n"
                             "        -f 'comments[][body]=inline comment'\n"
