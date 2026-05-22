@@ -656,23 +656,33 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         if agent_id_msg:
             await ctx.db.execute(
                 update(Agent)
-                .where(Agent.id == agent_id_msg, Agent.guild_id == ctx.guild_pk)
+                .where(
+                    Agent.id == agent_id_msg,
+                    Agent.guild_id == ctx.guild_pk,
+                    Agent.worker_id == worker_id_msg,
+                )
                 .values(state="idle", current_task_id=None, activity=None)
             )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
         if agent_id_msg:
-            await broadcast(
-                ctx.guild_id,
-                {
-                    "type": "agent-state",
-                    "agentId": agent_id_msg,
-                    "workerId": worker_id_msg,
-                    "state": "idle",
-                    "taskId": None,
-                    "activity": None,
-                },
-            )
+            try:
+                await broadcast(
+                    ctx.guild_id,
+                    {
+                        "type": "agent-state",
+                        "agentId": agent_id_msg,
+                        "workerId": worker_id_msg,
+                        "state": "idle",
+                        "taskId": None,
+                        "activity": None,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "synthesized agent-state:idle broadcast failed after commit",
+                    exc_info=True,
+                )
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if task_id:
         spawn(
@@ -730,23 +740,33 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
         if agent_id_msg:
             await ctx.db.execute(
                 update(Agent)
-                .where(Agent.id == agent_id_msg, Agent.guild_id == ctx.guild_pk)
+                .where(
+                    Agent.id == agent_id_msg,
+                    Agent.guild_id == ctx.guild_pk,
+                    Agent.worker_id == worker_id_msg,
+                )
                 .values(state="idle", current_task_id=None, activity=None)
             )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
         if agent_id_msg:
-            await broadcast(
-                ctx.guild_id,
-                {
-                    "type": "agent-state",
-                    "agentId": agent_id_msg,
-                    "workerId": worker_id_msg,
-                    "state": "idle",
-                    "taskId": None,
-                    "activity": None,
-                },
-            )
+            try:
+                await broadcast(
+                    ctx.guild_id,
+                    {
+                        "type": "agent-state",
+                        "agentId": agent_id_msg,
+                        "workerId": worker_id_msg,
+                        "state": "idle",
+                        "taskId": None,
+                        "activity": None,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "synthesized agent-state:idle broadcast failed after commit",
+                    exc_info=True,
+                )
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if not task_id:
         return

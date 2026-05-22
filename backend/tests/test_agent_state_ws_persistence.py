@@ -371,12 +371,17 @@ def test_task_complete_clears_agent_state(client):
                 }
             )
 
-            # Handler emits agent-state:idle before the task-complete broadcast.
-            msg = ws_obs.receive_json()
-            assert msg["type"] == "agent-state"
-            assert msg["agentId"] == agent_id
-            assert msg["state"] == "idle"
-            assert msg["taskId"] is None
+            # Handler synthesizes an agent-state:idle message; scan all
+            # received messages to find it regardless of broadcast order.
+            received = [ws_obs.receive_json(), ws_obs.receive_json()]
+            idle_msgs = [
+                m for m in received
+                if m.get("type") == "agent-state"
+                and m.get("agentId") == agent_id
+                and m.get("state") == "idle"
+                and m.get("taskId") is None
+            ]
+            assert idle_msgs, f"no agent-state:idle found in {received}"
 
             # DB is already committed at this point.
             with _sync_session(db_url) as session:
@@ -431,12 +436,17 @@ def test_task_followup_done_clears_agent_state(client):
                 }
             )
 
-            # Handler emits agent-state:idle before the task-followup-done broadcast.
-            msg = ws_obs.receive_json()
-            assert msg["type"] == "agent-state"
-            assert msg["agentId"] == agent_id
-            assert msg["state"] == "idle"
-            assert msg["taskId"] is None
+            # Handler synthesizes an agent-state:idle message; scan all
+            # received messages to find it regardless of broadcast order.
+            received = [ws_obs.receive_json(), ws_obs.receive_json()]
+            idle_msgs = [
+                m for m in received
+                if m.get("type") == "agent-state"
+                and m.get("agentId") == agent_id
+                and m.get("state") == "idle"
+                and m.get("taskId") is None
+            ]
+            assert idle_msgs, f"no agent-state:idle found in {received}"
 
             # DB is already committed at this point.
             with _sync_session(db_url) as session:
