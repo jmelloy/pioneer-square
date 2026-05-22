@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -35,17 +36,34 @@ _HUMAN_TURN_WINDOW = 5
 _TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
 _24H_SECS = 86_400
 
+# Set FOREMAN_PROVIDER=bedrock to use Amazon Bedrock instead of the Anthropic API.
+# Requires: pip install "anthropic[bedrock]"  +  AWS credentials in env / IAM role.
+# On Bedrock, model IDs use the "anthropic." prefix, e.g.:
+#   anthropic.claude-sonnet-4-5   (Sonnet 4.x on Bedrock)
+#   anthropic.claude-opus-4-5     (Opus 4.x on Bedrock)
+# Check your Bedrock console for exact IDs available in your region.
+FOREMAN_PROVIDER = os.environ.get("FOREMAN_PROVIDER", "anthropic").lower()
+_BEDROCK_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
 # Module-level Anthropic client (reused across calls)
-_anthropic_client: _anthropic.AsyncAnthropic | None = None
+_anthropic_client: _anthropic.AsyncAnthropic | _anthropic.AsyncAnthropicBedrock | None = None
 
 
-def _get_anthropic_client(api_key: str | None = None) -> _anthropic.AsyncAnthropic:
+def _get_anthropic_client(
+    config: Config,
+) -> _anthropic.AsyncAnthropic | _anthropic.AsyncAnthropicBedrock:
     global _anthropic_client
     if _anthropic_client is None:
-        kwargs: dict = {}
-        if api_key:
-            kwargs["api_key"] = api_key
-        _anthropic_client = _anthropic.AsyncAnthropic(**kwargs)
+        provider = (getattr(config, "provider", None) or FOREMAN_PROVIDER).lower()
+        region = getattr(config, "aws_region", None) or _BEDROCK_REGION
+        if provider == "bedrock":
+            _anthropic_client = _anthropic.AsyncAnthropicBedrock(aws_region=region)
+            logger.info("Foreman using Amazon Bedrock (region=%s, model=%s)", region, config.model)
+        else:
+            kwargs: dict = {}
+            if getattr(config, "api_key", None):
+                kwargs["api_key"] = config.api_key
+            _anthropic_client = _anthropic.AsyncAnthropic(**kwargs)
     return _anthropic_client
 
 
@@ -356,10 +374,14 @@ async def run_foreman_ai(
         )
 
         logger.info(
-            "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d",
+            "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
+            "system_chars=%d state_chars=%d extra_context_chars=%d",
             guild_id,
             len(worker_rows),
             len(summarized_tasks),
+            len(system_blocks[0]["text"]),
+            len(state_preamble),
+            len(extra_context),
         )
 
         await _save_turn(guild_id, user_id, "system", audit_system, http=http)
@@ -368,7 +390,7 @@ async def run_foreman_ai(
 
         _inject_state_preamble(messages, state_preamble)
 
-        client = _get_anthropic_client(config.api_key)
+        client = _get_anthropic_client(config)
 
         text_parts = []
         for round_num in range(config.max_rounds):
@@ -392,11 +414,15 @@ async def run_foreman_ai(
             _input_tokens = getattr(usage, "input_tokens", 0) or 0
             _output_tokens = getattr(usage, "output_tokens", 0) or 0
             logger.info(
-                "guild=%s round %d: stop_reason=%s input=%d output=%d",
+                "guild=%s round %d: stop_reason=%s content_blocks=%d "
+                "input=%d cache_read=%d cache_write=%d output=%d",
                 guild_id,
                 round_num,
                 resp.stop_reason,
+                len(resp.content),
                 _input_tokens,
+                getattr(usage, "cache_read_input_tokens", 0) or 0,
+                getattr(usage, "cache_creation_input_tokens", 0) or 0,
                 _output_tokens,
             )
 
@@ -499,6 +525,15 @@ async def run_foreman_ai(
             wrap_usage = wrap_resp.usage
             _wrap_input = getattr(wrap_usage, "input_tokens", 0) or 0
             _wrap_output = getattr(wrap_usage, "output_tokens", 0) or 0
+            logger.info(
+                "guild=%s wrap-up: stop_reason=%s input=%d cache_read=%d cache_write=%d output=%d",
+                guild_id,
+                wrap_resp.stop_reason,
+                _wrap_input,
+                getattr(wrap_usage, "cache_read_input_tokens", 0) or 0,
+                getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0,
+                _wrap_output,
+            )
             wrap_turn_id = await _save_turn(
                 guild_id, user_id, "assistant", wrap_resp.content, http=http
             )
