@@ -628,6 +628,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
 async def handle_task_complete(ctx: WSContext, data: dict) -> None:
     task_id = data.get("taskId")
     worker_id_msg = data.get("workerId", "")
+    agent_id_msg = data.get("agentId", "")
     desc = data.get("description", "")
     branch = data.get("branch", "")
     pr_url = data.get("prUrl", "")
@@ -648,8 +649,30 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
             .where(Task.id == task_id, Task.state == "working")
             .values(state="awaiting-review")
         )
+        # Clear the agent that ran this task so get_task_status doesn't return
+        # agent_state:"working" after the task has parked in awaiting-review.
+        # The worker will also send agent-state:idle shortly after, but the
+        # foreman may call get_task_status before that message arrives.
+        if agent_id_msg:
+            await ctx.db.execute(
+                update(Agent)
+                .where(Agent.id == agent_id_msg, Agent.guild_id == ctx.guild_pk)
+                .values(state="idle", current_task_id=None, activity=None)
+            )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
+        if agent_id_msg:
+            await broadcast(
+                ctx.guild_id,
+                {
+                    "type": "agent-state",
+                    "agentId": agent_id_msg,
+                    "workerId": worker_id_msg,
+                    "state": "idle",
+                    "taskId": None,
+                    "activity": None,
+                },
+            )
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if task_id:
         spawn(
@@ -683,6 +706,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
 async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     task_id = data.get("taskId")
     worker_id_msg = data.get("workerId", "")
+    agent_id_msg = data.get("agentId", "")
     if task_id:
         pr_url_fud = data.get("prUrl", "")
         pr_update: dict = {}
@@ -701,8 +725,28 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
                 .where(Task.id == task_id, Task.state.in_(_TERMINAL_STATES))
                 .values(**pr_update)
             )
+        # Clear the agent that ran this follow-up so get_task_status returns
+        # the correct idle state while the task parks in awaiting-review.
+        if agent_id_msg:
+            await ctx.db.execute(
+                update(Agent)
+                .where(Agent.id == agent_id_msg, Agent.guild_id == ctx.guild_pk)
+                .values(state="idle", current_task_id=None, activity=None)
+            )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
+        if agent_id_msg:
+            await broadcast(
+                ctx.guild_id,
+                {
+                    "type": "agent-state",
+                    "agentId": agent_id_msg,
+                    "workerId": worker_id_msg,
+                    "state": "idle",
+                    "taskId": None,
+                    "activity": None,
+                },
+            )
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
     if not task_id:
         return

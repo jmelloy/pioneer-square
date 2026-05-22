@@ -327,6 +327,127 @@ def test_guild_get_returns_current_task_id(client):
             assert agents_by_id[agent_id]["activity"] == "editing"
 
 
+def test_task_complete_clears_agent_state(client):
+    """task-complete with agentId must immediately clear the agent to idle.
+
+    The worker sends agent-state:idle only after task-complete, so there is a
+    window where the foreman can call get_task_status and see agent_state
+    'working' on an already-parked awaiting-review task. Fixes #446.
+    """
+    test_client, db_url = client
+    guild_id, worker_id, task_id, agent_id = "gas-6", "w-gas6", "t-gas6", "a-gas6"
+    _insert_guild_worker_task(db_url, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+        _join_ws(ws_worker, agent_id, worker_id)
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
+            _join_ws(ws_obs, "a-obs6")
+            ws_worker.receive_json()  # drain obs's agent-joined broadcast
+
+            # Set agent to 'working' on the task.
+            ws_worker.send_json(
+                {
+                    "type": "agent-state",
+                    "workerId": worker_id,
+                    "agentId": agent_id,
+                    "taskId": task_id,
+                    "state": "working",
+                }
+            )
+            ws_obs.receive_json()  # drain agent-state broadcast
+
+            # Worker finishes and sends task-complete (agent-state:idle not sent yet).
+            ws_worker.send_json(
+                {
+                    "type": "task-complete",
+                    "workerId": worker_id,
+                    "agentId": agent_id,
+                    "taskId": task_id,
+                    "branch": "feature/fix",
+                    "description": "done",
+                    "prUrl": "",
+                    "sessionId": "",
+                    "lastText": "",
+                }
+            )
+
+            # Handler emits agent-state:idle before the task-complete broadcast.
+            msg = ws_obs.receive_json()
+            assert msg["type"] == "agent-state"
+            assert msg["agentId"] == agent_id
+            assert msg["state"] == "idle"
+            assert msg["taskId"] is None
+
+            # DB is already committed at this point.
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(Agent.state, Agent.current_task_id).where(Agent.id == agent_id)
+                ).first()
+
+    assert row.state == "idle"
+    assert row.current_task_id is None
+
+
+def test_task_followup_done_clears_agent_state(client):
+    """task-followup-done with agentId must immediately clear the agent to idle.
+
+    Same race as task-complete: the foreman is triggered right after, so the
+    agent row must be idle before the get_task_status call can arrive. #446.
+    """
+    test_client, db_url = client
+    guild_id, worker_id, task_id, agent_id = "gas-7", "w-gas7", "t-gas7", "a-gas7"
+    _insert_guild_worker_task(db_url, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+        _join_ws(ws_worker, agent_id, worker_id)
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
+            _join_ws(ws_obs, "a-obs7")
+            ws_worker.receive_json()  # drain obs's agent-joined broadcast
+
+            # Set agent to 'working' on the task.
+            ws_worker.send_json(
+                {
+                    "type": "agent-state",
+                    "workerId": worker_id,
+                    "agentId": agent_id,
+                    "taskId": task_id,
+                    "state": "working",
+                }
+            )
+            ws_obs.receive_json()  # drain agent-state broadcast
+
+            # Worker finishes a follow-up iteration (agent-state:idle not sent yet).
+            ws_worker.send_json(
+                {
+                    "type": "task-followup-done",
+                    "workerId": worker_id,
+                    "agentId": agent_id,
+                    "taskId": task_id,
+                    "success": True,
+                    "stopReason": "end_turn",
+                    "branch": "feature/fix",
+                    "sessionId": "",
+                    "prUrl": "",
+                }
+            )
+
+            # Handler emits agent-state:idle before the task-followup-done broadcast.
+            msg = ws_obs.receive_json()
+            assert msg["type"] == "agent-state"
+            assert msg["agentId"] == agent_id
+            assert msg["state"] == "idle"
+            assert msg["taskId"] is None
+
+            # DB is already committed at this point.
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(Agent.state, Agent.current_task_id).where(Agent.id == agent_id)
+                ).first()
+
+    assert row.state == "idle"
+    assert row.current_task_id is None
+
+
 def test_agent_idle_releases_task_lock(client):
     """When an agent transitions to idle, the task lock is released and the
     task is moved out of 'working' so a new follow-up can be dispatched."""
