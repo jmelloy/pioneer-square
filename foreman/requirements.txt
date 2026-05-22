@@ -1,12 +1,10 @@
-# Foreman runtime dependencies
+# Legacy foreman runtime dependencies (for foreman/main.py)
 #
-# The standalone foreman process imports backend/ source directly (via a
-# sys.path insert in main.py). These packages cover that full dependency
-# chain without pulling in backend-only extras like uvicorn, alembic, or
-# asyncpg that the foreman process never uses.
+# foreman/main.py imports backend/ source directly (via a sys.path insert).
+# These packages cover that full dependency chain.
 #
-# Note: Phase 3 will replace the sys.path import with a proper REST client,
-# after which sqlmodel/fastapi/aiosqlite/sqlalchemy can be dropped here.
+# For the standalone Phase 3 package (pioneer_foreman), use pyproject.toml
+# instead: pip install -e foreman/  (much lighter — no ORM or FastAPI needed).
 
 # Claude API (bedrock extra adds boto3 for FOREMAN_PROVIDER=bedrock support)
 anthropic[bedrock]>=0.40.0
