@@ -37,9 +37,13 @@ FOREMAN_TOOLS = [
         "name": "assign_task",
         "description": (
             "Queue a coding task for a worker agent. The worker creates a git worktree, "
-            "runs the chosen coding agent on the description, then pushes the branch. "
+            "runs the chosen coding agent on the description, then pushes the branch and "
+            "opens a PR. "
             "Pass task_id (from create_task) to assign that existing task to a worker instead "
-            "of creating a duplicate — this is the preferred flow."
+            "of creating a duplicate — this is the preferred flow. "
+            "WARNING: do NOT use assign_task to perform a PR code review. Workers always "
+            "end by committing and opening a new PR — they cannot post GitHub PR review "
+            "comments. For PR reviews use review_pr_internal or review_pr instead."
         ),
         "input_schema": {
             "type": "object",
@@ -387,7 +391,9 @@ FOREMAN_TOOLS = [
             "Request an automated code review via the EXTERNAL code-review-agent MCP server "
             "at agent.meyers.life (override with REVIEWER_AGENT_URL env var). "
             "The remote agent fetches the PR diff, runs a Claude-powered review, and posts "
-            "the result as a GitHub PR review (APPROVE / REQUEST_CHANGES / COMMENT). "
+            "the result as a GitHub PR review (APPROVE / REQUEST_CHANGES / COMMENT with "
+            "inline comments). This is the CORRECT way to review a PR — findings are posted "
+            "as review comments on the original PR, never as a new PR. "
             "Use this when you want a specialised external reviewer. "
             "For a self-contained internal review without any external dependency, "
             "use review_pr_internal instead."
@@ -414,6 +420,8 @@ FOREMAN_TOOLS = [
             "analyse it, then posts a GitHub PR review with a 3–5 bullet-point summary "
             "and up to 5 inline comments on specific lines. "
             "Supports action values APPROVE, REQUEST_CHANGES, or COMMENT (default COMMENT). "
+            "This is the CORRECT way to review a PR — findings are posted as review "
+            "comments on the original PR via the GitHub Reviews API, never as a new PR. "
             "Use this instead of review_pr when you want a quick review with no external "
             "dependency, or when agent.meyers.life is unavailable."
         ),
