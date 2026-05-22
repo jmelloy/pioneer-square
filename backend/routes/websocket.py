@@ -162,39 +162,55 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     stale_agents = [
                         aid for aid in joined_agents if agent_owners.get(aid) is websocket
                     ]
+                    # Release ownership first so a racing join/reconnect sees a
+                    # clean slate even if the DB operations below fail.
+                    for agent_id in stale_agents:
+                        agent_owners.pop(agent_id, None)
                     # Look up the worker_ids for all stale agents *before* we
                     # modify their rows, so we can update the Worker table with
                     # the correct IDs (worker IDs are "w-…"; agent IDs are
                     # "a-…" — using agent_id as a Worker.id filter never
                     # matched and left zombie workers stuck in "online").
                     stale_worker_ids: set[str] = set()
-                    if stale_agents:
-                        wid_rows = (
-                            await db.execute(
-                                select(Agent.worker_id).where(
-                                    Agent.id.in_(stale_agents),
-                                    Agent.guild_id == _guild_pk,
-                                    Agent.worker_id.isnot(None),
+                    try:
+                        if stale_agents:
+                            wid_rows = (
+                                await db.execute(
+                                    select(Agent.worker_id).where(
+                                        Agent.id.in_(stale_agents),
+                                        Agent.guild_id == _guild_pk,
+                                        Agent.worker_id.isnot(None),
+                                    )
                                 )
+                            ).all()
+                            stale_worker_ids = {r[0] for r in wid_rows}
+                        for agent_id in stale_agents:
+                            await db.execute(
+                                update(Agent)
+                                .where(Agent.id == agent_id, Agent.guild_id == _guild_pk)
+                                .values(state="offline", activity=None, current_task_id=None)
                             )
-                        ).all()
-                        stale_worker_ids = {r[0] for r in wid_rows}
-                    for agent_id in stale_agents:
-                        agent_owners.pop(agent_id, None)
-                        await db.execute(
-                            update(Agent)
-                            .where(Agent.id == agent_id, Agent.guild_id == _guild_pk)
-                            .values(state="offline", activity=None, current_task_id=None)
+                        # Mirror into workers table using the real worker IDs.
+                        for wid in stale_worker_ids:
+                            await db.execute(
+                                update(Worker)
+                                .where(Worker.id == wid, Worker.guild_id == _guild_pk)
+                                .values(state="offline")
+                            )
+                        if stale_agents:
+                            await db.commit()
+                    except Exception:
+                        # The DB connection may have been closed by a
+                        # CancelledError delivered during a handler (e.g.
+                        # when a close frame races a db.commit() inside the
+                        # message loop).  Log and continue so the broadcast
+                        # and foreman-trigger below still run.
+                        logger.warning(
+                            "WS teardown: DB error for guild %s — stale agents/workers"
+                            " may remain online in DB until sweeper runs",
+                            guild_id,
+                            exc_info=True,
                         )
-                    # Mirror into workers table using the real worker IDs.
-                    for wid in stale_worker_ids:
-                        await db.execute(
-                            update(Worker)
-                            .where(Worker.id == wid, Worker.guild_id == _guild_pk)
-                            .values(state="offline")
-                        )
-                    if stale_agents:
-                        await db.commit()
                 for agent_id in stale_agents:
                     await broadcast(
                         guild_id,
