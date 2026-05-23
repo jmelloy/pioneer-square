@@ -19,6 +19,9 @@ from datetime import UTC, datetime, timedelta
 
 from database import get_db
 from events import broadcast, emit_terminal_line
+from foreman_core.tools_schema import (
+    FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
+)
 from lock_service import LockService
 from models import (
     Agent,
@@ -31,7 +34,6 @@ from models import (
     TaskLog,
     Worker,
 )
-from foreman_core.tools_schema import FOREMAN_TOOLS
 from sqlalchemy import delete, select, update
 
 logger = logging.getLogger(__name__)
