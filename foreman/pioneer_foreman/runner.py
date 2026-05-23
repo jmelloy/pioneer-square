@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 _anthropic_clients: dict[tuple, object] = {}
 
 
-def _get_anthropic_client(config: "Config"):
+def _get_anthropic_client(config: Config):
     provider = getattr(config, "provider", "anthropic") or "anthropic"
     region = getattr(config, "aws_region", None)
     api_key = getattr(config, "api_key", None) or ""

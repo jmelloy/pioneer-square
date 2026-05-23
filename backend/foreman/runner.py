@@ -9,12 +9,10 @@ from auth_deps import get_guild_pk
 from database import get_db
 from events import broadcast
 from foreman_core.constants import (
-    MAX_FOREMAN_ROUNDS,
-    MAX_HISTORY_MESSAGES,
-    MAX_TOOL_RESULT_CHARS,
     _24H_SECS,
     _HUMAN_TURN_WINDOW,
     _TERMINAL_STATES,
+    MAX_FOREMAN_ROUNDS,
 )
 from foreman_core.llm import FOREMAN_MODEL, HAS_ANTHROPIC, make_anthropic_client
 from foreman_core.message_utils import (

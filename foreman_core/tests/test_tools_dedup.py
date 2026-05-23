@@ -22,10 +22,9 @@ def test_foreman_tools_canonical_is_list():
 
 
 def test_standalone_foreman_uses_canonical_tools():
-    from foreman_core.tools_schema import FOREMAN_TOOLS as canonical
-
     # foreman/ standalone entry point
     import pioneer_foreman.tools as foreman_tools
+    from foreman_core.tools_schema import FOREMAN_TOOLS as canonical
 
     assert foreman_tools.FOREMAN_TOOLS is canonical, (
         "foreman/pioneer_foreman/tools.py must import FOREMAN_TOOLS from foreman_core, "

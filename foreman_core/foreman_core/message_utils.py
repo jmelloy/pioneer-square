@@ -6,7 +6,7 @@ import copy
 import json
 from datetime import datetime
 
-from .constants import MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS, _TERMINAL_STATES
+from .constants import _TERMINAL_STATES, MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS
 
 
 def truncate_tool_result(content: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
