@@ -32,15 +32,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Module-level Anthropic client (reused across calls)
-_anthropic_client = None
+# Client cache keyed on (provider, region, api_key) so different configs
+# get different clients instead of silently reusing the first one created.
+_anthropic_clients: dict[tuple, object] = {}
 
 
-def _get_anthropic_client(api_key: str | None = None):
-    global _anthropic_client
-    if _anthropic_client is None:
-        _anthropic_client = make_anthropic_client(api_key=api_key)
-    return _anthropic_client
+def _get_anthropic_client(config: "Config"):
+    provider = getattr(config, "provider", "anthropic") or "anthropic"
+    region = getattr(config, "aws_region", None)
+    api_key = getattr(config, "api_key", None) or ""
+    cache_key = (provider.lower(), region, api_key)
+    if cache_key not in _anthropic_clients:
+        _anthropic_clients[cache_key] = make_anthropic_client(
+            provider=provider,
+            api_key=api_key or None,
+            region=region,
+        )
+    return _anthropic_clients[cache_key]
 
 
 async def _load_history(guild_id: str, user_id: str, *, http: ForemanHTTPClient) -> list[dict]:
@@ -159,11 +167,16 @@ async def run_foreman_ai(
             workers_block, tasks_block, extra_context, primary_repo=primary_repo
         )
 
+        _system_chars = next((len(b["text"]) for b in system_blocks if b.get("type") == "text"), 0)
         logger.info(
-            "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d",
+            "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
+            "system_chars=%d state_chars=%d extra_context_chars=%d",
             guild_id,
             len(worker_rows),
             len(summarized_tasks),
+            _system_chars,
+            len(state_preamble),
+            len(extra_context),
         )
 
         await _save_turn(guild_id, user_id, "system", audit_system, http=http)
@@ -172,7 +185,7 @@ async def run_foreman_ai(
 
         _inject_state_preamble(messages, state_preamble)
 
-        client = _get_anthropic_client(config.api_key)
+        client = _get_anthropic_client(config)
 
         text_parts = []
         for round_num in range(config.max_rounds):
@@ -196,11 +209,15 @@ async def run_foreman_ai(
             _input_tokens = getattr(usage, "input_tokens", 0) or 0
             _output_tokens = getattr(usage, "output_tokens", 0) or 0
             logger.info(
-                "guild=%s round %d: stop_reason=%s input=%d output=%d",
+                "guild=%s round %d: stop_reason=%s content_blocks=%d "
+                "input=%d cache_read=%d cache_write=%d output=%d",
                 guild_id,
                 round_num,
                 resp.stop_reason,
+                len(resp.content),
                 _input_tokens,
+                getattr(usage, "cache_read_input_tokens", 0) or 0,
+                getattr(usage, "cache_creation_input_tokens", 0) or 0,
                 _output_tokens,
             )
 
@@ -303,6 +320,15 @@ async def run_foreman_ai(
             wrap_usage = wrap_resp.usage
             _wrap_input = getattr(wrap_usage, "input_tokens", 0) or 0
             _wrap_output = getattr(wrap_usage, "output_tokens", 0) or 0
+            logger.info(
+                "guild=%s wrap-up: stop_reason=%s input=%d cache_read=%d cache_write=%d output=%d",
+                guild_id,
+                wrap_resp.stop_reason,
+                _wrap_input,
+                getattr(wrap_usage, "cache_read_input_tokens", 0) or 0,
+                getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0,
+                _wrap_output,
+            )
             wrap_turn_id = await _save_turn(
                 guild_id, user_id, "assistant", wrap_resp.content, http=http
             )
