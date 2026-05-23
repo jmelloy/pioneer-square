@@ -27,9 +27,13 @@ class Config:
     # Static token fallback — a member login_token or worker auth_token.
     # Used only when backend_key is not set.
     auth_token: str | None = None
-    # Claude settings
+    # Claude / AI provider settings
     model: str = "claude-sonnet-4-6"
     api_key: str | None = None
+    # "anthropic" (default) or "bedrock" (Amazon Bedrock via AsyncAnthropicBedrock)
+    provider: str = "anthropic"
+    # AWS region for Bedrock; ignored when provider != "bedrock"
+    aws_region: str = "us-east-1"
     max_rounds: int = 10
     history_limit: int = 40
     # Poll settings
@@ -135,6 +139,20 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or "claude-sonnet-4-6"
     )
 
+    provider = (
+        overrides.get("provider")
+        or claude_block.get("provider")
+        or os.environ.get("FOREMAN_PROVIDER")
+        or "anthropic"
+    ).lower()
+
+    aws_region = (
+        overrides.get("aws_region")
+        or claude_block.get("aws_region")
+        or os.environ.get("AWS_DEFAULT_REGION")
+        or "us-east-1"
+    )
+
     log_level = (
         overrides.get("log_level")
         or raw.get("log_level")
@@ -150,6 +168,8 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         auth_token=auth_token,
         model=model,
         api_key=api_key,
+        provider=provider,
+        aws_region=aws_region,
         max_rounds=int(overrides.get("max_rounds", claude_block.get("max_rounds", 10))),
         history_limit=int(overrides.get("history_limit", claude_block.get("history_limit", 40))),
         poll_min_interval=int(

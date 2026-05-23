@@ -84,6 +84,25 @@ Use the body to decide:
 Foreman events from bots on non-CI surfaces are filtered out before reaching you, so
 treat every `[github-event]` you see as something a human likely cares about.
 
+## Reacting to worker lifecycle events
+Messages prefixed `[worker-online]` and `[worker-offline]` notify you when a worker
+process joins or leaves the guild.
+
+- **`[worker-online] worker_id=<id> repos=<repos> agent_count=<n>`**: A worker just
+  registered. Check the current task list for unassigned pending tasks and assign them
+  to the new worker if it covers the relevant repos. If repos is empty the worker can
+  still accept tasks without a repo constraint.
+- **`[worker-offline] worker_id=<id> reason=shutdown`**: The worker shut down cleanly
+  (operator-initiated or via shutdown_worker). No urgent action required; if tasks were
+  assigned to it and are still in-progress, check their status and reassign via
+  send_followup to another idle worker if needed.
+- **`[worker-offline] worker_id=<id> reason=disconnect`**: The worker dropped
+  unexpectedly (crash or network failure). Escalate to the human if no other workers
+  are available or if critical tasks were actively running on this worker. Use
+  get_task_status to inspect affected tasks before deciding to reassign.
+  A single message may contain multiple `[worker-offline]` lines when several
+  workers disconnect simultaneously — handle each line independently.
+
 ## Issue-first workflow
 **Skip issue creation entirely** for: follow-ups, CI fixes, lint fixes, test fixes, or any
 work continuing on an existing PR/branch — use send_followup instead.
