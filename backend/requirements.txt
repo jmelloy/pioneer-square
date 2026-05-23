@@ -1,3 +1,4 @@
+-e ../foreman_core
 cryptography
 fastapi
 uvicorn[standard]
