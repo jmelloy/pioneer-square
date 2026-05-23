@@ -27,11 +27,12 @@ import database as database_module
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from foreman.prompt import FOREMAN_SYSTEM, build_system_prompt
 from foreman.runner import (
-    MAX_HISTORY_MESSAGES,
-    MAX_TOOL_RESULT_CHARS,
     _fetch_online_workers,  # noqa: E402
     _load_history,
     _save_turn,
+)
+from foreman_core.constants import MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS
+from foreman_core.message_utils import (
     _serialize_content,
     _summarize_task,
     prune_history,
