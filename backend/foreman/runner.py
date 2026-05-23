@@ -24,12 +24,13 @@ from foreman_core.message_utils import (
     strip_orphaned_tool_results,
     truncate_tool_result,
 )
+from foreman_core.tools_schema import FOREMAN_TOOLS
 from models import Agent, ForemanTurn, Guild, GuildMember, Message, Task, Worker, live_tasks_filter
 from sqlalchemy import delete, func, select
 from util.tasks import spawn
 
 from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
-from foreman.tools import FOREMAN_TOOLS, exec_tools
+from foreman.tools import exec_tools
 
 logger = logging.getLogger(__name__)
 
