@@ -91,7 +91,8 @@ services:
   # pioneer-foreman.toml at /config/pioneer-foreman.toml.
   pioneer-foreman:
     build:
-      context: ./pioneer-foreman
+      context: .
+      dockerfile: pioneer-foreman/Dockerfile
     profiles: [ "pioneer-foreman" ]
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

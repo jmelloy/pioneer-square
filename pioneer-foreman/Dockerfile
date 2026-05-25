@@ -11,8 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
-COPY pioneer_foreman ./pioneer_foreman
+# Install foreman_core (shared library) first
+COPY foreman_core/pyproject.toml /app/foreman_core/pyproject.toml
+COPY foreman_core/foreman_core/ /app/foreman_core/foreman_core/
+RUN pip install -e /app/foreman_core
+
+COPY pioneer-foreman/pyproject.toml ./
+COPY pioneer-foreman/pioneer_foreman ./pioneer_foreman
 RUN pip install -e .
 
 RUN useradd --create-home --shell /bin/bash foreman \
