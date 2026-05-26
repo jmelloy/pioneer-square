@@ -46,6 +46,11 @@ _COLUMNS = [
 
 
 def upgrade() -> None:
+    # IMPORTANT: postgresql_using casts existing text values directly to
+    # timestamptz. This succeeds only when every stored value is a valid
+    # ISO-8601 timestamp string. If any row contains a non-parseable value
+    # the ALTER TABLE will fail mid-migration. Verify clean data beforehand:
+    #   SELECT table, column, value FROM <table> WHERE <column> !~ '^\d{4}-\d{2}-\d{2}'
     for table, column, nullable in _COLUMNS:
         op.alter_column(
             table,
@@ -53,7 +58,7 @@ def upgrade() -> None:
             existing_type=sa.Text(),
             type_=sa.DateTime(timezone=True),
             existing_nullable=nullable,
-            postgresql_using=f"{column}::timestamptz",
+            postgresql_using=f"{column}::timestamptz",  # safe for ISO-8601 text strings
         )
 
 

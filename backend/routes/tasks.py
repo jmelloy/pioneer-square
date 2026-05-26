@@ -292,7 +292,8 @@ async def finalize_task_endpoint(
             "deletedAt": deleted_at.isoformat(),
         },
     )
-    return {"status": "finalized", "taskId": task_id, "deletedAt": deleted_at.isoformat()}
+    # Return raw datetime — FastAPI's jsonable_encoder handles ISO-8601 serialisation.
+    return {"status": "finalized", "taskId": task_id, "deletedAt": deleted_at}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/cancel")

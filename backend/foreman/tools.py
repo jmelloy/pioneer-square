@@ -908,11 +908,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 "taskId": task_id,
                                 "state": "done",
                                 "finishedAt": finished_at.isoformat(),
-                                "deletedAt": deleted_at.isoformat(),
+                                "deletedAt": deleted_at.isoformat()
+                                if deleted_at is not None
+                                else None,
                             },
                         )
                         result_text = (
-                            f"Task {task_id} finalized; soft-delete at {deleted_at.isoformat()}."
+                            f"Task {task_id} finalized; soft-delete at "
+                            f"{deleted_at.isoformat() if deleted_at is not None else 'unknown'}."
                         )
 
             elif tu.name == "message_worker":
