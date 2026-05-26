@@ -39,7 +39,7 @@ async def _touch_agent(
         return
     if not agent_id and not worker_id:
         return
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     if agent_id and worker_id is None:
         res = await db.execute(select(Agent.worker_id).where(Agent.id == agent_id))
         worker_id = res.scalar_one_or_none()

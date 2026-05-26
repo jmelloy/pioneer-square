@@ -103,7 +103,7 @@ async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
             key_id=secrets.token_urlsafe(16),
             public_key_pem=pub_pem,
             private_key_pem=priv_pem,
-            created_at=datetime.now(UTC).isoformat(),
+            created_at=datetime.now(UTC),
         )
         db.add(row)
         await db.commit()
@@ -413,7 +413,7 @@ async def set_jwks_config(
                 key_id=secrets.token_urlsafe(16),
                 public_key_pem=pub_pem,
                 private_key_pem=priv_pem,
-                created_at=datetime.now(UTC).isoformat(),
+                created_at=datetime.now(UTC),
             )
             db.add(row)
 

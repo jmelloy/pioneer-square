@@ -47,12 +47,8 @@ class RedirectCreate(BaseModel):
     instructions: str
 
 
-def _resolve_finalize_deleted_at(body: FinalizeBody | None) -> str:
-    """Return an ISO-8601 UTC timestamp for the task's soft-delete instant.
-
-    Honours an explicit ``deleted_at`` first, then ``expires_in_seconds``,
-    and otherwise falls back to ``now + DEFAULT_FINALIZE_TTL``.
-    """
+def _resolve_finalize_deleted_at(body: FinalizeBody | None) -> datetime:
+    """Return a UTC datetime for the task's soft-delete instant."""
     if body and body.deleted_at:
         try:
             parsed = datetime.fromisoformat(body.deleted_at.replace("Z", "+00:00"))
@@ -60,12 +56,12 @@ def _resolve_finalize_deleted_at(body: FinalizeBody | None) -> str:
             raise HTTPException(status_code=400, detail=f"Invalid deleted_at: {exc}") from exc
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC).isoformat()
+        return parsed.astimezone(UTC)
     if body and body.expires_in_seconds is not None:
         if body.expires_in_seconds < 0:
             raise HTTPException(status_code=400, detail="expires_in_seconds must be >= 0")
-        return (datetime.now(UTC) + timedelta(seconds=body.expires_in_seconds)).isoformat()
-    return (datetime.now(UTC) + DEFAULT_FINALIZE_TTL).isoformat()
+        return datetime.now(UTC) + timedelta(seconds=body.expires_in_seconds)
+    return datetime.now(UTC) + DEFAULT_FINALIZE_TTL
 
 
 @router.get("/guilds/{guild_id}/tasks")
@@ -268,7 +264,7 @@ async def finalize_task_endpoint(
         worker_id = result.scalar_one_or_none()
         if not worker_id:
             raise HTTPException(status_code=404, detail="Task not found")
-        finished_at = datetime.now(UTC).isoformat()
+        finished_at = datetime.now(UTC)
         deleted_at = _resolve_finalize_deleted_at(body)
         await db.execute(
             update(Task)
@@ -292,11 +288,11 @@ async def finalize_task_endpoint(
             "type": "task-update",
             "taskId": task_id,
             "state": "done",
-            "finishedAt": finished_at,
-            "deletedAt": deleted_at,
+            "finishedAt": finished_at.isoformat(),
+            "deletedAt": deleted_at.isoformat(),
         },
     )
-    return {"status": "finalized", "taskId": task_id, "deletedAt": deleted_at}
+    return {"status": "finalized", "taskId": task_id, "deletedAt": deleted_at.isoformat()}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/cancel")
@@ -320,7 +316,7 @@ async def cancel_task_endpoint(
         worker_id, state = row
         if state in ("done", "failed", "cancelled"):
             raise HTTPException(status_code=409, detail=f"Task is already {state}")
-        finished_at = datetime.now(UTC).isoformat()
+        finished_at = datetime.now(UTC)
         await db.execute(
             update(Task)
             .where(Task.id == task_id)
@@ -344,7 +340,7 @@ async def cancel_task_endpoint(
             "type": "task-update",
             "taskId": task_id,
             "state": "cancelled",
-            "finishedAt": finished_at,
+            "finishedAt": finished_at.isoformat(),
         },
     )
     return {"status": "cancelled", "taskId": task_id}

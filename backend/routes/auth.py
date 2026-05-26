@@ -154,7 +154,7 @@ async def store_claude_credentials(
     Without this check, anyone could overwrite a guild's Claude credentials."""
     token = credentials.credentials if credentials else None
     await authorize_worker_or_member(data.guild_id, token)
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     db = await get_db()
     try:
         guild_pk = await get_guild_pk(db, data.guild_id)
@@ -249,7 +249,7 @@ async def guest_login():
     if not os.environ.get("TEST_MODE"):
         raise HTTPException(status_code=403, detail="Test mode not enabled (set TEST_MODE=1)")
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     guest_user_id = "dev-guest"
     login_token = secrets.token_urlsafe(32)
 

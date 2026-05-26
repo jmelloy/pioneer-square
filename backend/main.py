@@ -84,7 +84,7 @@ async def reset_connection_state() -> None:
 async def _sweep_stale_workers_once() -> int:
     """One pass of the stale-worker sweep. Returns the total number of agents
     and zombie workers marked offline. Extracted for direct testing."""
-    cutoff = (datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)).isoformat()
+    cutoff = datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)
     stale_agents: list = []
     zombie_workers: list = []
     agent_cascade_wids: set[str] = set()

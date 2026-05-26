@@ -85,14 +85,14 @@ async def broadcast(guild_id: str, message: dict, exclude: WebSocket | None = No
 
 async def emit_terminal_line(guild_id: str, agent_id: str, line: str):
     """Broadcast and persist a terminal output line."""
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     await broadcast(
         guild_id,
         {
             "type": "terminal-output",
             "agentId": agent_id,
             "line": line,
-            "timestamp": now,
+            "timestamp": now.isoformat(),
         },
     )
     if line:

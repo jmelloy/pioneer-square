@@ -41,7 +41,7 @@ def _create_task(test_client, guild_id: str, worker_id: str, desc: str, db_url: 
     return resp.json()["id"]
 
 
-def _set_deleted_at(db_url: str, task_id: str, deleted_at: str | None) -> None:
+def _set_deleted_at(db_url: str, task_id: str, deleted_at: datetime | None) -> None:
 
     with _sync_session(db_url) as session:
         session.execute(update(Task).where(Task.id == task_id).values(deleted_at=deleted_at))
@@ -89,7 +89,7 @@ def test_resolve_finalize_default_window(monkeypatch):
 
     monkeypatch.setattr("routes.tasks.datetime", _FixedDT)
     out = _resolve_finalize_deleted_at(None)
-    assert datetime.fromisoformat(out) == fixed + DEFAULT_FINALIZE_TTL
+    assert out == fixed + DEFAULT_FINALIZE_TTL
 
 
 def test_resolve_finalize_explicit_seconds(monkeypatch):
@@ -104,7 +104,7 @@ def test_resolve_finalize_explicit_seconds(monkeypatch):
 
     monkeypatch.setattr("routes.tasks.datetime", _FixedDT)
     out = _resolve_finalize_deleted_at(FinalizeBody(expires_in_seconds=1200))
-    assert datetime.fromisoformat(out) == fixed + timedelta(seconds=1200)
+    assert out == fixed + timedelta(seconds=1200)
 
 
 def test_resolve_finalize_explicit_deleted_at_iso():
@@ -112,23 +112,22 @@ def test_resolve_finalize_explicit_deleted_at_iso():
 
     target = "2026-06-15T12:00:00+00:00"
     out = _resolve_finalize_deleted_at(FinalizeBody(deleted_at=target))
-    assert datetime.fromisoformat(out) == datetime.fromisoformat(target)
+    assert out == datetime.fromisoformat(target)
 
 
 def test_resolve_finalize_deleted_at_naive_assumed_utc():
     from main import FinalizeBody, _resolve_finalize_deleted_at
 
     out = _resolve_finalize_deleted_at(FinalizeBody(deleted_at="2026-06-15T12:00:00"))
-    parsed = datetime.fromisoformat(out)
-    assert parsed.tzinfo is not None
-    assert parsed == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
+    assert out.tzinfo is not None
+    assert out == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def test_resolve_finalize_deleted_at_z_suffix():
     from main import FinalizeBody, _resolve_finalize_deleted_at
 
     out = _resolve_finalize_deleted_at(FinalizeBody(deleted_at="2026-06-15T12:00:00Z"))
-    assert datetime.fromisoformat(out) == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
+    assert out == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def test_resolve_finalize_invalid_deleted_at_raises():
@@ -156,7 +155,7 @@ def test_resolve_finalize_deleted_at_wins_over_seconds():
     out = _resolve_finalize_deleted_at(
         FinalizeBody(deleted_at="2026-12-25T00:00:00Z", expires_in_seconds=60)
     )
-    assert datetime.fromisoformat(out) == datetime(2026, 12, 25, tzinfo=UTC)
+    assert out == datetime(2026, 12, 25, tzinfo=UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +171,8 @@ def test_list_guild_tasks_hides_past_deleted_at(client):
     t_dead = _create_task(test_client, "gsd01", worker_id, "dead task", db_url)
     t_future = _create_task(test_client, "gsd01", worker_id, "future task", db_url)
 
-    past = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
-    future = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    past = datetime.now(UTC) - timedelta(seconds=5)
+    future = datetime.now(UTC) + timedelta(days=1)
     _set_deleted_at(db_url, t_dead, past)
     _set_deleted_at(db_url, t_future, future)
 
@@ -191,7 +190,7 @@ def test_list_worker_tasks_hides_past_deleted_at(client):
     worker_id = _create_worker(test_client, "gsd02")
     t_live = _create_task(test_client, "gsd02", worker_id, "live", db_url)
     t_dead = _create_task(test_client, "gsd02", worker_id, "dead", db_url)
-    _set_deleted_at(db_url, t_dead, (datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    _set_deleted_at(db_url, t_dead, datetime.now(UTC) - timedelta(minutes=1))
 
     resp = test_client.get(f"/guilds/gsd02/workers/{worker_id}/tasks")
     assert resp.status_code == 200
@@ -204,7 +203,7 @@ def test_get_task_logs_404_on_soft_deleted(client):
     insert_guild(db_url, "gsd03")
     worker_id = _create_worker(test_client, "gsd03")
     task_id = _create_task(test_client, "gsd03", worker_id, "task", db_url)
-    _set_deleted_at(db_url, task_id, (datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    _set_deleted_at(db_url, task_id, datetime.now(UTC) - timedelta(minutes=1))
 
     resp = test_client.get(f"/guilds/gsd03/tasks/{task_id}/logs", headers=_auth(db_url))
     assert resp.status_code == 404
@@ -228,7 +227,7 @@ def test_finalize_endpoint_default_sets_three_day_window(client):
     parsed = datetime.fromisoformat(deleted_at)
     # Should be roughly 3 days from now (allow ±1 minute slack for slow machines).
     assert timedelta(days=3, minutes=-1) <= parsed - before <= timedelta(days=3, minutes=1)
-    assert _read_task(db_url, task_id)["deleted_at"] == deleted_at
+    assert _read_task(db_url, task_id)["deleted_at"] == datetime.fromisoformat(deleted_at)
 
 
 def test_finalize_endpoint_explicit_expires_in_seconds(client):
@@ -291,7 +290,7 @@ def test_finalize_then_list_hides_after_window_passes(client):
         headers=_auth(db_url),
     )
     # Backdate by 1 second so the strict `>` comparison hides it.
-    past = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    past = datetime.now(UTC) - timedelta(seconds=1)
     _set_deleted_at(db_url, task_id, past)
     resp = test_client.get("/guilds/gsd08/tasks", headers=_auth(db_url))
     ids = {t["id"] for t in resp.json()}
@@ -309,7 +308,7 @@ def test_foreman_tool_resolver_default():
     before = datetime.now(UTC)
     out, err = _resolve_finalize_deleted_at({})
     assert err is None
-    delta = datetime.fromisoformat(out) - before
+    delta = out - before
     assert (
         timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS - 60)
         <= delta
@@ -323,7 +322,7 @@ def test_foreman_tool_resolver_explicit_seconds():
     before = datetime.now(UTC)
     out, err = _resolve_finalize_deleted_at({"expires_in_seconds": 1200})
     assert err is None
-    delta = datetime.fromisoformat(out) - before
+    delta = out - before
     assert timedelta(seconds=1199) <= delta <= timedelta(seconds=1260)
 
 
@@ -331,7 +330,7 @@ def test_foreman_tool_resolver_invalid_seconds():
     from foreman.tools import _resolve_finalize_deleted_at
 
     out, err = _resolve_finalize_deleted_at({"expires_in_seconds": "not-an-int"})
-    assert out == ""
+    assert out is None
     assert err and "Invalid expires_in_seconds" in err
 
 
@@ -339,7 +338,7 @@ def test_foreman_tool_resolver_negative_seconds():
     from foreman.tools import _resolve_finalize_deleted_at
 
     out, err = _resolve_finalize_deleted_at({"expires_in_seconds": -5})
-    assert out == ""
+    assert out is None
     assert err and ">=" in err
 
 
@@ -349,14 +348,14 @@ def test_foreman_tool_resolver_explicit_deleted_at():
     target = "2026-12-25T00:00:00Z"
     out, err = _resolve_finalize_deleted_at({"deleted_at": target})
     assert err is None
-    assert datetime.fromisoformat(out) == datetime(2026, 12, 25, tzinfo=UTC)
+    assert out == datetime(2026, 12, 25, tzinfo=UTC)
 
 
 def test_foreman_tool_resolver_invalid_deleted_at():
     from foreman.tools import _resolve_finalize_deleted_at
 
     out, err = _resolve_finalize_deleted_at({"deleted_at": "garbage"})
-    assert out == ""
+    assert out is None
     assert err and "Invalid deleted_at" in err
 
 

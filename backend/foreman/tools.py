@@ -45,10 +45,10 @@ FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 DEFAULT_FINALIZE_TTL_SECONDS = 3 * 24 * 60 * 60  # 3 days
 
 
-def _resolve_finalize_deleted_at(inp: dict) -> tuple[str, str | None]:
+def _resolve_finalize_deleted_at(inp: dict) -> tuple[datetime | None, str | None]:
     """Compute the soft-delete instant for a finalize_task tool call.
 
-    Returns ``(deleted_at_iso, error)`` — error is non-None when the inputs
+    Returns ``(deleted_at, error)`` — error is non-None when the inputs
     were malformed. Honours an explicit ``deleted_at`` first, then
     ``expires_in_seconds``, otherwise falls back to the default 3-day window.
     """
@@ -57,21 +57,20 @@ def _resolve_finalize_deleted_at(inp: dict) -> tuple[str, str | None]:
         try:
             parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         except ValueError as exc:
-            return "", f"Invalid deleted_at: {exc}"
+            return None, f"Invalid deleted_at: {exc}"
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC).isoformat(), None
+        return parsed.astimezone(UTC), None
     seconds = inp.get("expires_in_seconds")
     if seconds is not None:
         try:
             secs = int(seconds)
         except (TypeError, ValueError):
-            return "", f"Invalid expires_in_seconds: {seconds!r}"
+            return None, f"Invalid expires_in_seconds: {seconds!r}"
         if secs < 0:
-            return "", "expires_in_seconds must be >= 0"
-        return (datetime.now(UTC) + timedelta(seconds=secs)).isoformat(), None
-    default = datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS)
-    return default.isoformat(), None
+            return None, "expires_in_seconds must be >= 0"
+        return datetime.now(UTC) + timedelta(seconds=secs), None
+    return datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS), None
 
 
 # ---------------------------------------------------------------------------
@@ -570,7 +569,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 task_id = "t-" + "".join(
                     random.choices(string.ascii_lowercase + string.digits, k=6)
                 )
-                created_at = datetime.now(UTC).isoformat()
+                created_at = datetime.now(UTC)
                 db.add(
                     Task(
                         id=task_id,
@@ -595,7 +594,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         "description": desc,
                         "phase": phase,
                         "state": "pending",
-                        "createdAt": created_at,
+                        "createdAt": created_at.isoformat(),
                     },
                 )
                 result_text = (
@@ -696,7 +695,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     task_id = "t-" + "".join(
                         random.choices(string.ascii_lowercase + string.digits, k=6)
                     )
-                    created_at = datetime.now(UTC).isoformat()
+                    created_at = datetime.now(UTC)
                     db.add(
                         Task(
                             id=task_id,
@@ -805,7 +804,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                             "preferred_worker_id": preferred_worker_id,
                                         }
                                     ),
-                                    created_at=datetime.now(UTC).isoformat(),
+                                    created_at=datetime.now(UTC),
                                 )
                             )
                             await db.commit()
@@ -880,7 +879,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     if not worker_id_val:
                         result_text = f"Task {task_id} not found."
                     else:
-                        finished_at = datetime.now(UTC).isoformat()
+                        finished_at = datetime.now(UTC)
                         await db.execute(
                             update(Task)
                             .where(Task.id == task_id)
@@ -908,11 +907,13 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 "type": "task-update",
                                 "taskId": task_id,
                                 "state": "done",
-                                "finishedAt": finished_at,
-                                "deletedAt": deleted_at,
+                                "finishedAt": finished_at.isoformat(),
+                                "deletedAt": deleted_at.isoformat(),
                             },
                         )
-                        result_text = f"Task {task_id} finalized; soft-delete at {deleted_at}."
+                        result_text = (
+                            f"Task {task_id} finalized; soft-delete at {deleted_at.isoformat()}."
+                        )
 
             elif tu.name == "message_worker":
                 wid = inp["worker_id"]
@@ -983,7 +984,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     if state in ("done", "failed", "cancelled"):
                         result_text = f"Task {task_id} is already {state}."
                     else:
-                        finished_at = datetime.now(UTC).isoformat()
+                        finished_at = datetime.now(UTC)
                         await db.execute(
                             update(Task)
                             .where(Task.id == task_id)
@@ -1008,7 +1009,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 "type": "task-update",
                                 "taskId": task_id,
                                 "state": "cancelled",
-                                "finishedAt": finished_at,
+                                "finishedAt": finished_at.isoformat(),
                             },
                         )
                         result_text = f"Task {task_id} cancelled." + (
@@ -1069,9 +1070,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "agent": agent_info,
                             "branch": task.branch,
                             "pr_url": task.pr_url,
-                            "created_at": task.created_at,
-                            "finished_at": task.finished_at,
-                            "recent_logs": [{"time": r[0], "line": r[1]} for r in log_rows],
+                            "created_at": task.created_at.isoformat(),
+                            "finished_at": task.finished_at.isoformat()
+                            if task.finished_at
+                            else None,
+                            "recent_logs": [
+                                {"time": r[0].isoformat() if r[0] else None, "line": r[1]}
+                                for r in log_rows
+                            ],
                         }
                     )
         finally:

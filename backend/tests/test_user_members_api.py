@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
     """Insert a guild with github_user_id but no guild_members row."""
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         session.execute(
             pg_insert(Guild)
@@ -30,7 +30,7 @@ def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
 def _seed_user(db_url: str, user_id: str, login: str) -> None:
     """Insert a users row directly so it can be referenced as a member."""
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         session.execute(
             pg_insert(User)

@@ -75,7 +75,7 @@ async def create_worker(guild_id: str, data: WorkerCreate):
     only returned here — there is no read-after-create endpoint by design, so
     losing it means re-registering."""
     worker_id = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    created_at = datetime.now(UTC).isoformat()
+    created_at = datetime.now(UTC)
     worker_name = worker_display_name(worker_id, data.hostname)
     auth_token = secrets.token_urlsafe(32)
 
@@ -233,7 +233,7 @@ async def assign_task(
 ):
     """Persist a task and broadcast a task-assigned event for the worker process."""
     task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-    created_at = datetime.now(UTC).isoformat()
+    created_at = datetime.now(UTC)
 
     db = await get_db()
     try:

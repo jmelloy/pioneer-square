@@ -255,7 +255,7 @@ def test_guild_get_returns_current_task_id(client):
     headers = {"Authorization": "Bearer test-token"}
     # Seed the test token & guild membership the way other tests do.
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         session.execute(
             pg_insert(User)

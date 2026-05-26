@@ -64,7 +64,9 @@ def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
     insert_worker(db_url, guild_id, worker_id, state="online")
 
 
-def _read_last_seen(db_url: str, agent_id: str, worker_id: str) -> tuple[str | None, str | None]:
+def _read_last_seen(
+    db_url: str, agent_id: str, worker_id: str
+) -> tuple[datetime | None, datetime | None]:
 
     with _sync_session(db_url) as session:
         agent_seen = session.scalar(select(Agent.last_seen).where(Agent.id == agent_id))
@@ -97,8 +99,8 @@ def test_join_initialises_last_seen(client):
     agent_seen, worker_seen = _read_last_seen(db_url, agent_id, worker_id)
     assert agent_seen is not None
     assert worker_seen is not None
-    assert datetime.fromisoformat(str(agent_seen)) >= before - timedelta(seconds=5)
-    assert datetime.fromisoformat(str(worker_seen)) >= before - timedelta(seconds=5)
+    assert agent_seen >= before - timedelta(seconds=5)
+    assert worker_seen >= before - timedelta(seconds=5)
 
 
 def test_ping_message_replies_pong_and_refreshes_last_seen(client):
@@ -123,7 +125,7 @@ def test_ping_message_replies_pong_and_refreshes_last_seen(client):
         ws.receive_json()  # agent-joined
 
         # Force last_seen artificially old so we can detect the refresh.
-        old_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        old_ts = datetime.now(UTC) - timedelta(minutes=5)
 
         with _sync_session(db_url) as session:
             session.execute(update(Agent).where(Agent.id == agent_id).values(last_seen=old_ts))
@@ -166,7 +168,7 @@ def test_any_inbound_frame_touches_sibling_agents(client):
             )
             ws.receive_json()  # broadcast for each join
 
-        old_ts = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+        old_ts = datetime.now(UTC) - timedelta(minutes=5)
 
         with _sync_session(db_url) as session:
             session.execute(
@@ -193,8 +195,8 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)
 
-    now = datetime.now(UTC).isoformat()
-    old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
+    now = datetime.now(UTC)
+    old = datetime.now(UTC) - timedelta(seconds=300)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
@@ -267,8 +269,8 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)
 
-    now = datetime.now(UTC).isoformat()
-    old = (datetime.now(UTC) - timedelta(seconds=300)).isoformat()
+    now = datetime.now(UTC)
+    old = datetime.now(UTC) - timedelta(seconds=300)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
@@ -319,7 +321,7 @@ def test_sweeper_skips_fresh_workers(client):
 
     _setup_guild_and_worker(db_url, guild_id, worker_id)
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
@@ -366,7 +368,7 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
     _setup_guild_and_worker(db_path, guild_id, worker_id)
     from datetime import timezone
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     # Lock acquired long ago — older than WORKER_OFFLINE_AFTER_SECONDS (set to 1s below).
     old_lock_dt = datetime.now(UTC) - timedelta(seconds=300)
     future_exp_dt = datetime.now(UTC) + timedelta(hours=1)

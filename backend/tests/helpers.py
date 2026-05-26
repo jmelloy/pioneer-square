@@ -104,7 +104,7 @@ def _sync_session(db_url: str):
 def make_auth_token(db_url: str, user_id: str = "gh-user-test", username: str = "testuser") -> str:
     """Insert a test GitHub user + session into the DB and return the token."""
     token = "test-session-" + secrets.token_hex(8)
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         stmt = (
             pg_insert(GithubToken)
@@ -137,7 +137,7 @@ def insert_guild(
     default ``make_auth_token()`` user satisfies ``require_member`` checks.
     Pass ``owner_user_id=None`` to skip that.
     """
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         stmt = (
             pg_insert(Guild)
@@ -174,7 +174,7 @@ def insert_guild(
 
 def insert_member(db_url: str, guild_id: str, user_id: str, role: str = "member") -> None:
     """Add a user as a member of a guild (creating a users row if needed)."""
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         session.execute(
             pg_insert(User)
@@ -211,7 +211,7 @@ def insert_worker(
     org: str | None = None,
 ) -> None:
     """Insert a worker row for a guild."""
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
@@ -235,11 +235,11 @@ def insert_agent(
     worker_id: str | None = None,
     state: str = "idle",
     agent_type: str = "worker",
-    last_seen: str | None = None,
+    last_seen: datetime | None = None,
     current_task_id: str | None = None,
 ) -> None:
     """Insert an agent row for a guild."""
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
@@ -282,7 +282,7 @@ def insert_task(
     user_id: str | None = None,
 ) -> None:
     """Insert a task row for a guild."""
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
