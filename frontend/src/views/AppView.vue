@@ -165,7 +165,7 @@ watch(
       console.warn('Guild is missing name or id', { name, id })
     }
     const label = name && id ? `${name} / ${id}` : name || id
-    document.title = `PS / ${label}`
+    document.title = `Pioneer Square / ${label}`
   },
   { immediate: true },
 )
