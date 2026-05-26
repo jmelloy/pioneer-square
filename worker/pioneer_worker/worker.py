@@ -1793,7 +1793,12 @@ class Worker:
                         self.cfg.claude_max_turns,
                         resume_session_id,
                     )
-                    success, stop_reason, last_msg, resume_session_id = await claude_runner.run_claude_auto(
+                    (
+                        success,
+                        stop_reason,
+                        last_msg,
+                        resume_session_id,
+                    ) = await claude_runner.run_claude_auto(
                         current_desc,
                         primary_wt,
                         max_turns=self.cfg.claude_max_turns,
@@ -1865,7 +1870,7 @@ class Worker:
                 worktree_path=primary_wt,
                 token=token,
             )
-            if pr_url:    
+            if pr_url:
                 await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
                 await self._ensure_pr_webhook(pr_url, emit)
 
@@ -1881,7 +1886,7 @@ class Worker:
                 "prUrl": pr_url or "",
                 "lastText": last_msg,
             }
-            
+
             if success:
                 await self._task_update(
                     task_id,

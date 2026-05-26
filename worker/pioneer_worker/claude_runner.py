@@ -173,6 +173,7 @@ class ClaudeProcess:
 # StreamReader limit is 64 KiB which is easily exceeded by file reads.
 STDOUT_LINE_LIMIT = 16 * 1024 * 1024  # 16 MiB
 
+
 def _log_event_full(event: dict, pid: int, n: int) -> None:
     """Log the full content of a stream-json event, untruncated."""
     t = event.get("type")
@@ -264,7 +265,6 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
             t,
             json.dumps(event, ensure_ascii=False),
         )
-
 
 
 async def run_claude_auto(
@@ -382,7 +382,7 @@ async def run_claude_auto(
         else:
             logger.error("claude failed to start (cwd missing?): %s — cwd=%r", exc, cwd)
             await emit(f"[claude] ✗ failed to start: {exc} (cwd={cwd!r})")
-        return False, "no_events", last_text, session_id  
+        return False, "no_events", last_text, session_id
     except Exception as exc:  # pragma: no cover
         logger.exception("claude subprocess crashed: %s", exc)
         await emit(f"[claude] ✗ {exc}")
