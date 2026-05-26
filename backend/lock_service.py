@@ -67,6 +67,8 @@ class LockService:
                 (Lock.expires_at.is_(None) | (Lock.expires_at > now)),
             )
         )
+        # SQLModel's ScalarResult.one_or_none() on a scalar-column query returns
+        # the value directly (str or None), equivalent to .scalar_one_or_none().
         return row.one_or_none() is not None
 
     @staticmethod

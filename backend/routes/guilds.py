@@ -191,6 +191,9 @@ async def get_guild(guild_id: str, github_user_id: str = Depends(require_member(
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
         guild_pk = guild.id
+        # Multi-model join with a labelled column — SQLAlchemy's .execute() is
+        # required here because SQLModel's .exec() only handles single-model
+        # scalar queries; rows are accessed via _mapping / named attributes.
         result = await db.execute(
             select(Agent, Worker.name.label("worker_name"))
             .outerjoin(Worker, Worker.id == Agent.worker_id)
