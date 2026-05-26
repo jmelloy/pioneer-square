@@ -215,6 +215,41 @@ describe('useAgentsStore', () => {
 
       expect(store.agents[0].state).toBe('working')
     })
+
+    it('handles a subsequent agent-state:idle gracefully after task-complete already cleared the agent (double-update)', () => {
+      const store = useAgentsStore()
+      store.registerAgent({ agentId: 'a-1', workerId: 'w-x', state: 'working', taskId: 't-5' })
+
+      // First frame: task-complete sets agent to idle and clears taskId
+      store.handleWebSocketMessage({ type: 'task-complete', taskId: 't-5', agentId: 'a-1' })
+      expect(store.agents[0].state).toBe('idle')
+      expect(store.agents[0].taskId).toBeNull()
+
+      // Second frame: trailing agent-state:idle arrives; taskId is already null
+      // so the taskId-based lookup would be a no-op — but the agentId lookup
+      // must still find the agent and leave it idle without throwing.
+      store.handleWebSocketMessage({ type: 'agent-state', agentId: 'a-1', state: 'idle' })
+      expect(store.agents[0].state).toBe('idle')
+      expect(store.agents[0].taskId).toBeNull()
+    })
+
+    it('falls through to taskId lookup when agentId is present but not registered (deregistration race)', () => {
+      const store = useAgentsStore()
+      // Agent is registered with a taskId but its agentId will not match the
+      // one in the task-complete message (simulates a race where the ws frame
+      // carries a stale agentId while the slot reconnected under a new id).
+      store.registerAgent({ agentId: 'a-new', workerId: 'w-x', state: 'working', taskId: 't-6' })
+
+      store.handleWebSocketMessage({
+        type: 'task-complete',
+        taskId: 't-6',
+        agentId: 'a-old', // not registered
+      })
+
+      // agentId lookup misses; taskId fallback must find a-new and reset it
+      expect(store.agents[0].state).toBe('idle')
+      expect(store.agents[0].taskId).toBeNull()
+    })
   })
 
   describe('concurrent slots on the same worker', () => {
