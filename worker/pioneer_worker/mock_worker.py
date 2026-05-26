@@ -204,7 +204,7 @@ class MockWorker(Worker):
 
         await self._finalize_task(task_id, agent, outcome, desc, branch, is_followup)
 
-    async def _run_script(self, task_id: str, slot, script: list[dict], emit) -> dict | None:
+    async def _run_script(self, task_id: str, agent, script: list[dict], emit) -> dict | None:
         """Execute a script of steps. Returns an outcome dict if the script
         terminated the task; otherwise None (caller will wait on HTTP)."""
         for step in script:
@@ -217,10 +217,10 @@ class MockWorker(Worker):
             if "state" in step:
                 new_state = step["state"]
                 if "activity" in step:
-                    slot.activity = step["activity"]
-                await self._set_state(new_state, slot)
-                if new_state == "working" and slot.current_task_id is None:
-                    slot.current_task_id = task_id
+                    agent.activity = step["activity"]
+                await self._set_state(new_state, agent)
+                if new_state == "working" and agent.current_task_id is None:
+                    agent.current_task_id = task_id
                 continue
             if "output" in step:
                 detail = step.get("detail")
@@ -238,7 +238,7 @@ class MockWorker(Worker):
     async def _finalize_task(
         self,
         task_id: str,
-        slot,
+        agent,
         outcome: dict,
         desc: str,
         branch: str,
@@ -254,7 +254,7 @@ class MockWorker(Worker):
 
             await self._task_update(
                 task_id,
-                agent=slot,
+                agent=agent,
                 branch=final_branch,
                 prUrl=pr_url,
                 state="awaiting-review",
@@ -264,7 +264,7 @@ class MockWorker(Worker):
                     {
                         "type": "task-followup-done",
                         "workerId": self.cfg.worker_id,
-                        "agentId": slot.agent_id,
+                        "agentId": agent.agent_id,
                         "taskId": task_id,
                         "success": True,
                         "stopReason": stop_reason,
@@ -278,7 +278,7 @@ class MockWorker(Worker):
                     {
                         "type": "task-complete",
                         "workerId": self.cfg.worker_id,
-                        "agentId": slot.agent_id,
+                        "agentId": agent.agent_id,
                         "taskId": task_id,
                         "branch": final_branch,
                         "description": desc,
@@ -290,12 +290,12 @@ class MockWorker(Worker):
         else:  # fail
             stop_reason = outcome.get("stopReason", "mock_failure")
             last_message = outcome.get("lastMessage", "mock failure")
-            await self._task_update(task_id, agent=slot, branch=branch, state="failed")
+            await self._task_update(task_id, agent=agent, branch=branch, state="failed")
             await self._send(
                 {
                     "type": "needs-input",
                     "workerId": self.cfg.worker_id,
-                    "agentId": slot.agent_id,
+                    "agentId": agent.agent_id,
                     "taskId": task_id,
                     "description": desc,
                     "branch": branch,
@@ -304,8 +304,8 @@ class MockWorker(Worker):
                     "lastMessage": last_message,
                 }
             )
-            await self._set_state("error", slot)
-        await self._set_state("idle", slot)
+            await self._set_state("error", agent)
+        await self._set_state("idle", agent)
 
     # ── Called from HTTP handler thread via run_coroutine_threadsafe ──────
     async def _http_set_state(
