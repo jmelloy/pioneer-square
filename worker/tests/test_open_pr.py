@@ -131,7 +131,7 @@ async def test_open_pr_non_422_http_error_propagates():
     mock_find.assert_not_called()
 
 
-async def _fake_run_git_count(count: int):
+def _fake_run_git_count(count: int):
     async def _impl(args, cwd=None):
         if args[:2] == ["rev-list", "--count"]:
             return (0, str(count), "")
@@ -143,16 +143,17 @@ async def _fake_run_git_count(count: int):
 @pytest.mark.asyncio
 async def test_branch_has_new_commits_with_commits():
     emit = AsyncMock()
-    with patch("pioneer_worker.git_ops.run_git", await _fake_run_git_count(3)):
+    with patch("pioneer_worker.git_ops.run_git", _fake_run_git_count(3)):
         result = await github_pr.branch_has_new_commits(worktree_path="/tmp/wt", emit=emit)
     assert result is True
-    emit.assert_not_called()
+    emit.assert_called_once()
+    assert "3" in emit.call_args[0][0]
 
 
 @pytest.mark.asyncio
 async def test_branch_has_new_commits_no_commits():
     emit = AsyncMock()
-    with patch("pioneer_worker.git_ops.run_git", await _fake_run_git_count(0)):
+    with patch("pioneer_worker.git_ops.run_git", _fake_run_git_count(0)):
         result = await github_pr.branch_has_new_commits(worktree_path="/tmp/wt", emit=emit)
     assert result is False
     emit.assert_called_once()
@@ -170,3 +171,23 @@ async def test_branch_has_new_commits_fallback_when_base_missing():
     with patch("pioneer_worker.git_ops.run_git", _always_fail):
         result = await github_pr.branch_has_new_commits(worktree_path="/tmp/wt", emit=emit)
     assert result is True
+
+
+@pytest.mark.asyncio
+async def test_branch_has_new_commits_fallback_to_master():
+    """When origin/main is absent, fall back to origin/master with commits."""
+    emit = AsyncMock()
+
+    async def _main_fails_master_has_commits(args, cwd=None):
+        if args[:2] == ["rev-list", "--count"]:
+            base_ref = args[2].split("..")[0]
+            if base_ref == "origin/main":
+                return (1, "", "unknown revision")
+            return (0, "2", "")
+        return (1, "", "not found")
+
+    with patch("pioneer_worker.git_ops.run_git", _main_fails_master_has_commits):
+        result = await github_pr.branch_has_new_commits(worktree_path="/tmp/wt", emit=emit)
+    assert result is True
+    emit.assert_called_once()
+    assert "2" in emit.call_args[0][0]

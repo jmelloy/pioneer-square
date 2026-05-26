@@ -97,8 +97,9 @@ async def push_branch(
 async def branch_has_new_commits(*, worktree_path: str, emit: EmitFn) -> bool:
     """Return True if the current branch has commits not present on the base branch.
 
-    Checks against origin/main then origin/master. Falls back to True (safe
-    default — open the PR) if neither ref can be resolved or git fails.
+    Tries origin/main first, then origin/master. The first ref that resolves
+    successfully wins — origin/master is only consulted when origin/main is absent.
+    Falls back to True (safe default — open the PR) if neither ref resolves.
     """
     try:
         for base_ref in ("origin/main", "origin/master"):
@@ -106,13 +107,20 @@ async def branch_has_new_commits(*, worktree_path: str, emit: EmitFn) -> bool:
                 ["rev-list", "--count", f"{base_ref}..HEAD"],
                 cwd=worktree_path,
             )
-            if rc == 0:
-                count = int(out.strip() or "0")
-                if count == 0:
-                    await emit("[worker] Branch has no new commits relative to base — skipping PR")
-                return count > 0
+            if rc != 0:
+                continue  # ref absent, try fallback
+            count = int(out.strip() or "0")
+            if count == 0:
+                await emit("[worker] Branch has no new commits relative to base — skipping PR")
+            else:
+                await emit(
+                    f"[worker] Branch has {count} new commit(s) relative to {base_ref} — opening PR"
+                )
+            return count > 0
     except Exception:
-        logger.warning("branch_has_new_commits: git error, assuming new commits exist")
+        logger.warning(
+            "branch_has_new_commits: git error, assuming new commits exist", exc_info=True
+        )
         return True
     logger.warning("branch_has_new_commits: could not resolve base ref, assuming new commits exist")
     return True
