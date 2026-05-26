@@ -330,6 +330,8 @@ async def run_foreman_ai(
 
         worker_rows = await _fetch_online_workers(db, guild_id)
         guild_pk_val = await get_guild_pk(db, guild_id)
+        if guild_pk_val is None:
+            raise ValueError(f"Guild not found: {guild_id}")
         task_result = await db.execute(
             select(
                 Task.id,
@@ -457,7 +459,7 @@ async def run_foreman_ai(
 
             # Emit text blocks immediately so narration appears inline with tool calls,
             # not batched at the end of the turn.
-            _now = datetime.now(UTC).isoformat()
+            _now = datetime.now(UTC)
             for b in resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
@@ -506,7 +508,7 @@ async def run_foreman_ai(
             ]
 
             # Broadcast tool-result events
-            _now = datetime.now(UTC).isoformat()
+            _now = datetime.now(UTC)
             for result in trimmed:
                 await broadcast(
                     guild_id,
