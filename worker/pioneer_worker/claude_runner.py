@@ -174,34 +174,6 @@ class ClaudeProcess:
 STDOUT_LINE_LIMIT = 16 * 1024 * 1024  # 16 MiB
 
 
-async def _drain_stderr(stream, pid: int) -> int:
-    """Log claude's stderr line-by-line at full length. Returns line count."""
-    n = 0
-    try:
-        while True:
-            try:
-                raw = await stream.readuntil(b"\n")
-            except asyncio.IncompleteReadError as exc:
-                raw = exc.partial
-                if not raw:
-                    break
-            except asyncio.LimitOverrunError as exc:
-                # Line longer than the buffer — pull what we have and keep going.
-                raw = await stream.readexactly(exc.consumed)
-            except (asyncio.CancelledError, ValueError):
-                break
-            line = raw.decode(errors="replace").rstrip("\n")
-            if line:
-                n += 1
-                logger.warning("claude[%d] stderr: %s", pid, line)
-            if not raw:
-                break
-    except Exception as exc:  # pragma: no cover
-        logger.debug("claude[%d] stderr drain error: %s", pid, exc)
-    logger.info("claude[%d] stderr drain finished after %d line(s)", pid, n)
-    return n
-
-
 def _log_event_full(event: dict, pid: int, n: int) -> None:
     """Log the full content of a stream-json event, untruncated."""
     t = event.get("type")
@@ -295,38 +267,6 @@ def _log_event_full(event: dict, pid: int, n: int) -> None:
         )
 
 
-async def _iter_stdout_lines(stream):
-    """Yield stdout lines without the 64KiB asyncio default line cap."""
-    while True:
-        try:
-            raw = await stream.readuntil(b"\n")
-        except asyncio.IncompleteReadError as exc:
-            if exc.partial:
-                yield exc.partial
-            return
-        except asyncio.LimitOverrunError as exc:
-            # Line is longer than the StreamReader buffer; pull what's queued and
-            # keep reading more chunks until we see a newline or EOF.
-            chunks = [await stream.readexactly(exc.consumed)]
-            while True:
-                try:
-                    more = await stream.readuntil(b"\n")
-                    chunks.append(more)
-                    break
-                except asyncio.IncompleteReadError as exc2:
-                    if exc2.partial:
-                        chunks.append(exc2.partial)
-                    yield b"".join(chunks)
-                    return
-                except asyncio.LimitOverrunError as exc2:
-                    chunks.append(await stream.readexactly(exc2.consumed))
-            yield b"".join(chunks)
-            continue
-        if not raw:
-            return
-        yield raw
-
-
 async def run_claude_auto(
     description: str,
     cwd: str,
@@ -336,8 +276,8 @@ async def run_claude_auto(
     on_proc: Callable[[ClaudeProcess], None] | None = None,
     claude_path: str = "claude",
     resume_session_id: str | None = None,
-) -> tuple[bool, str, str]:
-    """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text).
+) -> tuple[bool, str, str, str | None]:
+    """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text, session_id).
 
     stop_reason is the result event subtype: "success", "max_turns",
     "error_during_execution", "interrupted", or "no_events" when the process
@@ -365,6 +305,7 @@ async def run_claude_auto(
     last_text = ""
     stop_reason = "no_events"
     event_count = 0
+    session_id = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -408,10 +349,10 @@ async def run_claude_auto(
                 continue
             _log_event_full(event, proc.pid, event_count)
             if event.get("type") == "system" and event.get("subtype") == "init":
-                sid = event.get("session_id")
-                if sid:
-                    claude_proc.session_id = sid
-                    logger.info("claude[%d] session_id=%s", proc.pid, sid)
+                session_id = event.get("session_id")
+                if session_id:
+                    claude_proc.session_id = session_id
+                    logger.info("claude[%d] session_id=%s", proc.pid, session_id)
             if event.get("type") == "result":
                 stop_reason = event.get("subtype", "success")
             for text, detail in parse_claude_event(event):
@@ -433,7 +374,7 @@ async def run_claude_auto(
                 "claude[%d] produced no stdout events — check stderr above and PATH/auth",
                 proc.pid,
             )
-        return exit_code == 0, stop_reason, last_text
+        return exit_code == 0, stop_reason, last_text, session_id
     except FileNotFoundError as exc:
         if not os.path.exists(claude_path):
             logger.error("claude executable not found: %r", claude_path)
@@ -441,8 +382,8 @@ async def run_claude_auto(
         else:
             logger.error("claude failed to start (cwd missing?): %s — cwd=%r", exc, cwd)
             await emit(f"[claude] ✗ failed to start: {exc} (cwd={cwd!r})")
-        return False, "no_events", last_text
+        return False, "no_events", last_text, session_id
     except Exception as exc:  # pragma: no cover
         logger.exception("claude subprocess crashed: %s", exc)
         await emit(f"[claude] ✗ {exc}")
-        return False, "error_during_execution", last_text
+        return False, "error_during_execution", last_text, session_id

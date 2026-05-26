@@ -748,24 +748,24 @@ class Worker:
             }
         )
 
-    async def _set_state(self, state: str, slot: Agent) -> None:
-        slot.state = state
+    async def _set_state(self, state: str, agent: Agent) -> None:
+        agent.state = state
         if state != "working":
-            slot.activity = None
+            agent.activity = None
         # Idle/offline slots aren't working anything; drop the task link so the
         # frontend can match `agent.taskId === task.id` without picking up a
         # stale association from the previous run.
         if state in ("idle", "offline"):
-            slot.current_task_id = None
-        await self._emit_agent_state(slot)
+            agent.current_task_id = None
+        await self._emit_agent_state(agent)
 
     async def _join(self) -> None:
-        for slot in self.agents:
+        for agent in self.agents:
             await self._send(
                 {
                     "type": "join",
-                    "agentId": slot.id,
-                    "agentName": slot.name,
+                    "agentId": agent.id,
+                    "agentName": agent.name,
                     "agentType": "worker",
                     "workerId": self.cfg.worker_id,
                 }
@@ -810,7 +810,7 @@ class Worker:
             logger.warning("Reconnect: pending-task fetch failed: %s", exc)
 
     async def _task_update(
-        self, task_id: str, *, slot: Agent | None = None, **fields: object
+        self, task_id: str, *, agent: Agent | None = None, **fields: object
     ) -> None:
         payload: dict = {
             "type": "task-update",
@@ -818,10 +818,10 @@ class Worker:
             "taskId": task_id,
             **fields,
         }
-        # Include the slot identity so the UI can map task→agent unambiguously
-        # when a worker runs multiple concurrent slots (workerId is shared).
-        if slot is not None:
-            payload["agentId"] = slot.agent_id
+        # Include the agent identity so the UI can map task→agent unambiguously
+        # when a worker runs multiple concurrent agents (workerId is shared).
+        if agent is not None:
+            payload["agentId"] = agent.agent_id
         await self._send(payload)
 
     async def _ensure_pr_webhook(self, pr_url: str, emit) -> None:
@@ -1556,7 +1556,7 @@ class Worker:
                 logger.exception("Task %s crashed: %s", task_id, exc)
                 await self._emit(f"[worker] ✗ Internal error on task {task_id}: {exc}")
                 await self._task_update(
-                    task["id"], slot=slot, state="failed", finishedAt=_now_iso()
+                    task["id"], agent=slot, state="failed", finishedAt=_now_iso()
                 )
             finally:
                 slot.current_task_id = None
@@ -1567,7 +1567,7 @@ class Worker:
         logger.info("Agent loop exited for %s", slot.agent_id)
 
     # ------------------------------------------------------------------ Execution
-    async def _execute_task(self, task: dict, slot: Agent) -> None:
+    async def _execute_task(self, task: dict, agent: Agent) -> None:
         task_id = task["id"]
         desc = task.get("description") or ""
         token = self.cfg.github_token
@@ -1593,12 +1593,12 @@ class Worker:
         logger.info(
             "Executing task %s (agent=%s, followup=%s): %s",
             task_id,
-            slot.agent_id,
+            agent.agent_id,
             is_followup,
             desc[:120],
         )
-        await self._set_state("working", slot)
-        await self._task_update(task_id, slot=slot, state="working")
+        await self._set_state("working", agent)
+        await self._task_update(task_id, agent=agent, state="working")
 
         name = task.get("name") or desc
         # On follow-ups we must continue on the existing branch — the original
@@ -1610,7 +1610,7 @@ class Worker:
         )
         os.makedirs(work_dir, exist_ok=True)
 
-        emit = self._task_emit(task_id, slot)
+        emit = self._task_emit(task_id, agent)
         if is_followup:
             await emit(f"[worker] Follow-up: {followup_instructions[:120]}")
             await emit(f"[worker] Branch: {branch}")
@@ -1679,11 +1679,11 @@ class Worker:
         if not primary_wt:
             logger.error("Task %s: no worktrees created — aborting", task_id)
             await emit("[worker] ✗ No worktrees — aborting.")
-            await self._task_update(task_id, slot=slot, state="failed", finishedAt=_now_iso())
-            await self._set_state("error", slot)
+            await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
+            await self._set_state("error", agent)
             return
 
-        await self._task_update(task_id, slot=slot, branch=branch, worktreePath=primary_wt)
+        await self._task_update(task_id, agent=agent, branch=branch, worktreePath=primary_wt)
         # Register worktrees for the deferred sweeper — touched again below in
         # finally so the timestamp reflects the most recent activity.
         self._register_worktrees(task_id, worktree_entries)
@@ -1700,13 +1700,13 @@ class Worker:
         def _capture_session_and_clear() -> None:
             """Save session_id from the just-finished ClaudeProcess, then clear the slot."""
             nonlocal resume_session_id
-            if slot.current_claude is not None:
-                if slot.current_claude.session_id:
-                    resume_session_id = slot.current_claude.session_id
-                slot.current_claude = None
+            if agent.current_claude is not None:
+                if agent.current_claude.session_id:
+                    resume_session_id = agent.current_claude.session_id
+                agent.current_claude = None
 
         def _on_proc(proc: claude_runner.ClaudeProcess) -> None:
-            slot.current_claude = proc
+            agent.current_claude = proc
 
         try:
             # ── Main execution with redirect loop ──────────────────────────
@@ -1793,7 +1793,12 @@ class Worker:
                         self.cfg.claude_max_turns,
                         resume_session_id,
                     )
-                    success, stop_reason, last_msg = await claude_runner.run_claude_auto(
+                    (
+                        success,
+                        stop_reason,
+                        last_msg,
+                        resume_session_id,
+                    ) = await claude_runner.run_claude_auto(
                         current_desc,
                         primary_wt,
                         max_turns=self.cfg.claude_max_turns,
@@ -1803,7 +1808,7 @@ class Worker:
                         resume_session_id=resume_session_id,
                     )
 
-                _capture_session_and_clear()
+                    _capture_session_and_clear()
                 logger.info(
                     "Task %s: run done success=%s stop=%s session=%s",
                     task_id,
@@ -1815,10 +1820,10 @@ class Worker:
                 if task_id in self._cancelled_tasks:
                     await emit("[worker] Task cancelled.")
                     await self._task_update(
-                        task_id, slot=slot, state="cancelled", finishedAt=_now_iso()
+                        task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
                     )
                     await self._release_task_worktrees(task_id)
-                    await self._set_state("idle", slot)
+                    await self._set_state("idle", agent)
                     return
 
                 try:
@@ -1829,16 +1834,16 @@ class Worker:
                 if redirect_instr is _CANCEL_SENTINEL:
                     await emit("[worker] Task cancelled.")
                     await self._task_update(
-                        task_id, slot=slot, state="cancelled", finishedAt=_now_iso()
+                        task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
                     )
                     await self._release_task_worktrees(task_id)
-                    await self._set_state("idle", slot)
+                    await self._set_state("idle", agent)
                     return
 
                 if redirect_instr is not None and not self._shutdown_event.is_set():
                     await emit(f"[worker] ↩ Redirected: {redirect_instr[:120]}")
                     current_desc = redirect_instr
-                    await self._task_update(task_id, slot=slot, state="working")
+                    await self._task_update(task_id, agent=agent, state="working")
                     continue
 
                 break  # normal exit from redirect loop
@@ -1857,100 +1862,57 @@ class Worker:
                 worktree_path=primary_wt,
                 emit=emit,
             )
-            pr_url: str | None = None
+            if push_ok:
+                await emit(f"[worker] Branch pushed: {branch}")
+
+            pr_url = await github_pr.find_existing_pr(
+                branch=branch,
+                worktree_path=primary_wt,
+                token=token,
+            )
+            if pr_url:
+                await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
+                await self._ensure_pr_webhook(pr_url, emit)
+
+            logger.info("Task %s: pr_url=%s", task_id, pr_url)
+            msg = {
+                "workerId": self.cfg.worker_id,
+                "agentId": agent.agent_id,
+                "taskId": task_id,
+                "stopReason": stop_reason,
+                "branch": branch,
+                "worktreePath": primary_wt,
+                "sessionId": resume_session_id or "",
+                "prUrl": pr_url or "",
+                "lastText": last_msg,
+            }
 
             if success:
-                existing_pr = await github_pr.find_existing_pr(
-                    branch=branch,
-                    worktree_path=primary_wt,
-                    token=token,
-                )
-                if existing_pr:
-                    pr_url = existing_pr
-                    await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
-                elif push_ok:
-                    pr_url = await github_pr.open_pr(
-                        task=task,
-                        branch=branch,
-                        worktree_path=primary_wt,
-                        token=token,
-                        emit=emit,
-                    )
-                if pr_url:
-                    await self._ensure_pr_webhook(pr_url, emit)
-                logger.info("Task %s: pr_url=%s", task_id, pr_url)
-
                 await self._task_update(
                     task_id,
-                    slot=slot,
-                    branch=branch,
-                    worktreePath=primary_wt,
-                    prUrl=pr_url or "",
+                    success=True,
+                    type="task-followup-done" if is_followup else "task-complete",
+                    agent=agent,
                     state="awaiting-review",
+                    **msg,
                 )
-                # On a follow-up run, surface task-followup-done so the
-                # foreman knows iteration finished; on a fresh run, surface
-                # task-complete. Both leave the task in awaiting-review for
-                # the foreman to decide whether more work is required.
-                if is_followup:
-                    await self._send(
-                        {
-                            "type": "task-followup-done",
-                            "workerId": self.cfg.worker_id,
-                            "agentId": slot.agent_id,
-                            "taskId": task_id,
-                            "success": True,
-                            "stopReason": stop_reason,
-                            "branch": branch,
-                            "sessionId": resume_session_id or "",
-                            "prUrl": pr_url or "",
-                        }
-                    )
-                else:
-                    await self._send(
-                        {
-                            "type": "task-complete",
-                            "workerId": self.cfg.worker_id,
-                            "agentId": slot.agent_id,
-                            "taskId": task_id,
-                            "branch": branch,
-                            "description": desc,
-                            "prUrl": pr_url or "",
-                            "sessionId": resume_session_id or "",
-                            "lastText": last_msg,
-                        }
-                    )
+
             else:
                 logger.warning("Task %s failed: %s", task_id, stop_reason)
-                # Don't mark finishedAt yet — the foreman may send a follow-up
-                # that resumes the same worktree/session.
                 await self._task_update(
                     task_id,
-                    slot=slot,
-                    branch=branch,
-                    worktreePath=primary_wt,
-                    state="failed",
+                    agent=agent,
+                    type="needs-input" if stop_reason == "needs_input" else "error",
+                    state="error",
+                    **msg,
                 )
-                await self._send(
-                    {
-                        "type": "needs-input",
-                        "workerId": self.cfg.worker_id,
-                        "agentId": slot.agent_id,
-                        "taskId": task_id,
-                        "description": desc,
-                        "branch": branch,
-                        "sessionId": resume_session_id or "",
-                        "stopReason": stop_reason,
-                        "lastMessage": last_msg,
-                    }
-                )
-                await self._set_state("error", slot)
+                await self._set_state("error", agent)
 
             # The slot returns to idle here. Worktrees stay on disk so the
             # foreman can dispatch a follow-up to this same worker without
             # paying for a re-clone; the deferred sweeper reclaims them
             # after WORKTREE_TTL_SECONDS.
-            await self._set_state("idle", slot)
+            await self._set_state("idle", agent)
 
         finally:
             self._redirect_queues.pop(task_id, None)

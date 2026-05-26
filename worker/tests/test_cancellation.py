@@ -36,7 +36,7 @@ async def test_cancelled_task_releases_worktrees_immediately(tmp_path):
     worker._task_update = AsyncMock()
 
     task_id = "t-cancel-wt1"
-    slot = worker.agents[0]
+    agent = worker.agents[0]
 
     released: list[str] = []
 
@@ -58,14 +58,14 @@ async def test_cancelled_task_releases_worktrees_immediately(tmp_path):
         patch("pioneer_worker.worker.git_ops.create_worktree", new=AsyncMock(return_value=True)),
         patch(
             "pioneer_worker.worker.claude_runner.run_claude_auto",
-            new=AsyncMock(return_value=(False, "interrupted", "")),
+            new=AsyncMock(return_value=(False, "interrupted", "", None)),
         ),
         patch("pioneer_worker.worker.github_pr.push_branch", new=AsyncMock(return_value=False)),
     ):
-        await worker._execute_task(task, slot)
+        await worker._execute_task(task, agent)
 
     assert task_id in released, "worktrees must be released immediately on cancellation"
-    assert slot.state == "idle", "slot must return to idle after cancellation"
+    assert agent.state == "idle", "slot must return to idle after cancellation"
 
 
 @pytest.mark.asyncio
@@ -94,7 +94,7 @@ async def test_cancel_sentinel_releases_worktrees_immediately(tmp_path):
         rq = worker._redirect_queues.get(task_id)
         if rq is not None:
             await rq.put(_CANCEL_SENTINEL)
-        return (False, "interrupted", "")
+        return (False, "interrupted", "", None)
 
     with (
         patch(

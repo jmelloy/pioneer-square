@@ -174,7 +174,7 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
 
     async def fake_run_claude(desc, *args, **kwargs):
         captured_desc.append(desc)
-        return True, "end_turn", "done"
+        return True, "end_turn", "done", None
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
