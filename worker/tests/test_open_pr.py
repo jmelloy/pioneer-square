@@ -129,4 +129,3 @@ async def test_open_pr_non_422_http_error_propagates():
 
     assert exc_info.value.code == 500
     mock_find.assert_not_called()
-
