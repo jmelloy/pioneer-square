@@ -129,3 +129,44 @@ async def test_open_pr_non_422_http_error_propagates():
 
     assert exc_info.value.code == 500
     mock_find.assert_not_called()
+
+
+async def _fake_run_git_count(count: int):
+    async def _impl(args, cwd=None):
+        if args[:2] == ["rev-list", "--count"]:
+            return (0, str(count), "")
+        return (1, "", "not found")
+
+    return _impl
+
+
+@pytest.mark.asyncio
+async def test_branch_has_new_commits_with_commits():
+    emit = AsyncMock()
+    with patch("pioneer_worker.git_ops.run_git", await _fake_run_git_count(3)):
+        result = await github_pr.branch_has_new_commits(worktree_path="/tmp/wt", emit=emit)
+    assert result is True
+    emit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_branch_has_new_commits_no_commits():
+    emit = AsyncMock()
+    with patch("pioneer_worker.git_ops.run_git", await _fake_run_git_count(0)):
+        result = await github_pr.branch_has_new_commits(worktree_path="/tmp/wt", emit=emit)
+    assert result is False
+    emit.assert_called_once()
+    assert "no new commits" in emit.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_branch_has_new_commits_fallback_when_base_missing():
+    """If neither origin/main nor origin/master can be resolved, default to True."""
+    emit = AsyncMock()
+
+    async def _always_fail(args, cwd=None):
+        return (1, "", "unknown revision")
+
+    with patch("pioneer_worker.git_ops.run_git", _always_fail):
+        result = await github_pr.branch_has_new_commits(worktree_path="/tmp/wt", emit=emit)
+    assert result is True

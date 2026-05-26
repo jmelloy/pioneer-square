@@ -181,6 +181,7 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
         patch("pioneer_worker.worker.git_ops.create_worktree", return_value=True),
         patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
+        patch("pioneer_worker.worker.github_pr.branch_has_new_commits", return_value=False),
         patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
         patch.dict(os.environ, {}),
         tempfile.TemporaryDirectory() as tmp,

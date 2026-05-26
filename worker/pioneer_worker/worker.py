@@ -1868,7 +1868,10 @@ class Worker:
                 if existing_pr:
                     pr_url = existing_pr
                     await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
-                elif push_ok:
+                elif push_ok and await github_pr.branch_has_new_commits(
+                    worktree_path=primary_wt,
+                    emit=emit,
+                ):
                     pr_url = await github_pr.open_pr(
                         task=task,
                         branch=branch,
