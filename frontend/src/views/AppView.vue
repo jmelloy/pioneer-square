@@ -154,9 +154,12 @@ watch(
 )
 
 watch(
-  () => guildStore.currentGuild?.name,
-  (name) => {
-    document.title = name ? `${name} — Pioneer Square` : 'Pioneer Square'
+  () => guildStore.currentGuild,
+  (guild) => {
+    document.title =
+      guild?.name && guild?.id
+        ? `PS / ${guild.name} - ${guild.id}`
+        : 'Pioneer Square'
   },
   { immediate: true },
 )
