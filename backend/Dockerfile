@@ -41,11 +41,8 @@ RUN apt-get update \
 COPY backend/requirements.txt ./
 RUN pip install -r requirements.txt
 
-# Install foreman_core (shared library) before backend code
-COPY foreman_core/pyproject.toml /app/foreman_core/pyproject.toml
-COPY foreman_core/foreman_core/ /app/foreman_core/foreman_core/
-RUN pip install -e /app/foreman_core
-
+# foreman_core now lives inside the backend package (backend/foreman_core/).
+# COPY backend/ brings it along; no separate install step needed.
 COPY backend/ ./
 
 # SPA assets served by FastAPI's StaticFiles mount in main.py

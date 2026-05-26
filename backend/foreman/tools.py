@@ -1,7 +1,7 @@
 """Foreman tool definitions (embedded), GitHub API helpers, and tool-call executor.
 
-FOREMAN_TOOLS is imported from foreman_core.tools_schema — the single source of
-truth shared with the standalone foreman.  This module owns the embedded executor
+FOREMAN_TOOLS is imported from backend.foreman_core.tools_schema — the single source
+of truth shared with the standalone foreman.  This module owns the embedded executor
 (exec_tools) and all GitHub/DB helpers.
 """
 

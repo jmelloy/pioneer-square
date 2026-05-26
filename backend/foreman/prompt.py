@@ -1,7 +1,8 @@
 """Foreman system prompt and system-prompt builder.
 
-All logic lives in foreman_core.prompt — this module re-exports for
-backward-compatibility with existing imports (from foreman.prompt import ...).
+All logic lives in backend.foreman_core.prompt (at backend/foreman_core/prompt.py) —
+this module re-exports for backward-compatibility with existing imports
+(from foreman.prompt import ...).
 """
 
 from foreman_core.prompt import (

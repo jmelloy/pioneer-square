@@ -37,7 +37,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from foreman_core.tools_schema import FOREMAN_TOOLS  # noqa: F401
+
+from backend.foreman_core.tools_schema import FOREMAN_TOOLS  # noqa: F401
 
 logger = logging.getLogger(__name__)
 

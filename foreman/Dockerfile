@@ -13,10 +13,11 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install foreman_core (shared library) then the standalone foreman package
-COPY foreman_core/pyproject.toml /app/foreman_core/pyproject.toml
-COPY foreman_core/foreman_core/ /app/foreman_core/foreman_core/
-RUN pip install -e /app/foreman_core
+# Install backend package (provides backend.foreman_core) before the foreman CLI
+COPY backend/pyproject.toml /app/backend/pyproject.toml
+COPY backend/__init__.py /app/backend/__init__.py
+COPY backend/foreman_core/ /app/backend/foreman_core/
+RUN pip install -e /app/backend
 
 COPY foreman/pyproject.toml /app/foreman/pyproject.toml
 COPY foreman/pioneer_foreman/ /app/foreman/pioneer_foreman/

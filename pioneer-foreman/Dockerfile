@@ -11,10 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install foreman_core (shared library) first
-COPY foreman_core/pyproject.toml /app/foreman_core/pyproject.toml
-COPY foreman_core/foreman_core/ /app/foreman_core/foreman_core/
-RUN pip install -e /app/foreman_core
+# Install backend package (provides backend.foreman_core) before the foreman CLI
+COPY backend/pyproject.toml /app/backend/pyproject.toml
+COPY backend/__init__.py /app/backend/__init__.py
+COPY backend/foreman_core/ /app/backend/foreman_core/
+RUN pip install -e /app/backend
 
 COPY pioneer-foreman/pyproject.toml ./
 COPY pioneer-foreman/pioneer_foreman ./pioneer_foreman

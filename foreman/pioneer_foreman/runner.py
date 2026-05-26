@@ -12,9 +12,9 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from foreman_core.constants import _24H_SECS, _HUMAN_TURN_WINDOW
-from foreman_core.llm import HAS_ANTHROPIC, make_anthropic_client
-from foreman_core.message_utils import (
+from backend.foreman_core.constants import _24H_SECS, _HUMAN_TURN_WINDOW
+from backend.foreman_core.llm import HAS_ANTHROPIC, make_anthropic_client
+from backend.foreman_core.message_utils import (
     _inject_state_preamble,
     _serialize_content,
     _stamp_message_cache_breakpoint,
