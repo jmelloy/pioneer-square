@@ -20,7 +20,7 @@ from events import broadcast, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlmodel import select
 from utils import (
     build_spawn_worker_env,
     decode_claude_oauth_token,

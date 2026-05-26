@@ -28,8 +28,9 @@ from events import (
 from fastapi import WebSocket
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel import select
 from util.tasks import spawn
 from utils import worker_display_name
 

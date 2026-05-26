@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse
 from models import Guild, GuildKey, Worker
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
-from sqlalchemy import select
+from sqlmodel import select
 
 router = APIRouter()
 

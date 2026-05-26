@@ -17,9 +17,10 @@ from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
+from sqlmodel import select
 from utils import generate_guild_id, row_to_dict
 from ws_handlers import _resolve_user_identifier
 

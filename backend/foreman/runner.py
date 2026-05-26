@@ -26,7 +26,8 @@ from foreman_core.message_utils import (
 )
 from foreman_core.tools_schema import FOREMAN_TOOLS
 from models import Agent, ForemanTurn, Guild, GuildMember, Message, Task, Worker, live_tasks_filter
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func
+from sqlmodel import select
 from util.tasks import spawn
 
 from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
@@ -130,7 +131,7 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
 
 
 async def _save_turn(
-    guild_id: str,
+    guild: str,
     user_id: str,
     role: str,
     content,
@@ -141,9 +142,11 @@ async def _save_turn(
     """Persist one turn to the DB. Returns the new row's id."""
     db = await get_db()
     try:
-        guild_pk_val = await get_guild_pk(db, guild_id)
+        guild_id = await get_guild_pk(db, guild)
+        if guild_id is None:
+            return 0
         turn = ForemanTurn(
-            guild_id=guild_pk_val,
+            guild_id=guild_id,
             user_id=user_id,
             role=role,
             content_json=_serialize_content(content),
