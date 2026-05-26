@@ -27,9 +27,9 @@
         class="pixel-btn shutdown-btn"
         :disabled="workerState === 'offline' || shuttingDown"
         @click="handleShutdown"
-        title="Ask the worker to shut down"
+        title="Sends a graceful shutdown request via the foreman message API. The worker finishes current work before exiting."
       >
-        {{ shuttingDown ? '…' : '⏻ Shut down' }}
+        {{ shuttingDown ? '…' : '⏻ Send Shutdown Signal' }}
       </button>
     </div>
     <div v-if="actionError" class="action-error">{{ actionError }}</div>
