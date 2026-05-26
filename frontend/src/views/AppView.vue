@@ -154,12 +154,18 @@ watch(
 )
 
 watch(
-  () => guildStore.currentGuild,
-  (guild) => {
-    document.title =
-      guild?.name && guild?.id
-        ? `PS / ${guild.name} - ${guild.id}`
-        : 'Pioneer Square'
+  () => [guildStore.currentGuild?.name, guildStore.currentGuild?.id],
+  ([name, id]) => {
+    const guild = guildStore.currentGuild
+    if (!guild) {
+      document.title = 'Pioneer Square'
+      return
+    }
+    if (!name || !id) {
+      console.warn('Guild is missing name or id', { name, id })
+    }
+    const label = name && id ? `${name} / ${id}` : name || id
+    document.title = `PS / ${label}`
   },
   { immediate: true },
 )
