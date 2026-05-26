@@ -530,7 +530,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         if len(body_text) > _MAX_PAYLOAD_BYTES:
             body_text = body_text[:_MAX_PAYLOAD_BYTES] + "\n…[truncated]"
 
-        created_at = datetime.now(UTC).isoformat()
+        created_at = datetime.now(UTC)
         stmt = (
             pg_insert(GithubEvent)
             .values(
@@ -607,7 +607,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
     )
 
     chat_line = _build_chat_line(event_type, action, repo, pr_number, payload, task_id)
-    chat_now = datetime.now(UTC).isoformat()
+    chat_now = datetime.now(UTC)
     await broadcast(
         guild_id,
         {
@@ -615,7 +615,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
             "from": "github",
             "to": "foreman",
             "content": chat_line,
-            "createdAt": chat_now,
+            "createdAt": chat_now.isoformat(),
         },
     )
     msg_db = await get_db()

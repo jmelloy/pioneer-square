@@ -1285,7 +1285,7 @@ class TestExecToolsResultHandling:
         _insert_task(db_session, "t-large1", "g-large-res", "w-large")
         # Insert many log lines
 
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
         with _sync_session(db_session) as session:
             for _i in range(50):
                 session.add(

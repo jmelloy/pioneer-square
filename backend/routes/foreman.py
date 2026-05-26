@@ -343,7 +343,7 @@ async def create_foreman_turn(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        created_at = datetime.now(UTC).isoformat()
+        created_at = datetime.now(UTC)
         turn = ForemanTurn(
             guild_id=guild_pk,
             user_id=body.user_id,
@@ -393,7 +393,7 @@ async def create_foreman_task(
 
         task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
         name = (body.name or "")[:80]
-        created_at = datetime.now(UTC).isoformat()
+        created_at = datetime.now(UTC)
         db.add(
             Task(
                 id=task_id,
@@ -421,7 +421,7 @@ async def create_foreman_task(
             "description": body.description,
             "phase": body.phase,
             "state": "pending",
-            "createdAt": created_at,
+            "createdAt": created_at.isoformat(),
         },
     )
     return {"task_id": task_id, "created_at": created_at}
@@ -556,7 +556,7 @@ async def create_message(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
 
-        created_at = datetime.now(UTC).isoformat()
+        created_at = datetime.now(UTC)
         msg = Message(
             guild_id=guild_pk,
             from_agent=body.from_agent,
@@ -580,7 +580,7 @@ async def create_message(
             "from": body.from_agent,
             "to": body.to_agent,
             "content": body.content,
-            "createdAt": created_at,
+            "createdAt": created_at.isoformat(),
             **({"userId": body.user_id} if body.user_id else {}),
         },
     )

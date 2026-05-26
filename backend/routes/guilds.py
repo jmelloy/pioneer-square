@@ -71,7 +71,7 @@ async def create_guild(
 ):
     if data is None:
         data = GuildCreate()
-    created_at = datetime.now(UTC).isoformat()
+    created_at = datetime.now(UTC)
     db = await get_db()
     try:
         result = await db.execute(select(Guild.guild_id).where(Guild.deleted_at.is_(None)))
@@ -275,7 +275,7 @@ async def add_guild_member(
                     "before they can be added."
                 ),
             )
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
         stmt = pg_insert(GuildMember).values(
             guild_id=guild_pk,
             user_id=target_id,

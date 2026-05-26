@@ -156,7 +156,7 @@ async def create_session(code: str, state: str) -> dict:
     avatar_url = user_data.get("avatar_url") or ""
     email = user_data.get("email") or None
     login_token = secrets.token_urlsafe(32)
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
 
     db = await get_db()
     try:

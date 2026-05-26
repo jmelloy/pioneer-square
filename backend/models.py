@@ -4,15 +4,15 @@ from sqlalchemy import Column, DateTime, Index, or_, text
 from sqlmodel import Field, SQLModel
 
 
-def live_tasks_filter(now: str | None = None):
+def live_tasks_filter(now: datetime | None = None):
     """SQL clause matching tasks that have not been soft-deleted.
 
     A task is "live" when ``deleted_at`` is NULL or set to a future timestamp.
-    *now* defaults to the current UTC time as an ISO-8601 string; pass an
-    explicit value to make a query reproducible in tests.
+    *now* defaults to the current UTC time; pass an explicit value to make a
+    query reproducible in tests.
     """
     if now is None:
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
     return or_(Task.deleted_at.is_(None), Task.deleted_at > now)
 
 
@@ -29,7 +29,7 @@ class Guild(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     guild_id: str
-    created_at: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     name: str | None = None
     github_user_id: str | None = None
     primary_repo: str | None = None
@@ -41,9 +41,11 @@ class Guild(SQLModel, table=True):
     description: str | None = None
     url: str | None = None
     version: str | None = None
-    # ISO-8601 UTC timestamp at which this guild is considered soft-deleted.
+    # UTC instant at which this guild is considered soft-deleted.
     # NULL = active; partial unique index enforces one active row per guild_id.
-    deleted_at: str | None = None
+    deleted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
 
 
 class Agent(SQLModel, table=True):
@@ -62,11 +64,13 @@ class Agent(SQLModel, table=True):
     # to its agent unambiguously when a worker runs concurrent slots that
     # share a worker_id.
     current_task_id: str | None = None
-    joined_at: str
-    # ISO-8601 UTC timestamp of the last message received from this agent over
-    # the WebSocket. Refreshed by every inbound frame (incl. application-level
+    joined_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    # UTC instant of the last message received from this agent over the
+    # WebSocket. Refreshed by every inbound frame (incl. application-level
     # `ping`); the sweeper marks the agent offline when this gets stale.
-    last_seen: str | None = None
+    last_seen: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
 
 
 class Message(SQLModel, table=True):
@@ -79,7 +83,7 @@ class Message(SQLModel, table=True):
     to_agent: str | None = None
     content: str
     message_type: str
-    created_at: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     user_id: str | None = None  # github_user_id of the sender; NULL for system/worker messages
     role: str | None = None  # "tool_use" | "tool_result" | NULL for plain chat
     meta: str | None = None  # JSON blob with extra WS fields (toolId, toolName, …)
@@ -96,8 +100,10 @@ class Worker(SQLModel, table=True):
     # and clones repos lazily. NULL for workers that use an explicit repos list only.
     org: str | None = None
     state: str = Field(default="idle", sa_column_kwargs={"server_default": "'idle'"})
-    created_at: str
-    last_seen: str | None = None
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    last_seen: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     # Identity of the human user this worker process runs on behalf of.
     # NULL for legacy/unattributed workers.
     user_id: str | None = Field(default=None, foreign_key="users.id")
@@ -134,14 +140,18 @@ class Task(SQLModel, table=True):
     # URL substring matching. Both NULL until the worker reports a PR.
     pr_number: int | None = None
     pr_repo: str | None = None
-    created_at: str
-    finished_at: str | None = None
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    finished_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     name: str | None = None
     parent_task_id: str | None = None
     phase: str | None = Field(default="execute", sa_column_kwargs={"server_default": "'execute'"})
-    # ISO-8601 UTC timestamp at which this task is considered soft-deleted.
+    # UTC instant at which this task is considered soft-deleted.
     # NULL = live; once `now() > deleted_at`, list/get queries hide the row.
-    deleted_at: str | None = None
+    deleted_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     # github_user_id of the human who initiated this task. Used to route
     # worker-driven foreman events (task-complete, etc.) back to the originator's
     # foreman thread in multi-user guilds. NULL on legacy/system tasks.
@@ -156,8 +166,8 @@ class GithubToken(SQLModel, table=True):
     access_token: str
     token_type: str = Field(default="bearer", sa_column_kwargs={"server_default": "'bearer'"})
     scope: str | None = None
-    created_at: str
-    updated_at: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
 class UserSession(SQLModel, table=True):
@@ -165,7 +175,7 @@ class UserSession(SQLModel, table=True):
 
     token: str = Field(primary_key=True)
     github_user_id: str = Field(foreign_key="github_tokens.github_user_id")
-    created_at: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
 class User(SQLModel, table=True):
@@ -180,8 +190,8 @@ class User(SQLModel, table=True):
     email: str | None = None
     display_name: str | None = None
     avatar_url: str | None = None
-    created_at: str
-    updated_at: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
 class GuildMember(SQLModel, table=True):
@@ -190,9 +200,10 @@ class GuildMember(SQLModel, table=True):
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id", primary_key=True)
     user_id: str = Field(foreign_key="users.id", primary_key=True)
-    # owner | member | viewer
-    role: str = Field(default="member", sa_column_kwargs={"server_default": "'member'"})
-    created_at: str
+    role: str = Field(
+        default="member", sa_column_kwargs={"server_default": "'member'"}
+    )  # owner | member | viewer
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
 class TaskLog(SQLModel, table=True):
@@ -200,7 +211,7 @@ class TaskLog(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
-    timestamp: str
+    timestamp: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     line: str
     worker_id: str | None = None
     agent_id: str | None = None
@@ -214,7 +225,7 @@ class ClaudeCredentials(SQLModel, table=True):
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id", unique=True)
     credentials_blob: str  # base64-encoded tar.gz of ~/.claude/
-    updated_at: str
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
 class GuildKey(SQLModel, table=True):
@@ -226,7 +237,7 @@ class GuildKey(SQLModel, table=True):
     key_id: str  # "kid" in JWK
     public_key_pem: str
     private_key_pem: str
-    created_at: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     # When set, served verbatim at /.well-known/jwks.json instead of the
     # auto-generated key. Stored as JSON text ({"keys": [...]}).
     custom_jwks: str | None = None
@@ -247,7 +258,7 @@ class ForemanTurn(SQLModel, table=True):
     is_tool_response: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
     # For tool_result turns: id of the assistant turn whose tool_use blocks this answers
     parent_id: int | None = Field(default=None, foreign_key="foreman_turns.id")
-    created_at: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     # Token usage from the API response (assistant turns only; NULL for user/system turns)
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -271,7 +282,7 @@ class GithubEvent(SQLModel, table=True):
     pr_url: str | None = None
     sender_login: str | None = None
     payload_json: str
-    created_at: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
 class Lock(SQLModel, table=True):
@@ -304,4 +315,4 @@ class TaskEvent(SQLModel, table=True):
     # "pending-followup" is the only event_type currently; reserved for future use.
     event_type: str
     payload_json: str  # JSON: instructions, preferred_worker_id
-    created_at: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))

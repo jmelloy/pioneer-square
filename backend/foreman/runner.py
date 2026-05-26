@@ -149,7 +149,7 @@ async def _save_turn(
             content_json=_serialize_content(content),
             is_tool_response=1 if is_tool_response else 0,
             parent_id=parent_id,
-            created_at=datetime.now(UTC).isoformat(),
+            created_at=datetime.now(UTC),
         )
         db.add(turn)
         await db.commit()
@@ -658,7 +658,7 @@ async def run_foreman_ai(
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
-            now = datetime.now(UTC).isoformat()
+            now = datetime.now(UTC)
             db.add(
                 Message(
                     guild_id=guild_pk_val,

@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, content: str) -> None:
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))

@@ -212,7 +212,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     agent_name = data.get("agentName", "Unknown")
     agent_type = data.get("agentType", "worker")
     worker_id = data.get("workerId")
-    joined_at = datetime.now(UTC).isoformat()
+    joined_at = datetime.now(UTC)
     is_external_foreman = agent_type == "foreman" and data.get("external") is True
     if not is_external_foreman:
         stmt = pg_insert(Agent).values(
@@ -332,7 +332,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         "agentType": agent_type,
         "workerId": worker_id,
         "state": "idle",
-        "joinedAt": joined_at,
+        "joinedAt": joined_at.isoformat(),
     }
     if worker_id:
         r = await ctx.db.execute(
@@ -433,7 +433,7 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
     from_agent = data.get("from", "user")
     to_agent = data.get("to", "foreman")
     content = data.get("content", "")
-    created_at = datetime.now(UTC).isoformat()
+    created_at = datetime.now(UTC)
     ctx.db.add(
         Message(
             guild_id=ctx.guild_pk,
@@ -453,7 +453,7 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
             "from": from_agent,
             "to": to_agent,
             "content": content,
-            "createdAt": created_at,
+            "createdAt": created_at.isoformat(),
             **({"userId": ctx.ws_user_id} if ctx.ws_user_id and from_agent == "user" else {}),
         },
     )
@@ -495,7 +495,7 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
     line = data.get("line", "")
     task_id = data.get("taskId")
     detail = data.get("detail")
-    created_at = datetime.now(UTC).isoformat()
+    created_at = datetime.now(UTC)
     worker_id_for_log = msg_worker_id
     if worker_id_for_log is None and msg_agent_id:
         result = await ctx.db.execute(select(Agent.worker_id).where(Agent.id == msg_agent_id))
@@ -520,7 +520,7 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
             "workerId": worker_id_for_log,
             "taskId": task_id,
             "line": line,
-            "timestamp": created_at,
+            "timestamp": created_at.isoformat(),
             **({"detail": detail} if detail else {}),
         },
     )
@@ -604,10 +604,21 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         ("branch", "branch"),
         ("worktreePath", "worktree_path"),
         ("prUrl", "pr_url"),
-        ("finishedAt", "finished_at"),
     ):
         if src in data:
             update_values[col] = data[src]
+    if "finishedAt" in data:
+        raw = data.get("finishedAt")
+        if raw is not None:
+            try:
+                parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                update_values["finished_at"] = parsed
+            except (ValueError, TypeError):
+                pass
+        else:
+            update_values["finished_at"] = None
     # When the worker reports a PR URL, derive pr_number + pr_repo so github
     # webhook deliveries can be linked back to this task without fragile URL
     # substring matching at receive time.

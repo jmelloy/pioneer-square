@@ -21,7 +21,7 @@ def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
     Simulates a pre-migration guild to verify the legacy fallback is gone.
     """
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         session.execute(
             pg_insert(Guild)
@@ -207,7 +207,7 @@ def test_guild_partial_unique_index(client):
     test_client, db_url = client  # noqa: F841 — db_url used directly
 
     shared_id = "reuse-me-001"
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
 
     with _sync_session(db_url) as session:
         # Insert the first active guild.

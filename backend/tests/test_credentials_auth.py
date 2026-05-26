@@ -30,7 +30,7 @@ def _register_worker(test_client, guild_id: str) -> dict:
 
 def _seed_claude_credentials(db_url: str, guild_id: str, blob: str = "BLOB") -> None:
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
@@ -58,7 +58,7 @@ def _seed_github_token(db_url: str, user_id: str = "gh-user-test") -> None:
     """The default test user already has a github_tokens row via make_auth_token —
     this is a no-op that just ensures it's there for clarity."""
 
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         existing = session.scalar(
             select(GithubToken.github_user_id).where(GithubToken.github_user_id == user_id)
@@ -235,7 +235,7 @@ def test_get_github_token_no_owner_in_guild_members(client):
     from datetime import UTC, datetime
 
     test_client, db_url = client
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(UTC)
     # Insert a guild with github_user_id but no guild_members row
     with _sync_session(db_url) as session:
         stmt = (
