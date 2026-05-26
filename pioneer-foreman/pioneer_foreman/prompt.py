@@ -34,7 +34,31 @@ the branch from GitHub. Pass preferred_worker_id to force a specific worker.
 For complex work use phases:
 1. **plan** — create_task(phase='plan'), assign a worker to produce an outline/spec
 2. **execute** — assign workers to implement
-3. **review** — assign a worker to verify correctness, run tests, check the PR
+3. **review** — use review_pr_internal (or review_pr) to post a GitHub PR review; do NOT assign a worker to "review a PR" — that causes the worker to open a new PR with its findings instead of posting review comments
+
+NEVER assign a worker to review a PR and expect it to post comments. Workers that receive review instructions will try to commit findings and open a new PR — the wrong output. Always use review_pr_internal or review_pr for PR code reviews.
+
+## PR review tracking
+review_pr_internal and review_pr always run as tracked tasks — every review must have \
+a sidebar entry so the human can see what was reviewed and what was found.
+
+Pattern (treat as a single atomic sequence):
+1. create_task(name="Review PR #N: <title>", phase="review") → returns task_id
+2. review_pr_internal (or review_pr) — pass the PR details
+3. finalize_task(task_id=<task_id from step 1>) — call this after the review returns, \
+   whether it succeeded, found issues, or errored. \
+   Use expires_in_seconds=86400 for error/failed reviews; omit (default 3 days) otherwise.
+
+Never call review_pr_internal or review_pr without a preceding create_task. The task_id \
+ties the review outcome to the sidebar entry so humans can track what was reviewed.
+
+CRITICAL — review output must go to GitHub PR review comments, never to a new PR:
+review_pr_internal and review_pr post findings directly to the PR via the GitHub Reviews
+API (APPROVE / REQUEST_CHANGES / COMMENT with inline comments). The review is complete
+when those calls return — there is nothing to commit or push. NEVER open a new PR to
+report review findings. A worker that receives a "review PR #N" instruction will commit
+files and open a new PR (the wrong result); always use review_pr_internal or review_pr
+instead of assign_task for PR code reviews.
 
 ## Task ownership
 - create_task + assign_task are always called as a pair — create_task first (names the job, returns task_id), then assign_task immediately with that task_id. Treat this as a single atomic action, not a two-step ceremony.

@@ -1111,6 +1111,7 @@ class Worker:
                         "name": msg.get("name", ""),
                         "description": msg.get("description", ""),
                         "tool": msg.get("tool", "claude"),
+                        "phase": msg.get("phase", "execute"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
                         "repos": msg.get("repos") or [],
@@ -1194,6 +1195,7 @@ class Worker:
                         "name": msg.get("name", ""),
                         "description": msg.get("description", "") or instructions,
                         "tool": msg.get("tool", "claude"),
+                        "phase": msg.get("phase", "execute"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
                         "repos": msg.get("repos") or [],
@@ -1288,6 +1290,7 @@ class Worker:
                                 "name": msg.get("name", ""),
                                 "description": msg.get("description", "") or instructions,
                                 "tool": msg.get("tool", "claude"),
+                                "phase": msg.get("phase", "execute"),
                                 "issue_number": msg.get("issueNumber"),
                                 "issue_repo": msg.get("issueRepo"),
                                 "repos": msg.get("repos") or [],
@@ -1722,13 +1725,43 @@ class Worker:
                 if tool == "claude":
                     pr_title = (task.get("name") or desc)[:72].replace('"', "'")
                     closes = f" Closes #{task['issue_number']}" if task.get("issue_number") else ""
-                    current_desc = (
-                        f"{desc}\n\n"
-                        f"After completing your changes, commit, push, and open a PR:\n"
-                        f'  git add -A && git commit -m "<concise commit message>"\n'
-                        f"  git push origin {branch}\n"
-                        f'  gh pr create --title "{pr_title}" --body "<summary of changes>{closes}"\n'
-                    )
+                    if (task.get("phase") or "").lower() == "review":
+                        # Review-phase tasks must post findings as GitHub PR review
+                        # comments — NEVER by committing files and opening a new PR.
+                        _pr_repo = task.get("issue_repo") or ""
+                        _pr_num = task.get("issue_number")
+                        if _pr_repo and _pr_num:
+                            _pr_ref = f"https://github.com/{_pr_repo}/pull/{_pr_num}"
+                            _api_ref = f"repos/{_pr_repo}/pulls/{_pr_num}"
+                        else:
+                            _pr_ref = "<PR-URL>"
+                            _api_ref = "repos/OWNER/REPO/pulls/NUMBER"
+                        current_desc = (
+                            f"{desc}\n\n"
+                            "IMPORTANT — this is a review-phase task.\n"
+                            "If you are reviewing a pull request:\n"
+                            "  - Post your findings directly as a GitHub PR review using the gh CLI or API.\n"
+                            "  - NEVER create a new branch, commit review findings to files, or open a new PR.\n"
+                            "  - The review is complete when you post it, for example:\n"
+                            f"      gh pr review {_pr_ref} --comment --body '<your findings>'\n"
+                            "    or for APPROVE/REQUEST_CHANGES:\n"
+                            f"      gh pr review {_pr_ref} --approve --body '<comment>'\n"
+                            f"      gh pr review {_pr_ref} --request-changes --body '<what needs fixing>'\n"
+                            "    or via the API for inline comments:\n"
+                            f"      gh api {_api_ref}/reviews \\\n"
+                            "        -f body='...' -f event='COMMENT|APPROVE|REQUEST_CHANGES' \\\n"
+                            "        -f 'comments[][path]=file.py' -f 'comments[][line]=42' \\\n"
+                            "        -f 'comments[][body]=inline comment'\n"
+                            "Do NOT push any commits or open a PR as part of this review.\n"
+                        )
+                    else:
+                        current_desc = (
+                            f"{desc}\n\n"
+                            f"After completing your changes, commit, push, and open a PR:\n"
+                            f'  git add -A && git commit -m "<concise commit message>"\n'
+                            f"  git push origin {branch}\n"
+                            f'  gh pr create --title "{pr_title}" --body "<summary of changes>{closes}"\n'
+                        )
             success = False
             stop_reason = "no_events"
             last_msg = ""
