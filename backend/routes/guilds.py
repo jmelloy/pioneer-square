@@ -201,14 +201,14 @@ async def get_guild(guild_id: str, github_user_id: str = Depends(require_member(
             )
         )
         agent_rows = result.all()
-        result = await db.execute(
+        result = await db.exec(
             select(Message)
             .where(Message.guild_id == guild_pk)
             # .id.desc() is a stable tiebreaker because message IDs are auto-increment integers.
             .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(100)
         )
-        messages = result.scalars().all()
+        messages = result.all()
         return {
             **row_to_dict(guild),
             "id": guild.guild_id,  # keep text guild_id as "id" for API compatibility

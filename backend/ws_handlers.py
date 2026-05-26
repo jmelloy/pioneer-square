@@ -299,14 +299,14 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         # observers see the join event; this prevents anyio cancel-scope races
         # in tests where a peer WS closes on receiving the broadcast.
         if worker_id:
-            result = await ctx.db.execute(
+            result = await ctx.db.exec(
                 select(Task).where(
                     Task.guild_id == ctx.guild_pk,
                     Task.worker_id == worker_id,
                     Task.state.in_(["pending", "working"]),
                 )
             )
-            pending_tasks = result.scalars().all()
+            pending_tasks = result.all()
             for pt in pending_tasks:
                 logger.info(
                     "join: replaying task-assigned for pending task %s to worker %s",

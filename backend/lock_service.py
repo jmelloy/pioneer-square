@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 from models import Lock
 from sqlalchemy import delete, insert, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 
 class LockService:
@@ -61,13 +61,13 @@ class LockService:
     async def is_locked(self, key: str) -> bool:
         """Return True if a non-expired lock exists for *key*."""
         now = datetime.now(UTC)
-        row = await self._db.execute(
+        row = await self._db.exec(
             select(Lock.key).where(
                 Lock.key == key,
                 (Lock.expires_at.is_(None) | (Lock.expires_at > now)),
             )
         )
-        return row.scalar_one_or_none() is not None
+        return row.one_or_none() is not None
 
     @staticmethod
     async def cleanup_expired(db: AsyncSession) -> int:

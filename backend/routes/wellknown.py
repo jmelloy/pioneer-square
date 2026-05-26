@@ -337,12 +337,10 @@ async def agent_card(request: Request) -> JSONResponse:
     if guild_id:
         db = await get_db()
         try:
-            guild = (
-                await db.execute(select(Guild).where(Guild.guild_id == guild_id))
-            ).scalar_one_or_none()
+            guild = (await db.exec(select(Guild).where(Guild.guild_id == guild_id))).one_or_none()
             if guild:
-                rows = await db.execute(select(Worker).where(Worker.guild_id == guild.id))
-                workers = list(rows.scalars().all())
+                rows = await db.exec(select(Worker).where(Worker.guild_id == guild.id))
+                workers = list(rows.all())
         finally:
             await db.close()
 
@@ -366,13 +364,11 @@ async def guild_agent_card(
     """Returns the AgentCard for a specific guild (authenticated)."""
     db = await get_db()
     try:
-        guild = (
-            await db.execute(select(Guild).where(Guild.guild_id == guild_id))
-        ).scalar_one_or_none()
+        guild = (await db.exec(select(Guild).where(Guild.guild_id == guild_id))).one_or_none()
         if not guild:
             raise HTTPException(404, detail="Guild not found")
-        rows = await db.execute(select(Worker).where(Worker.guild_id == guild.id))
-        workers = list(rows.scalars().all())
+        rows = await db.exec(select(Worker).where(Worker.guild_id == guild.id))
+        workers = list(rows.all())
     finally:
         await db.close()
 

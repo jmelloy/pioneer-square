@@ -216,10 +216,10 @@ async def list_workers(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
+        result = await db.exec(
             select(Worker).where(Worker.guild_id == guild_pk).order_by(Worker.created_at.desc())
         )
-        return [row_to_dict(w) for w in result.scalars().all()]
+        return [row_to_dict(w) for w in result.all()]
     finally:
         await db.close()
 
@@ -293,7 +293,7 @@ async def list_tasks(guild_id: str, worker_id: str):
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
+        result = await db.exec(
             select(Task)
             .where(
                 Task.worker_id == worker_id,
@@ -302,7 +302,7 @@ async def list_tasks(guild_id: str, worker_id: str):
             )
             .order_by(Task.created_at.desc())
         )
-        return [row_to_dict(t) for t in result.scalars().all()]
+        return [row_to_dict(t) for t in result.all()]
     finally:
         await db.close()
 

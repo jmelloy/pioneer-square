@@ -80,12 +80,12 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
     db = await get_db()
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
-        result = await db.execute(
+        result = await db.exec(
             select(ForemanTurn)
             .where(ForemanTurn.guild_id == guild_pk_val, ForemanTurn.user_id == user_id)
             .order_by(ForemanTurn.id)
         )
-        turns = result.scalars().all()
+        turns = result.all()
     finally:
         await db.close()
 
@@ -720,12 +720,12 @@ async def get_foreman_history(guild_id: str, user_id: str) -> dict:
     db = await get_db()
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
-        result = await db.execute(
+        result = await db.exec(
             select(ForemanTurn)
             .where(ForemanTurn.guild_id == guild_pk_val, ForemanTurn.user_id == user_id)
             .order_by(ForemanTurn.id)
         )
-        turns = result.scalars().all()
+        turns = result.all()
     finally:
         await db.close()
 

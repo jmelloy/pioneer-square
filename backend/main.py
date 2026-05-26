@@ -166,34 +166,30 @@ async def _sweep_stale_workers_once() -> int:
         # (i.e. no agent with current_task_id = task.id in a live state) and
         # whose lock was acquired long enough ago to not be a new dispatch.
         orphaned = (
-            (
-                await db.execute(
-                    select(Task.id).where(
-                        Task.state == "working",
-                        # Lock exists for this task and has been held long enough
-                        # that we can assume it's not a brand-new dispatch.
-                        # Use the || operator for string concat — SQLite does not
-                        # have a concat() function; this is dialect-neutral for
-                        # single-DB deployments and avoids func.concat().
-                        select(Lock.key)
-                        .where(
-                            Lock.key == literal("task:").op("||")(Task.id),
-                            Lock.acquired_at < cutoff_lock,
-                        )
-                        .exists(),
-                        # No agent is actively running this task right now.
-                        ~select(Agent.id)
-                        .where(
-                            Agent.current_task_id == Task.id,
-                            Agent.state.in_(("working", "thinking", "busy")),
-                        )
-                        .exists(),
+            await db.exec(
+                select(Task.id).where(
+                    Task.state == "working",
+                    # Lock exists for this task and has been held long enough
+                    # that we can assume it's not a brand-new dispatch.
+                    # Use the || operator for string concat — SQLite does not
+                    # have a concat() function; this is dialect-neutral for
+                    # single-DB deployments and avoids func.concat().
+                    select(Lock.key)
+                    .where(
+                        Lock.key == literal("task:").op("||")(Task.id),
+                        Lock.acquired_at < cutoff_lock,
                     )
+                    .exists(),
+                    # No agent is actively running this task right now.
+                    ~select(Agent.id)
+                    .where(
+                        Agent.current_task_id == Task.id,
+                        Agent.state.in_(("working", "thinking", "busy")),
+                    )
+                    .exists(),
                 )
             )
-            .scalars()
-            .all()
-        )
+        ).all()
         if orphaned:
             stale_task_ids = list(orphaned)
             for task_id in stale_task_ids:
