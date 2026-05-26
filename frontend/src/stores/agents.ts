@@ -279,6 +279,24 @@ export const useAgentsStore = defineStore('agents', () => {
         data.activity ?? undefined,
         data.taskId ?? undefined,
       )
+    } else if (data.type === 'task-complete') {
+      // The worker returns to its idle pool immediately after sending task-complete.
+      // Reset the agent proactively so the sidebar doesn't lag behind waiting for
+      // the separate agent-state:idle frame (which may be delayed for short tasks).
+      if (data.agentId) {
+        updateAgentState(data.agentId, 'idle', null, null)
+      } else {
+        const match = agents.value.find((a) => a.taskId === data.taskId)
+        if (match) updateAgentState(match.id, 'idle', null, null)
+      }
+    } else if (data.type === 'task-followup-done') {
+      // Same as task-complete: worker returns to idle after sending this.
+      if (data.agentId) {
+        updateAgentState(data.agentId, 'idle', null, null)
+      } else {
+        const match = agents.value.find((a) => a.taskId === data.taskId)
+        if (match) updateAgentState(match.id, 'idle', null, null)
+      }
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
       if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)

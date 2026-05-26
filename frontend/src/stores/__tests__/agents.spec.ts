@@ -149,6 +149,74 @@ describe('useAgentsStore', () => {
     })
   })
 
+  describe('task-complete and task-followup-done reset agent to idle', () => {
+    it('resets agent to idle on task-complete when agentId is present', () => {
+      const store = useAgentsStore()
+      store.registerAgent({ agentId: 'a-1', workerId: 'w-x', state: 'working', taskId: 't-1' })
+
+      store.handleWebSocketMessage({
+        type: 'task-complete',
+        taskId: 't-1',
+        agentId: 'a-1',
+      })
+
+      expect(store.agents[0].state).toBe('idle')
+      expect(store.agents[0].taskId).toBeNull()
+    })
+
+    it('resets agent to idle on task-complete by taskId fallback when agentId is absent', () => {
+      const store = useAgentsStore()
+      store.registerAgent({ agentId: 'a-1', workerId: 'w-x', state: 'working', taskId: 't-2' })
+
+      store.handleWebSocketMessage({
+        type: 'task-complete',
+        taskId: 't-2',
+      })
+
+      expect(store.agents[0].state).toBe('idle')
+      expect(store.agents[0].taskId).toBeNull()
+    })
+
+    it('resets agent to idle on task-followup-done when agentId is present', () => {
+      const store = useAgentsStore()
+      store.registerAgent({ agentId: 'a-1', workerId: 'w-x', state: 'working', taskId: 't-3' })
+
+      store.handleWebSocketMessage({
+        type: 'task-followup-done',
+        taskId: 't-3',
+        agentId: 'a-1',
+      })
+
+      expect(store.agents[0].state).toBe('idle')
+      expect(store.agents[0].taskId).toBeNull()
+    })
+
+    it('resets agent to idle on task-followup-done by taskId fallback when agentId is absent', () => {
+      const store = useAgentsStore()
+      store.registerAgent({ agentId: 'a-1', workerId: 'w-x', state: 'working', taskId: 't-4' })
+
+      store.handleWebSocketMessage({
+        type: 'task-followup-done',
+        taskId: 't-4',
+      })
+
+      expect(store.agents[0].state).toBe('idle')
+      expect(store.agents[0].taskId).toBeNull()
+    })
+
+    it('is a no-op for task-complete when neither agentId nor matching taskId exists', () => {
+      const store = useAgentsStore()
+      store.registerAgent({ agentId: 'a-1', workerId: 'w-x', state: 'working', taskId: 't-99' })
+
+      store.handleWebSocketMessage({
+        type: 'task-complete',
+        taskId: 't-unknown',
+      })
+
+      expect(store.agents[0].state).toBe('working')
+    })
+  })
+
   describe('concurrent slots on the same worker', () => {
     it('tracks distinct taskIds per slot even when workerId matches', () => {
       // Regression: prior matching by workerId collapsed concurrent slots
