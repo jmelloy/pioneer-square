@@ -1,6 +1,6 @@
 """Foreman tool definitions and HTTP-backed tool executor.
 
-FOREMAN_TOOLS is imported from foreman_core.tools_schema — the single source of
+FOREMAN_TOOLS is imported from backend.foreman_core.tools_schema — the single source of
 truth shared with the embedded foreman.  Tool execution is delegated to the
 backend via POST /guilds/{guild_id}/foreman/exec_tool so all business logic
 (DB writes, lock acquisition, WS broadcasts to workers) stays in the backend.
@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from foreman_core.tools_schema import FOREMAN_TOOLS  # noqa: F401  – re-exported for runner.py
+from backend.foreman_core.tools_schema import (
+    FOREMAN_TOOLS,  # noqa: F401  – re-exported for runner.py
+)
 
 from .http_client import ForemanHTTPClient
 

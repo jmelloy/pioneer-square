@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk
 from database import get_db
 from events import broadcast
+from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
+from foreman.tools import exec_tools
 from foreman_core.constants import (
     _24H_SECS,
     _HUMAN_TURN_WINDOW,
@@ -28,9 +30,6 @@ from foreman_core.tools_schema import FOREMAN_TOOLS
 from models import Agent, ForemanTurn, Guild, GuildMember, Message, Task, Worker, live_tasks_filter
 from sqlalchemy import delete, func, select
 from util.tasks import spawn
-
-from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
-from foreman.tools import exec_tools
 
 logger = logging.getLogger(__name__)
 
