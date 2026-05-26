@@ -90,6 +90,7 @@ async def run_codex_auto(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=8 * 1024 * 1024,  # raise readline limit to 8 MB
         )
         os.close(slave_fd)
         slave_fd = None
