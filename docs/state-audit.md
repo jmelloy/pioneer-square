@@ -1,6 +1,7 @@
 # Pioneer Square — Worker / Agent / Task State Audit
 
 > Generated: 2026-05-26
+> Verified at commit: fc64c4478e91949438d4467238671baf69d401ac
 
 ## Executive Summary
 
@@ -114,6 +115,8 @@ _LOCK_RELEASE_AGENT_STATES = frozenset({"idle", "offline", "error", "timeout"})
 
 When an agent enters one of these states, the backend checks whether it owns a `working` task and, if so, moves it to `awaiting-review`.
 
+> **`timeout` state discrepancy:** `_LOCK_RELEASE_AGENT_STATES` includes `"timeout"` but the TypeScript `AgentState` union (`frontend/src/types.ts:1`) does **not** list `timeout` as a valid value. No code path in the audited codebase emits `agent-state: timeout` from either the worker or the backend — the entry in `_LOCK_RELEASE_AGENT_STATES` appears to be a defensive placeholder (if a `timeout` state were ever emitted, the lock would release). This discrepancy requires a decision: either confirm a code path that emits `timeout` and add it to the TypeScript union, or remove it from `_LOCK_RELEASE_AGENT_STATES` if no such path is planned.
+
 ### Frontend Priority Ranking
 
 Used by `frontend/src/stores/agents.ts:9–16` to derive a single display state when a worker has multiple agents:
@@ -159,17 +162,22 @@ Once a task enters a terminal state it cannot transition further (guarded at eve
 [created]
     │
     ▼
- pending ──────────────────────────────► cancelled
-    │                                        ▲
-    │ (foreman assigns)                      │
-    ▼                                        │
- working ─── (agent crash/disconnect) ──► awaiting-review
-    │                                        │
-    │ task-complete                          │ (foreman finalize)
-    └──────────────────────────────────────► done
+ pending ──(cancel)────────────────────────────────────────────► cancelled
+    │                                                                 ▲
+    │ (foreman assigns)                                               │ (cancel: any non-terminal)
+    ▼                                                                 │
+ working ──(task-update: state=planning)──► planning ────────────────┤
+    │  │                                    [unguarded; no watchdog]  │
+    │  └──(task-update: state=failed)────────────────────► failed     │
+    │                                                                 │
+    │ (task-complete / agent: idle, offline, error, timeout)          │
+    ▼                                                                 │
+ awaiting-review ──(finalize)──────────────────────────────► done    │
+    │  │                                                              │
+    │  └──(redirect_task)───────────────────────────────► working ───┘
     │
-    │ (task-update: state=failed)
-    └──► failed
+    └──► followup ──(task-followup-done)──► awaiting-review
+         [legacy: no active backend path currently sets this state]
 ```
 
 ### State Transition Locations
@@ -247,7 +255,9 @@ Task (state: pending/working/awaiting-review/done/failed/followup/cancelled)
 
 3. **`followup` task state is legacy/rare.** It appears in the frontend type union and color mapping but no backend code path currently sets `state = 'followup'` directly. The follow-up flow uses `awaiting-review` as the state while a follow-up is in progress. This state may be dead code.
 
-4. **`planning` task state is foreman-only and unguarded.** It can be set by a `task-update` message from any worker (no server-side validation). It is also absent from `_TERMINAL_STATES` and `_LOCK_RELEASE_AGENT_STATES`, so a task stuck in `planning` would not be cleaned up by the stale watchdog.
+4. **Security concern — `task-update` state changes are unvalidated.** The `task-update` WebSocket message handler (`backend/ws_handlers.py:619`) applies the requested state change without verifying that the requesting worker owns the task. A rogue or compromised worker can therefore set `state=planning` on *any* other worker's task. Because `planning` is absent from both `_TERMINAL_STATES` and `_LOCK_RELEASE_AGENT_STATES`, the stale-task watchdog does not reclaim it — the victim task is stalled indefinitely with no automatic recovery path.
+
+   **Recommended fix:** Add server-side ownership validation to the `task-update` handler. Before applying a state change, verify that `task.assigned_worker_id == requesting_agent.worker_id`. Reject the update (e.g. a `task-update-error` WS message) if the IDs do not match.
 
 5. **Agent `activity` is not persisted.** It is only in memory / WS broadcast. A browser reload loses the current activity display. This is probably fine for a display hint but worth noting.
 
