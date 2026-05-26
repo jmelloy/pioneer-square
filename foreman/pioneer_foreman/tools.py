@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from foreman_core.tools_schema import FOREMAN_TOOLS  # noqa: F401  – re-exported for runner.py
+
 from .http_client import ForemanHTTPClient
 
 logger = logging.getLogger(__name__)
