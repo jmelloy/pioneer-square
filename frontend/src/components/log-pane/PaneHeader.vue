@@ -3,6 +3,7 @@
     <div class="pane-title">
       <span class="title-icon">{{ icon }}</span>
       <span class="title-text">{{ titleText }}</span>
+      <code v-if="entityId" class="entity-id-chip">{{ entityId }}</code>
     </div>
     <div class="pane-meta">
       <slot name="meta">
@@ -22,6 +23,7 @@ const props = defineProps<{
   icon: string
   titleText: string
   entityState?: string
+  entityId?: string
 }>()
 
 const isLive = computed(() => {
@@ -50,6 +52,17 @@ const isLive = computed(() => {
 
 .title-icon {
   color: var(--color-green);
+}
+
+.entity-id-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-text-dim);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--color-brass-dark);
+  padding: 1px 5px;
+  border-radius: 2px;
+  letter-spacing: 0.5px;
 }
 
 .pane-meta {

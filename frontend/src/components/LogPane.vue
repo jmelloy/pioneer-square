@@ -1,6 +1,6 @@
 <template>
   <div class="log-pane" :class="'kind-' + kind">
-    <PaneHeader :icon="icon" :title-text="titleText" :entity-state="entityState">
+    <PaneHeader :icon="icon" :title-text="titleText" :entity-state="entityState" :entity-id="entityIdBadge">
       <template v-if="kind === 'task'" #meta>
         <span v-if="taskPhase" class="phase-badge" :class="taskPhase">{{ taskPhase }}</span>
         <span v-if="taskStateLabel" class="state-badge" :class="stateBadgeClass">
@@ -28,6 +28,12 @@
     <LogList ref="logListRef" :logs="logs" />
 
     <AgentActions v-if="kind === 'agent'" :agent-id="id" :agent-state="entityState" />
+    <TaskActions
+      v-if="kind === 'agent' && agentTask"
+      :task-id="agentTask.id"
+      :task-state="agentTask.state"
+      :worker-id="agentTask.worker_id"
+    />
     <WorkerActions v-if="kind === 'worker'" :worker-id="id" :worker-state="entityState" />
     <TaskActions
       v-if="kind === 'task'"
@@ -106,6 +112,18 @@ const entityState = computed(() => {
   if (props.kind === 'agent') return agent.value?.state
   if (props.kind === 'worker') return worker.value?.state
   return undefined
+})
+
+const agentTask = computed(() => {
+  if (props.kind !== 'agent' || !agent.value?.taskId) return null
+  return tasksStore.tasks.find((t) => t.id === agent.value!.taskId) ?? null
+})
+
+const entityIdBadge = computed(() => {
+  if (props.kind !== 'worker') return undefined
+  const w = worker.value
+  if (!w) return undefined
+  return w.name && w.name !== w.id ? w.id : undefined
 })
 
 const taskPhase = computed(() =>
