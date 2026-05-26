@@ -191,3 +191,23 @@ async def test_branch_has_new_commits_fallback_to_master():
     assert result is True
     emit.assert_called_once()
     assert "2" in emit.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_branch_has_new_commits_main_zero_master_has_commits():
+    """When origin/main resolves with 0 commits, still check origin/master."""
+    emit = AsyncMock()
+
+    async def _main_zero_master_has_commits(args, cwd=None):
+        if args[:2] == ["rev-list", "--count"]:
+            base_ref = args[2].split("..")[0]
+            if base_ref == "origin/main":
+                return (0, "0", "")
+            return (0, "3", "")
+        return (1, "", "not found")
+
+    with patch("pioneer_worker.git_ops.run_git", _main_zero_master_has_commits):
+        result = await github_pr.branch_has_new_commits(worktree_path="/tmp/wt", emit=emit)
+    assert result is True
+    emit.assert_called_once()
+    assert "3" in emit.call_args[0][0]
