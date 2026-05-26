@@ -874,10 +874,10 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     is_error = True
                 else:
                     result = await db.execute(
-                        select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_pk)
+                        select(Task).where(Task.id == task_id, Task.guild_id == guild_pk)
                     )
-                    worker_id_val = result.scalar_one_or_none()
-                    if not worker_id_val:
+                    task = result.scalar_one_or_none()
+                    if not task:
                         result_text = f"Task {task_id} not found."
                     else:
                         finished_at = datetime.now(UTC).isoformat()
@@ -898,7 +898,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             guild_id,
                             {
                                 "type": "task-finalize",
-                                "workerId": worker_id_val,
+                                "workerId": task.worker_id,
                                 "taskId": task_id,
                             },
                         )
