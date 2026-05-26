@@ -100,15 +100,25 @@ export const useAgentsStore = defineStore('agents', () => {
     state: AgentState,
     activity?: AgentActivity | null,
     taskId?: string | null,
-  ) {
+  ): boolean {
     const agent = agents.value.find((a) => a.id === agentId)
-    if (!agent) return
+    if (!agent) return false
     agent.state = state
     if (activity !== undefined) agent.activity = activity
     if (taskId !== undefined) agent.taskId = taskId
     // Idle/offline agents are by definition not working a task; clear the
     // link so a stale taskId from a prior run can't latch the agent to a row.
     if (state === 'idle' || state === 'offline') agent.taskId = null
+    return true
+  }
+
+  // Resets the agent responsible for a completed task back to idle.
+  // Tries agentId first; falls through to taskId lookup on a miss (e.g. race
+  // during deregistration where agentId is present but no longer registered).
+  function resetAgentForTask(data: { agentId?: string | null; taskId?: string }) {
+    if (data.agentId && updateAgentState(data.agentId, 'idle', null, null)) return
+    const match = agents.value.find((a) => a.taskId === data.taskId)
+    if (match) updateAgentState(match.id, 'idle', null, null)
   }
 
   function addLog(agentId: string, line: string, timestamp?: string, detail?: LogDetail | null) {
@@ -279,6 +289,14 @@ export const useAgentsStore = defineStore('agents', () => {
         data.activity ?? undefined,
         data.taskId ?? undefined,
       )
+    } else if (data.type === 'task-complete') {
+      // The worker returns to its idle pool immediately after sending task-complete.
+      // Reset the agent proactively so the sidebar doesn't lag behind waiting for
+      // the separate agent-state:idle frame (which may be delayed for short tasks).
+      resetAgentForTask(data)
+    } else if (data.type === 'task-followup-done') {
+      // Same as task-complete: worker returns to idle after sending this.
+      resetAgentForTask(data)
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
       if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)
