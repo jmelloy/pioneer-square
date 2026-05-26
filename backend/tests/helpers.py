@@ -17,7 +17,7 @@ import psycopg2.extras
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from models import Agent, GithubToken, Guild, GuildMember, Task, User, UserSession, Worker
-from sqlalchemy import create_engine, select
+from sqlmodel import create_engine, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import Session

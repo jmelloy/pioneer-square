@@ -28,19 +28,21 @@ class RunAgentRequest(BaseModel):
     provider: str | None = None  # pi only
 
 
-async def set_agent_state(guild_id: str, agent_id: str, state: str) -> None:
+async def set_agent_state(guild: str, agent_id: str, state: str) -> None:
     """Broadcast and persist an agent state change (clears activity)."""
     await broadcast(
-        guild_id, {"type": "agent-state", "agentId": agent_id, "state": state, "activity": None}
+        guild, {"type": "agent-state", "agentId": agent_id, "state": state, "activity": None}
     )
     db = await get_db()
     try:
         from auth_deps import get_guild_pk
 
-        guild_pk = await get_guild_pk(db, guild_id)
-        await db.execute(
+        guild_id = await get_guild_pk(db, guild)
+        if guild_id is None:
+            return
+        await db.exec(
             update(Agent)
-            .where(Agent.id == agent_id, Agent.guild_id == guild_pk)
+            .where(Agent.id == agent_id, Agent.guild_id == guild_id)
             .values(state=state, activity=None)
         )
         await db.commit()
