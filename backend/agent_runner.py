@@ -101,6 +101,7 @@ async def stream_agent(guild_id: str, agent_id: str, req: RunAgentRequest) -> No
         return
 
     stdin_pipe = asyncio.subprocess.PIPE if needs_stdin else asyncio.subprocess.DEVNULL
+    
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

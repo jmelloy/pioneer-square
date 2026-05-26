@@ -174,23 +174,23 @@ class MockWorker(Worker):
             self._http_thread = None
 
     # ── Task execution (replaces claude/codex/pi runners) ──────────────────
-    async def _execute_task(self, task: dict, slot) -> None:
+    async def _execute_task(self, task: dict, agent) -> None:
         task_id = task["id"]
         desc = task.get("description") or ""
         is_followup = bool(task.get("followup_instructions"))
         branch = task.get("followup_branch") or f"mock/{task_id[:8]}"
 
-        await self._set_state("working", slot)
-        await self._task_update(task_id, slot=slot, state="working", branch=branch)
+        await self._set_state("working", agent)
+        await self._task_update(task_id, agent=agent, state="working", branch=branch)
 
-        emit = self._task_emit(task_id, slot)
+        emit = self._task_emit(task_id, agent)
         await emit(f"[mock] Task {task_id}: {desc[:120]}")
         await emit(f"[mock] Branch: {branch}")
 
         script = _extract_script(task)
         outcome: dict | None = None
         if script is not None:
-            outcome = await self._run_script(task_id, slot, script, emit)
+            outcome = await self._run_script(task_id, agent, script, emit)
 
         if outcome is None:
             # No script (or script didn't terminate the task) — wait for HTTP.
@@ -202,7 +202,7 @@ class MockWorker(Worker):
             finally:
                 self._task_outcomes.pop(task_id, None)
 
-        await self._finalize_task(task_id, slot, outcome, desc, branch, is_followup)
+        await self._finalize_task(task_id, agent, outcome, desc, branch, is_followup)
 
     async def _run_script(self, task_id: str, slot, script: list[dict], emit) -> dict | None:
         """Execute a script of steps. Returns an outcome dict if the script
@@ -254,7 +254,7 @@ class MockWorker(Worker):
 
             await self._task_update(
                 task_id,
-                slot=slot,
+                agent=slot,
                 branch=final_branch,
                 prUrl=pr_url,
                 state="awaiting-review",
@@ -290,7 +290,7 @@ class MockWorker(Worker):
         else:  # fail
             stop_reason = outcome.get("stopReason", "mock_failure")
             last_message = outcome.get("lastMessage", "mock failure")
-            await self._task_update(task_id, slot=slot, branch=branch, state="failed")
+            await self._task_update(task_id, agent=slot, branch=branch, state="failed")
             await self._send(
                 {
                     "type": "needs-input",
