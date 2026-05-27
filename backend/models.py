@@ -192,6 +192,10 @@ class User(SQLModel, table=True):
     avatar_url: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    # Per-user API keys set from the user-settings UI; stored in plaintext,
+    # never returned raw — always masked at the API layer.
+    claude_api_key: str | None = None
+    openai_api_key: str | None = None
 
 
 class GuildMember(SQLModel, table=True):

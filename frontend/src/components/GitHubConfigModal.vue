@@ -2,7 +2,7 @@
   <div class="modal-overlay" @click.self="$emit('close')">
     <div class="modal">
       <div class="modal-header">
-        <span class="modal-title">⚙ GITHUB CONFIGURATION</span>
+        <span class="modal-title">⚙ USER SETTINGS</span>
         <button class="close-btn" @click="$emit('close')">✕</button>
       </div>
 
@@ -14,6 +14,41 @@
             <div class="user-label">{{ authStore.user?.name || 'GitHub User' }}</div>
           </div>
         </div>
+
+        <div class="section">
+          <div class="section-title">API TOKENS</div>
+          <div class="token-row">
+            <div class="token-info">
+              <span class="token-label">Claude</span>
+              <span class="token-value" :class="{ unset: !tokens.claude }">
+                {{ tokens.claude ?? 'Not set' }}
+              </span>
+            </div>
+            <button
+              class="pixel-btn danger-btn"
+              :disabled="!tokens.claude || clearing === 'claude'"
+              @click="clearToken('claude')"
+            >
+              {{ clearing === 'claude' ? '…' : 'CLEAR' }}
+            </button>
+          </div>
+          <div class="token-row">
+            <div class="token-info">
+              <span class="token-label">Codex</span>
+              <span class="token-value" :class="{ unset: !tokens.codex }">
+                {{ tokens.codex ?? 'Not set' }}
+              </span>
+            </div>
+            <button
+              class="pixel-btn danger-btn"
+              :disabled="!tokens.codex || clearing === 'codex'"
+              @click="clearToken('codex')"
+            >
+              {{ clearing === 'codex' ? '…' : 'CLEAR' }}
+            </button>
+          </div>
+          <div v-if="tokenError" class="token-error">{{ tokenError }}</div>
+        </div>
       </div>
 
       <div class="modal-footer">
@@ -24,10 +59,45 @@
 </template>
 
 <script setup lang="ts">
+import { ref, onMounted } from 'vue'
 import { useAuthStore } from '../stores/auth'
+import { api } from '../utils/api'
 
 defineEmits<{ close: [] }>()
 const authStore = useAuthStore()
+
+const tokens = ref<{ claude: string | null; codex: string | null }>({
+  claude: null,
+  codex: null,
+})
+const clearing = ref<'claude' | 'codex' | null>(null)
+const tokenError = ref<string | null>(null)
+
+async function loadTokens() {
+  try {
+    const data = await api<{ claude: string | null; codex: string | null }>(
+      '/api/users/me/tokens',
+    )
+    tokens.value = data
+  } catch {
+    // Not fatal — just leave tokens as null
+  }
+}
+
+async function clearToken(provider: 'claude' | 'codex') {
+  clearing.value = provider
+  tokenError.value = null
+  try {
+    await api(`/api/users/me/tokens/${provider}`, { method: 'DELETE' })
+    tokens.value = { ...tokens.value, [provider]: null }
+  } catch (err) {
+    tokenError.value = err instanceof Error ? err.message : 'Failed to clear token'
+  } finally {
+    clearing.value = null
+  }
+}
+
+onMounted(loadTokens)
 </script>
 
 <style scoped>
@@ -122,6 +192,81 @@ const authStore = useAuthStore()
 .user-label {
   font-size: 11px;
   color: var(--color-text-dim);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.section-title {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-light);
+  letter-spacing: 2px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--color-brass-dark);
+}
+
+.token-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.token-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.token-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-text-dim);
+  letter-spacing: 1px;
+}
+
+.token-value {
+  font-size: 11px;
+  color: var(--color-text);
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-value.unset {
+  color: var(--color-text-dim);
+  font-style: italic;
+  font-family: inherit;
+}
+
+.danger-btn {
+  flex-shrink: 0;
+  border-color: rgba(255, 80, 80, 0.6) !important;
+  color: rgba(255, 130, 130, 1) !important;
+}
+
+.danger-btn:not(:disabled):hover {
+  background: rgba(255, 80, 80, 0.15) !important;
+}
+
+.danger-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.token-error {
+  font-size: 11px;
+  color: rgba(255, 130, 130, 1);
+  padding: 4px 0;
 }
 
 .modal-footer {

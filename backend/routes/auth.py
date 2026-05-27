@@ -39,6 +39,20 @@ from utils import generate_guild_id
 router = APIRouter()
 
 
+def _mask_token(token: str | None) -> str | None:
+    """Return a masked representation of *token*, or None when not set.
+
+    Shows the first 7 characters (the recognizable prefix) and the last 4,
+    with ``****`` in between — e.g. ``sk-ant-****1234``.
+    """
+    if not token:
+        return None
+    if len(token) <= 8:
+        return "****"
+    prefix_len = min(7, len(token) - 4)
+    return token[:prefix_len] + "****" + token[-4:]
+
+
 class CodeExchangeRequest(BaseModel):
     code: str
     state: str
@@ -333,6 +347,51 @@ async def guest_login():
         "gh_name": "Dev Guest",
         "gh_avatar": "",
     }
+
+
+@router.get("/api/users/me/tokens")
+async def get_my_tokens(github_user_id: str = Depends(require_user)):
+    """Return which API tokens the current user has configured, masked.
+
+    Never returns raw token values — each present token is shown as e.g.
+    ``sk-ant-****1234``.
+    """
+    db = await get_db()
+    try:
+        u_res = await db.execute(select(User).where(User.id == github_user_id))
+        user = u_res.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {
+            "claude": _mask_token(user.claude_api_key),
+            "codex": _mask_token(user.openai_api_key),
+        }
+    finally:
+        await db.close()
+
+
+@router.delete("/api/users/me/tokens/{provider}")
+async def clear_my_token(provider: str, github_user_id: str = Depends(require_user)):
+    """Clear the stored API token for *provider* (``claude`` or ``codex``).
+
+    Sets the column to NULL in the database; the raw value is never returned.
+    """
+    if provider not in ("claude", "codex"):
+        raise HTTPException(status_code=400, detail="provider must be 'claude' or 'codex'")
+    db = await get_db()
+    try:
+        u_res = await db.execute(select(User).where(User.id == github_user_id))
+        user = u_res.scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        if provider == "claude":
+            user.claude_api_key = None
+        else:
+            user.openai_api_key = None
+        await db.commit()
+    finally:
+        await db.close()
+    return {"ok": True}
 
 
 @router.delete("/auth/logout")
