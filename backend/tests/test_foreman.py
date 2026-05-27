@@ -17,8 +17,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -42,6 +43,7 @@ from foreman_core.message_utils import (
 from helpers import _sync_session, create_db, insert_agent, insert_guild, insert_task, insert_worker
 from models import Guild, Lock, Task, TaskEvent, TaskLog  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
+from sqlmodel import col  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -316,7 +318,7 @@ class TestExecToolsDispatching:
         task_id = results[0]["content"].split()[1]
 
         with _sync_session(db_session) as session:
-            phase = session.scalar(select(Task.phase).where(Task.id == task_id))
+            phase = session.scalar(select(col(Task.phase)).where(col(Task.id) == task_id))
         assert phase == "execute"
 
     async def test_create_task_stamps_user_id(self, db_session):
@@ -333,7 +335,7 @@ class TestExecToolsDispatching:
         task_id = results[0]["content"].split()[1]
 
         with _sync_session(db_session) as session:
-            user_id = session.scalar(select(Task.user_id).where(Task.id == task_id))
+            user_id = session.scalar(select(col(Task.user_id)).where(col(Task.id) == task_id))
         assert user_id == "gh-user-42"
 
     async def test_assign_task_new_stamps_user_id(self, db_session):
@@ -355,7 +357,7 @@ class TestExecToolsDispatching:
         task_id = next(tok for tok in content.split() if tok.startswith("t-"))
 
         with _sync_session(db_session) as session:
-            user_id = session.scalar(select(Task.user_id).where(Task.id == task_id))
+            user_id = session.scalar(select(col(Task.user_id)).where(col(Task.id) == task_id))
         assert user_id == "gh-user-99"
 
     async def test_create_task_custom_phase(self, db_session):
@@ -373,7 +375,7 @@ class TestExecToolsDispatching:
         task_id = results[0]["content"].split()[1]
 
         with _sync_session(db_session) as session:
-            phase = session.scalar(select(Task.phase).where(Task.id == task_id))
+            phase = session.scalar(select(col(Task.phase)).where(col(Task.id) == task_id))
         assert phase == "plan"
 
     async def test_assign_task_unknown_worker(self, db_session):
@@ -500,7 +502,7 @@ class TestExecToolsDispatching:
         assert "reassigned" in results[0]["content"].lower()
 
         with _sync_session(db_session) as session:
-            wid = session.scalar(select(Task.worker_id).where(Task.id == "t-flwup-fb"))
+            wid = session.scalar(select(col(Task.worker_id)).where(col(Task.id) == "t-flwup-fb"))
         assert wid == "w-other"
 
     async def test_send_followup_errors_when_no_idle_worker(self, db_session):
@@ -547,7 +549,7 @@ class TestExecToolsDispatching:
         assert "finalized" in results[0]["content"].lower()
 
         with _sync_session(db_session) as session:
-            state = session.scalar(select(Task.state).where(Task.id == "t-fin1"))
+            state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-fin1"))
         assert state == "done"
 
     async def test_message_worker_dispatches(self, db_session):
@@ -653,7 +655,7 @@ class TestExecToolsDispatching:
         assert "No longer needed" in results[0]["content"]
 
         with _sync_session(db_session) as session:
-            state = session.scalar(select(Task.state).where(Task.id == "t-cpend"))
+            state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-cpend"))
         assert state == "cancelled"
 
     async def test_shutdown_worker_not_found(self, db_session):
@@ -786,7 +788,7 @@ class TestExecToolsDispatching:
 
         with _sync_session(db_session) as session:
             row = session.execute(
-                select(Task).where(Task.worker_id == "w-inputcheck")
+                select(Task).where(col(Task.worker_id) == "w-inputcheck")
             ).scalar_one_or_none()
         assert row is not None
         assert row.description == "Specific description text"
@@ -818,7 +820,7 @@ class TestExecToolsDispatching:
 
         with _sync_session(db_session) as session:
             lock = session.execute(
-                select(Lock).where(Lock.key == "task:t-lock1")
+                select(Lock).where(col(Lock.key) == "task:t-lock1")
             ).scalar_one_or_none()
         assert lock is not None, "A lock row should exist in the locks table after dispatch"
         assert lock.owner is not None, "Lock owner should be set after dispatch"
@@ -871,7 +873,7 @@ class TestExecToolsDispatching:
 
         with _sync_session(db_session) as session:
             ev = session.execute(
-                select(TaskEvent).where(TaskEvent.task_id == "t-lq1")
+                select(TaskEvent).where(col(TaskEvent.task_id) == "t-lq1")
             ).scalar_one_or_none()
         assert ev is not None, "A task_event row should have been inserted"
         assert ev.event_type == "pending-followup"
@@ -940,7 +942,7 @@ class TestExecToolsDispatching:
 
         with _sync_session(db_session) as session:
             rows = (
-                session.execute(select(TaskEvent).where(TaskEvent.task_id == "t-race1"))
+                session.execute(select(TaskEvent).where(col(TaskEvent.task_id) == "t-race1"))
                 .scalars()
                 .all()
             )
@@ -981,11 +983,13 @@ class TestExecToolsDispatching:
         assert "finalized" in results[0]["content"].lower()
 
         with _sync_session(db_session) as session:
-            task_state = session.scalar(select(Task.state).where(Task.id == "t-fin-lk"))
+            task_state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-fin-lk"))
             event_count = session.scalar(
-                select(func.count()).select_from(TaskEvent).where(TaskEvent.task_id == "t-fin-lk")
+                select(func.count())
+                .select_from(TaskEvent)
+                .where(col(TaskEvent.task_id) == "t-fin-lk")
             )
-            lock_key = session.scalar(select(Lock.key).where(Lock.key == "task:t-fin-lk"))
+            lock_key = session.scalar(select(col(Lock.key)).where(col(Lock.key) == "task:t-fin-lk"))
         assert task_state == "done"
         assert lock_key is None, "Lock should be released on finalize"
         assert event_count == 0, "Queued events should be deleted on finalize"
@@ -1025,7 +1029,7 @@ class TestExecToolsDispatching:
 
         with _sync_session(db_session) as session:
             lock = session.execute(
-                select(Lock).where(Lock.key == "task:t-stale")
+                select(Lock).where(col(Lock.key) == "task:t-stale")
             ).scalar_one_or_none()
         assert lock is not None, "A new lock should have been acquired"
         assert lock.owner != "old-holder", "Lock owner should have been replaced"

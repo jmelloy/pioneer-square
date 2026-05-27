@@ -15,6 +15,7 @@ from events import broadcast, emit_terminal_line
 from models import Agent
 from pydantic import BaseModel
 from sqlalchemy import update
+from sqlmodel import col
 
 # Running agent subprocesses: agent_id -> Process. Separate from the worker
 # subprocess registry because workers run out-of-process.
@@ -40,7 +41,7 @@ async def set_agent_state(guild_id: str, agent_id: str, state: str) -> None:
         guild_pk = await get_guild_pk(db, guild_id)
         await db.execute(
             update(Agent)
-            .where(Agent.id == agent_id, Agent.guild_id == guild_pk)
+            .where(col(Agent.id) == agent_id, col(Agent.guild_id) == guild_pk)
             .values(state=state, activity=None)
         )
         await db.commit()
@@ -121,6 +122,7 @@ async def stream_agent(guild_id: str, agent_id: str, req: RunAgentRequest) -> No
     if needs_stdin:
         # Pi RPC: send the initial prompt as a JSON command, then leave stdin open
         rpc_msg = json.dumps({"type": "prompt", "content": req.prompt}) + "\n"
+        assert proc.stdin is not None  # PIPE was set above
         proc.stdin.write(rpc_msg.encode())
         await proc.stdin.drain()
 
@@ -139,7 +141,7 @@ async def stream_agent(guild_id: str, agent_id: str, req: RunAgentRequest) -> No
     stderr_task = asyncio.create_task(_drain_stderr())
 
     try:
-        async for raw_line in proc.stdout:
+        async for raw_line in proc.stdout or []:
             line_str = raw_line.decode(errors="replace").strip()
             if not line_str:
                 continue

@@ -22,8 +22,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -38,6 +39,7 @@ from routes.webhooks import (  # noqa: E402
     _should_dispatch_to_foreman,
 )
 from sqlalchemy import update  # noqa: E402
+from sqlmodel import col  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers (mirror test_github_webhooks.py to keep these focused on Phase 2)
@@ -48,7 +50,7 @@ def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
 
     with _sync_session(db_url) as session:
         session.execute(
-            update(Guild).where(Guild.guild_id == guild_id).values(webhook_secret=secret)
+            update(Guild).where(col(Guild.guild_id) == guild_id).values(webhook_secret=secret)
         )
         session.commit()
 

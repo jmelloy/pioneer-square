@@ -16,8 +16,9 @@ import os
 import sys
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -29,6 +30,7 @@ from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_worker  # noqa: E402
 from models import Agent, Worker  # noqa: E402
 from sqlalchemy import select  # noqa: E402
+from sqlmodel import col  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -61,11 +63,11 @@ def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
     insert_worker(db_url, guild_id, worker_id, state="online")
 
 
-def _get_states(db_url: str, agent_id: str, worker_id: str) -> tuple[str, str]:
+def _get_states(db_url: str, agent_id: str, worker_id: str) -> tuple[str | None, str | None]:
     """Return (agent_state, worker_state) from the DB."""
     with _sync_session(db_url) as session:
-        agent_state = session.scalar(select(Agent.state).where(Agent.id == agent_id))
-        worker_state = session.scalar(select(Worker.state).where(Worker.id == worker_id))
+        agent_state = session.scalar(select(col(Agent.state)).where(col(Agent.id) == agent_id))
+        worker_state = session.scalar(select(col(Worker.state)).where(col(Worker.id) == worker_id))
     return (agent_state, worker_state)
 
 

@@ -19,6 +19,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from database import AsyncSessionLocal
 from events import agent_owners, broadcast
@@ -28,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from lock_service import LockService
 from models import Agent, Guild, Lock, Task, Worker
 from sqlalchemy import literal, select, update
+from sqlmodel import col
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -75,7 +77,11 @@ async def reset_connection_state() -> None:
         await db.execute(update(Worker).values(state="offline"))
         await db.execute(
             update(Agent)
-            .where(Agent.worker_id.in_(select(Worker.id).where(Worker.state == "offline")))
+            .where(
+                col(Agent.worker_id).in_(
+                    select(col(Worker.id)).where(col(Worker.state) == "offline")
+                )
+            )
             .values(state="offline", activity=None, current_task_id=None)
         )
         await db.commit()
@@ -85,8 +91,8 @@ async def _sweep_stale_workers_once() -> int:
     """One pass of the stale-worker sweep. Returns the total number of agents
     and zombie workers marked offline. Extracted for direct testing."""
     cutoff = datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)
-    stale_agents: list = []
-    zombie_workers: list = []
+    stale_agents: list[Any] = []
+    zombie_workers: list[Any] = []
     agent_cascade_wids: set[str] = set()
     async with AsyncSessionLocal() as db:
         # Zombie-worker pass runs first so the agent-state guard sees pre-update
@@ -97,15 +103,19 @@ async def _sweep_stale_workers_once() -> int:
         # and handled via the agent cascade below.
         zombie_workers = (
             await db.execute(
-                select(Worker.id, Worker.guild_id, Guild.guild_id.label("guild_slug"))
-                .join(Guild, Guild.id == Worker.guild_id)
-                .where(Worker.state != "offline")
-                .where(Worker.last_seen.isnot(None))
-                .where(Worker.last_seen < cutoff)
+                select(
+                    col(Worker.id),
+                    col(Worker.guild_id),
+                    col(Guild.guild_id).label("guild_slug"),
+                )
+                .join(Guild, col(Guild.id) == col(Worker.guild_id))
+                .where(col(Worker.state) != "offline")
+                .where(col(Worker.last_seen).isnot(None))
+                .where(col(Worker.last_seen) < cutoff)
                 .where(
-                    ~select(Agent.id)
-                    .where(Agent.worker_id == Worker.id)
-                    .where(Agent.state != "offline")
+                    ~select(col(Agent.id))
+                    .where(col(Agent.worker_id) == col(Worker.id))
+                    .where(col(Agent.state) != "offline")
                     .exists()
                 )
             )
@@ -114,12 +124,15 @@ async def _sweep_stale_workers_once() -> int:
         stale_agents = (
             await db.execute(
                 select(
-                    Agent.id, Agent.guild_id, Agent.worker_id, Guild.guild_id.label("guild_slug")
+                    col(Agent.id),
+                    col(Agent.guild_id),
+                    col(Agent.worker_id),
+                    col(Guild.guild_id).label("guild_slug"),
                 )
-                .join(Guild, Guild.id == Agent.guild_id)
-                .where(Agent.state != "offline")
-                .where(Agent.last_seen.isnot(None))
-                .where(Agent.last_seen < cutoff)
+                .join(Guild, col(Guild.id) == col(Agent.guild_id))
+                .where(col(Agent.state) != "offline")
+                .where(col(Agent.last_seen).isnot(None))
+                .where(col(Agent.last_seen) < cutoff)
             )
         ).all()
         # stale_worker_keys stores (worker_id, guild_id) where guild_id is the
@@ -128,7 +141,7 @@ async def _sweep_stale_workers_once() -> int:
         for row in stale_agents:
             await db.execute(
                 update(Agent)
-                .where(Agent.id == row.id, Agent.guild_id == row.guild_id)
+                .where(col(Agent.id) == row.id, col(Agent.guild_id) == row.guild_id)
                 .values(state="offline", activity=None, current_task_id=None)
             )
             if row.worker_id:
@@ -142,7 +155,7 @@ async def _sweep_stale_workers_once() -> int:
         for worker_id, gpk in stale_worker_keys:
             await db.execute(
                 update(Worker)
-                .where(Worker.id == worker_id, Worker.guild_id == gpk)
+                .where(col(Worker.id) == worker_id, col(Worker.guild_id) == gpk)
                 .values(state="offline")
             )
         if stale_agents or zombie_workers:
@@ -168,24 +181,24 @@ async def _sweep_stale_workers_once() -> int:
         orphaned = (
             (
                 await db.execute(
-                    select(Task.id).where(
-                        Task.state == "working",
+                    select(col(Task.id)).where(
+                        col(Task.state) == "working",
                         # Lock exists for this task and has been held long enough
                         # that we can assume it's not a brand-new dispatch.
                         # Use the || operator for string concat — SQLite does not
                         # have a concat() function; this is dialect-neutral for
                         # single-DB deployments and avoids func.concat().
-                        select(Lock.key)
+                        select(col(Lock.key))
                         .where(
-                            Lock.key == literal("task:").op("||")(Task.id),
-                            Lock.acquired_at < cutoff_lock,
+                            col(Lock.key) == literal("task:").op("||")(col(Task.id)),
+                            col(Lock.acquired_at) < cutoff_lock,
                         )
                         .exists(),
                         # No agent is actively running this task right now.
-                        ~select(Agent.id)
+                        ~select(col(Agent.id))
                         .where(
-                            Agent.current_task_id == Task.id,
-                            Agent.state.in_(("working", "thinking", "busy")),
+                            col(Agent.current_task_id) == col(Task.id),
+                            col(Agent.state).in_(("working", "thinking", "busy")),
                         )
                         .exists(),
                     )
@@ -199,7 +212,7 @@ async def _sweep_stale_workers_once() -> int:
             for task_id in stale_task_ids:
                 await db.execute(
                     update(Task)
-                    .where(Task.id == task_id, Task.state == "working")
+                    .where(col(Task.id) == task_id, col(Task.state) == "working")
                     .values(state="awaiting-review")
                 )
                 await LockService(db).release(f"task:{task_id}")

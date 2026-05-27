@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
 from models import ForemanTurn, Guild
 from sqlalchemy import select
+from sqlmodel import col  # noqa: E402
 
 
 def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, content: str) -> None:
@@ -19,11 +20,13 @@ def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, co
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         session.add(
             ForemanTurn(
-                guild_id=guild_pk,
+                guild_id=guild_pk or 0,
                 user_id=user_id,
                 role=role,
                 content_json=f'"{content}"',

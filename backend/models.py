@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import Column, DateTime, Index, or_, text
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, col
 
 
 def live_tasks_filter(now: datetime | None = None):
@@ -13,11 +13,11 @@ def live_tasks_filter(now: datetime | None = None):
     """
     if now is None:
         now = datetime.now(UTC)
-    return or_(Task.deleted_at.is_(None), Task.deleted_at > now)
+    return or_(col(Task.deleted_at).is_(None), col(Task.deleted_at) > now)
 
 
 class Guild(SQLModel, table=True):
-    __tablename__ = "guilds"
+    __tablename__ = "guilds"  # type: ignore[assignment]
     __table_args__ = (
         Index(
             "uq_guilds_guild_id_active",
@@ -49,7 +49,7 @@ class Guild(SQLModel, table=True):
 
 
 class Agent(SQLModel, table=True):
-    __tablename__ = "agents"
+    __tablename__ = "agents"  # type: ignore[assignment]
 
     id: str = Field(primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -74,7 +74,7 @@ class Agent(SQLModel, table=True):
 
 
 class Message(SQLModel, table=True):
-    __tablename__ = "messages"
+    __tablename__ = "messages"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -90,7 +90,7 @@ class Message(SQLModel, table=True):
 
 
 class Worker(SQLModel, table=True):
-    __tablename__ = "workers"
+    __tablename__ = "workers"  # type: ignore[assignment]
 
     id: str = Field(primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -119,7 +119,7 @@ class Worker(SQLModel, table=True):
 
 
 class Task(SQLModel, table=True):
-    __tablename__ = "tasks"
+    __tablename__ = "tasks"  # type: ignore[assignment]
 
     id: str = Field(primary_key=True)
     worker_id: str | None = Field(
@@ -137,7 +137,7 @@ class Task(SQLModel, table=True):
     pr_url: str | None = None
     # Explicit PR coordinates extracted from pr_url at PR-creation time, so
     # github webhook events can be linked back to the task without fragile
-    # URL substring matching. Both NULL until the worker reports a PR.
+    # URL substring matching at receive time. Both NULL until the worker reports a PR.
     pr_number: int | None = None
     pr_repo: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
@@ -159,7 +159,7 @@ class Task(SQLModel, table=True):
 
 
 class GithubToken(SQLModel, table=True):
-    __tablename__ = "github_tokens"
+    __tablename__ = "github_tokens"  # type: ignore[assignment]
 
     github_user_id: str = Field(primary_key=True)
     github_username: str | None = None
@@ -171,7 +171,7 @@ class GithubToken(SQLModel, table=True):
 
 
 class UserSession(SQLModel, table=True):
-    __tablename__ = "user_sessions"
+    __tablename__ = "user_sessions"  # type: ignore[assignment]
 
     token: str = Field(primary_key=True)
     github_user_id: str = Field(foreign_key="github_tokens.github_user_id")
@@ -179,7 +179,7 @@ class UserSession(SQLModel, table=True):
 
 
 class User(SQLModel, table=True):
-    __tablename__ = "users"
+    __tablename__ = "users"  # type: ignore[assignment]
 
     # Canonical user id == GitHub numeric id, kept as Text for FK compatibility
     # with the existing github_user_id columns (messages.user_id,
@@ -195,7 +195,7 @@ class User(SQLModel, table=True):
 
 
 class GuildMember(SQLModel, table=True):
-    __tablename__ = "guild_members"
+    __tablename__ = "guild_members"  # type: ignore[assignment]
 
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id", primary_key=True)
@@ -207,7 +207,7 @@ class GuildMember(SQLModel, table=True):
 
 
 class TaskLog(SQLModel, table=True):
-    __tablename__ = "task_logs"
+    __tablename__ = "task_logs"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
@@ -219,7 +219,7 @@ class TaskLog(SQLModel, table=True):
 
 
 class ClaudeCredentials(SQLModel, table=True):
-    __tablename__ = "claude_credentials"
+    __tablename__ = "claude_credentials"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -229,7 +229,7 @@ class ClaudeCredentials(SQLModel, table=True):
 
 
 class GuildKey(SQLModel, table=True):
-    __tablename__ = "guild_keys"
+    __tablename__ = "guild_keys"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -246,7 +246,7 @@ class GuildKey(SQLModel, table=True):
 
 
 class ForemanTurn(SQLModel, table=True):
-    __tablename__ = "foreman_turns"
+    __tablename__ = "foreman_turns"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -265,7 +265,7 @@ class ForemanTurn(SQLModel, table=True):
 
 
 class GithubEvent(SQLModel, table=True):
-    __tablename__ = "github_events"
+    __tablename__ = "github_events"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -288,7 +288,7 @@ class GithubEvent(SQLModel, table=True):
 class Lock(SQLModel, table=True):
     """Standalone key-value lock table. See lock_service.LockService for usage."""
 
-    __tablename__ = "locks"
+    __tablename__ = "locks"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     key: str = Field(index=True)
@@ -308,7 +308,7 @@ class TaskEvent(SQLModel, table=True):
     instructions so it can decide whether to dispatch them.
     """
 
-    __tablename__ = "task_events"
+    __tablename__ = "task_events"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     task_id: str = Field(foreign_key="tasks.id")

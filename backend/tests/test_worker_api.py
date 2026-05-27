@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
 from models import Agent, User, Worker
 from sqlalchemy import select, update
+from sqlmodel import col  # noqa: E402
 
 
 def _auth(db_url: str) -> dict:
@@ -68,7 +69,7 @@ def test_create_worker_does_not_insert_agent_row(client):
     worker_id = resp.json()["id"]
 
     with _sync_session(db_url) as session:
-        row = session.scalar(select(Agent.id).where(Agent.id == worker_id))
+        row = session.scalar(select(col(Agent.id)).where(col(Agent.id) == worker_id))
     assert row is None, f"create_worker must not insert an agent row, but found: {row}"
 
 
@@ -89,7 +90,7 @@ def test_create_worker_attributes_to_user(client):
     insert_member(db_url, "guildusr", "user-bob", role="member")
     # Bob's users row was created by insert_member; reference by login should also work.
     with _sync_session(db_url) as session:
-        session.execute(update(User).where(User.id == "user-bob").values(github_login="bobby"))
+        session.execute(update(User).where(col(User.id) == "user-bob").values(github_login="bobby"))
         session.commit()
     resp = test_client.post(
         "/guilds/guildusr/workers",
@@ -98,7 +99,7 @@ def test_create_worker_attributes_to_user(client):
     assert resp.status_code == 200
     worker_id = resp.json()["id"]
     with _sync_session(db_url) as session:
-        user_id = session.scalar(select(Worker.user_id).where(Worker.id == worker_id))
+        user_id = session.scalar(select(col(Worker.user_id)).where(col(Worker.id) == worker_id))
     assert user_id == "user-bob"
 
 

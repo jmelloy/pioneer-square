@@ -29,6 +29,7 @@ from models import GithubEvent, Guild, Message, Task
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
+from sqlmodel import col
 
 from foreman import reset_foreman_poll, run_foreman_ai
 
@@ -273,13 +274,13 @@ async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None)
     if not repo or pr_number is None:
         return None
     res = await db.execute(
-        select(Task.id, Task.user_id)
+        select(col(Task.id), col(Task.user_id))
         .where(
-            Task.guild_id == guild_pk,
-            Task.pr_repo == repo,
-            Task.pr_number == pr_number,
+            col(Task.guild_id) == guild_pk,
+            col(Task.pr_repo) == repo,
+            col(Task.pr_number) == pr_number,
         )
-        .order_by(Task.created_at.desc())
+        .order_by(col(Task.created_at).desc())
         .limit(1)
     )
     return res.first()
@@ -468,7 +469,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
     db = await get_db()
     try:
         guild_res = await db.execute(
-            select(Guild.webhook_secret, Guild.id).where(Guild.guild_id == guild_id)
+            select(col(Guild.webhook_secret), col(Guild.id)).where(col(Guild.guild_id) == guild_id)
         )
         guild_row = guild_res.one_or_none()
         if not guild_row or not guild_row.webhook_secret:
@@ -558,7 +559,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         # ``rowcount`` is 0 when ON CONFLICT DO NOTHING fired — i.e. GitHub
         # redelivered an event we already accepted. Return 202 so GitHub stops
         # retrying without re-triggering downstream side effects.
-        is_duplicate = result is None or (result.rowcount or 0) == 0
+        is_duplicate = result is None or (getattr(result, "rowcount", 0) or 0) == 0
         if is_duplicate:
             logger.info(
                 "github webhook duplicate delivery guild=%s delivery=%s event=%s",
@@ -574,7 +575,9 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         # task-update message was dropped before pr_url was persisted.
         if task_id and pr_url and event_type == "pull_request":
             await db.execute(
-                update(Task).where(Task.id == task_id, Task.pr_url.is_(None)).values(pr_url=pr_url)
+                update(Task)
+                .where(col(Task.id) == task_id, col(Task.pr_url).is_(None))
+                .values(pr_url=pr_url)
             )
             await db.commit()
 
@@ -639,7 +642,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
     )
     if dispatch:
         summary = _build_foreman_summary(
-            event_type, action, payload, repo, pr_number, task_id, sender_login
+            event_type, action, payload, repo, pr_number, task_id or "", sender_login
         )
         key = f"{guild_id}:{task_id}"
         await _debounce_queue.schedule(key, guild_id, summary, task_user_id)

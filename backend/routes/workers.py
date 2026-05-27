@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlmodel import col
 from utils import (
     build_spawn_worker_env,
     decode_claude_oauth_token,
@@ -137,7 +138,9 @@ async def spawn_worker_container(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(ClaudeCredentials.credentials_blob).where(ClaudeCredentials.guild_id == guild_pk)
+            select(col(ClaudeCredentials.credentials_blob)).where(
+                col(ClaudeCredentials.guild_id) == guild_pk
+            )
         )
         stored_blob = result.scalar_one_or_none()
     finally:
@@ -217,7 +220,9 @@ async def list_workers(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Worker).where(Worker.guild_id == guild_pk).order_by(Worker.created_at.desc())
+            select(Worker)
+            .where(col(Worker.guild_id) == guild_pk)
+            .order_by(col(Worker.created_at).desc())
         )
         return [row_to_dict(w) for w in result.scalars().all()]
     finally:
@@ -241,7 +246,9 @@ async def assign_task(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         result = await db.execute(
-            select(Worker.id).where(Worker.id == worker_id, Worker.guild_id == guild_pk)
+            select(col(Worker.id)).where(
+                col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk
+            )
         )
         if not result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="Worker not found")
@@ -296,11 +303,11 @@ async def list_tasks(guild_id: str, worker_id: str):
         result = await db.execute(
             select(Task)
             .where(
-                Task.worker_id == worker_id,
-                Task.guild_id == guild_pk,
+                col(Task.worker_id) == worker_id,
+                col(Task.guild_id) == guild_pk,
                 live_tasks_filter(),
             )
-            .order_by(Task.created_at.desc())
+            .order_by(col(Task.created_at).desc())
         )
         return [row_to_dict(t) for t in result.scalars().all()]
     finally:

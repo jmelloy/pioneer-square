@@ -17,6 +17,7 @@ from helpers import _sync_session, insert_guild, make_auth_token
 from models import ClaudeCredentials, GithubToken, Guild
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel import col  # noqa: E402
 
 
 def _register_worker(test_client, guild_id: str) -> dict:
@@ -33,7 +34,9 @@ def _seed_claude_credentials(db_url: str, guild_id: str, blob: str = "BLOB") -> 
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         stmt = (
             pg_insert(ClaudeCredentials)
@@ -61,7 +64,9 @@ def _seed_github_token(db_url: str, user_id: str = "gh-user-test") -> None:
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         existing = session.scalar(
-            select(GithubToken.github_user_id).where(GithubToken.github_user_id == user_id)
+            select(col(GithubToken.github_user_id)).where(
+                col(GithubToken.github_user_id) == user_id
+            )
         )
         if existing:
             return
@@ -178,9 +183,9 @@ def test_post_claude_credentials_accepts_worker_token(client):
 
     with _sync_session(db_url) as session:
         blob = session.scalar(
-            select(ClaudeCredentials.credentials_blob)
-            .join(Guild, Guild.id == ClaudeCredentials.guild_id)
-            .where(Guild.guild_id == "g-write", Guild.deleted_at.is_(None))
+            select(col(ClaudeCredentials.credentials_blob))
+            .join(Guild, col(Guild.id) == ClaudeCredentials.guild_id)
+            .where(col(Guild.guild_id) == "g-write", col(Guild.deleted_at).is_(None))
         )
     assert blob == "NEW"
 

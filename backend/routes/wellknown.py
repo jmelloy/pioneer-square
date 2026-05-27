@@ -32,6 +32,7 @@ from models import Guild, GuildKey, Worker
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 from sqlalchemy import select
+from sqlmodel import col
 
 router = APIRouter()
 
@@ -85,7 +86,7 @@ async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
             return None
 
         row = (
-            await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
+            await db.execute(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
         ).scalar_one_or_none()
 
         if row:
@@ -155,7 +156,7 @@ async def get_jwks_config(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         row = (
-            await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
+            await db.execute(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
         ).scalar_one_or_none()
     finally:
         await db.close()
@@ -338,10 +339,10 @@ async def agent_card(request: Request) -> JSONResponse:
         db = await get_db()
         try:
             guild = (
-                await db.execute(select(Guild).where(Guild.guild_id == guild_id))
+                await db.execute(select(Guild).where(col(Guild.guild_id) == guild_id))
             ).scalar_one_or_none()
             if guild:
-                rows = await db.execute(select(Worker).where(Worker.guild_id == guild.id))
+                rows = await db.execute(select(Worker).where(col(Worker.guild_id) == guild.id))
                 workers = list(rows.scalars().all())
         finally:
             await db.close()
@@ -367,11 +368,11 @@ async def guild_agent_card(
     db = await get_db()
     try:
         guild = (
-            await db.execute(select(Guild).where(Guild.guild_id == guild_id))
+            await db.execute(select(Guild).where(col(Guild.guild_id) == guild_id))
         ).scalar_one_or_none()
         if not guild:
             raise HTTPException(404, detail="Guild not found")
-        rows = await db.execute(select(Worker).where(Worker.guild_id == guild.id))
+        rows = await db.execute(select(Worker).where(col(Worker.guild_id) == guild.id))
         workers = list(rows.scalars().all())
     finally:
         await db.close()
@@ -403,7 +404,7 @@ async def set_jwks_config(
             raise HTTPException(404, detail="Guild not found")
 
         row = (
-            await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
+            await db.execute(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
         ).scalar_one_or_none()
 
         if not row:

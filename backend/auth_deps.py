@@ -26,13 +26,14 @@ from fastapi import Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from models import Guild, GuildMember, UserSession, Worker
 from sqlalchemy import select
+from sqlmodel import col
 
 http_bearer = HTTPBearer(auto_error=False)
 
 
 async def get_guild_pk(db, guild_id: str) -> int | None:
     """Return the integer PK (guilds.id) for *guild_id*, or None if not found."""
-    result = await db.execute(select(Guild.id).where(Guild.guild_id == guild_id))
+    result = await db.execute(select(col(Guild.id)).where(col(Guild.guild_id) == guild_id))
     return result.scalar_one_or_none()
 
 
@@ -46,7 +47,7 @@ async def require_user(
     db = await get_db()
     try:
         result = await db.execute(
-            select(UserSession.github_user_id).where(UserSession.token == token)
+            select(col(UserSession.github_user_id)).where(col(UserSession.token) == token)
         )
         github_user_id = result.scalar_one_or_none()
         if not github_user_id:
@@ -63,8 +64,8 @@ async def ensure_membership(db, guild_id: str, user_id: str) -> str:
         raise HTTPException(status_code=404, detail="Guild not found")
 
     res = await db.execute(
-        select(GuildMember.role).where(
-            GuildMember.guild_id == guild_pk, GuildMember.user_id == user_id
+        select(col(GuildMember.role)).where(
+            col(GuildMember.guild_id) == guild_pk, col(GuildMember.user_id) == user_id
         )
     )
     role = res.scalar_one_or_none()
@@ -120,14 +121,16 @@ async def authorize_worker_or_member(guild_id: str, token: str | None) -> str:  
             raise HTTPException(status_code=404, detail="Guild not found")
 
         worker_res = await db.execute(
-            select(Worker.id).where(Worker.guild_id == guild_pk, Worker.auth_token == token)
+            select(col(Worker.id)).where(
+                col(Worker.guild_id) == guild_pk, col(Worker.auth_token) == token
+            )
         )
         worker_id = worker_res.scalar_one_or_none()
         if worker_id:
             return f"worker:{worker_id}"
 
         user_res = await db.execute(
-            select(UserSession.github_user_id).where(UserSession.token == token)
+            select(col(UserSession.github_user_id)).where(col(UserSession.token) == token)
         )
         github_user_id = user_res.scalar_one_or_none()
         if github_user_id:

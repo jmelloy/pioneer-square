@@ -16,6 +16,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from events import (
     agent_owner_lock,
@@ -30,6 +31,8 @@ from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel import col
+from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
 from utils import worker_display_name
 
@@ -84,7 +87,9 @@ async def _resolve_user_identifier(db, identifier: str) -> str | None:
     ident = (identifier or "").strip()
     if not ident:
         return None
-    res = await db.execute(select(User.id).where((User.id == ident) | (User.github_login == ident)))
+    res = await db.execute(
+        select(col(User.id)).where((col(User.id) == ident) | (col(User.github_login) == ident))
+    )
     return res.scalar_one_or_none()
 
 
@@ -98,7 +103,7 @@ async def _task_user_id(db, task_id: str | None) -> str | None:
     """
     if not task_id:
         return None
-    res = await db.execute(select(Task.user_id).where(Task.id == task_id))
+    res = await db.execute(select(col(Task.user_id)).where(col(Task.id) == task_id))
     return res.scalar_one_or_none()
 
 
@@ -190,7 +195,7 @@ class WSContext:
 
     websocket: WebSocket
     guild_id: str
-    db: object  # AsyncSession; typed as object to avoid SQLAlchemy import dance
+    db: AsyncSession
     joined_agents: set[str] = field(default_factory=set)
     ws_user_id: str | None = None
     guild_pk: int | None = None
@@ -243,7 +248,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         if agent_type == "worker" and worker_id:
             await ctx.db.execute(
                 update(Worker)
-                .where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
+                .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)
                 .values(state="online", last_seen=joined_at)
             )
         await ctx.db.commit()
@@ -301,9 +306,9 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         if worker_id:
             result = await ctx.db.execute(
                 select(Task).where(
-                    Task.guild_id == ctx.guild_pk,
-                    Task.worker_id == worker_id,
-                    Task.state.in_(["pending", "working"]),
+                    col(Task.guild_id) == ctx.guild_pk,
+                    col(Task.worker_id) == worker_id,
+                    col(Task.state).in_(["pending", "working"]),
                 )
             )
             pending_tasks = result.scalars().all()
@@ -336,7 +341,9 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     }
     if worker_id:
         r = await ctx.db.execute(
-            select(Worker.name).where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
+            select(col(Worker.name)).where(
+                col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk
+            )
         )
         stored_name = r.scalar_one_or_none()
         broadcast_payload["workerName"] = stored_name or worker_display_name(worker_id)
@@ -379,8 +386,8 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     agent_worker_id_for_release: str | None = None
     if state in _LOCK_RELEASE_AGENT_STATES and agent_id:
         row = await ctx.db.execute(
-            select(Agent.current_task_id, Agent.worker_id).where(
-                Agent.id == agent_id, Agent.guild_id == ctx.guild_pk
+            select(col(Agent.current_task_id), col(Agent.worker_id)).where(
+                col(Agent.id) == agent_id, col(Agent.guild_id) == ctx.guild_pk
             )
         )
         agent_row = row.one_or_none()
@@ -390,7 +397,7 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
 
     await ctx.db.execute(
         update(Agent)
-        .where(Agent.id == agent_id, Agent.guild_id == ctx.guild_pk)
+        .where(col(Agent.id) == agent_id, col(Agent.guild_id) == ctx.guild_pk)
         .values(**update_vals)
     )
 
@@ -401,13 +408,13 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
         res = await ctx.db.execute(
             update(Task)
             .where(
-                Task.id == task_id_to_release,
-                Task.state == "working",
-                Task.worker_id == agent_worker_id_for_release,
+                col(Task.id) == task_id_to_release,
+                col(Task.state) == "working",
+                col(Task.worker_id) == agent_worker_id_for_release,
             )
             .values(state="awaiting-review")
         )
-        if res.rowcount:
+        if getattr(res, "rowcount", 0):
             await LockService(ctx.db).release(f"task:{task_id_to_release}")
 
     await ctx.db.commit()
@@ -436,7 +443,7 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
     created_at = datetime.now(UTC)
     ctx.db.add(
         Message(
-            guild_id=ctx.guild_pk,
+            guild_id=ctx.guild_pk or 0,  # guild_pk is set during connection setup
             from_agent=from_agent,
             to_agent=to_agent,
             content=content,
@@ -498,7 +505,9 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
     created_at = datetime.now(UTC)
     worker_id_for_log = msg_worker_id
     if worker_id_for_log is None and msg_agent_id:
-        result = await ctx.db.execute(select(Agent.worker_id).where(Agent.id == msg_agent_id))
+        result = await ctx.db.execute(
+            select(col(Agent.worker_id)).where(col(Agent.id) == msg_agent_id)
+        )
         worker_id_for_log = result.scalar_one_or_none()
     if line:
         ctx.db.add(
@@ -539,7 +548,7 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
             update_vals["user_id"] = resolved
     await ctx.db.execute(
         update(Worker)
-        .where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
+        .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)
         .values(**update_vals)
     )
     await ctx.db.commit()
@@ -548,10 +557,10 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     # is accurate even when multiple workers share the same WS connection or
     # agents from previous sessions are still tracked in joined_agents.
     count_res = await ctx.db.execute(
-        select(func.count(Agent.id)).where(
-            Agent.worker_id == worker_id,
-            Agent.guild_id == ctx.guild_pk,
-            Agent.state != "offline",
+        select(func.count(col(Agent.id))).where(
+            col(Agent.worker_id) == worker_id,
+            col(Agent.guild_id) == ctx.guild_pk,
+            col(Agent.state) != "offline",
         )
     )
     agent_count = count_res.scalar_one()
@@ -568,13 +577,13 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
     for agent_id in ctx.joined_agents:
         await ctx.db.execute(
             update(Agent)
-            .where(Agent.id == agent_id, Agent.guild_id == ctx.guild_pk)
+            .where(col(Agent.id) == agent_id, col(Agent.guild_id) == ctx.guild_pk)
             .values(state="offline", activity=None, current_task_id=None)
         )
     if worker_id:
         await ctx.db.execute(
             update(Worker)
-            .where(Worker.id == worker_id, Worker.guild_id == ctx.guild_pk)
+            .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)
             .values(state="offline")
         )
     if ctx.joined_agents or worker_id:
@@ -599,14 +608,14 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
     if not task_id:
         return
     update_values: dict = {}
-    for src, col in (
+    for src, col_name in (
         ("state", "state"),
         ("branch", "branch"),
         ("worktreePath", "worktree_path"),
         ("prUrl", "pr_url"),
     ):
         if src in data:
-            update_values[col] = data[src]
+            update_values[col_name] = data[src]
     if "finishedAt" in data:
         raw = data.get("finishedAt")
         if raw is not None:
@@ -627,7 +636,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         update_values["pr_number"] = pr_number
         update_values["pr_repo"] = pr_repo
     if update_values:
-        await ctx.db.execute(update(Task).where(Task.id == task_id).values(**update_values))
+        await ctx.db.execute(update(Task).where(col(Task.id) == task_id).values(**update_values))
         if update_values.get("state") in _TERMINAL_STATES:
             await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
@@ -651,12 +660,12 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url)
             await ctx.db.execute(
                 update(Task)
-                .where(Task.id == task_id)
+                .where(col(Task.id) == task_id)
                 .values(pr_url=pr_url, pr_number=pr_number_val, pr_repo=pr_repo_val)
             )
         await ctx.db.execute(
             update(Task)
-            .where(Task.id == task_id, Task.state == "working")
+            .where(col(Task.id) == task_id, col(Task.state) == "working")
             .values(state="awaiting-review")
         )
         await LockService(ctx.db).release(f"task:{task_id}")
@@ -703,13 +712,13 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
         # Move to awaiting-review unless task is already terminal.
         await ctx.db.execute(
             update(Task)
-            .where(Task.id == task_id, Task.state.not_in(_TERMINAL_STATES))
+            .where(col(Task.id) == task_id, col(Task.state).not_in(_TERMINAL_STATES))
             .values(**pr_update, state="awaiting-review")
         )
         if pr_update:
             await ctx.db.execute(
                 update(Task)
-                .where(Task.id == task_id, Task.state.in_(_TERMINAL_STATES))
+                .where(col(Task.id) == task_id, col(Task.state).in_(_TERMINAL_STATES))
                 .values(**pr_update)
             )
         await LockService(ctx.db).release(f"task:{task_id}")
@@ -723,15 +732,15 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     # decide whether to dispatch them.
     queued_payloads: list[dict] = []
     result = await ctx.db.execute(
-        select(TaskEvent.id, TaskEvent.payload_json)
-        .where(TaskEvent.task_id == task_id, TaskEvent.event_type == "pending-followup")
-        .order_by(TaskEvent.id)
+        select(col(TaskEvent.id), col(TaskEvent.payload_json))
+        .where(col(TaskEvent.task_id) == task_id, col(TaskEvent.event_type) == "pending-followup")
+        .order_by(col(TaskEvent.id))
     )
     rows = result.all()
     if rows:
         event_ids = [r[0] for r in rows]
         queued_payloads = [json.loads(r[1]) for r in rows]
-        await ctx.db.execute(delete(TaskEvent).where(TaskEvent.id.in_(event_ids)))
+        await ctx.db.execute(delete(TaskEvent).where(col(TaskEvent.id).in_(event_ids)))
         await ctx.db.commit()
 
     task_uid = await _task_user_id(ctx.db, task_id)
@@ -875,7 +884,7 @@ async def handle_webrtc_signal(ctx: WSContext, data: dict) -> None:
     await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
 
 
-HANDLERS: dict[str, callable] = {
+HANDLERS: dict[str, Any] = {
     "ping": handle_ping,
     "join": handle_join,
     "agent-state": handle_agent_state,
@@ -902,7 +911,7 @@ async def dispatch(ctx: WSContext, data: dict) -> None:
 
     Unknown types fall through to a generic broadcast (legacy behaviour).
     """
-    msg_type = data.get("type")
+    msg_type = data.get("type") or ""
     handler = HANDLERS.get(msg_type)
     if handler is None:
         await broadcast(ctx.guild_id, data)
