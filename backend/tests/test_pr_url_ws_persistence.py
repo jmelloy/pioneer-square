@@ -21,8 +21,9 @@ import os
 import sys
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -33,6 +34,7 @@ from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_task, insert_worker  # noqa: E402
 from models import Task  # noqa: E402
 from sqlalchemy import select  # noqa: E402
+from sqlmodel import col  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
@@ -140,9 +142,9 @@ def test_task_complete_persists_pr_url(client):
 
             with _sync_session(db_url) as session:
                 row = session.execute(
-                    select(Task.pr_url, Task.pr_number, Task.pr_repo, Task.state).where(
-                        Task.id == task_id
-                    )
+                    select(
+                        col(Task.pr_url), col(Task.pr_number), col(Task.pr_repo), col(Task.state)
+                    ).where(col(Task.id) == task_id)
                 ).first()
 
     assert row is not None
@@ -184,7 +186,9 @@ def test_task_complete_without_pr_url_leaves_pr_url_null(client):
 
             with _sync_session(db_url) as session:
                 row = session.execute(
-                    select(Task.pr_url, Task.pr_number, Task.pr_repo).where(Task.id == task_id)
+                    select(col(Task.pr_url), col(Task.pr_number), col(Task.pr_repo)).where(
+                        col(Task.id) == task_id
+                    )
                 ).first()
 
     assert row is not None
@@ -230,9 +234,9 @@ def test_task_followup_done_persists_pr_url(client):
 
             with _sync_session(db_url) as session:
                 row = session.execute(
-                    select(Task.pr_url, Task.pr_number, Task.pr_repo, Task.state).where(
-                        Task.id == task_id
-                    )
+                    select(
+                        col(Task.pr_url), col(Task.pr_number), col(Task.pr_repo), col(Task.state)
+                    ).where(col(Task.id) == task_id)
                 ).first()
 
     assert row is not None

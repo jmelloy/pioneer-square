@@ -17,7 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from lock_service import LockService
 from models import Guild, Task, TaskLog, live_tasks_filter
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import update
+from sqlmodel import col, select
 from util.tasks import spawn
 
 from foreman import run_foreman_ai
@@ -75,29 +76,29 @@ async def list_guild_tasks(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
+        result = await db.exec(
             select(
-                Task.id,
-                Task.worker_id,
-                Task.name,
-                Task.description,
-                Task.tool,
-                Task.state,
-                Task.phase,
-                Task.parent_task_id,
-                Task.branch,
-                Task.pr_url,
-                Task.issue_number,
-                Task.issue_repo,
-                Task.created_at,
-                Task.finished_at,
-                Task.deleted_at,
+                col(Task.id),
+                col(Task.worker_id),
+                col(Task.name),
+                col(Task.description),
+                col(Task.tool),
+                col(Task.state),
+                col(Task.phase),
+                col(Task.parent_task_id),
+                col(Task.branch),
+                col(Task.pr_url),
+                col(Task.issue_number),
+                col(Task.issue_repo),
+                col(Task.created_at),
+                col(Task.finished_at),
+                col(Task.deleted_at),
             )
-            .where(Task.guild_id == guild_pk, live_tasks_filter())
-            .order_by(Task.created_at.desc())
+            .where(col(Task.guild_id) == guild_pk, live_tasks_filter())
+            .order_by(col(Task.created_at).desc())
             .limit(100)
         )
-        return [dict(r._mapping) for r in result.fetchall()]
+        return [dict(r._mapping) for r in result.all()]
     finally:
         await db.close()
 
@@ -114,24 +115,28 @@ async def get_task_logs(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(Task.id).where(
-                Task.id == task_id,
-                Task.guild_id == guild_pk,
+        result = await db.exec(
+            select(col(Task.id)).where(
+                col(Task.id) == task_id,
+                col(Task.guild_id) == guild_pk,
                 live_tasks_filter(),
             )
         )
-        if not result.scalar_one_or_none():
+        if not result.one_or_none():
             raise HTTPException(status_code=404, detail="Task not found")
-        result = await db.execute(
+        result = await db.exec(
             select(
-                TaskLog.timestamp, TaskLog.line, TaskLog.worker_id, TaskLog.agent_id, TaskLog.data
+                col(TaskLog.timestamp),
+                col(TaskLog.line),
+                col(TaskLog.worker_id),
+                col(TaskLog.agent_id),
+                col(TaskLog.data),
             )
-            .where(TaskLog.task_id == task_id)
-            .order_by(TaskLog.id.asc())
+            .where(col(TaskLog.task_id) == task_id)
+            .order_by(col(TaskLog.id).asc())
         )
         rows = []
-        for r in result.fetchall():
+        for r in result.all():
             row = dict(r._mapping)
             raw = row.pop("data", None)
             if raw:
@@ -158,27 +163,27 @@ async def get_guild_logs(
         raise HTTPException(status_code=400, detail="Specify worker_id, agent_id, or task_id")
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
-        if not result.scalar_one_or_none():
+        result = await db.exec(select(col(Guild.guild_id)).where(col(Guild.guild_id) == guild_id))
+        if not result.one_or_none():
             raise HTTPException(status_code=404, detail="Guild not found")
         stmt = select(
-            TaskLog.timestamp,
-            TaskLog.line,
-            TaskLog.worker_id,
-            TaskLog.agent_id,
-            TaskLog.task_id,
-            TaskLog.data,
+            col(TaskLog.timestamp),
+            col(TaskLog.line),
+            col(TaskLog.worker_id),
+            col(TaskLog.agent_id),
+            col(TaskLog.task_id),
+            col(TaskLog.data),
         )
         if task_id:
-            stmt = stmt.where(TaskLog.task_id == task_id)
+            stmt = stmt.where(col(TaskLog.task_id) == task_id)
         elif worker_id:
-            stmt = stmt.where(TaskLog.worker_id == worker_id, TaskLog.task_id.is_(None))
+            stmt = stmt.where(col(TaskLog.worker_id) == worker_id, col(TaskLog.task_id).is_(None))
         else:
-            stmt = stmt.where(TaskLog.agent_id == agent_id)
-        stmt = stmt.order_by(TaskLog.id.asc())
-        result = await db.execute(stmt)
+            stmt = stmt.where(col(TaskLog.agent_id) == agent_id)
+        stmt = stmt.order_by(col(TaskLog.id).asc())
+        result = await db.exec(stmt)
         rows = []
-        for r in result.fetchall():
+        for r in result.all():
             row = dict(r._mapping)
             raw = row.pop("data", None)
             if raw:
@@ -212,9 +217,9 @@ async def create_task_followup(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(Task.worker_id, Task.state, Task.branch).where(
-                Task.id == task_id, Task.guild_id == guild_pk
+        result = await db.exec(
+            select(col(Task.worker_id), col(Task.state), col(Task.branch)).where(
+                col(Task.id) == task_id, col(Task.guild_id) == guild_pk
             )
         )
         row = result.one_or_none()
@@ -258,17 +263,19 @@ async def finalize_task_endpoint(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(Task.worker_id).where(Task.id == task_id, Task.guild_id == guild_pk)
+        result = await db.exec(
+            select(col(Task.worker_id)).where(
+                col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+            )
         )
-        worker_id = result.scalar_one_or_none()
+        worker_id = result.one_or_none()
         if not worker_id:
             raise HTTPException(status_code=404, detail="Task not found")
         finished_at = datetime.now(UTC)
         deleted_at = _resolve_finalize_deleted_at(body)
-        await db.execute(
+        await db.exec(
             update(Task)
-            .where(Task.id == task_id)
+            .where(col(Task.id) == task_id)
             .values(state="done", finished_at=finished_at, deleted_at=deleted_at)
         )
         await db.commit()
@@ -308,8 +315,10 @@ async def cancel_task_endpoint(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_id == guild_pk)
+        result = await db.exec(
+            select(col(Task.worker_id), col(Task.state)).where(
+                col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+            )
         )
         row = result.one_or_none()
         if not row:
@@ -318,9 +327,9 @@ async def cancel_task_endpoint(
         if state in ("done", "failed", "cancelled"):
             raise HTTPException(status_code=409, detail=f"Task is already {state}")
         finished_at = datetime.now(UTC)
-        await db.execute(
+        await db.exec(
             update(Task)
-            .where(Task.id == task_id)
+            .where(col(Task.id) == task_id)
             .values(state="cancelled", finished_at=finished_at)
         )
         await LockService(db).release(f"task:{task_id}")
@@ -363,8 +372,10 @@ async def redirect_task_endpoint(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(Task.worker_id, Task.state).where(Task.id == task_id, Task.guild_id == guild_pk)
+        result = await db.exec(
+            select(col(Task.worker_id), col(Task.state)).where(
+                col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+            )
         )
         row = result.one_or_none()
         if not row:
@@ -372,7 +383,7 @@ async def redirect_task_endpoint(
         worker_id, state = row
         if state in ("done", "failed", "cancelled"):
             raise HTTPException(status_code=409, detail=f"Task is already {state}")
-        await db.execute(update(Task).where(Task.id == task_id).values(state="working"))
+        await db.exec(update(Task).where(col(Task.id) == task_id).values(state="working"))
         await db.commit()
     finally:
         await db.close()

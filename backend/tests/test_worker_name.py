@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from helpers import _sync_session, insert_guild, make_auth_token
 from models import Worker
 from sqlalchemy import select
+from sqlmodel import col  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # format_worker_id unit tests
@@ -166,6 +167,6 @@ def test_list_workers_name_persisted_correctly(client):
     expected_name = f"myhost/{format_worker_id(wid)}"
 
     with _sync_session(db_url) as session:
-        name = session.scalar(select(Worker.name).where(Worker.id == wid))
+        name = session.scalar(select(col(Worker.name)).where(col(Worker.id) == wid))
     assert name is not None
     assert name == expected_name

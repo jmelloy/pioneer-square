@@ -17,7 +17,9 @@ from database import get_db
 from events import agent_owner_lock, agent_owners, broadcast, connections, foreman_connections
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from models import Agent, Guild, UserSession, Worker
-from sqlalchemy import select, update
+from sqlalchemy import update
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -41,23 +43,23 @@ async def _touch_agent(
         return
     now = datetime.now(UTC)
     if agent_id and worker_id is None:
-        res = await db.execute(select(Agent.worker_id).where(Agent.id == agent_id))
-        worker_id = res.scalar_one_or_none()
+        res = await db.exec(select(col(Agent.worker_id)).where(col(Agent.id) == agent_id))
+        worker_id = res.one_or_none()
     if worker_id:
-        await db.execute(
+        await db.exec(
             update(Worker)
-            .where(Worker.id == worker_id, Worker.guild_id == guild_pk)
+            .where(col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk)
             .values(last_seen=now)
         )
-        await db.execute(
+        await db.exec(
             update(Agent)
-            .where(Agent.worker_id == worker_id, Agent.guild_id == guild_pk)
+            .where(col(Agent.worker_id) == worker_id, col(Agent.guild_id) == guild_pk)
             .values(last_seen=now)
         )
     elif agent_id:
-        await db.execute(
+        await db.exec(
             update(Agent)
-            .where(Agent.id == agent_id, Agent.guild_id == guild_pk)
+            .where(col(Agent.id) == agent_id, col(Agent.guild_id) == guild_pk)
             .values(last_seen=now)
         )
     await db.commit()
@@ -75,11 +77,14 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
     # checkpoint inside the message loop where it is properly caught.
     _guild_pk: int | None = None
     ws_user_id: str | None = None
+    db: AsyncSession = None  # type: ignore[assignment]  -- initialized inside the shield below
     with anyio.CancelScope(shield=True):
         _gp_db = await get_db()
         try:
-            _gp_res = await _gp_db.execute(select(Guild.id).where(Guild.guild_id == guild_id))
-            _guild_pk = _gp_res.scalar_one_or_none()
+            _gp_res = await _gp_db.exec(
+                select(col(Guild.id)).where(col(Guild.guild_id) == guild_id)
+            )
+            _guild_pk = _gp_res.one_or_none()
         except Exception:
             logger.exception("WS guild id lookup failed for guild %s", guild_id)
         finally:
@@ -94,10 +99,10 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         if _token:
             _auth_db = await get_db()
             try:
-                _res = await _auth_db.execute(
-                    select(UserSession.github_user_id).where(UserSession.token == _token)
+                _res = await _auth_db.exec(
+                    select(col(UserSession.github_user_id)).where(col(UserSession.token) == _token)
                 )
-                ws_user_id = _res.scalar_one_or_none()
+                ws_user_id = _res.one_or_none()
             except Exception:
                 logger.exception("WS token lookup failed (token treated as anonymous)")
             finally:
@@ -175,26 +180,26 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     try:
                         if stale_agents:
                             wid_rows = (
-                                await db.execute(
-                                    select(Agent.worker_id).where(
-                                        Agent.id.in_(stale_agents),
-                                        Agent.guild_id == _guild_pk,
-                                        Agent.worker_id.isnot(None),
+                                await db.exec(
+                                    select(col(Agent.worker_id)).where(
+                                        col(Agent.id).in_(stale_agents),
+                                        col(Agent.guild_id) == _guild_pk,
+                                        col(Agent.worker_id).isnot(None),
                                     )
                                 )
                             ).all()
-                            stale_worker_ids = {r[0] for r in wid_rows}
+                            stale_worker_ids = set(wid_rows)
                         for agent_id in stale_agents:
-                            await db.execute(
+                            await db.exec(
                                 update(Agent)
-                                .where(Agent.id == agent_id, Agent.guild_id == _guild_pk)
+                                .where(col(Agent.id) == agent_id, col(Agent.guild_id) == _guild_pk)
                                 .values(state="offline", activity=None, current_task_id=None)
                             )
                         # Mirror into workers table using the real worker IDs.
                         for wid in stale_worker_ids:
-                            await db.execute(
+                            await db.exec(
                                 update(Worker)
-                                .where(Worker.id == wid, Worker.guild_id == _guild_pk)
+                                .where(col(Worker.id) == wid, col(Worker.guild_id) == _guild_pk)
                                 .values(state="offline")
                             )
                         if stale_agents:

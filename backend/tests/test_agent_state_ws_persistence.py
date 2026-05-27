@@ -22,8 +22,9 @@ import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -45,6 +46,7 @@ from models import (  # noqa: E402
 )
 from sqlalchemy import select, update  # noqa: E402
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
+from sqlmodel import col  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
@@ -141,11 +143,12 @@ def test_agent_state_persists_current_task_id(client):
 
             with _sync_session(db_url) as session:
                 row = session.execute(
-                    select(Agent.state, Agent.activity, Agent.current_task_id).where(
-                        Agent.id == agent_id
+                    select(col(Agent.state), col(Agent.activity), col(Agent.current_task_id)).where(
+                        col(Agent.id) == agent_id
                     )
                 ).first()
 
+    assert row is not None
     assert row.state == "working"
     assert row.activity == "editing"
     assert row.current_task_id == task_id
@@ -191,11 +194,12 @@ def test_agent_state_idle_clears_current_task_id(client):
 
             with _sync_session(db_url) as session:
                 row = session.execute(
-                    select(Agent.state, Agent.activity, Agent.current_task_id).where(
-                        Agent.id == agent_id
+                    select(col(Agent.state), col(Agent.activity), col(Agent.current_task_id)).where(
+                        col(Agent.id) == agent_id
                     )
                 ).first()
 
+    assert row is not None
     assert row.state == "idle"
     assert row.activity is None
     assert row.current_task_id is None
@@ -240,7 +244,7 @@ def test_agent_state_explicit_task_id_null_clears(client):
 
             with _sync_session(db_url) as session:
                 current_task_id = session.scalar(
-                    select(Agent.current_task_id).where(Agent.id == agent_id)
+                    select(col(Agent.current_task_id)).where(col(Agent.id) == agent_id)
                 )
 
     assert current_task_id is None
@@ -291,7 +295,9 @@ def test_guild_get_returns_current_task_id(client):
             )
         )
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         session.execute(
             pg_insert(GuildMember)
@@ -338,7 +344,7 @@ def test_agent_idle_releases_task_lock(client):
     now_dt = datetime.now(UTC)
     future_dt = now_dt + timedelta(hours=1)
     with _sync_session(db_url) as session:
-        session.execute(update(Task).where(Task.id == task_id).values(state="working"))
+        session.execute(update(Task).where(col(Task.id) == task_id).values(state="working"))
         session.execute(
             pg_insert(Lock)
             .values(
@@ -390,8 +396,8 @@ def test_agent_idle_releases_task_lock(client):
             assert msg["state"] == "idle"
 
     with _sync_session(db_url) as session:
-        lock_key = session.scalar(select(Lock.key).where(Lock.key == f"task:{task_id}"))
-        task_state = session.scalar(select(Task.state).where(Task.id == task_id))
+        lock_key = session.scalar(select(col(Lock.key)).where(col(Lock.key) == f"task:{task_id}"))
+        task_state = session.scalar(select(col(Task.state)).where(col(Task.id) == task_id))
 
     assert lock_key is None, "lock should be released when agent goes idle"
     assert task_state == "awaiting-review", (

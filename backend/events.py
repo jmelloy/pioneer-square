@@ -14,7 +14,7 @@ from uuid import UUID
 from database import get_db
 from fastapi import WebSocket, WebSocketDisconnect
 from models import Agent, TaskLog
-from sqlalchemy import select
+from sqlmodel import col, select
 
 logger = logging.getLogger(__name__)
 
@@ -122,8 +122,8 @@ async def emit_terminal_line(guild_id: str, agent_id: str, line: str):
     if line:
         db = await get_db()
         try:
-            result = await db.execute(select(Agent.worker_id).where(Agent.id == agent_id))
-            worker_id_for_log = result.scalar_one_or_none()
+            result = await db.exec(select(col(Agent.worker_id)).where(col(Agent.id) == agent_id))
+            worker_id_for_log = result.one_or_none()
             db.add(
                 TaskLog(
                     task_id=None,

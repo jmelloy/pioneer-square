@@ -11,8 +11,9 @@ import os
 import sys
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -23,6 +24,7 @@ from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import insert_guild, insert_worker  # noqa: E402
 from models import TaskLog  # noqa: E402
 from sqlalchemy import select  # noqa: E402
+from sqlmodel import col  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
 
 
@@ -105,11 +107,17 @@ def test_worker_only_terminal_output_uses_worker_id_only(client):
 
             with _sync_session(db_url) as session:
                 row = session.execute(
-                    select(TaskLog.worker_id, TaskLog.agent_id, TaskLog.task_id, TaskLog.line)
-                    .order_by(TaskLog.id.desc())
+                    select(
+                        col(TaskLog.worker_id),
+                        col(TaskLog.agent_id),
+                        col(TaskLog.task_id),
+                        col(TaskLog.line),
+                    )
+                    .order_by(col(TaskLog.id).desc())
                     .limit(1)
                 ).first()
 
+    assert row is not None
     assert row.worker_id == worker_id
     assert row.agent_id is None
     assert row.task_id is None

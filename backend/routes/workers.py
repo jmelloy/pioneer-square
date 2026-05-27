@@ -20,7 +20,7 @@ from events import broadcast, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlmodel import col, select
 from utils import (
     build_spawn_worker_env,
     decode_claude_oauth_token,
@@ -136,10 +136,12 @@ async def spawn_worker_container(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(ClaudeCredentials.credentials_blob).where(ClaudeCredentials.guild_id == guild_pk)
+        result = await db.exec(
+            select(col(ClaudeCredentials.credentials_blob)).where(
+                col(ClaudeCredentials.guild_id) == guild_pk
+            )
         )
-        stored_blob = result.scalar_one_or_none()
+        stored_blob = result.one_or_none()
     finally:
         await db.close()
 
@@ -216,10 +218,12 @@ async def list_workers(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(Worker).where(Worker.guild_id == guild_pk).order_by(Worker.created_at.desc())
+        result = await db.exec(
+            select(Worker)
+            .where(col(Worker.guild_id) == guild_pk)
+            .order_by(col(Worker.created_at).desc())
         )
-        return [row_to_dict(w) for w in result.scalars().all()]
+        return [row_to_dict(w) for w in result.all()]
     finally:
         await db.close()
 
@@ -240,10 +244,12 @@ async def assign_task(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(Worker.id).where(Worker.id == worker_id, Worker.guild_id == guild_pk)
+        result = await db.exec(
+            select(col(Worker.id)).where(
+                col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk
+            )
         )
-        if not result.scalar_one_or_none():
+        if not result.one_or_none():
             raise HTTPException(status_code=404, detail="Worker not found")
         name = data.name or data.description[:60]
         db.add(
@@ -293,16 +299,16 @@ async def list_tasks(guild_id: str, worker_id: str):
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
+        result = await db.exec(
             select(Task)
             .where(
-                Task.worker_id == worker_id,
-                Task.guild_id == guild_pk,
+                col(Task.worker_id) == worker_id,
+                col(Task.guild_id) == guild_pk,
                 live_tasks_filter(),
             )
-            .order_by(Task.created_at.desc())
+            .order_by(col(Task.created_at).desc())
         )
-        return [row_to_dict(t) for t in result.scalars().all()]
+        return [row_to_dict(t) for t in result.all()]
     finally:
         await db.close()
 

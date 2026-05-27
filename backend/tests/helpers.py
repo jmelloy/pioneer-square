@@ -21,6 +21,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import Session
+from sqlmodel import col
 
 
 def _psycopg2_kwargs(db_url: str) -> dict:
@@ -144,10 +145,10 @@ def insert_guild(
             .values(guild_id=guild_id, created_at=now, name=name, github_user_id=owner_user_id)
             .on_conflict_do_update(
                 index_elements=["guild_id"],
-                index_where=Guild.deleted_at.is_(None),
+                index_where=col(Guild.deleted_at).is_(None),
                 set_={"name": pg_insert(Guild).excluded.name},
             )
-            .returning(Guild.id)
+            .returning(col(Guild.id))
         )
         guild_pk = session.execute(stmt).scalar_one()
 
@@ -188,7 +189,9 @@ def insert_member(db_url: str, guild_id: str, user_id: str, role: str = "member"
             .on_conflict_do_nothing(index_elements=["id"])
         )
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         if guild_pk:
             session.execute(
@@ -214,7 +217,9 @@ def insert_worker(
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         assert guild_pk is not None, f"Guild {guild_id!r} not found"
         session.execute(
@@ -242,7 +247,9 @@ def insert_agent(
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         assert guild_pk is not None, f"Guild {guild_id!r} not found"
         session.execute(
@@ -285,7 +292,9 @@ def insert_task(
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         assert guild_pk is not None, f"Guild {guild_id!r} not found"
         session.execute(

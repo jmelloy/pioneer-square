@@ -12,13 +12,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 from helpers import _sync_session, insert_guild, insert_task, insert_worker, make_auth_token
 from models import GithubEvent, Guild, Message, Task
 from sqlalchemy import func, select, update
+from sqlmodel import col  # noqa: E402
 
 
 def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
 
     with _sync_session(db_url) as session:
         session.execute(
-            update(Guild).where(Guild.guild_id == guild_id).values(webhook_secret=secret)
+            update(Guild).where(col(Guild.guild_id) == guild_id).values(webhook_secret=secret)
         )
         session.commit()
 
@@ -157,10 +158,14 @@ def test_webhook_accepts_ping(client):
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == "g4", Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == "g4", col(Guild.deleted_at).is_(None)
+            )
         )
         count = session.scalar(
-            select(func.count()).select_from(GithubEvent).where(GithubEvent.guild_id == guild_pk)
+            select(func.count())
+            .select_from(GithubEvent)
+            .where(col(GithubEvent.guild_id) == guild_pk)
         )
     assert count == 0
 
@@ -185,7 +190,7 @@ def test_webhook_persists_event_and_links_task(client):
 
     with _sync_session(db_url) as session:
         row = session.execute(
-            select(GithubEvent).where(GithubEvent.delivery_id == "d-evt-1")
+            select(GithubEvent).where(col(GithubEvent.delivery_id) == "d-evt-1")
         ).scalar_one_or_none()
     assert row is not None
     assert row.task_id == "t-1"
@@ -210,7 +215,7 @@ def test_webhook_event_without_matching_task(client):
 
     with _sync_session(db_url) as session:
         row = session.execute(
-            select(GithubEvent).where(GithubEvent.delivery_id == "d-evt-2")
+            select(GithubEvent).where(col(GithubEvent.delivery_id) == "d-evt-2")
         ).scalar_one_or_none()
     assert row is not None
     assert row.task_id is None
@@ -231,7 +236,9 @@ def test_webhook_dedupes_redelivery(client):
 
     with _sync_session(db_url) as session:
         n = session.scalar(
-            select(func.count()).select_from(GithubEvent).where(GithubEvent.delivery_id == "dup-1")
+            select(func.count())
+            .select_from(GithubEvent)
+            .where(col(GithubEvent.delivery_id) == "dup-1")
         )
     assert n == 1
 
@@ -265,7 +272,7 @@ def test_webhook_check_run_extracts_pr_from_pull_requests_array(client):
 
     with _sync_session(db_url) as session:
         row = session.execute(
-            select(GithubEvent).where(GithubEvent.delivery_id == "cr-1")
+            select(GithubEvent).where(col(GithubEvent.delivery_id) == "cr-1")
         ).scalar_one_or_none()
     assert row is not None
     assert row.task_id == "t-2"
@@ -317,10 +324,12 @@ def test_webhook_emits_foreman_chat_message(client):
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == "gchat1", Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == "gchat1", col(Guild.deleted_at).is_(None)
+            )
         )
         row = session.execute(
-            select(Message).where(Message.guild_id == guild_pk)
+            select(Message).where(col(Message.guild_id) == guild_pk)
         ).scalar_one_or_none()
     assert row is not None
     assert row.from_agent == "github"
@@ -353,10 +362,12 @@ def test_webhook_chat_line_includes_merged_status(client):
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == "gchat2", Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == "gchat2", col(Guild.deleted_at).is_(None)
+            )
         )
         row = session.execute(
-            select(Message).where(Message.guild_id == guild_pk)
+            select(Message).where(col(Message.guild_id) == guild_pk)
         ).scalar_one_or_none()
     assert row is not None
     assert "merged=true" in row.content
@@ -375,10 +386,12 @@ def test_webhook_chat_line_not_emitted_for_duplicate(client):
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == "gchat3", Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == "gchat3", col(Guild.deleted_at).is_(None)
+            )
         )
         count = session.scalar(
-            select(func.count()).select_from(Message).where(Message.guild_id == guild_pk)
+            select(func.count()).select_from(Message).where(col(Message.guild_id) == guild_pk)
         )
     assert count == 1  # second delivery is a duplicate; no second message
 
@@ -498,7 +511,7 @@ def test_webhook_backfills_task_pr_url(client):
     assert resp.status_code == 202
 
     with _sync_session(db_url) as session:
-        pr_url = session.scalar(select(Task.pr_url).where(Task.id == "t-bf1"))
+        pr_url = session.scalar(select(col(Task.pr_url)).where(col(Task.id) == "t-bf1"))
     assert pr_url == "https://github.com/org/my-repo/pull/55"
 
 
@@ -530,5 +543,5 @@ def test_webhook_does_not_overwrite_existing_pr_url(client):
     assert resp.status_code == 202
 
     with _sync_session(db_url) as session:
-        pr_url = session.scalar(select(Task.pr_url).where(Task.id == "t-bf2"))
+        pr_url = session.scalar(select(col(Task.pr_url)).where(col(Task.id) == "t-bf2"))
     assert pr_url == "https://github.com/org/my-repo/pull/77"

@@ -28,7 +28,8 @@ from foreman_core.message_utils import (
 )
 from foreman_core.tools_schema import FOREMAN_TOOLS
 from models import Agent, ForemanTurn, Guild, GuildMember, Message, Task, Worker, live_tasks_filter
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func
+from sqlmodel import col, select
 from util.tasks import spawn
 
 logger = logging.getLogger(__name__)
@@ -58,12 +59,12 @@ async def _get_guild_user_id(guild_id: str) -> str | None:
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             return None
-        result = await db.execute(
-            select(GuildMember.user_id)
-            .where(GuildMember.guild_id == guild_pk, GuildMember.role == "owner")
+        result = await db.exec(
+            select(col(GuildMember.user_id))
+            .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
             .limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.one_or_none()
     finally:
         await db.close()
 
@@ -79,12 +80,12 @@ async def _load_history(guild_id: str, user_id: str) -> list[dict]:
     db = await get_db()
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
-        result = await db.execute(
+        result = await db.exec(
             select(ForemanTurn)
-            .where(ForemanTurn.guild_id == guild_pk_val, ForemanTurn.user_id == user_id)
-            .order_by(ForemanTurn.id)
+            .where(col(ForemanTurn.guild_id) == guild_pk_val, col(ForemanTurn.user_id) == user_id)
+            .order_by(col(ForemanTurn.id))
         )
-        turns = result.scalars().all()
+        turns = result.all()
     finally:
         await db.close()
 
@@ -142,7 +143,7 @@ async def _save_turn(
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
         turn = ForemanTurn(
-            guild_id=guild_pk_val,
+            guild_id=guild_pk_val or 0,
             user_id=user_id,
             role=role,
             content_json=_serialize_content(content),
@@ -153,7 +154,7 @@ async def _save_turn(
         db.add(turn)
         await db.commit()
         await db.refresh(turn)
-        return turn.id
+        return turn.id or 0
     finally:
         await db.close()
 
@@ -164,9 +165,9 @@ async def _update_turn_tokens(turn_id: int, input_tokens: int, output_tokens: in
 
     db = await get_db()
     try:
-        await db.execute(
+        await db.exec(
             sa_update(ForemanTurn)
-            .where(ForemanTurn.id == turn_id)
+            .where(col(ForemanTurn.id) == turn_id)
             .values(input_tokens=input_tokens, output_tokens=output_tokens)
         )
         await db.commit()
@@ -213,14 +214,14 @@ async def _poll_loop(guild_id: str) -> None:
             db = await get_db()
             try:
                 guild_pk_val = await get_guild_pk(db, guild_id)
-                result = await db.execute(
-                    select(Task.id, Task.state, Task.name).where(
-                        Task.guild_id == guild_pk_val,
-                        ~Task.state.in_(list(_TERMINAL_STATES)),
+                result = await db.exec(
+                    select(col(Task.id), col(Task.state), col(Task.name)).where(
+                        col(Task.guild_id) == guild_pk_val,
+                        ~col(Task.state).in_(list(_TERMINAL_STATES)),
                         live_tasks_filter(),
                     )
                 )
-                active_tasks = [dict(r._mapping) for r in result.fetchall()]
+                active_tasks = [dict(r._mapping) for r in result.all()]
             finally:
                 await db.close()
 
@@ -276,20 +277,22 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
     (empty string when a worker has no non-offline agents).
     """
     guild_pk_val = await get_guild_pk(db, guild_id)
-    result = await db.execute(
+    result = await db.exec(
         select(
-            Worker.id,
-            Worker.repos,
-            Worker.org,
-            Worker.state.label("worker_state"),
-            func.count(Agent.id).label("agent_count"),
-            func.string_agg(Agent.id + ":" + Agent.state, ",").label("agents"),
+            col(Worker.id),
+            col(Worker.repos),
+            col(Worker.org),
+            col(Worker.state).label("worker_state"),
+            func.count(col(Agent.id)).label("agent_count"),
+            func.string_agg(col(Agent.id) + ":" + col(Agent.state), ",").label("agents"),
         )
-        .outerjoin(Agent, (Agent.worker_id == Worker.id) & (Agent.state != "offline"))
-        .where(Worker.guild_id == guild_pk_val, Worker.state == "online")
-        .group_by(Worker.id)
+        .outerjoin(
+            Agent, (col(Agent.worker_id) == col(Worker.id)) & (col(Agent.state) != "offline")
+        )
+        .where(col(Worker.guild_id) == guild_pk_val, col(Worker.state) == "online")
+        .group_by(col(Worker.id))
     )
-    return [dict(r._mapping) for r in result.fetchall()]
+    return [dict(r._mapping) for r in result.all()]
 
 
 async def run_foreman_ai(
@@ -321,8 +324,8 @@ async def run_foreman_ai(
     # final chat Message can all be written without opening fresh connections.
     db = await get_db()
     try:
-        guild_result = await db.execute(
-            select(Guild.name, Guild.primary_repo).where(Guild.guild_id == guild_id)
+        guild_result = await db.exec(
+            select(col(Guild.name), col(Guild.primary_repo)).where(col(Guild.guild_id) == guild_id)
         )
         guild_row = guild_result.one_or_none()
         primary_repo = guild_row.primary_repo if guild_row else None
@@ -331,27 +334,27 @@ async def run_foreman_ai(
         guild_pk_val = await get_guild_pk(db, guild_id)
         if guild_pk_val is None:
             raise ValueError(f"Guild not found: {guild_id}")
-        task_result = await db.execute(
+        task_result = await db.exec(
             select(
-                Task.id,
-                Task.worker_id,
-                Task.name,
-                Task.description,
-                Task.state,
-                Task.branch,
-                Task.pr_url,
-                Task.finished_at,
+                col(Task.id),
+                col(Task.worker_id),
+                col(Task.name),
+                col(Task.description),
+                col(Task.state),
+                col(Task.branch),
+                col(Task.pr_url),
+                col(Task.finished_at),
             )
             .where(
-                Task.guild_id == guild_pk_val,
-                ~Task.state.in_(list(_TERMINAL_STATES)),
+                col(Task.guild_id) == guild_pk_val,
+                ~col(Task.state).in_(list(_TERMINAL_STATES)),
                 live_tasks_filter(),
             )
-            .order_by(Task.created_at.desc())
+            .order_by(col(Task.created_at).desc())
         )
         task_rows = [
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
-            for r in task_result.fetchall()
+            for r in task_result.all()
         ]
     except Exception:
         await db.close()
@@ -429,9 +432,9 @@ async def run_foreman_ai(
             resp = await client.messages.create(
                 model=FOREMAN_MODEL,
                 max_tokens=1024,
-                system=system_blocks,
-                messages=messages,
-                tools=FOREMAN_TOOLS,
+                system=system_blocks,  # type: ignore[arg-type]
+                messages=messages,  # type: ignore[arg-type]
+                tools=FOREMAN_TOOLS,  # type: ignore[arg-type]
             )
             usage = resp.usage
             _input_tokens = getattr(usage, "input_tokens", 0) or 0
@@ -610,10 +613,10 @@ async def run_foreman_ai(
             wrap_resp = await client.messages.create(
                 model=FOREMAN_MODEL,
                 max_tokens=1024,
-                system=system_blocks,
-                messages=messages,
-                tools=FOREMAN_TOOLS,
-                tool_choice={"type": "none"},
+                system=system_blocks,  # type: ignore[arg-type]
+                messages=messages,  # type: ignore[arg-type]
+                tools=FOREMAN_TOOLS,  # type: ignore[arg-type]
+                tool_choice={"type": "none"},  # type: ignore[arg-type]
             )
             wrap_usage = wrap_resp.usage
             _wrap_input = getattr(wrap_usage, "input_tokens", 0) or 0
@@ -693,13 +696,13 @@ async def clear_foreman_history(guild_id: str, user_id: str) -> int:
     db = await get_db()
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
-        result = await db.execute(
+        result = await db.exec(
             delete(ForemanTurn).where(
-                ForemanTurn.guild_id == guild_pk_val, ForemanTurn.user_id == user_id
+                col(ForemanTurn.guild_id) == guild_pk_val, col(ForemanTurn.user_id) == user_id
             )
         )
         await db.commit()
-        return result.rowcount
+        return getattr(result, "rowcount", 0) or 0
     finally:
         await db.close()
 
@@ -721,12 +724,12 @@ async def get_foreman_history(guild_id: str, user_id: str) -> dict:
     db = await get_db()
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
-        result = await db.execute(
+        result = await db.exec(
             select(ForemanTurn)
-            .where(ForemanTurn.guild_id == guild_pk_val, ForemanTurn.user_id == user_id)
-            .order_by(ForemanTurn.id)
+            .where(col(ForemanTurn.guild_id) == guild_pk_val, col(ForemanTurn.user_id) == user_id)
+            .order_by(col(ForemanTurn.id))
         )
-        turns = result.scalars().all()
+        turns = result.all()
     finally:
         await db.close()
 

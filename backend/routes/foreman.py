@@ -48,7 +48,8 @@ from models import (
     live_tasks_filter,
 )
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import update
+from sqlmodel import col, select
 
 from foreman import clear_foreman_history, get_foreman_history
 
@@ -69,8 +70,8 @@ async def get_foreman_context(
     """Return the stored foreman conversation turns for this guild+user (debug view)."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
-        if result.scalar_one_or_none() is None:
+        result = await db.exec(select(col(Guild.guild_id)).where(col(Guild.guild_id) == guild_id))
+        if result.one_or_none() is None:
             raise HTTPException(status_code=404, detail="Guild not found")
     finally:
         await db.close()
@@ -90,8 +91,8 @@ async def clear_foreman_context(
     """Delete all stored foreman turns for this guild+user. Chat history in messages table is preserved."""
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
-        if result.scalar_one_or_none() is None:
+        result = await db.exec(select(col(Guild.guild_id)).where(col(Guild.guild_id) == guild_id))
+        if result.one_or_none() is None:
             raise HTTPException(status_code=404, detail="Guild not found")
     finally:
         await db.close()
@@ -152,18 +153,18 @@ async def get_foreman_state(
             raise HTTPException(status_code=404, detail="Guild not found")
 
         # Guild metadata
-        guild_res = await db.execute(
-            select(Guild.name, Guild.primary_repo).where(Guild.guild_id == guild_id)
+        guild_res = await db.exec(
+            select(col(Guild.name), col(Guild.primary_repo)).where(col(Guild.guild_id) == guild_id)
         )
         guild_row = guild_res.one_or_none()
 
         # Fetch guild owner user_id for the standalone foreman
-        owner_res = await db.execute(
-            select(GuildMember.user_id)
-            .where(GuildMember.guild_id == guild_pk, GuildMember.role == "owner")
+        owner_res = await db.exec(
+            select(col(GuildMember.user_id))
+            .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
             .limit(1)
         )
-        owner_user_id = owner_res.scalar_one_or_none()
+        owner_user_id = owner_res.one_or_none()
 
         guild_data = {
             "name": guild_row.name if guild_row else None,
@@ -187,28 +188,28 @@ async def get_foreman_state(
 
         # Active (non-terminal, non-soft-deleted) tasks
         _TERMINAL = {"done", "failed", "cancelled"}
-        tasks_res = await db.execute(
+        tasks_res = await db.exec(
             select(
-                Task.id,
-                Task.worker_id,
-                Task.name,
-                Task.description,
-                Task.state,
-                Task.phase,
-                Task.branch,
-                Task.pr_url,
-                Task.finished_at,
-                Task.created_at,
-                Task.user_id,
+                col(Task.id),
+                col(Task.worker_id),
+                col(Task.name),
+                col(Task.description),
+                col(Task.state),
+                col(Task.phase),
+                col(Task.branch),
+                col(Task.pr_url),
+                col(Task.finished_at),
+                col(Task.created_at),
+                col(Task.user_id),
             )
             .where(
-                Task.guild_id == guild_pk,
-                ~Task.state.in_(list(_TERMINAL)),
+                col(Task.guild_id) == guild_pk,
+                ~col(Task.state).in_(list(_TERMINAL)),
                 live_tasks_filter(),
             )
-            .order_by(Task.created_at.desc())
+            .order_by(col(Task.created_at).desc())
         )
-        tasks_data = [dict(r._mapping) for r in tasks_res.fetchall()]
+        tasks_data = [dict(r._mapping) for r in tasks_res.all()]
     finally:
         await db.close()
 
@@ -249,20 +250,20 @@ async def get_foreman_history_for_user(
 
         stmt = (
             select(
-                ForemanTurn.id,
-                ForemanTurn.role,
-                ForemanTurn.content_json,
-                ForemanTurn.is_tool_response,
-                ForemanTurn.parent_id,
-                ForemanTurn.created_at,
+                col(ForemanTurn.id),
+                col(ForemanTurn.role),
+                col(ForemanTurn.content_json),
+                col(ForemanTurn.is_tool_response),
+                col(ForemanTurn.parent_id),
+                col(ForemanTurn.created_at),
             )
-            .where(ForemanTurn.guild_id == guild_pk, ForemanTurn.user_id == user_id)
-            .order_by(ForemanTurn.id)
+            .where(col(ForemanTurn.guild_id) == guild_pk, col(ForemanTurn.user_id) == user_id)
+            .order_by(col(ForemanTurn.id))
         )
         if limit is not None and limit > 0:
             stmt = stmt.limit(limit)
-        result = await db.execute(stmt)
-        turns = result.fetchall()
+        result = await db.exec(stmt)
+        turns = result.all()
     finally:
         await db.close()
 
@@ -298,8 +299,10 @@ async def get_guild_key(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(GuildKey.key_id, GuildKey.private_key_pem).where(GuildKey.guild_id == guild_pk)
+        result = await db.exec(
+            select(col(GuildKey.key_id), col(GuildKey.private_key_pem)).where(
+                col(GuildKey.guild_id) == guild_pk
+            )
         )
         row = result.one_or_none()
     finally:
@@ -471,7 +474,7 @@ async def patch_task(
     Response: ``{ "task_id": str, "updated": dict }``
     """
     update_values: dict = {}
-    for field, col in (
+    for field, col_name in (
         ("state", "state"),
         ("worker_id", "worker_id"),
         ("branch", "branch"),
@@ -482,7 +485,7 @@ async def patch_task(
     ):
         val = getattr(body, field)
         if val is not None:
-            update_values[col] = val
+            update_values[col_name] = val
 
     if not update_values:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -494,13 +497,13 @@ async def patch_task(
             raise HTTPException(status_code=404, detail="Guild not found")
 
         # Verify task exists in this guild
-        exists = await db.execute(
-            select(Task.id).where(Task.id == task_id, Task.guild_id == guild_pk)
+        exists = await db.exec(
+            select(col(Task.id)).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
         )
-        if exists.scalar_one_or_none() is None:
+        if exists.one_or_none() is None:
             raise HTTPException(status_code=404, detail="Task not found")
 
-        await db.execute(update(Task).where(Task.id == task_id).values(**update_values))
+        await db.exec(update(Task).where(col(Task.id) == task_id).values(**update_values))
         await db.commit()
     finally:
         await db.close()
@@ -516,9 +519,9 @@ async def patch_task(
         "phase": "phase",
     }
     ws_payload: dict = {"type": "task-update", "taskId": task_id}
-    for col, ws_key in _KEY_MAP.items():
-        if col in update_values:
-            ws_payload[ws_key] = update_values[col]
+    for col_name, ws_key in _KEY_MAP.items():
+        if col_name in update_values:
+            ws_payload[ws_key] = update_values[col_name]
     await broadcast(guild_id, ws_payload)
 
     return {"task_id": task_id, "updated": update_values}
@@ -612,9 +615,9 @@ async def update_turn_tokens(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        await db.execute(
+        await db.exec(
             sa_update(ForemanTurn)
-            .where(ForemanTurn.id == turn_id)
+            .where(col(ForemanTurn.id) == turn_id)
             .values(input_tokens=body.input_tokens, output_tokens=body.output_tokens)
         )
         await db.commit()

@@ -10,10 +10,11 @@ import logging
 import os
 
 try:
-    import anthropic as _anthropic
+    import anthropic as _anthropic_mod
 
     HAS_ANTHROPIC = True
 except ImportError:
+    _anthropic_mod = None  # type: ignore[assignment]
     HAS_ANTHROPIC = False
 
 logger = logging.getLogger(__name__)
@@ -41,14 +42,14 @@ def make_anthropic_client(
     api_key:  API key for direct Anthropic API (ignored for Bedrock).
     region:   AWS region for Bedrock (defaults to AWS_DEFAULT_REGION or 'us-east-1').
     """
-    if not HAS_ANTHROPIC:
+    if not HAS_ANTHROPIC or _anthropic_mod is None:
         raise ImportError("anthropic package is not installed")
 
     resolved_provider = (provider or FOREMAN_PROVIDER).lower()
     resolved_region = region or _BEDROCK_REGION
 
     if resolved_provider == "bedrock":
-        client = _anthropic.AsyncAnthropicBedrock(aws_region=resolved_region)
+        client = _anthropic_mod.AsyncAnthropicBedrock(aws_region=resolved_region)
         logger.info(
             "Foreman using Amazon Bedrock (region=%s, model=%s)",
             resolved_region,
@@ -59,4 +60,4 @@ def make_anthropic_client(
     kwargs: dict = {}
     if api_key:
         kwargs["api_key"] = api_key
-    return _anthropic.AsyncAnthropic(**kwargs)
+    return _anthropic_mod.AsyncAnthropic(**kwargs)

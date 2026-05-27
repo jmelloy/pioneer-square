@@ -17,9 +17,10 @@ from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
+from sqlmodel import col, select
 from utils import generate_guild_id, row_to_dict
 from ws_handlers import _resolve_user_identifier
 
@@ -74,8 +75,8 @@ async def create_guild(
     created_at = datetime.now(UTC)
     db = await get_db()
     try:
-        result = await db.execute(select(Guild.guild_id).where(Guild.deleted_at.is_(None)))
-        existing_ids = {row[0] for row in result.fetchall()}
+        result = await db.exec(select(col(Guild.guild_id)).where(col(Guild.deleted_at).is_(None)))
+        existing_ids = set(result.all())
         guild_id = generate_guild_id(name=data.name or "", existing_ids=existing_ids)
         guild_name = data.name or f"Guild {guild_id}"
         try:
@@ -89,7 +90,7 @@ async def create_guild(
             await db.flush()
             db.add(
                 GuildMember(
-                    guild_id=new_guild.id,
+                    guild_id=new_guild.id or 0,
                     user_id=github_user_id,
                     role="owner",
                     created_at=created_at,
@@ -108,29 +109,30 @@ async def create_guild(
 async def list_guilds(github_user_id: str = Depends(require_user)):
     db = await get_db()
     try:
-        result = await db.execute(
+        result = await db.exec(
             select(
-                Guild.guild_id.label("id"),
-                Guild.created_at,
-                Guild.name,
-                func.count(Agent.id).label("agent_count"),
+                col(Guild.guild_id).label("id"),
+                col(Guild.created_at),
+                col(Guild.name),
+                func.count(col(Agent.id)).label("agent_count"),
             )
             .select_from(Guild)
             .join(
                 GuildMember,
-                (GuildMember.guild_id == Guild.id) & (GuildMember.user_id == github_user_id),
+                (col(GuildMember.guild_id) == col(Guild.id))
+                & (col(GuildMember.user_id) == github_user_id),
             )
             .outerjoin(
                 Agent,
-                (Agent.guild_id == Guild.id)
-                & (Agent.type != "foreman")
-                & (Agent.state != "offline"),
+                (col(Agent.guild_id) == col(Guild.id))
+                & (col(Agent.type) != "foreman")
+                & (col(Agent.state) != "offline"),
             )
-            .where(GuildMember.user_id == github_user_id)
-            .group_by(Guild.guild_id, Guild.created_at, Guild.name)
-            .order_by(Guild.created_at.desc())
+            .where(col(GuildMember.user_id) == github_user_id)
+            .group_by(col(Guild.guild_id), col(Guild.created_at), col(Guild.name))
+            .order_by(col(Guild.created_at).desc())
         )
-        return [dict(r._mapping) for r in result.fetchall()]
+        return [dict(r._mapping) for r in result.all()]
     finally:
         await db.close()
 
@@ -143,8 +145,8 @@ async def update_guild(
 ):
     db = await get_db()
     try:
-        result = await db.execute(select(Guild).where(Guild.guild_id == guild_id))
-        guild = result.scalar_one_or_none()
+        result = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+        guild = result.one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
         if data.name is not None:
@@ -186,29 +188,29 @@ async def update_guild(
 async def get_guild(guild_id: str, github_user_id: str = Depends(require_member())):
     db = await get_db()
     try:
-        result = await db.execute(select(Guild).where(Guild.guild_id == guild_id))
-        guild = result.scalar_one_or_none()
+        result = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+        guild = result.one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
         guild_pk = guild.id
-        result = await db.execute(
-            select(Agent, Worker.name.label("worker_name"))
-            .outerjoin(Worker, Worker.id == Agent.worker_id)
+        result = await db.exec(
+            select(Agent, col(Worker.name).label("worker_name"))
+            .outerjoin(Worker, col(Worker.id) == col(Agent.worker_id))
             .where(
-                Agent.guild_id == guild_pk,
-                Agent.state != "offline",
-                Agent.type != "foreman",
+                col(Agent.guild_id) == guild_pk,
+                col(Agent.state) != "offline",
+                col(Agent.type) != "foreman",
             )
         )
         agent_rows = result.all()
-        result = await db.execute(
+        result = await db.exec(
             select(Message)
-            .where(Message.guild_id == guild_pk)
+            .where(col(Message.guild_id) == guild_pk)
             # .id.desc() is a stable tiebreaker because message IDs are auto-increment integers.
-            .order_by(Message.created_at.desc(), Message.id.desc())
+            .order_by(col(Message.created_at).desc(), col(Message.id).desc())
             .limit(100)
         )
-        messages = result.scalars().all()
+        messages = result.all()
         return {
             **row_to_dict(guild),
             "id": guild.guild_id,  # keep text guild_id as "id" for API compatibility
@@ -232,20 +234,20 @@ async def list_guild_members(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
+        result = await db.exec(
             select(
-                GuildMember.user_id,
-                GuildMember.role,
-                GuildMember.created_at,
-                User.github_login,
-                User.display_name,
-                User.avatar_url,
+                col(GuildMember.user_id),
+                col(GuildMember.role),
+                col(GuildMember.created_at),
+                col(User.github_login),
+                col(User.display_name),
+                col(User.avatar_url),
             )
-            .outerjoin(User, User.id == GuildMember.user_id)
-            .where(GuildMember.guild_id == guild_pk)
-            .order_by(GuildMember.created_at.asc())
+            .outerjoin(User, col(User.id) == col(GuildMember.user_id))
+            .where(col(GuildMember.guild_id) == guild_pk)
+            .order_by(col(GuildMember.created_at).asc())
         )
-        return [dict(r._mapping) for r in result.fetchall()]
+        return [dict(r._mapping) for r in result.all()]
     finally:
         await db.close()
 
@@ -286,7 +288,7 @@ async def add_guild_member(
             index_elements=["guild_id", "user_id"],
             set_={"role": stmt.excluded.role},
         )
-        await db.execute(stmt)
+        await db.exec(stmt)
         await db.commit()
         return {"guild_id": guild_id, "user_id": target_id, "role": data.role}
     finally:
@@ -310,22 +312,22 @@ async def update_guild_member(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        res = await db.execute(
+        res = await db.exec(
             select(GuildMember).where(
-                GuildMember.guild_id == guild_pk, GuildMember.user_id == user_id
+                col(GuildMember.guild_id) == guild_pk, col(GuildMember.user_id) == user_id
             )
         )
-        member = res.scalar_one_or_none()
+        member = res.one_or_none()
         if not member:
             raise HTTPException(status_code=404, detail="Member not found")
         # Don't let the last owner demote themselves and lock the guild.
         if member.role == "owner" and data.role != "owner":
-            owner_count = await db.execute(
+            owner_count = await db.exec(
                 select(func.count())
                 .select_from(GuildMember)
-                .where(GuildMember.guild_id == guild_pk, GuildMember.role == "owner")
+                .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
             )
-            if (owner_count.scalar() or 0) <= 1:
+            if (owner_count.one() or 0) <= 1:
                 raise HTTPException(
                     status_code=400, detail="Cannot demote the last owner of a guild"
                 )
@@ -338,8 +340,8 @@ async def update_guild_member(
 
 async def _ensure_webhook_secret(db, guild_id: str) -> str:
     """Return the guild's webhook secret, generating one on first access."""
-    res = await db.execute(select(Guild).where(Guild.guild_id == guild_id))
-    guild = res.scalar_one_or_none()
+    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
     if not guild.webhook_secret:
@@ -360,8 +362,8 @@ async def rotate_webhook_secret(
     """
     db = await get_db()
     try:
-        res = await db.execute(select(Guild).where(Guild.guild_id == guild_id))
-        guild = res.scalar_one_or_none()
+        res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+        guild = res.one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
         guild.webhook_secret = secrets.token_hex(32)
@@ -401,27 +403,27 @@ async def remove_guild_member(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        res = await db.execute(
+        res = await db.exec(
             select(GuildMember).where(
-                GuildMember.guild_id == guild_pk, GuildMember.user_id == user_id
+                col(GuildMember.guild_id) == guild_pk, col(GuildMember.user_id) == user_id
             )
         )
-        member = res.scalar_one_or_none()
+        member = res.one_or_none()
         if not member:
             raise HTTPException(status_code=404, detail="Member not found")
         if member.role == "owner":
-            owner_count = await db.execute(
+            owner_count = await db.exec(
                 select(func.count())
                 .select_from(GuildMember)
-                .where(GuildMember.guild_id == guild_pk, GuildMember.role == "owner")
+                .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
             )
-            if (owner_count.scalar() or 0) <= 1:
+            if (owner_count.one() or 0) <= 1:
                 raise HTTPException(
                     status_code=400, detail="Cannot remove the last owner of a guild"
                 )
-        await db.execute(
+        await db.exec(
             delete(GuildMember).where(
-                GuildMember.guild_id == guild_pk, GuildMember.user_id == user_id
+                col(GuildMember.guild_id) == guild_pk, col(GuildMember.user_id) == user_id
             )
         )
         await db.commit()

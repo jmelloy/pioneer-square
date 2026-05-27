@@ -15,8 +15,9 @@ import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -29,6 +30,7 @@ from helpers import _sync_session, insert_guild, insert_worker, truncate_all  # 
 from helpers import create_db as _create_db
 from models import Agent, Guild, Lock, Task, Worker  # noqa: E402
 from sqlalchemy import select, update  # noqa: E402
+from sqlmodel import col  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -69,8 +71,10 @@ def _read_last_seen(
 ) -> tuple[datetime | None, datetime | None]:
 
     with _sync_session(db_url) as session:
-        agent_seen = session.scalar(select(Agent.last_seen).where(Agent.id == agent_id))
-        worker_seen = session.scalar(select(Worker.last_seen).where(Worker.id == worker_id))
+        agent_seen = session.scalar(select(col(Agent.last_seen)).where(col(Agent.id) == agent_id))
+        worker_seen = session.scalar(
+            select(col(Worker.last_seen)).where(col(Worker.id) == worker_id)
+        )
     return (agent_seen, worker_seen)
 
 
@@ -128,8 +132,10 @@ def test_ping_message_replies_pong_and_refreshes_last_seen(client):
         old_ts = datetime.now(UTC) - timedelta(minutes=5)
 
         with _sync_session(db_url) as session:
-            session.execute(update(Agent).where(Agent.id == agent_id).values(last_seen=old_ts))
-            session.execute(update(Worker).where(Worker.id == worker_id).values(last_seen=old_ts))
+            session.execute(update(Agent).where(col(Agent.id) == agent_id).values(last_seen=old_ts))
+            session.execute(
+                update(Worker).where(col(Worker.id) == worker_id).values(last_seen=old_ts)
+            )
             session.commit()
 
         # Heartbeat ping carries only workerId — backend looks up agents from
@@ -172,7 +178,7 @@ def test_any_inbound_frame_touches_sibling_agents(client):
 
         with _sync_session(db_url) as session:
             session.execute(
-                update(Agent).where(Agent.worker_id == worker_id).values(last_seen=old_ts)
+                update(Agent).where(col(Agent.worker_id) == worker_id).values(last_seen=old_ts)
             )
             session.commit()
 
@@ -199,12 +205,14 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
     old = datetime.now(UTC) - timedelta(seconds=300)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         session.add(
             Agent(
                 id=agent_id,
-                guild_id=guild_pk,
+                guild_id=guild_pk or 0,
                 worker_id=worker_id,
                 name="Test",
                 type="worker",
@@ -213,7 +221,7 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
                 last_seen=old,
             )
         )
-        session.execute(update(Worker).where(Worker.id == worker_id).values(last_seen=old))
+        session.execute(update(Worker).where(col(Worker.id) == worker_id).values(last_seen=old))
         session.commit()
 
     # Tighten the threshold so the sweep triggers immediately for this test.
@@ -226,8 +234,8 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
     assert marked == 1
 
     with _sync_session(db_url) as session:
-        a_state = session.scalar(select(Agent.state).where(Agent.id == agent_id))
-        w_state = session.scalar(select(Worker.state).where(Worker.id == worker_id))
+        a_state = session.scalar(select(col(Agent.state)).where(col(Agent.id) == agent_id))
+        w_state = session.scalar(select(col(Worker.state)).where(col(Worker.id) == worker_id))
     assert a_state == "offline"
     assert w_state == "offline"
 
@@ -273,14 +281,16 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
     old = datetime.now(UTC) - timedelta(seconds=300)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         # Insert an agent that is *already* offline — simulates the state after
         # the buggy WS close handler ran: agent marked offline, worker not.
         session.add(
             Agent(
                 id=agent_id,
-                guild_id=guild_pk,
+                guild_id=guild_pk or 0,
                 worker_id=worker_id,
                 name="Test",
                 type="worker",
@@ -291,7 +301,7 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
         )
         # Worker is still "online" (the buggy state) with a stale last_seen.
         session.execute(
-            update(Worker).where(Worker.id == worker_id).values(state="online", last_seen=old)
+            update(Worker).where(col(Worker.id) == worker_id).values(state="online", last_seen=old)
         )
         session.commit()
 
@@ -305,7 +315,7 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
     assert marked == 1
 
     with _sync_session(db_url) as session:
-        w_state = session.scalar(select(Worker.state).where(Worker.id == worker_id))
+        w_state = session.scalar(select(col(Worker.state)).where(col(Worker.id) == worker_id))
     assert w_state == "offline", (
         f"worker.state={w_state!r}, expected 'offline' — "
         "sweeper did not catch zombie worker with no active agents"
@@ -324,12 +334,14 @@ def test_sweeper_skips_fresh_workers(client):
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         session.add(
             Agent(
                 id=agent_id,
-                guild_id=guild_pk,
+                guild_id=guild_pk or 0,
                 worker_id=worker_id,
                 name="Test",
                 type="worker",
@@ -347,7 +359,7 @@ def test_sweeper_skips_fresh_workers(client):
     assert marked == 0
 
     with _sync_session(db_url) as session:
-        a_state = session.scalar(select(Agent.state).where(Agent.id == agent_id))
+        a_state = session.scalar(select(col(Agent.state)).where(col(Agent.id) == agent_id))
     assert a_state == "idle"
 
 
@@ -375,14 +387,16 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
 
     with _sync_session(db_path) as session:
         guild_pk = session.scalar(
-            select(Guild.id).where(Guild.guild_id == guild_id, Guild.deleted_at.is_(None))
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+            )
         )
         # Task stuck in "working".
         session.add(
             Task(
                 id=task_id,
                 worker_id=worker_id,
-                guild_id=guild_pk,
+                guild_id=guild_pk or 0,
                 description="stuck task",
                 tool="claude",
                 state="working",
@@ -393,7 +407,7 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
         session.add(
             Agent(
                 id=agent_id,
-                guild_id=guild_pk,
+                guild_id=guild_pk or 0,
                 worker_id=worker_id,
                 name="Test",
                 type="worker",
@@ -422,8 +436,8 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
     asyncio.run(_drive())
 
     with _sync_session(db_path) as session:
-        t_state = session.scalar(select(Task.state).where(Task.id == task_id))
-        lock_key = session.scalar(select(Lock.key).where(Lock.key == f"task:{task_id}"))
+        t_state = session.scalar(select(col(Task.state)).where(col(Task.id) == task_id))
+        lock_key = session.scalar(select(col(Lock.key)).where(col(Lock.key) == f"task:{task_id}"))
 
     assert t_state == "awaiting-review", (
         f"task.state={t_state!r} — watchdog should have moved it to 'awaiting-review'"
