@@ -648,7 +648,6 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
             event_ids = [r[0] for r in rows]
             queued_payloads = [json.loads(r[1]) for r in rows]
             await ctx.db.execute(delete(TaskEvent).where(TaskEvent.id.in_(event_ids)))
-            await ctx.db.commit()
         worker_id_upd = data.get("workerId", "a worker")
         task_uid = await _task_user_id(ctx.db, task_id)
         if queued_payloads:
@@ -675,6 +674,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
             task_id=task_id,
             task_name=f"foreman.task-error:{task_id}",
         )
+        await ctx.db.commit()
 
 
 async def handle_task_complete(ctx: WSContext, data: dict) -> None:
