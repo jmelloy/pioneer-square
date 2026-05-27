@@ -32,6 +32,7 @@ import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_task, insert_worker
+from routes import websocket as ws_routes_module
 from models import (  # noqa: E402
     Agent,
     GithubToken,
@@ -58,6 +59,10 @@ def client(_setup_schema):
     mp = pytest.MonkeyPatch()
     mp.setattr(database_module, "AsyncSessionLocal", new_session)
     mp.setattr(main_module, "AsyncSessionLocal", new_session)
+    # routes/websocket.py imports AsyncSessionLocal directly; patch its local
+    # binding so that each function-scoped TestClient (new event loop) uses
+    # the fresh NullPool session rather than stale pool connections.
+    mp.setattr(ws_routes_module, "AsyncSessionLocal", new_session)
 
     async def _stubbed_reset_connection_state() -> None:
         pass
