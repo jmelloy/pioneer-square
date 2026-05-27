@@ -119,6 +119,13 @@ function onSelectIssue(issue: GitHubIssue) {
     background 0.12s;
 }
 
+@media (max-width: 1024px) {
+  .tab-btn {
+    min-height: 44px;
+    padding: 12px 4px 11px;
+  }
+}
+
 .tab-btn:hover {
   color: var(--color-brass);
   background: rgba(232, 170, 0, 0.06);
