@@ -194,7 +194,7 @@ async function createGuild(name: string) {
 <style scoped>
 .landing {
   width: 100vw;
-  height: 100vh;
+  height: 100dvh;
   background: var(--color-bg);
   display: flex;
   align-items: stretch;

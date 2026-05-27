@@ -51,9 +51,16 @@
           agentPos(agent.id).y * 100
         }%; z-index: ${zIndex(agentPos(agent.id).y)}`"
       >
-        <div class="agent-tilt" :style="`transform: rotate(${agentTilt(agent.id)}deg)`">
-          <AgentAvatar :agent="agent" :walking="isWalking(agent.id)" />
-        </div>
+        <button
+          class="agent-hit"
+          :title="`Open ${agent.name}`"
+          :aria-label="`Open ${agent.name}`"
+          @click="onAgentTap(agent.id)"
+        >
+          <div class="agent-tilt" :style="`transform: rotate(${agentTilt(agent.id)}deg)`">
+            <AgentAvatar :agent="agent" :walking="isWalking(agent.id)" />
+          </div>
+        </button>
         <div class="agent-nametag">{{ agent.name }}</div>
       </div>
     </div>
@@ -353,6 +360,10 @@ function truncate(str: string | undefined, len: number) {
 function stateLabel(state: string) {
   return tasksStore.stateLabel(state)
 }
+
+function onAgentTap(agentId: string) {
+  agentsStore.selectAgent(agentId)
+}
 </script>
 
 <style scoped>
@@ -535,6 +546,30 @@ function stateLabel(state: string) {
 .floating-agent :deep(.robot-sprite) {
   width: 9cqw;
   height: auto;
+}
+.agent-hit {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  pointer-events: auto;
+  border-radius: 50%;
+  transition: transform 0.12s ease;
+}
+.agent-hit:hover {
+  transform: scale(1.06);
+}
+.agent-hit:focus-visible {
+  outline: 2px solid var(--color-brass);
+  outline-offset: 2px;
+}
+/* Touch: expand the hit area beyond the visible sprite so 9cqw avatars
+   (~35px on a phone) are still comfortable to tap. */
+@media (hover: none) {
+  .agent-hit {
+    padding: 8px;
+    margin: -8px;
+  }
 }
 .agent-tilt {
   display: flex;
