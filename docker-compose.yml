@@ -63,9 +63,12 @@ services:
       GUILD_ID: ${GUILD_ID:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # Model and provider — set FOREMAN_PROVIDER=bedrock to use Amazon Bedrock.
-      # Bedrock model IDs use the cross-region inference prefix, e.g.:
-      #   us.anthropic.claude-sonnet-4-5-20251001-v2:0
+      # Direct Anthropic API: FOREMAN_MODEL is a plain model ID (e.g. claude-sonnet-4-6).
+      # Amazon Bedrock: FOREMAN_BEDROCK_MODEL must be a cross-region inference profile, e.g.:
+      #   arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6
+      # When FOREMAN_PROVIDER=bedrock, FOREMAN_BEDROCK_MODEL is used; otherwise FOREMAN_MODEL.
       FOREMAN_MODEL: ${FOREMAN_MODEL:-claude-sonnet-4-6}
+      FOREMAN_BEDROCK_MODEL: ${FOREMAN_BEDROCK_MODEL:-arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6}
       FOREMAN_PROVIDER: ${FOREMAN_PROVIDER:-anthropic}
       # Shared HMAC secret for JWT auth between the foreman and backend.
       PIONEER_FOREMAN_KEY: ${PIONEER_FOREMAN_KEY:-}

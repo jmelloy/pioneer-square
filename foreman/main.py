@@ -16,9 +16,10 @@ Environment variables:
     GUILD_ID         Guild this foreman instance manages (required)
     DB_PATH          Path to the SQLite database file   (default: pioneer_square.db)
     DATABASE_URL     Full SQLAlchemy URL; overrides DB_PATH
-    ANTHROPIC_API_KEY  Anthropic key for the AI loop
-    FOREMAN_MODEL    Claude model for the foreman AI    (default: claude-sonnet-4-6)
-    LOG_LEVEL        Logging level                       (default: INFO)
+    ANTHROPIC_API_KEY      Anthropic key for the AI loop
+    FOREMAN_MODEL          Claude model for direct Anthropic API  (default: claude-sonnet-4-6)
+    FOREMAN_BEDROCK_MODEL  Bedrock inference profile ID           (default: arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6)
+    LOG_LEVEL              Logging level                          (default: INFO)
 """
 
 from __future__ import annotations

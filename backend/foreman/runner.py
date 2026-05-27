@@ -16,7 +16,7 @@ from foreman_core.constants import (
     _TERMINAL_STATES,
     MAX_FOREMAN_ROUNDS,
 )
-from foreman_core.llm import FOREMAN_MODEL, HAS_ANTHROPIC, make_anthropic_client
+from foreman_core.llm import HAS_ANTHROPIC, get_foreman_model, make_anthropic_client
 from foreman_core.message_utils import (
     _inject_state_preamble,
     _serialize_content,
@@ -430,7 +430,7 @@ async def run_foreman_ai(
                 len(messages),
             )
             resp = await client.messages.create(
-                model=FOREMAN_MODEL,
+                model=get_foreman_model(),
                 max_tokens=1024,
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]
@@ -611,7 +611,7 @@ async def run_foreman_ai(
             messages = strip_orphaned_tool_results(messages)
             _stamp_message_cache_breakpoint(messages)
             wrap_resp = await client.messages.create(
-                model=FOREMAN_MODEL,
+                model=get_foreman_model(),
                 max_tokens=1024,
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]

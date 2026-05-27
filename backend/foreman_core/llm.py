@@ -19,16 +19,34 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_BEDROCK_MODEL = (
+    "arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6"
+)
+
 FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
+# Bedrock uses cross-region inference profiles, not plain model IDs.
+# Set this to the profile ARN/ID appropriate for your region, e.g.:
+#   arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6
+FOREMAN_BEDROCK_MODEL = os.environ.get("FOREMAN_BEDROCK_MODEL", _DEFAULT_BEDROCK_MODEL)
 
 # Set FOREMAN_PROVIDER=bedrock to use Amazon Bedrock instead of the Anthropic API.
 # Requires: pip install "anthropic[bedrock]"  +  AWS credentials in env / IAM role.
-# On Bedrock, model IDs use the "anthropic." prefix, e.g.:
-#   anthropic.claude-sonnet-4-5   (Sonnet 4.x on Bedrock)
-#   anthropic.claude-opus-4-5     (Opus 4.x on Bedrock)
-# Check your Bedrock console for exact IDs available in your region.
 FOREMAN_PROVIDER = os.environ.get("FOREMAN_PROVIDER", "anthropic").lower()
 _BEDROCK_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
+
+def get_foreman_model(provider: str | None = None) -> str:
+    """Return the model ID to use for the given provider.
+
+    When provider is 'bedrock' (or FOREMAN_PROVIDER=bedrock), returns
+    FOREMAN_BEDROCK_MODEL; otherwise returns FOREMAN_MODEL.
+
+    Reads os.environ on every call so that tests can patch env vars directly.
+    """
+    resolved = (provider or os.environ.get("FOREMAN_PROVIDER", "anthropic")).lower()
+    if resolved == "bedrock":
+        return os.environ.get("FOREMAN_BEDROCK_MODEL", _DEFAULT_BEDROCK_MODEL)
+    return os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 
 
 def make_anthropic_client(
@@ -53,7 +71,7 @@ def make_anthropic_client(
         logger.info(
             "Foreman using Amazon Bedrock (region=%s, model=%s)",
             resolved_region,
-            FOREMAN_MODEL,
+            get_foreman_model("bedrock"),
         )
         return client
 
