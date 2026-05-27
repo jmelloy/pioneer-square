@@ -419,13 +419,13 @@ async def test_oidc_token_accepted_when_receiver_enabled(monkeypatch):
     }
     token = _make_jwt(payload, priv)
 
-    # execute() is awaited; scalar_one_or_none() is synchronous on the result.
-    # Use MagicMock for the execute result so scalar_one_or_none returns None (not a coroutine).
+    # exec() is awaited; one_or_none() is synchronous on the result.
+    # Use MagicMock for the exec result so one_or_none returns None (not a coroutine).
     exec_result = MagicMock()
-    exec_result.scalar_one_or_none.return_value = None
+    exec_result.one_or_none.return_value = None
 
     mock_db = AsyncMock()
-    mock_db.execute.return_value = exec_result
+    mock_db.exec.return_value = exec_result
 
     async def fake_get_db():
         return mock_db
@@ -460,10 +460,10 @@ async def test_oidc_token_rejected_when_receiver_disabled(monkeypatch):
     token = _make_jwt(payload, priv)
 
     exec_result = MagicMock()
-    exec_result.scalar_one_or_none.return_value = None
+    exec_result.one_or_none.return_value = None
 
     mock_db = AsyncMock()
-    mock_db.execute.return_value = exec_result
+    mock_db.exec.return_value = exec_result
 
     async def fake_get_db():
         return mock_db

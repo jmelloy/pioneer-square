@@ -26,10 +26,10 @@ from database import get_db
 from events import broadcast
 from fastapi import APIRouter, HTTPException, Request, Response
 from models import GithubEvent, Guild, Message, Task
-from sqlalchemy import select, update
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import col
+from sqlmodel import col, select
 
 from foreman import reset_foreman_poll, run_foreman_ai
 
@@ -273,7 +273,7 @@ async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None)
     """
     if not repo or pr_number is None:
         return None
-    res = await db.execute(
+    res = await db.exec(
         select(col(Task.id), col(Task.user_id))
         .where(
             col(Task.guild_id) == guild_pk,
@@ -468,7 +468,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
 
     db = await get_db()
     try:
-        guild_res = await db.execute(
+        guild_res = await db.exec(
             select(col(Guild.webhook_secret), col(Guild.id)).where(col(Guild.guild_id) == guild_id)
         )
         guild_row = guild_res.one_or_none()

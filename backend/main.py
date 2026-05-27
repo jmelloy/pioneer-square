@@ -28,8 +28,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from lock_service import LockService
 from models import Agent, Guild, Lock, Task, Worker
-from sqlalchemy import literal, select, update
-from sqlmodel import col
+from sqlalchemy import literal, update
+from sqlmodel import col, select
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -102,7 +102,7 @@ async def _sweep_stale_workers_once() -> int:
         # bug).  Workers that still have any non-offline agent are skipped here
         # and handled via the agent cascade below.
         zombie_workers = (
-            await db.execute(
+            await db.exec(
                 select(
                     col(Worker.id),
                     col(Worker.guild_id),
@@ -122,7 +122,7 @@ async def _sweep_stale_workers_once() -> int:
         ).all()
 
         stale_agents = (
-            await db.execute(
+            await db.exec(
                 select(
                     col(Agent.id),
                     col(Agent.guild_id),
@@ -179,34 +179,30 @@ async def _sweep_stale_workers_once() -> int:
         # (i.e. no agent with current_task_id = task.id in a live state) and
         # whose lock was acquired long enough ago to not be a new dispatch.
         orphaned = (
-            (
-                await db.execute(
-                    select(col(Task.id)).where(
-                        col(Task.state) == "working",
-                        # Lock exists for this task and has been held long enough
-                        # that we can assume it's not a brand-new dispatch.
-                        # Use the || operator for string concat — SQLite does not
-                        # have a concat() function; this is dialect-neutral for
-                        # single-DB deployments and avoids func.concat().
-                        select(col(Lock.key))
-                        .where(
-                            col(Lock.key) == literal("task:").op("||")(col(Task.id)),
-                            col(Lock.acquired_at) < cutoff_lock,
-                        )
-                        .exists(),
-                        # No agent is actively running this task right now.
-                        ~select(col(Agent.id))
-                        .where(
-                            col(Agent.current_task_id) == col(Task.id),
-                            col(Agent.state).in_(("working", "thinking", "busy")),
-                        )
-                        .exists(),
+            await db.exec(
+                select(col(Task.id)).where(
+                    col(Task.state) == "working",
+                    # Lock exists for this task and has been held long enough
+                    # that we can assume it's not a brand-new dispatch.
+                    # Use the || operator for string concat — SQLite does not
+                    # have a concat() function; this is dialect-neutral for
+                    # single-DB deployments and avoids func.concat().
+                    select(col(Lock.key))
+                    .where(
+                        col(Lock.key) == literal("task:").op("||")(col(Task.id)),
+                        col(Lock.acquired_at) < cutoff_lock,
                     )
+                    .exists(),
+                    # No agent is actively running this task right now.
+                    ~select(col(Agent.id))
+                    .where(
+                        col(Agent.current_task_id) == col(Task.id),
+                        col(Agent.state).in_(("working", "thinking", "busy")),
+                    )
+                    .exists(),
                 )
             )
-            .scalars()
-            .all()
-        )
+        ).all()
         if orphaned:
             stale_task_ids = list(orphaned)
             for task_id in stale_task_ids:

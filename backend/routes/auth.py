@@ -32,9 +32,9 @@ from models import (
 )
 from oauth import FRONTEND_URL, GITHUB_CLIENT_ID, create_session, get_return_to, make_authorize_url
 from pydantic import BaseModel
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlmodel import col
+from sqlmodel import col, select
 from utils import generate_guild_id
 
 router = APIRouter()
@@ -94,15 +94,15 @@ async def get_github_token(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")
-        owner_res = await db.execute(
+        owner_res = await db.exec(
             select(col(GuildMember.user_id))
             .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
             .limit(1)
         )
-        owner_user_id = owner_res.scalar_one_or_none()
+        owner_user_id = owner_res.one_or_none()
         if not owner_user_id:
             raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")
-        result = await db.execute(
+        result = await db.exec(
             select(col(GithubToken.access_token), col(GithubToken.github_username)).where(
                 col(GithubToken.github_user_id) == owner_user_id
             )
@@ -131,10 +131,10 @@ async def get_claude_credentials(
             raise HTTPException(
                 status_code=404, detail="No Claude credentials stored for this guild"
             )
-        result = await db.execute(
+        result = await db.exec(
             select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
         )
-        row = result.scalar_one_or_none()
+        row = result.one_or_none()
         if not row:
             raise HTTPException(
                 status_code=404, detail="No Claude credentials stored for this guild"
@@ -161,10 +161,10 @@ async def store_claude_credentials(
         guild_pk = await get_guild_pk(db, data.guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
+        result = await db.exec(
             select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
         )
-        row = result.scalar_one_or_none()
+        row = result.one_or_none()
         if row:
             row.credentials_blob = data.credentials_blob
             row.updated_at = now
@@ -187,7 +187,7 @@ async def get_me(github_user_id: str = Depends(require_user)):
     """Return the currently authenticated user's info."""
     db = await get_db()
     try:
-        result = await db.execute(
+        result = await db.exec(
             select(
                 col(GithubToken.github_user_id),
                 col(GithubToken.github_username),
@@ -211,19 +211,19 @@ async def api_me(github_user_id: str = Depends(require_user)):
     """Return the current user's profile + their guild memberships."""
     db = await get_db()
     try:
-        u_res = await db.execute(select(User).where(col(User.id) == github_user_id))
-        user = u_res.scalar_one_or_none()
+        u_res = await db.exec(select(User).where(col(User.id) == github_user_id))
+        user = u_res.one_or_none()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        members_res = await db.execute(
+        members_res = await db.exec(
             select(col(Guild.guild_id), col(GuildMember.role), col(Guild.name))
             .join(Guild, col(Guild.id) == col(GuildMember.guild_id))
             .where(col(GuildMember.user_id) == github_user_id)
         )
         memberships = [
             {"guild_id": row.guild_id, "guild_name": row.name, "role": row.role}
-            for row in members_res.fetchall()
+            for row in members_res.all()
         ]
         return {
             "user": {
@@ -294,16 +294,16 @@ async def guest_login():
 
         # Find or create the persistent dev guild
         _not_deleted = or_(col(Guild.deleted_at).is_(None), col(Guild.deleted_at) == "")
-        guild_res = await db.execute(
+        guild_res = await db.exec(
             select(col(Guild.guild_id))
             .where(col(Guild.github_user_id) == guest_user_id, _not_deleted)
             .limit(1)
         )
-        guild_id = guild_res.scalar_one_or_none()
+        guild_id = guild_res.one_or_none()
 
         if not guild_id:
-            existing_res = await db.execute(select(col(Guild.guild_id)).where(_not_deleted))
-            existing_ids = {row[0] for row in existing_res.fetchall()}
+            existing_res = await db.exec(select(col(Guild.guild_id)).where(_not_deleted))
+            existing_ids = set(existing_res.all())
             guild_id = generate_guild_id(name="dev", existing_ids=existing_ids)
             new_guild = Guild(
                 guild_id=guild_id,

@@ -31,8 +31,7 @@ from fastapi.responses import JSONResponse
 from models import Guild, GuildKey, Worker
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
-from sqlalchemy import select
-from sqlmodel import col
+from sqlmodel import col, select
 
 router = APIRouter()
 
@@ -86,8 +85,8 @@ async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
             return None
 
         row = (
-            await db.execute(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
-        ).scalar_one_or_none()
+            await db.exec(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
+        ).one_or_none()
 
         if row:
             # Migrate any existing P-256 key to Ed25519.
@@ -156,8 +155,8 @@ async def get_jwks_config(
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
         row = (
-            await db.execute(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
-        ).scalar_one_or_none()
+            await db.exec(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
+        ).one_or_none()
     finally:
         await db.close()
 
@@ -339,11 +338,11 @@ async def agent_card(request: Request) -> JSONResponse:
         db = await get_db()
         try:
             guild = (
-                await db.execute(select(Guild).where(col(Guild.guild_id) == guild_id))
-            ).scalar_one_or_none()
+                await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+            ).one_or_none()
             if guild:
-                rows = await db.execute(select(Worker).where(col(Worker.guild_id) == guild.id))
-                workers = list(rows.scalars().all())
+                rows = await db.exec(select(Worker).where(col(Worker.guild_id) == guild.id))
+                workers = list(rows.all())
         finally:
             await db.close()
 
@@ -367,13 +366,11 @@ async def guild_agent_card(
     """Returns the AgentCard for a specific guild (authenticated)."""
     db = await get_db()
     try:
-        guild = (
-            await db.execute(select(Guild).where(col(Guild.guild_id) == guild_id))
-        ).scalar_one_or_none()
+        guild = (await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))).one_or_none()
         if not guild:
             raise HTTPException(404, detail="Guild not found")
-        rows = await db.execute(select(Worker).where(col(Worker.guild_id) == guild.id))
-        workers = list(rows.scalars().all())
+        rows = await db.exec(select(Worker).where(col(Worker.guild_id) == guild.id))
+        workers = list(rows.all())
     finally:
         await db.close()
 
@@ -404,8 +401,8 @@ async def set_jwks_config(
             raise HTTPException(404, detail="Guild not found")
 
         row = (
-            await db.execute(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
-        ).scalar_one_or_none()
+            await db.exec(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
+        ).one_or_none()
 
         if not row:
             pub_pem, priv_pem = _generate_ed25519_pems()

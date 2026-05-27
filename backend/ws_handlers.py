@@ -29,9 +29,9 @@ from events import (
 from fastapi import WebSocket
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlmodel import col
+from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
 from utils import worker_display_name
@@ -87,10 +87,10 @@ async def _resolve_user_identifier(db, identifier: str) -> str | None:
     ident = (identifier or "").strip()
     if not ident:
         return None
-    res = await db.execute(
+    res = await db.exec(
         select(col(User.id)).where((col(User.id) == ident) | (col(User.github_login) == ident))
     )
-    return res.scalar_one_or_none()
+    return res.one_or_none()
 
 
 async def _task_user_id(db, task_id: str | None) -> str | None:
@@ -103,8 +103,8 @@ async def _task_user_id(db, task_id: str | None) -> str | None:
     """
     if not task_id:
         return None
-    res = await db.execute(select(col(Task.user_id)).where(col(Task.id) == task_id))
-    return res.scalar_one_or_none()
+    res = await db.exec(select(col(Task.user_id)).where(col(Task.id) == task_id))
+    return res.one_or_none()
 
 
 # ---------------------------------------------------------------------------
@@ -304,14 +304,14 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         # observers see the join event; this prevents anyio cancel-scope races
         # in tests where a peer WS closes on receiving the broadcast.
         if worker_id:
-            result = await ctx.db.execute(
+            result = await ctx.db.exec(
                 select(Task).where(
                     col(Task.guild_id) == ctx.guild_pk,
                     col(Task.worker_id) == worker_id,
                     col(Task.state).in_(["pending", "working"]),
                 )
             )
-            pending_tasks = result.scalars().all()
+            pending_tasks = result.all()
             for pt in pending_tasks:
                 logger.info(
                     "join: replaying task-assigned for pending task %s to worker %s",
@@ -340,12 +340,12 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         "joinedAt": joined_at.isoformat(),
     }
     if worker_id:
-        r = await ctx.db.execute(
+        r = await ctx.db.exec(
             select(col(Worker.name)).where(
                 col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk
             )
         )
-        stored_name = r.scalar_one_or_none()
+        stored_name = r.one_or_none()
         broadcast_payload["workerName"] = stored_name or worker_display_name(worker_id)
     await broadcast(ctx.guild_id, broadcast_payload)
 
@@ -385,7 +385,7 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
     task_id_to_release: str | None = None
     agent_worker_id_for_release: str | None = None
     if state in _LOCK_RELEASE_AGENT_STATES and agent_id:
-        row = await ctx.db.execute(
+        row = await ctx.db.exec(
             select(col(Agent.current_task_id), col(Agent.worker_id)).where(
                 col(Agent.id) == agent_id, col(Agent.guild_id) == ctx.guild_pk
             )
@@ -505,10 +505,10 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
     created_at = datetime.now(UTC)
     worker_id_for_log = msg_worker_id
     if worker_id_for_log is None and msg_agent_id:
-        result = await ctx.db.execute(
+        result = await ctx.db.exec(
             select(col(Agent.worker_id)).where(col(Agent.id) == msg_agent_id)
         )
-        worker_id_for_log = result.scalar_one_or_none()
+        worker_id_for_log = result.one_or_none()
     if line:
         ctx.db.add(
             TaskLog(
@@ -556,14 +556,14 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     # Query the DB for agents belonging to this specific worker so the count
     # is accurate even when multiple workers share the same WS connection or
     # agents from previous sessions are still tracked in joined_agents.
-    count_res = await ctx.db.execute(
+    count_res = await ctx.db.exec(
         select(func.count(col(Agent.id))).where(
             col(Agent.worker_id) == worker_id,
             col(Agent.guild_id) == ctx.guild_pk,
             col(Agent.state) != "offline",
         )
     )
-    agent_count = count_res.scalar_one()
+    agent_count = count_res.one()
     await _trigger_foreman(
         ctx.guild_id,
         "worker-online",
@@ -731,7 +731,7 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     # was locked, then re-trigger the foreman with their instructions so it can
     # decide whether to dispatch them.
     queued_payloads: list[dict] = []
-    result = await ctx.db.execute(
+    result = await ctx.db.exec(
         select(col(TaskEvent.id), col(TaskEvent.payload_json))
         .where(col(TaskEvent.task_id) == task_id, col(TaskEvent.event_type) == "pending-followup")
         .order_by(col(TaskEvent.id))

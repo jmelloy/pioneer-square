@@ -17,10 +17,10 @@ from events import broadcast
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import col
+from sqlmodel import col, select
 from utils import generate_guild_id, row_to_dict
 from ws_handlers import _resolve_user_identifier
 
@@ -75,10 +75,8 @@ async def create_guild(
     created_at = datetime.now(UTC)
     db = await get_db()
     try:
-        result = await db.execute(
-            select(col(Guild.guild_id)).where(col(Guild.deleted_at).is_(None))
-        )
-        existing_ids = {row[0] for row in result.fetchall()}
+        result = await db.exec(select(col(Guild.guild_id)).where(col(Guild.deleted_at).is_(None)))
+        existing_ids = set(result.all())
         guild_id = generate_guild_id(name=data.name or "", existing_ids=existing_ids)
         guild_name = data.name or f"Guild {guild_id}"
         try:
@@ -111,7 +109,7 @@ async def create_guild(
 async def list_guilds(github_user_id: str = Depends(require_user)):
     db = await get_db()
     try:
-        result = await db.execute(
+        result = await db.exec(
             select(
                 col(Guild.guild_id).label("id"),
                 col(Guild.created_at),
@@ -134,7 +132,7 @@ async def list_guilds(github_user_id: str = Depends(require_user)):
             .group_by(col(Guild.guild_id), col(Guild.created_at), col(Guild.name))
             .order_by(col(Guild.created_at).desc())
         )
-        return [dict(r._mapping) for r in result.fetchall()]
+        return [dict(r._mapping) for r in result.all()]
     finally:
         await db.close()
 
@@ -147,8 +145,8 @@ async def update_guild(
 ):
     db = await get_db()
     try:
-        result = await db.execute(select(Guild).where(col(Guild.guild_id) == guild_id))
-        guild = result.scalar_one_or_none()
+        result = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+        guild = result.one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
         if data.name is not None:
@@ -190,12 +188,12 @@ async def update_guild(
 async def get_guild(guild_id: str, github_user_id: str = Depends(require_member())):
     db = await get_db()
     try:
-        result = await db.execute(select(Guild).where(col(Guild.guild_id) == guild_id))
-        guild = result.scalar_one_or_none()
+        result = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+        guild = result.one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
         guild_pk = guild.id
-        result = await db.execute(
+        result = await db.exec(
             select(Agent, col(Worker.name).label("worker_name"))
             .outerjoin(Worker, col(Worker.id) == col(Agent.worker_id))
             .where(
@@ -205,14 +203,14 @@ async def get_guild(guild_id: str, github_user_id: str = Depends(require_member(
             )
         )
         agent_rows = result.all()
-        result = await db.execute(
+        result = await db.exec(
             select(Message)
             .where(col(Message.guild_id) == guild_pk)
             # .id.desc() is a stable tiebreaker because message IDs are auto-increment integers.
             .order_by(col(Message.created_at).desc(), col(Message.id).desc())
             .limit(100)
         )
-        messages = result.scalars().all()
+        messages = result.all()
         return {
             **row_to_dict(guild),
             "id": guild.guild_id,  # keep text guild_id as "id" for API compatibility
@@ -236,7 +234,7 @@ async def list_guild_members(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
+        result = await db.exec(
             select(
                 col(GuildMember.user_id),
                 col(GuildMember.role),
@@ -249,7 +247,7 @@ async def list_guild_members(
             .where(col(GuildMember.guild_id) == guild_pk)
             .order_by(col(GuildMember.created_at).asc())
         )
-        return [dict(r._mapping) for r in result.fetchall()]
+        return [dict(r._mapping) for r in result.all()]
     finally:
         await db.close()
 
@@ -314,22 +312,22 @@ async def update_guild_member(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        res = await db.execute(
+        res = await db.exec(
             select(GuildMember).where(
                 col(GuildMember.guild_id) == guild_pk, col(GuildMember.user_id) == user_id
             )
         )
-        member = res.scalar_one_or_none()
+        member = res.one_or_none()
         if not member:
             raise HTTPException(status_code=404, detail="Member not found")
         # Don't let the last owner demote themselves and lock the guild.
         if member.role == "owner" and data.role != "owner":
-            owner_count = await db.execute(
+            owner_count = await db.exec(
                 select(func.count())
                 .select_from(GuildMember)
                 .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
             )
-            if (owner_count.scalar() or 0) <= 1:
+            if (owner_count.one() or 0) <= 1:
                 raise HTTPException(
                     status_code=400, detail="Cannot demote the last owner of a guild"
                 )
@@ -342,8 +340,8 @@ async def update_guild_member(
 
 async def _ensure_webhook_secret(db, guild_id: str) -> str:
     """Return the guild's webhook secret, generating one on first access."""
-    res = await db.execute(select(Guild).where(col(Guild.guild_id) == guild_id))
-    guild = res.scalar_one_or_none()
+    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
     if not guild.webhook_secret:
@@ -364,8 +362,8 @@ async def rotate_webhook_secret(
     """
     db = await get_db()
     try:
-        res = await db.execute(select(Guild).where(col(Guild.guild_id) == guild_id))
-        guild = res.scalar_one_or_none()
+        res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+        guild = res.one_or_none()
         if not guild:
             raise HTTPException(status_code=404, detail="Guild not found")
         guild.webhook_secret = secrets.token_hex(32)
@@ -405,21 +403,21 @@ async def remove_guild_member(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        res = await db.execute(
+        res = await db.exec(
             select(GuildMember).where(
                 col(GuildMember.guild_id) == guild_pk, col(GuildMember.user_id) == user_id
             )
         )
-        member = res.scalar_one_or_none()
+        member = res.one_or_none()
         if not member:
             raise HTTPException(status_code=404, detail="Member not found")
         if member.role == "owner":
-            owner_count = await db.execute(
+            owner_count = await db.exec(
                 select(func.count())
                 .select_from(GuildMember)
                 .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
             )
-            if (owner_count.scalar() or 0) <= 1:
+            if (owner_count.one() or 0) <= 1:
                 raise HTTPException(
                     status_code=400, detail="Cannot remove the last owner of a guild"
                 )

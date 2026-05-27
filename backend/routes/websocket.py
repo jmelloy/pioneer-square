@@ -17,8 +17,8 @@ from database import get_db
 from events import agent_owner_lock, agent_owners, broadcast, connections, foreman_connections
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from models import Agent, Guild, UserSession, Worker
-from sqlalchemy import select, update
-from sqlmodel import col
+from sqlalchemy import update
+from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 router = APIRouter()
@@ -43,8 +43,8 @@ async def _touch_agent(
         return
     now = datetime.now(UTC)
     if agent_id and worker_id is None:
-        res = await db.execute(select(col(Agent.worker_id)).where(col(Agent.id) == agent_id))
-        worker_id = res.scalar_one_or_none()
+        res = await db.exec(select(col(Agent.worker_id)).where(col(Agent.id) == agent_id))
+        worker_id = res.one_or_none()
     if worker_id:
         await db.execute(
             update(Worker)
@@ -81,10 +81,10 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
     with anyio.CancelScope(shield=True):
         _gp_db = await get_db()
         try:
-            _gp_res = await _gp_db.execute(
+            _gp_res = await _gp_db.exec(
                 select(col(Guild.id)).where(col(Guild.guild_id) == guild_id)
             )
-            _guild_pk = _gp_res.scalar_one_or_none()
+            _guild_pk = _gp_res.one_or_none()
         except Exception:
             logger.exception("WS guild id lookup failed for guild %s", guild_id)
         finally:
@@ -99,10 +99,10 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         if _token:
             _auth_db = await get_db()
             try:
-                _res = await _auth_db.execute(
+                _res = await _auth_db.exec(
                     select(col(UserSession.github_user_id)).where(col(UserSession.token) == _token)
                 )
-                ws_user_id = _res.scalar_one_or_none()
+                ws_user_id = _res.one_or_none()
             except Exception:
                 logger.exception("WS token lookup failed (token treated as anonymous)")
             finally:
@@ -180,7 +180,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                     try:
                         if stale_agents:
                             wid_rows = (
-                                await db.execute(
+                                await db.exec(
                                     select(col(Agent.worker_id)).where(
                                         col(Agent.id).in_(stale_agents),
                                         col(Agent.guild_id) == _guild_pk,
@@ -188,7 +188,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                                     )
                                 )
                             ).all()
-                            stale_worker_ids = {r[0] for r in wid_rows}
+                            stale_worker_ids = set(wid_rows)
                         for agent_id in stale_agents:
                             await db.execute(
                                 update(Agent)
