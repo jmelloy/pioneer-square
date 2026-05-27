@@ -717,10 +717,9 @@ async def ci_notify(guild_id: str, body: CINotifyPayload, request: Request) -> R
     db = await get_db()
     try:
         guild_res = await db.exec(select(col(Guild.id)).where(col(Guild.guild_id) == guild_id))
-        guild_row = guild_res.one_or_none()
-        if guild_row is None:
+        guild_pk = guild_res.one_or_none()
+        if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        guild_pk = guild_row.id
 
         task_id = body.task_id
         if not task_id and body.pr_number is not None:
