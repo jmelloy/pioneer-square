@@ -427,14 +427,10 @@ async def test_oidc_token_accepted_when_receiver_enabled(monkeypatch):
     mock_db = AsyncMock()
     mock_db.execute.return_value = exec_result
 
-    async def fake_get_db():
-        return mock_db
-
-    monkeypatch.setattr("auth_deps.get_db", fake_get_db)
     monkeypatch.setattr("auth_deps.get_guild_pk", AsyncMock(return_value=1))
 
     with patch("foreman.oidc._fetch_jwks", return_value=[jwk]):
-        result = await auth_deps.authorize_worker_or_member("g-test", token)
+        result = await auth_deps.authorize_worker_or_member("g-test", token, mock_db)
 
     assert result == "oidc:external-agent-1"
 
@@ -465,16 +461,12 @@ async def test_oidc_token_rejected_when_receiver_disabled(monkeypatch):
     mock_db = AsyncMock()
     mock_db.execute.return_value = exec_result
 
-    async def fake_get_db():
-        return mock_db
-
-    monkeypatch.setattr("auth_deps.get_db", fake_get_db)
     monkeypatch.setattr("auth_deps.get_guild_pk", AsyncMock(return_value=1))
 
     with (
         patch("foreman.oidc._fetch_jwks", return_value=[jwk]),
         pytest.raises(HTTPException) as exc_info,
     ):
-        await auth_deps.authorize_worker_or_member("g-test", token)
+        await auth_deps.authorize_worker_or_member("g-test", token, mock_db)
 
     assert exc_info.value.status_code == 401

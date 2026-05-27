@@ -96,51 +96,53 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 except Exception:
                     logger.exception("WS token lookup failed (token treated as anonymous)")
 
-        # Open the main session inside the shield so all setup awaits are
-        # protected; deferred cancellation fires at receive_json() instead.
-        db = AsyncSessionLocal()
-    ctx = ws_handlers.WSContext(
-        websocket=websocket,
-        guild_id=guild_id,
-        guild_pk=_guild_pk,
-        db=db,
-        ws_user_id=ws_user_id,
-    )
-    joined_agents = ctx.joined_agents  # alias for the disconnect cleanup below
-    try:
-        while True:
-            data = await websocket.receive_json()
+    # Open the main long-lived session as a proper context manager so the pool
+    # slot is always returned via __aexit__, even when db.close() would raise
+    # (e.g. the underlying asyncpg connection was already closed by a
+    # CancelledError).  The context manager's __aexit__ is called *after* the
+    # inner finally block, so all cleanup DB operations below can still use db.
+    async with AsyncSessionLocal() as db:
+        ctx = ws_handlers.WSContext(
+            websocket=websocket,
+            guild_id=guild_id,
+            guild_pk=_guild_pk,
+            db=db,
+            ws_user_id=ws_user_id,
+        )
+        joined_agents = ctx.joined_agents  # alias for the disconnect cleanup below
+        try:
+            while True:
+                data = await websocket.receive_json()
 
-            # Refresh last_seen for any inbound frame so the sweeper knows
-            # this worker is still alive. Cheap no-op for browser users
-            # (they don't carry an agentId/workerId).
-            await _touch_agent(db, ctx.guild_pk, data.get("agentId"), data.get("workerId"))
+                # Refresh last_seen for any inbound frame so the sweeper knows
+                # this worker is still alive. Cheap no-op for browser users
+                # (they don't carry an agentId/workerId).
+                await _touch_agent(db, ctx.guild_pk, data.get("agentId"), data.get("workerId"))
 
-            await ws_handlers.dispatch(ctx, data)
+                await ws_handlers.dispatch(ctx, data)
 
-    except WebSocketDisconnect:
-        if guild_id in connections and websocket in connections[guild_id]:
-            connections[guild_id].remove(websocket)
-    except asyncio.CancelledError:
-        # Deferred cancellation from the shielded setup phase (WS closed before
-        # setup completed).  Clean up the connection slot and let the finally
-        # block handle the rest; do NOT re-raise so sibling connections are not
-        # cascade-cancelled by the anyio task group.
-        if guild_id in connections and websocket in connections[guild_id]:
-            connections[guild_id].remove(websocket)
-    except Exception:
-        logger.exception("WS handler crashed for guild %s", guild_id)
-        if guild_id in connections and websocket in connections[guild_id]:
-            connections[guild_id].remove(websocket)
-    finally:
-        # Shield the cleanup from anyio cancel-scope cancellation so that
-        # db operations and db.close() always run to completion.  Without
-        # the shield, a cancelled cancel scope (e.g. TestClient teardown)
-        # raises Cancelled inside the asyncpg layer, which then propagates
-        # as an unhandled exception from this task and causes the anyio task
-        # group to cancel sibling connections.
-        with anyio.CancelScope(shield=True):
-            try:
+        except WebSocketDisconnect:
+            if guild_id in connections and websocket in connections[guild_id]:
+                connections[guild_id].remove(websocket)
+        except asyncio.CancelledError:
+            # Deferred cancellation from the shielded setup phase (WS closed before
+            # setup completed).  Clean up the connection slot and let the finally
+            # block handle the rest; do NOT re-raise so sibling connections are not
+            # cascade-cancelled by the anyio task group.
+            if guild_id in connections and websocket in connections[guild_id]:
+                connections[guild_id].remove(websocket)
+        except Exception:
+            logger.exception("WS handler crashed for guild %s", guild_id)
+            if guild_id in connections and websocket in connections[guild_id]:
+                connections[guild_id].remove(websocket)
+        finally:
+            # Shield the cleanup from anyio cancel-scope cancellation so that
+            # db operations always run to completion.  Without the shield, a
+            # cancelled cancel scope (e.g. TestClient teardown) raises Cancelled
+            # inside the asyncpg layer, which then propagates as an unhandled
+            # exception from this task and causes the anyio task group to cancel
+            # sibling connections.
+            with anyio.CancelScope(shield=True):
                 # If this socket was the active external foreman, evict it so
                 # subsequent trigger events fall back to the embedded foreman.
                 if foreman_connections.get(guild_id) is websocket:
@@ -227,14 +229,3 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         offline_lines,
                         task_name="foreman.worker-offline:disconnect-batch",
                     )
-            finally:
-                # If a cancellation was delivered inside a handler (e.g.
-                # handle_worker_disconnect) the underlying asyncpg connection
-                # may already be closed, making the implicit rollback inside
-                # db.close() raise ValueError("Connection closed").  Swallow
-                # that so the teardown error doesn't propagate to the test
-                # client or the caller.
-                try:
-                    await db.close()
-                except Exception:
-                    logger.debug("WS db session close error during teardown", exc_info=True)

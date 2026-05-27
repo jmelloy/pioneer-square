@@ -301,9 +301,10 @@ async def run_foreman_ai(
     if not user_id:
         user_id = await _get_guild_user_id(guild_id) or guild_id
 
-    # Build live context for the system prompt.  The session is kept open until
-    # the end of the function so the tool_use / tool_result Message rows and the
-    # final chat Message can all be written without opening fresh connections.
+    # Build live context for the system prompt using a short-lived session that
+    # is released before any Anthropic API calls.  Per-round Message inserts
+    # also use short-lived sessions so the pool is never held idle during LLM
+    # or tool-execution I/O.
     async with AsyncSessionLocal() as db:
         guild_result = await db.execute(
             select(Guild.name, Guild.primary_repo).where(Guild.guild_id == guild_id)
@@ -337,311 +338,312 @@ async def run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.fetchall()
         ]
+    # Session closed — guild_pk_val is cached for the rest of the function.
 
-        try:
-            workers_block = json.dumps(
-                [
-                    {
-                        "id": r["id"],
-                        "state": r["worker_state"] or "idle",
-                        "repos": json.loads(r["repos"] or "[]"),
-                        **({"org": r["org"]} if r.get("org") else {}),
-                        "agent_count": r["agent_count"] or 0,
-                    }
-                    for r in worker_rows
-                ],
-                indent=2,
-            )
-            cutoff_ts = datetime.now(UTC).timestamp() - _24H_SECS
-            summarized_tasks = [
-                s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
-            ]
-            tasks_block = json.dumps(summarized_tasks, indent=2)
-            system_blocks = build_system_blocks(primary_repo=primary_repo)
-            state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
-            # Legacy single-string render — persisted for audit only, not sent to the API.
-            audit_system = build_system_prompt(
-                workers_block, tasks_block, extra_context, primary_repo=primary_repo
-            )
+    try:
+        workers_block = json.dumps(
+            [
+                {
+                    "id": r["id"],
+                    "state": r["worker_state"] or "idle",
+                    "repos": json.loads(r["repos"] or "[]"),
+                    **({"org": r["org"]} if r.get("org") else {}),
+                    "agent_count": r["agent_count"] or 0,
+                }
+                for r in worker_rows
+            ],
+            indent=2,
+        )
+        cutoff_ts = datetime.now(UTC).timestamp() - _24H_SECS
+        summarized_tasks = [
+            s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
+        ]
+        tasks_block = json.dumps(summarized_tasks, indent=2)
+        system_blocks = build_system_blocks(primary_repo=primary_repo)
+        state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
+        # Legacy single-string render — persisted for audit only, not sent to the API.
+        audit_system = build_system_prompt(
+            workers_block, tasks_block, extra_context, primary_repo=primary_repo
+        )
 
+        logger.info(
+            "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
+            "system_chars=%d state_chars=%d extra_context_chars=%d",
+            guild_id,
+            len(worker_rows),
+            len(summarized_tasks),
+            len(system_blocks[0]["text"]),
+            len(state_preamble),
+            len(extra_context),
+        )
+        logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
+        logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
+
+        # Persist the rendered prompt + human turn for auditing; the API receives
+        # `system_blocks` (cacheable) and the state preamble injected at send time.
+        await _save_turn(guild_id, user_id, "system", audit_system)
+        await _save_turn(guild_id, user_id, "user", human_message)
+        messages = await _load_history(guild_id, user_id)
+
+        logger.info(
+            "guild=%s run_foreman_ai: %d messages loaded from history; human_message_chars=%d",
+            guild_id,
+            len(messages),
+            len(human_message),
+        )
+
+        # Inject live state into the just-loaded current human turn so it travels
+        # with this call only — the DB still holds just the human's literal text.
+        _inject_state_preamble(messages, state_preamble)
+
+        client = _get_anthropic_client()
+
+        text_parts = []
+        for round_num in range(MAX_FOREMAN_ROUNDS):
+            messages = prune_history(messages)
+            messages = strip_orphaned_tool_results(messages)
+            _stamp_message_cache_breakpoint(messages)
             logger.info(
-                "guild=%s run_foreman_ai: workers=%d tasks_in_context=%d "
-                "system_chars=%d state_chars=%d extra_context_chars=%d",
+                "guild=%s run_foreman_ai round %d: sending %d messages to Claude",
                 guild_id,
-                len(worker_rows),
-                len(summarized_tasks),
-                len(system_blocks[0]["text"]),
-                len(state_preamble),
-                len(extra_context),
-            )
-            logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
-            logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
-
-            # Persist the rendered prompt + human turn for auditing; the API receives
-            # `system_blocks` (cacheable) and the state preamble injected at send time.
-            await _save_turn(guild_id, user_id, "system", audit_system)
-            await _save_turn(guild_id, user_id, "user", human_message)
-            messages = await _load_history(guild_id, user_id)
-
-            logger.info(
-                "guild=%s run_foreman_ai: %d messages loaded from history; human_message_chars=%d",
-                guild_id,
+                round_num,
                 len(messages),
-                len(human_message),
+            )
+            resp = await client.messages.create(
+                model=FOREMAN_MODEL,
+                max_tokens=1024,
+                system=system_blocks,
+                messages=messages,
+                tools=FOREMAN_TOOLS,
+            )
+            usage = resp.usage
+            _input_tokens = getattr(usage, "input_tokens", 0) or 0
+            _output_tokens = getattr(usage, "output_tokens", 0) or 0
+            logger.info(
+                "guild=%s run_foreman_ai round %d: stop_reason=%s content_blocks=%d "
+                "input=%d cache_read=%d cache_write=%d output=%d",
+                guild_id,
+                round_num,
+                resp.stop_reason,
+                len(resp.content),
+                _input_tokens,
+                getattr(usage, "cache_read_input_tokens", 0) or 0,
+                getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                _output_tokens,
             )
 
-            # Inject live state into the just-loaded current human turn so it travels
-            # with this call only — the DB still holds just the human's literal text.
-            _inject_state_preamble(messages, state_preamble)
+            # Persist assistant turn and append to local messages
+            asst_turn_id = await _save_turn(guild_id, user_id, "assistant", resp.content)
+            await _update_turn_tokens(asst_turn_id, _input_tokens, _output_tokens)
+            messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
+            # Re-parse so messages stays as plain dicts (not SDK objects)
+            messages[-1]["content"] = json.loads(messages[-1]["content"])
 
-            client = _get_anthropic_client()
-
-            text_parts = []
-            for round_num in range(MAX_FOREMAN_ROUNDS):
-                messages = prune_history(messages)
-                messages = strip_orphaned_tool_results(messages)
-                _stamp_message_cache_breakpoint(messages)
-                logger.info(
-                    "guild=%s run_foreman_ai round %d: sending %d messages to Claude",
-                    guild_id,
-                    round_num,
-                    len(messages),
-                )
-                resp = await client.messages.create(
-                    model=FOREMAN_MODEL,
-                    max_tokens=1024,
-                    system=system_blocks,
-                    messages=messages,
-                    tools=FOREMAN_TOOLS,
-                )
-                usage = resp.usage
-                _input_tokens = getattr(usage, "input_tokens", 0) or 0
-                _output_tokens = getattr(usage, "output_tokens", 0) or 0
-                logger.info(
-                    "guild=%s run_foreman_ai round %d: stop_reason=%s content_blocks=%d "
-                    "input=%d cache_read=%d cache_write=%d output=%d",
-                    guild_id,
-                    round_num,
-                    resp.stop_reason,
-                    len(resp.content),
-                    _input_tokens,
-                    getattr(usage, "cache_read_input_tokens", 0) or 0,
-                    getattr(usage, "cache_creation_input_tokens", 0) or 0,
-                    _output_tokens,
-                )
-
-                # Persist assistant turn and append to local messages
-                asst_turn_id = await _save_turn(guild_id, user_id, "assistant", resp.content)
-                await _update_turn_tokens(asst_turn_id, _input_tokens, _output_tokens)
-                messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
-                # Re-parse so messages stays as plain dicts (not SDK objects)
-                messages[-1]["content"] = json.loads(messages[-1]["content"])
-
-                # Emit text blocks immediately so narration appears inline with tool calls,
-                # not batched at the end of the turn.
-                _now = datetime.now(UTC)
-                for b in resp.content:
-                    if b.type == "text" and b.text.strip():
-                        text_parts.append(b.text.strip())
-                        await broadcast(
-                            guild_id,
-                            {
-                                "type": "chat",
-                                "from": "foreman",
-                                "to": "user",
-                                "content": b.text.strip(),
-                                "createdAt": _now,
-                            },
-                        )
-
-                tool_uses = [b for b in resp.content if b.type == "tool_use"]
-                if not tool_uses:
-                    break  # end_turn — foreman is done
-
-                # Broadcast tool-use events so the frontend chat shows them live
-                for tu in tool_uses:
+            # Emit text blocks immediately so narration appears inline with tool calls,
+            # not batched at the end of the turn.
+            _now = datetime.now(UTC)
+            for b in resp.content:
+                if b.type == "text" and b.text.strip():
+                    text_parts.append(b.text.strip())
                     await broadcast(
                         guild_id,
                         {
                             "type": "chat",
                             "from": "foreman",
-                            "role": "tool_use",
                             "to": "user",
-                            "content": f"▶ {tu.name}",
-                            "toolName": tu.name,
-                            "toolInput": dict(tu.input) if tu.input else {},
-                            "toolId": tu.id,
+                            "content": b.text.strip(),
                             "createdAt": _now,
                         },
                     )
 
-                _tool_use_ts = _now  # capture before exec_tools may raise
+            tool_uses = [b for b in resp.content if b.type == "tool_use"]
+            if not tool_uses:
+                break  # end_turn — foreman is done
 
-                tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
-                # Truncate verbose results; filter to only IDs in the current batch so
-                # stale results that survived history trimming are never persisted.
-                current_tool_use_ids = {tu.id for tu in tool_uses}
-                trimmed = [
-                    {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r
-                    for r in tool_results
-                    if r.get("tool_use_id") in current_tool_use_ids
-                ]
-
-                # Broadcast tool-result events
-                _now = datetime.now(UTC)
-                for result in trimmed:
-                    await broadcast(
-                        guild_id,
-                        {
-                            "type": "chat",
-                            "from": "foreman",
-                            "role": "tool_result",
-                            "to": "user",
-                            "content": result.get("content", ""),
-                            "toolId": result.get("tool_use_id"),
-                            "toolOutput": result.get("content", ""),
-                            "isError": result.get("is_error", False),
-                            "createdAt": _now,
-                        },
-                    )
-
-                # Persist tool_use and tool_result together in one transaction
-                # so exec_tools raising never leaves tool_use rows without their results.
-                try:
-                    for tu in tool_uses:
-                        db.add(
-                            Message(
-                                guild_id=guild_pk_val,
-                                from_agent="foreman",
-                                to_agent="user",
-                                content=f"▶ {tu.name}",
-                                message_type="chat",
-                                role="tool_use",
-                                meta=json.dumps(
-                                    {
-                                        "toolId": tu.id,
-                                        "toolName": tu.name,
-                                        "toolInput": dict(tu.input) if tu.input else {},
-                                    }
-                                ),
-                                created_at=_tool_use_ts,
-                            )
-                        )
-                    for result in trimmed:
-                        db.add(
-                            Message(
-                                guild_id=guild_pk_val,
-                                from_agent="foreman",
-                                to_agent="user",
-                                content=result.get("content", "") or "",
-                                message_type="chat",
-                                role="tool_result",
-                                meta=json.dumps(
-                                    {
-                                        "toolId": result.get("tool_use_id"),
-                                        "isError": result.get("is_error", False),
-                                    }
-                                ),
-                                created_at=_now,
-                            )
-                        )
-                    await db.commit()
-                except Exception:
-                    await db.rollback()
-                    raise
-
-                # Persist tool_result turn as a child of the assistant turn
-                await _save_turn(
-                    guild_id,
-                    user_id,
-                    "user",
-                    trimmed,
-                    is_tool_response=True,
-                    parent_id=asst_turn_id,
-                )
-                logger.info(
-                    "guild=%s round %d: %d tool call(s) dispatched: %s",
-                    guild_id,
-                    round_num,
-                    len(trimmed),
-                    [
-                        {
-                            "tool_use_id": r["tool_use_id"],
-                            "name": r.get("name"),
-                            "is_error": r.get("is_error", False),
-                        }
-                        for r in trimmed
-                    ],
-                )
-                messages.append({"role": "user", "content": trimmed})
-            else:
-                # Loop exhausted: round MAX_FOREMAN_ROUNDS-1 returned tool_uses and
-                # we just executed them, but have no rounds left to send results
-                # back. Force a final tool-free wrap-up so the conversation ends
-                # cleanly (no orphaned tool_use, no consecutive user turns) and
-                # the human gets a summary of what the foreman accomplished.
-                logger.warning(
-                    "guild=%s run_foreman_ai: hit %d-round safety cap, forcing wrap-up",
-                    guild_id,
-                    MAX_FOREMAN_ROUNDS,
-                )
-                messages = prune_history(messages)
-                messages = strip_orphaned_tool_results(messages)
-                _stamp_message_cache_breakpoint(messages)
-                wrap_resp = await client.messages.create(
-                    model=FOREMAN_MODEL,
-                    max_tokens=1024,
-                    system=system_blocks,
-                    messages=messages,
-                    tools=FOREMAN_TOOLS,
-                    tool_choice={"type": "none"},
-                )
-                wrap_usage = wrap_resp.usage
-                _wrap_input = getattr(wrap_usage, "input_tokens", 0) or 0
-                _wrap_output = getattr(wrap_usage, "output_tokens", 0) or 0
-                logger.info(
-                    "guild=%s run_foreman_ai wrap-up: stop_reason=%s "
-                    "input=%d cache_read=%d cache_write=%d output=%d",
-                    guild_id,
-                    wrap_resp.stop_reason,
-                    _wrap_input,
-                    getattr(wrap_usage, "cache_read_input_tokens", 0) or 0,
-                    getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0,
-                    _wrap_output,
-                )
-                wrap_turn_id = await _save_turn(guild_id, user_id, "assistant", wrap_resp.content)
-                await _update_turn_tokens(wrap_turn_id, _wrap_input, _wrap_output)
-                _now = datetime.now(UTC).isoformat()
-                for b in wrap_resp.content:
-                    if b.type == "text" and b.text.strip():
-                        text_parts.append(b.text.strip())
-                        await broadcast(
-                            guild_id,
-                            {
-                                "type": "chat",
-                                "from": "foreman",
-                                "to": "user",
-                                "content": b.text.strip(),
-                                "createdAt": _now,
-                            },
-                        )
-                cap_note = f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_"
-                text_parts.append(cap_note)
+            # Broadcast tool-use events so the frontend chat shows them live
+            for tu in tool_uses:
                 await broadcast(
                     guild_id,
                     {
                         "type": "chat",
                         "from": "foreman",
+                        "role": "tool_use",
                         "to": "user",
-                        "content": cap_note,
+                        "content": f"▶ {tu.name}",
+                        "toolName": tu.name,
+                        "toolInput": dict(tu.input) if tu.input else {},
+                        "toolId": tu.id,
                         "createdAt": _now,
                     },
                 )
 
-            response_text = "\n".join(text_parts).strip()
-            if response_text:
-                now = datetime.now(UTC)
-                db.add(
+            _tool_use_ts = _now  # capture before exec_tools may raise
+
+            tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
+            # Truncate verbose results; filter to only IDs in the current batch so
+            # stale results that survived history trimming are never persisted.
+            current_tool_use_ids = {tu.id for tu in tool_uses}
+            trimmed = [
+                {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r
+                for r in tool_results
+                if r.get("tool_use_id") in current_tool_use_ids
+            ]
+
+            # Broadcast tool-result events
+            _now = datetime.now(UTC)
+            for result in trimmed:
+                await broadcast(
+                    guild_id,
+                    {
+                        "type": "chat",
+                        "from": "foreman",
+                        "role": "tool_result",
+                        "to": "user",
+                        "content": result.get("content", ""),
+                        "toolId": result.get("tool_use_id"),
+                        "toolOutput": result.get("content", ""),
+                        "isError": result.get("is_error", False),
+                        "createdAt": _now,
+                    },
+                )
+
+            # Persist tool_use and tool_result together in one short-lived
+            # transaction so exec_tools raising never leaves tool_use rows
+            # without their results, and the pool slot is not held during
+            # the next Anthropic API call.
+            async with AsyncSessionLocal() as _msg_db:
+                for tu in tool_uses:
+                    _msg_db.add(
+                        Message(
+                            guild_id=guild_pk_val,
+                            from_agent="foreman",
+                            to_agent="user",
+                            content=f"▶ {tu.name}",
+                            message_type="chat",
+                            role="tool_use",
+                            meta=json.dumps(
+                                {
+                                    "toolId": tu.id,
+                                    "toolName": tu.name,
+                                    "toolInput": dict(tu.input) if tu.input else {},
+                                }
+                            ),
+                            created_at=_tool_use_ts,
+                        )
+                    )
+                for result in trimmed:
+                    _msg_db.add(
+                        Message(
+                            guild_id=guild_pk_val,
+                            from_agent="foreman",
+                            to_agent="user",
+                            content=result.get("content", "") or "",
+                            message_type="chat",
+                            role="tool_result",
+                            meta=json.dumps(
+                                {
+                                    "toolId": result.get("tool_use_id"),
+                                    "isError": result.get("is_error", False),
+                                }
+                            ),
+                            created_at=_now,
+                        )
+                    )
+                await _msg_db.commit()
+
+            # Persist tool_result turn as a child of the assistant turn
+            await _save_turn(
+                guild_id,
+                user_id,
+                "user",
+                trimmed,
+                is_tool_response=True,
+                parent_id=asst_turn_id,
+            )
+            logger.info(
+                "guild=%s round %d: %d tool call(s) dispatched: %s",
+                guild_id,
+                round_num,
+                len(trimmed),
+                [
+                    {
+                        "tool_use_id": r["tool_use_id"],
+                        "name": r.get("name"),
+                        "is_error": r.get("is_error", False),
+                    }
+                    for r in trimmed
+                ],
+            )
+            messages.append({"role": "user", "content": trimmed})
+        else:
+            # Loop exhausted: round MAX_FOREMAN_ROUNDS-1 returned tool_uses and
+            # we just executed them, but have no rounds left to send results
+            # back. Force a final tool-free wrap-up so the conversation ends
+            # cleanly (no orphaned tool_use, no consecutive user turns) and
+            # the human gets a summary of what the foreman accomplished.
+            logger.warning(
+                "guild=%s run_foreman_ai: hit %d-round safety cap, forcing wrap-up",
+                guild_id,
+                MAX_FOREMAN_ROUNDS,
+            )
+            messages = prune_history(messages)
+            messages = strip_orphaned_tool_results(messages)
+            _stamp_message_cache_breakpoint(messages)
+            wrap_resp = await client.messages.create(
+                model=FOREMAN_MODEL,
+                max_tokens=1024,
+                system=system_blocks,
+                messages=messages,
+                tools=FOREMAN_TOOLS,
+                tool_choice={"type": "none"},
+            )
+            wrap_usage = wrap_resp.usage
+            _wrap_input = getattr(wrap_usage, "input_tokens", 0) or 0
+            _wrap_output = getattr(wrap_usage, "output_tokens", 0) or 0
+            logger.info(
+                "guild=%s run_foreman_ai wrap-up: stop_reason=%s "
+                "input=%d cache_read=%d cache_write=%d output=%d",
+                guild_id,
+                wrap_resp.stop_reason,
+                _wrap_input,
+                getattr(wrap_usage, "cache_read_input_tokens", 0) or 0,
+                getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0,
+                _wrap_output,
+            )
+            wrap_turn_id = await _save_turn(guild_id, user_id, "assistant", wrap_resp.content)
+            await _update_turn_tokens(wrap_turn_id, _wrap_input, _wrap_output)
+            _now = datetime.now(UTC).isoformat()
+            for b in wrap_resp.content:
+                if b.type == "text" and b.text.strip():
+                    text_parts.append(b.text.strip())
+                    await broadcast(
+                        guild_id,
+                        {
+                            "type": "chat",
+                            "from": "foreman",
+                            "to": "user",
+                            "content": b.text.strip(),
+                            "createdAt": _now,
+                        },
+                    )
+            cap_note = f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_"
+            text_parts.append(cap_note)
+            await broadcast(
+                guild_id,
+                {
+                    "type": "chat",
+                    "from": "foreman",
+                    "to": "user",
+                    "content": cap_note,
+                    "createdAt": _now,
+                },
+            )
+
+        response_text = "\n".join(text_parts).strip()
+        if response_text:
+            now = datetime.now(UTC)
+            async with AsyncSessionLocal() as _resp_db:
+                _resp_db.add(
                     Message(
                         guild_id=guild_pk_val,
                         from_agent="foreman",
@@ -651,20 +653,20 @@ async def run_foreman_ai(
                         created_at=now,
                     )
                 )
-                await db.commit()
+                await _resp_db.commit()
 
-        except Exception as exc:
-            now = datetime.now(UTC).isoformat()
-            await broadcast(
-                guild_id,
-                {
-                    "type": "chat",
-                    "from": "foreman",
-                    "to": "user",
-                    "content": f"Foreman error: {exc}",
-                    "createdAt": now,
-                },
-            )
+    except Exception as exc:
+        now = datetime.now(UTC).isoformat()
+        await broadcast(
+            guild_id,
+            {
+                "type": "chat",
+                "from": "foreman",
+                "to": "user",
+                "content": f"Foreman error: {exc}",
+                "createdAt": now,
+            },
+        )
 
 
 async def clear_foreman_history(guild_id: str, user_id: str) -> int:

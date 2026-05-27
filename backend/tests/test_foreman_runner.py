@@ -42,6 +42,27 @@ def _mock_session() -> AsyncMock:
     return session
 
 
+def _mock_session_local(session=None, side_effect=None):
+    """Return a mock for AsyncSessionLocal that works as an async context manager.
+
+    foreman/tools.py uses ``async with AsyncSessionLocal() as db:`` so we need
+    a callable that returns an object whose __aenter__ yields the mock session.
+
+    Args:
+        session: the AsyncMock session to yield from __aenter__ (default: new mock).
+        side_effect: if given, __aenter__ raises this exception instead.
+    """
+    if session is None:
+        session = _mock_session()
+    cm = AsyncMock()
+    if side_effect is not None:
+        cm.__aenter__ = AsyncMock(side_effect=side_effect)
+    else:
+        cm.__aenter__ = AsyncMock(return_value=session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=cm)
+
+
 # ---------------------------------------------------------------------------
 # Structure tests
 # ---------------------------------------------------------------------------
@@ -54,7 +75,7 @@ def test_exec_tools_result_has_required_keys():
     tu = _mock_tool_use("message_worker", "toolu_abc123", {"worker_id": "w-1", "message": "hello"})
 
     with (
-        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools.AsyncSessionLocal", _mock_session_local()),
         patch("foreman.tools.broadcast", new=AsyncMock()),
         patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
     ):
@@ -75,7 +96,7 @@ def test_exec_tools_tool_use_id_matches_input():
     tu = _mock_tool_use("message_worker", specific_id, {"worker_id": "w-1", "message": "ping"})
 
     with (
-        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools.AsyncSessionLocal", _mock_session_local()),
         patch("foreman.tools.broadcast", new=AsyncMock()),
         patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
     ):
@@ -95,7 +116,7 @@ def test_exec_tools_content_is_always_string():
     tu = _mock_tool_use("get_task_status", "toolu_str_check", {"task_id": "t-notexist"})
 
     with (
-        patch("foreman.tools.get_db", AsyncMock(return_value=session)),
+        patch("foreman.tools.AsyncSessionLocal", _mock_session_local(session=session)),
         patch("foreman.tools.broadcast", new=AsyncMock()),
     ):
         results = _run(exec_tools("guild1", [tu]))
@@ -110,7 +131,7 @@ def test_exec_tools_no_is_error_on_success():
     tu = _mock_tool_use("message_worker", "toolu_ok", {"worker_id": "w-1", "message": "hi"})
 
     with (
-        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools.AsyncSessionLocal", _mock_session_local()),
         patch("foreman.tools.broadcast", new=AsyncMock()),
         patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
     ):
@@ -131,7 +152,7 @@ def test_exec_tools_error_sets_is_error_true():
 
     tu = _mock_tool_use("finalize_task", "toolu_err1", {"task_id": "t-bad"})
 
-    with patch("foreman.tools.get_db", AsyncMock(side_effect=RuntimeError("DB unavailable"))):
+    with patch("foreman.tools.AsyncSessionLocal", _mock_session_local(side_effect=RuntimeError("DB unavailable"))):
         results = _run(exec_tools("guild1", [tu]))
 
     assert len(results) == 1
@@ -150,7 +171,7 @@ def test_exec_tools_error_preserves_tool_use_id():
     error_id = "toolu_preserve_id_on_error"
     tu = _mock_tool_use("create_task", error_id, {"name": "boom", "description": "x"})
 
-    with patch("foreman.tools.get_db", AsyncMock(side_effect=Exception("kaboom"))):
+    with patch("foreman.tools.AsyncSessionLocal", _mock_session_local(side_effect=Exception("kaboom"))):
         results = _run(exec_tools("guild1", [tu]))
 
     assert results[0]["tool_use_id"] == error_id
@@ -166,7 +187,7 @@ def test_exec_tools_multiple_tools_all_returned():
     ]
 
     with (
-        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools.AsyncSessionLocal", _mock_session_local()),
         patch("foreman.tools.broadcast", new=AsyncMock()),
         patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
     ):
@@ -185,12 +206,13 @@ def test_exec_tools_partial_failure_still_returns_all():
     session = _mock_session()
     call_count = 0
 
-    async def get_db_side_effect():
+    def make_session_local_cm():
+        """Return an async-CM mock; first call raises, subsequent calls succeed."""
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise RuntimeError("first tool DB error")
-        return session
+            return _mock_session_local(side_effect=RuntimeError("first tool DB error")).return_value
+        return _mock_session_local(session=session).return_value
 
     tus = [
         _mock_tool_use("finalize_task", "toolu_fail", {"task_id": "t-bad"}),
@@ -198,7 +220,7 @@ def test_exec_tools_partial_failure_still_returns_all():
     ]
 
     with (
-        patch("foreman.tools.get_db", side_effect=get_db_side_effect),
+        patch("foreman.tools.AsyncSessionLocal", MagicMock(side_effect=make_session_local_cm)),
         patch("foreman.tools.broadcast", new=AsyncMock()),
         patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
     ):
@@ -233,7 +255,7 @@ def test_exec_tools_github_http_error_sets_is_error():
     )
 
     with (
-        patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())),
+        patch("foreman.tools.AsyncSessionLocal", _mock_session_local()),
         patch("foreman.tools._guild_github_token", AsyncMock(return_value=("tok", "user"))),
         patch("foreman.tools._gh_api", side_effect=http_err),
     ):

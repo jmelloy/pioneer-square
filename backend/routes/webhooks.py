@@ -554,11 +554,15 @@ async def github_webhook(
     except IntegrityError:
         await db.rollback()
         result = None
-    await db.commit()
 
     # ``rowcount`` is 0 when ON CONFLICT DO NOTHING fired — i.e. GitHub
     # redelivered an event we already accepted. Return 202 so GitHub stops
     # retrying without re-triggering downstream side effects.
+    # NOTE: we intentionally do NOT commit yet; the duplicate check happens
+    # before the first commit so that GithubEvent, the pr_url back-fill, and
+    # the Message row are all committed atomically at the end of the handler.
+    # This prevents the data-loss window where GithubEvent is committed first
+    # and a subsequent crash prevents the pr_url update from ever being retried.
     is_duplicate = result is None or (result.rowcount or 0) == 0
     if is_duplicate:
         logger.info(
@@ -577,7 +581,6 @@ async def github_webhook(
         await db.execute(
             update(Task).where(Task.id == task_id, Task.pr_url.is_(None)).values(pr_url=pr_url)
         )
-        await db.commit()
 
     logger.info(
         "github webhook accepted guild=%s delivery=%s event=%s action=%s repo=%s pr=%s task=%s",
