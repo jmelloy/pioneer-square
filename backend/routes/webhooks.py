@@ -46,10 +46,14 @@ router = APIRouter()
 # Configurable via WEBHOOK_DEBOUNCE_SECONDS (default: 30 seconds).
 DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "30"))
 
+
 # Shared secret for the /foreman/ci-notify endpoint.  GitHub Actions sets
 # Authorization: Bearer <PIONEER_CI_KEY> on each CI completion POST.
 # When empty the endpoint returns 503 (not configured).
-_CI_KEY: str = os.environ.get("PIONEER_CI_KEY", "")
+# Read at call time so monkeypatch.setenv works in tests and secrets can rotate
+# without a restart.
+def _get_ci_key() -> str:
+    return os.environ.get("PIONEER_CI_KEY", "")
 
 
 # Cap on stored payloads. GitHub webhook payloads are typically <50 KB but
@@ -695,13 +699,14 @@ async def ci_notify(guild_id: str, body: CINotifyPayload, request: Request) -> R
     Auth: ``Authorization: Bearer <PIONEER_CI_KEY>`` where the key matches
     the ``PIONEER_CI_KEY`` environment variable on the backend.
     """
-    if not _CI_KEY:
+    ci_key = _get_ci_key()
+    if not ci_key:
         raise HTTPException(
             status_code=503, detail="CI notifications not configured (PIONEER_CI_KEY not set)"
         )
     auth = request.headers.get("authorization", "")
     provided = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
-    if not hmac.compare_digest(provided.encode(), _CI_KEY.encode()):
+    if not hmac.compare_digest(provided.encode(), ci_key.encode()):
         raise HTTPException(status_code=401, detail="Invalid CI key")
 
     repo = body.repo or ""
@@ -742,25 +747,25 @@ async def ci_notify(guild_id: str, body: CINotifyPayload, request: Request) -> R
             )
         )
         await db.commit()
+        await broadcast(
+            guild_id,
+            {
+                "type": "chat",
+                "from": "github",
+                "to": "foreman",
+                "content": content,
+                "createdAt": created_at.isoformat(),
+            },
+        )
+        logger.info(
+            "ci-notify guild=%s repo=%s pr=%s task=%s conclusion=%s",
+            guild_id,
+            repo,
+            body.pr_number,
+            task_id,
+            conclusion,
+        )
     finally:
         await db.close()
 
-    await broadcast(
-        guild_id,
-        {
-            "type": "chat",
-            "from": "github",
-            "to": "foreman",
-            "content": content,
-            "createdAt": created_at.isoformat(),
-        },
-    )
-    logger.info(
-        "ci-notify guild=%s repo=%s pr=%s task=%s conclusion=%s",
-        guild_id,
-        repo,
-        body.pr_number,
-        task_id,
-        conclusion,
-    )
     return Response(status_code=202)
