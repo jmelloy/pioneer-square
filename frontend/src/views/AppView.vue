@@ -175,7 +175,7 @@ watch(
 .app-layout {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100dvh;
   width: 100%;
   overflow: hidden;
   background: var(--color-bg);
@@ -200,6 +200,8 @@ watch(
     left: 0;
     right: 0;
     height: 52px;
+    padding-bottom: env(safe-area-inset-bottom);
+    box-sizing: content-box;
     background: var(--color-bg-secondary);
     border-top: 2px solid var(--color-brass-dark);
     z-index: 200;
@@ -252,12 +254,12 @@ watch(
     top: 44px;
     left: 0;
     right: 0;
-    bottom: 52px;
+    bottom: calc(52px + env(safe-area-inset-bottom));
     width: 100% !important;
     min-width: 0 !important;
     max-width: 100% !important;
-    height: calc(100dvh - 96px) !important;
-    max-height: calc(100dvh - 96px) !important;
+    height: calc(100dvh - 96px - env(safe-area-inset-bottom)) !important;
+    max-height: calc(100dvh - 96px - env(safe-area-inset-bottom)) !important;
     display: none !important;
   }
 
