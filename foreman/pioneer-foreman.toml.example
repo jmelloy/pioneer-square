@@ -12,18 +12,19 @@ backend_key = ""
 # auth_token = ""
 
 [claude]
-model         = "claude-sonnet-4-6"
+model         = "claude-sonnet-4-6"    # used when provider = "anthropic"
 api_key       = ""                     # falls back to ANTHROPIC_API_KEY env var
 max_rounds    = 10
 history_limit = 40
 
 # AI provider: "anthropic" (default) or "bedrock" (Amazon Bedrock).
 # When using Bedrock: set provider = "bedrock", ensure AWS credentials are
-# available (env vars, ~/.aws/credentials, or IAM role), and update model to
-# the Bedrock model ID (e.g. "anthropic.claude-sonnet-4-5").
+# available (env vars, ~/.aws/credentials, or IAM role), and set bedrock_model
+# to a cross-region inference profile ID (not a plain model ID).
 # Requires: pip install "anthropic[bedrock]"
-# provider   = "anthropic"
-# aws_region = "us-east-1"             # falls back to AWS_DEFAULT_REGION env var
+# provider      = "anthropic"
+# bedrock_model = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+# aws_region    = "us-east-1"          # falls back to AWS_DEFAULT_REGION env var
 
 [poll]
 min_interval = 60     # seconds (doubles each cycle up to max_interval)

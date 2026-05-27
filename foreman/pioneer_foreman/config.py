@@ -29,6 +29,9 @@ class Config:
     auth_token: str | None = None
     # Claude / AI provider settings
     model: str = "claude-sonnet-4-6"
+    # Bedrock uses cross-region inference profiles, not plain model IDs.
+    # Ignored when provider != "bedrock".
+    bedrock_model: str = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
     api_key: str | None = None
     # "anthropic" (default) or "bedrock" (Amazon Bedrock via AsyncAnthropicBedrock)
     provider: str = "anthropic"
@@ -43,6 +46,11 @@ class Config:
     log_level: str = "INFO"
 
     config_path: Path = field(default_factory=Path)
+
+    @property
+    def effective_model(self) -> str:
+        """Return the model ID appropriate for the configured provider."""
+        return self.bedrock_model if self.provider == "bedrock" else self.model
 
     @property
     def http_url(self) -> str:
@@ -139,6 +147,13 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or "claude-sonnet-4-6"
     )
 
+    bedrock_model = (
+        overrides.get("bedrock_model")
+        or claude_block.get("bedrock_model")
+        or os.environ.get("FOREMAN_BEDROCK_MODEL")
+        or "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+    )
+
     provider = (
         overrides.get("provider")
         or claude_block.get("provider")
@@ -167,6 +182,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         backend_key=backend_key,
         auth_token=auth_token,
         model=model,
+        bedrock_model=bedrock_model,
         api_key=api_key,
         provider=provider,
         aws_region=aws_region,

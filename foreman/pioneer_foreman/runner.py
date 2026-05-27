@@ -199,7 +199,7 @@ async def run_foreman_ai(
                 len(messages),
             )
             resp = await client.messages.create(
-                model=config.model,
+                model=config.effective_model,
                 max_tokens=1024,
                 system=system_blocks,
                 messages=messages,
@@ -310,7 +310,7 @@ async def run_foreman_ai(
             messages = strip_orphaned_tool_results(messages)
             _stamp_message_cache_breakpoint(messages)
             wrap_resp = await client.messages.create(
-                model=config.model,
+                model=config.effective_model,
                 max_tokens=1024,
                 system=system_blocks,
                 messages=messages,
