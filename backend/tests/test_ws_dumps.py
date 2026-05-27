@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from uuid import UUID
 
 import pytest
@@ -16,7 +16,7 @@ from events import ws_dumps  # noqa: E402
 
 
 def test_datetime_serializes_to_iso8601():
-    dt = datetime(2024, 3, 15, 10, 30, 0, tzinfo=timezone.utc)
+    dt = datetime(2024, 3, 15, 10, 30, 0, tzinfo=UTC)
     result = json.loads(ws_dumps({"ts": dt}))
     assert result["ts"] == "2024-03-15T10:30:00+00:00"
 
