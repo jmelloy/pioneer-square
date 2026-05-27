@@ -24,11 +24,12 @@ from datetime import UTC, datetime
 
 from database import get_db
 from events import broadcast
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from models import GithubEvent, Guild, Message, Task
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from foreman import reset_foreman_poll, run_foreman_ai
 
@@ -445,7 +446,9 @@ def _build_chat_line(
 
 
 @router.post("/webhooks/github/{guild_id}")
-async def github_webhook(guild_id: str, request: Request) -> Response:
+async def github_webhook(
+    guild_id: str, request: Request, db: AsyncSession = Depends(get_db)
+) -> Response:
     body = await request.body()
     if len(body) > _MAX_PAYLOAD_BYTES * 4:
         # Hard upper bound on accept size; 4× the persisted cap so we still
@@ -465,131 +468,127 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         event_type,
     )
 
-    db = await get_db()
-    try:
-        guild_res = await db.execute(
-            select(Guild.webhook_secret, Guild.id).where(Guild.guild_id == guild_id)
-        )
-        guild_row = guild_res.one_or_none()
-        if not guild_row or not guild_row.webhook_secret:
-            # Guild missing or no secret configured. Don't leak which is which.
-            raise HTTPException(status_code=404, detail="Webhook not configured")
-        secret = guild_row.webhook_secret
-        guild_pk = guild_row.id
+    guild_res = await db.execute(
+        select(Guild.webhook_secret, Guild.id).where(Guild.guild_id == guild_id)
+    )
+    guild_row = guild_res.one_or_none()
+    if not guild_row or not guild_row.webhook_secret:
+        # Guild missing or no secret configured. Don't leak which is which.
+        raise HTTPException(status_code=404, detail="Webhook not configured")
+    secret = guild_row.webhook_secret
+    guild_pk = guild_row.id
 
-        if not _verify_signature(secret, body, signature):
-            logger.warning(
-                "github webhook signature mismatch guild=%s delivery=%s event=%s",
-                guild_id,
-                delivery_id,
-                event_type,
-            )
-            raise HTTPException(status_code=401, detail="Invalid signature")
-
-        # GitHub sends ping deliveries on webhook setup; accept them but skip
-        # the rest of the pipeline (no PR context, no foreman action).
-        if event_type == "ping":
-            logger.info(
-                "github webhook ping guild=%s delivery=%s",
-                guild_id,
-                delivery_id,
-            )
-            return Response(status_code=204)
-
-        try:
-            payload = json.loads(body)
-        except json.JSONDecodeError:
-            logger.warning(
-                "github webhook invalid JSON guild=%s delivery=%s event=%s excerpt=%r",
-                guild_id,
-                delivery_id,
-                event_type,
-                body[:200].decode("utf-8", errors="replace"),
-            )
-            raise HTTPException(status_code=400, detail="Invalid JSON body") from None
-        if not isinstance(payload, dict):
-            logger.warning(
-                "github webhook non-object payload guild=%s delivery=%s event=%s",
-                guild_id,
-                delivery_id,
-                event_type,
-            )
-            raise HTTPException(status_code=400, detail="Payload must be a JSON object")
-
-        action = payload.get("action") if isinstance(payload.get("action"), str) else None
-        pr_number, pr_url, repo = _extract_pr_info(payload)
-        sender = payload.get("sender") or {}
-        sender_login = sender.get("login") if isinstance(sender, dict) else None
-
-        task_row = await _find_task(db, guild_pk, repo, pr_number)
-        task_id = task_row.id if task_row else None
-        task_user_id = task_row.user_id if task_row else None
-
-        # Trim the persisted payload so a runaway diff hunk can't balloon the DB.
-        body_text = body.decode("utf-8", errors="replace")
-        if len(body_text) > _MAX_PAYLOAD_BYTES:
-            body_text = body_text[:_MAX_PAYLOAD_BYTES] + "\n…[truncated]"
-
-        created_at = datetime.now(UTC)
-        stmt = (
-            pg_insert(GithubEvent)
-            .values(
-                guild_id=guild_pk,
-                task_id=task_id,
-                delivery_id=delivery_id,
-                event_type=event_type,
-                action=action,
-                repo=repo or "",
-                pr_number=pr_number,
-                pr_url=pr_url,
-                sender_login=sender_login,
-                payload_json=body_text,
-                created_at=created_at,
-            )
-            .on_conflict_do_nothing(index_elements=["delivery_id"])
-        )
-        try:
-            result = await db.execute(stmt)
-        except IntegrityError:
-            await db.rollback()
-            result = None
-        await db.commit()
-
-        # ``rowcount`` is 0 when ON CONFLICT DO NOTHING fired — i.e. GitHub
-        # redelivered an event we already accepted. Return 202 so GitHub stops
-        # retrying without re-triggering downstream side effects.
-        is_duplicate = result is None or (result.rowcount or 0) == 0
-        if is_duplicate:
-            logger.info(
-                "github webhook duplicate delivery guild=%s delivery=%s event=%s",
-                guild_id,
-                delivery_id,
-                event_type,
-            )
-            return Response(status_code=202)
-
-        # Back-fill pr_url on the task from the webhook payload when a
-        # pull_request event arrives and the task doesn't already have it set.
-        # This is a safety net for the (rare) case where the worker's
-        # task-update message was dropped before pr_url was persisted.
-        if task_id and pr_url and event_type == "pull_request":
-            await db.execute(
-                update(Task).where(Task.id == task_id, Task.pr_url.is_(None)).values(pr_url=pr_url)
-            )
-            await db.commit()
-
-        logger.info(
-            "github webhook accepted guild=%s delivery=%s event=%s action=%s repo=%s pr=%s task=%s",
+    if not _verify_signature(secret, body, signature):
+        logger.warning(
+            "github webhook signature mismatch guild=%s delivery=%s event=%s",
             guild_id,
             delivery_id,
             event_type,
-            action,
-            repo,
-            pr_number,
-            task_id,
         )
-    finally:
-        await db.close()
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # GitHub sends ping deliveries on webhook setup; accept them but skip
+    # the rest of the pipeline (no PR context, no foreman action).
+    if event_type == "ping":
+        logger.info(
+            "github webhook ping guild=%s delivery=%s",
+            guild_id,
+            delivery_id,
+        )
+        return Response(status_code=204)
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        logger.warning(
+            "github webhook invalid JSON guild=%s delivery=%s event=%s excerpt=%r",
+            guild_id,
+            delivery_id,
+            event_type,
+            body[:200].decode("utf-8", errors="replace"),
+        )
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from None
+    if not isinstance(payload, dict):
+        logger.warning(
+            "github webhook non-object payload guild=%s delivery=%s event=%s",
+            guild_id,
+            delivery_id,
+            event_type,
+        )
+        raise HTTPException(status_code=400, detail="Payload must be a JSON object")
+
+    action = payload.get("action") if isinstance(payload.get("action"), str) else None
+    pr_number, pr_url, repo = _extract_pr_info(payload)
+    sender = payload.get("sender") or {}
+    sender_login = sender.get("login") if isinstance(sender, dict) else None
+
+    task_row = await _find_task(db, guild_pk, repo, pr_number)
+    task_id = task_row.id if task_row else None
+    task_user_id = task_row.user_id if task_row else None
+
+    # Trim the persisted payload so a runaway diff hunk can't balloon the DB.
+    body_text = body.decode("utf-8", errors="replace")
+    if len(body_text) > _MAX_PAYLOAD_BYTES:
+        body_text = body_text[:_MAX_PAYLOAD_BYTES] + "\n…[truncated]"
+
+    created_at = datetime.now(UTC)
+    stmt = (
+        pg_insert(GithubEvent)
+        .values(
+            guild_id=guild_pk,
+            task_id=task_id,
+            delivery_id=delivery_id,
+            event_type=event_type,
+            action=action,
+            repo=repo or "",
+            pr_number=pr_number,
+            pr_url=pr_url,
+            sender_login=sender_login,
+            payload_json=body_text,
+            created_at=created_at,
+        )
+        .on_conflict_do_nothing(index_elements=["delivery_id"])
+    )
+    try:
+        result = await db.execute(stmt)
+    except IntegrityError:
+        await db.rollback()
+        result = None
+    await db.commit()
+
+    # ``rowcount`` is 0 when ON CONFLICT DO NOTHING fired — i.e. GitHub
+    # redelivered an event we already accepted. Return 202 so GitHub stops
+    # retrying without re-triggering downstream side effects.
+    is_duplicate = result is None or (result.rowcount or 0) == 0
+    if is_duplicate:
+        logger.info(
+            "github webhook duplicate delivery guild=%s delivery=%s event=%s",
+            guild_id,
+            delivery_id,
+            event_type,
+        )
+        return Response(status_code=202)
+
+    # Back-fill pr_url on the task from the webhook payload when a
+    # pull_request event arrives and the task doesn't already have it set.
+    # This is a safety net for the (rare) case where the worker's
+    # task-update message was dropped before pr_url was persisted.
+    if task_id and pr_url and event_type == "pull_request":
+        await db.execute(
+            update(Task).where(Task.id == task_id, Task.pr_url.is_(None)).values(pr_url=pr_url)
+        )
+        await db.commit()
+
+    logger.info(
+        "github webhook accepted guild=%s delivery=%s event=%s action=%s repo=%s pr=%s task=%s",
+        guild_id,
+        delivery_id,
+        event_type,
+        action,
+        repo,
+        pr_number,
+        task_id,
+    )
 
     await broadcast(
         guild_id,
@@ -618,21 +617,17 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
             "createdAt": chat_now.isoformat(),
         },
     )
-    msg_db = await get_db()
-    try:
-        msg_db.add(
-            Message(
-                guild_id=guild_pk,
-                from_agent="github",
-                to_agent="foreman",
-                content=chat_line,
-                message_type="chat",
-                created_at=chat_now,
-            )
+    db.add(
+        Message(
+            guild_id=guild_pk,
+            from_agent="github",
+            to_agent="foreman",
+            content=chat_line,
+            message_type="chat",
+            created_at=chat_now,
         )
-        await msg_db.commit()
-    finally:
-        await msg_db.close()
+    )
+    await db.commit()
 
     dispatch, skip_reason = _should_dispatch_to_foreman(
         event_type, action, payload, sender_login, task_id

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from database import get_db
+from database import AsyncSessionLocal
 from events import broadcast, emit_terminal_line
 from models import Agent
 from pydantic import BaseModel
@@ -33,8 +33,7 @@ async def set_agent_state(guild_id: str, agent_id: str, state: str) -> None:
     await broadcast(
         guild_id, {"type": "agent-state", "agentId": agent_id, "state": state, "activity": None}
     )
-    db = await get_db()
-    try:
+    async with AsyncSessionLocal() as db:
         from auth_deps import get_guild_pk
 
         guild_pk = await get_guild_pk(db, guild_id)
@@ -44,8 +43,6 @@ async def set_agent_state(guild_id: str, agent_id: str, state: str) -> None:
             .values(state=state, activity=None)
         )
         await db.commit()
-    finally:
-        await db.close()
 
 
 def build_command(req: RunAgentRequest) -> tuple[list[str], bool]:

@@ -49,6 +49,7 @@ from models import (
 )
 from pydantic import BaseModel
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from foreman import clear_foreman_history, get_foreman_history
 
@@ -65,15 +66,12 @@ logger = logging.getLogger(__name__)
 async def get_foreman_context(
     guild_id: str,
     github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db),
 ):
     """Return the stored foreman conversation turns for this guild+user (debug view)."""
-    db = await get_db()
-    try:
-        result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
-        if result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-    finally:
-        await db.close()
+    result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
     history = await get_foreman_history(guild_id, github_user_id)
     return {
         "system": history["system"],
@@ -86,15 +84,12 @@ async def get_foreman_context(
 async def clear_foreman_context(
     guild_id: str,
     github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete all stored foreman turns for this guild+user. Chat history in messages table is preserved."""
-    db = await get_db()
-    try:
-        result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
-        if result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-    finally:
-        await db.close()
+    result = await db.execute(select(Guild.guild_id).where(Guild.guild_id == guild_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
     removed = await clear_foreman_history(guild_id, github_user_id)
     logger.info(
         "Foreman context cleared for guild %s user %s (%d turns removed)",
@@ -114,6 +109,7 @@ async def clear_foreman_context(
 async def get_foreman_state(
     guild_id: str,
     _caller: str = Depends(require_worker_or_member_path),
+    db: AsyncSession = Depends(get_db),
 ):
     """Return a snapshot of guild state for an external foreman process.
 
@@ -145,72 +141,68 @@ async def get_foreman_state(
     Mirrors the state snapshot built by ``run_foreman_ai()`` so the
     standalone foreman can construct the same system-prompt preamble.
     """
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
 
-        # Guild metadata
-        guild_res = await db.execute(
-            select(Guild.name, Guild.primary_repo).where(Guild.guild_id == guild_id)
-        )
-        guild_row = guild_res.one_or_none()
+    # Guild metadata
+    guild_res = await db.execute(
+        select(Guild.name, Guild.primary_repo).where(Guild.guild_id == guild_id)
+    )
+    guild_row = guild_res.one_or_none()
 
-        # Fetch guild owner user_id for the standalone foreman
-        owner_res = await db.execute(
-            select(GuildMember.user_id)
-            .where(GuildMember.guild_id == guild_pk, GuildMember.role == "owner")
-            .limit(1)
-        )
-        owner_user_id = owner_res.scalar_one_or_none()
+    # Fetch guild owner user_id for the standalone foreman
+    owner_res = await db.execute(
+        select(GuildMember.user_id)
+        .where(GuildMember.guild_id == guild_pk, GuildMember.role == "owner")
+        .limit(1)
+    )
+    owner_user_id = owner_res.scalar_one_or_none()
 
-        guild_data = {
-            "name": guild_row.name if guild_row else None,
-            "primary_repo": guild_row.primary_repo if guild_row else None,
-            "owner_user_id": owner_user_id,
+    guild_data = {
+        "name": guild_row.name if guild_row else None,
+        "primary_repo": guild_row.primary_repo if guild_row else None,
+        "owner_user_id": owner_user_id,
+    }
+
+    # Online workers with their active agents
+    worker_rows = await _fetch_online_workers(db, guild_id)
+    workers_data = [
+        {
+            "id": r["id"],
+            "state": r["worker_state"] or "idle",
+            "repos": json.loads(r["repos"] or "[]"),
+            **({"org": r["org"]} if r.get("org") else {}),
+            "agent_count": r["agent_count"] or 0,
+            "agents": r["agents"] or "",
         }
+        for r in worker_rows
+    ]
 
-        # Online workers with their active agents
-        worker_rows = await _fetch_online_workers(db, guild_id)
-        workers_data = [
-            {
-                "id": r["id"],
-                "state": r["worker_state"] or "idle",
-                "repos": json.loads(r["repos"] or "[]"),
-                **({"org": r["org"]} if r.get("org") else {}),
-                "agent_count": r["agent_count"] or 0,
-                "agents": r["agents"] or "",
-            }
-            for r in worker_rows
-        ]
-
-        # Active (non-terminal, non-soft-deleted) tasks
-        _TERMINAL = {"done", "failed", "cancelled"}
-        tasks_res = await db.execute(
-            select(
-                Task.id,
-                Task.worker_id,
-                Task.name,
-                Task.description,
-                Task.state,
-                Task.phase,
-                Task.branch,
-                Task.pr_url,
-                Task.finished_at,
-                Task.created_at,
-                Task.user_id,
-            )
-            .where(
-                Task.guild_id == guild_pk,
-                ~Task.state.in_(list(_TERMINAL)),
-                live_tasks_filter(),
-            )
-            .order_by(Task.created_at.desc())
+    # Active (non-terminal, non-soft-deleted) tasks
+    _TERMINAL = {"done", "failed", "cancelled"}
+    tasks_res = await db.execute(
+        select(
+            Task.id,
+            Task.worker_id,
+            Task.name,
+            Task.description,
+            Task.state,
+            Task.phase,
+            Task.branch,
+            Task.pr_url,
+            Task.finished_at,
+            Task.created_at,
+            Task.user_id,
         )
-        tasks_data = [dict(r._mapping) for r in tasks_res.fetchall()]
-    finally:
-        await db.close()
+        .where(
+            Task.guild_id == guild_pk,
+            ~Task.state.in_(list(_TERMINAL)),
+            live_tasks_filter(),
+        )
+        .order_by(Task.created_at.desc())
+    )
+    tasks_data = [dict(r._mapping) for r in tasks_res.fetchall()]
 
     return {"guild": guild_data, "workers": workers_data, "tasks": tasks_data}
 
@@ -221,6 +213,7 @@ async def get_foreman_history_for_user(
     user_id: str = Query(..., description="GitHub user_id whose thread to fetch"),
     limit: int | None = Query(default=None, description="Max rows to return (newest first)"),
     _caller: str = Depends(require_worker_or_member_path),
+    db: AsyncSession = Depends(get_db),
 ):
     """Return raw ForemanTurn rows for a given user, ordered oldest→newest.
 
@@ -241,30 +234,26 @@ async def get_foreman_history_for_user(
     to ``_load_history()``) on top of these raw rows. ``limit`` caps the
     number of rows returned (applied before the sliding window).
     """
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
 
-        stmt = (
-            select(
-                ForemanTurn.id,
-                ForemanTurn.role,
-                ForemanTurn.content_json,
-                ForemanTurn.is_tool_response,
-                ForemanTurn.parent_id,
-                ForemanTurn.created_at,
-            )
-            .where(ForemanTurn.guild_id == guild_pk, ForemanTurn.user_id == user_id)
-            .order_by(ForemanTurn.id)
+    stmt = (
+        select(
+            ForemanTurn.id,
+            ForemanTurn.role,
+            ForemanTurn.content_json,
+            ForemanTurn.is_tool_response,
+            ForemanTurn.parent_id,
+            ForemanTurn.created_at,
         )
-        if limit is not None and limit > 0:
-            stmt = stmt.limit(limit)
-        result = await db.execute(stmt)
-        turns = result.fetchall()
-    finally:
-        await db.close()
+        .where(ForemanTurn.guild_id == guild_pk, ForemanTurn.user_id == user_id)
+        .order_by(ForemanTurn.id)
+    )
+    if limit is not None and limit > 0:
+        stmt = stmt.limit(limit)
+    result = await db.execute(stmt)
+    turns = result.fetchall()
 
     return [
         {
@@ -283,6 +272,7 @@ async def get_foreman_history_for_user(
 async def get_guild_key(
     guild_id: str,
     _caller: str = Depends(require_worker_or_member_path),
+    db: AsyncSession = Depends(get_db),
 ):
     """Return the guild's Ed25519 signing key for JWT operations.
 
@@ -293,17 +283,13 @@ async def get_guild_key(
     Used by the standalone foreman's ``dnsid sign`` tool to create JWTs
     without direct DB access. Returns 404 if no key has been generated yet.
     """
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.execute(
-            select(GuildKey.key_id, GuildKey.private_key_pem).where(GuildKey.guild_id == guild_pk)
-        )
-        row = result.one_or_none()
-    finally:
-        await db.close()
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.execute(
+        select(GuildKey.key_id, GuildKey.private_key_pem).where(GuildKey.guild_id == guild_pk)
+    )
+    row = result.one_or_none()
 
     if row is None:
         raise HTTPException(status_code=404, detail="No signing key found for this guild")
@@ -330,6 +316,7 @@ async def create_foreman_turn(
     guild_id: str,
     body: ForemanTurnCreate,
     _caller: str = Depends(require_worker_or_member_path),
+    db: AsyncSession = Depends(get_db),
 ):
     """Persist one foreman conversation turn to the DB.
 
@@ -338,27 +325,23 @@ async def create_foreman_turn(
 
     Response: ``{ "id": int, "created_at": str }``
     """
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        created_at = datetime.now(UTC)
-        turn = ForemanTurn(
-            guild_id=guild_pk,
-            user_id=body.user_id,
-            role=body.role,
-            content_json=body.content_json,
-            is_tool_response=1 if body.is_tool_response else 0,
-            parent_id=body.parent_id,
-            created_at=created_at,
-        )
-        db.add(turn)
-        await db.commit()
-        await db.refresh(turn)
-        return {"id": turn.id, "created_at": created_at}
-    finally:
-        await db.close()
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    created_at = datetime.now(UTC)
+    turn = ForemanTurn(
+        guild_id=guild_pk,
+        user_id=body.user_id,
+        role=body.role,
+        content_json=body.content_json,
+        is_tool_response=1 if body.is_tool_response else 0,
+        parent_id=body.parent_id,
+        created_at=created_at,
+    )
+    db.add(turn)
+    await db.commit()
+    await db.refresh(turn)
+    return {"id": turn.id, "created_at": created_at}
 
 
 class ForemanTaskCreate(BaseModel):
@@ -375,6 +358,7 @@ async def create_foreman_task(
     guild_id: str,
     body: ForemanTaskCreate,
     _caller: str = Depends(require_worker_or_member_path),
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a foreman-owned task (worker_id=None — unassigned until a worker picks it up).
 
@@ -385,32 +369,28 @@ async def create_foreman_task(
 
     Also broadcasts a ``task-created`` WS event so the UI sidebar updates.
     """
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
 
-        task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-        name = (body.name or "")[:80]
-        created_at = datetime.now(UTC)
-        db.add(
-            Task(
-                id=task_id,
-                worker_id=None,
-                guild_id=guild_pk,
-                name=name,
-                description=body.description,
-                tool="claude",
-                state="pending",
-                phase=body.phase,
-                created_at=created_at,
-                user_id=body.user_id,
-            )
+    task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    name = (body.name or "")[:80]
+    created_at = datetime.now(UTC)
+    db.add(
+        Task(
+            id=task_id,
+            worker_id=None,
+            guild_id=guild_pk,
+            name=name,
+            description=body.description,
+            tool="claude",
+            state="pending",
+            phase=body.phase,
+            created_at=created_at,
+            user_id=body.user_id,
         )
-        await db.commit()
-    finally:
-        await db.close()
+    )
+    await db.commit()
 
     await broadcast(
         guild_id,
@@ -437,8 +417,8 @@ class TaskPatch(BaseModel):
     worker_id: str | None = None
     branch: str | None = None
     pr_url: str | None = None
-    finished_at: str | None = None
-    deleted_at: str | None = None
+    finished_at: datetime | None = None
+    deleted_at: datetime | None = None
     phase: str | None = None
 
 
@@ -448,6 +428,7 @@ async def patch_task(
     task_id: str,
     body: TaskPatch,
     _caller: str = Depends(require_worker_or_member_path),
+    db: AsyncSession = Depends(get_db),
 ):
     """Partially update a task's mutable fields.
 
@@ -487,23 +468,17 @@ async def patch_task(
     if not update_values:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
 
-        # Verify task exists in this guild
-        exists = await db.execute(
-            select(Task.id).where(Task.id == task_id, Task.guild_id == guild_pk)
-        )
-        if exists.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Task not found")
+    # Verify task exists in this guild
+    exists = await db.execute(select(Task.id).where(Task.id == task_id, Task.guild_id == guild_pk))
+    if exists.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Task not found")
 
-        await db.execute(update(Task).where(Task.id == task_id).values(**update_values))
-        await db.commit()
-    finally:
-        await db.close()
+    await db.execute(update(Task).where(Task.id == task_id).values(**update_values))
+    await db.commit()
 
     # Broadcast task-update with changed fields (camelCase keys for WS protocol)
     _KEY_MAP = {
@@ -539,6 +514,7 @@ async def create_message(
     guild_id: str,
     body: MessageCreate,
     _caller: str = Depends(require_worker_or_member_path),
+    db: AsyncSession = Depends(get_db),
 ):
     """Persist a chat message sent by the external foreman.
 
@@ -550,28 +526,24 @@ async def create_message(
 
     Response: ``{ "message_id": int, "created_at": str }``
     """
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
 
-        created_at = datetime.now(UTC)
-        msg = Message(
-            guild_id=guild_pk,
-            from_agent=body.from_agent,
-            to_agent=body.to_agent,
-            content=body.content,
-            message_type=body.message_type,
-            created_at=created_at,
-            user_id=body.user_id,
-        )
-        db.add(msg)
-        await db.commit()
-        await db.refresh(msg)
-        msg_id = msg.id
-    finally:
-        await db.close()
+    created_at = datetime.now(UTC)
+    msg = Message(
+        guild_id=guild_pk,
+        from_agent=body.from_agent,
+        to_agent=body.to_agent,
+        content=body.content,
+        message_type=body.message_type,
+        created_at=created_at,
+        user_id=body.user_id,
+    )
+    db.add(msg)
+    await db.commit()
+    await db.refresh(msg)
+    msg_id = msg.id
 
     await broadcast(
         guild_id,
@@ -603,23 +575,20 @@ async def update_turn_tokens(
     turn_id: int,
     body: TurnTokensUpdate,
     _caller: str = Depends(require_worker_or_member_path),
+    db: AsyncSession = Depends(get_db),
 ):
     """Update token counts for a saved foreman turn. Used by the standalone foreman."""
     from sqlalchemy import update as sa_update
 
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        await db.execute(
-            sa_update(ForemanTurn)
-            .where(ForemanTurn.id == turn_id)
-            .values(input_tokens=body.input_tokens, output_tokens=body.output_tokens)
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    await db.execute(
+        sa_update(ForemanTurn)
+        .where(ForemanTurn.id == turn_id)
+        .values(input_tokens=body.input_tokens, output_tokens=body.output_tokens)
+    )
+    await db.commit()
     return {"ok": True}
 
 
