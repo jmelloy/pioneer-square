@@ -56,12 +56,13 @@ export function onPushToken(handler: PushTokenHandler): () => void {
   const native = window.pioneerSquareNative
   if (!native) return () => {}
   const previous = native.onPushToken
-  native.onPushToken = (payload) => {
+  const wrapper = (payload: { token: string }) => {
     previous?.(payload)
     handler(payload.token)
   }
+  native.onPushToken = wrapper
   return () => {
-    if (native.onPushToken && native.onPushToken === handler) {
+    if (native.onPushToken === wrapper) {
       native.onPushToken = previous
     }
   }
@@ -76,12 +77,13 @@ export function onNotificationTap(handler: NotificationTapHandler): () => void {
   const native = window.pioneerSquareNative
   if (!native) return () => {}
   const previous = native.onNotificationTap
-  native.onNotificationTap = (payload) => {
+  const wrapper = (payload: Record<string, unknown>) => {
     previous?.(payload)
     handler(payload)
   }
+  native.onNotificationTap = wrapper
   return () => {
-    if (native.onNotificationTap && native.onNotificationTap === handler) {
+    if (native.onNotificationTap === wrapper) {
       native.onNotificationTap = previous
     }
   }
