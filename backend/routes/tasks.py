@@ -273,7 +273,7 @@ async def finalize_task_endpoint(
             raise HTTPException(status_code=404, detail="Task not found")
         finished_at = datetime.now(UTC)
         deleted_at = _resolve_finalize_deleted_at(body)
-        await db.execute(
+        await db.exec(
             update(Task)
             .where(col(Task.id) == task_id)
             .values(state="done", finished_at=finished_at, deleted_at=deleted_at)
@@ -327,7 +327,7 @@ async def cancel_task_endpoint(
         if state in ("done", "failed", "cancelled"):
             raise HTTPException(status_code=409, detail=f"Task is already {state}")
         finished_at = datetime.now(UTC)
-        await db.execute(
+        await db.exec(
             update(Task)
             .where(col(Task.id) == task_id)
             .values(state="cancelled", finished_at=finished_at)
@@ -383,7 +383,7 @@ async def redirect_task_endpoint(
         worker_id, state = row
         if state in ("done", "failed", "cancelled"):
             raise HTTPException(status_code=409, detail=f"Task is already {state}")
-        await db.execute(update(Task).where(col(Task.id) == task_id).values(state="working"))
+        await db.exec(update(Task).where(col(Task.id) == task_id).values(state="working"))
         await db.commit()
     finally:
         await db.close()

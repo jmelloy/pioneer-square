@@ -503,7 +503,7 @@ async def patch_task(
         if exists.one_or_none() is None:
             raise HTTPException(status_code=404, detail="Task not found")
 
-        await db.execute(update(Task).where(col(Task.id) == task_id).values(**update_values))
+        await db.exec(update(Task).where(col(Task.id) == task_id).values(**update_values))
         await db.commit()
     finally:
         await db.close()
@@ -615,7 +615,7 @@ async def update_turn_tokens(
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             raise HTTPException(status_code=404, detail="Guild not found")
-        await db.execute(
+        await db.exec(
             sa_update(ForemanTurn)
             .where(col(ForemanTurn.id) == turn_id)
             .values(input_tokens=body.input_tokens, output_tokens=body.output_tokens)

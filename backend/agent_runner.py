@@ -39,7 +39,7 @@ async def set_agent_state(guild_id: str, agent_id: str, state: str) -> None:
         from auth_deps import get_guild_pk
 
         guild_pk = await get_guild_pk(db, guild_id)
-        await db.execute(
+        await db.exec(
             update(Agent)
             .where(col(Agent.id) == agent_id, col(Agent.guild_id) == guild_pk)
             .values(state=state, activity=None)

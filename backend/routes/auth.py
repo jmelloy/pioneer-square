@@ -270,7 +270,7 @@ async def guest_login():
             index_elements=["github_user_id"],
             set_={"updated_at": gh_stmt.excluded.updated_at},
         )
-        await db.execute(gh_stmt)
+        await db.exec(gh_stmt)
 
         # Upsert user
         user_stmt = pg_insert(User).values(
@@ -287,7 +287,7 @@ async def guest_login():
             index_elements=["id"],
             set_={"updated_at": user_stmt.excluded.updated_at},
         )
-        await db.execute(user_stmt)
+        await db.exec(user_stmt)
 
         # Fresh session each call (so re-login after logout works)
         db.add(UserSession(token=login_token, github_user_id=guest_user_id, created_at=now))
@@ -342,7 +342,7 @@ async def logout(credentials: HTTPAuthorizationCredentials = Depends(http_bearer
     if credentials:
         db = await get_db()
         try:
-            await db.execute(
+            await db.exec(
                 delete(UserSession).where(col(UserSession.token) == credentials.credentials)
             )
             await db.commit()

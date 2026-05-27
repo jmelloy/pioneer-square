@@ -288,7 +288,7 @@ async def add_guild_member(
             index_elements=["guild_id", "user_id"],
             set_={"role": stmt.excluded.role},
         )
-        await db.execute(stmt)
+        await db.exec(stmt)
         await db.commit()
         return {"guild_id": guild_id, "user_id": target_id, "role": data.role}
     finally:
@@ -421,7 +421,7 @@ async def remove_guild_member(
                 raise HTTPException(
                     status_code=400, detail="Cannot remove the last owner of a guild"
                 )
-        await db.execute(
+        await db.exec(
             delete(GuildMember).where(
                 col(GuildMember.guild_id) == guild_pk, col(GuildMember.user_id) == user_id
             )

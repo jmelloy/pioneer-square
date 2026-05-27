@@ -550,7 +550,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
             .on_conflict_do_nothing(index_elements=["delivery_id"])
         )
         try:
-            result = await db.execute(stmt)
+            result = await db.exec(stmt)
         except IntegrityError:
             await db.rollback()
             result = None
@@ -574,7 +574,7 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
         # This is a safety net for the (rare) case where the worker's
         # task-update message was dropped before pr_url was persisted.
         if task_id and pr_url and event_type == "pull_request":
-            await db.execute(
+            await db.exec(
                 update(Task)
                 .where(col(Task.id) == task_id, col(Task.pr_url).is_(None))
                 .values(pr_url=pr_url)

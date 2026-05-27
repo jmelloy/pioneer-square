@@ -33,7 +33,7 @@ class LockService:
         expires_at = now + timedelta(seconds=ttl_seconds)
 
         # Evict any expired lock for this key before attempting the insert.
-        await self._db.execute(
+        await self._db.exec(
             delete(Lock).where(
                 col(Lock.key) == key,
                 col(Lock.expires_at).isnot(None),
@@ -46,7 +46,7 @@ class LockService:
         # expired-lock eviction above intact.
         try:
             async with self._db.begin_nested():
-                await self._db.execute(
+                await self._db.exec(
                     insert(Lock).values(
                         key=key, owner=owner, acquired_at=now, expires_at=expires_at
                     )
@@ -57,7 +57,7 @@ class LockService:
 
     async def release(self, key: str) -> None:
         """Release *key*. Safe to call even if the lock is not held (idempotent)."""
-        await self._db.execute(delete(Lock).where(col(Lock.key) == key))
+        await self._db.exec(delete(Lock).where(col(Lock.key) == key))
 
     async def is_locked(self, key: str) -> bool:
         """Return True if a non-expired lock exists for *key*."""
@@ -74,7 +74,7 @@ class LockService:
     async def cleanup_expired(db: AsyncSession) -> int:
         """Delete all expired locks. Returns the number of rows removed."""
         now = datetime.now(UTC)
-        result = await db.execute(
+        result = await db.exec(
             delete(Lock).where(col(Lock.expires_at).isnot(None), col(Lock.expires_at) < now)
         )
         return getattr(result, "rowcount", 0) or 0

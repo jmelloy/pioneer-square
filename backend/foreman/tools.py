@@ -668,7 +668,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         update_values["issue_number"] = inp["issue_number"]
                     if inp.get("issue_repo"):
                         update_values["issue_repo"] = inp["issue_repo"]
-                    await db.execute(
+                    await db.exec(
                         update(Task)
                         .where(col(Task.id) == existing_task_id, col(Task.guild_id) == guild_pk)
                         .values(**update_values)
@@ -830,7 +830,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 # reappears in the live task list and isn't auto-purged.
                                 update_vals["deleted_at"] = None
                                 update_vals["finished_at"] = None
-                            await db.execute(
+                            await db.exec(
                                 update(Task).where(col(Task.id) == task_id).values(**update_vals)
                             )
                             await db.commit()
@@ -886,7 +886,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         result_text = f"Task {task_id} not found."
                     else:
                         finished_at = datetime.now(UTC)
-                        await db.execute(
+                        await db.exec(
                             update(Task)
                             .where(col(Task.id) == task_id)
                             .values(
@@ -896,7 +896,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             )
                         )
                         # Discard any queued follow-up events — the task is done.
-                        await db.execute(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
+                        await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
                         await LockService(db).release(f"task:{task_id}")
                         await db.commit()
                         await broadcast(
@@ -954,7 +954,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     if state in ("done", "failed", "cancelled"):
                         result_text = f"Task {task_id} is {state} — cannot redirect."
                     else:
-                        await db.execute(
+                        await db.exec(
                             update(Task).where(col(Task.id) == task_id).values(state="working")
                         )
                         await db.commit()
@@ -994,7 +994,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         result_text = f"Task {task_id} is already {state}."
                     else:
                         finished_at = datetime.now(UTC)
-                        await db.execute(
+                        await db.exec(
                             update(Task)
                             .where(col(Task.id) == task_id)
                             .values(

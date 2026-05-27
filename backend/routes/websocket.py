@@ -46,18 +46,18 @@ async def _touch_agent(
         res = await db.exec(select(col(Agent.worker_id)).where(col(Agent.id) == agent_id))
         worker_id = res.one_or_none()
     if worker_id:
-        await db.execute(
+        await db.exec(
             update(Worker)
             .where(col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk)
             .values(last_seen=now)
         )
-        await db.execute(
+        await db.exec(
             update(Agent)
             .where(col(Agent.worker_id) == worker_id, col(Agent.guild_id) == guild_pk)
             .values(last_seen=now)
         )
     elif agent_id:
-        await db.execute(
+        await db.exec(
             update(Agent)
             .where(col(Agent.id) == agent_id, col(Agent.guild_id) == guild_pk)
             .values(last_seen=now)
@@ -190,14 +190,14 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                             ).all()
                             stale_worker_ids = set(wid_rows)
                         for agent_id in stale_agents:
-                            await db.execute(
+                            await db.exec(
                                 update(Agent)
                                 .where(col(Agent.id) == agent_id, col(Agent.guild_id) == _guild_pk)
                                 .values(state="offline", activity=None, current_task_id=None)
                             )
                         # Mirror into workers table using the real worker IDs.
                         for wid in stale_worker_ids:
-                            await db.execute(
+                            await db.exec(
                                 update(Worker)
                                 .where(col(Worker.id) == wid, col(Worker.guild_id) == _guild_pk)
                                 .values(state="offline")

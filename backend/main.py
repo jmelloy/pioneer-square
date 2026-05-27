@@ -74,8 +74,8 @@ WORKER_SWEEP_INTERVAL_SECONDS = float(os.environ.get("WORKER_SWEEP_INTERVAL_SECO
 async def reset_connection_state() -> None:
     # On every startup, no worker processes are connected yet.
     async with AsyncSessionLocal() as db:
-        await db.execute(update(Worker).values(state="offline"))
-        await db.execute(
+        await db.exec(update(Worker).values(state="offline"))
+        await db.exec(
             update(Agent)
             .where(
                 col(Agent.worker_id).in_(
@@ -139,7 +139,7 @@ async def _sweep_stale_workers_once() -> int:
         # integer FK to guilds.id (not the text slug guild_slug selected above).
         stale_worker_keys: set[tuple[str, int]] = set()
         for row in stale_agents:
-            await db.execute(
+            await db.exec(
                 update(Agent)
                 .where(col(Agent.id) == row.id, col(Agent.guild_id) == row.guild_id)
                 .values(state="offline", activity=None, current_task_id=None)
@@ -153,7 +153,7 @@ async def _sweep_stale_workers_once() -> int:
             stale_worker_keys.add((row.id, row.guild_id))
 
         for worker_id, gpk in stale_worker_keys:
-            await db.execute(
+            await db.exec(
                 update(Worker)
                 .where(col(Worker.id) == worker_id, col(Worker.guild_id) == gpk)
                 .values(state="offline")
@@ -206,7 +206,7 @@ async def _sweep_stale_workers_once() -> int:
         if orphaned:
             stale_task_ids = list(orphaned)
             for task_id in stale_task_ids:
-                await db.execute(
+                await db.exec(
                     update(Task)
                     .where(col(Task.id) == task_id, col(Task.state) == "working")
                     .values(state="awaiting-review")

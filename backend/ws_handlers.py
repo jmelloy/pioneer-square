@@ -244,9 +244,9 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                 "last_seen": stmt.excluded.last_seen,
             },
         )
-        await ctx.db.execute(stmt)
+        await ctx.db.exec(stmt)
         if agent_type == "worker" and worker_id:
-            await ctx.db.execute(
+            await ctx.db.exec(
                 update(Worker)
                 .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)
                 .values(state="online", last_seen=joined_at)
@@ -395,7 +395,7 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
             task_id_to_release = agent_row[0]
             agent_worker_id_for_release = agent_row[1]
 
-    await ctx.db.execute(
+    await ctx.db.exec(
         update(Agent)
         .where(col(Agent.id) == agent_id, col(Agent.guild_id) == ctx.guild_pk)
         .values(**update_vals)
@@ -405,7 +405,7 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
         # Guard: only transition the task when the agent's worker is the one
         # assigned to it.  Prevents a stale current_task_id from releasing a
         # lock that belongs to a different worker's active execution.
-        res = await ctx.db.execute(
+        res = await ctx.db.exec(
             update(Task)
             .where(
                 col(Task.id) == task_id_to_release,
@@ -546,7 +546,7 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
         resolved = await _resolve_user_identifier(ctx.db, user_ident)
         if resolved:
             update_vals["user_id"] = resolved
-    await ctx.db.execute(
+    await ctx.db.exec(
         update(Worker)
         .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)
         .values(**update_vals)
@@ -575,13 +575,13 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
 async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
     worker_id = data.get("workerId")
     for agent_id in ctx.joined_agents:
-        await ctx.db.execute(
+        await ctx.db.exec(
             update(Agent)
             .where(col(Agent.id) == agent_id, col(Agent.guild_id) == ctx.guild_pk)
             .values(state="offline", activity=None, current_task_id=None)
         )
     if worker_id:
-        await ctx.db.execute(
+        await ctx.db.exec(
             update(Worker)
             .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)
             .values(state="offline")
@@ -636,7 +636,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         update_values["pr_number"] = pr_number
         update_values["pr_repo"] = pr_repo
     if update_values:
-        await ctx.db.execute(update(Task).where(col(Task.id) == task_id).values(**update_values))
+        await ctx.db.exec(update(Task).where(col(Task.id) == task_id).values(**update_values))
         if update_values.get("state") in _TERMINAL_STATES:
             await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
@@ -658,12 +658,12 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         # would be a no-op, but pr_url still needs to be written.
         if pr_url:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url)
-            await ctx.db.execute(
+            await ctx.db.exec(
                 update(Task)
                 .where(col(Task.id) == task_id)
                 .values(pr_url=pr_url, pr_number=pr_number_val, pr_repo=pr_repo_val)
             )
-        await ctx.db.execute(
+        await ctx.db.exec(
             update(Task)
             .where(col(Task.id) == task_id, col(Task.state) == "working")
             .values(state="awaiting-review")
@@ -710,13 +710,13 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url_fud)
             pr_update = {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
         # Move to awaiting-review unless task is already terminal.
-        await ctx.db.execute(
+        await ctx.db.exec(
             update(Task)
             .where(col(Task.id) == task_id, col(Task.state).not_in(_TERMINAL_STATES))
             .values(**pr_update, state="awaiting-review")
         )
         if pr_update:
-            await ctx.db.execute(
+            await ctx.db.exec(
                 update(Task)
                 .where(col(Task.id) == task_id, col(Task.state).in_(_TERMINAL_STATES))
                 .values(**pr_update)
@@ -740,7 +740,7 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     if rows:
         event_ids = [r[0] for r in rows]
         queued_payloads = [json.loads(r[1]) for r in rows]
-        await ctx.db.execute(delete(TaskEvent).where(col(TaskEvent.id).in_(event_ids)))
+        await ctx.db.exec(delete(TaskEvent).where(col(TaskEvent.id).in_(event_ids)))
         await ctx.db.commit()
 
     task_uid = await _task_user_id(ctx.db, task_id)
