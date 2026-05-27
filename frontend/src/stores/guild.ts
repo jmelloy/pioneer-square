@@ -119,7 +119,7 @@ export const useGuildStore = defineStore('guild', () => {
         if (data.type === 'chat') {
           const chatMsg = data as ChatMessage
           if ((chatMsg.from || chatMsg.from_agent) !== 'github') {
-            messages.value = [...messages.value, chatMsg]
+            messages.value.push(chatMsg)
           }
         }
         if (data.type === 'guild-updated') {
