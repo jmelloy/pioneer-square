@@ -152,7 +152,10 @@ def test_exec_tools_error_sets_is_error_true():
 
     tu = _mock_tool_use("finalize_task", "toolu_err1", {"task_id": "t-bad"})
 
-    with patch("foreman.tools.AsyncSessionLocal", _mock_session_local(side_effect=RuntimeError("DB unavailable"))):
+    with patch(
+        "foreman.tools.AsyncSessionLocal",
+        _mock_session_local(side_effect=RuntimeError("DB unavailable")),
+    ):
         results = _run(exec_tools("guild1", [tu]))
 
     assert len(results) == 1
@@ -171,7 +174,9 @@ def test_exec_tools_error_preserves_tool_use_id():
     error_id = "toolu_preserve_id_on_error"
     tu = _mock_tool_use("create_task", error_id, {"name": "boom", "description": "x"})
 
-    with patch("foreman.tools.AsyncSessionLocal", _mock_session_local(side_effect=Exception("kaboom"))):
+    with patch(
+        "foreman.tools.AsyncSessionLocal", _mock_session_local(side_effect=Exception("kaboom"))
+    ):
         results = _run(exec_tools("guild1", [tu]))
 
     assert results[0]["tool_use_id"] == error_id
