@@ -316,3 +316,22 @@ class TaskEvent(SQLModel, table=True):
     event_type: str
     payload_json: str  # JSON: instructions, preferred_worker_id
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class PushToken(SQLModel, table=True):
+    """APNs (or, in the future, FCM) device token registered by the iOS app.
+
+    The token is the primary key because Apple's tokens are globally unique
+    per app install — when the same token comes back from a different user
+    it means the device was re-provisioned and we overwrite ``user_id``.
+    """
+
+    __tablename__ = "push_tokens"
+
+    token: str = Field(primary_key=True)
+    user_id: str = Field(foreign_key="users.id", index=True)
+    platform: str = Field(
+        default="ios", sa_column_kwargs={"server_default": "'ios'"}
+    )  # ios | (future: android)
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    last_seen_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
