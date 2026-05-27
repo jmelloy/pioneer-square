@@ -81,7 +81,7 @@ const tasksStore = useTasksStore()
 
 const isWorkerTask = computed(() => props.workerId && props.workerId !== 'foreman')
 
-const _TERMINAL_STATES = new Set(['done', 'failed', 'cancelled'])
+const _TERMINAL_STATES = new Set(['done', 'failed', 'cancelled', 'error'])
 
 const isTerminalState = computed(() => _TERMINAL_STATES.has(props.taskState || ''))
 
