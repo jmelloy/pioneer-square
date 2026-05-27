@@ -97,7 +97,8 @@ async def broadcast(guild_id: str, message: dict, exclude: WebSocket | None = No
             continue
         try:
             await ws.send_text(data)
-        except Exception:
+        except Exception as exc:
+            logger.warning("broadcast: send failed for %s guild=%s: %s", ws, guild_id, exc)
             dead.append(ws)
     for ws in dead:
         connections[guild_id].remove(ws)
