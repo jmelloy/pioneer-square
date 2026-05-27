@@ -19,13 +19,13 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+
 FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 # Bedrock uses cross-region inference profiles, not plain model IDs.
 # Set this to the profile ARN/ID appropriate for your region, e.g.:
 #   us.anthropic.claude-sonnet-4-6-20250514-v1:0
-FOREMAN_BEDROCK_MODEL = os.environ.get(
-    "FOREMAN_BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
-)
+FOREMAN_BEDROCK_MODEL = os.environ.get("FOREMAN_BEDROCK_MODEL", _DEFAULT_BEDROCK_MODEL)
 
 # Set FOREMAN_PROVIDER=bedrock to use Amazon Bedrock instead of the Anthropic API.
 # Requires: pip install "anthropic[bedrock]"  +  AWS credentials in env / IAM role.
@@ -38,9 +38,13 @@ def get_foreman_model(provider: str | None = None) -> str:
 
     When provider is 'bedrock' (or FOREMAN_PROVIDER=bedrock), returns
     FOREMAN_BEDROCK_MODEL; otherwise returns FOREMAN_MODEL.
+
+    Reads os.environ on every call so that tests can patch env vars directly.
     """
-    resolved = (provider or FOREMAN_PROVIDER).lower()
-    return FOREMAN_BEDROCK_MODEL if resolved == "bedrock" else FOREMAN_MODEL
+    resolved = (provider or os.environ.get("FOREMAN_PROVIDER", "anthropic")).lower()
+    if resolved == "bedrock":
+        return os.environ.get("FOREMAN_BEDROCK_MODEL", _DEFAULT_BEDROCK_MODEL)
+    return os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 
 
 def make_anthropic_client(

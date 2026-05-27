@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
+from backend.foreman_core.llm import _DEFAULT_BEDROCK_MODEL
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_NAME = "pioneer-foreman.toml"
@@ -31,7 +33,7 @@ class Config:
     model: str = "claude-sonnet-4-6"
     # Bedrock uses cross-region inference profiles, not plain model IDs.
     # Ignored when provider != "bedrock".
-    bedrock_model: str = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+    bedrock_model: str = _DEFAULT_BEDROCK_MODEL
     api_key: str | None = None
     # "anthropic" (default) or "bedrock" (Amazon Bedrock via AsyncAnthropicBedrock)
     provider: str = "anthropic"
@@ -49,7 +51,13 @@ class Config:
 
     @property
     def effective_model(self) -> str:
-        """Return the model ID appropriate for the configured provider."""
+        """Return the model ID appropriate for the configured provider.
+
+        Intentional duplication of the provider-branching logic in
+        backend.foreman_core.llm.get_foreman_model(): Config is used by the
+        standalone foreman without the full backend env-var stack, so it needs
+        its own copy operating on dataclass fields rather than os.environ.
+        """
         return self.bedrock_model if self.provider == "bedrock" else self.model
 
     @property
@@ -151,7 +159,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         overrides.get("bedrock_model")
         or claude_block.get("bedrock_model")
         or os.environ.get("FOREMAN_BEDROCK_MODEL")
-        or "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
+        or _DEFAULT_BEDROCK_MODEL
     )
 
     provider = (
