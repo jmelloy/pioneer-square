@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
-from database import get_db
+from database import AsyncSessionLocal
 from events import broadcast, emit_terminal_line
 from foreman_core.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
@@ -165,8 +165,7 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
     """Return (access_token, github_username) for this guild, or None."""
     from auth_deps import get_guild_pk
 
-    db = await get_db()
-    try:
+    async with AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             return None
@@ -178,16 +177,13 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
         )
         row = result.first()
         return (row.access_token, row.github_username) if row else None
-    finally:
-        await db.close()
 
 
 async def _guild_private_key_pem(guild_id: str) -> str | None:
     """Return the Ed25519 private key PEM for the guild, or None if not found."""
     from auth_deps import get_guild_pk
 
-    db = await get_db()
-    try:
+    async with AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             return None
@@ -195,8 +191,6 @@ async def _guild_private_key_pem(guild_id: str) -> str | None:
             select(GuildKey.private_key_pem).where(GuildKey.guild_id == guild_pk)
         )
         return result.scalar_one_or_none()
-    finally:
-        await db.close()
 
 
 async def _select_followup_worker(
@@ -253,14 +247,11 @@ async def maybe_post_plan_comment(guild_id: str, task_id: str, last_text: str) -
     """Post plan output as a GitHub issue comment when a plan-phase task completes."""
     logger = logging.getLogger(__name__)
     try:
-        db = await get_db()
-        try:
+        async with AsyncSessionLocal() as db:
             result = await db.execute(
                 select(Task.phase, Task.issue_number, Task.issue_repo).where(Task.id == task_id)
             )
             row = result.first()
-        finally:
-            await db.close()
 
         if not row or row.phase != "plan":
             return
@@ -557,8 +548,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
     result_text = ""
     is_error = False
     try:
-        db = await get_db()
-        try:
+        async with AsyncSessionLocal() as db:
             from auth_deps import get_guild_pk
 
             guild_pk = await get_guild_pk(db, guild_id)
@@ -1083,8 +1073,6 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             ],
                         }
                     )
-        finally:
-            await db.close()
 
         # GitHub tools — use guild's OAuth token
         if tu.name in (

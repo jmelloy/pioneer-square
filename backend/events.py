@@ -8,7 +8,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from database import get_db
+from database import AsyncSessionLocal
 from fastapi import WebSocket
 from models import Agent, TaskLog
 from sqlalchemy import select
@@ -96,8 +96,7 @@ async def emit_terminal_line(guild_id: str, agent_id: str, line: str):
         },
     )
     if line:
-        db = await get_db()
-        try:
+        async with AsyncSessionLocal() as db:
             result = await db.execute(select(Agent.worker_id).where(Agent.id == agent_id))
             worker_id_for_log = result.scalar_one_or_none()
             db.add(
@@ -110,5 +109,3 @@ async def emit_terminal_line(guild_id: str, agent_id: str, line: str):
                 )
             )
             await db.commit()
-        finally:
-            await db.close()

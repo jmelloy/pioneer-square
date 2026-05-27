@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 import anyio
 import ws_handlers
-from database import get_db
+from database import AsyncSessionLocal
 from events import agent_owner_lock, agent_owners, broadcast, connections, foreman_connections
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from models import Agent, Guild, UserSession, Worker
@@ -76,36 +76,29 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
     _guild_pk: int | None = None
     ws_user_id: str | None = None
     with anyio.CancelScope(shield=True):
-        _gp_db = await get_db()
-        try:
-            _gp_res = await _gp_db.execute(select(Guild.id).where(Guild.guild_id == guild_id))
-            _guild_pk = _gp_res.scalar_one_or_none()
-        except Exception:
-            logger.exception("WS guild id lookup failed for guild %s", guild_id)
-        finally:
+        async with AsyncSessionLocal() as _gp_db:
             try:
-                await _gp_db.close()
+                _gp_res = await _gp_db.execute(select(Guild.id).where(Guild.guild_id == guild_id))
+                _guild_pk = _gp_res.scalar_one_or_none()
             except Exception:
-                logger.debug("WS _gp_db close error during guild id lookup", exc_info=True)
+                logger.exception("WS guild id lookup failed for guild %s", guild_id)
 
         # Identify the browser user from the optional ?token= query param.
         # Workers don't pass a token; ws_user_id stays None for them.
         _token = websocket.query_params.get("token")
         if _token:
-            _auth_db = await get_db()
-            try:
-                _res = await _auth_db.execute(
-                    select(UserSession.github_user_id).where(UserSession.token == _token)
-                )
-                ws_user_id = _res.scalar_one_or_none()
-            except Exception:
-                logger.exception("WS token lookup failed (token treated as anonymous)")
-            finally:
-                await _auth_db.close()
+            async with AsyncSessionLocal() as _auth_db:
+                try:
+                    _res = await _auth_db.execute(
+                        select(UserSession.github_user_id).where(UserSession.token == _token)
+                    )
+                    ws_user_id = _res.scalar_one_or_none()
+                except Exception:
+                    logger.exception("WS token lookup failed (token treated as anonymous)")
 
         # Open the main session inside the shield so all setup awaits are
         # protected; deferred cancellation fires at receive_json() instead.
-        db = await get_db()
+        db = AsyncSessionLocal()
     ctx = ws_handlers.WSContext(
         websocket=websocket,
         guild_id=guild_id,

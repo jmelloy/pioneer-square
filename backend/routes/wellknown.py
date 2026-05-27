@@ -25,13 +25,14 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk, require_member
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from database import get_db
+from database import AsyncSessionLocal, get_db
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from models import Guild, GuildKey, Worker
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
 
@@ -78,8 +79,7 @@ def _generate_ed25519_pems() -> tuple[str, str]:
 
 
 async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
-    db = await get_db()
-    try:
+    async with AsyncSessionLocal() as db:
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             return None
@@ -109,8 +109,6 @@ async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
         await db.commit()
         await db.refresh(row)
         return row
-    finally:
-        await db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -148,17 +146,14 @@ class JWKSConfig(BaseModel):
 async def get_jwks_config(
     guild_id: str,
     _: str = Depends(require_member("owner", "member")),
+    db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        row = (
-            await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
-        ).scalar_one_or_none()
-    finally:
-        await db.close()
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    row = (
+        await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
+    ).scalar_one_or_none()
 
     if not row or not row.custom_jwks:
         return JSONResponse({"custom_jwks": None, "has_private_key": False})
@@ -335,16 +330,13 @@ async def agent_card(request: Request) -> JSONResponse:
     workers: list[Worker] = []
 
     if guild_id:
-        db = await get_db()
-        try:
+        async with AsyncSessionLocal() as db:
             guild = (
                 await db.execute(select(Guild).where(Guild.guild_id == guild_id))
             ).scalar_one_or_none()
             if guild:
                 rows = await db.execute(select(Worker).where(Worker.guild_id == guild.id))
                 workers = list(rows.scalars().all())
-        finally:
-            await db.close()
 
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host", request.url.netloc)
@@ -362,19 +354,14 @@ async def guild_agent_card(
     guild_id: str,
     request: Request,
     _: str = Depends(require_member("owner", "member", "viewer")),
+    db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     """Returns the AgentCard for a specific guild (authenticated)."""
-    db = await get_db()
-    try:
-        guild = (
-            await db.execute(select(Guild).where(Guild.guild_id == guild_id))
-        ).scalar_one_or_none()
-        if not guild:
-            raise HTTPException(404, detail="Guild not found")
-        rows = await db.execute(select(Worker).where(Worker.guild_id == guild.id))
-        workers = list(rows.scalars().all())
-    finally:
-        await db.close()
+    guild = (await db.execute(select(Guild).where(Guild.guild_id == guild_id))).scalar_one_or_none()
+    if not guild:
+        raise HTTPException(404, detail="Guild not found")
+    rows = await db.execute(select(Worker).where(Worker.guild_id == guild.id))
+    workers = list(rows.scalars().all())
 
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host", request.url.netloc)
@@ -392,37 +379,34 @@ async def set_jwks_config(
     guild_id: str,
     body: JWKSConfig,
     _: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     if "keys" not in body.public_jwks or not isinstance(body.public_jwks["keys"], list):
         raise HTTPException(400, detail="public_jwks must have a 'keys' array")
 
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(404, detail="Guild not found")
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(404, detail="Guild not found")
 
-        row = (
-            await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
-        ).scalar_one_or_none()
+    row = (
+        await db.execute(select(GuildKey).where(GuildKey.guild_id == guild_pk))
+    ).scalar_one_or_none()
 
-        if not row:
-            pub_pem, priv_pem = _generate_ed25519_pems()
-            row = GuildKey(
-                guild_id=guild_pk,
-                key_id=secrets.token_urlsafe(16),
-                public_key_pem=pub_pem,
-                private_key_pem=priv_pem,
-                created_at=datetime.now(UTC),
-            )
-            db.add(row)
+    if not row:
+        pub_pem, priv_pem = _generate_ed25519_pems()
+        row = GuildKey(
+            guild_id=guild_pk,
+            key_id=secrets.token_urlsafe(16),
+            public_key_pem=pub_pem,
+            private_key_pem=priv_pem,
+            created_at=datetime.now(UTC),
+        )
+        db.add(row)
 
-        row.custom_jwks = json.dumps(body.public_jwks)
-        if body.private_key_jwk is not None:
-            row.private_key_jwk = json.dumps(body.private_key_jwk)
+    row.custom_jwks = json.dumps(body.public_jwks)
+    if body.private_key_jwk is not None:
+        row.private_key_jwk = json.dumps(body.private_key_jwk)
 
-        await db.commit()
-    finally:
-        await db.close()
+    await db.commit()
 
     return JSONResponse({"ok": True})

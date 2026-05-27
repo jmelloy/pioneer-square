@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 
-from database import get_db
+from database import AsyncSessionLocal
 from fastapi import HTTPException
 from models import GithubToken, User, UserSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -158,8 +158,7 @@ async def create_session(code: str, state: str) -> dict:
     login_token = secrets.token_urlsafe(32)
     now = datetime.now(UTC)
 
-    db = await get_db()
-    try:
+    async with AsyncSessionLocal() as db:
         stmt = pg_insert(GithubToken).values(
             github_user_id=github_user_id,
             github_username=github_username,
@@ -204,8 +203,6 @@ async def create_session(code: str, state: str) -> dict:
         await db.execute(user_stmt)
         db.add(UserSession(token=login_token, github_user_id=github_user_id, created_at=now))
         await db.commit()
-    finally:
-        await db.close()
 
     return {
         "login_token": login_token,
