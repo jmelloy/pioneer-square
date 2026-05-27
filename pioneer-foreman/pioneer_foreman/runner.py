@@ -32,7 +32,7 @@ MAX_TOOL_RESULT_CHARS = 8_000
 MAX_HISTORY_MESSAGES = 20
 MAX_FOREMAN_ROUNDS = 10
 _HUMAN_TURN_WINDOW = 5
-_TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
+_TERMINAL_STATES = frozenset({"done", "failed", "cancelled", "error"})
 _24H_SECS = 86_400
 
 POLL_MIN_SECS = 60

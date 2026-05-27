@@ -1030,6 +1030,50 @@ class TestExecToolsDispatching:
         assert lock is not None, "A new lock should have been acquired"
         assert lock.owner != "old-holder", "Lock owner should have been replaced"
 
+    async def test_send_followup_after_error_state_dispatches(self, db_session):
+        """send_followup on a task in 'error' state dispatches (not silently dropped).
+
+        When a task transitions to error, the lock is released.  A subsequent
+        send_followup must be able to acquire the lock and dispatch the
+        follow-up — previously the lock was never released so this call would
+        queue a pending-followup event that was never drained.
+        """
+        insert_guild(db_session, "g-err-fu")
+        _insert_worker(db_session, "g-err-fu", "w-err1")
+        _insert_agent(db_session, "g-err-fu", "w-err1", "a-err1")
+        _insert_task(db_session, "t-err1", "g-err-fu", "w-err1", state="error")
+
+        # No lock row — mirrors what happens after handle_task_update releases
+        # the lock on the error transition (the fix we're testing).
+
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-err-fu",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {"task_id": "t-err1", "instructions": "Retry the failing step"},
+                    )
+                ],
+            )
+
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 1, (
+            "send_followup after error state should dispatch, not silently queue"
+        )
+        assert "t-err1" in results[0]["content"]
+
+        with _sync_session(db_session) as session:
+            ev = session.execute(
+                select(TaskEvent).where(TaskEvent.task_id == "t-err1")
+            ).scalar_one_or_none()
+        assert ev is None, "No pending-followup event should be queued — follow-up was dispatched"
+
 
 # ---------------------------------------------------------------------------
 # 4. Tool result handling — serialisation, error capture, edge cases
