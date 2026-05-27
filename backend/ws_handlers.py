@@ -643,6 +643,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
     branch = data.get("branch", "")
     pr_url = data.get("prUrl", "")
     last_text = data.get("lastText", "")
+    stop_reason = data.get("stopReason", "success")
     if task_id:
         # Persist pr_url regardless of current state — the prior task-update may
         # have already moved the task to awaiting-review, so the state guard below
@@ -672,18 +673,33 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
 
     task_uid = await _task_user_id(ctx.db, task_id)
     pr_line = f" PR: {pr_url}." if pr_url else ""
+    if stop_reason == "max_turns":
+        last_text_snippet = f' Last output: "{last_text[:200]}".' if last_text else ""
+        foreman_message = (
+            f"[task-complete/max-turns] Worker {worker_id_msg} task {task_id}: "
+            f'"{desc[:80]}" — branch: {branch}.{pr_line} '
+            f"IMPORTANT: Claude hit its max-turns limit and stopped before finishing. "
+            f"Partial work has been committed and the branch pushed.{last_text_snippet} "
+            "Call send_followup with a continuation prompt so the worker can resume on the "
+            "same branch/worktree. Only call finalize_task if the partial work is sufficient "
+            "or the task should be abandoned."
+        )
+    else:
+        foreman_message = (
+            f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
+            f'"{desc[:80]}" — branch: {branch}.{pr_line} '
+            "The worker has returned to its idle pool; the task is parked in "
+            "awaiting-review for human review. "
+            "Default behaviour: leave PR-bearing tasks open so reviewers can "
+            "comment — call send_followup if a comment or CI failure asks for "
+            "an iteration on the same branch (any idle worker can pick it up). "
+            "Only call finalize_task when the work is genuinely closed (PR "
+            "merged, task abandoned, or it was an ephemeral/automation task)."
+        )
     await _trigger_foreman(
         ctx.guild_id,
         "task-complete",
-        f"[task-complete] Worker {worker_id_msg} finished task {task_id}: "
-        f'"{desc[:80]}" — branch: {branch}.{pr_line} '
-        "The worker has returned to its idle pool; the task is parked in "
-        "awaiting-review for human review. "
-        "Default behaviour: leave PR-bearing tasks open so reviewers can "
-        "comment — call send_followup if a comment or CI failure asks for "
-        "an iteration on the same branch (any idle worker can pick it up). "
-        "Only call finalize_task when the work is genuinely closed (PR "
-        "merged, task abandoned, or it was an ephemeral/automation task).",
+        foreman_message,
         user_id=task_uid,
         task_id=task_id,
         task_name=f"foreman.task-complete:{task_id}",
@@ -694,6 +710,8 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
 async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     task_id = data.get("taskId")
     worker_id_msg = data.get("workerId", "")
+    stop_reason = data.get("stopReason", "success")
+    last_text_fud = data.get("lastText", "")
     if task_id:
         pr_url_fud = data.get("prUrl", "")
         pr_update: dict = {}
@@ -736,7 +754,15 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
 
     task_uid = await _task_user_id(ctx.db, task_id)
 
-    if queued_payloads:
+    if stop_reason == "max_turns":
+        last_text_snippet = f' Last output: "{last_text_fud[:200]}".' if last_text_fud else ""
+        human_msg = (
+            f"[followup-done/max-turns] Worker {worker_id_msg} follow-up for task {task_id} "
+            f"hit Claude's max-turns limit before finishing. Partial work committed.{last_text_snippet} "
+            "Call send_followup with a continuation prompt to resume, or call finalize_task if "
+            "the partial work is sufficient."
+        )
+    elif queued_payloads:
         queued_summary = "\n".join(
             f"  {i + 1}. {p.get('instructions', '')}" for i, p in enumerate(queued_payloads)
         )

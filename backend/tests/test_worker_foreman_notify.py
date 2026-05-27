@@ -4,6 +4,7 @@ Verifies that:
 - handle_worker_register triggers [worker-online] to the foreman
 - handle_worker_disconnect triggers [worker-offline] reason=shutdown
 - abrupt WebSocket disconnect triggers [worker-offline] reason=disconnect
+- task-complete with stopReason=max_turns triggers a max-turns foreman message
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 import ws_handlers  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import insert_guild, insert_worker  # noqa: E402
+from helpers import insert_guild, insert_task, insert_worker  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -182,3 +183,73 @@ def test_abrupt_disconnect_notifies_foreman(client):
     _event, msg = offline[0]
     assert f"worker_id={worker_id}" in msg, msg
     assert "reason=disconnect" in msg, msg
+
+
+def test_task_complete_max_turns_notifies_foreman(client):
+    """task-complete with stopReason=max_turns sends a truncation-aware foreman trigger."""
+    test_client, db_url = client
+    guild_id = "nfy004"
+    worker_id = "w-nfy004"
+    task_id = "t-nfy004"
+    agent_id = "a-nfy004"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="working")
+
+    triggered, fake_trigger = _make_trigger_spy()
+
+    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+            ws_worker.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws_worker.receive_json()  # agent-joined broadcast
+
+            with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
+                ws_obs.send_json(
+                    {
+                        "type": "join",
+                        "agentId": "a-nfy004-obs",
+                        "agentName": "Observer",
+                        "agentType": "browser",
+                    }
+                )
+                ws_obs.receive_json()  # agent-joined for observer
+                ws_worker.receive_json()  # observer's agent-joined broadcast to worker
+
+                ws_worker.send_json(
+                    {
+                        "type": "task-complete",
+                        "workerId": worker_id,
+                        "taskId": task_id,
+                        "branch": "feature/partial-work",
+                        "stopReason": "max_turns",
+                        "lastText": "I was working on the migration when I ran out of turns.",
+                        "prUrl": "",
+                        "sessionId": "",
+                    }
+                )
+                ws_obs.receive_json()  # task-complete broadcast
+
+                ws_worker.send_json({"type": "ping"})
+                ws_worker.receive_json()  # pong — ensures handler is done
+
+    complete_triggers = [(e, m) for e, m in triggered if e == "task-complete"]
+    assert complete_triggers, f"Expected task-complete trigger, got: {triggered}"
+    _event, msg = complete_triggers[0]
+    assert "max-turns" in msg, f"Expected 'max-turns' in message, got: {msg}"
+    assert "max_turns" not in msg.split("max-turns")[0].replace("max_turns", ""), True
+    assert task_id in msg, f"Expected task_id in message, got: {msg}"
+    assert "continuation" in msg.lower() or "resume" in msg.lower() or "send_followup" in msg, (
+        f"Expected continuation/resume/send_followup hint, got: {msg}"
+    )
+    assert "I was working on the migration" in msg, (
+        f"Expected lastText snippet in message, got: {msg}"
+    )
