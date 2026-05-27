@@ -452,7 +452,7 @@ async def run_foreman_ai(
                             "from": "foreman",
                             "to": "user",
                             "content": b.text.strip(),
-                            "createdAt": _now,
+                            "createdAt": _now.isoformat(),
                         },
                     )
 
@@ -473,7 +473,7 @@ async def run_foreman_ai(
                         "toolName": tu.name,
                         "toolInput": dict(tu.input) if tu.input else {},
                         "toolId": tu.id,
-                        "createdAt": _now,
+                        "createdAt": _now.isoformat(),
                     },
                 )
 
@@ -503,7 +503,7 @@ async def run_foreman_ai(
                         "toolId": result.get("tool_use_id"),
                         "toolOutput": result.get("content", ""),
                         "isError": result.get("is_error", False),
-                        "createdAt": _now,
+                        "createdAt": _now.isoformat(),
                     },
                 )
 

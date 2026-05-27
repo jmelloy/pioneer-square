@@ -11,7 +11,7 @@ export function taskTabId(id: string): string {
 // immediately on long horizons (e.g. a 3-day finalize window).
 const MAX_TIMEOUT_MS = 2_147_483_647
 
-const TERMINAL_STATES = new Set<string>(['done', 'failed', 'cancelled'])
+const TERMINAL_STATES = new Set<string>(['done', 'failed', 'cancelled', 'error'])
 
 const STATE_LABELS: Record<string, string> = {
   pending: 'pending',

@@ -5,15 +5,32 @@ broadcast/emit_terminal_line without circular dependencies.
 """
 
 import asyncio
+import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from typing import Any
+from uuid import UUID
 
 from database import AsyncSessionLocal
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from models import Agent, TaskLog
 from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
+
+
+def _json_default(obj: Any) -> Any:
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, UUID):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+
+def ws_dumps(payload: Any) -> str:
+    """Serialize payload to a JSON string with datetime/UUID support."""
+    return json.dumps(payload, default=_json_default)
+
 
 # In-memory WebSocket connections: guild_id -> list of WebSocket
 connections: dict[str, list[WebSocket]] = {}
@@ -71,13 +88,20 @@ async def broadcast(guild_id: str, message: dict, exclude: WebSocket | None = No
         return
     if guild_id not in connections:
         return
+    # Serialize once before iterating — let TypeError propagate immediately so
+    # serialization bugs are visible rather than silently evicting connections.
+    data = ws_dumps(message)
     dead = []
     for ws in connections[guild_id]:
         if ws is exclude:
             continue
         try:
-            await ws.send_json(message)
-        except Exception:
+            await ws.send_text(data)
+        except (WebSocketDisconnect, RuntimeError, OSError) as exc:
+            logger.warning("broadcast: send failed for %s guild=%s: %s", ws, guild_id, exc)
+            dead.append(ws)
+        except Exception as exc:
+            logger.warning("Unexpected error evicting WebSocket: %s", exc, exc_info=True)
             dead.append(ws)
     for ws in dead:
         connections[guild_id].remove(ws)

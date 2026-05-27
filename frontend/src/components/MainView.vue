@@ -230,6 +230,23 @@ function onTabClick(event: MouseEvent, taskId: string) {
   background: rgba(255, 80, 80, 0.12);
 }
 
+/* Touch devices have no :hover — keep the close affordance visible so
+   opened tabs can be closed on mobile. Bump tab + close tap targets to
+   ~44pt while we're at it. */
+@media (hover: none) {
+  .tab {
+    padding: 12px 14px;
+    min-height: 44px;
+  }
+  .worker-tab .tab-close,
+  .task-tab .tab-close {
+    opacity: 1;
+    font-size: 16px;
+    padding: 6px 8px;
+    margin-left: 4px;
+  }
+}
+
 .task-dot {
   width: 8px;
   height: 8px;

@@ -39,6 +39,7 @@ from models import (  # noqa: E402
     GuildMember,
     Lock,
     Task,
+    TaskEvent,
     User,
     UserSession,
 )
@@ -396,3 +397,70 @@ def test_agent_idle_releases_task_lock(client):
     assert task_state == "awaiting-review", (
         "task should move to awaiting-review when its agent goes idle"
     )
+
+
+def test_error_state_releases_lock_and_drains_followups(client):
+    """task-update with state=error releases the lock and drains pending-followup events."""
+    test_client, db_url = client
+    guild_id, worker_id, task_id, agent_id = "gas-6", "w-gas6", "t-gas6", "a-gas6"
+    _insert_guild_worker_task(db_url, guild_id=guild_id, worker_id=worker_id, task_id=task_id)
+
+    now_dt = datetime.now(UTC)
+    future_dt = now_dt + timedelta(hours=1)
+    with _sync_session(db_url) as session:
+        session.execute(update(Task).where(Task.id == task_id).values(state="working"))
+        session.execute(
+            pg_insert(Lock)
+            .values(
+                key=f"task:{task_id}",
+                owner="some-lock-holder",
+                acquired_at=now_dt,
+                expires_at=future_dt,
+            )
+            .on_conflict_do_update(
+                index_elements=["key"],
+                set_={
+                    "owner": "some-lock-holder",
+                    "acquired_at": now_dt,
+                    "expires_at": future_dt,
+                },
+            )
+        )
+        session.add(
+            TaskEvent(
+                task_id=task_id,
+                event_type="pending-followup",
+                payload_json='{"instructions": "fix the tests", "preferred_worker_id": null}',
+                created_at=now_dt,
+            )
+        )
+        session.commit()
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+        _join_ws(ws_worker, agent_id, worker_id)
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
+            _join_ws(ws_obs, "a-obs6")
+            ws_worker.receive_json()  # drain obs's join broadcast
+
+            ws_worker.send_json(
+                {
+                    "type": "task-update",
+                    "taskId": task_id,
+                    "workerId": worker_id,
+                    "state": "error",
+                }
+            )
+            ws_obs.receive_json()  # drain the broadcast
+
+    with _sync_session(db_url) as session:
+        lock_key = session.scalar(select(Lock.key).where(Lock.key == f"task:{task_id}"))
+        task_state = session.scalar(select(Task.state).where(Task.id == task_id))
+        remaining_event = session.scalar(
+            select(TaskEvent).where(
+                TaskEvent.task_id == task_id, TaskEvent.event_type == "pending-followup"
+            )
+        )
+
+    assert lock_key is None, "lock must be released when task transitions to error"
+    assert task_state == "error"
+    assert remaining_event is None, "pending-followup events must be drained on error transition"
