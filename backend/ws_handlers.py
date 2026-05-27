@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -636,45 +637,60 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         reset_foreman_poll(ctx.guild_id)
     # Drain any pending-followup events queued while the task was locked, and
     # notify the foreman so it can decide how to handle them.
-    if update_values.get("state") == "error" and task_id:
-        queued_payloads: list[dict] = []
-        result = await ctx.db.execute(
-            select(TaskEvent.id, TaskEvent.payload_json)
-            .where(TaskEvent.task_id == task_id, TaskEvent.event_type == "pending-followup")
-            .order_by(TaskEvent.id)
-        )
-        rows = result.all()
-        if rows:
-            event_ids = [r[0] for r in rows]
-            queued_payloads = [json.loads(r[1]) for r in rows]
-            await ctx.db.execute(delete(TaskEvent).where(TaskEvent.id.in_(event_ids)))
-        worker_id_upd = data.get("workerId", "a worker")
-        task_uid = await _task_user_id(ctx.db, task_id)
-        if queued_payloads:
-            queued_summary = "\n".join(
-                f"  {i + 1}. {p.get('instructions', '')}" for i, p in enumerate(queued_payloads)
-            )
-            human_msg = (
-                f"[task-error] Worker {worker_id_upd} reported task {task_id} as errored. "
-                f"While the task was locked, {len(queued_payloads)} follow-up request(s) were queued:\n"
-                f"{queued_summary}\n"
-                "The queued follow-ups were NOT dispatched because the task errored. "
-                "Decide: call send_followup to retry, or call finalize_task to mark it failed."
-            )
+    if update_values.get("state") == "error":
+        if not task_id:
+            logger.warning("task-error state received but task_id is falsy — drain skipped")
         else:
-            human_msg = (
-                f"[task-error] Worker {worker_id_upd} reported task {task_id} as errored. "
-                "Decide: call send_followup to retry the task, or call finalize_task to mark it failed."
+            queued_payloads: list[dict] = []
+            event_ids: list = []
+            result = await ctx.db.execute(
+                select(TaskEvent.id, TaskEvent.payload_json)
+                .where(TaskEvent.task_id == task_id, TaskEvent.event_type == "pending-followup")
+                .order_by(TaskEvent.id)
             )
-        await _trigger_foreman(
-            ctx.guild_id,
-            "task-error",
-            human_msg,
-            user_id=task_uid,
-            task_id=task_id,
-            task_name=f"foreman.task-error:{task_id}",
-        )
-        await ctx.db.commit()
+            rows = result.all()
+            if rows:
+                event_ids = [r[0] for r in rows]
+                queued_payloads = [json.loads(r[1]) for r in rows]
+                logger.info(
+                    "task=%s draining %d pending-followup event(s): %s",
+                    task_id,
+                    len(queued_payloads),
+                    queued_payloads,
+                )
+            raw_worker_id = data.get("workerId", "")
+            if raw_worker_id and re.fullmatch(r"w-[a-z0-9]+", raw_worker_id):
+                worker_id_upd = raw_worker_id
+            else:
+                worker_id_upd = "a worker"
+            task_uid = await _task_user_id(ctx.db, task_id)
+            if queued_payloads:
+                queued_summary = "\n".join(
+                    f"  {i + 1}. {p.get('instructions', '')}" for i, p in enumerate(queued_payloads)
+                )
+                human_msg = (
+                    f"[task-error] Worker {worker_id_upd} reported task {task_id} as errored. "
+                    f"While the task was locked, {len(queued_payloads)} follow-up request(s) were queued:\n"
+                    f"{queued_summary}\n"
+                    "The queued follow-ups were NOT dispatched because the task errored. "
+                    "Decide: call send_followup to retry, or call finalize_task to mark it failed."
+                )
+            else:
+                human_msg = (
+                    f"[task-error] Worker {worker_id_upd} reported task {task_id} as errored. "
+                    "Decide: call send_followup to retry the task, or call finalize_task to mark it failed."
+                )
+            await _trigger_foreman(
+                ctx.guild_id,
+                "task-error",
+                human_msg,
+                user_id=task_uid,
+                task_id=task_id,
+                task_name=f"foreman.task-error:{task_id}",
+            )
+            if event_ids:
+                await ctx.db.execute(delete(TaskEvent).where(TaskEvent.id.in_(event_ids)))
+            await ctx.db.commit()
 
 
 async def handle_task_complete(ctx: WSContext, data: dict) -> None:

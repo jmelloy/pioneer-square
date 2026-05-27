@@ -1068,10 +1068,9 @@ class TestExecToolsDispatching:
         )
         assert "t-err1" in results[0]["content"]
 
-        with _sync_session(db_session) as session:
-            ev = session.execute(
-                select(TaskEvent).where(TaskEvent.task_id == "t-err1")
-            ).scalar_one_or_none()
+        async with database_module.AsyncSessionLocal() as db:
+            result = await db.execute(select(TaskEvent).where(TaskEvent.task_id == "t-err1"))
+            ev = result.scalar_one_or_none()
         assert ev is None, "No pending-followup event should be queued — follow-up was dispatched"
 
 
