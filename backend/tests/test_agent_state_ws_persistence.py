@@ -32,7 +32,6 @@ import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_task, insert_worker
-from routes import websocket as ws_routes_module
 from models import (  # noqa: E402
     Agent,
     GithubToken,
@@ -44,6 +43,7 @@ from models import (  # noqa: E402
     User,
     UserSession,
 )
+from routes import websocket as ws_routes_module
 from sqlalchemy import select, update  # noqa: E402
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
 from starlette.testclient import TestClient  # noqa: E402
