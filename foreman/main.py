@@ -18,7 +18,7 @@ Environment variables:
     DATABASE_URL     Full SQLAlchemy URL; overrides DB_PATH
     ANTHROPIC_API_KEY      Anthropic key for the AI loop
     FOREMAN_MODEL          Claude model for direct Anthropic API  (default: claude-sonnet-4-6)
-    FOREMAN_BEDROCK_MODEL  Bedrock inference profile ID           (default: us.anthropic.claude-sonnet-4-6-20250514-v1:0)
+    FOREMAN_BEDROCK_MODEL  Bedrock inference profile ID           (default: arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6)
     LOG_LEVEL              Logging level                          (default: INFO)
 """
 
