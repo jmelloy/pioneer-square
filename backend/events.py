@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from database import get_db
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from models import Agent, TaskLog
 from sqlalchemy import select
 
@@ -97,8 +97,11 @@ async def broadcast(guild_id: str, message: dict, exclude: WebSocket | None = No
             continue
         try:
             await ws.send_text(data)
-        except Exception as exc:
+        except (WebSocketDisconnect, RuntimeError, OSError) as exc:
             logger.warning("broadcast: send failed for %s guild=%s: %s", ws, guild_id, exc)
+            dead.append(ws)
+        except Exception as exc:
+            logger.warning("Unexpected error evicting WebSocket: %s", exc, exc_info=True)
             dead.append(ws)
     for ws in dead:
         connections[guild_id].remove(ws)
