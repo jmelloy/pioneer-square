@@ -49,7 +49,7 @@ class Config:
     # before the worker has a chance to forward it.
     openai_api_key: str | None = None
     pi_path: str = "pi"
-    pull_interval: float = 300.0
+    pull_interval: float = 15.0
     claude_max_turns: int = 50
     max_agents: int = 4
     # Optional public-facing backend URL used when registering GitHub webhooks.
@@ -234,7 +234,9 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         pull_interval=float(
             overrides.get("pull_interval")
             if overrides.get("pull_interval") is not None
-            else raw.get("pull_interval", 300.0)
+            else raw.get(
+                "pull_interval", float(os.environ.get("WORKER_PULL_INTERVAL_SECONDS", 15.0))
+            )
         ),
         claude_max_turns=int(
             overrides.get("claude_max_turns")
