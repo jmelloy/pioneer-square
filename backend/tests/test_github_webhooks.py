@@ -515,6 +515,171 @@ def test_webhook_backfills_task_pr_url(client):
     assert pr_url == "https://github.com/org/my-repo/pull/55"
 
 
+# ---------------------------------------------------------------------------
+# /guilds/{guild_id}/foreman/ci-notify
+# ---------------------------------------------------------------------------
+
+
+def test_ci_notify_returns_503_when_key_not_configured(client, monkeypatch):
+    """503 when PIONEER_CI_KEY is empty (not configured)."""
+    test_client, db_url = client
+    insert_guild(db_url, "gcn1")
+    monkeypatch.delenv("PIONEER_CI_KEY", raising=False)
+    resp = test_client.post(
+        "/guilds/gcn1/foreman/ci-notify",
+        json={"repo": "o/r", "workflow_name": "CI", "conclusion": "success"},
+    )
+    assert resp.status_code == 503
+
+
+def test_ci_notify_returns_401_without_auth(client, monkeypatch):
+    """401 when Authorization header is missing."""
+    test_client, db_url = client
+    insert_guild(db_url, "gcn2")
+    monkeypatch.setenv("PIONEER_CI_KEY", "secret")
+    resp = test_client.post(
+        "/guilds/gcn2/foreman/ci-notify",
+        json={"repo": "o/r", "workflow_name": "CI", "conclusion": "success"},
+    )
+    assert resp.status_code == 401
+
+
+def test_ci_notify_returns_401_with_wrong_key(client, monkeypatch):
+    """401 when Bearer token doesn't match PIONEER_CI_KEY."""
+    test_client, db_url = client
+    insert_guild(db_url, "gcn3")
+    monkeypatch.setenv("PIONEER_CI_KEY", "correct-key")
+    resp = test_client.post(
+        "/guilds/gcn3/foreman/ci-notify",
+        json={"repo": "o/r", "workflow_name": "CI", "conclusion": "success"},
+        headers={"Authorization": "Bearer wrong-key"},
+    )
+    assert resp.status_code == 401
+
+
+def test_ci_notify_returns_404_for_unknown_guild(client, monkeypatch):
+    test_client, _ = client
+    monkeypatch.setenv("PIONEER_CI_KEY", "key")
+    resp = test_client.post(
+        "/guilds/nosuchguild/foreman/ci-notify",
+        json={"repo": "o/r", "workflow_name": "CI", "conclusion": "success"},
+        headers={"Authorization": "Bearer key"},
+    )
+    assert resp.status_code == 404
+
+
+def test_ci_notify_persists_message_and_returns_202(client, monkeypatch):
+    """Happy path: message stored and 202 returned without triggering foreman."""
+    test_client, db_url = client
+    insert_guild(db_url, "gcn4")
+    monkeypatch.setenv("PIONEER_CI_KEY", "mykey")
+    resp = test_client.post(
+        "/guilds/gcn4/foreman/ci-notify",
+        json={
+            "repo": "owner/repo",
+            "pr_number": 42,
+            "workflow_name": "CI",
+            "conclusion": "success",
+            "run_id": "12345",
+            "run_url": "https://github.com/owner/repo/actions/runs/12345",
+            "branch": "claude/some-task-t-abc123",
+        },
+        headers={"Authorization": "Bearer mykey"},
+    )
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == "gcn4", col(Guild.deleted_at).is_(None)
+            )
+        )
+        row = session.execute(
+            select(Message).where(col(Message.guild_id) == guild_pk)
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.from_agent == "github"
+    assert row.to_agent == "foreman"
+    assert row.message_type == "chat"
+    assert "[ci-notify] CI/success on owner/repo#42" in row.content
+    assert "https://github.com/owner/repo/actions/runs/12345" in row.content
+
+
+def test_ci_notify_resolves_task_from_pr_number(client, monkeypatch):
+    """task_id is looked up from (repo, pr_number) when not provided in the payload."""
+    test_client, db_url = client
+    insert_guild(db_url, "gcn5")
+    monkeypatch.setenv("PIONEER_CI_KEY", "key5")
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-cn5",
+        guild_id="gcn5",
+        pr_number=7,
+        pr_repo="org/proj",
+        pr_url="https://github.com/org/proj/pull/7",
+    )
+    resp = test_client.post(
+        "/guilds/gcn5/foreman/ci-notify",
+        json={"repo": "org/proj", "pr_number": 7, "workflow_name": "CI", "conclusion": "failure"},
+        headers={"Authorization": "Bearer key5"},
+    )
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == "gcn5", col(Guild.deleted_at).is_(None)
+            )
+        )
+        row = session.execute(
+            select(Message).where(col(Message.guild_id) == guild_pk)
+        ).scalar_one_or_none()
+    assert row is not None
+    assert "task t-cn5" in row.content
+    assert "CI/failure" in row.content
+
+
+def test_ci_notify_uses_explicit_task_id(client, monkeypatch):
+    """When task_id is in the payload, the DB lookup is skipped and the given id is used."""
+    test_client, db_url = client
+    insert_guild(db_url, "gcn6")
+    monkeypatch.setenv("PIONEER_CI_KEY", "key6")
+    # Insert a task that would be found by (repo, pr_number) lookup — but it should be bypassed.
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-db-cn6",
+        guild_id="gcn6",
+        pr_number=11,
+        pr_repo="org/repo",
+        pr_url="https://github.com/org/repo/pull/11",
+    )
+    resp = test_client.post(
+        "/guilds/gcn6/foreman/ci-notify",
+        json={
+            "repo": "org/repo",
+            "pr_number": 11,
+            "workflow_name": "CI",
+            "conclusion": "success",
+            "task_id": "t-explicit",
+        },
+        headers={"Authorization": "Bearer key6"},
+    )
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(
+                col(Guild.guild_id) == "gcn6", col(Guild.deleted_at).is_(None)
+            )
+        )
+        row = session.execute(
+            select(Message).where(col(Message.guild_id) == guild_pk)
+        ).scalar_one_or_none()
+    assert row is not None
+    assert "task t-explicit" in row.content
+    assert "t-db-cn6" not in row.content  # DB lookup was bypassed
+
+
 def test_webhook_does_not_overwrite_existing_pr_url(client):
     """Webhook must not clobber a pr_url that was already set by the worker."""
     test_client, db_url = client

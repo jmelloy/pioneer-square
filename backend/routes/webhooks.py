@@ -26,6 +26,7 @@ from database import get_db
 from events import broadcast
 from fastapi import APIRouter, HTTPException, Request, Response
 from models import GithubEvent, Guild, Message, Task
+from pydantic import BaseModel
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -38,12 +39,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # How long (seconds) to wait for further events on the same PR before
-# delivering the buffered batch to the foreman.  GitHub CI pipelines commonly
-# take 1–3 minutes; using a window long enough to cover the full CI run means
-# the foreman sees one coalesced batch (all check_run completions + any review
-# comments) rather than firing once per check.
-# Configurable via WEBHOOK_DEBOUNCE_SECONDS (default: 180 seconds).
-DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "180"))
+# delivering the buffered batch to the foreman.  Previously defaulted to 180s
+# to cover the full CI run, but CI completion is now injected directly by
+# GitHub Actions (POST /foreman/ci-notify), so a short window is sufficient
+# to coalesce review comments and other rapid events.
+# Configurable via WEBHOOK_DEBOUNCE_SECONDS (default: 30 seconds).
+DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "30"))
+
+
+# Shared secret for the /foreman/ci-notify endpoint.  GitHub Actions sets
+# Authorization: Bearer <PIONEER_CI_KEY> on each CI completion POST.
+# When empty the endpoint returns 503 (not configured).
+# Read at call time so monkeypatch.setenv works in tests and secrets can rotate
+# without a restart.
+def _get_ci_key() -> str:
+    return os.environ.get("PIONEER_CI_KEY", "")
 
 
 # Cap on stored payloads. GitHub webhook payloads are typically <50 KB but
@@ -654,5 +664,107 @@ async def github_webhook(guild_id: str, request: Request) -> Response:
             event_type,
             skip_reason,
         )
+
+    return Response(status_code=202)
+
+
+# ---------------------------------------------------------------------------
+# CI completion notification (GitHub Actions → foreman context)
+# ---------------------------------------------------------------------------
+
+
+class CINotifyPayload(BaseModel):
+    """Body for POST /guilds/{guild_id}/foreman/ci-notify."""
+
+    repo: str
+    pr_number: int | None = None
+    workflow_name: str
+    conclusion: str  # success | failure | cancelled | timed_out
+    task_id: str | None = None
+    run_id: str | None = None
+    run_url: str | None = None
+    branch: str | None = None
+
+
+@router.post("/guilds/{guild_id}/foreman/ci-notify")
+async def ci_notify(guild_id: str, body: CINotifyPayload, request: Request) -> Response:
+    """CI completion notification injected directly by GitHub Actions.
+
+    Persists a structured ``[ci-notify]`` chat message so the foreman has
+    CI context the next time it runs, **without** triggering a new foreman
+    AI invocation.  This is the event-driven counterpart to the webhook
+    debounce: GHA posts here the moment the workflow finishes, giving the
+    foreman immediate context while avoiding an automatic re-trigger.
+
+    Auth: ``Authorization: Bearer <PIONEER_CI_KEY>`` where the key matches
+    the ``PIONEER_CI_KEY`` environment variable on the backend.
+    """
+    ci_key = _get_ci_key()
+    if not ci_key:
+        raise HTTPException(
+            status_code=503, detail="CI notifications not configured (PIONEER_CI_KEY not set)"
+        )
+    auth = request.headers.get("authorization", "")
+    provided = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
+    if not hmac.compare_digest(provided.encode(), ci_key.encode()):
+        raise HTTPException(status_code=401, detail="Invalid CI key")
+
+    repo = body.repo or ""
+    pr_part = f"#{body.pr_number}" if body.pr_number is not None else ""
+    workflow = body.workflow_name or "CI"
+    conclusion = body.conclusion or "unknown"
+
+    db = await get_db()
+    try:
+        guild_res = await db.exec(select(col(Guild.id)).where(col(Guild.guild_id) == guild_id))
+        guild_pk = guild_res.one_or_none()
+        if guild_pk is None:
+            raise HTTPException(status_code=404, detail="Guild not found")
+
+        task_id = body.task_id
+        if not task_id and body.pr_number is not None:
+            task_row = await _find_task(db, guild_pk, repo, body.pr_number)
+            task_id = task_row.id if task_row else None
+
+        task_part = f" (task {task_id})" if task_id else ""
+        run_part = (
+            f" — {body.run_url}"
+            if body.run_url
+            else (f" — run {body.run_id}" if body.run_id else "")
+        )
+        content = f"[ci-notify] {workflow}/{conclusion} on {repo}{pr_part}{task_part}{run_part}"
+
+        created_at = datetime.now(UTC)
+        db.add(
+            Message(
+                guild_id=guild_pk,
+                from_agent="github",
+                to_agent="foreman",
+                content=content,
+                message_type="chat",
+                created_at=created_at,
+            )
+        )
+        await db.commit()
+        await broadcast(
+            guild_id,
+            {
+                "type": "chat",
+                "from": "github",
+                "to": "foreman",
+                "content": content,
+                "createdAt": created_at.isoformat(),
+            },
+        )
+        logger.info(
+            "ci-notify guild=%s repo=%s pr=%s task=%s conclusion=%s",
+            guild_id,
+            repo,
+            body.pr_number,
+            task_id,
+            conclusion,
+        )
+    finally:
+        await db.close()
 
     return Response(status_code=202)
