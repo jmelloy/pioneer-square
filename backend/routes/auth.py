@@ -193,7 +193,7 @@ async def get_claude_credentials_status(
     """Return masked Claude credentials status for the settings UI (never the full blob)."""
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
-        return {"saved": False}
+        raise HTTPException(status_code=404, detail="Guild not found")
     result = await db.exec(
         select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
     )
@@ -211,9 +211,10 @@ async def delete_claude_credentials(
 ):
     """Delete stored Claude credentials for a guild. Requires guild member auth."""
     guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is not None:
-        await db.exec(delete(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk))
-        await db.commit()
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    await db.exec(delete(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk))
+    await db.commit()
     return Response(status_code=204)
 
 
