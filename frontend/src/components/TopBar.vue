@@ -107,6 +107,7 @@
           </button>
         </div>
         <div v-else class="creds-none">No credentials saved</div>
+        <div v-if="claudeCredsError" class="creds-error">{{ claudeCredsError }}</div>
       </div>
 
       <div class="settings-field settings-meta">
@@ -151,9 +152,10 @@ const repoStatus = ref<'' | 'saved' | 'error'>('')
 let renameStatusTimer: ReturnType<typeof setTimeout> | null = null
 let repoStatusTimer: ReturnType<typeof setTimeout> | null = null
 
-type CredsStatus = { saved: false } | { saved: true; updated_at: string }
+type CredsStatus = { saved: false } | { saved: true; updated_at: string | null }
 const claudeCredsStatus = ref<CredsStatus | null>(null)
 const claudeCredsDeleting = ref(false)
+const claudeCredsError = ref<string | null>(null)
 
 async function loadClaudeCredsStatus() {
   if (!currentGuild.value) return
@@ -175,18 +177,26 @@ async function deleteClaude() {
   if (!currentGuild.value) return
   if (!confirm('Delete saved Claude credentials for this guild?')) return
   claudeCredsDeleting.value = true
+  claudeCredsError.value = null
   try {
-    await fetch(
+    const res = await fetch(
       `${API_BASE}/auth/claude-credentials?guild_id=${encodeURIComponent(currentGuild.value.id)}`,
       { method: 'DELETE', headers: authStore.authHeaders() },
     )
-    claudeCredsStatus.value = { saved: false }
+    if (res.ok) {
+      claudeCredsStatus.value = { saved: false }
+    } else {
+      claudeCredsError.value = `Delete failed (${res.status})`
+    }
+  } catch {
+    claudeCredsError.value = 'Delete failed'
   } finally {
     claudeCredsDeleting.value = false
   }
 }
 
-function formatCredsDate(iso: string) {
+function formatCredsDate(iso: string | null) {
+  if (!iso) return 'unknown date'
   return new Date(iso).toLocaleDateString(undefined, {
     year: 'numeric',
     month: 'short',
@@ -211,7 +221,7 @@ async function toggleSettings() {
     if (ghStore.repos.length === 0 && ghStore.token) {
       await ghStore.fetchRepos()
     }
-    loadClaudeCredsStatus()
+    await loadClaudeCredsStatus()
   }
 }
 
@@ -577,6 +587,12 @@ function goHome() {
   font-size: 11px;
   color: var(--color-text-dim);
   font-style: italic;
+}
+
+.creds-error {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-red, #e74c3c);
 }
 
 .settings-meta {

@@ -199,7 +199,7 @@ async def get_claude_credentials_status(
         row = result.one_or_none()
         if not row:
             return {"saved": False}
-        return {"saved": True, "updated_at": row.updated_at.isoformat()}
+        return {"saved": True, "updated_at": row.updated_at.isoformat() if row.updated_at else None}
     finally:
         await db.close()
 
@@ -207,11 +207,9 @@ async def get_claude_credentials_status(
 @router.delete("/auth/claude-credentials", status_code=204)
 async def delete_claude_credentials(
     guild_id: str = Query(...),
-    credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
+    _principal: str = Depends(require_worker_or_member),
 ):
     """Delete stored Claude credentials for a guild. Requires member or worker auth."""
-    token = credentials.credentials if credentials else None
-    await authorize_worker_or_member(guild_id, token)
     db = await get_db()
     try:
         guild_pk = await get_guild_pk(db, guild_id)
