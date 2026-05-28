@@ -15,11 +15,12 @@ from auth_deps import (
     authorize_worker_or_member,
     get_guild_pk,
     http_bearer,
+    require_member,
     require_user,
     require_worker_or_member,
 )
-from database import get_db
-from fastapi import APIRouter, Depends, HTTPException, Query
+from database import get_db, get_db_dep
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from models import (
@@ -35,6 +36,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from utils import generate_guild_id
 
 router = APIRouter()
@@ -180,6 +182,40 @@ async def store_claude_credentials(
     finally:
         await db.close()
     return {"ok": True}
+
+
+@router.get("/auth/claude-credentials")
+async def get_claude_credentials_status(
+    guild_id: str = Query(...),
+    _user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return masked Claude credentials status for the settings UI (never the full blob)."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
+    )
+    row = result.one_or_none()
+    if not row:
+        return {"saved": False}
+    return {"saved": True, "updated_at": row.updated_at.isoformat() if row.updated_at else None}
+
+
+@router.delete("/auth/claude-credentials", status_code=204)
+async def delete_claude_credentials(
+    guild_id: str = Query(...),
+    _user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Delete stored Claude credentials for a guild. Requires guild member auth."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    await db.exec(delete(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk))
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/auth/me")

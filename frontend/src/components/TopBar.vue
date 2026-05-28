@@ -93,6 +93,39 @@
         </div>
       </div>
 
+      <div class="settings-field">
+        <label class="settings-label">Claude Credentials</label>
+        <div v-if="claudeCredsStatus === null" class="creds-loading">Loading…</div>
+        <div v-else-if="claudeCredsStatus.saved" class="creds-saved-section">
+          <div class="settings-row creds-saved-row">
+            <span class="creds-saved-at">Saved {{ formatCredsDate(claudeCredsStatus.updated_at) }}</span>
+            <button
+              v-if="!claudeCredsConfirmDelete"
+              class="pixel-btn creds-delete-btn"
+              :disabled="claudeCredsDeleting"
+              @click="claudeCredsConfirmDelete = true"
+            >
+              Delete
+            </button>
+          </div>
+          <div v-if="claudeCredsConfirmDelete" class="creds-confirm-row">
+            <span class="creds-confirm-label">Delete credentials?</span>
+            <button
+              class="pixel-btn creds-confirm-yes-btn"
+              :disabled="claudeCredsDeleting"
+              @click="deleteClaude"
+            >
+              Confirm
+            </button>
+            <button class="pixel-btn creds-confirm-no-btn" @click="claudeCredsConfirmDelete = false">
+              Cancel
+            </button>
+          </div>
+        </div>
+        <div v-else class="creds-none">No credentials saved</div>
+        <div v-if="claudeCredsError" class="creds-error">{{ claudeCredsError }}</div>
+      </div>
+
       <div class="settings-field settings-meta">
         <span class="settings-meta-label">Session ID</span>
         <code class="settings-meta-value">{{ currentGuild.id }}</code>
@@ -110,6 +143,8 @@ import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useAuthStore } from '../stores/auth'
 import GitHubConfigModal from './GitHubConfigModal.vue'
+
+const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
 defineProps<{ debugActive?: boolean }>()
 const emit = defineEmits<{ 'toggle-debug': [] }>()
@@ -133,14 +168,81 @@ const repoStatus = ref<'' | 'saved' | 'error'>('')
 let renameStatusTimer: ReturnType<typeof setTimeout> | null = null
 let repoStatusTimer: ReturnType<typeof setTimeout> | null = null
 
+type CredsStatus = { saved: false } | { saved: true; updated_at: string | null }
+const claudeCredsStatus = ref<CredsStatus | null>(null)
+const claudeCredsDeleting = ref(false)
+const claudeCredsError = ref<string | null>(null)
+const claudeCredsConfirmDelete = ref(false)
+
+async function loadClaudeCredsStatus() {
+  if (!currentGuild.value) return
+  claudeCredsStatus.value = null
+  claudeCredsError.value = null
+  try {
+    const res = await fetch(
+      `${API_BASE}/auth/claude-credentials?guild_id=${encodeURIComponent(currentGuild.value.id)}`,
+      { headers: authStore.authHeaders() },
+    )
+    if (res.ok) {
+      claudeCredsStatus.value = await res.json()
+    } else {
+      claudeCredsError.value = `Failed to load credentials status (${res.status})`
+      claudeCredsStatus.value = { saved: false }
+    }
+  } catch {
+    claudeCredsError.value = 'Failed to load credentials status'
+    claudeCredsStatus.value = { saved: false }
+  }
+}
+
+async function deleteClaude() {
+  if (!currentGuild.value) return
+  claudeCredsDeleting.value = true
+  claudeCredsError.value = null
+  try {
+    const res = await fetch(
+      `${API_BASE}/auth/claude-credentials?guild_id=${encodeURIComponent(currentGuild.value.id)}`,
+      { method: 'DELETE', headers: authStore.authHeaders() },
+    )
+    if (res.ok) {
+      claudeCredsStatus.value = { saved: false }
+      claudeCredsConfirmDelete.value = false
+    } else {
+      claudeCredsError.value = `Delete failed (${res.status})`
+    }
+  } catch {
+    claudeCredsError.value = 'Delete failed'
+  } finally {
+    claudeCredsDeleting.value = false
+  }
+}
+
+function formatCredsDate(iso: string | null) {
+  if (!iso) return 'unknown date'
+  return new Date(iso).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
 watch(
   currentGuild,
   (guild) => {
     renameValue.value = guild?.name ?? ''
     primaryRepoValue.value = guild?.primary_repo ?? ''
+    claudeCredsStatus.value = null
+    claudeCredsError.value = null
+    claudeCredsConfirmDelete.value = false
   },
   { immediate: true },
 )
+
+watch(showSettings, (open) => {
+  if (!open) {
+    claudeCredsConfirmDelete.value = false
+  }
+})
 
 async function toggleSettings() {
   showSettings.value = !showSettings.value
@@ -150,6 +252,7 @@ async function toggleSettings() {
     if (ghStore.repos.length === 0 && ghStore.token) {
       await ghStore.fetchRepos()
     }
+    await loadClaudeCredsStatus()
   }
 }
 
@@ -474,6 +577,96 @@ function goHome() {
 }
 .save-status-error {
   color: var(--color-red);
+}
+
+.creds-loading {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-text-dim);
+}
+
+.creds-saved-row {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.creds-saved-at {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text);
+}
+
+.creds-delete-btn {
+  font-size: 7px;
+  padding: 5px 9px;
+  flex-shrink: 0;
+  border-color: var(--color-red, #c0392b);
+  color: var(--color-red, #e74c3c);
+}
+
+.creds-delete-btn:hover:not(:disabled) {
+  background: rgba(192, 57, 43, 0.2);
+}
+
+.creds-delete-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.creds-saved-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.creds-confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.creds-confirm-label {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-red, #e74c3c);
+  flex: 1;
+  white-space: nowrap;
+}
+
+.creds-confirm-yes-btn {
+  font-size: 7px;
+  padding: 5px 9px;
+  flex-shrink: 0;
+  border-color: var(--color-red, #c0392b);
+  color: var(--color-red, #e74c3c);
+}
+
+.creds-confirm-yes-btn:hover:not(:disabled) {
+  background: rgba(192, 57, 43, 0.2);
+}
+
+.creds-confirm-yes-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.creds-confirm-no-btn {
+  font-size: 7px;
+  padding: 5px 9px;
+  flex-shrink: 0;
+}
+
+.creds-none {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
+.creds-error {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-red, #e74c3c);
 }
 
 .settings-meta {
