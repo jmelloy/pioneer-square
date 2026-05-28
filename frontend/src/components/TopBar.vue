@@ -93,6 +93,22 @@
         </div>
       </div>
 
+      <div class="settings-field">
+        <label class="settings-label">Claude Credentials</label>
+        <div v-if="claudeCredsStatus === null" class="creds-loading">Loading…</div>
+        <div v-else-if="claudeCredsStatus.saved" class="settings-row creds-saved-row">
+          <span class="creds-saved-at">Saved {{ formatCredsDate(claudeCredsStatus.updated_at) }}</span>
+          <button
+            class="pixel-btn creds-delete-btn"
+            :disabled="claudeCredsDeleting"
+            @click="deleteClaude"
+          >
+            Delete
+          </button>
+        </div>
+        <div v-else class="creds-none">No credentials saved</div>
+      </div>
+
       <div class="settings-field settings-meta">
         <span class="settings-meta-label">Session ID</span>
         <code class="settings-meta-value">{{ currentGuild.id }}</code>
@@ -110,6 +126,8 @@ import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useAuthStore } from '../stores/auth'
 import GitHubConfigModal from './GitHubConfigModal.vue'
+
+const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
 defineProps<{ debugActive?: boolean }>()
 const emit = defineEmits<{ 'toggle-debug': [] }>()
@@ -133,6 +151,49 @@ const repoStatus = ref<'' | 'saved' | 'error'>('')
 let renameStatusTimer: ReturnType<typeof setTimeout> | null = null
 let repoStatusTimer: ReturnType<typeof setTimeout> | null = null
 
+type CredsStatus = { saved: false } | { saved: true; updated_at: string }
+const claudeCredsStatus = ref<CredsStatus | null>(null)
+const claudeCredsDeleting = ref(false)
+
+async function loadClaudeCredsStatus() {
+  if (!currentGuild.value) return
+  claudeCredsStatus.value = null
+  try {
+    const res = await fetch(
+      `${API_BASE}/auth/claude-credentials?guild_id=${encodeURIComponent(currentGuild.value.id)}`,
+      { headers: authStore.authHeaders() },
+    )
+    if (res.ok) {
+      claudeCredsStatus.value = await res.json()
+    }
+  } catch {
+    // ignore — status stays null
+  }
+}
+
+async function deleteClaude() {
+  if (!currentGuild.value) return
+  if (!confirm('Delete saved Claude credentials for this guild?')) return
+  claudeCredsDeleting.value = true
+  try {
+    await fetch(
+      `${API_BASE}/auth/claude-credentials?guild_id=${encodeURIComponent(currentGuild.value.id)}`,
+      { method: 'DELETE', headers: authStore.authHeaders() },
+    )
+    claudeCredsStatus.value = { saved: false }
+  } finally {
+    claudeCredsDeleting.value = false
+  }
+}
+
+function formatCredsDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
 watch(
   currentGuild,
   (guild) => {
@@ -150,6 +211,7 @@ async function toggleSettings() {
     if (ghStore.repos.length === 0 && ghStore.token) {
       await ghStore.fetchRepos()
     }
+    loadClaudeCredsStatus()
   }
 }
 
@@ -474,6 +536,47 @@ function goHome() {
 }
 .save-status-error {
   color: var(--color-red);
+}
+
+.creds-loading {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-text-dim);
+}
+
+.creds-saved-row {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.creds-saved-at {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text);
+}
+
+.creds-delete-btn {
+  font-size: 7px;
+  padding: 5px 9px;
+  flex-shrink: 0;
+  border-color: var(--color-red, #c0392b);
+  color: var(--color-red, #e74c3c);
+}
+
+.creds-delete-btn:hover:not(:disabled) {
+  background: rgba(192, 57, 43, 0.2);
+}
+
+.creds-delete-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.creds-none {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text-dim);
+  font-style: italic;
 }
 
 .settings-meta {

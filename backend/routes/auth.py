@@ -19,7 +19,7 @@ from auth_deps import (
     require_worker_or_member,
 )
 from database import get_db
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from models import (
@@ -180,6 +180,49 @@ async def store_claude_credentials(
     finally:
         await db.close()
     return {"ok": True}
+
+
+@router.get("/auth/claude-credentials")
+async def get_claude_credentials_status(
+    guild_id: str = Query(...),
+    _principal: str = Depends(require_worker_or_member),
+):
+    """Return masked Claude credentials status for the settings UI (never the full blob)."""
+    db = await get_db()
+    try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is None:
+            return {"saved": False}
+        result = await db.exec(
+            select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
+        )
+        row = result.one_or_none()
+        if not row:
+            return {"saved": False}
+        return {"saved": True, "updated_at": row.updated_at.isoformat()}
+    finally:
+        await db.close()
+
+
+@router.delete("/auth/claude-credentials", status_code=204)
+async def delete_claude_credentials(
+    guild_id: str = Query(...),
+    credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
+):
+    """Delete stored Claude credentials for a guild. Requires member or worker auth."""
+    token = credentials.credentials if credentials else None
+    await authorize_worker_or_member(guild_id, token)
+    db = await get_db()
+    try:
+        guild_pk = await get_guild_pk(db, guild_id)
+        if guild_pk is not None:
+            await db.exec(
+                delete(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
+            )
+            await db.commit()
+    finally:
+        await db.close()
+    return Response(status_code=204)
 
 
 @router.get("/auth/me")
