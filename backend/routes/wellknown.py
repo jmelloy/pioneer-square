@@ -25,13 +25,14 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk, require_member
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from database import get_db
+from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from models import Guild, GuildKey, Worker
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 router = APIRouter()
 
@@ -77,40 +78,34 @@ def _generate_ed25519_pems() -> tuple[str, str]:
     return pub_pem, priv_pem
 
 
-async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            return None
+async def _get_or_create_guild_key(db: AsyncSession, guild_id: str) -> GuildKey | None:
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        return None
 
-        row = (
-            await db.exec(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
-        ).one_or_none()
+    row = (await db.exec(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))).one_or_none()
 
-        if row:
-            # Migrate any existing P-256 key to Ed25519.
-            pub = serialization.load_pem_public_key(row.public_key_pem.encode())
-            if not isinstance(pub, Ed25519PublicKey):
-                row.public_key_pem, row.private_key_pem = _generate_ed25519_pems()
-                await db.commit()
-                await db.refresh(row)
-            return row
-
-        pub_pem, priv_pem = _generate_ed25519_pems()
-        row = GuildKey(
-            guild_id=guild_pk,
-            key_id=secrets.token_urlsafe(16),
-            public_key_pem=pub_pem,
-            private_key_pem=priv_pem,
-            created_at=datetime.now(UTC),
-        )
-        db.add(row)
-        await db.commit()
-        await db.refresh(row)
+    if row:
+        # Migrate any existing P-256 key to Ed25519.
+        pub = serialization.load_pem_public_key(row.public_key_pem.encode())
+        if not isinstance(pub, Ed25519PublicKey):
+            row.public_key_pem, row.private_key_pem = _generate_ed25519_pems()
+            await db.commit()
+            await db.refresh(row)
         return row
-    finally:
-        await db.close()
+
+    pub_pem, priv_pem = _generate_ed25519_pems()
+    row = GuildKey(
+        guild_id=guild_pk,
+        key_id=secrets.token_urlsafe(16),
+        public_key_pem=pub_pem,
+        private_key_pem=priv_pem,
+        created_at=datetime.now(UTC),
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -119,12 +114,15 @@ async def _get_or_create_guild_key(guild_id: str) -> GuildKey | None:
 
 
 @router.get("/.well-known/jwks.json")
-async def jwks(request: Request) -> JSONResponse:
+async def jwks(
+    request: Request,
+    db: AsyncSession = Depends(get_db_dep),
+) -> JSONResponse:
     guild_id = _extract_guild_from_host(request.headers.get("host", ""))
     if not guild_id:
         return JSONResponse({"keys": []})
 
-    guild_key = await _get_or_create_guild_key(guild_id)
+    guild_key = await _get_or_create_guild_key(db, guild_id)
     if not guild_key:
         return JSONResponse({"keys": []})
 
@@ -148,17 +146,12 @@ class JWKSConfig(BaseModel):
 async def get_jwks_config(
     guild_id: str,
     _: str = Depends(require_member("owner", "member")),
+    db: AsyncSession = Depends(get_db_dep),
 ) -> JSONResponse:
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        row = (
-            await db.exec(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
-        ).one_or_none()
-    finally:
-        await db.close()
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    row = (await db.exec(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))).one_or_none()
 
     if not row or not row.custom_jwks:
         return JSONResponse({"custom_jwks": None, "has_private_key": False})
@@ -328,23 +321,20 @@ def _build_agent_card(
 
 
 @router.get("/.well-known/agent.json")
-async def agent_card(request: Request) -> JSONResponse:
+async def agent_card(
+    request: Request,
+    db: AsyncSession = Depends(get_db_dep),
+) -> JSONResponse:
     guild_id = _extract_guild_from_host(request.headers.get("host", ""))
 
     guild: Guild | None = None
     workers: list[Worker] = []
 
     if guild_id:
-        db = await get_db()
-        try:
-            guild = (
-                await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
-            ).one_or_none()
-            if guild:
-                rows = await db.exec(select(Worker).where(col(Worker.guild_id) == guild.id))
-                workers = list(rows.all())
-        finally:
-            await db.close()
+        guild = (await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))).one_or_none()
+        if guild:
+            rows = await db.exec(select(Worker).where(col(Worker.guild_id) == guild.id))
+            workers = list(rows.all())
 
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host", request.url.netloc)
@@ -362,17 +352,14 @@ async def guild_agent_card(
     guild_id: str,
     request: Request,
     _: str = Depends(require_member("owner", "member", "viewer")),
+    db: AsyncSession = Depends(get_db_dep),
 ) -> JSONResponse:
     """Returns the AgentCard for a specific guild (authenticated)."""
-    db = await get_db()
-    try:
-        guild = (await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))).one_or_none()
-        if not guild:
-            raise HTTPException(404, detail="Guild not found")
-        rows = await db.exec(select(Worker).where(col(Worker.guild_id) == guild.id))
-        workers = list(rows.all())
-    finally:
-        await db.close()
+    guild = (await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))).one_or_none()
+    if not guild:
+        raise HTTPException(404, detail="Guild not found")
+    rows = await db.exec(select(Worker).where(col(Worker.guild_id) == guild.id))
+    workers = list(rows.all())
 
     scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host", request.url.netloc)
@@ -390,37 +377,32 @@ async def set_jwks_config(
     guild_id: str,
     body: JWKSConfig,
     _: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db_dep),
 ) -> JSONResponse:
     if "keys" not in body.public_jwks or not isinstance(body.public_jwks["keys"], list):
         raise HTTPException(400, detail="public_jwks must have a 'keys' array")
 
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(404, detail="Guild not found")
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(404, detail="Guild not found")
 
-        row = (
-            await db.exec(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))
-        ).one_or_none()
+    row = (await db.exec(select(GuildKey).where(col(GuildKey.guild_id) == guild_pk))).one_or_none()
 
-        if not row:
-            pub_pem, priv_pem = _generate_ed25519_pems()
-            row = GuildKey(
-                guild_id=guild_pk,
-                key_id=secrets.token_urlsafe(16),
-                public_key_pem=pub_pem,
-                private_key_pem=priv_pem,
-                created_at=datetime.now(UTC),
-            )
-            db.add(row)
+    if not row:
+        pub_pem, priv_pem = _generate_ed25519_pems()
+        row = GuildKey(
+            guild_id=guild_pk,
+            key_id=secrets.token_urlsafe(16),
+            public_key_pem=pub_pem,
+            private_key_pem=priv_pem,
+            created_at=datetime.now(UTC),
+        )
+        db.add(row)
 
-        row.custom_jwks = json.dumps(body.public_jwks)
-        if body.private_key_jwk is not None:
-            row.private_key_jwk = json.dumps(body.private_key_jwk)
+    row.custom_jwks = json.dumps(body.public_jwks)
+    if body.private_key_jwk is not None:
+        row.private_key_jwk = json.dumps(body.private_key_jwk)
 
-        await db.commit()
-    finally:
-        await db.close()
+    await db.commit()
 
     return JSONResponse({"ok": True})
