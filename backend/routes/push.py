@@ -13,12 +13,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from auth_deps import require_user
-from database import get_db
+from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
 from models import PushToken
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 router = APIRouter()
 
@@ -35,6 +36,7 @@ class RegisterRequest(BaseModel):
 async def register_push_token(
     body: RegisterRequest,
     github_user_id: str = Depends(require_user),
+    db: AsyncSession = Depends(get_db_dep),
 ) -> dict[str, str]:
     """Register or refresh a device token for the authenticated user.
 
@@ -49,30 +51,26 @@ async def register_push_token(
         )
 
     now = datetime.now(UTC)
-    db = await get_db()
-    try:
-        stmt = (
-            pg_insert(PushToken)
-            .values(
-                token=body.token,
-                user_id=github_user_id,
-                platform=body.platform,
-                created_at=now,
-                last_seen_at=now,
-            )
-            .on_conflict_do_update(
-                index_elements=["token"],
-                set_={
-                    "user_id": github_user_id,
-                    "platform": body.platform,
-                    "last_seen_at": now,
-                },
-            )
+    stmt = (
+        pg_insert(PushToken)
+        .values(
+            token=body.token,
+            user_id=github_user_id,
+            platform=body.platform,
+            created_at=now,
+            last_seen_at=now,
         )
-        await db.execute(stmt)
-        await db.commit()
-    finally:
-        await db.close()
+        .on_conflict_do_update(
+            index_elements=["token"],
+            set_={
+                "user_id": github_user_id,
+                "platform": body.platform,
+                "last_seen_at": now,
+            },
+        )
+    )
+    await db.execute(stmt)
+    await db.commit()
     return {"status": "ok"}
 
 
@@ -84,50 +82,44 @@ class UnregisterRequest(BaseModel):
 async def unregister_push_token(
     body: UnregisterRequest,
     github_user_id: str = Depends(require_user),
+    db: AsyncSession = Depends(get_db_dep),
 ) -> dict[str, str]:
     """Delete the caller's row for ``token``.
 
     Only deletes when the token is owned by the authenticated user, so one
     user can't silence another's device by guessing its token.
     """
-    db = await get_db()
-    try:
-        await db.execute(
-            delete(PushToken).where(
-                PushToken.token == body.token,
-                PushToken.user_id == github_user_id,
-            )
+    await db.execute(
+        delete(PushToken).where(
+            PushToken.token == body.token,
+            PushToken.user_id == github_user_id,
         )
-        await db.commit()
-    finally:
-        await db.close()
+    )
+    await db.commit()
     return {"status": "ok"}
 
 
 @router.get("/api/push/tokens")
 async def list_my_tokens(
     github_user_id: str = Depends(require_user),
+    db: AsyncSession = Depends(get_db_dep),
 ) -> dict[str, list[dict]]:
     """List the caller's registered devices.
 
     Useful for a future "logged-in devices" settings screen and for
     debugging — exposes only the caller's own rows.
     """
-    db = await get_db()
-    try:
-        result = await db.execute(
-            select(
-                PushToken.token,
-                PushToken.platform,
-                PushToken.created_at,
-                PushToken.last_seen_at,
-            )
-            .where(PushToken.user_id == github_user_id)
-            .order_by(PushToken.last_seen_at.desc())
+    result = await db.execute(
+        select(
+            PushToken.token,
+            PushToken.platform,
+            PushToken.created_at,
+            PushToken.last_seen_at,
         )
-        rows = result.all()
-    finally:
-        await db.close()
+        .where(PushToken.user_id == github_user_id)
+        .order_by(PushToken.last_seen_at.desc())
+    )
+    rows = result.all()
     return {
         "tokens": [
             {

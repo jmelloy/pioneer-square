@@ -15,12 +15,13 @@ import string
 from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member
-from database import get_db
+from database import get_db_dep
 from events import broadcast, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
 from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
 from utils import (
     build_spawn_worker_env,
     decode_claude_oauth_token,
@@ -66,7 +67,11 @@ class WorkerMessage(BaseModel):
 
 
 @router.post("/guilds/{guild_id}/workers")
-async def create_worker(guild_id: str, data: WorkerCreate):
+async def create_worker(
+    guild_id: str,
+    data: WorkerCreate,
+    db: AsyncSession = Depends(get_db_dep),
+):
     """Register a worker agent. The actual worker process must connect via WebSocket
     using the returned id (see the standalone /worker package).
 
@@ -79,28 +84,24 @@ async def create_worker(guild_id: str, data: WorkerCreate):
     worker_name = worker_display_name(worker_id, data.hostname)
     auth_token = secrets.token_urlsafe(32)
 
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        resolved_user_id = await _resolve_user_identifier(db, data.user) if data.user else None
-        db.add(
-            Worker(
-                id=worker_id,
-                guild_id=guild_pk,
-                repos=json.dumps(data.repos),
-                org=data.org,
-                state="offline",
-                created_at=created_at,
-                user_id=resolved_user_id,
-                auth_token=auth_token,
-                name=worker_name,
-            )
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    resolved_user_id = await _resolve_user_identifier(db, data.user) if data.user else None
+    db.add(
+        Worker(
+            id=worker_id,
+            guild_id=guild_pk,
+            repos=json.dumps(data.repos),
+            org=data.org,
+            state="offline",
+            created_at=created_at,
+            user_id=resolved_user_id,
+            auth_token=auth_token,
+            name=worker_name,
         )
-        await db.commit()
-    finally:
-        await db.close()
+    )
+    await db.commit()
 
     return {
         "id": worker_id,
@@ -117,6 +118,7 @@ async def spawn_worker_container(
     guild_id: str,
     data: SpawnWorkerRequest,
     github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
 ):
     """Start a new worker container via Docker. Requires the Docker socket to be mounted."""
     try:
@@ -131,19 +133,15 @@ async def spawn_worker_container(
 
     image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
 
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.exec(
-            select(col(ClaudeCredentials.credentials_blob)).where(
-                col(ClaudeCredentials.guild_id) == guild_pk
-            )
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(col(ClaudeCredentials.credentials_blob)).where(
+            col(ClaudeCredentials.guild_id) == guild_pk
         )
-        stored_blob = result.one_or_none()
-    finally:
-        await db.close()
+    )
+    stored_blob = result.one_or_none()
 
     env = build_spawn_worker_env(
         guild_id=guild_id,
@@ -212,20 +210,17 @@ async def get_pending_auth(
 async def list_workers(
     guild_id: str,
     github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
 ):
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.exec(
-            select(Worker)
-            .where(col(Worker.guild_id) == guild_pk)
-            .order_by(col(Worker.created_at).desc())
-        )
-        return [row_to_dict(w) for w in result.all()]
-    finally:
-        await db.close()
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(Worker)
+        .where(col(Worker.guild_id) == guild_pk)
+        .order_by(col(Worker.created_at).desc())
+    )
+    return [row_to_dict(w) for w in result.all()]
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/tasks")
@@ -234,43 +229,38 @@ async def assign_task(
     worker_id: str,
     data: TaskCreate,
     github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
 ):
     """Persist a task and broadcast a task-assigned event for the worker process."""
     task_id = "t-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
     created_at = datetime.now(UTC)
 
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.exec(
-            select(col(Worker.id)).where(
-                col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk
-            )
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(col(Worker.id)).where(col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk)
+    )
+    if not result.one_or_none():
+        raise HTTPException(status_code=404, detail="Worker not found")
+    name = data.name or data.description[:60]
+    db.add(
+        Task(
+            id=task_id,
+            worker_id=worker_id,
+            guild_id=guild_pk,
+            name=name,
+            description=data.description,
+            tool=data.tool,
+            issue_number=data.issue_number,
+            issue_repo=data.issue_repo,
+            state="pending",
+            phase=data.phase or "execute",
+            parent_task_id=data.parent_task_id,
+            created_at=created_at,
         )
-        if not result.one_or_none():
-            raise HTTPException(status_code=404, detail="Worker not found")
-        name = data.name or data.description[:60]
-        db.add(
-            Task(
-                id=task_id,
-                worker_id=worker_id,
-                guild_id=guild_pk,
-                name=name,
-                description=data.description,
-                tool=data.tool,
-                issue_number=data.issue_number,
-                issue_repo=data.issue_repo,
-                state="pending",
-                phase=data.phase or "execute",
-                parent_task_id=data.parent_task_id,
-                created_at=created_at,
-            )
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    )
+    await db.commit()
 
     await broadcast(
         guild_id,
@@ -293,24 +283,24 @@ async def assign_task(
 
 
 @router.get("/guilds/{guild_id}/workers/{worker_id}/tasks")
-async def list_tasks(guild_id: str, worker_id: str):
-    db = await get_db()
-    try:
-        guild_pk = await get_guild_pk(db, guild_id)
-        if guild_pk is None:
-            raise HTTPException(status_code=404, detail="Guild not found")
-        result = await db.exec(
-            select(Task)
-            .where(
-                col(Task.worker_id) == worker_id,
-                col(Task.guild_id) == guild_pk,
-                live_tasks_filter(),
-            )
-            .order_by(col(Task.created_at).desc())
+async def list_tasks(
+    guild_id: str,
+    worker_id: str,
+    db: AsyncSession = Depends(get_db_dep),
+):
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(Task)
+        .where(
+            col(Task.worker_id) == worker_id,
+            col(Task.guild_id) == guild_pk,
+            live_tasks_filter(),
         )
-        return [row_to_dict(t) for t in result.all()]
-    finally:
-        await db.close()
+        .order_by(col(Task.created_at).desc())
+    )
+    return [row_to_dict(t) for t in result.all()]
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/message")
