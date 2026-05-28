@@ -11,7 +11,7 @@ Task assignment is **push-based over WebSocket** — the server broadcasts `task
 
 1. **Fallback poll interval: 300 s** (`pull_interval` default) — tasks missed during WS downtime are not re-fetched until 5 minutes later.
 2. **Sequential startup sequence** — six sequential I/O steps (registration, GitHub token, repo discovery, tool auth checks, WS connect, Claude auth) must all complete before the worker announces itself as ready.
-3. **Claude auth flow: up to 300 s** — if Claude credentials are absent, the worker blocks on a manual auth-code paste before joining.
+3. **Claude auth flow: ~10 s (normal) / up to 300 s (credentials missing)** — when already authenticated, `claude auth status --json` completes in ~10 s (`worker.py:326`). The 300 s figure applies only when credentials are absent and the worker must block waiting for a manual auth-code paste; this is not a routine startup cost.
 
 ---
 
@@ -82,7 +82,10 @@ def _backoff_delay(attempt: int, base: float, cap: float) -> float:
 ### WebSocket send retry — `ws_client.py:113–130`
 
 - Up to `send_retries=3` attempts with the same exponential backoff.
-- If all 3 fail, the send is dropped (error logged).
+- If all 3 fail, the send is **dropped** (error logged). The risk level depends on which message type is dropped:
+  - `heartbeat` — low risk; the next heartbeat fires within 25 s.
+  - `join` / `worker-register` — high risk; the worker will not appear in the backend's agent list and will not receive push tasks until it reconnects and re-joins.
+  - `task-update` / `task-complete` / `task-followup-done` — high risk; task state diverges between worker and backend, potentially causing the task to stall or be re-assigned.
 
 ### WS transport / recv error backoff — `ws_client.py:160,164`
 
@@ -108,13 +111,15 @@ Reference: `backend/routes/workers.py` broadcasts `task-assigned` at the point o
 ### Poll fallback path
 
 ```
-task-assigned WS push missed (e.g. worker offline or WS flap)
+task-assigned WS push missed — dominant case: worker was offline when task was assigned
   → _idle_puller() fires after pull_interval (default 300 s)
   → _fetch_pending_tasks() GET /guilds/{id}/workers/{id}/tasks
   → tasks enqueued for execution
 ```
 
 Maximum extra wait: **300 s** on default config.
+
+The primary scenario that triggers this path is the worker being offline (or in the middle of reconnecting) at the moment a task is assigned. A push being silently dropped on an established, live WebSocket connection is a rare edge case — it would require a successful write at the sender that the receiver never processes, which the WS protocol does not normally allow.
 
 ### Reconnect recovery
 
@@ -135,14 +140,29 @@ All steps are **sequential** (`worker.py:971–990`). The worker does not appear
 | 5. `_check_codex_doctor()` | `worker.py:977` | Runs `codex doctor` — **20 s timeout** (`worker.py:267`) |
 | 6. `_ensure_codex_api_key()` | `worker.py:978` | Validates OpenAI key in config |
 | 7. `ws.connect()` | `worker.py:982` | WS connect with exponential backoff (up to 30 s per attempt, infinite retries) |
-| 8. `_check_claude_auth()` | `worker.py:988` | **Blocks up to 300 s** if credentials missing (manual auth-code paste) |
+| 8a. `_check_claude_auth()` — credentials present | `worker.py:988` / `worker.py:326` | Runs `claude auth status --json`; completes in **~10 s** (subprocess timeout) |
+| 8b. `_check_claude_auth()` — credentials missing | `worker.py:545` | Blocks waiting for manual auth-code paste — **up to 300 s**; not a routine startup cost |
 | 9. `_join()` | `worker.py:990` | Sends `join` + `worker-register` — **worker becomes visible** |
 | 10. Clone / fetch repos | `worker.py:999–1006` | Parallelized with `asyncio.gather`; runs after join |
 | 11. `_initial_worktree_sweep()` | `worker.py:1018` | **30 s timeout**; prunes stale worktrees |
 | 12. `_fetch_pending_tasks()` | `worker.py:1022` | Catches any tasks assigned before worker connected |
 | 13. Start agent loops, puller, heartbeat, sweeper | `worker.py:1029–1032` | Worker now fully operational |
 
-**Steps 4–6 always execute even if Codex/Pi runners are not in use.** `_check_codex_doctor()` is guarded (`worker.py:262–278`) and only logs a warning on failure, but still runs the subprocess and waits up to 20 s.
+**Steps 4–6 always execute even if the corresponding runner is not configured.** `_check_codex_doctor()` is guarded (`worker.py:262–278`) and only logs a warning on failure, but still runs the subprocess and waits up to 20 s. Similarly, `_check_gh_auth()` and `_check_claude_auth()` always run regardless of whether GitHub or Claude runners are enabled.
+
+**Recommendation**: guard each check behind the appropriate config flag to avoid blocking startup on tools that are not in use:
+
+```python
+if self.cfg.gh_enabled:
+    await self._check_gh_auth()
+if self.cfg.codex_enabled:
+    await self._check_codex_doctor()
+    await self._ensure_codex_api_key()
+if self.cfg.claude_enabled:
+    await self._check_claude_auth()
+```
+
+This alone can shave 10–40 s off startup time for workers that run only one runner type.
 
 ---
 
