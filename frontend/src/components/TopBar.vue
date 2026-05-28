@@ -160,6 +160,7 @@ const claudeCredsError = ref<string | null>(null)
 async function loadClaudeCredsStatus() {
   if (!currentGuild.value) return
   claudeCredsStatus.value = null
+  claudeCredsError.value = null
   try {
     const res = await fetch(
       `${API_BASE}/auth/claude-credentials?guild_id=${encodeURIComponent(currentGuild.value.id)}`,
@@ -167,9 +168,13 @@ async function loadClaudeCredsStatus() {
     )
     if (res.ok) {
       claudeCredsStatus.value = await res.json()
+    } else {
+      claudeCredsError.value = `Failed to load credentials status (${res.status})`
+      claudeCredsStatus.value = { saved: false }
     }
   } catch {
-    // ignore — status stays null
+    claudeCredsError.value = 'Failed to load credentials status'
+    claudeCredsStatus.value = { saved: false }
   }
 }
 
@@ -209,6 +214,8 @@ watch(
   (guild) => {
     renameValue.value = guild?.name ?? ''
     primaryRepoValue.value = guild?.primary_repo ?? ''
+    claudeCredsStatus.value = null
+    claudeCredsError.value = null
   },
   { immediate: true },
 )
