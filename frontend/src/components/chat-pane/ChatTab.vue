@@ -461,12 +461,17 @@ watch(
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
   font-family: var(--font-mono);
-  font-size: 16px;
   padding: 6px 10px;
   outline: none;
   resize: none;
   line-height: 1.4;
   transition: border-color 0.15s;
+}
+
+@media (max-width: 768px) {
+  .chat-input {
+    font-size: 16px;
+  }
 }
 
 .chat-input:focus {
