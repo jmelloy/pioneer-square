@@ -56,12 +56,13 @@
     </div>
   </div>
   <div class="chat-input-row">
-    <input
+    <textarea
       v-model="inputText"
       class="chat-input"
       placeholder="Send directive..."
-      @keydown.enter="onSend"
-    />
+      rows="3"
+      @keydown.enter.exact.prevent="onSend"
+    ></textarea>
     <button class="pixel-btn send-btn" @click="onSend">▶</button>
   </div>
 </template>
@@ -460,9 +461,11 @@ watch(
   border: 2px solid var(--color-brass-dark);
   color: var(--color-text);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   padding: 6px 10px;
   outline: none;
+  resize: none;
+  line-height: 1.4;
   transition: border-color 0.15s;
 }
 
