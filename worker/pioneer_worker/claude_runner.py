@@ -11,6 +11,17 @@ from collections.abc import Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
+UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
+
+
+def _usage_tokens(usage: dict) -> dict:
+    """Extract the four token counts from a message/result ``usage`` block."""
+    return {
+        "input_tokens": int(usage.get("input_tokens") or 0),
+        "output_tokens": int(usage.get("output_tokens") or 0),
+        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens") or 0),
+        "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens") or 0),
+    }
 
 
 def _summarize_lines(lines: list[str], prefix: str = "  → ") -> str:
@@ -274,6 +285,7 @@ async def run_claude_auto(
     max_turns: int,
     emit: EmitFn,
     on_proc: Callable[[ClaudeProcess], None] | None = None,
+    on_usage: UsageFn | None = None,
     claude_path: str = "claude",
     resume_session_id: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
@@ -355,6 +367,30 @@ async def run_claude_auto(
                     logger.info("claude[%d] session_id=%s", proc.pid, session_id)
             if event.get("type") == "result":
                 stop_reason = event.get("subtype", "success")
+            if on_usage is not None:
+                etype = event.get("type")
+                if etype == "assistant":
+                    msg = event.get("message", {})
+                    usage = msg.get("usage")
+                    if isinstance(usage, dict):
+                        await on_usage(
+                            {
+                                "kind": "api_call",
+                                "model": msg.get("model"),
+                                **_usage_tokens(usage),
+                            }
+                        )
+                elif etype == "result":
+                    usage = event.get("usage")
+                    rec = {
+                        "kind": "result",
+                        "model": event.get("model"),
+                        "cost_usd": event.get("total_cost_usd", event.get("cost_usd")),
+                        "num_turns": event.get("num_turns"),
+                        "stop_reason": event.get("subtype", "success"),
+                        **(_usage_tokens(usage) if isinstance(usage, dict) else {}),
+                    }
+                    await on_usage(rec)
             for text, detail in parse_claude_event(event):
                 await emit(text, detail)
                 if not text.startswith(("▶", "✓", "✗", "[", "  →")):

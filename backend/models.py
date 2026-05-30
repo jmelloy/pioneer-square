@@ -321,6 +321,48 @@ class TaskEvent(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class ClaudeUsage(SQLModel, table=True):
+    """Per-API-call usage captured from a worker's headless Claude run.
+
+    The worker parses ``claude --output-format stream-json`` and reports one
+    row per assistant message (``kind="api_call"``) carrying that message's
+    ``message.usage``, plus one ``kind="result"`` row per run holding the
+    ``result`` event's self-reported aggregate ``usage`` and
+    ``total_cost_usd``. Storing both lets the UI compare the per-call sum
+    against Claude's self-reported total (the two disagree in practice).
+    """
+
+    __tablename__ = "claude_usage"  # type: ignore[assignment]
+
+    id: int | None = Field(default=None, primary_key=True)
+    # guild_id is the integer FK to guilds.id.
+    guild_id: int = Field(foreign_key="guilds.id", index=True)
+    # Worker task this usage belongs to (NULL only for ad-hoc reports).
+    task_id: str | None = Field(default=None, foreign_key="tasks.id")
+    worker_id: str | None = Field(default=None, foreign_key="workers.id")
+    # Claude session_id (system:init) for the run this row came from.
+    session_id: str | None = None
+    # "api_call" (one assistant message) | "result" (the run's result event).
+    kind: str
+    # 0-based index of the API call within the task run; NULL for result rows.
+    call_index: int | None = None
+    # Model id (e.g. "claude-opus-4-8").
+    model: str | None = None
+    input_tokens: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
+    output_tokens: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
+    cache_read_input_tokens: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
+    cache_creation_input_tokens: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
+    # Result rows only: self-reported cost/turns/outcome (NULL on api_call rows).
+    cost_usd: float | None = None
+    num_turns: int | None = None
+    stop_reason: str | None = None
+    # workspace repo "owner/name" if known.
+    repo: str | None = None
+    # Free-text label for who reported (worker name / user). NULL if unknown.
+    reporter: str | None = None
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class PushToken(SQLModel, table=True):
     """APNs (or, in the future, FCM) device token registered by the iOS app.
 

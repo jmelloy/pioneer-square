@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import json
+from unittest.mock import patch
+
 import pytest
-from pioneer_worker.claude_runner import _summarize_lines, _truncate_at_word, parse_claude_event
+from pioneer_worker.claude_runner import (
+    _summarize_lines,
+    _truncate_at_word,
+    _usage_tokens,
+    parse_claude_event,
+    run_claude_auto,
+)
 
 # ---------------------------------------------------------------------------
 # _summarize_lines
@@ -314,3 +323,162 @@ def test_parse_unknown_type_returns_empty():
 
 def test_parse_empty_event_returns_empty():
     assert parse_claude_event({}) == []
+
+
+# ---------------------------------------------------------------------------
+# _usage_tokens
+# ---------------------------------------------------------------------------
+
+
+def test_usage_tokens_full():
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 30,
+        "cache_creation_input_tokens": 40,
+    }
+    assert _usage_tokens(usage) == {
+        "input_tokens": 10,
+        "output_tokens": 20,
+        "cache_read_input_tokens": 30,
+        "cache_creation_input_tokens": 40,
+    }
+
+
+def test_usage_tokens_missing_and_none_default_zero():
+    assert _usage_tokens({"input_tokens": None}) == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# run_claude_auto — on_usage callback
+# ---------------------------------------------------------------------------
+
+
+class _FakeStream:
+    """Async-iterable byte stream of pre-baked lines."""
+
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = lines
+
+    def __aiter__(self):
+        async def _gen():
+            for ln in self._lines:
+                yield ln
+
+        return _gen()
+
+
+class _FakeProc:
+    def __init__(self, stdout_lines: list[bytes]) -> None:
+        self.pid = 4242
+        self.stdout = _FakeStream(stdout_lines)
+        self.stderr = _FakeStream([])
+        self.stdin = None
+
+    async def wait(self) -> int:
+        return 0
+
+
+async def test_run_claude_auto_emits_per_call_and_result_usage():
+    events = [
+        {"type": "system", "subtype": "init", "session_id": "sess-1", "tools": []},
+        {
+            "type": "assistant",
+            "message": {
+                "model": "claude-opus-4-8",
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 7,
+                    "cache_read_input_tokens": 1,
+                    "cache_creation_input_tokens": 2,
+                },
+            },
+        },
+        {
+            "type": "assistant",
+            "message": {
+                "model": "claude-opus-4-8",
+                "content": [{"type": "text", "text": "bye"}],
+                "usage": {"input_tokens": 3, "output_tokens": 4},
+            },
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "num_turns": 2,
+            "total_cost_usd": 0.5,
+            "usage": {"input_tokens": 100, "output_tokens": 11},
+        },
+    ]
+    lines = [(json.dumps(e) + "\n").encode() for e in events]
+
+    captured: list[dict] = []
+
+    async def _emit(text, detail=None):
+        return None
+
+    async def _on_usage(rec):
+        captured.append(rec)
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc(lines)
+
+    with patch("asyncio.create_subprocess_exec", _fake_exec):
+        success, stop_reason, last_text, session_id = await run_claude_auto(
+            "do it",
+            "/tmp",
+            max_turns=10,
+            emit=_emit,
+            on_usage=_on_usage,
+        )
+
+    assert success is True
+    assert stop_reason == "success"
+    assert session_id == "sess-1"
+
+    api_calls = [r for r in captured if r["kind"] == "api_call"]
+    results = [r for r in captured if r["kind"] == "result"]
+    assert len(api_calls) == 2
+    assert len(results) == 1
+
+    assert api_calls[0]["input_tokens"] == 5
+    assert api_calls[0]["output_tokens"] == 7
+    assert api_calls[0]["cache_read_input_tokens"] == 1
+    assert api_calls[0]["model"] == "claude-opus-4-8"
+    # second call's missing cache fields default to 0
+    assert api_calls[1]["cache_read_input_tokens"] == 0
+
+    # The result event's self-reported total (100) differs from the per-call
+    # input sum (5 + 3 = 8) — the discrepancy this feature surfaces.
+    assert results[0]["input_tokens"] == 100
+    assert sum(c["input_tokens"] for c in api_calls) == 8
+    assert results[0]["cost_usd"] == 0.5
+    assert results[0]["num_turns"] == 2
+    assert results[0]["stop_reason"] == "success"
+
+
+async def test_run_claude_auto_no_usage_callback_is_optional():
+    events = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+        {"type": "result", "subtype": "success", "num_turns": 1},
+    ]
+    lines = [(json.dumps(e) + "\n").encode() for e in events]
+
+    async def _emit(text, detail=None):
+        return None
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc(lines)
+
+    with patch("asyncio.create_subprocess_exec", _fake_exec):
+        success, stop_reason, _last, _sid = await run_claude_auto(
+            "do it", "/tmp", max_turns=10, emit=_emit
+        )
+    assert success is True
+    assert stop_reason == "success"

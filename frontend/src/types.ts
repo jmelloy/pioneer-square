@@ -283,6 +283,28 @@ export interface ForemanPollStatusWS {
   nextCheckIn?: number
 }
 
+export interface ClaudeUsageWS {
+  type: 'claude-usage'
+  taskId: string | null
+  workerId?: string | null
+  sessionId?: string | null
+  model?: string | null
+  repo?: string | null
+  reporter?: string | null
+  apiCalls: number
+  summedInputTokens: number
+  summedOutputTokens: number
+  summedCacheReadTokens: number
+  summedCacheCreationTokens: number
+  reportedInputTokens?: number | null
+  reportedOutputTokens?: number | null
+  reportedCacheReadTokens?: number | null
+  reportedCacheCreationTokens?: number | null
+  costUsd?: number | null
+  numTurns?: number | null
+  stopReason?: string | null
+}
+
 export type WSInbound =
   | ChatWS
   | GuildUpdatedWS
@@ -299,6 +321,7 @@ export type WSInbound =
   | ClaudeAuthSuccessWS
   | ClaudeAuthClearedWS
   | ForemanPollStatusWS
+  | ClaudeUsageWS
 
 // Outbound: producer-side; we accept any object with a `type`.
 export interface WSOutbound {
