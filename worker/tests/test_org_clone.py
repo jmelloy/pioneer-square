@@ -306,7 +306,7 @@ async def test_pull_repos_skips_uncloned_repo(tmp_path):
     repos_dir = tmp_path / "repos"
     emitted: list[str] = []
 
-    async def fake_emit(msg: str) -> None:
+    async def fake_emit(msg: str, detail=None, level=None) -> None:
         emitted.append(msg)
 
     cloned: list[str] = []
@@ -331,7 +331,7 @@ async def test_pull_repos_updates_already_cloned_repo(tmp_path):
 
     emitted: list[str] = []
 
-    async def fake_emit(msg: str) -> None:
+    async def fake_emit(msg: str, detail=None, level=None) -> None:
         emitted.append(msg)
 
     git_calls: list[list[str]] = []
@@ -356,7 +356,7 @@ async def test_pull_repos_skips_uncloned_but_pulls_cloned(tmp_path):
 
     emitted: list[str] = []
 
-    async def fake_emit(msg: str) -> None:
+    async def fake_emit(msg: str, detail=None, level=None) -> None:
         emitted.append(msg)
 
     ensure_calls: list[str] = []

@@ -128,6 +128,7 @@ async def get_task_logs(
             col(TaskLog.worker_id),
             col(TaskLog.agent_id),
             col(TaskLog.data),
+            col(TaskLog.level),
         )
         .where(col(TaskLog.task_id) == task_id)
         .order_by(col(TaskLog.id).asc())
@@ -167,6 +168,7 @@ async def get_guild_logs(
         col(TaskLog.agent_id),
         col(TaskLog.task_id),
         col(TaskLog.data),
+        col(TaskLog.level),
     )
     if task_id:
         stmt = stmt.where(col(TaskLog.task_id) == task_id)

@@ -216,6 +216,9 @@ class TaskLog(SQLModel, table=True):
     worker_id: str | None = None
     agent_id: str | None = None
     data: str | None = None  # JSON: full tool input/output for click-to-expand
+    # Semantic line type (worker/auth/claude/thinking/…) so the frontend can
+    # style logs without parsing text prefixes. NULL = default agent output.
+    level: str | None = None
 
 
 class ClaudeCredentials(SQLModel, table=True):

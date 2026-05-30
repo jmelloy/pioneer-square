@@ -502,6 +502,7 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
     line = data.get("line", "")
     task_id = data.get("taskId")
     detail = data.get("detail")
+    level = data.get("level")
     created_at = datetime.now(UTC)
     worker_id_for_log = msg_worker_id
     if worker_id_for_log is None and msg_agent_id:
@@ -518,6 +519,7 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
                 worker_id=worker_id_for_log,
                 agent_id=msg_agent_id,
                 data=json.dumps(detail) if detail else None,
+                level=level,
             )
         )
         await ctx.db.commit()
@@ -531,6 +533,7 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
             "line": line,
             "timestamp": created_at.isoformat(),
             **({"detail": detail} if detail else {}),
+            **({"level": level} if level else {}),
         },
     )
 

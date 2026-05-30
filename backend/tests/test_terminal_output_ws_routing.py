@@ -122,3 +122,42 @@ def test_worker_only_terminal_output_uses_worker_id_only(client):
     assert row.agent_id is None
     assert row.task_id is None
     assert row.line == "[worker] Pulled repo"
+
+
+def test_terminal_output_level_is_persisted_and_broadcast(client):
+    """A typed ``level`` round-trips: stored on the log row and rebroadcast."""
+    test_client, db_url = client
+    guild_id, worker_id, agent_id = "gto-2", "w-gto2", "a-gto2"
+    _insert_guild_worker(db_url, guild_id=guild_id, worker_id=worker_id)
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+        _join_ws(ws_worker, agent_id, worker_id)
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
+            _join_ws(ws_obs, "a-obs2")
+            ws_worker.receive_json()  # drain observer join broadcast
+
+            ws_worker.send_json(
+                {
+                    "type": "terminal-output",
+                    "workerId": worker_id,
+                    "line": "Online. Watching for tasks.",
+                    "level": "worker",
+                }
+            )
+
+            msg = ws_obs.receive_json()
+            assert msg["type"] == "terminal-output"
+            assert msg["level"] == "worker"
+
+            from helpers import _sync_session
+
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(col(TaskLog.line), col(TaskLog.level))
+                    .order_by(col(TaskLog.id).desc())
+                    .limit(1)
+                ).first()
+
+    assert row is not None
+    assert row.line == "Online. Watching for tasks."
+    assert row.level == "worker"

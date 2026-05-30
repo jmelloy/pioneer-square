@@ -4,7 +4,16 @@ import { useGuildStore } from './guild'
 import { api } from '../utils/api'
 import { formatWorkerId } from '../utils/format'
 import { taskTabId } from './tasks'
-import type { Agent, AgentActivity, AgentState, LogDetail, LogEntry, Worker, WSInbound } from '../types'
+import type {
+  Agent,
+  AgentActivity,
+  AgentState,
+  LogDetail,
+  LogEntry,
+  LogLevel,
+  Worker,
+  WSInbound,
+} from '../types'
 
 const STATE_RANK: Record<string, number> = {
   working: 0,
@@ -121,20 +130,37 @@ export const useAgentsStore = defineStore('agents', () => {
     if (match) updateAgentState(match.id, 'idle', null, null)
   }
 
-  function addLog(agentId: string, line: string, timestamp?: string, detail?: LogDetail | null) {
+  function addLog(
+    agentId: string,
+    line: string,
+    timestamp?: string,
+    detail?: LogDetail | null,
+    level?: LogLevel | null,
+  ) {
     const agent = agents.value.find((a) => a.id === agentId)
     if (agent && line) {
       const ts = timestamp || new Date().toISOString()
-      agent.logs.push({ line, timestamp: ts, detail: detail || null })
+      agent.logs.push({ line, timestamp: ts, detail: detail || null, level: level || null })
       if (agent.logs.length > 500) agent.logs.shift()
     }
   }
 
-  function addWorkerLog(workerId: string, line: string, timestamp?: string, detail?: LogDetail | null) {
+  function addWorkerLog(
+    workerId: string,
+    line: string,
+    timestamp?: string,
+    detail?: LogDetail | null,
+    level?: LogLevel | null,
+  ) {
     if (!line) return
     if (!workerLogs.value[workerId]) workerLogs.value[workerId] = []
     const ts = timestamp || new Date().toISOString()
-    workerLogs.value[workerId].push({ line, timestamp: ts, detail: detail || null })
+    workerLogs.value[workerId].push({
+      line,
+      timestamp: ts,
+      detail: detail || null,
+      level: level || null,
+    })
     if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
   }
 
@@ -299,13 +325,13 @@ export const useAgentsStore = defineStore('agents', () => {
       resetAgentForTask(data)
     } else if (data.type === 'terminal-output') {
       // Route to per-agent log buffer (includes task logs for agent-tab view)
-      if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail)
+      if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail, data.level)
       // Route to per-worker log buffer; worker-wide lines may arrive with only
       // workerId, while agent/task lines include both workerId and agentId.
       const wid =
         data.workerId ||
         (data.agentId ? agents.value.find((a) => a.id === data.agentId)?.workerId : null)
-      if (wid) addWorkerLog(wid, data.line, data.timestamp, data.detail)
+      if (wid) addWorkerLog(wid, data.line, data.timestamp, data.detail, data.level)
     }
   }
 

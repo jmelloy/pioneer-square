@@ -37,6 +37,16 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+# Semantic line "levels" carried on terminal-output frames so the frontend can
+# style log lines by type instead of sniffing text prefixes like "[worker]".
+# Keep these in sync with the LogLevel union in frontend/src/types.ts.
+LEVEL_INFO = "info"  # default — agent/Claude output, rendered as markdown
+LEVEL_WORKER = "worker"  # worker-level status / lifecycle line
+LEVEL_AUTH = "auth"  # Claude login / credential flow
+LEVEL_CLAUDE = "claude"  # Claude runner framing (start / exit / stderr)
+LEVEL_THINKING = "thinking"  # extended-thinking text
+
+
 def _slug(text: str, max_len: int = 60) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text[:max_len].lower()).strip("-")
 
@@ -452,7 +462,7 @@ class Worker:
         except Exception as exc:
             logger.warning("Could not fetch Claude credentials from backend: %s", exc)
 
-        await self._emit("[auth] No Claude credentials found — starting login...")
+        await self._emit("No Claude credentials found — starting login...", level=LEVEL_AUTH)
         await self._run_claude_login()
 
     async def _run_claude_login(self) -> None:
@@ -549,7 +559,7 @@ class Worker:
                     line = line.rstrip()
                     if line:
                         logger.info("[claude setup-token] %s", line)
-                        await self._emit(f"[auth] {line}")
+                        await self._emit(line, level=LEVEL_AUTH)
 
                 # Detect the OAuth URL once it's been emitted. Ink word-wraps
                 # the URL across multiple lines (often after each ~80 chars),
@@ -572,7 +582,8 @@ class Worker:
                             }
                         )
                         await self._emit(
-                            "[auth] Waiting for auth code — paste it into the auth panel in the UI..."
+                            "Waiting for auth code — paste it into the auth panel in the UI...",
+                            level=LEVEL_AUTH,
                         )
                         logger.info("Auth login: awaiting code from queue (timeout=300s)")
                         try:
@@ -582,7 +593,8 @@ class Worker:
                         except TimeoutError:
                             logger.warning("Auth login: timed out waiting for code from queue")
                             await self._emit(
-                                "[auth] Timed out waiting for auth code — restart the worker to retry"
+                                "Timed out waiting for auth code — restart the worker to retry",
+                                level=LEVEL_AUTH,
                             )
                             proc.kill()
                             await proc.wait()
@@ -592,7 +604,9 @@ class Worker:
                             len(code),
                             proc.returncode is None,
                         )
-                        await self._emit("[auth] Code received — submitting to Claude CLI...")
+                        await self._emit(
+                            "Code received — submitting to Claude CLI...", level=LEVEL_AUTH
+                        )
                         try:
                             os.write(master_fd, code.strip().encode())
                             # Ink batches consecutive bytes into one paste
@@ -604,7 +618,9 @@ class Worker:
                             os.write(master_fd, b"\r")
                         except OSError as exc:
                             logger.warning("Auth login: PTY write failed: %s", exc)
-                            await self._emit(f"[auth] Failed to send code to Claude: {exc}")
+                            await self._emit(
+                                f"Failed to send code to Claude: {exc}", level=LEVEL_AUTH
+                            )
                             proc.kill()
                             await proc.wait()
                             return
@@ -634,14 +650,18 @@ class Worker:
         token = self._extract_oauth_token(cleaned_full)
         if not token:
             await self._emit(
-                "[auth] Login finished but could not extract OAuth token from output — please retry"
+                "Login finished but could not extract OAuth token from output — please retry",
+                level=LEVEL_AUTH,
             )
             logger.warning("Could not locate OAuth token in setup-token output")
             return
 
         os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
         logger.info("Captured CLAUDE_CODE_OAUTH_TOKEN (len=%d) and set in env", len(token))
-        await self._emit("[auth] Token captured — saving to backend so future workers can reuse it")
+        await self._emit(
+            "Token captured — saving to backend so future workers can reuse it",
+            level=LEVEL_AUTH,
+        )
 
         try:
             blob = base64.b64encode(json.dumps({"oauth_token": token}).encode()).decode()
@@ -650,11 +670,11 @@ class Worker:
                     "/auth/claude/credentials",
                     json={"guild_id": self.cfg.guild_id, "credentials_blob": blob},
                 )
-            await self._emit("[auth] Credentials saved")
+            await self._emit("Credentials saved", level=LEVEL_AUTH)
             logger.info("Posted OAuth token to backend credentials store")
         except Exception as exc:
             logger.warning("Could not store Claude credentials: %s", exc)
-            await self._emit(f"[auth] Warning: could not store credentials: {exc}")
+            await self._emit(f"Warning: could not store credentials: {exc}", level=LEVEL_AUTH)
 
     @staticmethod
     def _extract_oauth_token(cleaned_output: str) -> str | None:
@@ -729,14 +749,21 @@ class Worker:
     async def _send(self, payload: dict) -> None:
         await self.ws.send(payload)
 
-    async def _emit(self, line: str, detail: dict | None = None) -> None:
-        """Emit a worker-level log line."""
+    async def _emit(self, line: str, detail: dict | None = None, level: str = LEVEL_WORKER) -> None:
+        """Emit a worker-level log line.
+
+        ``level`` classifies the line semantically (see the ``LEVEL_*``
+        constants) so the frontend can style it without parsing text prefixes.
+        Worker-level lines default to ``LEVEL_WORKER``.
+        """
         msg: dict = {
             "type": "terminal-output",
             "workerId": self.cfg.worker_id,
             "line": line,
             "timestamp": _now_iso(),
         }
+        if level and level != LEVEL_INFO:
+            msg["level"] = level
         if detail:
             msg["detail"] = detail
         await self._send(msg)
@@ -744,7 +771,9 @@ class Worker:
     def _task_emit(self, task_id: str, slot: Agent):
         """Return an emit function scoped to a task and agent slot."""
 
-        async def _emit_task(line: str, detail: dict | None = None) -> None:
+        async def _emit_task(
+            line: str, detail: dict | None = None, level: str = LEVEL_INFO
+        ) -> None:
             msg: dict = {
                 "type": "terminal-output",
                 "workerId": self.cfg.worker_id,
@@ -753,6 +782,8 @@ class Worker:
                 "line": line,
                 "timestamp": _now_iso(),
             }
+            if level and level != LEVEL_INFO:
+                msg["level"] = level
             if detail:
                 msg["detail"] = detail
             await self._send(msg)
@@ -895,7 +926,7 @@ class Worker:
         logger.info("Graceful shutdown initiated: %s", reason)
         try:
             await self._emit(
-                f"[worker] Shutdown requested ({reason}). Idle agents stopping; "
+                f"Shutdown requested ({reason}). Idle agents stopping; "
                 "busy agents will finish their current task."
             )
         except Exception as exc:
@@ -1040,7 +1071,7 @@ class Worker:
                 )
             )
 
-        await self._emit("[worker] Online. Watching for tasks.")
+        await self._emit("Online. Watching for tasks.")
         for slot in self.agents:
             await self._set_state("idle", slot)
 
@@ -1166,13 +1197,13 @@ class Worker:
                             "Auth code received via worker-message (login flow) len=%d",
                             len(text),
                         )
-                        await self._emit("[worker] Auth code received and forwarded to login flow")
+                        await self._emit("Auth code received and forwarded to login flow")
                     else:
                         active = next((s for s in self.agents if s.current_claude), None)
                         if active:
                             delivered = await active.current_claude.send_message(text)
                             if delivered:
-                                await self._emit(f"[worker] Injected: {text[:80]}")
+                                await self._emit(f"Injected: {text[:80]}")
                             else:
                                 logger.warning("Failed to inject message (stdin closed?)")
                         else:
@@ -1589,7 +1620,7 @@ class Worker:
                 await self._execute_task(task, slot)
             except Exception as exc:
                 logger.exception("Task %s crashed: %s", task_id, exc)
-                await self._emit(f"[worker] ✗ Internal error on task {task_id}: {exc}")
+                await self._emit(f"✗ Internal error on task {task_id}: {exc}")
                 await self._task_update(
                     task["id"], agent=slot, state="failed", finishedAt=_now_iso()
                 )
@@ -1647,22 +1678,32 @@ class Worker:
 
         emit = self._task_emit(task_id, agent)
         if is_followup:
-            await emit(f"[worker] Follow-up: {followup_instructions[:120]}")
-            await emit(f"[worker] Branch: {branch}")
+            await emit(f"Follow-up: {followup_instructions[:120]}", level=LEVEL_WORKER)
+            await emit(f"Branch: {branch}", level=LEVEL_WORKER)
         else:
-            await emit(f"[worker] Task: {desc}")
-            await emit(f"[worker] Branch: {branch}")
+            await emit(f"Task: {desc}", level=LEVEL_WORKER)
+            await emit(f"Branch: {branch}", level=LEVEL_WORKER)
 
         worktree_entries: list[tuple[str, str, str]] = []
         primary_wt: str | None = None
 
         for repo_full in repos:
             logger.info("Task %s: preparing repo %s", task_id, repo_full)
-            await emit(f"[worker] Preparing {repo_full}...")
+            await emit(f"Preparing {repo_full}...", level=LEVEL_WORKER)
+            # Surface the first-time clone (a slow op) so the UI isn't silent
+            # while git fetches the repo; subsequent runs just fast-forward.
+            repo_parts = repo_full.split("/", 1)
+            already_cloned = len(repo_parts) == 2 and os.path.isdir(
+                os.path.join(self.cfg.repos_dir, repo_parts[0], repo_parts[1], ".git")
+            )
+            if not already_cloned:
+                await emit(
+                    f"Cloning {repo_full} (first run, may take a moment)…", level=LEVEL_WORKER
+                )
             repo_path = await git_ops.ensure_repo(self.cfg.repos_dir, repo_full, token)
             if not repo_path:
                 logger.error("Task %s: clone/fetch failed for %s", task_id, repo_full)
-                await emit(f"[worker] ✗ Clone failed: {repo_full}")
+                await emit(f"✗ Clone failed: {repo_full}", level=LEVEL_WORKER)
                 continue
             repo_name = repo_full.split("/")[-1]
             wt_path = os.path.join(work_dir, repo_name)
@@ -1675,7 +1716,7 @@ class Worker:
                 # the latest origin state for the branch so a different worker
                 # that pushed changes is reflected here.
                 logger.info("Task %s: reusing worktree at %s", task_id, wt_path)
-                await emit(f"[worker] Reusing worktree {repo_name}")
+                await emit(f"Reusing worktree {repo_name}", level=LEVEL_WORKER)
                 if is_followup:
                     await git_ops.run_git(["fetch", "origin", branch], cwd=wt_path)
                 worktree_entries.append((repo_full, repo_path, wt_path))
@@ -1696,7 +1737,8 @@ class Worker:
                         branch,
                     )
                     await emit(
-                        f"[worker] Branch not found on origin; creating fresh branch {branch[:50]}"
+                        f"Branch not found on origin; creating fresh branch {branch[:50]}",
+                        level=LEVEL_WORKER,
                     )
                     ok = await git_ops.create_worktree(repo_path, wt_path, branch)
             else:
@@ -1704,16 +1746,17 @@ class Worker:
                 ok = await git_ops.create_worktree(repo_path, wt_path, branch)
             if ok:
                 logger.info("Task %s: worktree ready at %s", task_id, wt_path)
+                await emit(f"Worktree ready: {repo_name}", level=LEVEL_WORKER)
                 worktree_entries.append((repo_full, repo_path, wt_path))
                 if primary_wt is None:
                     primary_wt = wt_path
             else:
                 logger.error("Task %s: worktree failed for %s", task_id, repo_full)
-                await emit(f"[worker] ✗ Worktree failed: {repo_full}")
+                await emit(f"✗ Worktree failed: {repo_full}", level=LEVEL_WORKER)
 
         if not primary_wt:
             logger.error("Task %s: no worktrees created — aborting", task_id)
-            await emit("[worker] ✗ No worktrees — aborting.")
+            await emit("✗ No worktrees — aborting.", level=LEVEL_WORKER)
             await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
             await self._set_state("error", agent)
             return
@@ -1868,7 +1911,7 @@ class Worker:
                 )
 
                 if task_id in self._cancelled_tasks:
-                    await emit("[worker] Task cancelled.")
+                    await emit("Task cancelled.", level=LEVEL_WORKER)
                     await self._task_update(
                         task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
                     )
@@ -1882,7 +1925,7 @@ class Worker:
                     redirect_instr = None
 
                 if redirect_instr is _CANCEL_SENTINEL:
-                    await emit("[worker] Task cancelled.")
+                    await emit("Task cancelled.", level=LEVEL_WORKER)
                     await self._task_update(
                         task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
                     )
@@ -1891,7 +1934,7 @@ class Worker:
                     return
 
                 if redirect_instr is not None and not self._shutdown_event.is_set():
-                    await emit(f"[worker] ↩ Redirected: {redirect_instr[:120]}")
+                    await emit(f"↩ Redirected: {redirect_instr[:120]}", level=LEVEL_WORKER)
                     current_desc = redirect_instr
                     await self._task_update(task_id, agent=agent, state="working")
                     continue
@@ -1922,7 +1965,7 @@ class Worker:
                 emit=emit,
             )
             if push_ok:
-                await emit(f"[worker] Branch pushed: {branch}")
+                await emit(f"Branch pushed: {branch}", level=LEVEL_WORKER)
 
             pr_url = await github_pr.find_existing_pr(
                 branch=branch,
@@ -1930,7 +1973,7 @@ class Worker:
                 token=token,
             )
             if pr_url:
-                await emit(f"[worker] ✓ Claude-authored PR: {pr_url}")
+                await emit(f"✓ Claude-authored PR: {pr_url}", level=LEVEL_WORKER)
                 await self._ensure_pr_webhook(pr_url, emit)
 
             logger.info("Task %s: pr_url=%s", task_id, pr_url)

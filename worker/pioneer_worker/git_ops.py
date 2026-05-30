@@ -10,7 +10,10 @@ from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
-EmitFn = Callable[[str], Awaitable[None]]
+# emit(line, detail=None, level=...) — accepts an optional ``level`` kwarg that
+# types the line for the frontend. Lines emitted here are worker-owned status.
+EmitFn = Callable[..., Awaitable[None]]
+_LEVEL = "worker"
 
 
 async def run_git(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
@@ -145,7 +148,7 @@ async def pull_repos(
         await run_git(["merge", "--ff-only", "origin/HEAD"], cwd=local_path)
         if rc == 0:
             logger.info("pull_repos: pulled %s", repo_full)
-            await emit(f"[worker] Pulled {repo_full}")
+            await emit(f"Pulled {repo_full}", level=_LEVEL)
         else:
             logger.warning("pull_repos: fetch warn for %s: %s", repo_full, err.strip()[:120])
-            await emit(f"[worker] Pull warn {repo_full}: {err.strip()[:60]}")
+            await emit(f"Pull warn {repo_full}: {err.strip()[:60]}", level=_LEVEL)
