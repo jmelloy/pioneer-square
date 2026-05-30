@@ -22,6 +22,7 @@
           :task-created-at="task.created_at"
           :task-description="task.description"
         />
+        <UsagePanel :task-id="id" />
       </div>
     </template>
 
@@ -56,6 +57,7 @@ import AgentActions from './log-pane/AgentActions.vue'
 import WorkerActions from './log-pane/WorkerActions.vue'
 import TaskHeader from './log-pane/TaskHeader.vue'
 import TaskActions from './log-pane/TaskActions.vue'
+import UsagePanel from './log-pane/UsagePanel.vue'
 
 const TASK_INFO_STORAGE_KEY = 'taskInfoPaneCollapsed'
 const infoCollapsed = ref(localStorage.getItem(TASK_INFO_STORAGE_KEY) === 'true')

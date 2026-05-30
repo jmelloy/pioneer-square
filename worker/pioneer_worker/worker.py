@@ -189,6 +189,41 @@ class Worker:
             self.cfg.user or "<unattributed>",
         )
 
+    async def _report_usage(
+        self,
+        *,
+        task_id: str,
+        session_id: str | None,
+        repo: str | None,
+        records: list[dict],
+    ) -> None:
+        """Best-effort POST of per-API-call usage for a finished run.
+
+        Never raises — usage reporting must not affect task outcome.
+        """
+        if not records:
+            return
+        body = {
+            "task_id": task_id,
+            "worker_id": self.cfg.worker_id,
+            "session_id": session_id,
+            "repo": repo,
+            "reporter": self._worker_name or self.cfg.worker_id,
+            "records": records,
+        }
+        try:
+            async with await self._http(authed=True) as client:
+                resp = await client.post(f"/guilds/{self.cfg.guild_id}/usage", json=body)
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "Usage report for task %s rejected (status %d): %s",
+                        task_id,
+                        resp.status_code,
+                        resp.text[:200],
+                    )
+        except Exception as exc:
+            logger.warning("Usage report for task %s failed: %s", task_id, exc)
+
     async def _fetch_github_token_if_needed(self) -> None:
         if not self.cfg.github_token:
             try:
@@ -1708,6 +1743,20 @@ class Worker:
         def _on_proc(proc: claude_runner.ClaudeProcess) -> None:
             agent.current_claude = proc
 
+        # Per-API-call usage captured from the claude stream across all runs of
+        # this task (the redirect loop may invoke claude more than once). Each
+        # api_call gets a task-global call_index; reported to the backend once
+        # the run finishes.
+        usage_records: list[dict] = []
+        _api_call_n = 0
+
+        async def _collect_usage(rec: dict) -> None:
+            nonlocal _api_call_n
+            if rec.get("kind") == "api_call":
+                rec = {**rec, "call_index": _api_call_n}
+                _api_call_n += 1
+            usage_records.append(rec)
+
         try:
             # ── Main execution with redirect loop ──────────────────────────
             if is_followup:
@@ -1804,6 +1853,7 @@ class Worker:
                         max_turns=self.cfg.claude_max_turns,
                         emit=emit,
                         on_proc=_on_proc,
+                        on_usage=_collect_usage,
                         claude_path=self.cfg.claude_path,
                         resume_session_id=resume_session_id,
                     )
@@ -1854,6 +1904,15 @@ class Worker:
                 success,
                 stop_reason,
             )
+
+            # Report captured per-API-call usage (claude tasks only). Best-effort.
+            if usage_records:
+                await self._report_usage(
+                    task_id=task_id,
+                    session_id=resume_session_id,
+                    repo=repos[0] if repos else None,
+                    records=usage_records,
+                )
 
             # Push the branch regardless of outcome so partial work is visible
             # and a follow-up run can build on it.
