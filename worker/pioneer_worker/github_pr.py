@@ -12,9 +12,14 @@ from collections.abc import Awaitable, Callable
 
 from . import git_ops
 
-EmitFn = Callable[[str], Awaitable[None]]
+# emit(line, detail=None, level=...) — the worker's task/worker emit closures
+# accept an optional ``level`` kwarg that types the line for the frontend.
+EmitFn = Callable[..., Awaitable[None]]
 
 logger = logging.getLogger(__name__)
+
+# Lines emitted here are worker-owned status, not Claude output.
+_LEVEL = "worker"
 
 
 # GitHub webhook events the foreman cares about — kept narrow so a single
@@ -75,22 +80,22 @@ async def push_branch(
     # (can happen on max-turns, plan-phase completion, or normal task end).
     rc_status, status_out, _ = await git_ops.run_git(["status", "--porcelain"], cwd=worktree_path)
     if rc_status == 0 and status_out.strip():
-        await emit("[worker] Uncommitted changes detected — auto-committing before push")
+        await emit("Uncommitted changes detected — auto-committing before push", level=_LEVEL)
         await git_ops.run_git(["add", "-A"], cwd=worktree_path)
         rc_commit, _, commit_err = await git_ops.run_git(
             ["commit", "-m", "chore: save uncommitted work before push [auto-commit]"],
             cwd=worktree_path,
         )
         if rc_commit != 0:
-            await emit(f"[worker] ✗ Auto-commit failed: {commit_err.strip()[:120]}")
+            await emit(f"✗ Auto-commit failed: {commit_err.strip()[:120]}", level=_LEVEL)
             return False
 
-    await emit(f"[worker] Pushing {branch}...")
+    await emit(f"Pushing {branch}...", level=_LEVEL)
     rc, _, err = await git_ops.run_git(["push", "-u", "origin", branch], cwd=worktree_path)
     if rc != 0:
-        await emit(f"[worker] ✗ Push failed: {err.strip()[:120]}")
+        await emit(f"✗ Push failed: {err.strip()[:120]}", level=_LEVEL)
         return False
-    await emit(f"[worker] ✓ Pushed {branch}")
+    await emit(f"✓ Pushed {branch}", level=_LEVEL)
     return True
 
 
@@ -145,7 +150,7 @@ async def open_pr(
 ) -> str | None:
     """Create a GitHub PR for *branch*. Returns PR URL or None on failure."""
     if not token:
-        await emit("[worker] No GitHub token — skipping PR")
+        await emit("No GitHub token — skipping PR", level=_LEVEL)
         return None
 
     repo_full = task.get("issue_repo")
@@ -156,7 +161,7 @@ async def open_pr(
             if m:
                 repo_full = m.group(1)
     if not repo_full:
-        await emit("[worker] Could not determine repo — skipping PR")
+        await emit("Could not determine repo — skipping PR", level=_LEVEL)
         return None
 
     task_name = task.get("name") or task.get("description") or ""
@@ -193,25 +198,27 @@ async def open_pr(
     try:
         result = await asyncio.to_thread(_create_pr)
         pr_url = result.get("html_url", "")
-        await emit(f"[worker] ✓ PR: {pr_url}")
+        await emit(f"✓ PR: {pr_url}", level=_LEVEL)
         return pr_url
     except urllib.error.HTTPError as exc:
         if exc.fp is not None:
             exc.fp.close()
         if exc.code == 422:
-            await emit(f"[worker] PR creation returned 422 — checking for existing PR on {branch}")
+            await emit(
+                f"PR creation returned 422 — checking for existing PR on {branch}", level=_LEVEL
+            )
             existing = await find_existing_pr(
                 branch=branch, worktree_path=worktree_path, token=token
             )
             if existing:
-                await emit(f"[worker] ✓ Found existing PR: {existing}")
+                await emit(f"✓ Found existing PR: {existing}", level=_LEVEL)
                 return existing
-            await emit(f"[worker] PR failed: {exc}")
+            await emit(f"PR failed: {exc}", level=_LEVEL)
             return None
         logger.error("PR creation failed: %s", exc)
         raise
     except (urllib.error.URLError, OSError) as exc:
-        await emit(f"[worker] PR failed: {exc}")
+        await emit(f"PR failed: {exc}", level=_LEVEL)
         return None
 
 
@@ -271,17 +278,17 @@ async def ensure_webhook(
     or events list drift). Otherwise a new hook is created.
     """
     if not auth_token:
-        await emit("[worker] webhook setup skipped — no worker auth_token")
+        await emit("webhook setup skipped — no worker auth_token", level=_LEVEL)
         return False
     if not github_token:
-        await emit("[worker] webhook setup skipped — no GitHub token")
+        await emit("webhook setup skipped — no GitHub token", level=_LEVEL)
         return False
 
     secret = await _fetch_webhook_secret(
         http_url=http_url, guild_id=guild_id, auth_token=auth_token
     )
     if not secret:
-        await emit("[worker] webhook setup skipped — backend did not return a secret")
+        await emit("webhook setup skipped — backend did not return a secret", level=_LEVEL)
         return False
 
     def _list_hooks() -> list:
@@ -353,10 +360,10 @@ async def ensure_webhook(
     except urllib.error.HTTPError as exc:
         # 403 => token lacks admin:repo_hook (or admin access on the repo).
         # Treat as a non-fatal warning; the operator can configure manually.
-        await emit(f"[worker] webhook list failed ({exc.code}): {exc.reason}")
+        await emit(f"webhook list failed ({exc.code}): {exc.reason}", level=_LEVEL)
         return False
     except (urllib.error.URLError, OSError) as exc:
-        await emit(f"[worker] webhook list failed: {exc}")
+        await emit(f"webhook list failed: {exc}", level=_LEVEL)
         return False
 
     existing = next(
@@ -373,14 +380,14 @@ async def ensure_webhook(
             # Always re-PATCH: the secret may have been rotated, the events
             # list may have grown, or the hook may have been deactivated.
             await asyncio.to_thread(_patch_hook, int(existing["id"]))
-            await emit(f"[worker] ✓ Webhook refreshed on {repo}")
+            await emit(f"✓ Webhook refreshed on {repo}", level=_LEVEL)
         else:
             await asyncio.to_thread(_create_hook)
-            await emit(f"[worker] ✓ Webhook installed on {repo} → {target_url}")
+            await emit(f"✓ Webhook installed on {repo} → {target_url}", level=_LEVEL)
         return True
     except urllib.error.HTTPError as exc:
-        await emit(f"[worker] webhook setup failed ({exc.code}): {exc.reason}")
+        await emit(f"webhook setup failed ({exc.code}): {exc.reason}", level=_LEVEL)
         return False
     except (urllib.error.URLError, OSError) as exc:
-        await emit(f"[worker] webhook setup failed: {exc}")
+        await emit(f"webhook setup failed: {exc}", level=_LEVEL)
         return False

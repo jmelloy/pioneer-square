@@ -12,8 +12,8 @@
         <span class="log-time">{{ formatTime(log.timestamp) }}</span>
         <span
           class="log-text"
-          :class="[lineClass(log.line), { 'log-text--markdown': isMarkdownLine(log.line) }]"
-          v-html="renderLine(log.line)"
+          :class="[lineClass(log), { 'log-text--markdown': isMarkdownLine(log) }]"
+          v-html="renderLine(log)"
         ></span>
         <span v-if="isExpandable(log)" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
       </div>
@@ -90,33 +90,48 @@ function linkify(text: string): string {
   )
 }
 
-function isMarkdownLine(line: string): boolean {
+function isMarkdownLine(log: LogEntry): boolean {
+  const line = log.line
   if (!line) return false
-  // Tool/metadata prefixes are plain text; everything else (including Claude's output) is markdown
-  if (line.startsWith('▶') || line.startsWith('✓') || line.startsWith('✗') || line.startsWith('  →'))
+  // Tool glyphs are intrinsic plain-text formatting from Claude's own output.
+  if (
+    line.startsWith('▶') ||
+    line.startsWith('✓') ||
+    line.startsWith('✗') ||
+    line.startsWith('  →')
+  )
     return false
+  // Typed lines: worker/auth status is plain; claude/thinking framing is markdown.
+  if (log.level === 'worker' || log.level === 'auth') return false
+  if (log.level === 'claude' || log.level === 'thinking') return true
+  // Legacy fallback for pre-typed persisted logs (bracketed prefixes).
   if (line.startsWith('[') && !line.startsWith('[thinking]') && !line.startsWith('[claude]'))
     return false
   return true
 }
 
-
-function renderLine(line: string): string {
-  if (isMarkdownLine(line)) return renderMarkdown(line)
-  return linkify(line)
+function renderLine(log: LogEntry): string {
+  if (isMarkdownLine(log)) return renderMarkdown(log.line)
+  return linkify(log.line)
 }
 
 function inputRecord(input: Record<string, unknown> | string | undefined): Record<string, unknown> {
   return typeof input === 'object' && input !== null ? input : {}
 }
 
-function lineClass(line: string) {
+function lineClass(log: LogEntry) {
+  const line = log.line
   if (!line) return ''
+  // Tool glyphs carry intrinsic success/error/tool semantics from Claude's
+  // own output formatting, so they win regardless of level.
   if (line.startsWith('✓') || line.includes('Done')) return 'log-success'
   if (line.startsWith('✗') || line.includes('error') || line.includes('Error')) return 'log-error'
   if (line.startsWith('▶')) return 'log-tool'
   if (line.startsWith('  →')) return 'log-result'
-  if (line.startsWith('[worker]')) return 'log-meta'
+  // Typed lines are styled by level instead of sniffing text prefixes.
+  if (log.level === 'thinking') return 'log-thinking'
+  if (log.level === 'worker' || log.level === 'auth' || log.level === 'claude') return 'log-meta'
+  // Legacy fallback for pre-typed persisted logs (bracketed prefixes).
   if (line.startsWith('[thinking]')) return 'log-thinking'
   if (line.startsWith('[')) return 'log-meta'
   return ''

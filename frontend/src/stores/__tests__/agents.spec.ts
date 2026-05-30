@@ -129,6 +129,20 @@ describe('useAgentsStore', () => {
       expect(store.agents).toHaveLength(0)
     })
 
+    it('threads the typed level through to the stored worker log entry', () => {
+      const store = useAgentsStore()
+
+      store.handleWebSocketMessage({
+        type: 'terminal-output',
+        workerId: 'w-x',
+        line: 'Online. Watching for tasks.',
+        level: 'worker',
+        timestamp: '2026-05-20T00:00:00.000Z',
+      })
+
+      expect(store.workerLogs['w-x'][0].level).toBe('worker')
+    })
+
     it('routes task output to both the agent log and the worker log', () => {
       const store = useAgentsStore()
       store.registerAgent({ agentId: 'a-1', workerId: 'w-x', state: 'working', taskId: 't-1' })

@@ -21,10 +21,21 @@ export interface LogDetail {
   [key: string]: unknown
 }
 
+// Semantic type of a terminal-output line, set by the producer (worker) so the
+// frontend can style logs without parsing text prefixes. Keep in sync with the
+// LEVEL_* constants in worker/pioneer_worker/worker.py.
+//   info     — default agent/Claude output (rendered as markdown)
+//   worker   — worker-level status / lifecycle line
+//   auth     — Claude login / credential flow
+//   claude   — Claude runner framing (start / exit / stderr)
+//   thinking — extended-thinking text
+export type LogLevel = 'info' | 'worker' | 'auth' | 'claude' | 'thinking'
+
 export interface LogEntry {
   line: string
   timestamp: string
   detail?: LogDetail | null
+  level?: LogLevel | null
 }
 
 export interface Agent {
@@ -195,6 +206,7 @@ export interface TerminalOutputWS {
   line: string
   timestamp?: string
   detail?: LogDetail | null
+  level?: LogLevel | null
 }
 
 export interface TaskCreatedWS {

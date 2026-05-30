@@ -87,13 +87,14 @@ export const useTasksStore = defineStore('tasks', () => {
 
   async function fetchTaskLogs(guildId: string, taskId: string) {
     try {
-      const raw = await api<Array<{ line: string; timestamp: string; detail?: unknown }>>(
-        `/guilds/${guildId}/tasks/${taskId}/logs`,
-      )
+      const raw = await api<
+        Array<{ line: string; timestamp: string; detail?: unknown; level?: unknown }>
+      >(`/guilds/${guildId}/tasks/${taskId}/logs`)
       const logs: LogEntry[] = raw.map((r) => ({
         line: r.line,
         timestamp: r.timestamp,
         detail: (r.detail as LogEntry['detail']) || null,
+        level: (r.level as LogEntry['level']) || null,
       }))
       taskLogs.value[taskId] = logs
       return logs
@@ -195,10 +196,15 @@ export const useTasksStore = defineStore('tasks', () => {
       const task = tasks.value.find((t) => t.id === data.taskId)
       if (task && !TERMINAL_STATES.has(task.state)) task.state = 'awaiting-review'
     } else if (data.type === 'terminal-output' && data.taskId) {
-      const { taskId, line, timestamp, detail } = data
+      const { taskId, line, timestamp, detail, level } = data
       if (line) {
         if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
-        taskLogs.value[taskId].push({ line, timestamp, detail: detail || null })
+        taskLogs.value[taskId].push({
+          line,
+          timestamp,
+          detail: detail || null,
+          level: level || null,
+        })
         if (taskLogs.value[taskId].length > 2000) taskLogs.value[taskId].shift()
       }
     }
