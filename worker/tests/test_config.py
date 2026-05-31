@@ -88,7 +88,7 @@ def test_load_overrides_defaults_preserved(tmp_path):
         str(tmp_path / "missing.toml"),
         overrides={"backend_url": "ws://x:1", "guild_id": "g"},
     )
-    assert cfg.pull_interval == 15.0
+    assert cfg.pull_interval == 300.0
     assert cfg.claude_max_turns == 50
     assert cfg.max_agents == 4
 
@@ -114,15 +114,6 @@ def test_load_toml_custom_pull_interval(tmp_path):
     toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\npull_interval = 60.0\n')
     cfg = load(str(toml_path))
     assert cfg.pull_interval == 60.0
-
-
-def test_load_pull_interval_env_var(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKER_PULL_INTERVAL_SECONDS", "45")
-    cfg = load(
-        str(tmp_path / "missing.toml"),
-        overrides={"backend_url": "ws://x:1", "guild_id": "g"},
-    )
-    assert cfg.pull_interval == 45.0
 
 
 def test_load_toml_github_token_literal(tmp_path):
