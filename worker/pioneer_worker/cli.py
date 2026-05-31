@@ -80,9 +80,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Tuning
     parser.add_argument(
-        "--pull-interval",
-        type=float,
-        help="Seconds between repo pulls (default: 15; also WORKER_PULL_INTERVAL_SECONDS).",
+        "--pull-interval", type=float, help="Seconds between repo pulls (default: 300)."
     )
     parser.add_argument(
         "--claude-max-turns", type=int, help="Max turns for claude runs (default: 50)."
