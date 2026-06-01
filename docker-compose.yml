@@ -110,12 +110,16 @@ services:
     restart: unless-stopped
 
   pgweb:
-    image: sosedoff/pgweb
+    image: sosedoff/pgweb:0.15.0
     profiles: [ "tools" ]
     ports:
       - "8081:8081"
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD:-pioneer_password}@postgres:5432/${POSTGRES_DB:-pioneer_square}?sslmode=disable
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-pioneer}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-pioneer_password}
+      PGDATABASE: ${POSTGRES_DB:-pioneer_square}
+      PGSSLMODE: disable
     depends_on:
       postgres:
         condition: service_healthy
