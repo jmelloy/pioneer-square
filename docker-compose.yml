@@ -109,6 +109,18 @@ services:
       - backend
     restart: unless-stopped
 
+  pgweb:
+    image: sosedoff/pgweb
+    profiles: [ "tools" ]
+    ports:
+      - "8081:8081"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD:-pioneer_password}@postgres:5432/${POSTGRES_DB:-pioneer_square}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres-test:
     image: postgres:17
     profiles: [ "test" ]
