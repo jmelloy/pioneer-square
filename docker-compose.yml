@@ -109,6 +109,25 @@ services:
       - backend
     restart: unless-stopped
 
+  pgweb:
+    image: sosedoff/pgweb:0.15.0
+    profiles: [ "tools" ]
+    ports:
+      - "${PGWEB_PORT:-8081}:8081"
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-pioneer}
+      # dev-only: PGPASSWORD is intentionally passed as a plain env var for local development convenience.
+      # Do not use this service configuration in shared/staging/production environments.
+      PGPASSWORD: ${POSTGRES_PASSWORD:-pioneer_password}
+      PGDATABASE: ${POSTGRES_DB:-pioneer_square}
+      PGPORT: "5432"
+      PGSSLMODE: disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres-test:
     image: postgres:17
     profiles: [ "test" ]
