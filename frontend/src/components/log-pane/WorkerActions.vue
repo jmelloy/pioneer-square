@@ -212,7 +212,7 @@ const cancellableTasks = computed(() =>
 )
 
 function _injectChat(content: string) {
-  guildStore.messages.push({
+  guildStore.sendMessage({
     type: 'chat',
     from: 'system',
     to: 'user',
@@ -243,6 +243,7 @@ async function handleSendMessage() {
 
 async function handleShutdown() {
   if (shuttingDown.value) return
+  if (!window.confirm(`Send shutdown signal to ${_workerLabel()}? This cannot be undone.`)) return
   shuttingDown.value = true
   actionError.value = ''
   try {
@@ -269,7 +270,7 @@ async function handleAssignTask() {
       name: assignName.value.trim() || null,
       phase: assignPhase.value,
     })
-    const label = assignName.value.trim() || desc.slice(0, 60)
+    const label = (assignName.value.trim() || desc).slice(0, 60)
     _injectChat(`[Foreman] Assigned task to ${_workerLabel()}: '${label}'`)
     assignName.value = ''
     assignDesc.value = ''
@@ -379,6 +380,11 @@ watch(
     pendingAuthUrl.value = null
     expanded.value = false
     actionError.value = ''
+    followupTaskId.value = ''
+    followupInstructions.value = ''
+    redirectTaskId.value = ''
+    redirectInstructions.value = ''
+    cancelTaskId.value = ''
     await fetchPendingAuth()
   },
 )

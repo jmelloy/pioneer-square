@@ -239,7 +239,7 @@ export const useAgentsStore = defineStore('agents', () => {
       json: {
         description,
         name: name || null,
-        phase: phase || null,
+        phase: phase ?? null,
         issue_number: issueNumber || null,
         issue_repo: issueRepo || null,
       },
