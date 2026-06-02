@@ -59,6 +59,12 @@ class Config:
     # webhook registration will target it. Defaults to ``backend_url``.
     public_backend_url: str | None = None
 
+    # Optional HTTP control API for driving/inspecting a live worker without a
+    # frontend or the foreman. Disabled unless ``api_port`` is set (via
+    # [api].port, --api-port, or PIONEER_API_PORT). Bind to localhost only.
+    api_port: int | None = None
+    api_host: str = "127.0.0.1"
+
     config_path: Path = field(default_factory=Path)
 
     @property
@@ -132,6 +138,22 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     paths_block = raw.get("paths") or {}
     claude_block = raw.get("claude") or {}
     codex_block = raw.get("codex") or {}
+    api_block = raw.get("api") or {}
+
+    _api_port = (
+        overrides.get("api_port")
+        if overrides.get("api_port") is not None
+        else api_block.get("port")
+        if api_block.get("port") is not None
+        else os.environ.get("PIONEER_API_PORT")
+    )
+    _api_port = int(_api_port) if _api_port is not None and _api_port != "" else None
+    _api_host = (
+        overrides.get("api_host")
+        or api_block.get("host")
+        or os.environ.get("PIONEER_API_HOST")
+        or "127.0.0.1"
+    )
 
     token = overrides.get("github_token")
     if token is None:
@@ -249,5 +271,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         public_backend_url=overrides.get("public_backend_url")
         or raw.get("public_backend_url")
         or os.environ.get("PIONEER_FRONTEND_URL"),
+        api_port=_api_port,
+        api_host=_api_host,
         config_path=cfg_path,
     )

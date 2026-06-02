@@ -113,6 +113,51 @@ The worker stays running, reconnecting if the backend restarts.
 6. Reports state changes (`working`, `done`, `failed`, branch, PR url) back
    to the backend via `task-update` WebSocket messages.
 
+## Control API (drive a live worker without a frontend)
+
+A real worker only acts on tasks the backend/foreman assigns over WebSocket,
+which makes it awkward to test in isolation. Enable the optional HTTP control
+API to inject tasks straight into the worker's queue and inspect its state —
+the full execution path (clone, worktree, claude/codex/pi, push, PR) still
+runs, so it's a faithful smoke test against a real backend without driving the
+UI.
+
+```bash
+pioneer-worker --api-port 9200             # enable on 127.0.0.1:9200
+pioneer-worker --api-port 9200 --api-host 0.0.0.0
+```
+
+Or in config / env:
+
+```toml
+[api]
+port = 9200
+host = "127.0.0.1"
+```
+
+```bash
+PIONEER_API_PORT=9200 pioneer-worker
+```
+
+It is unauthenticated; keep it bound to localhost (the default) and use it for
+local/dev only.
+
+| Method | Path                  | Body                                                                                          | Description                          |
+| ------ | --------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------ |
+| GET    | `/` or `/status`      | —                                                                                             | Worker id, repos, agents, queue depth |
+| GET    | `/agents`             | —                                                                                             | Agent slots with current state       |
+| GET    | `/tasks`              | —                                                                                             | Known task ids + queue depth         |
+| POST   | `/tasks`              | `{description, name?, tool?, phase?, repos?, issueNumber?, issueRepo?, id?, followupInstructions?, followupBranch?}` | Inject a task into the queue |
+| POST   | `/control/shutdown`   | —                                                                                             | Graceful shutdown                    |
+
+```bash
+# Inject a task and watch the worker run it
+curl -s localhost:9200/tasks \
+  -H 'content-type: application/json' \
+  -d '{"description": "Add a README badge", "tool": "claude", "repos": ["owner/repo"]}'
+curl -s localhost:9200/ | jq .
+```
+
 ## Multiple workers
 
 Run more than one worker against the same session by giving each its own

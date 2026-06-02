@@ -17,6 +17,7 @@ import httpx
 
 from . import claude_runner, codex_runner, git_ops, github_pr, pi_runner
 from . import config as config_mod
+from .control_api import ControlServer
 from .ws_client import WSClient
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,11 @@ class Worker:
         self.ws = WSClient(cfg.ws_url)
         self._shutdown_event = asyncio.Event()
         self._worker_name: str = ""
+        # Captured at run() start so the optional control API's handler thread
+        # can schedule coroutines onto the worker's loop. Stays None when no
+        # control API is configured.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._control_server: ControlServer | None = None
 
         # ── Agent pool ──────────────────────────────────────────────────────
         # Agents are owned by this worker.  Created once at startup, destroyed
@@ -736,6 +742,80 @@ class Worker:
             logger.debug("Auth login watchdog cancelled")
             raise
 
+    # ------------------------------------------------------------------ Control API
+    def _status_snapshot(self) -> dict:
+        """Point-in-time view of the worker, served by the control API."""
+        return {
+            "workerId": self.cfg.worker_id,
+            "workerName": self._worker_name,
+            "guildId": self.cfg.guild_id,
+            "repos": self._broadcast_repos,
+            "joined": self._joined,
+            "shuttingDown": self._shutdown_event.is_set(),
+            "agents": [
+                {
+                    "agentId": s.id,
+                    "agentName": s.name,
+                    "state": s.state,
+                    "activity": s.activity,
+                    "taskId": s.current_task_id,
+                }
+                for s in self.agents
+            ],
+            "knownTaskIds": sorted(self._known_task_ids),
+            "queueDepth": self.task_queue.qsize(),
+        }
+
+    def _build_injected_task(self, body: dict) -> dict:
+        """Translate a control-API POST body into a task-queue dict."""
+        task_id = body.get("id") or body.get("taskId") or _gen_id("t-")
+        task: dict = {
+            "id": task_id,
+            "worker_id": self.cfg.worker_id,
+            "guild_id": self.cfg.guild_id,
+            "name": body.get("name", ""),
+            "description": body.get("description", ""),
+            "tool": body.get("tool", "claude"),
+            "phase": body.get("phase", "execute"),
+            "issue_number": body.get("issueNumber"),
+            "issue_repo": body.get("issueRepo"),
+            "repos": body.get("repos") or [],
+        }
+        if body.get("followupInstructions"):
+            task["followup_instructions"] = body["followupInstructions"]
+        if body.get("followupBranch"):
+            task["followup_branch"] = body["followupBranch"]
+        return task
+
+    async def _inject_task(self, body: dict) -> dict:
+        """Enqueue a task supplied over the control API (foreman bypass)."""
+        if not body.get("description") and not body.get("followupInstructions"):
+            return {"error": "description (or followupInstructions) is required"}
+        task = self._build_injected_task(body)
+        task_id = task["id"]
+        if task_id in self._known_task_ids:
+            return {"error": f"task {task_id!r} already known to this worker"}
+        self._known_task_ids.add(task_id)
+        await self.task_queue.put(task)
+        logger.info("Control API injected task %s: %s", task_id, task["description"][:80])
+        return {"ok": True, "taskId": task_id, "queueDepth": self.task_queue.qsize()}
+
+    def _start_control_api(self) -> None:
+        if self.cfg.api_port is None:
+            return
+        self._control_server = ControlServer(
+            self, host=self.cfg.api_host, port=self.cfg.api_port
+        )
+        try:
+            self._control_server.start()
+        except OSError:
+            self._control_server = None
+
+    def _stop_control_api(self) -> None:
+        if self._control_server is not None:
+            self._control_server.stop()
+            self._control_server = None
+
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:
             resp = await client.get(
@@ -1032,7 +1112,9 @@ class Worker:
             self.cfg.pi_path,
         )
 
+        self._loop = asyncio.get_running_loop()
         self._install_signal_handlers()
+        self._start_control_api()
 
         await self._register()
         assert self.cfg.worker_id, "worker_id must be set after registration"
@@ -1071,10 +1153,6 @@ class Worker:
                 )
             )
 
-        await self._emit("Online. Watching for tasks.")
-        for slot in self.agents:
-            await self._set_state("idle", slot)
-
         # Reclaim any worktrees the previous incarnation of this worker left
         # behind. Tasks within the TTL window are re-registered so a follow-up
         # arriving for them can reuse the existing checkout.
@@ -1084,6 +1162,10 @@ class Worker:
             await asyncio.wait_for(self._initial_worktree_sweep(), timeout=30.0)
         except TimeoutError:
             logger.warning("Worktree startup sweep timed out after 30s — skipping")
+
+        await self._emit("Online. Watching for tasks.")
+        for slot in self.agents:
+            await self._set_state("idle", slot)
 
         initial = await self._fetch_pending_tasks()
         logger.info("Initial pending-task fetch: %d task(s)", len(initial))
@@ -1135,6 +1217,7 @@ class Worker:
                 await self._notify_offline()
             logger.info("Worker shutting down; closing WebSocket")
             await self.ws.close()
+            self._stop_control_api()
 
     # ------------------------------------------------------------------ Listener
     async def _listen(self) -> None:
@@ -1608,6 +1691,7 @@ class Worker:
             if task_id in self._cancelled_tasks:
                 logger.info("Skipping cancelled task %s", task_id)
                 continue
+
             logger.info(
                 "Dequeued task %s (agent=%s queue depth %d): %s",
                 task_id,
