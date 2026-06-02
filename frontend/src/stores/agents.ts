@@ -44,6 +44,8 @@ interface RunAgentOpts {
 
 interface AssignTaskOpts {
   description: string
+  name?: string | null
+  phase?: string | null
   issueNumber?: number | null
   issueRepo?: string | null
 }
@@ -229,13 +231,15 @@ export const useAgentsStore = defineStore('agents', () => {
 
   async function assignTask(
     workerId: string,
-    { description, issueNumber, issueRepo }: AssignTaskOpts,
+    { description, name, phase, issueNumber, issueRepo }: AssignTaskOpts,
   ) {
     const guildId = _currentGuildId()
     return api(`/guilds/${guildId}/workers/${workerId}/tasks`, {
       method: 'POST',
       json: {
         description,
+        name: name || null,
+        phase: phase ?? null,
         issue_number: issueNumber || null,
         issue_repo: issueRepo || null,
       },
