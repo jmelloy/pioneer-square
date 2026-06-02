@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[str], Awaitable[None]]
 
+# Seconds to wait for pi to exit after stdin is closed before killing it.
+_WAIT_TIMEOUT = 30
+
 
 def _result_text(result: dict) -> str:
     """Join the text blocks of a tool result's content array."""
@@ -75,6 +78,8 @@ async def run_pi_auto(
     stop_reason = "no_events"
     event_count = 0
     agent_ended_ok = False
+    proc: asyncio.subprocess.Process | None = None
+    stderr_task: asyncio.Task[None] | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -90,10 +95,13 @@ async def run_pi_auto(
         await proc.stdin.drain()  # type: ignore[union-attr]
 
         async def _drain_stderr() -> None:
-            async for raw in proc.stderr:  # type: ignore[union-attr]
-                line = raw.decode(errors="replace").strip()
-                if line:
-                    await emit(f"[stderr] {line}")
+            try:
+                async for raw in proc.stderr:  # type: ignore[union-attr]
+                    line = raw.decode(errors="replace").strip()
+                    if line:
+                        await emit(f"[stderr] {line}")
+            except Exception:
+                logger.debug("pi[%d] stderr drain exited early", proc.pid, exc_info=True)  # type: ignore[union-attr]
 
         stderr_task = asyncio.create_task(_drain_stderr())
         accumulated = ""
@@ -144,7 +152,16 @@ async def run_pi_auto(
         # Closing stdin signals EOF so the RPC process exits cleanly.
         if proc.stdin and not proc.stdin.is_closing():
             proc.stdin.close()
-        exit_code = await proc.wait()
+        try:
+            exit_code = await asyncio.wait_for(proc.wait(), timeout=_WAIT_TIMEOUT)
+        except TimeoutError:
+            logger.warning(
+                "pi[%d] did not exit within %ds after stdin close; killing",
+                proc.pid,
+                _WAIT_TIMEOUT,
+            )
+            proc.kill()
+            exit_code = await proc.wait()
         await stderr_task
         if event_count == 0:
             logger.warning("pi[%d] produced no stdout events — check PATH/auth", proc.pid)
@@ -164,3 +181,29 @@ async def run_pi_auto(
         logger.exception("pi subprocess crashed: %s", exc)
         await emit(f"[pi] ✗ {exc}")
         return False, "error_during_execution", last_text
+    finally:
+        # Safety net: ensure the subprocess is gone even if we took an
+        # exception or were cancelled before the normal cleanup above ran.
+        if proc is not None and proc.returncode is None:
+            if proc.stdin and not proc.stdin.is_closing():
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                logger.debug("pi kill failed", exc_info=True)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except Exception:
+                logger.debug("pi wait-after-kill failed", exc_info=True)
+        # Cancel the stderr drain task if it is still running.
+        if stderr_task is not None and not stderr_task.done():
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except BaseException:
+                pass
