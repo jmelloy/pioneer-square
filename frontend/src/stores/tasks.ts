@@ -151,62 +151,76 @@ export const useTasksStore = defineStore('tasks', () => {
   }
 
   function handleWebSocketMessage(data: WSInbound) {
-    if (data.type === 'task-created') {
-      _upsertTask({
-        id: data.taskId,
-        name: data.name,
-        description: data.description,
-        phase: data.phase,
-        state: data.state,
-        worker_id: null,
-        created_at: data.createdAt,
-      })
-    } else if (data.type === 'task-assigned') {
-      const existing = tasks.value.find((t) => t.id === data.taskId)
-      _upsertTask({
-        id: data.taskId,
-        name: data.name || (data.description || '').slice(0, 60),
-        description: data.description,
-        phase: data.phase || 'execute',
-        state: 'pending',
-        worker_id: data.workerId,
-        parent_task_id: data.parentTaskId || null,
-        ...(existing ? {} : { created_at: new Date().toISOString() }),
-      })
-    } else if (data.type === 'task-update') {
-      const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task) {
-        if (data.state) task.state = data.state
-        if (data.branch) task.branch = data.branch
-        if (data.prUrl) task.pr_url = data.prUrl
-        if (data.finishedAt) task.finished_at = data.finishedAt
-        if (data.worktreePath) task.worktree_path = data.worktreePath
-        if (data.deletedAt !== undefined) {
-          task.deleted_at = data.deletedAt
-          _scheduleExpiry(task.id, data.deletedAt)
-        }
-      }
-    } else if (data.type === 'task-complete') {
-      const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task && !TERMINAL_STATES.has(task.state)) {
-        task.state = 'awaiting-review'
-        if (data.branch) task.branch = data.branch
-      }
-    } else if (data.type === 'task-followup-done') {
-      const task = tasks.value.find((t) => t.id === data.taskId)
-      if (task && !TERMINAL_STATES.has(task.state)) task.state = 'awaiting-review'
-    } else if (data.type === 'terminal-output' && data.taskId) {
-      const { taskId, line, timestamp, detail, level } = data
-      if (line) {
-        if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
-        taskLogs.value[taskId].push({
-          line,
-          timestamp,
-          detail: detail || null,
-          level: level || null,
+    switch (data.type) {
+      case 'task-created':
+        _upsertTask({
+          id: data.taskId,
+          name: data.name,
+          description: data.description,
+          phase: data.phase,
+          state: data.state,
+          worker_id: null,
+          created_at: data.createdAt,
         })
-        if (taskLogs.value[taskId].length > 2000) taskLogs.value[taskId].shift()
+        break
+      case 'task-assigned': {
+        const existing = tasks.value.find((t) => t.id === data.taskId)
+        _upsertTask({
+          id: data.taskId,
+          name: data.name || (data.description || '').slice(0, 60),
+          description: data.description,
+          phase: data.phase || 'execute',
+          state: 'pending',
+          worker_id: data.workerId,
+          parent_task_id: data.parentTaskId || null,
+          ...(existing ? {} : { created_at: new Date().toISOString() }),
+        })
+        break
       }
+      case 'task-update': {
+        const task = tasks.value.find((t) => t.id === data.taskId)
+        if (task) {
+          if (data.state) task.state = data.state
+          if (data.branch) task.branch = data.branch
+          if (data.prUrl) task.pr_url = data.prUrl
+          if (data.finishedAt) task.finished_at = data.finishedAt
+          if (data.worktreePath) task.worktree_path = data.worktreePath
+          if (data.deletedAt !== undefined) {
+            task.deleted_at = data.deletedAt
+            _scheduleExpiry(task.id, data.deletedAt)
+          }
+        }
+        break
+      }
+      case 'task-complete': {
+        const task = tasks.value.find((t) => t.id === data.taskId)
+        if (task && !TERMINAL_STATES.has(task.state)) {
+          task.state = 'awaiting-review'
+          if (data.branch) task.branch = data.branch
+        }
+        break
+      }
+      case 'task-followup-done': {
+        const task = tasks.value.find((t) => t.id === data.taskId)
+        if (task && !TERMINAL_STATES.has(task.state)) task.state = 'awaiting-review'
+        break
+      }
+      case 'terminal-output': {
+        const { taskId, line, timestamp, detail, level } = data
+        if (taskId && line) {
+          if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
+          taskLogs.value[taskId].push({
+            line,
+            timestamp,
+            detail: detail || null,
+            level: level || null,
+          })
+          if (taskLogs.value[taskId].length > 2000) taskLogs.value[taskId].shift()
+        }
+        break
+      }
+      default:
+        break
     }
   }
 

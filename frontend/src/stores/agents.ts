@@ -306,32 +306,36 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   function handleWebSocketMessage(data: WSInbound) {
-    if (data.type === 'agent-joined') {
-      registerAgent(data)
-    } else if (data.type === 'agent-state') {
-      updateAgentState(
-        data.agentId,
-        data.state,
-        data.activity ?? undefined,
-        data.taskId ?? undefined,
-      )
-    } else if (data.type === 'task-complete') {
-      // The worker returns to its idle pool immediately after sending task-complete.
-      // Reset the agent proactively so the sidebar doesn't lag behind waiting for
-      // the separate agent-state:idle frame (which may be delayed for short tasks).
-      resetAgentForTask(data)
-    } else if (data.type === 'task-followup-done') {
-      // Same as task-complete: worker returns to idle after sending this.
-      resetAgentForTask(data)
-    } else if (data.type === 'terminal-output') {
-      // Route to per-agent log buffer (includes task logs for agent-tab view)
-      if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail, data.level)
-      // Route to per-worker log buffer; worker-wide lines may arrive with only
-      // workerId, while agent/task lines include both workerId and agentId.
-      const wid =
-        data.workerId ||
-        (data.agentId ? agents.value.find((a) => a.id === data.agentId)?.workerId : null)
-      if (wid) addWorkerLog(wid, data.line, data.timestamp, data.detail, data.level)
+    switch (data.type) {
+      case 'agent-joined':
+        registerAgent(data)
+        break
+      case 'agent-state':
+        updateAgentState(data.agentId, data.state, data.activity ?? undefined, data.taskId ?? undefined)
+        break
+      case 'task-complete':
+        // The worker returns to its idle pool immediately after sending task-complete.
+        // Reset the agent proactively so the sidebar doesn't lag behind waiting for
+        // the separate agent-state:idle frame (which may be delayed for short tasks).
+        resetAgentForTask(data)
+        break
+      case 'task-followup-done':
+        // Same as task-complete: worker returns to idle after sending this.
+        resetAgentForTask(data)
+        break
+      case 'terminal-output': {
+        // Route to per-agent log buffer (includes task logs for agent-tab view)
+        if (data.agentId) addLog(data.agentId, data.line, data.timestamp, data.detail, data.level)
+        // Route to per-worker log buffer; worker-wide lines may arrive with only
+        // workerId, while agent/task lines include both workerId and agentId.
+        const wid =
+          data.workerId ||
+          (data.agentId ? agents.value.find((a) => a.id === data.agentId)?.workerId : null)
+        if (wid) addWorkerLog(wid, data.line, data.timestamp, data.detail, data.level)
+        break
+      }
+      default:
+        break
     }
   }
 

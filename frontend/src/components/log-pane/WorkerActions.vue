@@ -100,13 +100,16 @@ async function fetchPendingAuth() {
 }
 
 function handleAuthEvent(data: WSInbound) {
-  if (data.type === 'claude-auth-required' && data.workerId === props.workerId) {
-    pendingAuthUrl.value = data.url
-  } else if (
-    (data.type === 'claude-auth-success' || data.type === 'claude-auth-cleared') &&
-    data.workerId === props.workerId
-  ) {
-    pendingAuthUrl.value = null
+  switch (data.type) {
+    case 'claude-auth-required':
+      if (data.workerId === props.workerId) pendingAuthUrl.value = data.url
+      break
+    case 'claude-auth-success':
+    case 'claude-auth-cleared':
+      if (data.workerId === props.workerId) pendingAuthUrl.value = null
+      break
+    default:
+      break
   }
 }
 

@@ -146,8 +146,10 @@ describe('useGuildStore', () => {
       const store = useGuildStore()
       store.connectWebSocket('g-1', onMessage)
       const ws = FakeWebSocket.instances[0]
-      ws.simulateMessage({ type: 'agent-state', state: 'idle' })
-      expect(onMessage).toHaveBeenCalledWith({ type: 'agent-state', state: 'idle' })
+      ws.simulateMessage({ type: 'agent-state', agentId: 'a-1', state: 'idle' })
+      expect(onMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'agent-state', agentId: 'a-1', state: 'idle' }),
+      )
     })
 
     it('fans out messages to all registered handlers', () => {
@@ -174,7 +176,7 @@ describe('useGuildStore', () => {
       store.addMessageHandler(good)
 
       store.connectWebSocket('g-1')
-      FakeWebSocket.instances[0].simulateMessage({ type: 'task-update' })
+      FakeWebSocket.instances[0].simulateMessage({ type: 'task-update', taskId: 't-x' })
 
       expect(bad).toHaveBeenCalled()
       expect(good).toHaveBeenCalled()
@@ -187,7 +189,7 @@ describe('useGuildStore', () => {
       store.removeMessageHandler(h)
 
       store.connectWebSocket('g-1')
-      FakeWebSocket.instances[0].simulateMessage({ type: 'task-update' })
+      FakeWebSocket.instances[0].simulateMessage({ type: 'task-update', taskId: 't-x' })
 
       expect(h).not.toHaveBeenCalled()
     })

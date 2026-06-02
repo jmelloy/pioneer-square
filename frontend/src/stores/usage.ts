@@ -102,9 +102,16 @@ export const useUsageStore = defineStore('usage', () => {
   }
 
   function handleWebSocketMessage(data: WSInbound) {
-    if (data.type !== 'claude-usage' || !data.taskId) return
-    const { type: _t, ...summary } = data
-    byTask.value = { ...byTask.value, [data.taskId]: summary }
+    switch (data.type) {
+      case 'claude-usage': {
+        if (!data.taskId) break
+        const { type: _t, ...summary } = data
+        byTask.value = { ...byTask.value, [data.taskId]: summary }
+        break
+      }
+      default:
+        break
+    }
   }
 
   function usageForTask(taskId: string): UsageSummary | null {

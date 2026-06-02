@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useAuthStore } from './auth'
 import { api } from '../utils/api'
 import type { ChatMessage, Guild, WSInbound, WSOutbound } from '../types'
+import { assertNever, parseWsMessage } from '../ws-schemas'
 
 type MessageHandler = (data: WSInbound) => void
 
@@ -108,28 +109,41 @@ export const useGuildStore = defineStore('guild', () => {
       reconnectAttempt.value = 0
     }
     socket.onmessage = (event) => {
-      let data: WSInbound
+      const data = parseWsMessage(event.data as string)
+      if (data === null) return
       try {
-        data = JSON.parse(event.data) as WSInbound
-      } catch (e) {
-        console.warn('Dropping non-JSON WS frame', e)
-        return
-      }
-      try {
-        if (data.type === 'chat') {
-          const chatMsg = data as ChatMessage
-          if ((chatMsg.from || chatMsg.from_agent) !== 'github') {
-            messages.value.push(chatMsg)
+        switch (data.type) {
+          case 'chat':
+            if ((data.from || data.from_agent) !== 'github')
+              messages.value.push(data as ChatMessage)
+            break
+          case 'guild-updated': {
+            if (currentGuild.value?.id === data.id)
+              currentGuild.value = { ...currentGuild.value, name: data.name }
+            const idx = guilds.value.findIndex((g) => g.id === data.id)
+            if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name: data.name }
+            break
           }
+          // All remaining types are handled by registered message handlers below.
+          case 'agent-joined':
+          case 'agent-state':
+          case 'task-created':
+          case 'task-assigned':
+          case 'task-update':
+          case 'task-complete':
+          case 'task-followup-done':
+          case 'terminal-output':
+          case 'needs-input':
+          case 'claude-auth-required':
+          case 'claude-auth-success':
+          case 'claude-auth-cleared':
+          case 'foreman-poll-status':
+          case 'claude-usage':
+            break
+          default:
+            assertNever(data)
         }
-        if (data.type === 'guild-updated') {
-          if (currentGuild.value && currentGuild.value.id === data.id) {
-            currentGuild.value = { ...currentGuild.value, name: data.name }
-          }
-          const idx = guilds.value.findIndex((g) => g.id === data.id)
-          if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name: data.name }
-        }
-        if (onMessage) onMessage(data)
+        onMessage?.(data)
         messageHandlers.value.forEach((h) => {
           try {
             h(data)

@@ -85,46 +85,54 @@ function onSubmitAuth({ workerId, code }: { workerId: string; code: string }) {
 }
 
 function handleTaskEvent(data: WSInbound) {
-  if (data.type === 'task-complete') {
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: data.prUrl
-        ? `✓ ${agentsStore.workerDisplayName(data.workerId)} done — PR: ${data.prUrl}`
-        : `✓ ${agentsStore.workerDisplayName(data.workerId)} finished (no PR)`,
-      prUrl: data.prUrl || null,
-      createdAt: new Date().toISOString(),
-    })
-  } else if (data.type === 'needs-input') {
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: `⚠ ${agentsStore.workerDisplayName(data.workerId)} needs attention on: "${data.description}"`,
-      createdAt: new Date().toISOString(),
-    })
-  } else if (data.type === 'claude-auth-required') {
-    claudeAuthPending.value = { workerId: data.workerId, url: data.url }
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: `⚿ ${agentsStore.workerDisplayName(data.workerId)} needs Claude auth — visit the URL and paste the code below`,
-      createdAt: new Date().toISOString(),
-    })
-  } else if (data.type === 'task-assigned') {
-    const taskName = (data.name || data.description || '').slice(0, 60)
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: `→ ${agentsStore.workerDisplayName(data.workerId)} assigned: ${taskName}`,
-      createdAt: new Date().toISOString(),
-    })
-  } else if (data.type === 'foreman-poll-status') {
-    const secs = typeof data.nextCheckIn === 'number' ? data.nextCheckIn : null
-    nextPollAt.value = secs !== null ? Date.now() + secs * 1000 : null
+  switch (data.type) {
+    case 'task-complete':
+      guildStore.messages.push({
+        type: 'chat',
+        from: 'system',
+        to: 'user',
+        content: data.prUrl
+          ? `✓ ${agentsStore.workerDisplayName(data.workerId ?? '')} done — PR: ${data.prUrl}`
+          : `✓ ${agentsStore.workerDisplayName(data.workerId ?? '')} finished (no PR)`,
+        prUrl: data.prUrl || null,
+        createdAt: new Date().toISOString(),
+      })
+      break
+    case 'needs-input':
+      guildStore.messages.push({
+        type: 'chat',
+        from: 'system',
+        to: 'user',
+        content: `⚠ ${agentsStore.workerDisplayName(data.workerId)} needs attention on: "${data.description}"`,
+        createdAt: new Date().toISOString(),
+      })
+      break
+    case 'claude-auth-required':
+      claudeAuthPending.value = { workerId: data.workerId, url: data.url }
+      guildStore.messages.push({
+        type: 'chat',
+        from: 'system',
+        to: 'user',
+        content: `⚿ ${agentsStore.workerDisplayName(data.workerId)} needs Claude auth — visit the URL and paste the code below`,
+        createdAt: new Date().toISOString(),
+      })
+      break
+    case 'task-assigned':
+      guildStore.messages.push({
+        type: 'chat',
+        from: 'system',
+        to: 'user',
+        content: `→ ${agentsStore.workerDisplayName(data.workerId)} assigned: ${(data.name || data.description || '').slice(0, 60)}`,
+        createdAt: new Date().toISOString(),
+      })
+      break
+    case 'foreman-poll-status': {
+      const secs = typeof data.nextCheckIn === 'number' ? data.nextCheckIn : null
+      nextPollAt.value = secs !== null ? Date.now() + secs * 1000 : null
+      break
+    }
+    default:
+      break
   }
 }
 
