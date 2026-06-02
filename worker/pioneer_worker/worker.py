@@ -1691,7 +1691,7 @@ class Worker:
             if task_id in self._cancelled_tasks:
                 logger.info("Skipping cancelled task %s", task_id)
                 continue
-            
+
             logger.info(
                 "Dequeued task %s (agent=%s queue depth %d): %s",
                 task_id,
