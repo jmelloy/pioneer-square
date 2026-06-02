@@ -12,6 +12,15 @@ logger = logging.getLogger(__name__)
 EmitFn = Callable[[str], Awaitable[None]]
 
 
+def _result_text(result: dict) -> str:
+    """Join the text blocks of a tool result's content array."""
+    parts = []
+    for blk in result.get("content", []):
+        if isinstance(blk, dict) and blk.get("type") == "text":
+            parts.append(blk.get("text", ""))
+    return "".join(parts)
+
+
 def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, str]:
     """Extract a human-readable line from one pi RPC event.
 
@@ -26,26 +35,23 @@ def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, str]:
         delta = full[len(last_text) :]
         return (delta if delta.strip() else None), full
     if t == "tool_execution_start":
-        ti = event.get("tool", {})
-        name = ti.get("name", "")
-        inp = ti.get("input", {})
+        name = event.get("toolName", "")
+        inp = event.get("args", {})
         if name == "bash":
             return f"▶ bash: {inp.get('command', '')[:120]}", last_text
         if name in ("read", "write", "edit"):
             return f"▶ {name}: {inp.get('path', inp.get('file_path', ''))}", last_text
         return f"▶ {name}({json.dumps(inp)[:80]})", last_text
     if t == "tool_execution_end":
-        out = str(event.get("output", "")).strip()
+        out = _result_text(event.get("result", {})).strip()
         if not out:
             return None, last_text
         lines = out.split("\n")
         preview = lines[0][:120]
         if len(lines) > 1:
             preview += f" (+{len(lines) - 1} lines)"
-        return f"  → {preview}", last_text
-    if t == "agent_end":
-        err = event.get("error")
-        return (f"✗ {err}" if err else None), ""
+        prefix = "  ✗ " if event.get("isError") else "  → "
+        return f"{prefix}{preview}", last_text
     if t == "agent_start":
         return "[pi] agent started", last_text
     return None, last_text
@@ -61,6 +67,8 @@ async def run_pi_auto(
     """Run pi on *description* in *cwd*. Returns (success, stop_reason, last_text)."""
     cmd = [pi_path, "--mode", "rpc", "--no-session"]
     logger.info("Spawning pi in %s; description=%r", cwd, description)
+    saw_agent_end = False
+    saw_error = False
     logger.info("pi argv: %s", cmd)
     await emit(f"[pi] Starting: {description[:80]}")
     last_text = ""
@@ -77,7 +85,7 @@ async def run_pi_auto(
         )
         logger.info("pi subprocess started pid=%s", proc.pid)
 
-        rpc_msg = json.dumps({"type": "prompt", "content": description}) + "\n"
+        rpc_msg = json.dumps({"type": "prompt", "message": description}) + "\n"
         proc.stdin.write(rpc_msg.encode())  # type: ignore[union-attr]
         await proc.stdin.drain()  # type: ignore[union-attr]
 
@@ -101,23 +109,52 @@ async def run_pi_auto(
             except json.JSONDecodeError:
                 await emit(line_str)
                 continue
-            if event.get("type") == "agent_end":
-                stop_reason = "error_during_execution" if event.get("error") else "success"
-                agent_ended_ok = not event.get("error")
+            etype = event.get("type")
+            if (
+                etype == "response"
+                and event.get("command") == "prompt"
+                and not event.get("success", True)
+            ):
+                # Prompt was rejected before acceptance.
+                err = event.get("error", "prompt rejected")
+                await emit(f"[pi] ✗ {err}")
+                saw_error = True
+            if etype == "agent_end":
+                saw_agent_end = True
+                if accumulated.strip():
+                    last_text = accumulated
+                accumulated = ""
+            if etype == "message_update":
+                ame = event.get("assistantMessageEvent", {})
+                if ame.get("type") == "error":
+                    saw_error = True
+                    reason = ame.get("reason", "error")
+                    await emit(f"[pi] ✗ {reason}")
             text, accumulated = parse_pi_event(event, accumulated)
             if text:
                 await emit(text)
-                if not text.startswith(("▶", "✗", "  →", "[pi]")):
-                    last_text = text
+            if etype == "message_update" and accumulated.strip():
+                last_text = accumulated
+            # We only send a single prompt; pi RPC mode stays alive waiting
+            # for more stdin after the run completes, so stop reading once the
+            # agent (or a fatal error) has finished.
+            if saw_agent_end or saw_error:
+                break
 
+        # Closing stdin signals EOF so the RPC process exits cleanly.
         if proc.stdin and not proc.stdin.is_closing():
             proc.stdin.close()
         exit_code = await proc.wait()
         await stderr_task
         if event_count == 0:
             logger.warning("pi[%d] produced no stdout events — check PATH/auth", proc.pid)
-        if stop_reason == "no_events" and exit_code == 0:
+        if saw_error:
+            stop_reason = "error_during_execution"
+        elif saw_agent_end:
             stop_reason = "success"
+        elif exit_code == 0:
+            stop_reason = "success"
+        agent_ended_ok = saw_agent_end and not saw_error
         return (exit_code == 0 and agent_ended_ok), stop_reason, last_text
     except FileNotFoundError:
         logger.error("`pi` CLI not found on PATH")
