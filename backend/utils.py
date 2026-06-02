@@ -247,6 +247,10 @@ def build_spawn_worker_env(
     worker_name: str | None,
     source_env: dict[str, str],
     claude_oauth_token: str | None = None,
+    worker_id: str | None = None,
+    auth_token: str | None = None,
+    agent_count: int | None = None,
+    tools: list[str] | None = None,
 ) -> dict[str, str]:
     """Build the env dict for a spawned worker container.
 
@@ -254,6 +258,11 @@ def build_spawn_worker_env(
     ``CLAUDE_CODE_OAUTH_TOKEN`` in *source_env* — the DB blob is the source
     of truth, refreshed every time a worker completes setup-token, while the
     host env var can drift stale.
+
+    *worker_id* and *auth_token* — when provided (pre-registered by the
+    foreman), the worker process skips its own self-registration and uses
+    these credentials directly.  This lets callers know the worker_id before
+    the container starts.
     """
     env: dict[str, str] = {
         "PIONEER_BACKEND_URL": source_env.get("WORKER_BACKEND_URL", "http://backend:8000"),
@@ -279,4 +288,12 @@ def build_spawn_worker_env(
     log_level = source_env.get("WORKER_LOG_LEVEL")
     if log_level:
         env["PIONEER_WORKER_LOG_LEVEL"] = log_level
+    if worker_id:
+        env["PIONEER_WORKER_ID"] = worker_id
+    if auth_token:
+        env["PIONEER_AUTH_TOKEN"] = auth_token
+    if agent_count is not None:
+        env["PIONEER_MAX_AGENTS"] = str(agent_count)
+    if tools:
+        env["PIONEER_TOOLS"] = ",".join(tools)
     return env

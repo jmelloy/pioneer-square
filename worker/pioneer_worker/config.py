@@ -216,6 +216,13 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             )
         _openai_api_key = _env_val  # None if var is absent, key string if present
 
+    _max_agents_env = os.environ.get("PIONEER_MAX_AGENTS")
+    _max_agents_val = (
+        overrides.get("max_agents")
+        if overrides.get("max_agents") is not None
+        else raw.get("max_agents", int(_max_agents_env) if _max_agents_env else 4)
+    )
+
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
@@ -229,6 +236,8 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or github_block.get("org")
         or os.environ.get("PIONEER_ORG")
         or None,
+        worker_id=overrides.get("worker_id") or os.environ.get("PIONEER_WORKER_ID") or None,
+        auth_token=overrides.get("auth_token") or os.environ.get("PIONEER_AUTH_TOKEN") or None,
         worker_name=overrides.get("worker_name")
         or raw.get("worker_name")
         or os.environ.get("PIONEER_WORKER_NAME"),
@@ -263,11 +272,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             if overrides.get("claude_max_turns") is not None
             else claude_block.get("max_turns", 50)
         ),
-        max_agents=int(
-            overrides.get("max_agents")
-            if overrides.get("max_agents") is not None
-            else raw.get("max_agents", 4)
-        ),
+        max_agents=int(_max_agents_val),
         public_backend_url=overrides.get("public_backend_url")
         or raw.get("public_backend_url")
         or os.environ.get("PIONEER_FRONTEND_URL"),
