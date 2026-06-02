@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from database import get_db
-from events import broadcast_msg, emit_terminal_line
+from events import broadcast, emit_terminal_line
 from foreman_core.llm import get_foreman_model
 from foreman_core.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
@@ -601,7 +601,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     )
                 )
                 await db.commit()
-                await broadcast_msg(
+                await broadcast(
                     guild_id,
                     TaskCreatedMsg(
                         taskId=task_id,
@@ -610,7 +610,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         phase=phase,
                         state="pending",
                         createdAt=created_at.isoformat(),
-                    ),
+                    ).model_dump(by_alias=True, exclude_none=True),
                 )
                 result_text = (
                     f"Task {task_id} created: '{name}'. Reference this task_id in assign_task."
@@ -688,7 +688,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     )
                     task_name = name_result.one_or_none() or desc[:60]
                     task_id = existing_task_id
-                    await broadcast_msg(
+                    await broadcast(
                         guild_id,
                         TaskAssignedMsg(
                             workerId=wid,
@@ -700,7 +700,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             issueNumber=inp.get("issue_number"),
                             issueRepo=inp.get("issue_repo"),
                             repos=repos,
-                        ),
+                        ).model_dump(by_alias=True, exclude_none=True),
                     )
                     result_text = f"Task {task_id} assigned to {wid}."
                 elif not is_error:
@@ -728,7 +728,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         )
                     )
                     await db.commit()
-                    await broadcast_msg(
+                    await broadcast(
                         guild_id,
                         TaskAssignedMsg(
                             workerId=wid,
@@ -741,7 +741,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             issueNumber=inp.get("issue_number"),
                             issueRepo=inp.get("issue_repo"),
                             repos=repos,
-                        ),
+                        ).model_dump(by_alias=True, exclude_none=True),
                     )
                     result_text = f"Task {task_id} queued for {wid}."
 
@@ -841,7 +841,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 update(Task).where(col(Task.id) == task_id).values(**update_vals)
                             )
                             await db.commit()
-                            await broadcast_msg(
+                            await broadcast(
                                 guild_id,
                                 TaskUpdateMsg(
                                     taskId=task_id,
@@ -849,9 +849,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     workerId=target_worker_id,
                                     deletedAt=None,
                                     finishedAt=None,
-                                ),
+                                ).model_dump(by_alias=True, exclude_none=True),
                             )
-                            await broadcast_msg(
+                            await broadcast(
                                 guild_id,
                                 TaskFollowupMsg(
                                     workerId=target_worker_id,
@@ -863,7 +863,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     instructions=instructions,
                                     issueNumber=task_issue_number,
                                     issueRepo=task_issue_repo,
-                                ),
+                                ).model_dump(by_alias=True, exclude_none=True),
                             )
                             if target_worker_id != original_worker_id and original_worker_id:
                                 result_text = (
