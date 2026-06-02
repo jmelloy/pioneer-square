@@ -1909,7 +1909,8 @@ class Worker:
                 if tool == "claude":
                     pr_title = (task.get("name") or desc)[:72].replace('"', "'")
                     closes = f" Closes #{task['issue_number']}" if task.get("issue_number") else ""
-                    if (task.get("phase") or "").lower() == "review":
+                    _phase = (task.get("phase") or "execute").lower()
+                    if _phase == "review":
                         # Review-phase tasks must post findings as GitHub PR review
                         # comments — NEVER by committing files and opening a new PR.
                         _pr_repo = task.get("issue_repo") or ""
@@ -1938,7 +1939,7 @@ class Worker:
                             "        -f 'comments[][body]=inline comment'\n"
                             "Do NOT push any commits or open a PR as part of this review.\n"
                         )
-                    else:
+                    elif _phase in ("execute", "followup"):
                         current_desc = (
                             f"{desc}\n\n"
                             f"After completing your changes, commit, push, and open a PR:\n"
@@ -1946,6 +1947,7 @@ class Worker:
                             f"  git push origin {branch}\n"
                             f'  gh pr create --title "{pr_title}" --body "<summary of changes>{closes}"\n'
                         )
+                    # plan / ephemeral / automation phases: leave current_desc = desc unchanged
             success = False
             stop_reason = "no_events"
             last_msg = ""
