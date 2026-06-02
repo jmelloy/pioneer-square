@@ -561,7 +561,7 @@ class TestExecToolsDispatching:
             broadcast_calls.append(msg)
 
         with (
-            patch("foreman.tools.broadcast", side_effect=capture),
+            patch("foreman.tools.broadcast_msg", side_effect=capture),
             patch("foreman.tools.emit_terminal_line", new_callable=AsyncMock),
         ):
             results = await exec_tools(
@@ -573,9 +573,9 @@ class TestExecToolsDispatching:
                 ],
             )
         assert "delivered" in results[0]["content"].lower()
-        worker_msgs = [m for m in broadcast_calls if m.get("type") == "worker-message"]
+        worker_msgs = [m for m in broadcast_calls if m.type == "worker-message"]
         assert len(worker_msgs) == 1
-        assert worker_msgs[0]["message"] == "Hello worker"
+        assert worker_msgs[0].message == "Hello worker"
 
     async def test_redirect_task_not_found(self, db_session):
         insert_guild(db_session, "g-redirect-missing")
