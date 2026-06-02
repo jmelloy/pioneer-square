@@ -124,15 +124,12 @@ async def broadcast_msg(
 
 async def emit_terminal_line(guild_id: str, agent_id: str, line: str):
     """Broadcast and persist a terminal output line."""
+    from ws_types import TerminalOutputMsg
+
     now = datetime.now(UTC)
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "terminal-output",
-            "agentId": agent_id,
-            "line": line,
-            "timestamp": now.isoformat(),
-        },
+        TerminalOutputMsg(agentId=agent_id, line=line, timestamp=now.isoformat()),
     )
     if line:
         db = await get_db()

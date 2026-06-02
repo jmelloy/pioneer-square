@@ -23,7 +23,8 @@ import os
 from datetime import UTC, datetime
 
 from database import get_db_dep
-from events import broadcast
+from events import broadcast_msg
+from ws_types import ChatMsg, GithubEventMsg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from models import GithubEvent, Guild, Message, Task
 from pydantic import BaseModel
@@ -605,32 +606,30 @@ async def github_webhook(
         task_id,
     )
 
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "github-event",
-            "deliveryId": delivery_id,
-            "event": event_type,
-            "action": action,
-            "repo": repo,
-            "prNumber": pr_number,
-            "prUrl": pr_url,
-            "taskId": task_id,
-            "sender": sender_login,
-        },
+        GithubEventMsg(
+            deliveryId=delivery_id,
+            event=event_type,
+            action=action,
+            repo=repo,
+            prNumber=pr_number,
+            prUrl=pr_url,
+            taskId=task_id,
+            sender=sender_login,
+        ),
     )
 
     chat_line = _build_chat_line(event_type, action, repo, pr_number, payload, task_id)
     chat_now = datetime.now(UTC)
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "chat",
-            "from": "github",
-            "to": "foreman",
-            "content": chat_line,
-            "createdAt": chat_now.isoformat(),
-        },
+        ChatMsg(
+            from_="github",
+            to="foreman",
+            content=chat_line,
+            createdAt=chat_now.isoformat(),
+        ),
     )
     db.add(
         Message(
@@ -744,15 +743,14 @@ async def ci_notify(
         )
     )
     await db.commit()
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "chat",
-            "from": "github",
-            "to": "foreman",
-            "content": content,
-            "createdAt": created_at.isoformat(),
-        },
+        ChatMsg(
+            from_="github",
+            to="foreman",
+            content=content,
+            createdAt=created_at.isoformat(),
+        ),
     )
     logger.info(
         "ci-notify guild=%s repo=%s pr=%s task=%s conclusion=%s",

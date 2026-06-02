@@ -35,7 +35,8 @@ from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member, require_worker_or_member_path
 from database import get_db_dep
-from events import broadcast
+from events import broadcast_msg
+from ws_types import ChatMsg, TaskCreatedMsg, TaskUpdateMsg
 from fastapi import APIRouter, Depends, HTTPException, Query
 from foreman.runner import _fetch_online_workers
 from models import (
@@ -395,17 +396,16 @@ async def create_foreman_task(
     )
     await db.commit()
 
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "task-created",
-            "taskId": task_id,
-            "name": name,
-            "description": body.description,
-            "phase": body.phase,
-            "state": "pending",
-            "createdAt": created_at.isoformat(),
-        },
+        TaskCreatedMsg(
+            taskId=task_id,
+            name=name,
+            description=body.description,
+            phase=body.phase,
+            state="pending",
+            createdAt=created_at.isoformat(),
+        ),
     )
     return {"task_id": task_id, "created_at": created_at}
 
@@ -495,11 +495,11 @@ async def patch_task(
         "deleted_at": "deletedAt",
         "phase": "phase",
     }
-    ws_payload: dict = {"type": "task-update", "taskId": task_id}
+    ws_data: dict = {"taskId": task_id}
     for col_name, ws_key in _KEY_MAP.items():
         if col_name in update_values:
-            ws_payload[ws_key] = update_values[col_name]
-    await broadcast(guild_id, ws_payload)
+            ws_data[ws_key] = update_values[col_name]
+    await broadcast_msg(guild_id, TaskUpdateMsg.model_validate(ws_data))
 
     return {"task_id": task_id, "updated": update_values}
 
@@ -550,16 +550,15 @@ async def create_message(
     await db.refresh(msg)
     msg_id = msg.id
 
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "chat",
-            "from": body.from_agent,
-            "to": body.to_agent,
-            "content": body.content,
-            "createdAt": created_at.isoformat(),
-            **({"userId": body.user_id} if body.user_id else {}),
-        },
+        ChatMsg(
+            from_=body.from_agent,
+            to=body.to_agent,
+            content=body.content,
+            createdAt=created_at.isoformat(),
+            userId=body.user_id,
+        ),
     )
     return {"message_id": msg_id, "created_at": created_at}
 

@@ -12,7 +12,8 @@ from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member, require_worker_or_member_path
 from database import get_db_dep
-from events import broadcast
+from events import broadcast_msg
+from ws_types import ClaudeUsageMsg
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeUsage
 from pydantic import BaseModel
@@ -109,18 +110,19 @@ async def report_usage(
         )
     await db.commit()
 
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "claude-usage",
-            "taskId": data.task_id,
-            "workerId": data.worker_id,
-            "sessionId": data.session_id,
-            "model": next((r.model for r in data.records if r.model), None),
-            "repo": data.repo,
-            "reporter": data.reporter,
-            **_summarize(data.records),
-        },
+        ClaudeUsageMsg.model_validate(
+            {
+                "taskId": data.task_id,
+                "workerId": data.worker_id,
+                "sessionId": data.session_id,
+                "model": next((r.model for r in data.records if r.model), None),
+                "repo": data.repo,
+                "reporter": data.reporter,
+                **_summarize(data.records),
+            }
+        ),
     )
     return {"stored": len(data.records)}
 
