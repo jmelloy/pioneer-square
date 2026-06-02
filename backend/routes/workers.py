@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
-from events import broadcast, emit_terminal_line, pending_claude_auth
+from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
@@ -29,6 +29,7 @@ from utils import (
     worker_display_name,
 )
 from ws_handlers import _resolve_user_identifier
+from ws_types import TaskAssignedMsg, WorkerMessageMsg
 
 router = APIRouter()
 
@@ -262,21 +263,20 @@ async def assign_task(
     )
     await db.commit()
 
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "task-assigned",
-            "workerId": worker_id,
-            "taskId": task_id,
-            "name": name,
-            "description": data.description,
-            "tool": data.tool,
-            "phase": data.phase or "execute",
-            "parentTaskId": data.parent_task_id,
-            "issueNumber": data.issue_number,
-            "issueRepo": data.issue_repo,
-            "repos": data.repos,
-        },
+        TaskAssignedMsg(
+            workerId=worker_id,
+            taskId=task_id,
+            name=name,
+            description=data.description,
+            tool=data.tool,
+            phase=data.phase or "execute",
+            parentTaskId=data.parent_task_id,
+            issueNumber=data.issue_number,
+            issueRepo=data.issue_repo,
+            repos=data.repos,
+        ),
     )
 
     return {"id": task_id, "worker_id": worker_id, "state": "pending"}
@@ -316,12 +316,5 @@ async def message_worker(
         raise HTTPException(status_code=400, detail="Empty message")
 
     await emit_terminal_line(guild_id, worker_id, f"[foreman → worker] {text_msg}")
-    await broadcast(
-        guild_id,
-        {
-            "type": "worker-message",
-            "workerId": worker_id,
-            "message": text_msg,
-        },
-    )
+    await broadcast_msg(guild_id, WorkerMessageMsg(workerId=worker_id, message=text_msg))
     return {"status": "delivered"}

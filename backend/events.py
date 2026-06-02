@@ -8,13 +8,16 @@ import asyncio
 import json
 import logging
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from database import get_db
 from fastapi import WebSocket, WebSocketDisconnect
 from models import Agent, TaskLog
 from sqlmodel import col, select
+
+if TYPE_CHECKING:
+    from ws_types import _WS
 
 logger = logging.getLogger(__name__)
 
@@ -107,17 +110,24 @@ async def broadcast(guild_id: str, message: dict, exclude: WebSocket | None = No
         connections[guild_id].remove(ws)
 
 
+async def send_ws_message(ws: WebSocket, message: "_WS") -> None:
+    """Serialise a typed WS model and send it to a single WebSocket."""
+    await ws.send_text(ws_dumps(message.model_dump(by_alias=True)))
+
+
+async def broadcast_msg(guild_id: str, message: "_WS", exclude: WebSocket | None = None) -> None:
+    """Serialise a typed WS model and broadcast it to all guild connections."""
+    await broadcast(guild_id, message.model_dump(by_alias=True), exclude)
+
+
 async def emit_terminal_line(guild_id: str, agent_id: str, line: str):
     """Broadcast and persist a terminal output line."""
+    from ws_types import TerminalOutputMsg
+
     now = datetime.now(UTC)
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "terminal-output",
-            "agentId": agent_id,
-            "line": line,
-            "timestamp": now.isoformat(),
-        },
+        TerminalOutputMsg(agentId=agent_id, line=line, timestamp=now.isoformat()),
     )
     if line:
         db = await get_db()

@@ -22,19 +22,45 @@ from events import (
     agent_owner_lock,
     agent_owners,
     broadcast,
+    broadcast_msg,
     connections,
     foreman_connections,
     pending_claude_auth,
+    send_ws_message,
 )
 from fastapi import WebSocket
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
+from pydantic import ValidationError
 from sqlalchemy import delete, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
 from utils import worker_display_name
+from ws_types import (
+    KNOWN_INBOUND_TYPES,
+    AgentJoinedMsg,
+    AgentStateMsg,
+    AnswerMsg,
+    ChatMsg,
+    ClaudeAuthRequiredMsg,
+    ForemanDisconnectMsg,
+    ForemanEvictedMsg,
+    ForemanRegisteredMsg,
+    ForemanTriggerMsg,
+    IceCandidateMsg,
+    NeedsInputMsg,
+    OfferMsg,
+    PongMsg,
+    TaskAssignedMsg,
+    TaskCompleteMsg,
+    TaskFollowupDoneMsg,
+    TaskUpdateMsg,
+    TerminalOutputMsg,
+    WorkerAuthResponseMsg,
+    parse_inbound_message,
+)
 
 from foreman import maybe_post_plan_comment, reset_foreman_poll, run_foreman_ai
 
@@ -148,18 +174,15 @@ async def _trigger_foreman(
     """
     ws = foreman_connections.get(guild_id)
     if ws is not None:
-        payload: dict = {
-            "type": "foreman-trigger",
-            "event": event,
-            "guildId": guild_id,
-            "humanMessage": human_message,
-        }
-        if user_id:
-            payload["userId"] = user_id
-        if task_id:
-            payload["taskId"] = task_id
+        msg = ForemanTriggerMsg(
+            event=event,
+            guildId=guild_id,
+            humanMessage=human_message,
+            userId=user_id or None,  # coerce empty string to None
+            taskId=task_id or None,  # coerce empty string to None
+        )
         try:
-            await ws.send_json(payload)
+            await send_ws_message(ws, msg)
             logger.debug(
                 "guild=%s foreman-trigger dispatched to external foreman: event=%s",
                 guild_id,
@@ -209,7 +232,7 @@ class WSContext:
 async def handle_ping(ctx: WSContext, data: dict) -> None:
     """Application-level heartbeat. Reply with pong so the worker can detect a
     half-open socket too."""
-    await ctx.websocket.send_json({"type": "pong", "timestamp": datetime.now(UTC).isoformat()})
+    await send_ws_message(ctx.websocket, PongMsg(timestamp=datetime.now(UTC).isoformat()))
 
 
 async def handle_join(ctx: WSContext, data: dict) -> None:
@@ -275,24 +298,21 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                 ctx.guild_id,
             )
             try:
-                await existing_ws.send_json(
-                    {
-                        "type": "foreman-evicted",
-                        "guildId": ctx.guild_id,
-                        "reason": "superseded by new foreman connection",
-                    }
+                await send_ws_message(
+                    existing_ws,
+                    ForemanEvictedMsg(
+                        guildId=ctx.guild_id,
+                        reason="superseded by new foreman connection",
+                    ),
                 )
             except Exception:
                 pass
         foreman_connections[ctx.guild_id] = ctx.websocket
         logger.info("guild=%s external foreman registered: agentId=%s", ctx.guild_id, agent_id)
         # Acknowledge registration so the foreman knows it is the active one.
-        await ctx.websocket.send_json(
-            {
-                "type": "foreman-registered",
-                "guildId": ctx.guild_id,
-                "agentId": agent_id,
-            }
+        await send_ws_message(
+            ctx.websocket,
+            ForemanRegisteredMsg(guildId=ctx.guild_id, agentId=agent_id),
         )
     elif agent_type == "worker":
         reset_foreman_poll(ctx.guild_id)
@@ -318,27 +338,25 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                     pt.id,
                     worker_id,
                 )
-                await ctx.websocket.send_json(
-                    {
-                        "type": "task-assigned",
-                        "workerId": worker_id,
-                        "taskId": pt.id,
-                        "name": pt.name or "",
-                        "description": pt.description or "",
-                        "tool": pt.tool or "claude",
-                        "issueNumber": pt.issue_number,
-                        "issueRepo": pt.issue_repo,
-                    }
+                await send_ws_message(
+                    ctx.websocket,
+                    TaskAssignedMsg(
+                        workerId=worker_id,
+                        taskId=pt.id,
+                        name=pt.name or "",
+                        description=pt.description or "",
+                        tool=pt.tool or "claude",
+                        issueNumber=pt.issue_number,
+                        issueRepo=pt.issue_repo,
+                    ),
                 )
-    broadcast_payload: dict = {
-        "type": "agent-joined",
-        "agentId": agent_id,
-        "agentName": agent_name,
-        "agentType": agent_type,
-        "workerId": worker_id,
-        "state": "idle",
-        "joinedAt": joined_at.isoformat(),
-    }
+    joined_msg = AgentJoinedMsg(
+        agentId=agent_id,
+        agentName=agent_name,
+        agentType=agent_type,
+        workerId=worker_id,
+        joinedAt=joined_at.isoformat(),
+    )
     if worker_id:
         r = await ctx.db.exec(
             select(col(Worker.name)).where(
@@ -346,8 +364,8 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
             )
         )
         stored_name = r.one_or_none()
-        broadcast_payload["workerName"] = stored_name or worker_display_name(worker_id)
-    await broadcast(ctx.guild_id, broadcast_payload)
+        joined_msg.workerName = stored_name or worker_display_name(worker_id)
+    await broadcast_msg(ctx.guild_id, joined_msg)
 
 
 # States that indicate the agent is no longer actively running a task and
@@ -418,14 +436,16 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
             await LockService(ctx.db).release(f"task:{task_id_to_release}")
 
     await ctx.db.commit()
-    msg: dict = {"type": "agent-state", "agentId": agent_id, "state": state}
-    if worker_id:
-        msg["workerId"] = worker_id
-    if "activity" in update_vals:
-        msg["activity"] = update_vals["activity"]
-    if "current_task_id" in update_vals:
-        msg["taskId"] = update_vals["current_task_id"]
-    await broadcast(ctx.guild_id, msg)
+    await broadcast_msg(
+        ctx.guild_id,
+        AgentStateMsg(
+            agentId=agent_id,
+            state=state,
+            workerId=worker_id if worker_id else None,
+            activity=update_vals.get("activity"),
+            taskId=update_vals.get("current_task_id"),
+        ),
+    )
     reset_foreman_poll(ctx.guild_id)
 
 
@@ -453,16 +473,15 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
         )
     )
     await ctx.db.commit()
-    await broadcast(
+    await broadcast_msg(
         ctx.guild_id,
-        {
-            "type": "chat",
-            "from": from_agent,
-            "to": to_agent,
-            "content": content,
-            "createdAt": created_at.isoformat(),
-            **({"userId": ctx.ws_user_id} if ctx.ws_user_id and from_agent == "user" else {}),
-        },
+        ChatMsg(
+            **{"from": from_agent},
+            to=to_agent,
+            content=content,
+            createdAt=created_at.isoformat(),
+            userId=ctx.ws_user_id if ctx.ws_user_id and from_agent == "user" else None,
+        ),
     )
     if not (from_agent == "user" and to_agent == "foreman" and content):
         return
@@ -477,13 +496,9 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
             ctx.guild_id,
             len(content),
         )
-        await broadcast(
+        await broadcast_msg(
             ctx.guild_id,
-            {
-                "type": "worker-auth-response",
-                "workerId": pending_worker_id,
-                "code": content,
-            },
+            WorkerAuthResponseMsg(workerId=pending_worker_id, code=content),
         )
     else:
         await _trigger_foreman(
@@ -523,18 +538,17 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
             )
         )
         await ctx.db.commit()
-    await broadcast(
+    await broadcast_msg(
         ctx.guild_id,
-        {
-            "type": "terminal-output",
-            "agentId": msg_agent_id,
-            "workerId": worker_id_for_log,
-            "taskId": task_id,
-            "line": line,
-            "timestamp": created_at.isoformat(),
-            **({"detail": detail} if detail else {}),
-            **({"level": level} if level else {}),
-        },
+        TerminalOutputMsg(
+            agentId=msg_agent_id,
+            workerId=worker_id_for_log,
+            taskId=task_id,
+            line=line,
+            timestamp=created_at.isoformat(),
+            detail=detail if detail else None,
+            level=level if level else None,
+        ),
     )
 
 
@@ -592,9 +606,9 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
     if ctx.joined_agents or worker_id:
         await ctx.db.commit()
     for agent_id in ctx.joined_agents:
-        await broadcast(
+        await broadcast_msg(
             ctx.guild_id,
-            {"type": "agent-state", "agentId": agent_id, "state": "offline"},
+            AgentStateMsg(agentId=agent_id, state="offline"),
         )
     if worker_id:
         await _trigger_foreman(
@@ -643,7 +657,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         if update_values.get("state") in _TERMINAL_STATES:
             await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
-    await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
+    await broadcast_msg(ctx.guild_id, TaskUpdateMsg.model_validate(data), exclude=ctx.websocket)
     if "state" in update_values:
         reset_foreman_poll(ctx.guild_id)
     # Drain any pending-followup events queued while the task was locked, and
@@ -715,7 +729,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
-    await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
+    await broadcast_msg(ctx.guild_id, TaskCompleteMsg.model_validate(data), exclude=ctx.websocket)
     if task_id:
         spawn(
             maybe_post_plan_comment(ctx.guild_id, task_id, last_text),
@@ -785,7 +799,9 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
             )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
-    await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
+    await broadcast_msg(
+        ctx.guild_id, TaskFollowupDoneMsg.model_validate(data), exclude=ctx.websocket
+    )
     if not task_id:
         return
 
@@ -844,7 +860,7 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
 
 
 async def handle_needs_input(ctx: WSContext, data: dict) -> None:
-    await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
+    await broadcast_msg(ctx.guild_id, NeedsInputMsg.model_validate(data), exclude=ctx.websocket)
     wid = data.get("workerId", "a worker")
     task_id = data.get("taskId", "")
     description = data.get("description", "")
@@ -876,7 +892,9 @@ async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
         ctx.guild_id,
         auth_url[:80],
     )
-    await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
+    await broadcast_msg(
+        ctx.guild_id, ClaudeAuthRequiredMsg.model_validate(data), exclude=ctx.websocket
+    )
     pending_claude_auth.setdefault(ctx.guild_id, {})[worker_id] = auth_url
     logger.info(
         "pending_claude_auth now has %d entries for guild %s",
@@ -909,9 +927,9 @@ async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:
             "guild=%s external foreman disconnected gracefully",
             ctx.guild_id,
         )
-    await broadcast(
+    await broadcast_msg(
         ctx.guild_id,
-        {"type": "foreman-disconnect", "guildId": ctx.guild_id},
+        ForemanDisconnectMsg(guildId=ctx.guild_id),
         exclude=ctx.websocket,
     )
 
@@ -932,7 +950,7 @@ async def handle_worker_auth_response(ctx: WSContext, data: dict) -> None:
         peer_count,
         ctx.guild_id,
     )
-    await broadcast(ctx.guild_id, data)
+    await broadcast_msg(ctx.guild_id, WorkerAuthResponseMsg.model_validate(data))
 
 
 async def handle_foreman_broadcast(ctx: WSContext, data: dict) -> None:
@@ -951,7 +969,11 @@ async def handle_foreman_broadcast(ctx: WSContext, data: dict) -> None:
 
 async def handle_webrtc_signal(ctx: WSContext, data: dict) -> None:
     """offer/answer/ice-candidate — forward to all peers in the guild."""
-    await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
+    rtc_type = data.get("type", "offer")
+    cls = {"offer": OfferMsg, "answer": AnswerMsg, "ice-candidate": IceCandidateMsg}.get(
+        rtc_type, OfferMsg
+    )
+    await broadcast_msg(ctx.guild_id, cls.model_validate(data), exclude=ctx.websocket)
 
 
 HANDLERS: dict[str, Any] = {
@@ -979,11 +1001,24 @@ HANDLERS: dict[str, Any] = {
 async def dispatch(ctx: WSContext, data: dict) -> None:
     """Route an inbound WS message to its handler.
 
-    Unknown types fall through to a generic broadcast (legacy behaviour).
+    Known types are validated with Pydantic before the handler is called;
+    malformed frames are dropped with a warning. Unknown types fall through
+    to a generic broadcast (legacy pass-through behaviour).
     """
     msg_type = data.get("type") or ""
     handler = HANDLERS.get(msg_type)
     if handler is None:
         await broadcast(ctx.guild_id, data)
         return
+    if msg_type in KNOWN_INBOUND_TYPES:
+        try:
+            parse_inbound_message(data)
+        except ValidationError as exc:
+            logger.warning(
+                "guild=%s dropping malformed inbound WS message type=%s: %s",
+                ctx.guild_id,
+                msg_type,
+                exc,
+            )
+            return
     await handler(ctx, data)

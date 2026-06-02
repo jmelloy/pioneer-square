@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member, require_user, require_worker_or_member_path
 from database import get_db_dep
-from events import broadcast
+from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
 from pydantic import BaseModel
@@ -24,6 +24,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from utils import generate_guild_id, row_to_dict
 from ws_handlers import _resolve_user_identifier
+from ws_types import GuildUpdatedMsg
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -156,17 +157,16 @@ async def update_guild(
     if "version" in data.model_fields_set:
         guild.version = data.version
     await db.commit()
-    await broadcast(
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "guild-updated",
-            "id": guild_id,
-            "name": guild.name,
-            "primary_repo": guild.primary_repo,
-            "description": guild.description,
-            "url": guild.url,
-            "version": guild.version,
-        },
+        GuildUpdatedMsg(
+            id=guild_id,
+            name=guild.name,
+            primary_repo=guild.primary_repo,
+            description=guild.description,
+            url=guild.url,
+            version=guild.version,
+        ),
     )
     return {
         "id": guild_id,

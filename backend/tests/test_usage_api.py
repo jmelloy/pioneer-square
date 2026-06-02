@@ -55,10 +55,6 @@ def test_report_usage_stores_rows_and_broadcasts(client, monkeypatch):
         captured.append((guild_id, message))
 
     monkeypatch.setattr(events_module, "broadcast", _fake_broadcast)
-    # routes.usage imported broadcast by name, so patch it there too.
-    import routes.usage as usage_module
-
-    monkeypatch.setattr(usage_module, "broadcast", _fake_broadcast)
 
     resp = test_client.post(
         "/guilds/guseu1/usage",

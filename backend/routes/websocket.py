@@ -14,12 +14,19 @@ from datetime import UTC, datetime
 import anyio
 import ws_handlers
 from database import get_db
-from events import agent_owner_lock, agent_owners, broadcast, connections, foreman_connections
+from events import (
+    agent_owner_lock,
+    agent_owners,
+    broadcast_msg,
+    connections,
+    foreman_connections,
+)
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from models import Agent, Guild, UserSession, Worker
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from ws_types import AgentStateMsg
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -217,13 +224,9 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                             exc_info=True,
                         )
                 for agent_id in stale_agents:
-                    await broadcast(
+                    await broadcast_msg(
                         guild_id,
-                        {
-                            "type": "agent-state",
-                            "agentId": agent_id,
-                            "state": "offline",
-                        },
+                        AgentStateMsg(agentId=agent_id, state="offline"),
                     )
                 # Batch all stale-worker notifications into a single foreman
                 # trigger so a simultaneous mass-disconnect doesn't stampede

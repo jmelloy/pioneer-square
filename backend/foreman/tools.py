@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from database import get_db
-from events import broadcast, emit_terminal_line
+from events import broadcast, broadcast_msg, emit_terminal_line
 from foreman_core.llm import get_foreman_model
 from foreman_core.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
@@ -38,6 +38,17 @@ from models import (
 )
 from sqlalchemy import delete, update
 from sqlmodel import col, select
+from ws_types import (
+    TaskAssignedMsg,
+    TaskCancelMsg,
+    TaskCreatedMsg,
+    TaskFinalizeMsg,
+    TaskFollowupMsg,
+    TaskRedirectMsg,
+    TaskUpdateMsg,
+    WorkerMessageMsg,
+    WorkerShutdownMsg,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -592,15 +603,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 await db.commit()
                 await broadcast(
                     guild_id,
-                    {
-                        "type": "task-created",
-                        "taskId": task_id,
-                        "name": name,
-                        "description": desc,
-                        "phase": phase,
-                        "state": "pending",
-                        "createdAt": created_at.isoformat(),
-                    },
+                    TaskCreatedMsg(
+                        taskId=task_id,
+                        name=name,
+                        description=desc,
+                        phase=phase,
+                        state="pending",
+                        createdAt=created_at.isoformat(),
+                    ).model_dump(by_alias=True, exclude_none=True),
                 )
                 result_text = (
                     f"Task {task_id} created: '{name}'. Reference this task_id in assign_task."
@@ -680,18 +690,17 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     task_id = existing_task_id
                     await broadcast(
                         guild_id,
-                        {
-                            "type": "task-assigned",
-                            "workerId": wid,
-                            "taskId": task_id,
-                            "name": task_name,
-                            "description": desc,
-                            "tool": tool,
-                            "phase": phase,
-                            "issueNumber": inp.get("issue_number"),
-                            "issueRepo": inp.get("issue_repo"),
-                            "repos": repos,
-                        },
+                        TaskAssignedMsg(
+                            workerId=wid,
+                            taskId=task_id,
+                            name=task_name,
+                            description=desc,
+                            tool=tool,
+                            phase=phase,
+                            issueNumber=inp.get("issue_number"),
+                            issueRepo=inp.get("issue_repo"),
+                            repos=repos,
+                        ).model_dump(by_alias=True, exclude_none=True),
                     )
                     result_text = f"Task {task_id} assigned to {wid}."
                 elif not is_error:
@@ -721,19 +730,18 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     await db.commit()
                     await broadcast(
                         guild_id,
-                        {
-                            "type": "task-assigned",
-                            "workerId": wid,
-                            "taskId": task_id,
-                            "name": name,
-                            "description": desc,
-                            "tool": tool,
-                            "phase": phase,
-                            "parentTaskId": parent_task_id,
-                            "issueNumber": inp.get("issue_number"),
-                            "issueRepo": inp.get("issue_repo"),
-                            "repos": repos,
-                        },
+                        TaskAssignedMsg(
+                            workerId=wid,
+                            taskId=task_id,
+                            name=name,
+                            description=desc,
+                            tool=tool,
+                            phase=phase,
+                            parentTaskId=parent_task_id,
+                            issueNumber=inp.get("issue_number"),
+                            issueRepo=inp.get("issue_repo"),
+                            repos=repos,
+                        ).model_dump(by_alias=True, exclude_none=True),
                     )
                     result_text = f"Task {task_id} queued for {wid}."
 
@@ -835,29 +843,27 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             await db.commit()
                             await broadcast(
                                 guild_id,
-                                {
-                                    "type": "task-update",
-                                    "taskId": task_id,
-                                    "state": "working",
-                                    "workerId": target_worker_id,
-                                    "deletedAt": None,
-                                    "finishedAt": None,
-                                },
+                                TaskUpdateMsg(
+                                    taskId=task_id,
+                                    state="working",
+                                    workerId=target_worker_id,
+                                    deletedAt=None,
+                                    finishedAt=None,
+                                ).model_dump(by_alias=True, exclude_none=True),
                             )
                             await broadcast(
                                 guild_id,
-                                {
-                                    "type": "task-followup",
-                                    "workerId": target_worker_id,
-                                    "taskId": task_id,
-                                    "name": task_name or "",
-                                    "description": task_desc or "",
-                                    "tool": task_tool or "claude",
-                                    "branch": branch,
-                                    "instructions": instructions,
-                                    "issueNumber": task_issue_number,
-                                    "issueRepo": task_issue_repo,
-                                },
+                                TaskFollowupMsg(
+                                    workerId=target_worker_id,
+                                    taskId=task_id,
+                                    name=task_name or "",
+                                    description=task_desc or "",
+                                    tool=task_tool or "claude",
+                                    branch=branch,
+                                    instructions=instructions,
+                                    issueNumber=task_issue_number,
+                                    issueRepo=task_issue_repo,
+                                ).model_dump(by_alias=True, exclude_none=True),
                             )
                             if target_worker_id != original_worker_id and original_worker_id:
                                 result_text = (
@@ -898,25 +904,20 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
                         await LockService(db).release(f"task:{task_id}")
                         await db.commit()
-                        await broadcast(
+                        await broadcast_msg(
                             guild_id,
-                            {
-                                "type": "task-finalize",
-                                "workerId": task.worker_id,
-                                "taskId": task_id,
-                            },
+                            TaskFinalizeMsg(workerId=task.worker_id, taskId=task_id),
                         )
-                        await broadcast(
+                        await broadcast_msg(
                             guild_id,
-                            {
-                                "type": "task-update",
-                                "taskId": task_id,
-                                "state": "done",
-                                "finishedAt": finished_at.isoformat(),
-                                "deletedAt": deleted_at.isoformat()
+                            TaskUpdateMsg(
+                                taskId=task_id,
+                                state="done",
+                                finishedAt=finished_at.isoformat(),
+                                deletedAt=deleted_at.isoformat()
                                 if deleted_at is not None
                                 else None,
-                            },
+                            ),
                         )
                         result_text = (
                             f"Task {task_id} finalized; soft-delete at "
@@ -927,14 +928,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 wid = inp["worker_id"]
                 msg = inp["message"]
                 await emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
-                await broadcast(
-                    guild_id,
-                    {
-                        "type": "worker-message",
-                        "workerId": wid,
-                        "message": msg,
-                    },
-                )
+                await broadcast_msg(guild_id, WorkerMessageMsg(workerId=wid, message=msg))
                 result_text = f"Message delivered to {wid}."
 
             elif tu.name == "redirect_task":
@@ -957,22 +951,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             update(Task).where(col(Task.id) == task_id).values(state="working")
                         )
                         await db.commit()
-                        await broadcast(
+                        await broadcast_msg(
                             guild_id,
-                            {
-                                "type": "task-redirect",
-                                "workerId": worker_id_val,
-                                "taskId": task_id,
-                                "instructions": instructions,
-                            },
+                            TaskRedirectMsg(
+                                workerId=worker_id_val, taskId=task_id, instructions=instructions
+                            ),
                         )
-                        await broadcast(
-                            guild_id,
-                            {
-                                "type": "task-update",
-                                "taskId": task_id,
-                                "state": "working",
-                            },
+                        await broadcast_msg(
+                            guild_id, TaskUpdateMsg(taskId=task_id, state="working")
                         )
                         result_text = f"Redirect sent to {worker_id_val} for task {task_id}."
 
@@ -1003,22 +989,17 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         )
                         await LockService(db).release(f"task:{task_id}")
                         await db.commit()
-                        await broadcast(
+                        await broadcast_msg(
                             guild_id,
-                            {
-                                "type": "task-cancel",
-                                "workerId": worker_id_val,
-                                "taskId": task_id,
-                            },
+                            TaskCancelMsg(workerId=worker_id_val, taskId=task_id),
                         )
-                        await broadcast(
+                        await broadcast_msg(
                             guild_id,
-                            {
-                                "type": "task-update",
-                                "taskId": task_id,
-                                "state": "cancelled",
-                                "finishedAt": finished_at.isoformat(),
-                            },
+                            TaskUpdateMsg(
+                                taskId=task_id,
+                                state="cancelled",
+                                finishedAt=finished_at.isoformat(),
+                            ),
                         )
                         result_text = f"Task {task_id} cancelled." + (
                             f" Reason: {reason}" if reason else ""
@@ -1035,10 +1016,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 if worker_result.one_or_none() is None:
                     result_text = f"Worker {wid} not found."
                 else:
-                    message: dict = {"type": "worker-shutdown", "workerId": wid}
-                    if reason:
-                        message["reason"] = reason
-                    await broadcast(guild_id, message)
+                    await broadcast_msg(
+                        guild_id, WorkerShutdownMsg(workerId=wid, reason=reason or None)
+                    )
                     result_text = f"Shutdown signal sent to {wid}." + (
                         f" Reason: {reason}" if reason else ""
                     )

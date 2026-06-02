@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk
 from database import get_db
-from events import broadcast
+from events import broadcast_msg
 from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
 from foreman.tools import exec_tools
 from foreman_core.constants import (
@@ -31,6 +31,7 @@ from models import Agent, ForemanTurn, Guild, GuildMember, Message, Task, Worker
 from sqlalchemy import delete, func
 from sqlmodel import col, select
 from util.tasks import spawn
+from ws_types import ChatMsg, ForemanPollStatusMsg
 
 logger = logging.getLogger(__name__)
 
@@ -205,10 +206,7 @@ async def _poll_loop(guild_id: str) -> None:
                     "guild=%s external foreman connected, skipping embedded poll", guild_id
                 )
                 interval = next_interval
-                await broadcast(
-                    guild_id,
-                    {"type": "foreman-poll-status", "nextCheckIn": interval},
-                )
+                await broadcast_msg(guild_id, ForemanPollStatusMsg(nextCheckIn=interval))
                 continue
 
             db = await get_db()
@@ -246,10 +244,7 @@ async def _poll_loop(guild_id: str) -> None:
 
             # Announce next check interval so the UI can display a countdown.
             interval = next_interval
-            await broadcast(
-                guild_id,
-                {"type": "foreman-poll-status", "nextCheckIn": interval},
-            )
+            await broadcast_msg(guild_id, ForemanPollStatusMsg(nextCheckIn=interval))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -304,15 +299,14 @@ async def run_foreman_ai(
     """Process a human message (or system escalation) through the Claude foreman AI."""
     if not HAS_ANTHROPIC:
         now = datetime.now(UTC).isoformat()
-        await broadcast(
+        await broadcast_msg(
             guild_id,
-            {
-                "type": "chat",
-                "from": "foreman",
-                "to": "user",
-                "content": "Foreman AI offline (install `anthropic` package to enable).",
-                "createdAt": now,
-            },
+            ChatMsg(
+                from_="foreman",
+                to="user",
+                content="Foreman AI offline (install `anthropic` package to enable).",
+                createdAt=now,
+            ),
         )
         return
 
@@ -465,15 +459,14 @@ async def run_foreman_ai(
             for b in resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await broadcast(
+                    await broadcast_msg(
                         guild_id,
-                        {
-                            "type": "chat",
-                            "from": "foreman",
-                            "to": "user",
-                            "content": b.text.strip(),
-                            "createdAt": _now.isoformat(),
-                        },
+                        ChatMsg(
+                            from_="foreman",
+                            to="user",
+                            content=b.text.strip(),
+                            createdAt=_now.isoformat(),
+                        ),
                     )
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
@@ -482,19 +475,18 @@ async def run_foreman_ai(
 
             # Broadcast tool-use events so the frontend chat shows them live
             for tu in tool_uses:
-                await broadcast(
+                await broadcast_msg(
                     guild_id,
-                    {
-                        "type": "chat",
-                        "from": "foreman",
-                        "role": "tool_use",
-                        "to": "user",
-                        "content": f"▶ {tu.name}",
-                        "toolName": tu.name,
-                        "toolInput": dict(tu.input) if tu.input else {},
-                        "toolId": tu.id,
-                        "createdAt": _now.isoformat(),
-                    },
+                    ChatMsg(
+                        from_="foreman",
+                        role="tool_use",
+                        to="user",
+                        content=f"▶ {tu.name}",
+                        toolName=tu.name,
+                        toolInput=dict(tu.input) if tu.input else {},
+                        toolId=tu.id,
+                        createdAt=_now.isoformat(),
+                    ),
                 )
 
             _tool_use_ts = _now  # capture before exec_tools may raise
@@ -512,19 +504,18 @@ async def run_foreman_ai(
             # Broadcast tool-result events
             _now = datetime.now(UTC)
             for result in trimmed:
-                await broadcast(
+                await broadcast_msg(
                     guild_id,
-                    {
-                        "type": "chat",
-                        "from": "foreman",
-                        "role": "tool_result",
-                        "to": "user",
-                        "content": result.get("content", ""),
-                        "toolId": result.get("tool_use_id"),
-                        "toolOutput": result.get("content", ""),
-                        "isError": result.get("is_error", False),
-                        "createdAt": _now.isoformat(),
-                    },
+                    ChatMsg(
+                        from_="foreman",
+                        role="tool_result",
+                        to="user",
+                        content=result.get("content", ""),
+                        toolId=result.get("tool_use_id"),
+                        toolOutput=result.get("content", ""),
+                        isError=result.get("is_error", False),
+                        createdAt=_now.isoformat(),
+                    ),
                 )
 
             # Persist tool_use and tool_result together in one transaction
@@ -637,27 +628,15 @@ async def run_foreman_ai(
             for b in wrap_resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await broadcast(
+                    await broadcast_msg(
                         guild_id,
-                        {
-                            "type": "chat",
-                            "from": "foreman",
-                            "to": "user",
-                            "content": b.text.strip(),
-                            "createdAt": _now,
-                        },
+                        ChatMsg(from_="foreman", to="user", content=b.text.strip(), createdAt=_now),
                     )
             cap_note = f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
-            await broadcast(
+            await broadcast_msg(
                 guild_id,
-                {
-                    "type": "chat",
-                    "from": "foreman",
-                    "to": "user",
-                    "content": cap_note,
-                    "createdAt": _now,
-                },
+                ChatMsg(from_="foreman", to="user", content=cap_note, createdAt=_now),
             )
 
         response_text = "\n".join(text_parts).strip()
@@ -677,15 +656,9 @@ async def run_foreman_ai(
 
     except Exception as exc:
         now = datetime.now(UTC).isoformat()
-        await broadcast(
+        await broadcast_msg(
             guild_id,
-            {
-                "type": "chat",
-                "from": "foreman",
-                "to": "user",
-                "content": f"Foreman error: {exc}",
-                "createdAt": now,
-            },
+            ChatMsg(from_="foreman", to="user", content=f"Foreman error: {exc}", createdAt=now),
         )
     finally:
         await db.close()
