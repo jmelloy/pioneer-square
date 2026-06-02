@@ -156,7 +156,7 @@ async def run_pi_auto(
             proc.stdin.close()
         try:
             exit_code = await asyncio.wait_for(proc.wait(), timeout=_WAIT_TIMEOUT)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             logger.warning(
                 "pi[%d] did not exit within %ds after stdin close; killing",
                 proc.pid,
