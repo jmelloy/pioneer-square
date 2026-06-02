@@ -94,6 +94,8 @@ async def run_pi_auto(
         proc.stdin.write(rpc_msg.encode())  # type: ignore[union-attr]
         await proc.stdin.drain()  # type: ignore[union-attr]
 
+        pid = proc.pid
+
         async def _drain_stderr() -> None:
             try:
                 async for raw in proc.stderr:  # type: ignore[union-attr]
@@ -101,7 +103,7 @@ async def run_pi_auto(
                     if line:
                         await emit(f"[stderr] {line}")
             except Exception:
-                logger.debug("pi[%d] stderr drain exited early", proc.pid, exc_info=True)  # type: ignore[union-attr]
+                logger.debug("pi[%d] stderr drain exited early", pid, exc_info=True)
 
         stderr_task = asyncio.create_task(_drain_stderr())
         accumulated = ""
@@ -154,7 +156,7 @@ async def run_pi_auto(
             proc.stdin.close()
         try:
             exit_code = await asyncio.wait_for(proc.wait(), timeout=_WAIT_TIMEOUT)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             logger.warning(
                 "pi[%d] did not exit within %ds after stdin close; killing",
                 proc.pid,
@@ -198,7 +200,7 @@ async def run_pi_auto(
                 logger.debug("pi kill failed", exc_info=True)
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except Exception:
+            except BaseException:
                 logger.debug("pi wait-after-kill failed", exc_info=True)
         # Cancel the stderr drain task if it is still running.
         if stderr_task is not None and not stderr_task.done():

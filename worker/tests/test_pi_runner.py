@@ -287,7 +287,7 @@ async def test_run_pi_auto_hung_process_is_killed(tmp_path, monkeypatch) -> None
     """Pi doesn't exit after agent_end + stdin close → timeout fires, SIGKILL sent."""
     import pioneer_worker.pi_runner as pi_runner_mod
 
-    monkeypatch.setattr(pi_runner_mod, "_WAIT_TIMEOUT", 1)
+    monkeypatch.setattr(pi_runner_mod, "_WAIT_TIMEOUT", 0.1)
 
     fake_pi = tmp_path / "fake-pi"
     fake_pi.write_text(
