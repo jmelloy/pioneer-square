@@ -36,7 +36,6 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk, require_member, require_worker_or_member_path
 from database import get_db_dep
 from events import broadcast_msg
-from ws_types import ChatMsg, TaskCreatedMsg, TaskUpdateMsg
 from fastapi import APIRouter, Depends, HTTPException, Query
 from foreman.runner import _fetch_online_workers
 from models import (
@@ -52,6 +51,7 @@ from pydantic import BaseModel
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from ws_types import ChatMsg, TaskCreatedMsg, TaskUpdateMsg
 
 from foreman import clear_foreman_history, get_foreman_history
 
@@ -557,7 +557,7 @@ async def create_message(
             to=body.to_agent,
             content=body.content,
             createdAt=created_at.isoformat(),
-            userId=body.user_id,
+            **({"userId": body.user_id} if body.user_id else {}),
         ),
     )
     return {"message_id": msg_id, "created_at": created_at}

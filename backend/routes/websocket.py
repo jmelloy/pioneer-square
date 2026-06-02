@@ -14,13 +14,19 @@ from datetime import UTC, datetime
 import anyio
 import ws_handlers
 from database import get_db
-from events import agent_owner_lock, agent_owners, broadcast, broadcast_msg, connections, foreman_connections
-from ws_types import AgentStateMsg
+from events import (
+    agent_owner_lock,
+    agent_owners,
+    broadcast_msg,
+    connections,
+    foreman_connections,
+)
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from models import Agent, Guild, UserSession, Worker
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from ws_types import AgentStateMsg
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

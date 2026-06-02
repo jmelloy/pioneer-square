@@ -8,20 +8,22 @@ frontend can surface live token/cost figures per task.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member, require_worker_or_member_path
 from database import get_db_dep
 from events import broadcast_msg
-from ws_types import ClaudeUsageMsg
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeUsage
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from utils import row_to_dict
+from ws_types import ClaudeUsageMsg
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class UsageRecord(BaseModel):
@@ -110,20 +112,20 @@ async def report_usage(
         )
     await db.commit()
 
-    await broadcast_msg(
-        guild_id,
-        ClaudeUsageMsg.model_validate(
-            {
-                "taskId": data.task_id,
-                "workerId": data.worker_id,
-                "sessionId": data.session_id,
-                "model": next((r.model for r in data.records if r.model), None),
-                "repo": data.repo,
-                "reporter": data.reporter,
-                **_summarize(data.records),
-            }
-        ),
-    )
+    try:
+        usage_msg = ClaudeUsageMsg(
+            taskId=data.task_id,
+            workerId=data.worker_id,
+            sessionId=data.session_id,
+            model=next((r.model for r in data.records if r.model), None),
+            repo=data.repo,
+            reporter=data.reporter,
+            **_summarize(data.records),
+        )
+    except ValidationError as exc:
+        logger.error("Failed to construct ClaudeUsageMsg for guild %s: %s", guild_id, exc)
+        return {"stored": len(data.records)}
+    await broadcast_msg(guild_id, usage_msg)
     return {"stored": len(data.records)}
 
 

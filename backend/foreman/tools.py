@@ -20,17 +20,6 @@ from typing import Any
 
 from database import get_db
 from events import broadcast_msg, emit_terminal_line
-from ws_types import (
-    TaskAssignedMsg,
-    TaskCancelMsg,
-    TaskCreatedMsg,
-    TaskFinalizeMsg,
-    TaskFollowupMsg,
-    TaskRedirectMsg,
-    TaskUpdateMsg,
-    WorkerMessageMsg,
-    WorkerShutdownMsg,
-)
 from foreman_core.llm import get_foreman_model
 from foreman_core.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
@@ -49,6 +38,17 @@ from models import (
 )
 from sqlalchemy import delete, update
 from sqlmodel import col, select
+from ws_types import (
+    TaskAssignedMsg,
+    TaskCancelMsg,
+    TaskCreatedMsg,
+    TaskFinalizeMsg,
+    TaskFollowupMsg,
+    TaskRedirectMsg,
+    TaskUpdateMsg,
+    WorkerMessageMsg,
+    WorkerShutdownMsg,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -914,7 +914,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 taskId=task_id,
                                 state="done",
                                 finishedAt=finished_at.isoformat(),
-                                deletedAt=deleted_at.isoformat() if deleted_at is not None else None,
+                                deletedAt=deleted_at.isoformat()
+                                if deleted_at is not None
+                                else None,
                             ),
                         )
                         result_text = (
@@ -987,22 +989,17 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         )
                         await LockService(db).release(f"task:{task_id}")
                         await db.commit()
-                        await broadcast(
+                        await broadcast_msg(
                             guild_id,
-                            {
-                                "type": "task-cancel",
-                                "workerId": worker_id_val,
-                                "taskId": task_id,
-                            },
+                            TaskCancelMsg(workerId=worker_id_val, taskId=task_id),
                         )
-                        await broadcast(
+                        await broadcast_msg(
                             guild_id,
-                            {
-                                "type": "task-update",
-                                "taskId": task_id,
-                                "state": "cancelled",
-                                "finishedAt": finished_at.isoformat(),
-                            },
+                            TaskUpdateMsg(
+                                taskId=task_id,
+                                state="cancelled",
+                                finishedAt=finished_at.isoformat(),
+                            ),
                         )
                         result_text = f"Task {task_id} cancelled." + (
                             f" Reason: {reason}" if reason else ""

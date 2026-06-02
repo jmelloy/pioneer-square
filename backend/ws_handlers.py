@@ -18,8 +18,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import ValidationError
-
 from events import (
     agent_owner_lock,
     agent_owners,
@@ -30,7 +28,18 @@ from events import (
     pending_claude_auth,
     send_ws_message,
 )
+from fastapi import WebSocket
+from lock_service import LockService
+from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
+from pydantic import ValidationError
+from sqlalchemy import delete, func, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel import col, select
+from sqlmodel.ext.asyncio.session import AsyncSession
+from util.tasks import spawn
+from utils import worker_display_name
 from ws_types import (
+    KNOWN_INBOUND_TYPES,
     AgentJoinedMsg,
     AgentStateMsg,
     AnswerMsg,
@@ -41,7 +50,6 @@ from ws_types import (
     ForemanRegisteredMsg,
     ForemanTriggerMsg,
     IceCandidateMsg,
-    KNOWN_INBOUND_TYPES,
     NeedsInputMsg,
     OfferMsg,
     PongMsg,
@@ -53,15 +61,6 @@ from ws_types import (
     WorkerAuthResponseMsg,
     parse_inbound_message,
 )
-from fastapi import WebSocket
-from lock_service import LockService
-from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
-from sqlalchemy import delete, func, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlmodel import col, select
-from sqlmodel.ext.asyncio.session import AsyncSession
-from util.tasks import spawn
-from utils import worker_display_name
 
 from foreman import maybe_post_plan_comment, reset_foreman_poll, run_foreman_ai
 
@@ -179,8 +178,8 @@ async def _trigger_foreman(
             event=event,
             guildId=guild_id,
             humanMessage=human_message,
-            userId=user_id if user_id else None,
-            taskId=task_id if task_id else None,
+            userId=user_id or None,  # coerce empty string to None
+            taskId=task_id or None,  # coerce empty string to None
         )
         try:
             await send_ws_message(ws, msg)
@@ -730,9 +729,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
-    await broadcast_msg(
-        ctx.guild_id, TaskCompleteMsg.model_validate(data), exclude=ctx.websocket
-    )
+    await broadcast_msg(ctx.guild_id, TaskCompleteMsg.model_validate(data), exclude=ctx.websocket)
     if task_id:
         spawn(
             maybe_post_plan_comment(ctx.guild_id, task_id, last_text),
@@ -863,9 +860,7 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
 
 
 async def handle_needs_input(ctx: WSContext, data: dict) -> None:
-    await broadcast_msg(
-        ctx.guild_id, NeedsInputMsg.model_validate(data), exclude=ctx.websocket
-    )
+    await broadcast_msg(ctx.guild_id, NeedsInputMsg.model_validate(data), exclude=ctx.websocket)
     wid = data.get("workerId", "a worker")
     task_id = data.get("taskId", "")
     description = data.get("description", "")

@@ -115,9 +115,7 @@ async def send_ws_message(ws: WebSocket, message: "_WS") -> None:
     await ws.send_text(ws_dumps(message.model_dump(by_alias=True)))
 
 
-async def broadcast_msg(
-    guild_id: str, message: "_WS", exclude: WebSocket | None = None
-) -> None:
+async def broadcast_msg(guild_id: str, message: "_WS", exclude: WebSocket | None = None) -> None:
     """Serialise a typed WS model and broadcast it to all guild connections."""
     await broadcast(guild_id, message.model_dump(by_alias=True), exclude)
 

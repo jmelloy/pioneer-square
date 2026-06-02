@@ -24,7 +24,6 @@ from datetime import UTC, datetime
 
 from database import get_db_dep
 from events import broadcast_msg
-from ws_types import ChatMsg, GithubEventMsg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from models import GithubEvent, Guild, Message, Task
 from pydantic import BaseModel
@@ -33,6 +32,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from ws_types import ChatMsg, GithubEventMsg
 
 from foreman import reset_foreman_poll, run_foreman_ai
 

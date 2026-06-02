@@ -17,7 +17,6 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line, pending_claude_auth
-from ws_types import TaskAssignedMsg, WorkerMessageMsg
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
@@ -30,6 +29,7 @@ from utils import (
     worker_display_name,
 )
 from ws_handlers import _resolve_user_identifier
+from ws_types import TaskAssignedMsg, WorkerMessageMsg
 
 router = APIRouter()
 

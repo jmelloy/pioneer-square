@@ -28,10 +28,9 @@ Inbound validation in dispatch::
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
-
 
 # ---------------------------------------------------------------------------
 # Base
@@ -367,62 +366,58 @@ class ForemanBroadcastMsg(_WS):
 # ---------------------------------------------------------------------------
 
 OutboundWSMessage = Annotated[
-    Union[
-        PongMsg,
-        AgentJoinedMsg,
-        AgentStateMsg,
-        ChatMsg,
-        TerminalOutputMsg,
-        TaskAssignedMsg,
-        TaskCreatedMsg,
-        TaskUpdateMsg,
-        TaskCompleteMsg,
-        TaskFollowupMsg,
-        TaskFollowupDoneMsg,
-        TaskFinalizeMsg,
-        TaskCancelMsg,
-        TaskRedirectMsg,
-        NeedsInputMsg,
-        ClaudeAuthRequiredMsg,
-        WorkerAuthResponseMsg,
-        WorkerMessageMsg,
-        WorkerShutdownMsg,
-        ForemanTriggerMsg,
-        ForemanRegisteredMsg,
-        ForemanEvictedMsg,
-        ForemanDisconnectMsg,
-        ForemanPollStatusMsg,
-        GuildUpdatedMsg,
-        GithubEventMsg,
-        ClaudeUsageMsg,
-        OfferMsg,
-        AnswerMsg,
-        IceCandidateMsg,
-    ],
+    PongMsg
+    | AgentJoinedMsg
+    | AgentStateMsg
+    | ChatMsg
+    | TerminalOutputMsg
+    | TaskAssignedMsg
+    | TaskCreatedMsg
+    | TaskUpdateMsg
+    | TaskCompleteMsg
+    | TaskFollowupMsg
+    | TaskFollowupDoneMsg
+    | TaskFinalizeMsg
+    | TaskCancelMsg
+    | TaskRedirectMsg
+    | NeedsInputMsg
+    | ClaudeAuthRequiredMsg
+    | WorkerAuthResponseMsg
+    | WorkerMessageMsg
+    | WorkerShutdownMsg
+    | ForemanTriggerMsg
+    | ForemanRegisteredMsg
+    | ForemanEvictedMsg
+    | ForemanDisconnectMsg
+    | ForemanPollStatusMsg
+    | GuildUpdatedMsg
+    | GithubEventMsg
+    | ClaudeUsageMsg
+    | OfferMsg
+    | AnswerMsg
+    | IceCandidateMsg,
     Field(discriminator="type"),
 ]
 
 InboundWSMessage = Annotated[
-    Union[
-        PingMsg,
-        JoinMsg,
-        AgentStateMsg,
-        ChatMsg,
-        TerminalOutputMsg,
-        WorkerRegisterMsg,
-        WorkerDisconnectMsg,
-        TaskUpdateMsg,
-        TaskCompleteMsg,
-        TaskFollowupDoneMsg,
-        NeedsInputMsg,
-        ClaudeAuthRequiredMsg,
-        ForemanDisconnectMsg,
-        ForemanBroadcastMsg,
-        WorkerAuthResponseMsg,
-        OfferMsg,
-        AnswerMsg,
-        IceCandidateMsg,
-    ],
+    PingMsg
+    | JoinMsg
+    | AgentStateMsg
+    | ChatMsg
+    | TerminalOutputMsg
+    | WorkerRegisterMsg
+    | WorkerDisconnectMsg
+    | TaskUpdateMsg
+    | TaskCompleteMsg
+    | TaskFollowupDoneMsg
+    | NeedsInputMsg
+    | ClaudeAuthRequiredMsg
+    | ForemanDisconnectMsg
+    | ForemanBroadcastMsg
+    | WorkerAuthResponseMsg
+    | OfferMsg
+    | AnswerMsg
+    | IceCandidateMsg,
     Field(discriminator="type"),
 ]
 

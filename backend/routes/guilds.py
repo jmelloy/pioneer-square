@@ -14,7 +14,6 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk, require_member, require_user, require_worker_or_member_path
 from database import get_db_dep
 from events import broadcast_msg
-from ws_types import GuildUpdatedMsg
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
 from pydantic import BaseModel
@@ -25,6 +24,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from utils import generate_guild_id, row_to_dict
 from ws_handlers import _resolve_user_identifier
+from ws_types import GuildUpdatedMsg
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
