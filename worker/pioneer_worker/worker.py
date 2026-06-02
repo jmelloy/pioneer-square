@@ -803,9 +803,7 @@ class Worker:
     def _start_control_api(self) -> None:
         if self.cfg.api_port is None:
             return
-        self._control_server = ControlServer(
-            self, host=self.cfg.api_host, port=self.cfg.api_port
-        )
+        self._control_server = ControlServer(self, host=self.cfg.api_host, port=self.cfg.api_port)
         try:
             self._control_server.start()
         except OSError:
