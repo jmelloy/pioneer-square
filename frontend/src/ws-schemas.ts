@@ -28,7 +28,7 @@ const logDetailZ = z
   .object({
     toolType: z.enum(['tool_use', 'tool_result', 'thinking']).optional(),
     name: z.string().optional(),
-    input: z.union([z.record(z.unknown()), z.string()]).optional(),
+    input: z.union([z.record(z.string(), z.unknown()), z.string()]).optional(),
     output: z.string().optional(),
     fullText: z.string().optional(),
     summary: z.string().optional(),
