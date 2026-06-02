@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from database import get_db
-from events import broadcast, emit_terminal_line
+from events import broadcast, broadcast_msg, emit_terminal_line
 from foreman_core.llm import get_foreman_model
 from foreman_core.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
