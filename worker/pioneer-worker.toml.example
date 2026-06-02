@@ -21,6 +21,12 @@ pull_interval = 300
 # Number of agents this worker runs concurrently (default: 4).
 # max_agents = 4
 
+# Optional HTTP control API for driving/inspecting a live worker without a
+# frontend or the foreman. Disabled unless a port is set. Bind to localhost.
+# [api]
+# port = 9200
+# host = "127.0.0.1"
+
 [github]
 # Repos this worker will clone and operate on (static list).
 repos = ["owner/repo"]

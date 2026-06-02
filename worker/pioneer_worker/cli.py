@@ -78,6 +78,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--pi-path", help="Path to the pi executable (default: pi).")
 
+    # Control API (drive/inspect a live worker without a frontend or foreman)
+    parser.add_argument(
+        "--api-port",
+        type=int,
+        help=(
+            "Enable the HTTP control API on this port (lets you inject tasks and "
+            "inspect the worker without a frontend/guild). Disabled if unset."
+        ),
+    )
+    parser.add_argument(
+        "--api-host",
+        help="Bind host for the control API (default: 127.0.0.1).",
+    )
+
     # Tuning
     parser.add_argument(
         "--pull-interval", type=float, help="Seconds between repo pulls (default: 300)."
@@ -148,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
             "pi_path": args.pi_path,
             "pull_interval": args.pull_interval,
             "claude_max_turns": args.claude_max_turns,
+            "api_port": args.api_port,
+            "api_host": args.api_host,
         }.items()
         if v is not None
     }
