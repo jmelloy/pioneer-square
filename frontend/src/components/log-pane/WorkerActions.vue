@@ -212,13 +212,12 @@ const cancellableTasks = computed(() =>
 )
 
 function _injectChat(content: string) {
-  guildStore.sendMessage({
-    type: 'chat',
-    from: 'system',
-    to: 'user',
-    content,
-    createdAt: new Date().toISOString(),
-  })
+  const guildId = guildStore.currentGuild?.id
+  if (!guildId) return
+  api(`/guilds/${guildId}/messages`, {
+    method: 'POST',
+    json: { from_agent: 'system', to_agent: 'user', content },
+  }).catch((e) => console.warn('[WorkerActions] failed to inject chat:', e))
 }
 
 function _workerLabel() {
