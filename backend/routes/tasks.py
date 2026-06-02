@@ -12,7 +12,8 @@ from datetime import UTC, datetime, timedelta
 
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
-from events import broadcast
+from events import broadcast_msg
+from ws_types import TaskCancelMsg, TaskFinalizeMsg, TaskRedirectMsg, TaskUpdateMsg
 from fastapi import APIRouter, Depends, HTTPException
 from lock_service import LockService
 from models import Guild, Task, TaskLog, live_tasks_filter
@@ -267,23 +268,15 @@ async def finalize_task_endpoint(
         .values(state="done", finished_at=finished_at, deleted_at=deleted_at)
     )
     await db.commit()
-    await broadcast(
+    await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "task-finalize",
-            "workerId": worker_id,
-            "taskId": task_id,
-        },
-    )
-    await broadcast(
-        guild_id,
-        {
-            "type": "task-update",
-            "taskId": task_id,
-            "state": "done",
-            "finishedAt": finished_at.isoformat(),
-            "deletedAt": deleted_at.isoformat(),
-        },
+        TaskUpdateMsg(
+            taskId=task_id,
+            state="done",
+            finishedAt=finished_at.isoformat(),
+            deletedAt=deleted_at.isoformat(),
+        ),
     )
     # Return raw datetime — FastAPI's jsonable_encoder handles ISO-8601 serialisation.
     return {"status": "finalized", "taskId": task_id, "deletedAt": deleted_at}
@@ -319,22 +312,10 @@ async def cancel_task_endpoint(
     )
     await LockService(db).release(f"task:{task_id}")
     await db.commit()
-    await broadcast(
+    await broadcast_msg(guild_id, TaskCancelMsg(workerId=worker_id, taskId=task_id))
+    await broadcast_msg(
         guild_id,
-        {
-            "type": "task-cancel",
-            "workerId": worker_id,
-            "taskId": task_id,
-        },
-    )
-    await broadcast(
-        guild_id,
-        {
-            "type": "task-update",
-            "taskId": task_id,
-            "state": "cancelled",
-            "finishedAt": finished_at.isoformat(),
-        },
+        TaskUpdateMsg(taskId=task_id, state="cancelled", finishedAt=finished_at.isoformat()),
     )
     return {"status": "cancelled", "taskId": task_id}
 
@@ -367,21 +348,8 @@ async def redirect_task_endpoint(
         raise HTTPException(status_code=409, detail=f"Task is already {state}")
     await db.exec(update(Task).where(col(Task.id) == task_id).values(state="working"))
     await db.commit()
-    await broadcast(
-        guild_id,
-        {
-            "type": "task-redirect",
-            "workerId": worker_id,
-            "taskId": task_id,
-            "instructions": instructions,
-        },
+    await broadcast_msg(
+        guild_id, TaskRedirectMsg(workerId=worker_id, taskId=task_id, instructions=instructions)
     )
-    await broadcast(
-        guild_id,
-        {
-            "type": "task-update",
-            "taskId": task_id,
-            "state": "working",
-        },
-    )
+    await broadcast_msg(guild_id, TaskUpdateMsg(taskId=task_id, state="working"))
     return {"status": "redirected", "taskId": task_id}
