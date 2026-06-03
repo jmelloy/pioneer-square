@@ -114,6 +114,8 @@ class TaskAssignedMsg(_WS):
     name: str = ""
     description: str = ""
     tool: str = "claude"
+    model: str | None = None
+    provider: str | None = None
     phase: str | None = None
     parentTaskId: str | None = None
     issueNumber: int | None = None

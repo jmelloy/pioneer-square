@@ -66,9 +66,15 @@ async def run_pi_auto(
     *,
     emit: EmitFn,
     pi_path: str = "pi",
+    model: str | None = None,
+    provider: str | None = None,
 ) -> tuple[bool, str, str]:
     """Run pi on *description* in *cwd*. Returns (success, stop_reason, last_text)."""
     cmd = [pi_path, "--mode", "rpc", "--no-session"]
+    if provider:
+        cmd += ["--provider", provider]
+    if model:
+        cmd += ["--model", model]
     logger.info("Spawning pi in %s; description=%r", cwd, description)
     saw_agent_end = False
     saw_error = False
