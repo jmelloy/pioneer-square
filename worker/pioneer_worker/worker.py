@@ -2032,14 +2032,17 @@ class Worker:
                         _pi_model,
                         _pi_provider,
                     )
-                    success, stop_reason, last_msg = await pi_runner.run_pi_auto(
+                    success, stop_reason, last_msg, _pi_session_id = await pi_runner.run_pi_auto(
                         current_desc,
                         primary_wt,
                         emit=emit,
                         pi_path=self.cfg.pi_path,
                         model=_pi_model,
                         provider=_pi_provider,
+                        on_usage=_collect_usage,
                     )
+                    if _pi_session_id:
+                        resume_session_id = _pi_session_id
                 else:
                     logger.info(
                         "Task %s: launching claude in %s (max_turns=%d, resume=%s)",

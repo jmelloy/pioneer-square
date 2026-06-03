@@ -172,7 +172,7 @@ sys.exit(0)
     async def emit(line: str) -> None:
         emitted.append(line)
 
-    success, stop_reason, last_text = await run_pi_auto(
+    success, stop_reason, last_text, session_id = await run_pi_auto(
         "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
     )
 
@@ -180,23 +180,25 @@ sys.exit(0)
     assert stop_reason == "success"
     assert "[pi] agent started" in emitted
     assert last_text == "Task done"
+    assert session_id is None  # no session event emitted by this fake
     for line in emitted:
         assert not line.endswith("\n"), f"trailing newline in emitted line: {line!r}"
 
 
 async def test_run_pi_auto_not_found(tmp_path) -> None:
-    """Missing pi binary → FileNotFoundError → returns (False, 'no_events', '')."""
+    """Missing pi binary → FileNotFoundError → returns (False, 'no_events', '', None)."""
     emitted: list[str] = []
 
     async def emit(line: str) -> None:
         emitted.append(line)
 
-    success, stop_reason, last_text = await run_pi_auto(
+    success, stop_reason, last_text, session_id = await run_pi_auto(
         "do the work", str(tmp_path), emit=emit, pi_path="/nonexistent/pi-binary-xyz"
     )
 
     assert success is False
     assert stop_reason == "no_events"
+    assert session_id is None
     assert any("not found" in line for line in emitted)
 
 
@@ -218,7 +220,7 @@ sys.exit(1)
     async def emit(line: str) -> None:
         emitted.append(line)
 
-    success, stop_reason, last_text = await run_pi_auto(
+    success, stop_reason, last_text, session_id = await run_pi_auto(
         "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
     )
 
@@ -246,7 +248,7 @@ sys.exit(0)
     async def emit(line: str) -> None:
         emitted.append(line)
 
-    success, stop_reason, _ = await run_pi_auto(
+    success, stop_reason, _, _sid = await run_pi_auto(
         "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
     )
 
@@ -277,7 +279,7 @@ sys.exit(1)
     async def emit(line: str) -> None:
         emitted.append(line)
 
-    success, stop_reason, _ = await run_pi_auto(
+    success, stop_reason, _, _sid = await run_pi_auto(
         "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
     )
 
@@ -314,7 +316,7 @@ while True:
         emitted.append(line)
 
     # Should complete (not hang) even though pi refuses to exit on its own.
-    success, stop_reason, _ = await run_pi_auto(
+    success, stop_reason, _, _sid = await run_pi_auto(
         "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
     )
 
@@ -345,7 +347,7 @@ sys.exit(0)
         emitted.append(line)
 
     # Should complete without raising — either success or graceful error.
-    success, stop_reason, _ = await run_pi_auto(
+    success, stop_reason, _, _sid = await run_pi_auto(
         "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
     )
 
@@ -420,7 +422,7 @@ async def test_run_pi_auto_limit_overrun_skips_and_continues() -> None:
         emitted.append(line)
 
     with patch("asyncio.create_subprocess_exec", new=_fake_create):
-        success, stop_reason, _ = await run_pi_auto("/tmp", "/tmp", emit=emit)
+        success, stop_reason, _, _sid = await run_pi_auto("/tmp", "/tmp", emit=emit)
 
     # The oversized-line error must have been reported.
     assert any("too large" in line for line in emitted)
@@ -454,3 +456,328 @@ sys.exit(0)
     await run_pi_auto("do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi))
 
     assert any("[stderr]" in line and "warning from pi" in line for line in emitted)
+
+
+# ---------------------------------------------------------------------------
+# Goal 1: Error & Crash Reporting
+# ---------------------------------------------------------------------------
+
+
+async def test_run_pi_auto_nonzero_exit_emits_error(tmp_path) -> None:
+    """Pi exits non-zero without agent_end → error chunk emitted, success=False."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{"type": "agent_start"}}), flush=True)
+print(json.dumps({{"type": "message_update", "message": {{"content": [{{"type": "text", "text": "partial"}}]}}}}), flush=True)
+sys.exit(2)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    assert success is False
+    assert stop_reason == "error_during_execution"
+    # Partial text should be preserved
+    assert last_text == "partial"
+    # An explicit error message about the exit code must be emitted
+    assert any("non-zero" in line and "2" in line for line in emitted), emitted
+
+
+async def test_run_pi_auto_crash_with_stderr(tmp_path) -> None:
+    """Pi crashes (non-zero + stderr) → both stderr and exit-code error are surfaced."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print("fatal: segfault", file=sys.stderr, flush=True)
+sys.exit(139)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    assert success is False
+    assert stop_reason == "error_during_execution"
+    # Stderr forwarded
+    assert any("[stderr]" in line and "fatal" in line for line in emitted), emitted
+    # Non-zero exit explicitly reported
+    assert any("non-zero" in line for line in emitted), emitted
+
+
+async def test_run_pi_auto_zero_exit_no_agent_end(tmp_path) -> None:
+    """Pi exits 0 but never emits agent_end → not treated as success (no clean agent_end)."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{"type": "agent_start"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    # exit_code == 0 but agent_ended_ok is False → success must be False
+    assert success is False
+    # stop_reason is "success" because exit_code==0 path sets it, but agent_ended_ok
+    # gate prevents returning success=True
+    assert stop_reason in ("success", "no_events")
+
+
+# ---------------------------------------------------------------------------
+# Goal 2: No "no-session" mode — session_id extraction
+# ---------------------------------------------------------------------------
+
+
+async def test_run_pi_auto_extracts_session_id_from_agent_start(tmp_path) -> None:
+    """Session ID in agent_start is returned from run_pi_auto."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{"type": "agent_start", "session_id": "sess-abc123"}}), flush=True)
+print(json.dumps({{"type": "agent_end"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    assert success is True
+    assert session_id == "sess-abc123"
+
+
+async def test_run_pi_auto_extracts_session_id_camel_case(tmp_path) -> None:
+    """sessionId (camelCase) in agent_start is also accepted."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{"type": "agent_start", "sessionId": "sess-xyz999"}}), flush=True)
+print(json.dumps({{"type": "agent_end"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    assert success is True
+    assert session_id == "sess-xyz999"
+
+
+async def test_run_pi_auto_no_session_flag_absent(tmp_path) -> None:
+    """The --no-session flag must NOT appear in the pi command invocation."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+# Fail if --no-session is passed so the test catches regression
+if "--no-session" in sys.argv:
+    print(json.dumps({{"type": "response", "command": "prompt", "success": False,
+                       "error": "--no-session flag was passed"}}), flush=True)
+    sys.exit(1)
+print(json.dumps({{"type": "agent_end"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    assert success is True, f"emitted: {emitted}"
+    assert not any("--no-session" in line for line in emitted)
+
+
+# ---------------------------------------------------------------------------
+# Goal 3: Cost Tracking via on_usage callback
+# ---------------------------------------------------------------------------
+
+
+async def test_run_pi_auto_usage_from_agent_end(tmp_path) -> None:
+    """Usage data in agent_end is forwarded to on_usage as a 'result' record."""
+    fake_pi = tmp_path / "fake-pi"
+    usage = {"inputTokens": 100, "outputTokens": 50}
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{"type": "agent_end", "usage": {json.dumps(usage)}, "cost_usd": 0.0042, "model": "pi-1"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+    usage_records: list[dict] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    async def on_usage(rec: dict) -> None:
+        usage_records.append(rec)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi), on_usage=on_usage
+    )
+
+    assert success is True
+    assert len(usage_records) == 1
+    rec = usage_records[0]
+    assert rec["kind"] == "result"
+    assert rec["input_tokens"] == 100
+    assert rec["output_tokens"] == 50
+    assert rec["cost_usd"] == pytest.approx(0.0042)
+    assert rec["model"] == "pi-1"
+
+
+async def test_run_pi_auto_usage_from_message_update(tmp_path) -> None:
+    """Per-message token counts in message_update are forwarded as 'api_call' records."""
+    fake_pi = tmp_path / "fake-pi"
+    usage = {"inputTokens": 20, "outputTokens": 10}
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{
+    "type": "message_update",
+    "usage": {json.dumps(usage)},
+    "model": "pi-1",
+    "message": {{"content": [{{"type": "text", "text": "hello"}}]}}
+}}), flush=True)
+print(json.dumps({{"type": "agent_end"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+    usage_records: list[dict] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    async def on_usage(rec: dict) -> None:
+        usage_records.append(rec)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi), on_usage=on_usage
+    )
+
+    assert success is True
+    api_calls = [r for r in usage_records if r.get("kind") == "api_call"]
+    assert len(api_calls) == 1
+    assert api_calls[0]["input_tokens"] == 20
+    assert api_calls[0]["output_tokens"] == 10
+
+
+async def test_run_pi_auto_no_usage_callback_still_works(tmp_path) -> None:
+    """Passing no on_usage callback is fine — runner completes without error."""
+    fake_pi = tmp_path / "fake-pi"
+    usage = {"inputTokens": 5, "outputTokens": 3}
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{"type": "agent_end", "usage": {json.dumps(usage)}}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+    assert success is True
+
+
+async def test_run_pi_auto_snake_case_usage_fields(tmp_path) -> None:
+    """Snake_case usage fields (input_tokens/output_tokens) are parsed correctly."""
+    fake_pi = tmp_path / "fake-pi"
+    usage = {"input_tokens": 77, "output_tokens": 33}
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{"type": "agent_end", "usage": {json.dumps(usage)}}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+    usage_records: list[dict] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    async def on_usage(rec: dict) -> None:
+        usage_records.append(rec)
+
+    success, stop_reason, last_text, session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi), on_usage=on_usage
+    )
+
+    assert success is True
+    assert len(usage_records) == 1
+    assert usage_records[0]["input_tokens"] == 77
+    assert usage_records[0]["output_tokens"] == 33
