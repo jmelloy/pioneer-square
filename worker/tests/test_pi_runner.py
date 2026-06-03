@@ -320,6 +320,36 @@ while True:
     assert stop_reason == "success"
 
 
+async def test_run_pi_auto_large_line_does_not_crash(tmp_path) -> None:
+    """A stdout line larger than the default 64 KB limit must not crash the runner."""
+    fake_pi = tmp_path / "fake-pi"
+    # Write a line that is 2 MB long (well above asyncio's default 64 KB limit).
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print("x" * 2 * 1024 * 1024, flush=True)
+print(json.dumps({{"type": "agent_end"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    # Should complete without raising — either success or graceful error.
+    success, stop_reason, _ = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    # The runner must not crash; success is acceptable if the limit is raised,
+    # but a logged error is also fine as long as it returns cleanly.
+    assert stop_reason in ("success", "error_during_execution", "no_events")
+
+
 async def test_run_pi_auto_stderr_forwarded(tmp_path) -> None:
     """Stderr lines from pi are forwarded to emit with [stderr] prefix."""
     fake_pi = tmp_path / "fake-pi"

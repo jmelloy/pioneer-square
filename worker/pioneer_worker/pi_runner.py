@@ -93,6 +93,7 @@ async def run_pi_auto(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=10 * 1024 * 1024,  # 10 MB — prevents LimitOverrunError on large lines
         )
         logger.info("pi subprocess started pid=%s", proc.pid)
 
@@ -114,48 +115,54 @@ async def run_pi_auto(
         stderr_task = asyncio.create_task(_drain_stderr())
         accumulated = ""
 
-        async for raw in proc.stdout:  # type: ignore[union-attr]
-            line_str = raw.decode(errors="replace").strip()
-            if not line_str:
-                continue
-            event_count += 1
-            logger.debug("pi[%d] stdout#%d: %s", proc.pid, event_count, line_str)
-            try:
-                event = json.loads(line_str)
-            except json.JSONDecodeError:
-                await emit(line_str)
-                continue
-            etype = event.get("type")
-            if (
-                etype == "response"
-                and event.get("command") == "prompt"
-                and not event.get("success", True)
-            ):
-                # Prompt was rejected before acceptance.
-                err = event.get("error", "prompt rejected")
-                await emit(f"[pi] ✗ {err}")
-                saw_error = True
-            if etype == "agent_end":
-                saw_agent_end = True
-                if accumulated.strip():
-                    last_text = accumulated
-                accumulated = ""
-            if etype == "message_update":
-                ame = event.get("assistantMessageEvent", {})
-                if ame.get("type") == "error":
+        try:
+            async for raw in proc.stdout:  # type: ignore[union-attr]
+                line_str = raw.decode(errors="replace").strip()
+                if not line_str:
+                    continue
+                event_count += 1
+                logger.debug("pi[%d] stdout#%d: %s", proc.pid, event_count, line_str)
+                try:
+                    event = json.loads(line_str)
+                except json.JSONDecodeError:
+                    await emit(line_str)
+                    continue
+                etype = event.get("type")
+                if (
+                    etype == "response"
+                    and event.get("command") == "prompt"
+                    and not event.get("success", True)
+                ):
+                    # Prompt was rejected before acceptance.
+                    err = event.get("error", "prompt rejected")
+                    await emit(f"[pi] ✗ {err}")
                     saw_error = True
-                    reason = ame.get("reason", "error")
-                    await emit(f"[pi] ✗ {reason}")
-            text, accumulated = parse_pi_event(event, accumulated)
-            if text:
-                await emit(text)
-            if etype == "message_update" and accumulated.strip():
-                last_text = accumulated
-            # We only send a single prompt; pi RPC mode stays alive waiting
-            # for more stdin after the run completes, so stop reading once the
-            # agent (or a fatal error) has finished.
-            if saw_agent_end or saw_error:
-                break
+                if etype == "agent_end":
+                    saw_agent_end = True
+                    if accumulated.strip():
+                        last_text = accumulated
+                    accumulated = ""
+                if etype == "message_update":
+                    ame = event.get("assistantMessageEvent", {})
+                    if ame.get("type") == "error":
+                        saw_error = True
+                        reason = ame.get("reason", "error")
+                        await emit(f"[pi] ✗ {reason}")
+                text, accumulated = parse_pi_event(event, accumulated)
+                if text:
+                    await emit(text)
+                if etype == "message_update" and accumulated.strip():
+                    last_text = accumulated
+                # We only send a single prompt; pi RPC mode stays alive waiting
+                # for more stdin after the run completes, so stop reading once the
+                # agent (or a fatal error) has finished.
+                if saw_agent_end or saw_error:
+                    break
+        except (asyncio.LimitOverrunError, ValueError) as exc:
+            logger.error(
+                "pi[%d] stdout line exceeded StreamReader limit: %s", proc.pid, exc
+            )
+            await emit(f"[pi] ✗ stdout line too large, skipping remainder: {exc}")
 
         # Closing stdin signals EOF so the RPC process exits cleanly.
         if proc.stdin and not proc.stdin.is_closing():
