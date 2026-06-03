@@ -25,7 +25,6 @@ from events import (
     connections,
     foreman_connections,
     pending_claude_auth,
-    pending_pi_auth,
 )
 from fastapi import WebSocket
 from lock_service import LockService
@@ -899,34 +898,6 @@ async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
     reset_foreman_poll(ctx.guild_id)
 
 
-async def handle_pi_auth_required(ctx: WSContext, data: dict) -> None:
-    worker_id = data.get("workerId", "a worker")
-    auth_url = data.get("url", "")
-    logger.info(
-        "pi-auth-required from %s in guild %s url=%s",
-        worker_id,
-        ctx.guild_id,
-        auth_url[:80],
-    )
-    await broadcast(ctx.guild_id, data, exclude=ctx.websocket)
-    pending_pi_auth.setdefault(ctx.guild_id, {})[worker_id] = auth_url
-    logger.info(
-        "pending_pi_auth now has %d entries for guild %s",
-        len(pending_pi_auth.get(ctx.guild_id, {})),
-        ctx.guild_id,
-    )
-    await _trigger_foreman(
-        ctx.guild_id,
-        "pi-auth",
-        f"Worker {worker_id} needs pi authentication. "
-        f"Auth URL: {auth_url}. "
-        "A human must visit this URL, complete authentication, then paste the "
-        "resulting code into the auth panel in the UI. The worker is waiting.",
-        task_name=f"foreman.pi-auth:{worker_id}",
-    )
-    reset_foreman_poll(ctx.guild_id)
-
-
 async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:
     """External foreman announcing a graceful shutdown.
 
@@ -957,7 +928,6 @@ async def handle_worker_auth_response(ctx: WSContext, data: dict) -> None:
         code_len,
     )
     pending_claude_auth.get(ctx.guild_id, {}).pop(worker_id, None)
-    pending_pi_auth.get(ctx.guild_id, {}).pop(worker_id, None)
     peer_count = len(connections.get(ctx.guild_id, []))
     logger.info(
         "broadcasting worker-auth-response to %d connections in guild %s",
@@ -999,7 +969,6 @@ HANDLERS: dict[str, Any] = {
     "task-followup-done": handle_task_followup_done,
     "needs-input": handle_needs_input,
     "claude-auth-required": handle_claude_auth_required,
-    "pi-auth-required": handle_pi_auth_required,
     "foreman-disconnect": handle_foreman_disconnect,
     "foreman-broadcast": handle_foreman_broadcast,
     "worker-auth-response": handle_worker_auth_response,

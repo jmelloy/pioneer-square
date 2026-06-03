@@ -65,7 +65,6 @@ const isRunning = computed(() => ['working', 'thinking', 'busy'].includes(props.
 const modelPlaceholder = computed(() => {
   if (runTool.value === 'claude') return 'claude-opus-4-7'
   if (runTool.value === 'codex') return 'o4-mini'
-  if (runTool.value === 'pi') return 'gpt-4o'
   return 'model (optional)'
 })
 

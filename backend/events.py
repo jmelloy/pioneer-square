@@ -41,9 +41,6 @@ agent_owners: dict[str, WebSocket] = {}
 # Workers currently waiting for a Claude auth code: guild_id -> {worker_id: url}
 pending_claude_auth: dict[str, dict[str, str]] = {}
 
-# Workers currently waiting for a pi auth code: guild_id -> {worker_id: url}
-pending_pi_auth: dict[str, dict[str, str]] = {}
-
 # Per-guild lock that serialises agent-ownership transitions (the join handler
 # installing a new owner vs. the disconnect cleanup nulling out a stale one).
 # Without this, a fast reconnect can race the previous socket's cleanup and
