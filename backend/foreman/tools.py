@@ -786,6 +786,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         col(Task.description),
                         col(Task.name),
                         col(Task.tool),
+                        col(Task.model),
+                        col(Task.provider),
                         col(Task.issue_number),
                         col(Task.issue_repo),
                     ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
@@ -801,6 +803,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         task_desc,
                         task_name,
                         task_tool,
+                        task_model,
+                        task_provider,
                         task_issue_number,
                         task_issue_repo,
                     ) = row
@@ -882,6 +886,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             )
                             await broadcast(
                                 guild_id,
+<<<<<<< HEAD
                                 TaskFollowupMsg(
                                     workerId=target_worker_id,
                                     taskId=task_id,
@@ -893,6 +898,22 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     issueNumber=task_issue_number,
                                     issueRepo=task_issue_repo,
                                 ).model_dump(by_alias=True, exclude_none=True),
+=======
+                                {
+                                    "type": "task-followup",
+                                    "workerId": target_worker_id,
+                                    "taskId": task_id,
+                                    "name": task_name or "",
+                                    "description": task_desc or "",
+                                    "tool": task_tool or "claude",
+                                    "model": task_model,
+                                    "provider": task_provider,
+                                    "branch": branch,
+                                    "instructions": instructions,
+                                    "issueNumber": task_issue_number,
+                                    "issueRepo": task_issue_repo,
+                                },
+>>>>>>> a1217b6 (Fix model/provider silently dropped in task dispatch paths)
                             )
                             if target_worker_id != original_worker_id and original_worker_id:
                                 result_text = (
