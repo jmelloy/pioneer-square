@@ -96,8 +96,13 @@ async def run_pi_auto(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            limit=_STREAM_LIMIT,
         )
+        # asyncio.create_subprocess_exec silently ignores the `limit` kwarg, so
+        # patch the StreamReader directly after creation.
+        if proc.stdout:
+            proc.stdout._limit = _STREAM_LIMIT
+        if proc.stderr:
+            proc.stderr._limit = _STREAM_LIMIT
         logger.info("pi subprocess started pid=%s", proc.pid)
 
         rpc_msg = json.dumps({"type": "prompt", "message": description}) + "\n"

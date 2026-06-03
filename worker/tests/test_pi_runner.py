@@ -346,14 +346,11 @@ sys.exit(0)
         "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
     )
 
-    # The runner must not crash; success is acceptable if the limit is raised,
-    # but a logged error is also fine as long as it returns cleanly.
-    assert stop_reason in ("success", "error_during_execution", "no_events")
+    # The 2 MB line is below the 10 MB _STREAM_LIMIT, so the runner completes cleanly.
+    assert stop_reason == "success"
 
 
-async def test_run_pi_auto_oversized_line_continues_to_agent_end(
-    tmp_path, monkeypatch
-) -> None:
+async def test_run_pi_auto_oversized_line_continues_to_agent_end(tmp_path, monkeypatch) -> None:
     """After an oversized line (LimitOverrunError), subsequent lines including
     agent_end must still be processed — the runner must not hang or lose events."""
     import pioneer_worker.pi_runner as pi_runner_mod
