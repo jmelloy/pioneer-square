@@ -2,13 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createTestingPinia } from '@pinia/testing'
 import SpawnWorkerForm from '../SpawnWorkerForm.vue'
+import { SETTINGS_KEY as makeSettingsKey } from '../spawnWorkerFormConstants'
 
 vi.mock('../../../utils/api', () => ({
   api: vi.fn().mockResolvedValue({ worker_id: 'test-worker' }),
 }))
 
 const GUILD_ID = 'guild-1'
-const SETTINGS_KEY = `pioneer_square:spawn_settings:${GUILD_ID}`
+const SETTINGS_KEY = makeSettingsKey(GUILD_ID)
 const TEST_REPOS = [{ full_name: 'owner/repo', language: 'TypeScript' }]
 
 function createWrapper() {
@@ -64,7 +65,7 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
 
       await wrapper.find('[data-testid="spawn-env-add"]').trigger('click')
       await wrapper.find('[data-testid="spawn-env-add"]').trigger('click')
-      await wrapper.vm.$nextTick()
+      await flushPromises()
 
       const keyInputs = wrapper.findAll('[data-testid="spawn-env-key"]')
       const valInputs = wrapper.findAll('[data-testid="spawn-env-val"]')

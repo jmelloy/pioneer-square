@@ -115,6 +115,7 @@ import { useGuildStore } from '../../stores/guild'
 import { useGitHubStore } from '../../stores/github'
 import { api } from '../../utils/api'
 import { groupAndSortRepos } from '../../utils/repoGroups'
+import { SETTINGS_KEY } from './spawnWorkerFormConstants'
 
 const emit = defineEmits<{ (e: 'launched'): void }>()
 
@@ -133,8 +134,6 @@ interface SpawnSettings {
   tools?: string[]
   envVars?: EnvPair[]
 }
-
-const SETTINGS_KEY = (guildId: string) => `pioneer_square:spawn_settings:${guildId}`
 
 const selectedRepos = ref<string[]>([])
 const name = ref('')
@@ -158,6 +157,7 @@ function loadSavedSettings(guildId: string): SpawnSettings | null {
     if (Array.isArray(parsed.envVars)) {
       parsed.envVars = parsed.envVars.map((e) => ({ key: e.key, value: '' }))
     } else {
+      console.warn('Unexpected envVars shape in localStorage, resetting:', parsed.envVars)
       parsed.envVars = []
     }
     return parsed
