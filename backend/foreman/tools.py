@@ -1042,6 +1042,12 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     worker_id = "w-" + "".join(
                         random.choices(string.ascii_lowercase + string.digits, k=6)
                     )
+                    # auth_token is a 256-bit cryptographically random bearer token stored
+                    # as plaintext in the DB (matching the UserSession.token convention).
+                    # It is passed to the container as an env var and never logged.
+                    # The DB is the only persistent store; no read-after-create endpoint
+                    # exists, so exposure is limited to the spawn path and the container's
+                    # runtime environment.
                     auth_token = secrets.token_urlsafe(32)
                     worker_name = custom_name or worker_display_name(worker_id, None)
                     created_at = datetime.now(UTC)

@@ -20,6 +20,7 @@ from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
+from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from utils import (
@@ -206,11 +207,19 @@ async def spawn_worker_container(
             run_kwargs["network"] = network
         container = client.containers.run(**run_kwargs)
     except docker_sdk.errors.ImageNotFound:
+        await db.exec(
+            update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
+        )
+        await db.commit()
         raise HTTPException(
             status_code=404,
             detail=f"Worker image '{image}' not found — run: docker compose build worker",
         )
     except Exception as e:
+        await db.exec(
+            update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
+        )
+        await db.commit()
         raise HTTPException(status_code=500, detail=f"Failed to start container: {e}")
 
     return {"worker_id": worker_id, "container_id": container.id[:12], "image": image}
