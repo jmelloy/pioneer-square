@@ -70,7 +70,7 @@ def _make_trigger_spy():
 
 
 def test_worker_online_notifies_foreman(client):
-    """worker-register triggers [worker-online] with worker_id, repos, and agent_count."""
+    """worker-register triggers [worker-online] with worker_id, repos, agent_count, and tools."""
     test_client, db_url = client
     guild_id = "nfy001"
     worker_id = "w-nfy001"
@@ -99,6 +99,7 @@ def test_worker_online_notifies_foreman(client):
                     "type": "worker-register",
                     "workerId": worker_id,
                     "repos": ["org/repo1", "org/repo2"],
+                    "tools": ["claude", "codex"],
                 }
             )
             # Sync: ping/pong ensures the server has fully processed
@@ -116,6 +117,7 @@ def test_worker_online_notifies_foreman(client):
     assert f"worker_id={worker_id}" in msg, msg
     assert "repos=org/repo1,org/repo2" in msg, msg
     assert "agent_count=1" in msg, msg
+    assert "tools=claude,codex" in msg, msg
 
 
 def test_worker_graceful_offline_notifies_foreman(client):

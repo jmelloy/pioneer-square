@@ -151,6 +151,7 @@ async def run_foreman_ai(
                     "repos": r.get("repos") or [],
                     **({"org": r["org"]} if r.get("org") else {}),
                     "agent_count": r.get("agent_count") or 0,
+                    "tools": r.get("tools") or [],
                 }
                 for r in worker_rows
             ],

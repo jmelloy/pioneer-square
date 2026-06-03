@@ -164,6 +164,8 @@ class Worker:
         # plus API-discovered repos). Never used for task execution — only for
         # telling the backend/UI how many repos this worker can see.
         self._broadcast_repos: list[str] = list(cfg.repos)
+        # Available tool runners detected at startup (e.g. ["claude", "codex", "pi"]).
+        self._available_tools: list[str] = []
 
     # ------------------------------------------------------------------ HTTP
     async def _http(self, *, authed: bool = False) -> httpx.AsyncClient:
@@ -357,6 +359,20 @@ class Worker:
                 "OPENAI_API_KEY not configured — Codex tasks will fail. "
                 "Set openai_api_key in the [codex] config block or the OPENAI_API_KEY env var."
             )
+
+    def _detect_available_tools(self) -> None:
+        """Populate self._available_tools based on which runner binaries are on PATH."""
+        import shutil
+
+        tools: list[str] = []
+        if shutil.which(self.cfg.claude_path):
+            tools.append("claude")
+        if shutil.which(self.cfg.codex_path):
+            tools.append("codex")
+        if shutil.which(self.cfg.pi_path):
+            tools.append("pi")
+        self._available_tools = tools
+        logger.info("Available tools: %s", tools or ["(none)"])
 
     async def _claude_is_authenticated(self) -> bool:
         """Return True if `claude auth status --json` reports loggedIn=true.
@@ -931,6 +947,7 @@ class Worker:
                 "type": "worker-register",
                 "workerId": self.cfg.worker_id,
                 "repos": self._broadcast_repos,
+                "tools": self._available_tools,
                 **({"user": self.cfg.user} if self.cfg.user else {}),
             }
         )
@@ -1144,6 +1161,7 @@ class Worker:
         # be visible to the foreman until Claude is ready to accept tasks.
         listener = asyncio.create_task(self._listen())
         await self._check_claude_auth()
+        self._detect_available_tools()
 
         await self._join()
         self._joined = True
@@ -1541,6 +1559,7 @@ class Worker:
                     "type": "worker-register",
                     "workerId": self.cfg.worker_id,
                     "repos": self._broadcast_repos,
+                    "tools": self._available_tools,
                     **({"user": self.cfg.user} if self.cfg.user else {}),
                 }
             )

@@ -96,6 +96,8 @@ class Worker(SQLModel, table=True):
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
     repos: str = Field(default="[]", sa_column_kwargs={"server_default": "'[]'"})
+    # JSON-serialised list of tool runner names available on this worker (e.g. ["claude", "codex"]).
+    tools: str = Field(default="[]", sa_column_kwargs={"server_default": "'[]'"})
     # Optional GitHub org; when set the worker accepts any task targeting <org>/*
     # and clones repos lazily. NULL for workers that use an explicit repos list only.
     org: str | None = None
