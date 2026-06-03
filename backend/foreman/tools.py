@@ -648,6 +648,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         wid,
                     )
                 tool = inp.get("tool", "claude")
+                model = inp.get("model") or None
+                provider = inp.get("provider") or None
                 existing_task_id = inp.get("task_id")
                 guild_result = await db.exec(
                     select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
@@ -687,6 +689,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         "worker_id": wid,
                         "description": desc,
                         "tool": tool,
+                        "model": model,
+                        "provider": provider,
                         "phase": phase,
                         "state": "pending",
                     }
@@ -715,6 +719,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             name=task_name,
                             description=desc,
                             tool=tool,
+                            model=model,
+                            provider=provider,
                             phase=phase,
                             issueNumber=inp.get("issue_number"),
                             issueRepo=inp.get("issue_repo"),
@@ -737,6 +743,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             name=name,
                             description=desc,
                             tool=tool,
+                            model=model,
+                            provider=provider,
                             issue_number=inp.get("issue_number"),
                             issue_repo=inp.get("issue_repo"),
                             state="pending",
@@ -755,6 +763,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             name=name,
                             description=desc,
                             tool=tool,
+                            model=model,
+                            provider=provider,
                             phase=phase,
                             parentTaskId=parent_task_id,
                             issueNumber=inp.get("issue_number"),
@@ -776,6 +786,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         col(Task.description),
                         col(Task.name),
                         col(Task.tool),
+                        col(Task.model),
+                        col(Task.provider),
                         col(Task.issue_number),
                         col(Task.issue_repo),
                     ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
@@ -791,6 +803,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         task_desc,
                         task_name,
                         task_tool,
+                        task_model,
+                        task_provider,
                         task_issue_number,
                         task_issue_repo,
                     ) = row
@@ -878,6 +892,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     name=task_name or "",
                                     description=task_desc or "",
                                     tool=task_tool or "claude",
+                                    model=task_model,
+                                    provider=task_provider,
                                     branch=branch,
                                     instructions=instructions,
                                     issueNumber=task_issue_number,

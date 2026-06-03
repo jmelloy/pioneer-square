@@ -1270,6 +1270,8 @@ class Worker:
                         "name": msg.get("name", ""),
                         "description": msg.get("description", ""),
                         "tool": msg.get("tool", "claude"),
+                        "model": msg.get("model"),
+                        "provider": msg.get("provider"),
                         "phase": msg.get("phase", "execute"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
@@ -1354,6 +1356,8 @@ class Worker:
                         "name": msg.get("name", ""),
                         "description": msg.get("description", "") or instructions,
                         "tool": msg.get("tool", "claude"),
+                        "model": msg.get("model"),
+                        "provider": msg.get("provider"),
                         "phase": msg.get("phase", "execute"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
@@ -1966,12 +1970,22 @@ class Worker:
                         openai_api_key=self.cfg.openai_api_key,
                     )
                 elif tool == "pi":
-                    logger.info("Task %s: launching pi in %s", task_id, primary_wt)
+                    _pi_model = task.get("model") or self.cfg.pi_model
+                    _pi_provider = task.get("provider") or self.cfg.pi_provider
+                    logger.info(
+                        "Task %s: launching pi in %s (model=%s provider=%s)",
+                        task_id,
+                        primary_wt,
+                        _pi_model,
+                        _pi_provider,
+                    )
                     success, stop_reason, last_msg = await pi_runner.run_pi_auto(
                         current_desc,
                         primary_wt,
                         emit=emit,
                         pi_path=self.cfg.pi_path,
+                        model=_pi_model,
+                        provider=_pi_provider,
                     )
                 else:
                     logger.info(

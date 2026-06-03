@@ -225,6 +225,9 @@ export interface TaskAssignedWS {
   workerId: string
   name?: string
   description?: string
+  tool?: string
+  model?: string | null
+  provider?: string | null
   phase?: string
   parentTaskId?: string | null
 }

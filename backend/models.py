@@ -129,6 +129,8 @@ class Task(SQLModel, table=True):
     guild_id: int = Field(foreign_key="guilds.id")
     description: str
     tool: str = Field(default="claude", sa_column_kwargs={"server_default": "'claude'"})
+    model: str | None = None
+    provider: str | None = None
     issue_number: int | None = None
     issue_repo: str | None = None
     state: str = Field(default="pending", sa_column_kwargs={"server_default": "'pending'"})

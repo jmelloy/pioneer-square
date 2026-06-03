@@ -85,6 +85,8 @@ class TaskCreate(BaseModel):
     description: str
     name: str | None = None
     tool: str = "claude"  # "claude" | "codex" | "pi"
+    model: str | None = None
+    provider: str | None = None
     issue_number: int | None = None
     issue_repo: str | None = None
     repos: list[str] = []
@@ -317,6 +319,8 @@ async def assign_task(
             name=name,
             description=data.description,
             tool=data.tool,
+            model=data.model,
+            provider=data.provider,
             issue_number=data.issue_number,
             issue_repo=data.issue_repo,
             state="pending",
@@ -335,6 +339,8 @@ async def assign_task(
             name=name,
             description=data.description,
             tool=data.tool,
+            model=data.model,
+            provider=data.provider,
             phase=data.phase or "execute",
             parentTaskId=data.parent_task_id,
             issueNumber=data.issue_number,
