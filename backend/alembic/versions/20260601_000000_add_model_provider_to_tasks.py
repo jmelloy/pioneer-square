@@ -1,7 +1,7 @@
 """Add model and provider columns to tasks.
 
 Revision ID: 20260601_000000_add_model_provider_to_tasks
-Revises: 20260530_000000_add_level_to_task_logs
+Revises: 20260603_000000_create_user_spawn_settings
 Create Date: 2026-06-01
 
 Adds nullable ``model`` and ``provider`` columns so per-task AI model
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260601_000000_add_model_provider_to_tasks"
-down_revision: str | Sequence[str] | None = "20260530_000000_add_level_to_task_logs"
+down_revision: str | Sequence[str] | None = "20260603_000000_create_user_spawn_settings"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
