@@ -323,7 +323,8 @@ while True:
 async def test_run_pi_auto_large_line_does_not_crash(tmp_path) -> None:
     """A stdout line larger than the default 64 KB limit must not crash the runner."""
     fake_pi = tmp_path / "fake-pi"
-    # Write a line that is 2 MB long (well above asyncio's default 64 KB limit).
+    # Write a line that is 2 MB long (well above asyncio's default 64 KB limit but
+    # within the 10 MB _STREAM_LIMIT, so it succeeds cleanly).
     fake_pi.write_text(
         f"""#!{sys.executable}
 import json, sys
@@ -348,6 +349,45 @@ sys.exit(0)
     # The runner must not crash; success is acceptable if the limit is raised,
     # but a logged error is also fine as long as it returns cleanly.
     assert stop_reason in ("success", "error_during_execution", "no_events")
+
+
+async def test_run_pi_auto_oversized_line_continues_to_agent_end(
+    tmp_path, monkeypatch
+) -> None:
+    """After an oversized line (LimitOverrunError), subsequent lines including
+    agent_end must still be processed — the runner must not hang or lose events."""
+    import pioneer_worker.pi_runner as pi_runner_mod
+
+    # Set a tiny limit so a 256-byte line triggers LimitOverrunError.
+    monkeypatch.setattr(pi_runner_mod, "_STREAM_LIMIT", 128)
+
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+# This 256-byte line exceeds the patched 128-byte limit.
+print("x" * 256, flush=True)
+# agent_end must still be received even after the oversized line.
+print(json.dumps({{"type": "agent_end"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    success, stop_reason, _ = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    # The oversized line error must have been reported.
+    assert any("too large" in line for line in emitted)
+    # agent_end must have been received → stop_reason is success, not no_events.
+    assert stop_reason == "success"
 
 
 async def test_run_pi_auto_stderr_forwarded(tmp_path) -> None:
