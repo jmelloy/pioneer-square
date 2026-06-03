@@ -224,9 +224,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         try:
             _default_max_agents: int = int(_max_agents_env)
         except ValueError:
-            logger.warning(
-                "Invalid PIONEER_MAX_AGENTS=%r, using default 4", _max_agents_env
-            )
+            logger.warning("Invalid PIONEER_MAX_AGENTS=%r, using default 4", _max_agents_env)
             _default_max_agents = 4
     else:
         _default_max_agents = 4
