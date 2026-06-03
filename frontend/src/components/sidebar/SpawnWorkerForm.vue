@@ -130,6 +130,8 @@ interface SpawnSettings {
   tools?: string[]
   // Only keys are persisted — values are never stored to localStorage.
   envVarKeys?: string[]
+  // Legacy field from before the security fix — used only for migration.
+  envVars?: Array<{ key: string; value: string }>
 }
 
 const SETTINGS_KEY = (guildId: string) => `pioneer_square:spawn_settings:${guildId}`
@@ -175,8 +177,11 @@ onMounted(async () => {
       selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
     }
     if (saved.tools?.length) selectedTools.value = saved.tools
-    if (saved.envVarKeys?.length)
-      envVars.value = saved.envVarKeys.map((k) => ({ key: k, value: '' }))
+    const keys = (saved.envVarKeys ?? saved.envVars?.map((e: { key: string }) => e.key) ?? [])
+      .filter((k): k is string => typeof k === 'string')
+      .map((k) => k.trim())
+      .filter((k) => k !== '')
+    if (keys.length) envVars.value = keys.map((k) => ({ key: k, value: '' }))
   } else {
     selectedRepos.value = [...ghStore.selectedRepos]
   }
