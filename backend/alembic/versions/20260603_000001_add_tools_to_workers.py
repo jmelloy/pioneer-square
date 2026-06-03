@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260603_000001_add_tools_to_workers"
-down_revision: str | Sequence[str] | None = "20260603_000000_create_user_spawn_settings"
+down_revision: str | Sequence[str] | None = "20260601_000000_add_model_provider_to_tasks"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
