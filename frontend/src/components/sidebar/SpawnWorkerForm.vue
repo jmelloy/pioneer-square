@@ -178,38 +178,48 @@ onMounted(async () => {
       selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
     }
     if (saved.tools?.length) selectedTools.value = saved.tools
-    // Legacy when envVars is present and envVarKeys is absent or empty (catches partially-migrated writes too).
-    const isLegacy = saved.envVars != null && (saved.envVarKeys == null || saved.envVarKeys.length === 0)
+    // Derive legacyKeys and isLegacy together so migration only fires when pre-migration data
+    // is present. Using !('envVarKeys' in saved) ensures already-migrated records (where
+    // envVarKeys may be []) are never re-migrated.
+    const legacyKeys = Array.isArray(saved.envVars)
+      ? saved.envVars
+          .map((o) => {
+            // TS `value?: never` structurally prevents values from being re-introduced via the
+            // legacy path, but JSON.parse bypasses TS types — delete at runtime too.
+            delete (o as any).value
+            return (o as any).key
+          })
+          .filter(Boolean)
+          .filter((k): k is string => typeof k === 'string')
+          .map((k) => k.trim())
+          .filter((k) => k !== '')
+      : []
+    const isLegacy = legacyKeys.length > 0 && !('envVarKeys' in saved)
 
     let keys: string[]
     if (isLegacy) {
-      // Strip any runtime `value` fields that may exist in pre-fix persisted data (JSON.parse bypasses TS types).
-      keys = (saved.envVars ?? [])
-        .map((e) => {
-          const entry = e as Record<string, unknown>
-          delete entry.value
-          return entry.key
-        })
-        .filter((k): k is string => typeof k === 'string')
-        .map((k) => k.trim())
-        .filter((k) => k !== '')
+      keys = legacyKeys
     } else {
       keys = (saved.envVarKeys ?? [])
         .filter((k): k is string => typeof k === 'string')
         .map((k) => k.trim())
         .filter((k) => k !== '')
+      // Edge case: envVarKeys present but empty while legacy envVars still has real keys
+      // (partial migration). Use legacy keys rather than silently dropping them.
+      if (keys.length === 0 && legacyKeys.length > 0) {
+        keys = legacyKeys
+      }
     }
 
     if (keys.length) envVars.value = keys.map((k) => ({ key: k, value: '' }))
 
-    // Gate migration on keys.length — avoids a pointless save when legacy entry has no usable data.
-    if (isLegacy && keys.length) {
+    if (isLegacy) {
       if (guild) {
         // Remove the stale legacy entry (envVars format) and replace it with the migrated envVarKeys format.
         localStorage.removeItem(SETTINGS_KEY(guild.id))
         saveSettings(guild.id)
       } else {
-        // Without guild the localStorage key is unknown, so the stale legacy entry cannot be removed here.
+        // Cannot remove stale legacy entry without guild id; it will be cleaned up on next successful load.
         console.warn('[SpawnWorkerForm] Could not migrate legacy envVars localStorage entry: guild unavailable.')
       }
     }
