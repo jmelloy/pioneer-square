@@ -43,13 +43,23 @@
       </div>
       <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
       <input v-model="name" class="spawn-input" type="text" placeholder="auto-generated" />
-      <label class="spawn-label">Tools <span class="spawn-hint">(optional, comma-separated)</span></label>
-      <input
-        v-model="toolsInput"
-        class="spawn-input"
-        type="text"
-        placeholder="claude, codex, pi"
-      />
+      <label class="spawn-label">Tools <span class="spawn-hint">(optional)</span></label>
+      <div class="spawn-tool-list">
+        <label
+          v-for="tool in AVAILABLE_TOOLS"
+          :key="tool"
+          class="spawn-repo-row"
+          :class="{ selected: selectedTools.includes(tool) }"
+        >
+          <input
+            type="checkbox"
+            :checked="selectedTools.includes(tool)"
+            @change="toggleTool(tool)"
+            class="spawn-repo-check"
+          />
+          <span class="spawn-repo-name">{{ tool }}</span>
+        </label>
+      </div>
       <label class="spawn-label">Agents <span class="spawn-hint">(optional)</span></label>
       <input
         v-model.number="agentCount"
@@ -85,9 +95,11 @@ const emit = defineEmits<{ (e: 'launched'): void }>()
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 
+const AVAILABLE_TOOLS = ['claude', 'codex', 'pi'] as const
+
 const selectedRepos = ref<string[]>([])
 const name = ref('')
-const toolsInput = ref('')
+const selectedTools = ref<string[]>([])
 const agentCount = ref<number | null>(null)
 const spawning = ref(false)
 const error = ref('')
@@ -145,22 +157,27 @@ function setOrgCheckboxRef(el: HTMLInputElement | null, owner: string) {
   }
 }
 
+function toggleTool(tool: string) {
+  const idx = selectedTools.value.indexOf(tool)
+  if (idx >= 0) {
+    selectedTools.value.splice(idx, 1)
+  } else {
+    selectedTools.value.push(tool)
+  }
+}
+
 async function launch() {
   const guild = guildStore.currentGuild
   if (!guild || selectedRepos.value.length === 0) return
   spawning.value = true
   error.value = ''
   try {
-    const tools = toolsInput.value
-      .split(/[,\n]+/)
-      .map(t => t.trim())
-      .filter(Boolean)
     const result = await api<{ worker_id?: string }>(`/guilds/${guild.id}/spawn-worker`, {
       method: 'POST',
       json: {
         repos: selectedRepos.value,
         name: name.value.trim() || undefined,
-        tools: tools.length ? tools : undefined,
+        tools: selectedTools.value.length ? selectedTools.value : undefined,
         agent_count: agentCount.value ?? undefined,
       },
     })
@@ -280,6 +297,15 @@ async function launch() {
   gap: 1px;
   max-height: 160px;
   overflow-y: auto;
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 2px;
+  background: var(--color-bg);
+}
+
+.spawn-tool-list {
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
   border: 1px solid var(--color-brass-dark);
   border-radius: 2px;
   background: var(--color-bg);
