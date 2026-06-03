@@ -378,15 +378,15 @@ class EnvVarPair(BaseModel):
 
 
 class SaveSpawnSettingsRequest(BaseModel):
-    repos: list[str] | None = None
-    tools: list[str] | None = None
-    envVars: list[EnvVarPair] | None = None
+    # All fields default to empty so a PUT always replaces the full settings object
+    # (no partial-update / PATCH semantics).
+    repos: list[str] = []
+    tools: list[str] = []
+    envVars: list[EnvVarPair] = []
 
     @field_validator("envVars")
     @classmethod
-    def validate_env_var_keys(cls, v: list[EnvVarPair] | None) -> list[EnvVarPair] | None:
-        if v is None:
-            return v
+    def validate_env_var_keys(cls, v: list[EnvVarPair]) -> list[EnvVarPair]:
         if len(v) > _MAX_SETTINGS_ENV_VARS:
             raise ValueError(f"Too many env vars (max {_MAX_SETTINGS_ENV_VARS})")
         for pair in v:
@@ -449,19 +449,25 @@ async def save_spawn_settings(
         )
     )
     row = result.one_or_none()
-    incoming = data.model_dump(exclude_none=True)
+    # model_dump() without exclude_none gives full-replace PUT semantics: every field
+    # is always written, so callers cannot do partial updates through this endpoint.
+    incoming = data.model_dump()
     now = datetime.now(UTC)
+    # TODO: encrypt env var values at rest before production use (tracked in GH issue #537).
+    # Currently stored as plaintext JSON — an improvement over localStorage but not
+    # suitable for highly sensitive credentials until encryption is added.
+    settings_blob = json.dumps(incoming)
     if row is None:
         db.add(
             UserSpawnSettings(
                 guild_id=guild_pk,
                 user_id=github_user_id,
-                settings_json=json.dumps(incoming),
+                settings_json=settings_blob,
                 updated_at=now,
             )
         )
     else:
-        row.settings_json = json.dumps(incoming)
+        row.settings_json = settings_blob
         row.updated_at = now
     await db.commit()
     return {"status": "saved"}
