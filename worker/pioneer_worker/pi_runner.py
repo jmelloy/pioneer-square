@@ -14,6 +14,9 @@ EmitFn = Callable[[str], Awaitable[None]]
 # Seconds to wait for pi to exit after stdin is closed before killing it.
 _WAIT_TIMEOUT = 30
 
+# StreamReader buffer size — large enough to handle big tool outputs.
+_STREAM_LIMIT = 10 * 1024 * 1024  # 10 MB
+
 
 def _result_text(result: dict) -> str:
     """Join the text blocks of a tool result's content array."""
@@ -93,6 +96,7 @@ async def run_pi_auto(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=_STREAM_LIMIT,
         )
         logger.info("pi subprocess started pid=%s", proc.pid)
 
@@ -114,7 +118,28 @@ async def run_pi_auto(
         stderr_task = asyncio.create_task(_drain_stderr())
         accumulated = ""
 
-        async for raw in proc.stdout:  # type: ignore[union-attr]
+        while True:
+            try:
+                raw = await proc.stdout.readline()  # type: ignore[union-attr]
+            except (asyncio.LimitOverrunError, ValueError) as exc:
+                logger.error(
+                    "pi[%d] stdout line exceeded StreamReader limit, skipping line: %s",
+                    proc.pid,
+                    exc,
+                )
+                await emit(f"[pi] ✗ stdout line too large, skipping: {exc}")
+                # Drain the rest of the oversized line one byte at a time so we
+                # stop exactly at the \n and don't consume bytes from the next line.
+                try:
+                    while True:
+                        byte = await proc.stdout.read(1)  # type: ignore[union-attr]
+                        if not byte or byte == b"\n":
+                            break
+                except Exception:
+                    pass
+                continue
+            if not raw:  # EOF
+                break
             line_str = raw.decode(errors="replace").strip()
             if not line_str:
                 continue
