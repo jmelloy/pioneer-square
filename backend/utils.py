@@ -270,9 +270,13 @@ def build_spawn_worker_env(
     required vars (PIONEER_GUILD_ID, PIONEER_AUTH_TOKEN, etc.) always win.
     """
     if extra_env:
+        # Intentionally defensive: callers that bypass the Pydantic model (e.g. tests,
+        # internal callers) still get consistent validation with a clear error message.
         for key in extra_env:
-            if not key or "=" in key:
-                raise ValueError(f"Invalid env var key: {key!r} — must be non-empty and contain no '='")
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                raise ValueError(
+                    f"Invalid env var key: {key!r}. Keys must match ^[A-Za-z_][A-Za-z0-9_]*$"
+                )
     # User-supplied extras go in first; Pioneer's required vars overwrite them.
     env: dict[str, str] = dict(extra_env) if extra_env else {}
     env.update(

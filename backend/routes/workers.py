@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import secrets
 import string
 from datetime import UTC, datetime
@@ -67,10 +68,14 @@ class SpawnWorkerRequest(BaseModel):
         if len(v) > _MAX_ENV_VARS:
             raise ValueError(f"Too many env vars (max {_MAX_ENV_VARS})")
         for key, value in v.items():
-            if not key or "=" in key:
-                raise ValueError(f"Invalid env var key: {key!r}")
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                raise ValueError(
+                    f"Invalid env var key: {key!r}. Keys must match ^[A-Za-z_][A-Za-z0-9_]*$"
+                )
             if len(value) > _MAX_ENV_VALUE_LEN:
-                raise ValueError(f"Env var value for {key!r} exceeds max length ({_MAX_ENV_VALUE_LEN} chars)")
+                raise ValueError(
+                    f"Env var value for {key!r} exceeds max length ({_MAX_ENV_VALUE_LEN} chars)"
+                )
         return v
 
 

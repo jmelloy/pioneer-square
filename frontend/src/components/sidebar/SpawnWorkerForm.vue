@@ -70,6 +70,7 @@
         placeholder="4"
       />
       <label class="spawn-label">Env Vars <span class="spawn-hint">(optional)</span></label>
+      <p class="spawn-env-hint">Keys are remembered between sessions; values must be re-entered each time (not saved for security).</p>
       <div class="spawn-env-list">
         <div v-for="(pair, idx) in envVars" :key="idx" class="spawn-env-row">
           <input
@@ -161,7 +162,7 @@ function saveSettings(guildId: string) {
     // Save only keys (not values) — values may contain secrets/tokens.
     envVars: envVars.value
       .filter((e) => e.key.trim() !== '')
-      .map((e) => ({ key: e.key.trim(), value: '' })),
+      .map((e) => ({ key: e.key.trim(), value: '' })), // value intentionally blank: secrets must be re-entered each session
   }
   localStorage.setItem(SETTINGS_KEY(guildId), JSON.stringify(settings))
 }
@@ -171,7 +172,10 @@ onMounted(async () => {
   const saved = guild ? loadSavedSettings(guild.id) : null
 
   if (saved) {
-    if (saved.repos?.length) selectedRepos.value = saved.repos
+    if (saved.repos?.length) {
+      const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
+      selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
+    }
     if (saved.tools?.length) selectedTools.value = saved.tools
     if (saved.envVars?.length) envVars.value = saved.envVars
   } else {
@@ -444,6 +448,14 @@ async function launch() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.spawn-env-hint {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  font-style: italic;
+  margin: 0 0 2px;
+  line-height: 1.4;
 }
 
 .spawn-env-list {
