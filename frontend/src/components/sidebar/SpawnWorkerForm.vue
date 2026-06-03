@@ -1,53 +1,85 @@
 <template>
   <div class="spawn-form">
-    <label class="spawn-label">Repos</label>
-    <div v-if="loadingRepos" class="spawn-hint-text">Loading repos…</div>
-    <div v-else-if="ghStore.repos.length === 0" class="spawn-hint-text">
-      No repos found — configure GitHub first.
+    <div v-if="launched" class="spawn-success">
+      <span class="spawn-success-label">Launched</span>
+      <span class="spawn-success-id">{{ launchedWorkerId }}</span>
     </div>
-    <div v-else class="spawn-repo-list">
-      <template v-for="group in groupedRepos" :key="group.owner">
+    <template v-else>
+      <label class="spawn-label">Repos</label>
+      <div v-if="loadingRepos" class="spawn-hint-text">Loading repos…</div>
+      <div v-else-if="ghStore.repos.length === 0" class="spawn-hint-text">
+        No repos found — configure GitHub first.
+      </div>
+      <div v-else class="spawn-repo-list">
+        <template v-for="group in groupedRepos" :key="group.owner">
+          <label
+            class="spawn-repo-row spawn-org-row"
+            :class="{ selected: orgAllSelected(group.owner) }"
+          >
+            <input
+              type="checkbox"
+              :ref="(el) => setOrgCheckboxRef(el as HTMLInputElement | null, group.owner)"
+              :checked="orgAllSelected(group.owner)"
+              @change="toggleOrg(group.owner)"
+              class="spawn-repo-check"
+            />
+            <span class="spawn-repo-name spawn-org-name">{{ group.owner }}</span>
+          </label>
+          <label
+            v-for="repo in group.repos"
+            :key="repo.full_name"
+            class="spawn-repo-row spawn-repo-indent"
+            :class="{ selected: selectedRepos.includes(repo.full_name) }"
+          >
+            <input
+              type="checkbox"
+              :checked="selectedRepos.includes(repo.full_name)"
+              @change="toggleRepo(repo.full_name)"
+              class="spawn-repo-check"
+            />
+            <span class="spawn-repo-name">{{ repo.full_name.split('/')[1] }}</span>
+          </label>
+        </template>
+      </div>
+      <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
+      <input v-model="name" class="spawn-input" type="text" placeholder="auto-generated" />
+      <label class="spawn-label">Tools <span class="spawn-hint">(optional)</span></label>
+      <div class="spawn-tool-list">
         <label
-          class="spawn-repo-row spawn-org-row"
-          :class="{ selected: orgAllSelected(group.owner) }"
+          v-for="tool in AVAILABLE_TOOLS"
+          :key="tool"
+          class="spawn-repo-row"
+          :class="{ selected: selectedTools.includes(tool) }"
         >
           <input
             type="checkbox"
-            :ref="(el) => setOrgCheckboxRef(el as HTMLInputElement | null, group.owner)"
-            :checked="orgAllSelected(group.owner)"
-            @change="toggleOrg(group.owner)"
+            :checked="selectedTools.includes(tool)"
+            @change="toggleTool(tool)"
             class="spawn-repo-check"
           />
-          <span class="spawn-repo-name spawn-org-name">{{ group.owner }}</span>
+          <span class="spawn-repo-name">{{ tool }}</span>
         </label>
-        <label
-          v-for="repo in group.repos"
-          :key="repo.full_name"
-          class="spawn-repo-row spawn-repo-indent"
-          :class="{ selected: selectedRepos.includes(repo.full_name) }"
+      </div>
+      <label class="spawn-label">Agents <span class="spawn-hint">(optional)</span></label>
+      <input
+        v-model.number="agentCount"
+        class="spawn-input spawn-input--narrow"
+        type="number"
+        min="1"
+        max="16"
+        placeholder="4"
+      />
+      <div class="spawn-actions">
+        <button
+          class="pixel-btn spawn-launch-btn"
+          :disabled="spawning || selectedRepos.length === 0"
+          @click="launch"
         >
-          <input
-            type="checkbox"
-            :checked="selectedRepos.includes(repo.full_name)"
-            @change="toggleRepo(repo.full_name)"
-            class="spawn-repo-check"
-          />
-          <span class="spawn-repo-name">{{ repo.full_name.split('/')[1] }}</span>
-        </label>
-      </template>
-    </div>
-    <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
-    <input v-model="name" class="spawn-input" type="text" placeholder="auto-generated" />
-    <div class="spawn-actions">
-      <button
-        class="pixel-btn spawn-launch-btn"
-        :disabled="spawning || selectedRepos.length === 0"
-        @click="launch"
-      >
-        {{ spawning ? 'Launching…' : 'Launch' }}
-      </button>
-    </div>
-    <div v-if="error" class="spawn-error">{{ error }}</div>
+          {{ spawning ? 'Launching…' : 'Launch' }}
+        </button>
+      </div>
+      <div v-if="error" class="spawn-error">{{ error }}</div>
+    </template>
   </div>
 </template>
 
@@ -63,11 +95,17 @@ const emit = defineEmits<{ (e: 'launched'): void }>()
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 
+const AVAILABLE_TOOLS = ['claude', 'codex', 'pi'] as const
+
 const selectedRepos = ref<string[]>([])
 const name = ref('')
+const selectedTools = ref<string[]>([])
+const agentCount = ref<number | null>(null)
 const spawning = ref(false)
 const error = ref('')
 const loadingRepos = ref(false)
+const launched = ref(false)
+const launchedWorkerId = ref('')
 
 const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
 
@@ -119,20 +157,33 @@ function setOrgCheckboxRef(el: HTMLInputElement | null, owner: string) {
   }
 }
 
+function toggleTool(tool: string) {
+  const idx = selectedTools.value.indexOf(tool)
+  if (idx >= 0) {
+    selectedTools.value.splice(idx, 1)
+  } else {
+    selectedTools.value.push(tool)
+  }
+}
+
 async function launch() {
   const guild = guildStore.currentGuild
   if (!guild || selectedRepos.value.length === 0) return
   spawning.value = true
   error.value = ''
   try {
-    await api(`/guilds/${guild.id}/spawn-worker`, {
+    const result = await api<{ worker_id?: string }>(`/guilds/${guild.id}/spawn-worker`, {
       method: 'POST',
       json: {
         repos: selectedRepos.value,
         name: name.value.trim() || undefined,
+        tools: selectedTools.value.length ? selectedTools.value : undefined,
+        agent_count: agentCount.value ?? undefined,
       },
     })
-    emit('launched')
+    launchedWorkerId.value = result?.worker_id ?? ''
+    launched.value = true
+    setTimeout(() => emit('launched'), 2500)
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -149,6 +200,29 @@ async function launch() {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.spawn-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 4px;
+}
+
+.spawn-success-label {
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  color: var(--color-green, #4caf50);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+
+.spawn-success-id {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-teal);
+  letter-spacing: 0.5px;
 }
 
 .spawn-label {
@@ -182,6 +256,10 @@ async function launch() {
 
 .spawn-input:focus {
   border-color: var(--color-teal);
+}
+
+.spawn-input--narrow {
+  width: 80px;
 }
 
 .spawn-actions {
@@ -219,6 +297,15 @@ async function launch() {
   gap: 1px;
   max-height: 160px;
   overflow-y: auto;
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 2px;
+  background: var(--color-bg);
+}
+
+.spawn-tool-list {
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
   border: 1px solid var(--color-brass-dark);
   border-radius: 2px;
   background: var(--color-bg);

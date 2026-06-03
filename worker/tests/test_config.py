@@ -283,3 +283,53 @@ def test_load_repos_only_org_none(tmp_path):
     cfg = load(str(toml_path))
     assert cfg.org is None
     assert "owner/repo" in cfg.repos
+
+
+# ---------------------------------------------------------------------------
+# load() — pre-assigned worker_id / auth_token (foreman spawn_worker path)
+# ---------------------------------------------------------------------------
+
+
+def test_load_worker_id_from_env(tmp_path, monkeypatch):
+    """PIONEER_WORKER_ID is picked up so the worker can skip self-registration."""
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("PIONEER_WORKER_ID", "w-abc123")
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.worker_id == "w-abc123"
+
+
+def test_load_auth_token_from_env(tmp_path, monkeypatch):
+    """PIONEER_AUTH_TOKEN lets a pre-registered worker skip self-registration."""
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("PIONEER_AUTH_TOKEN", "tok-secret")
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.auth_token == "tok-secret"
+
+
+def test_load_worker_id_none_by_default(tmp_path):
+    cfg = load(
+        str(tmp_path / "missing.toml"),
+        overrides={"backend_url": "ws://x:1", "guild_id": "g"},
+    )
+    assert cfg.worker_id is None
+    assert cfg.auth_token is None
+
+
+def test_load_max_agents_from_env(tmp_path, monkeypatch):
+    """PIONEER_MAX_AGENTS overrides the default of 4."""
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("PIONEER_MAX_AGENTS", "2")
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.max_agents == 2
+
+
+def test_load_max_agents_toml_beats_env(tmp_path, monkeypatch):
+    """max_agents in TOML takes priority over PIONEER_MAX_AGENTS."""
+    monkeypatch.setenv("PIONEER_MAX_AGENTS", "2")
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\nmax_agents = 8\n')
+    cfg = load(str(toml_path))
+    assert cfg.max_agents == 8
