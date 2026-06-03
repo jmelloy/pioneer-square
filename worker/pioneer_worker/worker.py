@@ -55,6 +55,8 @@ def _slug(text: str, max_len: int = 60) -> str:
 _CANCEL_SENTINEL = object()  # placed in redirect queue to signal task cancellation
 _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during shutdown
 
+_PR_PHASES = frozenset({"execute", "followup"})
+
 
 # Worktrees are kept around after a task completes so the foreman can send
 # follow-ups without paying for a re-clone. They're swept at startup and on a
@@ -1939,7 +1941,7 @@ class Worker:
                             "        -f 'comments[][body]=inline comment'\n"
                             "Do NOT push any commits or open a PR as part of this review.\n"
                         )
-                    elif _phase in ("execute", "followup"):
+                    elif _phase in _PR_PHASES:
                         current_desc = (
                             f"{desc}\n\n"
                             f"After completing your changes, commit, push, and open a PR:\n"

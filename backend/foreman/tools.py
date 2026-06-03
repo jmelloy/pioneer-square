@@ -1090,8 +1090,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             network = next(
                                 iter(me.attrs["NetworkSettings"]["Networks"].keys()), None
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(
+                                "Docker network detection failed, starting container without explicit network: %s",
+                                e,
+                            )
 
                         labels = {
                             "com.pioneer.kind": "worker",
@@ -1128,6 +1131,12 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             repos,
                         )
                     except ImportError:
+                        await db.exec(
+                            update(Worker)
+                            .where(col(Worker.id) == worker_id)
+                            .values(state="spawn_failed")
+                        )
+                        await db.commit()
                         result_text = (
                             f"Worker pre-registered as {worker_id} but the Docker SDK is not "
                             "installed on the backend — container was NOT started. "
@@ -1136,6 +1145,12 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         )
                         is_error = True
                     except Exception as exc:
+                        await db.exec(
+                            update(Worker)
+                            .where(col(Worker.id) == worker_id)
+                            .values(state="spawn_failed")
+                        )
+                        await db.commit()
                         result_text = (
                             f"Worker pre-registered as {worker_id} but failed to start "
                             f"container: {exc}"

@@ -148,7 +148,7 @@ async def test_spawn_worker_pre_registers_and_spawns(db_session):
 
     payload = json.loads(result["content"])
     assert payload["worker_id"].startswith("w-")
-    assert payload["container_id"] == "abc123def45"  # first 12 chars
+    assert payload["container_id"] == "abc123def456"  # first 12 chars
     assert payload["repos"] == ["acme/backend"]
 
     # Worker must be persisted in DB

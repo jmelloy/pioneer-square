@@ -8,7 +8,7 @@ credentials directly.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pioneer_worker.config import Config
@@ -81,7 +81,7 @@ async def test_register_calls_http_when_no_preassigned_credentials():
         async def post(self, *args, **kwargs):
             nonlocal http_called
             http_called = True
-            resp = AsyncMock()
+            resp = MagicMock()
             resp.raise_for_status = lambda: None
             resp.json.return_value = {"id": "w-new001", "auth_token": "tok-new", "name": "New"}
             return resp
