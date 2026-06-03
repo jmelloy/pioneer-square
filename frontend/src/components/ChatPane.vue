@@ -169,7 +169,9 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   border-left: 2px solid var(--color-brass-dark);
-  transition: width 0.2s ease, min-width 0.2s ease;
+  transition:
+    width 0.2s ease,
+    min-width 0.2s ease;
 }
 
 .chat-pane.minimized {
@@ -262,7 +264,6 @@ onUnmounted(() => {
   overflow: hidden;
   min-height: 0;
 }
-
 
 @media (max-width: 1024px) {
   .chat-pane {

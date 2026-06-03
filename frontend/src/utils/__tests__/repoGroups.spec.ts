@@ -15,7 +15,7 @@ describe('groupAndSortRepos', () => {
     const repos = [repo('acme/zebra'), repo('acme/alpha'), repo('acme/middle')]
     const groups = groupAndSortRepos(repos)
     expect(groups).toHaveLength(1)
-    expect(groups[0].repos.map(r => r.full_name)).toEqual([
+    expect(groups[0].repos.map((r) => r.full_name)).toEqual([
       'acme/alpha',
       'acme/middle',
       'acme/zebra',
@@ -23,22 +23,17 @@ describe('groupAndSortRepos', () => {
   })
 
   it('groups repos by owner', () => {
-    const repos = [
-      repo('bob/repo1'),
-      repo('alice/repoA'),
-      repo('alice/repoB'),
-      repo('bob/repo2'),
-    ]
+    const repos = [repo('bob/repo1'), repo('alice/repoA'), repo('alice/repoB'), repo('bob/repo2')]
     const groups = groupAndSortRepos(repos)
-    expect(groups.map(g => g.owner)).toEqual(['alice', 'bob'])
-    expect(groups[0].repos.map(r => r.full_name)).toEqual(['alice/repoA', 'alice/repoB'])
-    expect(groups[1].repos.map(r => r.full_name)).toEqual(['bob/repo1', 'bob/repo2'])
+    expect(groups.map((g) => g.owner)).toEqual(['alice', 'bob'])
+    expect(groups[0].repos.map((r) => r.full_name)).toEqual(['alice/repoA', 'alice/repoB'])
+    expect(groups[1].repos.map((r) => r.full_name)).toEqual(['bob/repo1', 'bob/repo2'])
   })
 
   it('orders groups alphabetically by owner', () => {
     const repos = [repo('zebra-org/a'), repo('alpha-org/b'), repo('middle-org/c')]
     const groups = groupAndSortRepos(repos)
-    expect(groups.map(g => g.owner)).toEqual(['alpha-org', 'middle-org', 'zebra-org'])
+    expect(groups.map((g) => g.owner)).toEqual(['alpha-org', 'middle-org', 'zebra-org'])
   })
 
   it('does not mutate the input array', () => {

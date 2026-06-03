@@ -69,6 +69,29 @@
         max="16"
         placeholder="4"
       />
+      <label class="spawn-label">Env Vars <span class="spawn-hint">(optional)</span></label>
+      <p class="spawn-env-hint">Keys are remembered between sessions; values must be re-entered each time (not saved for security).</p>
+      <div class="spawn-env-list">
+        <div v-for="(pair, idx) in envVars" :key="idx" class="spawn-env-row">
+          <input
+            v-model="pair.key"
+            class="spawn-input spawn-env-input spawn-env-key"
+            placeholder="KEY"
+            type="text"
+          />
+          <span class="spawn-env-sep">=</span>
+          <input
+            v-model="pair.value"
+            class="spawn-input spawn-env-input spawn-env-val"
+            placeholder="value"
+            type="text"
+          />
+          <button class="spawn-env-remove" @click="removeEnvVar(idx)" type="button" title="Remove">
+            ×
+          </button>
+        </div>
+        <button class="pixel-btn spawn-env-add" @click="addEnvVar" type="button">+ Add</button>
+      </div>
       <div class="spawn-actions">
         <button
           class="pixel-btn spawn-launch-btn"
@@ -97,10 +120,24 @@ const ghStore = useGitHubStore()
 
 const AVAILABLE_TOOLS = ['claude', 'codex', 'pi'] as const
 
+interface EnvPair {
+  key: string
+  value: string
+}
+
+interface SpawnSettings {
+  repos?: string[]
+  tools?: string[]
+  envVars?: EnvPair[]
+}
+
+const SETTINGS_KEY = (guildId: string) => `pioneer_square:spawn_settings:${guildId}`
+
 const selectedRepos = ref<string[]>([])
 const name = ref('')
 const selectedTools = ref<string[]>([])
 const agentCount = ref<number | null>(null)
+const envVars = ref<EnvPair[]>([])
 const spawning = ref(false)
 const error = ref('')
 const loadingRepos = ref(false)
@@ -109,8 +146,42 @@ const launchedWorkerId = ref('')
 
 const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
 
+function loadSavedSettings(guildId: string): SpawnSettings | null {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY(guildId))
+    return raw ? (JSON.parse(raw) as SpawnSettings) : null
+  } catch {
+    return null
+  }
+}
+
+function saveSettings(guildId: string) {
+  const settings: SpawnSettings = {
+    repos: selectedRepos.value,
+    tools: selectedTools.value,
+    // Save only keys (not values) — values may contain secrets/tokens.
+    envVars: envVars.value
+      .filter((e) => e.key.trim() !== '')
+      .map((e) => ({ key: e.key.trim(), value: '' })), // value intentionally blank: secrets must be re-entered each session
+  }
+  localStorage.setItem(SETTINGS_KEY(guildId), JSON.stringify(settings))
+}
+
 onMounted(async () => {
-  selectedRepos.value = [...ghStore.selectedRepos]
+  const guild = guildStore.currentGuild
+  const saved = guild ? loadSavedSettings(guild.id) : null
+
+  if (saved) {
+    if (saved.repos?.length) {
+      const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
+      selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
+    }
+    if (saved.tools?.length) selectedTools.value = saved.tools
+    if (saved.envVars?.length) envVars.value = saved.envVars
+  } else {
+    selectedRepos.value = [...ghStore.selectedRepos]
+  }
+
   if (ghStore.repos.length === 0 && ghStore.token) {
     loadingRepos.value = true
     await ghStore.fetchRepos()
@@ -128,20 +199,20 @@ function toggleRepo(fullName: string) {
 }
 
 function orgAllSelected(owner: string): boolean {
-  const repos = groupedRepos.value.find(g => g.owner === owner)?.repos ?? []
-  return repos.length > 0 && repos.every(r => selectedRepos.value.includes(r.full_name))
+  const repos = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
+  return repos.length > 0 && repos.every((r) => selectedRepos.value.includes(r.full_name))
 }
 
 function orgSomeSelected(owner: string): boolean {
-  const repos = groupedRepos.value.find(g => g.owner === owner)?.repos ?? []
-  return repos.some(r => selectedRepos.value.includes(r.full_name))
+  const repos = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
+  return repos.some((r) => selectedRepos.value.includes(r.full_name))
 }
 
 function toggleOrg(owner: string) {
-  const repos = groupedRepos.value.find(g => g.owner === owner)?.repos ?? []
+  const repos = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
   if (orgAllSelected(owner)) {
-    const names = new Set(repos.map(r => r.full_name))
-    selectedRepos.value = selectedRepos.value.filter(n => !names.has(n))
+    const names = new Set(repos.map((r) => r.full_name))
+    selectedRepos.value = selectedRepos.value.filter((n) => !names.has(n))
   } else {
     for (const repo of repos) {
       if (!selectedRepos.value.includes(repo.full_name)) {
@@ -166,12 +237,23 @@ function toggleTool(tool: string) {
   }
 }
 
+function addEnvVar() {
+  envVars.value.push({ key: '', value: '' })
+}
+
+function removeEnvVar(idx: number) {
+  envVars.value.splice(idx, 1)
+}
+
 async function launch() {
   const guild = guildStore.currentGuild
   if (!guild || selectedRepos.value.length === 0) return
   spawning.value = true
   error.value = ''
   try {
+    const envVarsPayload = Object.fromEntries(
+      envVars.value.filter((e) => e.key.trim() !== '').map((e) => [e.key.trim(), e.value.trim()]),
+    )
     const result = await api<{ worker_id?: string }>(`/guilds/${guild.id}/spawn-worker`, {
       method: 'POST',
       json: {
@@ -179,8 +261,10 @@ async function launch() {
         name: name.value.trim() || undefined,
         tools: selectedTools.value.length ? selectedTools.value : undefined,
         agent_count: agentCount.value ?? undefined,
+        env_vars: Object.keys(envVarsPayload).length ? envVarsPayload : undefined,
       },
     })
+    saveSettings(guild.id)
     launchedWorkerId.value = result?.worker_id ?? ''
     launched.value = true
     setTimeout(() => emit('launched'), 2500)
@@ -364,5 +448,73 @@ async function launch() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.spawn-env-hint {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  font-style: italic;
+  margin: 0 0 2px;
+  line-height: 1.4;
+}
+
+.spawn-env-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 2px;
+  background: var(--color-bg);
+  padding: 4px;
+}
+
+.spawn-env-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.spawn-env-input {
+  padding: 3px 4px;
+  font-size: 9px;
+  width: auto;
+}
+
+.spawn-env-key {
+  width: 80px;
+  flex-shrink: 0;
+}
+
+.spawn-env-val {
+  flex: 1;
+  min-width: 0;
+}
+
+.spawn-env-sep {
+  font-size: 10px;
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+}
+
+.spawn-env-remove {
+  background: none;
+  border: none;
+  color: var(--color-red, #e53935);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
+.spawn-env-remove:hover {
+  color: var(--color-text);
+}
+
+.spawn-env-add {
+  font-size: 7px;
+  padding: 3px 7px;
+  align-self: flex-start;
+  margin-top: 1px;
 }
 </style>

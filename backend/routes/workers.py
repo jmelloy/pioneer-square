@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import secrets
 import string
 from datetime import UTC, datetime
@@ -19,7 +20,7 @@ from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -48,11 +49,34 @@ class WorkerCreate(BaseModel):
     user: str | None = None
 
 
+_MAX_ENV_VARS = 20
+_MAX_ENV_VALUE_LEN = 4096
+
+
 class SpawnWorkerRequest(BaseModel):
     repos: list[str]
     name: str | None = None
     tools: list[str] | None = None
     agent_count: int | None = None
+    env_vars: dict[str, str] | None = None
+
+    @field_validator("env_vars")
+    @classmethod
+    def validate_env_vars(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is None:
+            return v
+        if len(v) > _MAX_ENV_VARS:
+            raise ValueError(f"Too many env vars (max {_MAX_ENV_VARS})")
+        for key, value in v.items():
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                raise ValueError(
+                    f"Invalid env var key: {key!r}. Keys must match ^[A-Za-z_][A-Za-z0-9_]*$"
+                )
+            if len(value) > _MAX_ENV_VALUE_LEN:
+                raise ValueError(
+                    f"Env var value for {key!r} exceeds max length ({_MAX_ENV_VALUE_LEN} chars)"
+                )
+        return v
 
 
 class TaskCreate(BaseModel):
@@ -179,6 +203,7 @@ async def spawn_worker_container(
         auth_token=auth_token,
         agent_count=data.agent_count,
         tools=data.tools or None,
+        extra_env=data.env_vars or None,
     )
 
     # Join the same Docker network as the backend so the worker can reach it.

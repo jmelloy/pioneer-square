@@ -291,7 +291,9 @@ async function handleSendFollowup() {
   followupError.value = ''
   try {
     await tasksStore.sendFollowup(guildId, taskId, instructions)
-    _injectChat(`[Foreman] Sent followup to ${_workerLabel()} on task ${taskId}: '${instructions.slice(0, 80)}'`)
+    _injectChat(
+      `[Foreman] Sent followup to ${_workerLabel()} on task ${taskId}: '${instructions.slice(0, 80)}'`,
+    )
     followupInstructions.value = ''
     followupTaskId.value = ''
   } catch (e: unknown) {
@@ -311,7 +313,9 @@ async function handleRedirectTask() {
   redirectError.value = ''
   try {
     await tasksStore.redirectTask(guildId, taskId, instructions)
-    _injectChat(`[Foreman] Redirected task ${taskId} on ${_workerLabel()}: '${instructions.slice(0, 80)}'`)
+    _injectChat(
+      `[Foreman] Redirected task ${taskId} on ${_workerLabel()}: '${instructions.slice(0, 80)}'`,
+    )
     redirectInstructions.value = ''
     redirectTaskId.value = ''
   } catch (e: unknown) {

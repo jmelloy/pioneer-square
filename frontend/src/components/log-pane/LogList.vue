@@ -15,15 +15,21 @@
           :class="[lineClass(log), { 'log-text--markdown': isMarkdownLine(log) }]"
           v-html="renderLine(log)"
         ></span>
-        <span v-if="isExpandable(log)" class="log-expand-icon">{{ expandedIdx === i ? '▲' : '▼' }}</span>
+        <span v-if="isExpandable(log)" class="log-expand-icon">{{
+          expandedIdx === i ? '▲' : '▼'
+        }}</span>
       </div>
       <div v-if="isExpandable(log) && expandedIdx === i" class="log-detail">
         <template v-if="log.detail.toolType === 'tool_use'">
           <template v-if="log.detail.name === 'Edit'">
             <div class="log-detail-label">OLD</div>
-            <pre class="log-detail-body log-detail-old">{{ inputRecord(log.detail.input).old_string }}</pre>
+            <pre class="log-detail-body log-detail-old">{{
+              inputRecord(log.detail.input).old_string
+            }}</pre>
             <div class="log-detail-label log-detail-label--new">NEW</div>
-            <pre class="log-detail-body log-detail-new">{{ inputRecord(log.detail.input).new_string }}</pre>
+            <pre class="log-detail-body log-detail-new">{{
+              inputRecord(log.detail.input).new_string
+            }}</pre>
           </template>
           <template v-else-if="log.detail.name === 'Write'">
             <div class="log-detail-label">{{ inputRecord(log.detail.input).file_path }}</div>

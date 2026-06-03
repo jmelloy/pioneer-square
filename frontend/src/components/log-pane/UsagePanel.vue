@@ -38,7 +38,9 @@
           <td :class="cellClass(usage.reportedCacheReadTokens, usage.summedCacheReadTokens)">
             {{ fmt(usage.reportedCacheReadTokens) }}
           </td>
-          <td :class="cellClass(usage.reportedCacheCreationTokens, usage.summedCacheCreationTokens)">
+          <td
+            :class="cellClass(usage.reportedCacheCreationTokens, usage.summedCacheCreationTokens)"
+          >
             {{ fmt(usage.reportedCacheCreationTokens) }}
           </td>
         </tr>

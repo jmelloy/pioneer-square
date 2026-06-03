@@ -1,6 +1,11 @@
 <template>
   <div class="log-pane" :class="'kind-' + kind">
-    <PaneHeader :icon="icon" :title-text="titleText" :entity-state="entityState" :entity-id="entityIdBadge">
+    <PaneHeader
+      :icon="icon"
+      :title-text="titleText"
+      :entity-state="entityState"
+      :entity-id="entityIdBadge"
+    >
       <template v-if="kind === 'task'" #meta>
         <span v-if="taskPhase" class="phase-badge" :class="taskPhase">{{ taskPhase }}</span>
         <span v-if="taskStateLabel" class="state-badge" :class="stateBadgeClass">

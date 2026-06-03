@@ -4,7 +4,9 @@
       <div class="auth-modal">
         <div class="auth-modal-header">
           <span class="auth-modal-title">⚿ CLAUDE AUTH REQUIRED</span>
-          <span class="auth-modal-worker">{{ agentsStore.workerDisplayName(pending.workerId) }}</span>
+          <span class="auth-modal-worker">{{
+            agentsStore.workerDisplayName(pending.workerId)
+          }}</span>
         </div>
         <div class="auth-modal-body">
           <p class="auth-instruction">

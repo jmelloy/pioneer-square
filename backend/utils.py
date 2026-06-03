@@ -251,6 +251,7 @@ def build_spawn_worker_env(
     auth_token: str | None = None,
     agent_count: int | None = None,
     tools: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the env dict for a spawned worker container.
 
@@ -263,12 +264,28 @@ def build_spawn_worker_env(
     foreman), the worker process skips its own self-registration and uses
     these credentials directly.  This lets callers know the worker_id before
     the container starts.
+
+    *extra_env* — additional key/value pairs supplied by the user at spawn
+    time (e.g. via the UI).  These are merged in first so that Pioneer's own
+    required vars (PIONEER_GUILD_ID, PIONEER_AUTH_TOKEN, etc.) always win.
     """
-    env: dict[str, str] = {
-        "PIONEER_BACKEND_URL": source_env.get("WORKER_BACKEND_URL", "http://backend:8000"),
-        "PIONEER_GUILD_ID": guild_id,
-        "PIONEER_REPOS": ",".join(repos),
-    }
+    if extra_env:
+        # Intentionally defensive: callers that bypass the Pydantic model (e.g. tests,
+        # internal callers) still get consistent validation with a clear error message.
+        for key in extra_env:
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                raise ValueError(
+                    f"Invalid env var key: {key!r}. Keys must match ^[A-Za-z_][A-Za-z0-9_]*$"
+                )
+    # User-supplied extras go in first; Pioneer's required vars overwrite them.
+    env: dict[str, str] = dict(extra_env) if extra_env else {}
+    env.update(
+        {
+            "PIONEER_BACKEND_URL": source_env.get("WORKER_BACKEND_URL", "http://backend:8000"),
+            "PIONEER_GUILD_ID": guild_id,
+            "PIONEER_REPOS": ",".join(repos),
+        }
+    )
     public_url = source_env.get("FRONTEND_URL", "").rstrip("/")
     if public_url:
         env["PIONEER_FRONTEND_URL"] = public_url
