@@ -37,23 +37,19 @@ def _parse_pi_usage(event: dict) -> dict | None:
     usage = event.get("usage") or event.get("tokenUsage")
     if not isinstance(usage, dict):
         return None
+    v = usage.get("inputTokens")
+    input_tokens = v if v is not None else usage.get("input_tokens", 0)
+    v = usage.get("outputTokens")
+    output_tokens = v if v is not None else usage.get("output_tokens", 0)
+    v = usage.get("cacheReadInputTokens")
+    cache_read = v if v is not None else usage.get("cache_read_input_tokens", 0)
+    v = usage.get("cacheCreationInputTokens")
+    cache_creation = v if v is not None else usage.get("cache_creation_input_tokens", 0)
     return {
-        "input_tokens": int(
-            usage.get("inputTokens") or usage.get("input_tokens") or 0
-        ),
-        "output_tokens": int(
-            usage.get("outputTokens") or usage.get("output_tokens") or 0
-        ),
-        "cache_read_input_tokens": int(
-            usage.get("cacheReadInputTokens")
-            or usage.get("cache_read_input_tokens")
-            or 0
-        ),
-        "cache_creation_input_tokens": int(
-            usage.get("cacheCreationInputTokens")
-            or usage.get("cache_creation_input_tokens")
-            or 0
-        ),
+        "input_tokens": int(input_tokens),
+        "output_tokens": int(output_tokens),
+        "cache_read_input_tokens": int(cache_read),
+        "cache_creation_input_tokens": int(cache_creation),
     }
 
 
@@ -285,13 +281,15 @@ async def run_pi_auto(
             stop_reason = "success"
         # Emit an explicit error when the subprocess exits non-zero without a
         # clean agent_end so callers see a failure rather than a silent EOF.
+        # Guard with `not saw_error` to avoid emitting a second error when the
+        # message_update handler already forwarded one.
         agent_ended_ok = saw_agent_end and not saw_error
-        if exit_code != 0 and not agent_ended_ok:
+        if exit_code != 0 and not agent_ended_ok and not saw_error:
             msg = f"[pi] ✗ process exited with non-zero code {exit_code}"
             logger.error("pi[%d] %s", proc.pid if proc else "?", msg)
             await emit(msg)
-            if not saw_error:
-                stop_reason = "error_during_execution"
+        if exit_code != 0 and not agent_ended_ok:
+            stop_reason = "error_during_execution"
         return (exit_code == 0 and agent_ended_ok), stop_reason, last_text, session_id
     except FileNotFoundError:
         logger.error("`pi` CLI not found on PATH")

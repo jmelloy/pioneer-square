@@ -750,6 +750,53 @@ sys.exit(0)
     assert success is True
 
 
+async def test_parse_pi_usage_zero_input_tokens_not_ignored() -> None:
+    """inputTokens=0 must not fall through to input_tokens via or-chaining."""
+    from pioneer_worker.pi_runner import _parse_pi_usage
+
+    # If or-chaining is used, 0 (falsy) would cause fallthrough to input_tokens=99.
+    event = {"usage": {"inputTokens": 0, "input_tokens": 99, "outputTokens": 5}}
+    result = _parse_pi_usage(event)
+    assert result is not None
+    assert result["input_tokens"] == 0
+    assert result["output_tokens"] == 5
+
+
+async def test_run_pi_auto_no_double_error_when_saw_error(tmp_path) -> None:
+    """When a message_update error is already forwarded, a non-zero exit must not
+    emit a second error chunk (double-error bug)."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+event = {{
+    "type": "message_update",
+    "assistantMessageEvent": {{"type": "error", "reason": "context_limit"}},
+    "message": {{"content": []}}
+}}
+print(json.dumps(event), flush=True)
+sys.exit(1)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str) -> None:
+        emitted.append(line)
+
+    success, stop_reason, _, _sid = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    assert success is False
+    assert stop_reason == "error_during_execution"
+    assert any("context_limit" in line for line in emitted)
+    # No second error chunk about the non-zero exit code.
+    assert not any("non-zero" in line for line in emitted), emitted
+
+
 async def test_run_pi_auto_snake_case_usage_fields(tmp_path) -> None:
     """Snake_case usage fields (input_tokens/output_tokens) are parsed correctly."""
     fake_pi = tmp_path / "fake-pi"

@@ -2041,8 +2041,7 @@ class Worker:
                         provider=_pi_provider,
                         on_usage=_collect_usage,
                     )
-                    if _pi_session_id:
-                        resume_session_id = _pi_session_id
+                    resume_session_id = _pi_session_id
                 else:
                     logger.info(
                         "Task %s: launching claude in %s (max_turns=%d, resume=%s)",
