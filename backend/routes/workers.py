@@ -8,6 +8,7 @@ the worker process connects via WebSocket (``join`` message in ws_handlers.py).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import re
@@ -19,7 +20,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeCredentials, Task, Worker, live_tasks_filter
+from models import ClaudeCredentials, Task, UserSpawnSettings, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -33,6 +34,7 @@ from utils import (
 from ws_handlers import _resolve_user_identifier
 from ws_types import TaskAssignedMsg, WorkerMessageMsg
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -363,6 +365,112 @@ async def list_tasks(
         .order_by(col(Task.created_at).desc())
     )
     return [row_to_dict(t) for t in result.all()]
+
+
+_MAX_SETTINGS_ENV_VARS = 50
+_MAX_SETTINGS_ENV_KEY_LEN = 256
+_MAX_SETTINGS_ENV_VALUE_LEN = 1024
+
+
+class EnvVarPair(BaseModel):
+    key: str
+    value: str
+
+
+class SaveSpawnSettingsRequest(BaseModel):
+    # All fields default to empty so a PUT always replaces the full settings object
+    # (no partial-update / PATCH semantics).
+    repos: list[str] = []
+    tools: list[str] = []
+    envVars: list[EnvVarPair] = []
+
+    @field_validator("envVars")
+    @classmethod
+    def validate_env_var_keys(cls, v: list[EnvVarPair]) -> list[EnvVarPair]:
+        if len(v) > _MAX_SETTINGS_ENV_VARS:
+            raise ValueError(f"Too many env vars (max {_MAX_SETTINGS_ENV_VARS})")
+        for pair in v:
+            if len(pair.key) > _MAX_SETTINGS_ENV_KEY_LEN:
+                raise ValueError(
+                    f"Env var key exceeds max length ({_MAX_SETTINGS_ENV_KEY_LEN} chars)"
+                )
+            if len(pair.value) > _MAX_SETTINGS_ENV_VALUE_LEN:
+                raise ValueError("An env var value exceeds the maximum allowed length")
+            if pair.key and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", pair.key):
+                raise ValueError(
+                    f"Invalid env var key: {pair.key!r}. Must match ^[A-Za-z_][A-Za-z0-9_]*$"
+                )
+        return v
+
+
+@router.get("/guilds/{guild_id}/spawn-settings")
+async def get_spawn_settings(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return the current user's saved spawn-worker settings for this guild."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(UserSpawnSettings).where(
+            col(UserSpawnSettings.guild_id) == guild_pk,
+            col(UserSpawnSettings.user_id) == github_user_id,
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        return {}
+    try:
+        return json.loads(row.settings_json)
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Corrupt settings_json for user %s guild %s: %s", github_user_id, guild_pk, exc
+        )
+        return {}
+
+
+@router.put("/guilds/{guild_id}/spawn-settings")
+async def save_spawn_settings(
+    guild_id: str,
+    data: SaveSpawnSettingsRequest,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Persist the current user's spawn-worker settings for this guild."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(UserSpawnSettings).where(
+            col(UserSpawnSettings.guild_id) == guild_pk,
+            col(UserSpawnSettings.user_id) == github_user_id,
+        )
+    )
+    row = result.one_or_none()
+    # model_dump() without exclude_none gives full-replace PUT semantics: every field
+    # is always written, so callers cannot do partial updates through this endpoint.
+    incoming = data.model_dump()
+    now = datetime.now(UTC)
+    # TODO: encrypt env var values at rest before production use (tracked in GH issue #537).
+    # Currently stored as plaintext JSON — an improvement over localStorage but not
+    # suitable for highly sensitive credentials until encryption is added.
+    settings_blob = json.dumps(incoming)
+    if row is None:
+        db.add(
+            UserSpawnSettings(
+                guild_id=guild_pk,
+                user_id=github_user_id,
+                settings_json=settings_blob,
+                updated_at=now,
+            )
+        )
+    else:
+        row.settings_json = settings_blob
+        row.updated_at = now
+    await db.commit()
+    return {"status": "saved"}
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/message")
