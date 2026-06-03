@@ -128,7 +128,8 @@ interface EnvPair {
 interface SpawnSettings {
   repos?: string[]
   tools?: string[]
-  envVars?: EnvPair[]
+  // Only keys are persisted — values are never stored to localStorage.
+  envVarKeys?: string[]
 }
 
 const SETTINGS_KEY = (guildId: string) => `pioneer_square:spawn_settings:${guildId}`
@@ -159,10 +160,7 @@ function saveSettings(guildId: string) {
   const settings: SpawnSettings = {
     repos: selectedRepos.value,
     tools: selectedTools.value,
-    // Save only keys (not values) — values may contain secrets/tokens.
-    envVars: envVars.value
-      .filter((e) => e.key.trim() !== '')
-      .map((e) => ({ key: e.key.trim(), value: '' })), // value intentionally blank: secrets must be re-entered each session
+    envVarKeys: envVars.value.filter((e) => e.key.trim() !== '').map((e) => e.key.trim()),
   }
   localStorage.setItem(SETTINGS_KEY(guildId), JSON.stringify(settings))
 }
@@ -177,7 +175,8 @@ onMounted(async () => {
       selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
     }
     if (saved.tools?.length) selectedTools.value = saved.tools
-    if (saved.envVars?.length) envVars.value = saved.envVars
+    if (saved.envVarKeys?.length)
+      envVars.value = saved.envVarKeys.map((k) => ({ key: k, value: '' }))
   } else {
     selectedRepos.value = [...ghStore.selectedRepos]
   }
