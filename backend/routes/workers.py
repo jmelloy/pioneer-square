@@ -53,6 +53,7 @@ class SpawnWorkerRequest(BaseModel):
     name: str | None = None
     tools: list[str] | None = None
     agent_count: int | None = None
+    env_vars: dict[str, str] | None = None
 
 
 class TaskCreate(BaseModel):
@@ -179,6 +180,7 @@ async def spawn_worker_container(
         auth_token=auth_token,
         agent_count=data.agent_count,
         tools=data.tools or None,
+        extra_env=data.env_vars or None,
     )
 
     # Join the same Docker network as the backend so the worker can reach it.

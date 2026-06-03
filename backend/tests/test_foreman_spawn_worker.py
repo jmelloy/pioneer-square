@@ -121,6 +121,33 @@ def test_build_spawn_worker_env_multiple_repos():
     assert env["PIONEER_GITHUB_TOKEN"] == "ghp_test"
 
 
+def test_build_spawn_worker_env_extra_env_passthrough():
+    env = build_spawn_worker_env(
+        guild_id="abc123",
+        repos=["owner/repo"],
+        worker_name=None,
+        source_env={},
+        extra_env={"MY_SECRET": "hunter2", "DEBUG": "1"},
+    )
+    assert env["MY_SECRET"] == "hunter2"
+    assert env["DEBUG"] == "1"
+    # Pioneer's required vars must not be clobbered by extra_env
+    assert env["PIONEER_GUILD_ID"] == "abc123"
+
+
+def test_build_spawn_worker_env_extra_env_pioneer_vars_win():
+    # User tries to override a required Pioneer var — Pioneer wins.
+    env = build_spawn_worker_env(
+        guild_id="real-guild",
+        repos=["owner/repo"],
+        worker_name=None,
+        source_env={},
+        extra_env={"PIONEER_GUILD_ID": "injected", "PIONEER_REPOS": "evil/repo"},
+    )
+    assert env["PIONEER_GUILD_ID"] == "real-guild"
+    assert env["PIONEER_REPOS"] == "owner/repo"
+
+
 # ---------------------------------------------------------------------------
 # spawn_worker tool — happy path (Docker mocked)
 # ---------------------------------------------------------------------------
