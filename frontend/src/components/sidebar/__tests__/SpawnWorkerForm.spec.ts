@@ -52,10 +52,13 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
       await wrapper.find('[data-testid="spawn-env-key"]').setValue('MY_SECRET')
       await wrapper.find('[data-testid="spawn-env-val"]').setValue('super-secret-value')
 
+      // Clicking the launch button triggers saveSettings as a side effect.
       await wrapper.find('[data-testid="spawn-launch-btn"]').trigger('click')
       await flushPromises()
 
-      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
+      const raw = localStorage.getItem(SETTINGS_KEY)
+      expect(raw).not.toBeNull()
+      const saved = JSON.parse(raw!)
       expect(saved.envVars).toEqual([{ key: 'MY_SECRET', value: '' }])
     })
 
@@ -73,10 +76,13 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
       await valInputs[0].setValue('some-value')
       // leave keyInputs[1] blank
 
+      // Clicking the launch button triggers saveSettings as a side effect.
       await wrapper.find('[data-testid="spawn-launch-btn"]').trigger('click')
       await flushPromises()
 
-      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
+      const raw = localStorage.getItem(SETTINGS_KEY)
+      expect(raw).not.toBeNull()
+      const saved = JSON.parse(raw!)
       expect(saved.envVars).toEqual([{ key: 'VALID_KEY', value: '' }])
     })
   })
@@ -101,17 +107,17 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
       expect(valInput.value).toBe('')
     })
 
-    it('returns null and renders defaults when localStorage contains non-object JSON', async () => {
-      for (const bad of ['null', '42', '"a string"', 'true', '[]']) {
+    it.each(['null', '42', '"a string"', 'true', '[]'])(
+      'returns null and renders defaults when localStorage contains %s',
+      async (bad) => {
         localStorage.setItem(SETTINGS_KEY, bad)
         const wrapper = createWrapper()
         await flushPromises()
         // Should fall back to default (selected repos from store, no env vars)
         expect(wrapper.findAll('[data-testid="spawn-env-key"]')).toHaveLength(0)
-        localStorage.clear()
         wrapper.unmount()
-      }
-    })
+      },
+    )
 
     it('returns null and renders defaults when localStorage contains malformed JSON', async () => {
       localStorage.setItem(SETTINGS_KEY, '{not valid json}')

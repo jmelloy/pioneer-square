@@ -158,10 +158,11 @@ function loadSavedSettings(guildId: string): SpawnSettings | null {
     // Strip values on load as defence-in-depth; values are never persisted.
     if (Array.isArray(settings.envVars)) {
       settings.envVars = settings.envVars.map((e) => ({ key: e.key, value: '' }))
-    } else {
-      console.warn('Unexpected envVars shape in localStorage, resetting:', settings.envVars)
+    } else if (settings.envVars !== undefined) {
+      console.warn('Unexpected envVars shape, resetting:', settings.envVars)
       settings.envVars = []
     }
+    // if undefined: silently default to []
     return settings
   } catch {
     return null
