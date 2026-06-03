@@ -76,6 +76,7 @@
           <input
             v-model="pair.key"
             class="spawn-input spawn-env-input spawn-env-key"
+            data-testid="spawn-env-key"
             placeholder="KEY"
             type="text"
           />
@@ -83,6 +84,7 @@
           <input
             v-model="pair.value"
             class="spawn-input spawn-env-input spawn-env-val"
+            data-testid="spawn-env-val"
             placeholder="value"
             type="text"
           />
@@ -90,11 +92,12 @@
             ×
           </button>
         </div>
-        <button class="pixel-btn spawn-env-add" @click="addEnvVar" type="button">+ Add</button>
+        <button class="pixel-btn spawn-env-add" data-testid="spawn-env-add" @click="addEnvVar" type="button">+ Add</button>
       </div>
       <div class="spawn-actions">
         <button
           class="pixel-btn spawn-launch-btn"
+          data-testid="spawn-launch-btn"
           :disabled="spawning || selectedRepos.length === 0"
           @click="launch"
         >
@@ -152,8 +155,10 @@ function loadSavedSettings(guildId: string): SpawnSettings | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as SpawnSettings
     // Strip values on load as defence-in-depth; values are never persisted.
-    if (parsed.envVars) {
+    if (Array.isArray(parsed.envVars)) {
       parsed.envVars = parsed.envVars.map((e) => ({ key: e.key, value: '' }))
+    } else {
+      parsed.envVars = []
     }
     return parsed
   } catch {

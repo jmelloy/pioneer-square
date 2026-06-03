@@ -45,13 +45,13 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
       const wrapper = createWrapper()
       await flushPromises()
 
-      await wrapper.find('.spawn-env-add').trigger('click')
+      await wrapper.find('[data-testid="spawn-env-add"]').trigger('click')
       await wrapper.vm.$nextTick()
 
-      await wrapper.find('.spawn-env-key').setValue('MY_SECRET')
-      await wrapper.find('.spawn-env-val').setValue('super-secret-value')
+      await wrapper.find('[data-testid="spawn-env-key"]').setValue('MY_SECRET')
+      await wrapper.find('[data-testid="spawn-env-val"]').setValue('super-secret-value')
 
-      await wrapper.find('.spawn-launch-btn').trigger('click')
+      await wrapper.find('[data-testid="spawn-launch-btn"]').trigger('click')
       await flushPromises()
 
       const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
@@ -62,17 +62,17 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
       const wrapper = createWrapper()
       await flushPromises()
 
-      await wrapper.find('.spawn-env-add').trigger('click')
-      await wrapper.find('.spawn-env-add').trigger('click')
+      await wrapper.find('[data-testid="spawn-env-add"]').trigger('click')
+      await wrapper.find('[data-testid="spawn-env-add"]').trigger('click')
       await wrapper.vm.$nextTick()
 
-      const keyInputs = wrapper.findAll('.spawn-env-key')
-      const valInputs = wrapper.findAll('.spawn-env-val')
+      const keyInputs = wrapper.findAll('[data-testid="spawn-env-key"]')
+      const valInputs = wrapper.findAll('[data-testid="spawn-env-val"]')
       await keyInputs[0].setValue('VALID_KEY')
       await valInputs[0].setValue('some-value')
       // leave keyInputs[1] blank
 
-      await wrapper.find('.spawn-launch-btn').trigger('click')
+      await wrapper.find('[data-testid="spawn-launch-btn"]').trigger('click')
       await flushPromises()
 
       const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
@@ -94,8 +94,8 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
       const wrapper = createWrapper()
       await flushPromises()
 
-      const keyInput = wrapper.find('.spawn-env-key').element as HTMLInputElement
-      const valInput = wrapper.find('.spawn-env-val').element as HTMLInputElement
+      const keyInput = wrapper.find('[data-testid="spawn-env-key"]').element as HTMLInputElement
+      const valInput = wrapper.find('[data-testid="spawn-env-val"]').element as HTMLInputElement
       expect(keyInput.value).toBe('MY_VAR')
       expect(valInput.value).toBe('')
     })
@@ -105,6 +105,7 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
         SETTINGS_KEY,
         JSON.stringify({
           repos: ['owner/repo'],
+          tools: [],
           envVars: [
             { key: 'FOO', value: 'foo-secret' },
             { key: 'BAR', value: 'bar-secret' },
@@ -115,7 +116,7 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
       const wrapper = createWrapper()
       await flushPromises()
 
-      const valInputs = wrapper.findAll('.spawn-env-val')
+      const valInputs = wrapper.findAll('[data-testid="spawn-env-val"]')
       expect(valInputs).toHaveLength(2)
       for (const input of valInputs) {
         expect((input.element as HTMLInputElement).value).toBe('')
