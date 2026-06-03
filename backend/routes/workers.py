@@ -50,6 +50,8 @@ class WorkerCreate(BaseModel):
 class SpawnWorkerRequest(BaseModel):
     repos: list[str]
     name: str | None = None
+    tools: list[str] | None = None
+    agent_count: int | None = None
 
 
 class TaskCreate(BaseModel):
@@ -144,12 +146,33 @@ async def spawn_worker_container(
     )
     stored_blob = result.one_or_none()
 
+    # Pre-register the worker so the container inherits a known worker_id.
+    worker_id = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    auth_token = secrets.token_urlsafe(32)
+    worker_name = data.name or worker_display_name(worker_id, None)
+    db.add(
+        Worker(
+            id=worker_id,
+            guild_id=guild_pk,
+            repos=json.dumps(data.repos),
+            state="offline",
+            created_at=datetime.now(UTC),
+            auth_token=auth_token,
+            name=worker_name,
+        )
+    )
+    await db.commit()
+
     env = build_spawn_worker_env(
         guild_id=guild_id,
         repos=data.repos,
-        worker_name=data.name,
+        worker_name=worker_name,
         source_env=dict(os.environ),
         claude_oauth_token=decode_claude_oauth_token(stored_blob),
+        worker_id=worker_id,
+        auth_token=auth_token,
+        agent_count=data.agent_count,
+        tools=data.tools or None,
     )
 
     # Join the same Docker network as the backend so the worker can reach it.
@@ -190,7 +213,7 @@ async def spawn_worker_container(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to start container: {e}")
 
-    return {"container_id": container.id[:12], "image": image}
+    return {"worker_id": worker_id, "container_id": container.id[:12], "image": image}
 
 
 @router.get("/guilds/{guild_id}/pending-auth")
