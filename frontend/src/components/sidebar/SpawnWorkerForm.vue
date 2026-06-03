@@ -152,15 +152,17 @@ function loadSavedSettings(guildId: string): SpawnSettings | null {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY(guildId))
     if (!raw) return null
-    const parsed = JSON.parse(raw) as SpawnSettings
+    const parsed = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const settings = parsed as SpawnSettings
     // Strip values on load as defence-in-depth; values are never persisted.
-    if (Array.isArray(parsed.envVars)) {
-      parsed.envVars = parsed.envVars.map((e) => ({ key: e.key, value: '' }))
+    if (Array.isArray(settings.envVars)) {
+      settings.envVars = settings.envVars.map((e) => ({ key: e.key, value: '' }))
     } else {
-      console.warn('Unexpected envVars shape in localStorage, resetting:', parsed.envVars)
-      parsed.envVars = []
+      console.warn('Unexpected envVars shape in localStorage, resetting:', settings.envVars)
+      settings.envVars = []
     }
-    return parsed
+    return settings
   } catch {
     return null
   }

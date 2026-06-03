@@ -101,6 +101,25 @@ describe('SpawnWorkerForm env var localStorage safety', () => {
       expect(valInput.value).toBe('')
     })
 
+    it('returns null and renders defaults when localStorage contains non-object JSON', async () => {
+      for (const bad of ['null', '42', '"a string"', 'true', '[]']) {
+        localStorage.setItem(SETTINGS_KEY, bad)
+        const wrapper = createWrapper()
+        await flushPromises()
+        // Should fall back to default (selected repos from store, no env vars)
+        expect(wrapper.findAll('[data-testid="spawn-env-key"]')).toHaveLength(0)
+        localStorage.clear()
+        wrapper.unmount()
+      }
+    })
+
+    it('returns null and renders defaults when localStorage contains malformed JSON', async () => {
+      localStorage.setItem(SETTINGS_KEY, '{not valid json}')
+      const wrapper = createWrapper()
+      await flushPromises()
+      expect(wrapper.findAll('[data-testid="spawn-env-key"]')).toHaveLength(0)
+    })
+
     it('restores multiple keys all with empty values', async () => {
       localStorage.setItem(
         SETTINGS_KEY,
