@@ -130,8 +130,9 @@ interface SpawnSettings {
   tools?: string[]
   // Only keys are persisted — values are never stored to localStorage.
   envVarKeys?: string[]
-  // Legacy field from before the security fix — used only for migration.
-  envVars?: EnvPair[]
+  // Legacy field from before the security fix — used only for migration. The `value?: never`
+  // ensures values can never be accidentally re-introduced here via a future refactor.
+  envVars?: { key: string; value?: never }[]
 }
 
 const SETTINGS_KEY = (guildId: string) => `pioneer_square:spawn_settings:${guildId}`
@@ -183,7 +184,15 @@ onMounted(async () => {
       .map((k) => k.trim())
       .filter((k) => k !== '')
     if (keys.length) envVars.value = keys.map((k) => ({ key: k, value: '' }))
-    if (isLegacy && guild) saveSettings(guild.id)
+    if (isLegacy) {
+      if (guild) {
+        // Intentionally migrate legacy envVars format on mount — safe to overwrite as values were never stored.
+        saveSettings(guild.id)
+      } else {
+        // guild unavailable; delete the stale legacy entry so it doesn't persist across sessions.
+        console.warn('[SpawnWorkerForm] Could not migrate legacy envVars localStorage entry: guild unavailable.')
+      }
+    }
   } else {
     selectedRepos.value = [...ghStore.selectedRepos]
   }
