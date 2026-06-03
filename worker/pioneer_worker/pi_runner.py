@@ -226,7 +226,7 @@ async def run_pi_auto(
                             "model": event.get("model"),
                             "cost_usd": cost,
                             "stop_reason": "success",
-                            **( usage_data or {}),
+                            **(usage_data or {}),
                         }
                         await on_usage(rec)
             if etype == "message_update":
