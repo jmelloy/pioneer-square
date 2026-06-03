@@ -269,6 +269,10 @@ def build_spawn_worker_env(
     time (e.g. via the UI).  These are merged in first so that Pioneer's own
     required vars (PIONEER_GUILD_ID, PIONEER_AUTH_TOKEN, etc.) always win.
     """
+    if extra_env:
+        for key in extra_env:
+            if not key or "=" in key:
+                raise ValueError(f"Invalid env var key: {key!r} — must be non-empty and contain no '='")
     # User-supplied extras go in first; Pioneer's required vars overwrite them.
     env: dict[str, str] = dict(extra_env) if extra_env else {}
     env.update(

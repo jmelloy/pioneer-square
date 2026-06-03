@@ -158,7 +158,10 @@ function saveSettings(guildId: string) {
   const settings: SpawnSettings = {
     repos: selectedRepos.value,
     tools: selectedTools.value,
-    envVars: envVars.value.filter((e) => e.key.trim() !== ''),
+    // Save only keys (not values) — values may contain secrets/tokens.
+    envVars: envVars.value
+      .filter((e) => e.key.trim() !== '')
+      .map((e) => ({ key: e.key.trim(), value: '' })),
   }
   localStorage.setItem(SETTINGS_KEY(guildId), JSON.stringify(settings))
 }
@@ -245,7 +248,7 @@ async function launch() {
   error.value = ''
   try {
     const envVarsPayload = Object.fromEntries(
-      envVars.value.filter((e) => e.key.trim() !== '').map((e) => [e.key.trim(), e.value]),
+      envVars.value.filter((e) => e.key.trim() !== '').map((e) => [e.key.trim(), e.value.trim()]),
     )
     const result = await api<{ worker_id?: string }>(`/guilds/${guild.id}/spawn-worker`, {
       method: 'POST',
