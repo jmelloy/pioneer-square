@@ -276,6 +276,7 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
         select(
             col(Worker.id),
             col(Worker.repos),
+            col(Worker.tools),
             col(Worker.org),
             col(Worker.state).label("worker_state"),
             func.count(col(Agent.id)).label("agent_count"),
@@ -363,6 +364,7 @@ async def run_foreman_ai(
                     "repos": json.loads(r["repos"] or "[]"),
                     **({"org": r["org"]} if r.get("org") else {}),
                     "agent_count": r["agent_count"] or 0,
+                    "tools": json.loads(r["tools"] or "[]"),
                 }
                 for r in worker_rows
             ],

@@ -559,8 +559,9 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     if not worker_id:
         return
     repos = data.get("repos") or []
+    tools = data.get("tools") or []
     user_ident = data.get("user")
-    update_vals: dict = {"repos": json.dumps(repos)}
+    update_vals: dict = {"repos": json.dumps(repos), "tools": json.dumps(tools)}
     if user_ident:
         resolved = await _resolve_user_identifier(ctx.db, user_ident)
         if resolved:
@@ -572,6 +573,7 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     )
     await ctx.db.commit()
     repos_str = ",".join(repos) if repos else ""
+    tools_str = ",".join(tools) if tools else ""
     # Query the DB for agents belonging to this specific worker so the count
     # is accurate even when multiple workers share the same WS connection or
     # agents from previous sessions are still tracked in joined_agents.
@@ -583,10 +585,11 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
         )
     )
     agent_count = count_res.one()
+    tools_suffix = f" tools={tools_str}" if tools_str else ""
     await _trigger_foreman(
         ctx.guild_id,
         "worker-online",
-        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}",
+        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}{tools_suffix}",
         task_name=f"foreman.worker-online:{worker_id}",
     )
 

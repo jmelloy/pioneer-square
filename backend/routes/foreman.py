@@ -177,6 +177,7 @@ async def get_foreman_state(
             **({"org": r["org"]} if r.get("org") else {}),
             "agent_count": r["agent_count"] or 0,
             "agents": r["agents"] or "",
+            "tools": json.loads(r["tools"] or "[]"),
         }
         for r in worker_rows
     ]

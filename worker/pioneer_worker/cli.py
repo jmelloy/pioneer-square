@@ -77,6 +77,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip `codex doctor` startup diagnostics.",
     )
     parser.add_argument("--pi-path", help="Path to the pi executable (default: pi).")
+    parser.add_argument(
+        "--tools",
+        help=(
+            "Comma-separated list of tool runners to enable (e.g. claude,codex,pi). "
+            "Each name is verified against its binary on PATH; tools not found are excluded "
+            "with a warning. Omit to auto-detect all known tools."
+        ),
+    )
 
     # Control API (drive/inspect a live worker without a frontend or foreman)
     parser.add_argument(
@@ -160,6 +168,11 @@ def main(argv: list[str] | None = None) -> int:
             "codex_args": args.codex_args,
             "codex_doctor": args.codex_doctor,
             "pi_path": args.pi_path,
+            "tools": (
+                [t.strip() for t in args.tools.split(",") if t.strip()]
+                if args.tools is not None
+                else None
+            ),
             "pull_interval": args.pull_interval,
             "claude_max_turns": args.claude_max_turns,
             "api_port": args.api_port,
