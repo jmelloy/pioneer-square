@@ -365,9 +365,9 @@ async def list_tasks(
     return [row_to_dict(t) for t in result.all()]
 
 
-_MAX_SETTINGS_ENV_VARS = 100
-_MAX_SETTINGS_ENV_KEY_LEN = 1000
-_MAX_SETTINGS_ENV_VALUE_LEN = 1000
+_MAX_SETTINGS_ENV_VARS = 50
+_MAX_SETTINGS_ENV_KEY_LEN = 256
+_MAX_SETTINGS_ENV_VALUE_LEN = 1024
 
 
 class EnvVarPair(BaseModel):

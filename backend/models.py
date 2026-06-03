@@ -379,7 +379,10 @@ class UserSpawnSettings(SQLModel, table=True):
     # secret env vars). Operators must restrict DB-level read access to this table.
     # TODO: add application-layer encryption for envVars before storing.
     settings_json: str = Field(default="{}")
-    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class PushToken(SQLModel, table=True):

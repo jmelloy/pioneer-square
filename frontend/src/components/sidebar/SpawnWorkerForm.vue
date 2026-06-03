@@ -172,8 +172,11 @@ onMounted(async () => {
 
   if (ghStore.repos.length === 0 && ghStore.token) {
     loadingRepos.value = true
-    await ghStore.fetchRepos()
-    loadingRepos.value = false
+    try {
+      await ghStore.fetchRepos()
+    } finally {
+      loadingRepos.value = false
+    }
   }
 
   const saved = guild ? await loadSavedSettings(guild.id) : null
