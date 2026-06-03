@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
-from events import broadcast, emit_terminal_line, pending_claude_auth
+from events import broadcast, emit_terminal_line, pending_claude_auth, pending_pi_auth
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
@@ -55,6 +55,8 @@ class TaskCreate(BaseModel):
     description: str
     name: str | None = None
     tool: str = "claude"  # "claude" | "codex" | "pi"
+    model: str | None = None
+    provider: str | None = None
     issue_number: int | None = None
     issue_repo: str | None = None
     repos: list[str] = []
@@ -197,13 +199,17 @@ async def get_pending_auth(
     guild_id: str,
     github_user_id: str = Depends(require_member()),
 ):
-    """Return workers currently waiting for a Claude auth code.
+    """Return workers currently waiting for a Claude or pi auth code.
 
     The frontend calls this on mount so the auth panel is restored after a
-    page refresh even if the original claude-auth-required broadcast was missed.
+    page refresh even if the original auth-required broadcast was missed.
     """
-    pending = pending_claude_auth.get(guild_id, {})
-    return [{"workerId": wid, "url": url} for wid, url in pending.items()]
+    items = []
+    for wid, url in pending_claude_auth.get(guild_id, {}).items():
+        items.append({"workerId": wid, "url": url, "tool": "claude"})
+    for wid, url in pending_pi_auth.get(guild_id, {}).items():
+        items.append({"workerId": wid, "url": url, "tool": "pi"})
+    return items
 
 
 @router.get("/guilds/{guild_id}/workers")
@@ -252,6 +258,8 @@ async def assign_task(
             name=name,
             description=data.description,
             tool=data.tool,
+            model=data.model,
+            provider=data.provider,
             issue_number=data.issue_number,
             issue_repo=data.issue_repo,
             state="pending",
@@ -271,6 +279,8 @@ async def assign_task(
             "name": name,
             "description": data.description,
             "tool": data.tool,
+            "model": data.model,
+            "provider": data.provider,
             "phase": data.phase or "execute",
             "parentTaskId": data.parent_task_id,
             "issueNumber": data.issue_number,

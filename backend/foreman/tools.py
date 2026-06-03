@@ -619,6 +619,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         wid,
                     )
                 tool = inp.get("tool", "claude")
+                model = inp.get("model") or None
+                provider = inp.get("provider") or None
                 existing_task_id = inp.get("task_id")
                 guild_result = await db.exec(
                     select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
@@ -658,6 +660,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         "worker_id": wid,
                         "description": desc,
                         "tool": tool,
+                        "model": model,
+                        "provider": provider,
                         "phase": phase,
                         "state": "pending",
                     }
@@ -687,6 +691,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "name": task_name,
                             "description": desc,
                             "tool": tool,
+                            "model": model,
+                            "provider": provider,
                             "phase": phase,
                             "issueNumber": inp.get("issue_number"),
                             "issueRepo": inp.get("issue_repo"),
@@ -709,6 +715,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             name=name,
                             description=desc,
                             tool=tool,
+                            model=model,
+                            provider=provider,
                             issue_number=inp.get("issue_number"),
                             issue_repo=inp.get("issue_repo"),
                             state="pending",
@@ -728,6 +736,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "name": name,
                             "description": desc,
                             "tool": tool,
+                            "model": model,
+                            "provider": provider,
                             "phase": phase,
                             "parentTaskId": parent_task_id,
                             "issueNumber": inp.get("issue_number"),

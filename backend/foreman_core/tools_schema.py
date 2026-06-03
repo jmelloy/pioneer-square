@@ -70,6 +70,14 @@ FOREMAN_TOOLS = [
                     "enum": ["claude", "codex", "pi"],
                     "description": "Coding agent to use. Default: claude.",
                 },
+                "model": {
+                    "type": "string",
+                    "description": "Model override for the chosen tool (e.g. 'claude-opus-4-8', 'o4-mini', 'gpt-4o'). Omit to use the worker's configured default.",
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "Provider override for pi tasks (e.g. 'anthropic', 'openai', 'google'). Ignored for claude and codex.",
+                },
                 "parent_task_id": {
                     "type": "string",
                     "description": "Foreman task ID this worker task belongs to (optional, ignored if task_id provided).",

@@ -49,6 +49,8 @@ class Config:
     # before the worker has a chance to forward it.
     openai_api_key: str | None = None
     pi_path: str = "pi"
+    pi_model: str | None = None
+    pi_provider: str | None = None
     pull_interval: float = 300.0
     claude_max_turns: int = 50
     max_agents: int = 4
@@ -132,6 +134,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     paths_block = raw.get("paths") or {}
     claude_block = raw.get("claude") or {}
     codex_block = raw.get("codex") or {}
+    pi_block = raw.get("pi") or {}
 
     token = overrides.get("github_token")
     if token is None:
@@ -231,6 +234,14 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         ),
         openai_api_key=_openai_api_key,
         pi_path=overrides.get("pi_path") or paths_block.get("pi", "pi"),
+        pi_model=overrides.get("pi_model")
+        or pi_block.get("model")
+        or os.environ.get("PIONEER_PI_MODEL")
+        or None,
+        pi_provider=overrides.get("pi_provider")
+        or pi_block.get("provider")
+        or os.environ.get("PIONEER_PI_PROVIDER")
+        or None,
         pull_interval=float(
             overrides.get("pull_interval")
             if overrides.get("pull_interval") is not None

@@ -110,7 +110,7 @@ services:
     restart: unless-stopped
 
   pgweb:
-    image: sosedoff/pgweb:0.15.0
+    image: sosedoff/pgweb:0.17.0
     profiles: [ "tools" ]
     ports:
       - "${PGWEB_PORT:-8081}:8081"

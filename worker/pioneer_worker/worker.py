@@ -146,6 +146,8 @@ class Worker:
         # ── Auth / repo state ────────────────────────────────────────────────
         # Queue for auth codes received from the UI during claude auth login.
         self._auth_code_queue: asyncio.Queue[str] | None = None
+        # Queue for auth codes received from the UI during pi auth login.
+        self._pi_auth_code_queue: asyncio.Queue[str] | None = None
         # Set to True once _join() has been called the first time so that
         # _on_ws_reconnect doesn't prematurely join before auth completes.
         self._joined = False
@@ -736,6 +738,175 @@ class Worker:
             logger.debug("Auth login watchdog cancelled")
             raise
 
+    async def _check_pi_auth(self) -> None:
+        """Check if pi is authenticated. Runs login flow if needed."""
+        if os.environ.get("PI_API_KEY"):
+            logger.info("PI_API_KEY set — skipping pi login flow")
+            return
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.cfg.pi_path,
+                "auth",
+                "status",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+            except TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                logger.info("pi auth status timed out — skipping pi login flow")
+                return
+
+            raw = stdout.decode(errors="replace").strip()
+            logger.info("pi auth status rc=%s output=%s", proc.returncode, raw[:200])
+            if proc.returncode == 0:
+                logger.info("pi is already authenticated")
+                return
+        except FileNotFoundError:
+            logger.info("pi CLI not found on PATH — skipping pi login flow")
+            return
+        except Exception as exc:
+            logger.warning("pi auth status check failed: %s — skipping pi login flow", exc)
+            return
+
+        await self._emit("No pi credentials found — starting login...", level=LEVEL_AUTH)
+        await self._run_pi_login()
+
+    async def _run_pi_login(self) -> None:
+        """Drive `pi auth login` to completion via PTY, broadcasting pi-auth-required."""
+        import fcntl
+        import pty
+        import re
+        import termios
+
+        self._pi_auth_code_queue = asyncio.Queue()
+        logger.info("Starting pi auth login — pi_auth_code_queue is now open")
+
+        master_fd, slave_fd = pty.openpty()
+        try:
+            attrs = termios.tcgetattr(slave_fd)
+            attrs[3] &= ~termios.ECHO
+            termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+        except termios.error as exc:
+            logger.debug("Could not disable PTY echo: %s", exc)
+
+        def _attach_controlling_tty() -> None:
+            os.setsid()
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.cfg.pi_path,
+                "auth",
+                "login",
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                preexec_fn=_attach_controlling_tty,
+            )
+        except FileNotFoundError:
+            logger.error("pi CLI not found; cannot run login")
+            self._pi_auth_code_queue = None
+            return
+        os.close(slave_fd)
+        logger.info("pi auth login started pid=%s (PTY mode)", proc.pid)
+
+        loop = asyncio.get_event_loop()
+        reader = asyncio.StreamReader()
+        reader_protocol = asyncio.StreamReaderProtocol(reader)
+        master_pipe = os.fdopen(master_fd, "rb", buffering=0)
+        await loop.connect_read_pipe(lambda: reader_protocol, master_pipe)
+
+        ansi_re = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]")
+
+        def _clean(b: bytes) -> str:
+            return ansi_re.sub(b"", b).decode(errors="replace")
+
+        captured = bytearray()
+        url_seen = False
+        code_sent = False
+        try:
+            while True:
+                try:
+                    chunk = await reader.read(4096)
+                except Exception as exc:
+                    logger.warning("PTY read error: %s", exc)
+                    break
+                if not chunk:
+                    break
+                captured.extend(chunk)
+                cleaned = _clean(chunk)
+                for line in cleaned.splitlines():
+                    line = line.rstrip()
+                    if line:
+                        logger.info("[pi auth login] %s", line)
+                        await self._emit(line, level=LEVEL_AUTH)
+
+                if not url_seen:
+                    full_clean = _clean(bytes(captured))
+                    m = re.search(r"https?://\S+", full_clean)
+                    if m:
+                        url = m.group(0).rstrip(".,)")
+                        url_seen = True
+                        await self._send(
+                            {
+                                "type": "pi-auth-required",
+                                "workerId": self.cfg.worker_id,
+                                "url": url,
+                            }
+                        )
+                        await self._emit(
+                            "Waiting for auth code — paste it into the auth panel in the UI...",
+                            level=LEVEL_AUTH,
+                        )
+                        logger.info("Pi auth login: awaiting code from queue (timeout=300s)")
+                        try:
+                            code = await asyncio.wait_for(
+                                self._pi_auth_code_queue.get(), timeout=300.0
+                            )
+                        except TimeoutError:
+                            logger.warning("Pi auth: timed out waiting for code")
+                            await self._emit(
+                                "Timed out waiting for pi auth code — restart worker to retry",
+                                level=LEVEL_AUTH,
+                            )
+                            proc.kill()
+                            await proc.wait()
+                            return
+                        await self._emit("Code received — submitting to pi...", level=LEVEL_AUTH)
+                        try:
+                            os.write(master_fd, code.strip().encode())
+                            await asyncio.sleep(0.2)
+                            os.write(master_fd, b"\r")
+                        except OSError as exc:
+                            logger.warning("Pi auth: PTY write failed: %s", exc)
+                            await self._emit(f"Failed to send code to pi: {exc}", level=LEVEL_AUTH)
+                            proc.kill()
+                            await proc.wait()
+                            return
+                        code_sent = True
+        finally:
+            self._pi_auth_code_queue = None
+            try:
+                master_pipe.close()
+            except OSError:
+                pass
+
+        await proc.wait()
+        logger.info("pi auth login exited rc=%s (code_sent=%s)", proc.returncode, code_sent)
+        if proc.returncode == 0:
+            await self._emit("pi authenticated successfully", level=LEVEL_AUTH)
+        else:
+            await self._emit(
+                "pi auth login finished — check pi credentials before running tasks",
+                level=LEVEL_AUTH,
+            )
+
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:
             resp = await client.get(
@@ -1052,6 +1223,7 @@ class Worker:
         # be visible to the foreman until Claude is ready to accept tasks.
         listener = asyncio.create_task(self._listen())
         await self._check_claude_auth()
+        await self._check_pi_auth()
 
         await self._join()
         self._joined = True
@@ -1189,15 +1361,22 @@ class Worker:
                     continue
                 text = msg.get("message", "")
                 if text:
-                    # During Claude login the auth queue is open; treat the
+                    # During Claude/pi login the auth queue is open; treat the
                     # message as the auth code so the foreman can relay it.
                     if self._auth_code_queue is not None:
                         await self._auth_code_queue.put(text)
                         logger.info(
-                            "Auth code received via worker-message (login flow) len=%d",
+                            "Auth code received via worker-message (claude login flow) len=%d",
                             len(text),
                         )
                         await self._emit("Auth code received and forwarded to login flow")
+                    elif self._pi_auth_code_queue is not None:
+                        await self._pi_auth_code_queue.put(text)
+                        logger.info(
+                            "Auth code received via worker-message (pi login flow) len=%d",
+                            len(text),
+                        )
+                        await self._emit("Auth code received and forwarded to pi login flow")
                     else:
                         active = next((s for s in self.agents if s.current_claude), None)
                         if active:
@@ -1227,7 +1406,10 @@ class Worker:
                     continue
                 if self._auth_code_queue is not None:
                     await self._auth_code_queue.put(code)
-                    logger.info("Auth code queued (len=%d)", len(code))
+                    logger.info("Auth code queued for claude (len=%d)", len(code))
+                elif self._pi_auth_code_queue is not None:
+                    await self._pi_auth_code_queue.put(code)
+                    logger.info("Auth code queued for pi (len=%d)", len(code))
                 else:
                     logger.warning(
                         "worker-auth-response received but no auth in progress (queue is None)"
@@ -1870,12 +2052,22 @@ class Worker:
                         openai_api_key=self.cfg.openai_api_key,
                     )
                 elif tool == "pi":
-                    logger.info("Task %s: launching pi in %s", task_id, primary_wt)
+                    _pi_model = task.get("model") or self.cfg.pi_model
+                    _pi_provider = task.get("provider") or self.cfg.pi_provider
+                    logger.info(
+                        "Task %s: launching pi in %s (model=%s provider=%s)",
+                        task_id,
+                        primary_wt,
+                        _pi_model,
+                        _pi_provider,
+                    )
                     success, stop_reason, last_msg = await pi_runner.run_pi_auto(
                         current_desc,
                         primary_wt,
                         emit=emit,
                         pi_path=self.cfg.pi_path,
+                        model=_pi_model,
+                        provider=_pi_provider,
                     )
                 else:
                     logger.info(
