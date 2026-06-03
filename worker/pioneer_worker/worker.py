@@ -174,6 +174,16 @@ class Worker:
         return httpx.AsyncClient(base_url=self.cfg.http_url, timeout=30.0, headers=headers)
 
     async def _register(self) -> None:
+        if self.cfg.worker_id and self.cfg.auth_token:
+            # Pre-assigned by the foreman's spawn_worker tool — skip self-registration.
+            self._worker_name = self.cfg.worker_name or self.cfg.worker_id
+            logger.info(
+                "Using pre-assigned worker_id=%s name=%s (skipping self-registration)",
+                self.cfg.worker_id,
+                self._worker_name,
+            )
+            return
+
         async with await self._http() as client:
             resp = await client.post(
                 f"/guilds/{self.cfg.guild_id}/workers",

@@ -27,11 +27,14 @@ class Config:
     # any task targeting <org>/* and will clone repos lazily on first use.
     # Can be used alongside repos (static list) or instead of it.
     org: str | None = None
+    # Pre-assigned by the foreman's spawn_worker tool.  When both are set the
+    # worker skips self-registration and uses these credentials directly.
     worker_id: str | None = None
     worker_name: str | None = None
     # Bearer token issued by the backend at registration; required for fetching
     # guild secrets (Claude credentials, GitHub token). Populated by Worker.run
-    # after _register and held in memory only.
+    # after _register and held in memory only.  Also supplied via
+    # PIONEER_AUTH_TOKEN when the foreman pre-registers the worker.
     auth_token: str | None = None
     github_token: str | None = None
     # Identity of the human this worker runs on behalf of.
@@ -216,6 +219,24 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             )
         _openai_api_key = _env_val  # None if var is absent, key string if present
 
+    _max_agents_env = os.environ.get("PIONEER_MAX_AGENTS")
+    if _max_agents_env:
+        try:
+            _default_max_agents: int = int(_max_agents_env)
+        except ValueError:
+            logger.warning(
+                "Invalid PIONEER_MAX_AGENTS=%r, using default 4", _max_agents_env
+            )
+            _default_max_agents = 4
+    else:
+        _default_max_agents = 4
+
+    _max_agents_val = (
+        overrides.get("max_agents")
+        if overrides.get("max_agents") is not None
+        else raw.get("max_agents", _default_max_agents)
+    )
+
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
@@ -229,6 +250,8 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or github_block.get("org")
         or os.environ.get("PIONEER_ORG")
         or None,
+        worker_id=overrides.get("worker_id") or os.environ.get("PIONEER_WORKER_ID") or None,
+        auth_token=overrides.get("auth_token") or os.environ.get("PIONEER_AUTH_TOKEN") or None,
         worker_name=overrides.get("worker_name")
         or raw.get("worker_name")
         or os.environ.get("PIONEER_WORKER_NAME"),
@@ -263,11 +286,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             if overrides.get("claude_max_turns") is not None
             else claude_block.get("max_turns", 50)
         ),
-        max_agents=int(
-            overrides.get("max_agents")
-            if overrides.get("max_agents") is not None
-            else raw.get("max_agents", 4)
-        ),
+        max_agents=int(_max_agents_val),
         public_backend_url=overrides.get("public_backend_url")
         or raw.get("public_backend_url")
         or os.environ.get("PIONEER_FRONTEND_URL"),

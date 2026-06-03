@@ -20,6 +20,7 @@ from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel
+from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from utils import (
@@ -50,6 +51,8 @@ class WorkerCreate(BaseModel):
 class SpawnWorkerRequest(BaseModel):
     repos: list[str]
     name: str | None = None
+    tools: list[str] | None = None
+    agent_count: int | None = None
 
 
 class TaskCreate(BaseModel):
@@ -144,12 +147,38 @@ async def spawn_worker_container(
     )
     stored_blob = result.one_or_none()
 
+    # Pre-register the worker so the container inherits a known worker_id and
+    # can skip self-registration on startup.
+    worker_id = "w-" + secrets.token_hex(3)
+    auth_token = secrets.token_urlsafe(32)
+    worker_name = data.name or worker_display_name(worker_id, None)
+    db.add(
+        Worker(
+            id=worker_id,
+            guild_id=guild_pk,
+            repos=json.dumps(data.repos),
+            state="offline",
+            created_at=datetime.now(UTC),
+            auth_token=auth_token,
+            name=worker_name,
+        )
+    )
+    await db.commit()
+    # TODO: If the process crashes between this commit and the docker run below,
+    # the row is left in "offline" state indefinitely (orphaned).  A background
+    # job or TTL-based cleanup should set stale "offline"/"pending" rows older
+    # than ~5 minutes to "spawn_failed".
+
     env = build_spawn_worker_env(
         guild_id=guild_id,
         repos=data.repos,
-        worker_name=data.name,
+        worker_name=worker_name,
         source_env=dict(os.environ),
         claude_oauth_token=decode_claude_oauth_token(stored_blob),
+        worker_id=worker_id,
+        auth_token=auth_token,
+        agent_count=data.agent_count,
+        tools=data.tools or None,
     )
 
     # Join the same Docker network as the backend so the worker can reach it.
@@ -183,14 +212,22 @@ async def spawn_worker_container(
             run_kwargs["network"] = network
         container = client.containers.run(**run_kwargs)
     except docker_sdk.errors.ImageNotFound:
+        await db.exec(
+            update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
+        )
+        await db.commit()
         raise HTTPException(
             status_code=404,
             detail=f"Worker image '{image}' not found — run: docker compose build worker",
         )
     except Exception as e:
+        await db.exec(
+            update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
+        )
+        await db.commit()
         raise HTTPException(status_code=500, detail=f"Failed to start container: {e}")
 
-    return {"container_id": container.id[:12], "image": image}
+    return {"worker_id": worker_id, "container_id": container.id[:12], "image": image}
 
 
 @router.get("/guilds/{guild_id}/pending-auth")
