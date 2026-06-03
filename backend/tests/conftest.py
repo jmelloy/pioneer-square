@@ -34,7 +34,7 @@ from helpers import create_db as _create_db  # noqa: E402
 from routes.webhooks import shutdown_debouncer  # noqa: E402
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def _setup_schema():
     """Run migrations once and wipe any leftover data from previous runs.
 
