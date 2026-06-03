@@ -59,6 +59,22 @@ logger = logging.getLogger(__name__)
 # an explicit expiry. Mirrors backend.main.DEFAULT_FINALIZE_TTL.
 DEFAULT_FINALIZE_TTL_SECONDS = 3 * 24 * 60 * 60  # 3 days
 
+# Module-level Docker client — created once per process to reuse the Unix-socket
+# connection across repeated spawn_worker calls instead of opening a new socket
+# each time.  None until first successful from_env(); tests can patch
+# _get_docker_client() directly to avoid touching sys.modules.
+_docker_client: Any = None
+
+
+def _get_docker_client() -> Any:
+    """Return the cached Docker client, importing the SDK and calling from_env() once."""
+    global _docker_client
+    if _docker_client is None:
+        import docker  # ImportError propagated to caller if SDK not installed
+
+        _docker_client = docker.from_env()
+    return _docker_client
+
 
 def _resolve_finalize_deleted_at(inp: dict) -> tuple[datetime | None, str | None]:
     """Compute the soft-delete instant for a finalize_task tool call.
@@ -1039,15 +1055,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     # before the container starts. The worker process will find
                     # PIONEER_WORKER_ID + PIONEER_AUTH_TOKEN in its env and skip
                     # its own self-registration step.
-                    worker_id = "w-" + "".join(
-                        random.choices(string.ascii_lowercase + string.digits, k=6)
-                    )
-                    # auth_token is a 256-bit cryptographically random bearer token stored
-                    # as plaintext in the DB (matching the UserSession.token convention).
-                    # It is passed to the container as an env var and never logged.
-                    # The DB is the only persistent store; no read-after-create endpoint
-                    # exists, so exposure is limited to the spawn path and the container's
-                    # runtime environment.
+                    worker_id = "w-" + secrets.token_hex(3)
                     auth_token = secrets.token_urlsafe(32)
                     worker_name = custom_name or worker_display_name(worker_id, None)
                     created_at = datetime.now(UTC)
@@ -1064,7 +1072,6 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     )
                     await db.commit()
 
-                    # Fetch Claude OAuth token from DB (same as HTTP spawn endpoint).
                     creds_result = await db.exec(
                         select(col(ClaudeCredentials.credentials_blob)).where(
                             col(ClaudeCredentials.guild_id) == guild_pk
@@ -1085,9 +1092,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     )
 
                     try:
-                        import docker as docker_sdk
-
-                        docker_client = docker_sdk.from_env()
+                        docker_client = _get_docker_client()
                         image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
 
                         network = None
@@ -1098,7 +1103,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             )
                         except Exception as e:
                             logger.warning(
-                                "Docker network detection failed, starting container without explicit network: %s",
+                                "Docker network detection failed, starting without explicit network: %s",
                                 e,
                             )
 
@@ -1146,8 +1151,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         result_text = (
                             f"Worker pre-registered as {worker_id} but the Docker SDK is not "
                             "installed on the backend — container was NOT started. "
-                            "Start the worker manually with "
-                            f"PIONEER_WORKER_ID={worker_id} PIONEER_AUTH_TOKEN=<token>."
+                            f"To start manually: PIONEER_WORKER_ID={worker_id} "
+                            f"PIONEER_AUTH_TOKEN={auth_token} "
+                            "<worker-start-command>"
                         )
                         is_error = True
                     except Exception as exc:

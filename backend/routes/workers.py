@@ -147,8 +147,9 @@ async def spawn_worker_container(
     )
     stored_blob = result.one_or_none()
 
-    # Pre-register the worker so the container inherits a known worker_id.
-    worker_id = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    # Pre-register the worker so the container inherits a known worker_id and
+    # can skip self-registration on startup.
+    worker_id = "w-" + secrets.token_hex(3)
     auth_token = secrets.token_urlsafe(32)
     worker_name = data.name or worker_display_name(worker_id, None)
     db.add(
@@ -163,6 +164,10 @@ async def spawn_worker_container(
         )
     )
     await db.commit()
+    # TODO: If the process crashes between this commit and the docker run below,
+    # the row is left in "offline" state indefinitely (orphaned).  A background
+    # job or TTL-based cleanup should set stale "offline"/"pending" rows older
+    # than ~5 minutes to "spawn_failed".
 
     env = build_spawn_worker_env(
         guild_id=guild_id,

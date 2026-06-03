@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
 from _test_config import TEST_DATABASE_URL
+from foreman import tools as foreman_tools
 from foreman.tools import _exec_one_tool
 from helpers import _sync_session, create_db, insert_guild, truncate_all
 from models import Worker
@@ -134,10 +135,7 @@ async def test_spawn_worker_pre_registers_and_spawns(db_session):
     fake_docker_client.containers.get.side_effect = Exception("no hostname")
     fake_docker_client.containers.run.return_value = fake_container
 
-    fake_docker_module = MagicMock()
-    fake_docker_module.from_env.return_value = fake_docker_client
-
-    with patch.dict("sys.modules", {"docker": fake_docker_module}):
+    with patch.object(foreman_tools, "_get_docker_client", return_value=fake_docker_client):
         result = await _exec_one_tool(
             "guild01",
             _fake_tool_use("spawn_worker", {"repos": ["acme/backend"]}),
@@ -173,9 +171,6 @@ async def test_spawn_worker_with_agent_count_and_tools(db_session):
     fake_docker_client.containers.get.side_effect = Exception("no hostname")
     fake_docker_client.containers.run.return_value = fake_container
 
-    fake_docker_module = MagicMock()
-    fake_docker_module.from_env.return_value = fake_docker_client
-
     captured_env: dict = {}
 
     def _capture_run(**kwargs):
@@ -184,7 +179,7 @@ async def test_spawn_worker_with_agent_count_and_tools(db_session):
 
     fake_docker_client.containers.run.side_effect = _capture_run
 
-    with patch.dict("sys.modules", {"docker": fake_docker_module}):
+    with patch.object(foreman_tools, "_get_docker_client", return_value=fake_docker_client):
         result = await _exec_one_tool(
             "guild02",
             _fake_tool_use(
@@ -224,7 +219,9 @@ async def test_spawn_worker_docker_unavailable(db_session):
     """When Docker SDK is not installed, worker is still pre-registered and error is returned."""
     insert_guild(db_session, "guild04")
 
-    with patch.dict("sys.modules", {"docker": None}):
+    with patch.object(
+        foreman_tools, "_get_docker_client", side_effect=ImportError("No module named 'docker'")
+    ):
         result = await _exec_one_tool(
             "guild04",
             _fake_tool_use("spawn_worker", {"repos": ["acme/api"]}),
@@ -249,10 +246,7 @@ async def test_spawn_worker_docker_run_fails(db_session):
     fake_docker_client.containers.get.side_effect = Exception("no hostname")
     fake_docker_client.containers.run.side_effect = Exception("image not found")
 
-    fake_docker_module = MagicMock()
-    fake_docker_module.from_env.return_value = fake_docker_client
-
-    with patch.dict("sys.modules", {"docker": fake_docker_module}):
+    with patch.object(foreman_tools, "_get_docker_client", return_value=fake_docker_client):
         result = await _exec_one_tool(
             "guild05",
             _fake_tool_use("spawn_worker", {"repos": ["acme/api"]}),
