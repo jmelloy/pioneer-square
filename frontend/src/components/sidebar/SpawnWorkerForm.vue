@@ -149,7 +149,13 @@ const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
 function loadSavedSettings(guildId: string): SpawnSettings | null {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY(guildId))
-    return raw ? (JSON.parse(raw) as SpawnSettings) : null
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as SpawnSettings
+    // Strip values on load as defence-in-depth; values are never persisted.
+    if (parsed.envVars) {
+      parsed.envVars = parsed.envVars.map((e) => ({ key: e.key, value: '' }))
+    }
+    return parsed
   } catch {
     return null
   }
