@@ -205,7 +205,8 @@ onMounted(async () => {
     // Gate migration on keys.length — avoids a pointless save when legacy entry has no usable data.
     if (isLegacy && keys.length) {
       if (guild) {
-        // Intentionally migrate legacy envVars format on mount — safe to overwrite as values were never stored.
+        // Remove the stale legacy entry (envVars format) and replace it with the migrated envVarKeys format.
+        localStorage.removeItem(SETTINGS_KEY(guild.id))
         saveSettings(guild.id)
       } else {
         // Without guild the localStorage key is unknown, so the stale legacy entry cannot be removed here.
