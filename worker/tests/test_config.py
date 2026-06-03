@@ -308,7 +308,9 @@ def test_load_auth_token_from_env(tmp_path, monkeypatch):
     assert cfg.auth_token == "tok-secret"
 
 
-def test_load_worker_id_none_by_default(tmp_path):
+def test_load_worker_id_none_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("PIONEER_WORKER_ID", raising=False)
+    monkeypatch.delenv("PIONEER_AUTH_TOKEN", raising=False)
     cfg = load(
         str(tmp_path / "missing.toml"),
         overrides={"backend_url": "ws://x:1", "guild_id": "g"},

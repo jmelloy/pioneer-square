@@ -367,7 +367,22 @@ class Worker:
         on PATH are excluded with a warning.  When cfg.tools is None (default), all
         known tool binaries are probed automatically.
         """
+        import os
         import shutil
+
+        def _is_executable(path: str) -> bool:
+            """Return True if *path* resolves to an executable file.
+
+            For bare names (no path separator) uses shutil.which to search PATH.
+            For paths containing a separator, falls back to a direct file check
+            when shutil.which returns None (handles relative and absolute paths
+            that aren't on PATH).
+            """
+            if shutil.which(path):
+                return True
+            if os.sep in path or (os.altsep and os.altsep in path):
+                return os.path.isfile(path) and os.access(path, os.X_OK)
+            return False
 
         tool_paths = {
             "claude": self.cfg.claude_path,
@@ -382,7 +397,7 @@ class Worker:
             if binary is None:
                 logger.warning("Unknown tool %r in --tools list; skipping", name)
                 continue
-            if shutil.which(binary):
+            if _is_executable(binary):
                 tools.append(name)
             else:
                 logger.warning(

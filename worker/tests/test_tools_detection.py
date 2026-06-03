@@ -117,6 +117,41 @@ class TestDetectAvailableTools:
         assert worker._available_tools == ["claude", "pi"]
         assert "codex" not in worker._available_tools
 
+    def test_absolute_path_detected_via_file_check(self, tmp_path):
+        """An absolute path to an executable must be detected even when shutil.which returns None."""
+        exe = tmp_path / "my-claude"
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+
+        cfg = _make_cfg(tools=["claude"], claude_path=str(exe))
+        worker = Worker(cfg)
+        with patch("shutil.which", return_value=None):
+            worker._detect_available_tools()
+
+        assert "claude" in worker._available_tools
+
+    def test_absolute_path_nonexistent_excluded(self, tmp_path):
+        """An absolute path that doesn't exist must be excluded."""
+        cfg = _make_cfg(tools=["claude"], claude_path=str(tmp_path / "no-such-binary"))
+        worker = Worker(cfg)
+        with patch("shutil.which", return_value=None):
+            worker._detect_available_tools()
+
+        assert "claude" not in worker._available_tools
+
+    def test_absolute_path_non_executable_excluded(self, tmp_path):
+        """An absolute path to a non-executable file must be excluded."""
+        non_exe = tmp_path / "claude-data"
+        non_exe.write_text("not a script")
+        non_exe.chmod(0o644)
+
+        cfg = _make_cfg(tools=["claude"], claude_path=str(non_exe))
+        worker = Worker(cfg)
+        with patch("shutil.which", return_value=None):
+            worker._detect_available_tools()
+
+        assert "claude" not in worker._available_tools
+
 
 class TestToolsCLIFlag:
     """Tests for the --tools CLI flag wiring through cli.main()."""
