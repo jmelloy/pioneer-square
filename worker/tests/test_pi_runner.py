@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -179,6 +180,8 @@ sys.exit(0)
     assert stop_reason == "success"
     assert "[pi] agent started" in emitted
     assert last_text == "Task done"
+    for line in emitted:
+        assert not line.endswith("\n"), f"trailing newline in emitted line: {line!r}"
 
 
 async def test_run_pi_auto_not_found(tmp_path) -> None:
@@ -350,41 +353,83 @@ sys.exit(0)
     assert stop_reason == "success"
 
 
-async def test_run_pi_auto_oversized_line_continues_to_agent_end(tmp_path, monkeypatch) -> None:
-    """After an oversized line (LimitOverrunError), subsequent lines including
-    agent_end must still be processed — the runner must not hang or lose events."""
-    import pioneer_worker.pi_runner as pi_runner_mod
+async def test_run_pi_auto_limit_overrun_skips_and_continues() -> None:
+    """LimitOverrunError on the first readline is logged and skipped; the
+    following agent_end line is still processed and stop_reason is success.
+    Uses a fully-mocked subprocess so no real process is spawned."""
+    from unittest.mock import AsyncMock, MagicMock, patch
 
-    # Set a tiny limit so a 256-byte line triggers LimitOverrunError.
-    monkeypatch.setattr(pi_runner_mod, "_STREAM_LIMIT", 128)
+    # --- stdout behaviour ---
+    # readline: first call raises LimitOverrunError; second returns agent_end; third is EOF.
+    readline_queue = [
+        asyncio.LimitOverrunError("line too long", 0),
+        b'{"type":"agent_end"}\n',
+        b"",
+    ]
+    readline_pos = [0]
 
-    fake_pi = tmp_path / "fake-pi"
-    fake_pi.write_text(
-        f"""#!{sys.executable}
-import json, sys
-# This 256-byte line exceeds the patched 128-byte limit.
-print("x" * 256, flush=True)
-# agent_end must still be received even after the oversized line.
-print(json.dumps({{"type": "agent_end"}}), flush=True)
-sys.exit(0)
-""",
-        encoding="utf-8",
-    )
-    fake_pi.chmod(0o755)
+    async def _readline() -> bytes:
+        idx = readline_pos[0]
+        readline_pos[0] += 1
+        val = readline_queue[idx] if idx < len(readline_queue) else b""
+        if isinstance(val, BaseException):
+            raise val
+        return val
+
+    # read(1): drain loop reads two bytes — 'x' then '\n' — to simulate the
+    # tail of the oversized line, stopping exactly at the newline.
+    read_queue = [b"x", b"\n"]
+    read_pos = [0]
+
+    async def _read(n: int) -> bytes:
+        idx = read_pos[0]
+        read_pos[0] += 1
+        return read_queue[idx] if idx < len(read_queue) else b""
+
+    fake_stdout = MagicMock()
+    fake_stdout.readline = _readline
+    fake_stdout.read = _read
+
+    # --- stderr: empty async generator ---
+    async def _empty_stderr():
+        return
+        yield  # make it an async generator
+
+    # --- stdin ---
+    fake_stdin = MagicMock()
+    fake_stdin.write = MagicMock()
+    fake_stdin.drain = AsyncMock()
+    fake_stdin.close = MagicMock()
+    fake_stdin.is_closing = MagicMock(return_value=False)
+
+    # --- process ---
+    fake_proc = MagicMock()
+    fake_proc.pid = 99999
+    fake_proc.returncode = 0  # already exited — finally block skips kill
+    fake_proc.stdout = fake_stdout
+    fake_proc.stderr = _empty_stderr()
+    fake_proc.stdin = fake_stdin
+    fake_proc.wait = AsyncMock(return_value=0)
+
+    async def _fake_create(*args: object, **kwargs: object):
+        return fake_proc
 
     emitted: list[str] = []
 
     async def emit(line: str) -> None:
         emitted.append(line)
 
-    success, stop_reason, _ = await run_pi_auto(
-        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
-    )
+    with patch("asyncio.create_subprocess_exec", new=_fake_create):
+        success, stop_reason, _ = await run_pi_auto("/tmp", "/tmp", emit=emit)
 
-    # The oversized line error must have been reported.
+    # The oversized-line error must have been reported.
     assert any("too large" in line for line in emitted)
-    # agent_end must have been received → stop_reason is success, not no_events.
+    # agent_end was processed → success is True (not merely exit_code==0).
+    assert success is True
     assert stop_reason == "success"
+    # No emitted line should carry a spurious trailing newline.
+    for line in emitted:
+        assert not line.endswith("\n"), f"trailing newline in emitted line: {line!r}"
 
 
 async def test_run_pi_auto_stderr_forwarded(tmp_path) -> None:

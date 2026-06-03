@@ -128,11 +128,12 @@ async def run_pi_auto(
                     exc,
                 )
                 await emit(f"[pi] ✗ stdout line too large, skipping: {exc}")
-                # Consume the rest of the oversized line so the stream stays usable.
+                # Drain the rest of the oversized line one byte at a time so we
+                # stop exactly at the \n and don't consume bytes from the next line.
                 try:
                     while True:
-                        chunk = await proc.stdout.read(65536)  # type: ignore[union-attr]
-                        if not chunk or b"\n" in chunk:
+                        byte = await proc.stdout.read(1)  # type: ignore[union-attr]
+                        if not byte or byte == b"\n":
                             break
                 except Exception:
                     pass
