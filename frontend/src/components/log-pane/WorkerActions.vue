@@ -2,7 +2,7 @@
   <div class="actions-panel">
     <div v-if="pendingAuthUrl" class="auth-banner">
       <span class="auth-icon">⚿</span>
-      <span class="auth-text">{{ pendingAuthTool?.toUpperCase() ?? '' }} authentication required —</span>
+      <span class="auth-text">Authentication required —</span>
       <a :href="pendingAuthUrl" target="_blank" rel="noopener" class="auth-link">{{
         pendingAuthUrl
       }}</a>
@@ -167,7 +167,6 @@ const sendingMessage = ref(false)
 const shuttingDown = ref(false)
 const actionError = ref('')
 const pendingAuthUrl = ref<string | null>(null)
-const pendingAuthTool = ref<'claude' | 'pi' | null>(null)
 
 // Expand toggle
 const expanded = ref(false)
@@ -348,33 +347,24 @@ async function fetchPendingAuth() {
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
   try {
-    const items = await api<Array<{ workerId: string; url: string; tool?: string }>>(
+    const items = await api<Array<{ workerId: string; url: string }>>(
       `/guilds/${guildId}/pending-auth`,
     )
     const match = items.find((i) => i.workerId === props.workerId)
     pendingAuthUrl.value = match?.url ?? null
-    pendingAuthTool.value = (match?.tool as 'claude' | 'pi') ?? null
   } catch {
     // non-fatal
   }
 }
 
 function handleAuthEvent(data: WSInbound) {
-  if (
-    (data.type === 'claude-auth-required' || data.type === 'pi-auth-required') &&
-    data.workerId === props.workerId
-  ) {
+  if (data.type === 'claude-auth-required' && data.workerId === props.workerId) {
     pendingAuthUrl.value = data.url
-    pendingAuthTool.value = data.type === 'pi-auth-required' ? 'pi' : 'claude'
   } else if (
-    (data.type === 'claude-auth-success' ||
-      data.type === 'claude-auth-cleared' ||
-      data.type === 'pi-auth-success' ||
-      data.type === 'pi-auth-cleared') &&
+    (data.type === 'claude-auth-success' || data.type === 'claude-auth-cleared') &&
     data.workerId === props.workerId
   ) {
     pendingAuthUrl.value = null
-    pendingAuthTool.value = null
   }
 }
 

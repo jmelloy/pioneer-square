@@ -113,14 +113,6 @@ function handleTaskEvent(data: WSInbound) {
       content: `⚿ ${agentsStore.workerDisplayName(data.workerId)} needs Claude auth — visit the URL and paste the code below`,
       createdAt: new Date().toISOString(),
     })
-  } else if (data.type === 'pi-auth-required') {
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: `⚿ ${agentsStore.workerDisplayName(data.workerId)} needs pi auth — visit the URL and paste the code in the worker auth panel`,
-      createdAt: new Date().toISOString(),
-    })
   } else if (data.type === 'task-assigned') {
     const taskName = (data.name || data.description || '').slice(0, 60)
     guildStore.messages.push({

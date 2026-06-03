@@ -281,22 +281,6 @@ export interface ClaudeAuthClearedWS {
   workerId: string
 }
 
-export interface PiAuthRequiredWS {
-  type: 'pi-auth-required'
-  workerId: string
-  url: string
-}
-
-export interface PiAuthSuccessWS {
-  type: 'pi-auth-success'
-  workerId: string
-}
-
-export interface PiAuthClearedWS {
-  type: 'pi-auth-cleared'
-  workerId: string
-}
-
 export interface ForemanPollStatusWS {
   type: 'foreman-poll-status'
   nextCheckIn?: number
@@ -339,9 +323,6 @@ export type WSInbound =
   | ClaudeAuthRequiredWS
   | ClaudeAuthSuccessWS
   | ClaudeAuthClearedWS
-  | PiAuthRequiredWS
-  | PiAuthSuccessWS
-  | PiAuthClearedWS
   | ForemanPollStatusWS
   | ClaudeUsageWS
 
