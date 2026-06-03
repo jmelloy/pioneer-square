@@ -86,9 +86,7 @@ const _TERMINAL_STATES = new Set(['done', 'failed', 'cancelled', 'error'])
 const isTerminalState = computed(() => _TERMINAL_STATES.has(props.taskState || ''))
 
 const showFollowupPanel = computed(
-  () =>
-    isWorkerTask.value &&
-    (props.taskState === 'awaiting-review' || isTerminalState.value),
+  () => isWorkerTask.value && (props.taskState === 'awaiting-review' || isTerminalState.value),
 )
 
 const followupPanelHeader = computed(() =>

@@ -48,9 +48,21 @@
     </div>
     <div class="tab-content">
       <FactoryFloor v-if="agentsStore.activeTab === 'factory'" />
-      <LogPane v-else-if="agentsStore.activeTab.startsWith('agent-')" kind="agent" :id="agentsStore.activeTab.slice(6)" />
-      <LogPane v-else-if="agentsStore.activeTab.startsWith('worker-')" kind="worker" :id="agentsStore.activeTab.slice(7)" />
-      <LogPane v-else-if="agentsStore.activeTab.startsWith('task-')" kind="task" :id="agentsStore.activeTab.slice(5)" />
+      <LogPane
+        v-else-if="agentsStore.activeTab.startsWith('agent-')"
+        kind="agent"
+        :id="agentsStore.activeTab.slice(6)"
+      />
+      <LogPane
+        v-else-if="agentsStore.activeTab.startsWith('worker-')"
+        kind="worker"
+        :id="agentsStore.activeTab.slice(7)"
+      />
+      <LogPane
+        v-else-if="agentsStore.activeTab.startsWith('task-')"
+        kind="task"
+        :id="agentsStore.activeTab.slice(5)"
+      />
     </div>
   </div>
 </template>

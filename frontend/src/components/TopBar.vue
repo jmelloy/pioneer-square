@@ -98,7 +98,9 @@
         <div v-if="claudeCredsStatus === null" class="creds-loading">Loading…</div>
         <div v-else-if="claudeCredsStatus.saved" class="creds-saved-section">
           <div class="settings-row creds-saved-row">
-            <span class="creds-saved-at">Saved {{ formatCredsDate(claudeCredsStatus.updated_at) }}</span>
+            <span class="creds-saved-at"
+              >Saved {{ formatCredsDate(claudeCredsStatus.updated_at) }}</span
+            >
             <button
               v-if="!claudeCredsConfirmDelete"
               class="pixel-btn creds-delete-btn"
@@ -117,7 +119,10 @@
             >
               Confirm
             </button>
-            <button class="pixel-btn creds-confirm-no-btn" @click="claudeCredsConfirmDelete = false">
+            <button
+              class="pixel-btn creds-confirm-no-btn"
+              @click="claudeCredsConfirmDelete = false"
+            >
               Cancel
             </button>
           </div>

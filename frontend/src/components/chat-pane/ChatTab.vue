@@ -109,7 +109,6 @@ function senderLabel(msg: ChatMessage): string {
   return sender.toUpperCase()
 }
 
-
 const formatTime = (iso?: string) => formatClock(iso)
 
 async function onSend() {
@@ -488,5 +487,4 @@ watch(
   padding: 6px 10px;
   font-size: 10px;
 }
-
 </style>

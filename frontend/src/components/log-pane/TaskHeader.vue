@@ -2,7 +2,12 @@
   <div v-if="taskBranch || taskPrUrl || taskCreatedAt" class="pane-subheader">
     <span v-if="taskId" class="sub-id">{{ taskId }}</span>
     <span v-if="taskBranch" class="sub-branch">⌥ {{ taskBranch }}</span>
-    <a v-if="taskPrUrl" :href="taskPrUrl" target="_blank" rel="noopener noreferrer" class="sub-pr-link"
+    <a
+      v-if="taskPrUrl"
+      :href="taskPrUrl"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="sub-pr-link"
       >PR →</a
     >
     <span v-if="taskCreatedAt" class="sub-time">{{ formatDateTime(taskCreatedAt) }}</span>
