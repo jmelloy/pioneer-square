@@ -70,6 +70,11 @@ class Config:
     api_port: int | None = None
     api_host: str = "127.0.0.1"
 
+    # Explicit allow-list of tool runners to report.  When None (default) the worker
+    # auto-detects by probing every known tool binary.  When set to a list the worker
+    # only checks the listed names and warns about any that are absent from PATH.
+    tools: list[str] | None = None
+
     config_path: Path = field(default_factory=Path)
 
     @property
@@ -238,6 +243,19 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         else raw.get("max_agents", _default_max_agents)
     )
 
+    # tools: override list > TOML list > PIONEER_TOOLS env var (comma-separated) > None (auto-detect)
+    _tools_override = overrides.get("tools")
+    _tools_raw = raw.get("tools")
+    _tools_env = os.environ.get("PIONEER_TOOLS", "").strip()
+    if _tools_override is not None:
+        _tools_val: list[str] | None = list(_tools_override)
+    elif _tools_raw is not None:
+        _tools_val = list(_tools_raw)
+    elif _tools_env:
+        _tools_val = [t.strip() for t in _tools_env.split(",") if t.strip()]
+    else:
+        _tools_val = None
+
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
@@ -301,5 +319,6 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or os.environ.get("PIONEER_FRONTEND_URL"),
         api_port=_api_port,
         api_host=_api_host,
+        tools=_tools_val,
         config_path=cfg_path,
     )

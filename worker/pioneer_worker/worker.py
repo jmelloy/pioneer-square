@@ -361,16 +361,35 @@ class Worker:
             )
 
     def _detect_available_tools(self) -> None:
-        """Populate self._available_tools based on which runner binaries are on PATH."""
+        """Populate self._available_tools based on which runner binaries are on PATH.
+
+        When cfg.tools is set, only the listed names are probed; any that aren't found
+        on PATH are excluded with a warning.  When cfg.tools is None (default), all
+        known tool binaries are probed automatically.
+        """
         import shutil
 
+        tool_paths = {
+            "claude": self.cfg.claude_path,
+            "codex": self.cfg.codex_path,
+            "pi": self.cfg.pi_path,
+        }
+        candidates = self.cfg.tools if self.cfg.tools is not None else list(tool_paths)
+
         tools: list[str] = []
-        if shutil.which(self.cfg.claude_path):
-            tools.append("claude")
-        if shutil.which(self.cfg.codex_path):
-            tools.append("codex")
-        if shutil.which(self.cfg.pi_path):
-            tools.append("pi")
+        for name in candidates:
+            binary = tool_paths.get(name)
+            if binary is None:
+                logger.warning("Unknown tool %r in --tools list; skipping", name)
+                continue
+            if shutil.which(binary):
+                tools.append(name)
+            else:
+                logger.warning(
+                    "Tool %r not found on PATH (checked %r); excluding from available tools",
+                    name,
+                    binary,
+                )
         self._available_tools = tools
         logger.info("Available tools: %s", tools or ["(none)"])
 
