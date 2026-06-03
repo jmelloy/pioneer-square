@@ -8,6 +8,7 @@ the worker process connects via WebSocket (``join`` message in ws_handlers.py).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import re
@@ -33,6 +34,7 @@ from utils import (
 from ws_handlers import _resolve_user_identifier
 from ws_types import TaskAssignedMsg, WorkerMessageMsg
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -393,9 +395,7 @@ class SaveSpawnSettingsRequest(BaseModel):
                     f"Env var key exceeds max length ({_MAX_SETTINGS_ENV_KEY_LEN} chars)"
                 )
             if len(pair.value) > _MAX_SETTINGS_ENV_VALUE_LEN:
-                raise ValueError(
-                    f"Env var value for {pair.key!r} exceeds max length ({_MAX_SETTINGS_ENV_VALUE_LEN} chars)"
-                )
+                raise ValueError("An env var value exceeds the maximum allowed length")
             if pair.key and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", pair.key):
                 raise ValueError(
                     f"Invalid env var key: {pair.key!r}. Must match ^[A-Za-z_][A-Za-z0-9_]*$"
@@ -424,7 +424,10 @@ async def get_spawn_settings(
         return {}
     try:
         return json.loads(row.settings_json)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Corrupt settings_json for user %s guild %s: %s", github_user_id, guild_pk, exc
+        )
         return {}
 
 
@@ -458,12 +461,7 @@ async def save_spawn_settings(
             )
         )
     else:
-        try:
-            existing = json.loads(row.settings_json)
-        except json.JSONDecodeError:
-            existing = {}
-        existing.update(incoming)
-        row.settings_json = json.dumps(existing)
+        row.settings_json = json.dumps(incoming)
         row.updated_at = now
     await db.commit()
     return {"status": "saved"}

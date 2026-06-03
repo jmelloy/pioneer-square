@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, DateTime, Index, or_, text
+from sqlalchemy import Column, DateTime, Index, Text, or_, text
 from sqlmodel import Field, SQLModel, col
 
 
@@ -378,7 +378,8 @@ class UserSpawnSettings(SQLModel, table=True):
     # SECURITY: this column may contain sensitive values (API tokens, credentials,
     # secret env vars). Operators must restrict DB-level read access to this table.
     # TODO: add application-layer encryption for envVars before storing.
-    settings_json: str = Field(default="{}")
+    # TODO: tracked in issue #537
+    settings_json: str = Field(default="{}", sa_column=Column(Text, server_default="{}"))
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),

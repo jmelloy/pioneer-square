@@ -7,6 +7,9 @@
     <template v-else>
       <label class="spawn-label">Repos</label>
       <div v-if="loadingRepos" class="spawn-hint-text">Loading repos…</div>
+      <div v-else-if="repoFetchFailed" class="spawn-error">
+        Failed to load repos — saved selection cleared.
+      </div>
       <div v-else-if="ghStore.repos.length === 0" class="spawn-hint-text">
         No repos found — configure GitHub first.
       </div>
@@ -139,6 +142,7 @@ const envVars = ref<EnvPair[]>([])
 const spawning = ref(false)
 const error = ref('')
 const loadingRepos = ref(false)
+const repoFetchFailed = ref(false)
 const launched = ref(false)
 const launchedWorkerId = ref('')
 
@@ -174,6 +178,8 @@ onMounted(async () => {
     loadingRepos.value = true
     try {
       await ghStore.fetchRepos()
+    } catch {
+      repoFetchFailed.value = true
     } finally {
       loadingRepos.value = false
     }
@@ -183,20 +189,19 @@ onMounted(async () => {
 
   if (saved && (saved.repos?.length || saved.tools?.length || saved.envVars?.length)) {
     if (saved.repos?.length) {
-      const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
-      if (availableRepoNames.size === 0) {
-        console.warn(
-          '[SpawnWorkerForm] repo list is empty after fetch — skipping filter, preserving saved repos',
-        )
-        selectedRepos.value = saved.repos
+      if (repoFetchFailed.value) {
+        // Fetch failed — cannot validate saved repos against available ones.
+        selectedRepos.value = []
       } else {
+        const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
+        // If fetch succeeded but returned no repos, the filter yields [] — correct.
         selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
       }
     }
     if (saved.tools?.length) selectedTools.value = saved.tools
     if (saved.envVars?.length) envVars.value = saved.envVars
   } else {
-    selectedRepos.value = [...ghStore.selectedRepos]
+    selectedRepos.value = repoFetchFailed.value ? [] : [...ghStore.selectedRepos]
   }
 })
 
