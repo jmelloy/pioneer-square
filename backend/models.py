@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, DateTime, Index, or_, text
+from sqlalchemy import Column, DateTime, Index, Text, or_, text
 from sqlmodel import Field, SQLModel, col
 
 
@@ -363,6 +363,29 @@ class ClaudeUsage(SQLModel, table=True):
     # Free-text label for who reported (worker name / user). NULL if unknown.
     reporter: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class UserSpawnSettings(SQLModel, table=True):
+    """Per-user, per-guild spawn-worker preferences (repos, tools, env vars).
+
+    Stored server-side so env var values survive browser sessions without
+    being exposed in localStorage.
+    """
+
+    __tablename__ = "user_spawn_settings"  # type: ignore[assignment]
+
+    guild_id: int = Field(foreign_key="guilds.id", primary_key=True)
+    user_id: str = Field(foreign_key="users.id", primary_key=True)
+    # JSON blob: {repos: [...], tools: [...], envVars: [{key, value}, ...]}
+    # SECURITY: this column may contain sensitive values (API tokens, credentials,
+    # secret env vars). Operators must restrict DB-level read access to this table.
+    # TODO: add application-layer encryption for envVars before storing.
+    # TODO: tracked in issue #537
+    settings_json: str = Field(default="{}", sa_column=Column(Text, server_default="{}"))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class PushToken(SQLModel, table=True):
