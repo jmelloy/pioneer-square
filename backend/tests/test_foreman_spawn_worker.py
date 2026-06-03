@@ -18,13 +18,14 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
 from _test_config import TEST_DATABASE_URL
-from foreman import tools as foreman_tools
 from foreman.tools import _exec_one_tool
 from helpers import _sync_session, create_db, insert_guild, truncate_all
 from models import Worker
 from sqlalchemy import select
 from sqlmodel import col
 from utils import build_spawn_worker_env
+
+from foreman import tools as foreman_tools
 
 # ---------------------------------------------------------------------------
 # Fixtures
