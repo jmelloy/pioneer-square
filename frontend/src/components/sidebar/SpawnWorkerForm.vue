@@ -178,18 +178,37 @@ onMounted(async () => {
       selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
     }
     if (saved.tools?.length) selectedTools.value = saved.tools
-    const isLegacy = saved.envVarKeys == null && saved.envVars != null
-    const keys = (saved.envVarKeys ?? saved.envVars?.map((e) => e.key) ?? [])
-      .filter((k): k is string => typeof k === 'string')
-      .map((k) => k.trim())
-      .filter((k) => k !== '')
-    if (keys.length) envVars.value = keys.map((k) => ({ key: k, value: '' }))
+    // Legacy when envVars is present and envVarKeys is absent or empty (catches partially-migrated writes too).
+    const isLegacy = saved.envVars != null && (saved.envVarKeys == null || saved.envVarKeys.length === 0)
+
+    let keys: string[]
     if (isLegacy) {
+      // Strip any runtime `value` fields that may exist in pre-fix persisted data (JSON.parse bypasses TS types).
+      keys = (saved.envVars ?? [])
+        .map((e) => {
+          const entry = e as Record<string, unknown>
+          delete entry.value
+          return entry.key
+        })
+        .filter((k): k is string => typeof k === 'string')
+        .map((k) => k.trim())
+        .filter((k) => k !== '')
+    } else {
+      keys = (saved.envVarKeys ?? [])
+        .filter((k): k is string => typeof k === 'string')
+        .map((k) => k.trim())
+        .filter((k) => k !== '')
+    }
+
+    if (keys.length) envVars.value = keys.map((k) => ({ key: k, value: '' }))
+
+    // Gate migration on keys.length — avoids a pointless save when legacy entry has no usable data.
+    if (isLegacy && keys.length) {
       if (guild) {
         // Intentionally migrate legacy envVars format on mount — safe to overwrite as values were never stored.
         saveSettings(guild.id)
       } else {
-        // guild unavailable; delete the stale legacy entry so it doesn't persist across sessions.
+        // Without guild the localStorage key is unknown, so the stale legacy entry cannot be removed here.
         console.warn('[SpawnWorkerForm] Could not migrate legacy envVars localStorage entry: guild unavailable.')
       }
     }
