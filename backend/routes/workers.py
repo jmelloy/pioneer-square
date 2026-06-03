@@ -19,7 +19,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeCredentials, Task, Worker, live_tasks_filter
+from models import ClaudeCredentials, Task, UserSpawnSettings, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -363,6 +363,90 @@ async def list_tasks(
         .order_by(col(Task.created_at).desc())
     )
     return [row_to_dict(t) for t in result.all()]
+
+
+class EnvVarPair(BaseModel):
+    key: str
+    value: str
+
+
+class SaveSpawnSettingsRequest(BaseModel):
+    repos: list[str] | None = None
+    tools: list[str] | None = None
+    envVars: list[EnvVarPair] | None = None
+
+    @field_validator("envVars")
+    @classmethod
+    def validate_env_var_keys(cls, v: list[EnvVarPair] | None) -> list[EnvVarPair] | None:
+        if v is None:
+            return v
+        for pair in v:
+            if pair.key and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", pair.key):
+                raise ValueError(
+                    f"Invalid env var key: {pair.key!r}. Must match ^[A-Za-z_][A-Za-z0-9_]*$"
+                )
+        return v
+
+
+@router.get("/guilds/{guild_id}/spawn-settings")
+async def get_spawn_settings(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return the current user's saved spawn-worker settings for this guild."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(UserSpawnSettings).where(
+            col(UserSpawnSettings.guild_id) == guild_pk,
+            col(UserSpawnSettings.user_id) == github_user_id,
+        )
+    )
+    row = result.one_or_none()
+    if row is None:
+        return {}
+    try:
+        return json.loads(row.settings_json)
+    except json.JSONDecodeError:
+        return {}
+
+
+@router.put("/guilds/{guild_id}/spawn-settings")
+async def save_spawn_settings(
+    guild_id: str,
+    data: SaveSpawnSettingsRequest,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Persist the current user's spawn-worker settings for this guild."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(UserSpawnSettings).where(
+            col(UserSpawnSettings.guild_id) == guild_pk,
+            col(UserSpawnSettings.user_id) == github_user_id,
+        )
+    )
+    row = result.one_or_none()
+    settings_json = json.dumps(data.model_dump(exclude_none=True))
+    now = datetime.now(UTC)
+    if row is None:
+        db.add(
+            UserSpawnSettings(
+                guild_id=guild_pk,
+                user_id=github_user_id,
+                settings_json=settings_json,
+                updated_at=now,
+            )
+        )
+    else:
+        row.settings_json = settings_json
+        row.updated_at = now
+    await db.commit()
+    return {"status": "saved"}
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/message")

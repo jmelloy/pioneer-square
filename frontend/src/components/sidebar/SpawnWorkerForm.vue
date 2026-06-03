@@ -70,7 +70,7 @@
         placeholder="4"
       />
       <label class="spawn-label">Env Vars <span class="spawn-hint">(optional)</span></label>
-      <p class="spawn-env-hint">Keys are remembered between sessions; values must be re-entered each time (not saved for security).</p>
+      <p class="spawn-env-hint">Key-value pairs are saved to the server and restored each session.</p>
       <div class="spawn-env-list">
         <div v-for="(pair, idx) in envVars" :key="idx" class="spawn-env-row">
           <input
@@ -131,8 +131,6 @@ interface SpawnSettings {
   envVars?: EnvPair[]
 }
 
-const SETTINGS_KEY = (guildId: string) => `pioneer_square:spawn_settings:${guildId}`
-
 const selectedRepos = ref<string[]>([])
 const name = ref('')
 const selectedTools = ref<string[]>([])
@@ -146,32 +144,41 @@ const launchedWorkerId = ref('')
 
 const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
 
-function loadSavedSettings(guildId: string): SpawnSettings | null {
+async function loadSavedSettings(guildId: string): Promise<SpawnSettings | null> {
   try {
-    const raw = localStorage.getItem(SETTINGS_KEY(guildId))
-    return raw ? (JSON.parse(raw) as SpawnSettings) : null
+    return await api<SpawnSettings>(`/guilds/${guildId}/spawn-settings`)
   } catch {
     return null
   }
 }
 
-function saveSettings(guildId: string) {
-  const settings: SpawnSettings = {
-    repos: selectedRepos.value,
-    tools: selectedTools.value,
-    // Save only keys (not values) — values may contain secrets/tokens.
-    envVars: envVars.value
-      .filter((e) => e.key.trim() !== '')
-      .map((e) => ({ key: e.key.trim(), value: '' })), // value intentionally blank: secrets must be re-entered each session
+async function saveSettings(guildId: string) {
+  try {
+    await api(`/guilds/${guildId}/spawn-settings`, {
+      method: 'PUT',
+      json: {
+        repos: selectedRepos.value,
+        tools: selectedTools.value,
+        envVars: envVars.value.filter((e) => e.key.trim() !== ''),
+      },
+    })
+  } catch {
+    // Settings persistence failure is non-fatal — the spawn already succeeded.
   }
-  localStorage.setItem(SETTINGS_KEY(guildId), JSON.stringify(settings))
 }
 
 onMounted(async () => {
   const guild = guildStore.currentGuild
-  const saved = guild ? loadSavedSettings(guild.id) : null
 
-  if (saved) {
+  if (ghStore.repos.length === 0 && ghStore.token) {
+    loadingRepos.value = true
+    await ghStore.fetchRepos()
+    loadingRepos.value = false
+  }
+
+  const saved = guild ? await loadSavedSettings(guild.id) : null
+
+  if (saved && (saved.repos?.length || saved.tools?.length || saved.envVars?.length)) {
     if (saved.repos?.length) {
       const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
       selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
@@ -180,12 +187,6 @@ onMounted(async () => {
     if (saved.envVars?.length) envVars.value = saved.envVars
   } else {
     selectedRepos.value = [...ghStore.selectedRepos]
-  }
-
-  if (ghStore.repos.length === 0 && ghStore.token) {
-    loadingRepos.value = true
-    await ghStore.fetchRepos()
-    loadingRepos.value = false
   }
 })
 
@@ -264,7 +265,7 @@ async function launch() {
         env_vars: Object.keys(envVarsPayload).length ? envVarsPayload : undefined,
       },
     })
-    saveSettings(guild.id)
+    await saveSettings(guild.id)
     launchedWorkerId.value = result?.worker_id ?? ''
     launched.value = true
     setTimeout(() => emit('launched'), 2500)

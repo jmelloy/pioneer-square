@@ -363,6 +363,22 @@ class ClaudeUsage(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class UserSpawnSettings(SQLModel, table=True):
+    """Per-user, per-guild spawn-worker preferences (repos, tools, env vars).
+
+    Stored server-side so env var values survive browser sessions without
+    being exposed in localStorage.
+    """
+
+    __tablename__ = "user_spawn_settings"  # type: ignore[assignment]
+
+    guild_id: int = Field(foreign_key="guilds.id", primary_key=True)
+    user_id: str = Field(foreign_key="users.id", primary_key=True)
+    # JSON blob: {repos: [...], tools: [...], envVars: [{key, value}, ...]}
+    settings_json: str = Field(default="{}")
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class PushToken(SQLModel, table=True):
     """APNs (or, in the future, FCM) device token registered by the iOS app.
 
