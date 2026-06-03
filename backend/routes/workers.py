@@ -365,6 +365,11 @@ async def list_tasks(
     return [row_to_dict(t) for t in result.all()]
 
 
+_MAX_SETTINGS_ENV_VARS = 100
+_MAX_SETTINGS_ENV_KEY_LEN = 1000
+_MAX_SETTINGS_ENV_VALUE_LEN = 1000
+
+
 class EnvVarPair(BaseModel):
     key: str
     value: str
@@ -380,7 +385,17 @@ class SaveSpawnSettingsRequest(BaseModel):
     def validate_env_var_keys(cls, v: list[EnvVarPair] | None) -> list[EnvVarPair] | None:
         if v is None:
             return v
+        if len(v) > _MAX_SETTINGS_ENV_VARS:
+            raise ValueError(f"Too many env vars (max {_MAX_SETTINGS_ENV_VARS})")
         for pair in v:
+            if len(pair.key) > _MAX_SETTINGS_ENV_KEY_LEN:
+                raise ValueError(
+                    f"Env var key exceeds max length ({_MAX_SETTINGS_ENV_KEY_LEN} chars)"
+                )
+            if len(pair.value) > _MAX_SETTINGS_ENV_VALUE_LEN:
+                raise ValueError(
+                    f"Env var value for {pair.key!r} exceeds max length ({_MAX_SETTINGS_ENV_VALUE_LEN} chars)"
+                )
             if pair.key and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", pair.key):
                 raise ValueError(
                     f"Invalid env var key: {pair.key!r}. Must match ^[A-Za-z_][A-Za-z0-9_]*$"
@@ -431,19 +446,24 @@ async def save_spawn_settings(
         )
     )
     row = result.one_or_none()
-    settings_json = json.dumps(data.model_dump(exclude_none=True))
+    incoming = data.model_dump(exclude_none=True)
     now = datetime.now(UTC)
     if row is None:
         db.add(
             UserSpawnSettings(
                 guild_id=guild_pk,
                 user_id=github_user_id,
-                settings_json=settings_json,
+                settings_json=json.dumps(incoming),
                 updated_at=now,
             )
         )
     else:
-        row.settings_json = settings_json
+        try:
+            existing = json.loads(row.settings_json)
+        except json.JSONDecodeError:
+            existing = {}
+        existing.update(incoming)
+        row.settings_json = json.dumps(existing)
         row.updated_at = now
     await db.commit()
     return {"status": "saved"}

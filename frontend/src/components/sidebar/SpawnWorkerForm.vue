@@ -181,7 +181,14 @@ onMounted(async () => {
   if (saved && (saved.repos?.length || saved.tools?.length || saved.envVars?.length)) {
     if (saved.repos?.length) {
       const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
-      selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
+      if (availableRepoNames.size === 0) {
+        console.warn(
+          '[SpawnWorkerForm] repo list is empty after fetch — skipping filter, preserving saved repos',
+        )
+        selectedRepos.value = saved.repos
+      } else {
+        selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
+      }
     }
     if (saved.tools?.length) selectedTools.value = saved.tools
     if (saved.envVars?.length) envVars.value = saved.envVars

@@ -375,6 +375,9 @@ class UserSpawnSettings(SQLModel, table=True):
     guild_id: int = Field(foreign_key="guilds.id", primary_key=True)
     user_id: str = Field(foreign_key="users.id", primary_key=True)
     # JSON blob: {repos: [...], tools: [...], envVars: [{key, value}, ...]}
+    # SECURITY: this column may contain sensitive values (API tokens, credentials,
+    # secret env vars). Operators must restrict DB-level read access to this table.
+    # TODO: add application-layer encryption for envVars before storing.
     settings_json: str = Field(default="{}")
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
