@@ -759,6 +759,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         col(Task.description),
                         col(Task.name),
                         col(Task.tool),
+                        col(Task.model),
+                        col(Task.provider),
                         col(Task.issue_number),
                         col(Task.issue_repo),
                     ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
@@ -774,6 +776,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         task_desc,
                         task_name,
                         task_tool,
+                        task_model,
+                        task_provider,
                         task_issue_number,
                         task_issue_repo,
                     ) = row
@@ -863,6 +867,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     "name": task_name or "",
                                     "description": task_desc or "",
                                     "tool": task_tool or "claude",
+                                    "model": task_model,
+                                    "provider": task_provider,
                                     "branch": branch,
                                     "instructions": instructions,
                                     "issueNumber": task_issue_number,
