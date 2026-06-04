@@ -3,9 +3,8 @@
 
 import json
 import subprocess
-import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 
 
 def fetch_prs():
