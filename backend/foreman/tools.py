@@ -59,6 +59,12 @@ logger = logging.getLogger(__name__)
 # an explicit expiry. Mirrors backend.main.DEFAULT_FINALIZE_TTL.
 DEFAULT_FINALIZE_TTL_SECONDS = 3 * 24 * 60 * 60  # 3 days
 
+# Hard cap on any single blocking external-service call (GitHub API, Docker, A2A
+# agent).  Wrapping asyncio.to_thread with asyncio.wait_for(timeout=...) means a
+# hung upstream can stall at most this many seconds instead of freezing the whole
+# event loop indefinitely.
+EXTERNAL_CALL_TIMEOUT = 30
+
 # Module-level Docker client — created once per process to reuse the Unix-socket
 # connection across repeated spawn_worker calls instead of opening a new socket
 # each time.  None until first successful from_env(); tests can patch
@@ -74,6 +80,14 @@ def _get_docker_client() -> Any:
 
         _docker_client = docker.from_env()
     return _docker_client
+
+
+async def _to_thread(fn, /, *args, **kwargs):
+    """Off-load a blocking I/O call to the thread pool with a global timeout."""
+    return await asyncio.wait_for(
+        asyncio.to_thread(fn, *args, **kwargs),
+        timeout=EXTERNAL_CALL_TIMEOUT,
+    )
 
 
 def _resolve_finalize_deleted_at(inp: dict) -> tuple[datetime | None, str | None]:
@@ -314,7 +328,7 @@ async def maybe_post_plan_comment(guild_id: str, task_id: str, last_text: str) -
         token, _ = creds
 
         body = f"## \U0001f4cb Plan from task `{task_id}`\n\n{last_text}"
-        await asyncio.to_thread(
+        await _to_thread(
             _gh_api_post,
             f"/repos/{issue_repo}/issues/{issue_number}/comments",
             token,
@@ -416,7 +430,7 @@ async def _supersede_prior_bot_reviews(
     logged as warnings rather than raised so that the main review post is never
     blocked by a cleanup failure.
     """
-    reviews = await asyncio.to_thread(_gh_api, f"/repos/{pr_repo}/pulls/{pr_number}/reviews", token)
+    reviews = await _to_thread(_gh_api, f"/repos/{pr_repo}/pulls/{pr_number}/reviews", token)
     if not isinstance(reviews, list):
         return 0
 
@@ -430,7 +444,7 @@ async def _supersede_prior_bot_reviews(
     threads_resolved = 0
     owner, repo_name = pr_repo.split("/", 1)
     try:
-        gql_result = await asyncio.to_thread(
+        gql_result = await _to_thread(
             _gh_graphql,
             token,
             _GQL_PR_THREADS,
@@ -452,7 +466,7 @@ async def _supersede_prior_bot_reviews(
                 for c in comments
             ):
                 try:
-                    await asyncio.to_thread(
+                    await _to_thread(
                         _gh_graphql,
                         token,
                         _GQL_RESOLVE_THREAD,
@@ -505,7 +519,7 @@ async def _run_dnsid(command: str, inp: dict, private_key_pem: str | None = None
 
         return {
             "ok": True,
-            "jwt": await asyncio.to_thread(_dnsid_sign_sync, claims, private_key_pem),
+            "jwt": await _to_thread(_dnsid_sign_sync, claims, private_key_pem),
         }
     elif command == "verify":
         jwt_token = inp.get("jwt", "")
@@ -1154,12 +1168,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     )
 
                     try:
-                        docker_client = _get_docker_client()
+                        docker_client = await _to_thread(_get_docker_client)
                         image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
 
                         network = None
                         try:
-                            me = docker_client.containers.get(os.environ.get("HOSTNAME", ""))
+                            me = await _to_thread(
+                                docker_client.containers.get, os.environ.get("HOSTNAME", "")
+                            )
                             network = next(
                                 iter(me.attrs["NetworkSettings"]["Networks"].keys()), None
                             )
@@ -1185,9 +1201,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         if network:
                             run_kwargs["network"] = network
 
-                        container = await asyncio.to_thread(
-                            docker_client.containers.run, **run_kwargs
-                        )
+                        container = await _to_thread(docker_client.containers.run, **run_kwargs)
                         result_text = json.dumps(
                             {
                                 "worker_id": worker_id,
@@ -1310,7 +1324,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         repo = inp["repo"]
                         state = inp.get("state", "open")
                         limit = min(int(inp.get("limit", 20)), 50)
-                        issues = await asyncio.to_thread(
+                        issues = await _to_thread(
                             _gh_api,
                             f"/repos/{repo}/issues?state={state}&per_page={limit}",
                             token,
@@ -1332,10 +1346,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     elif tu.name == "get_github_issue":
                         repo = inp["repo"]
                         num = int(inp["issue_number"])
-                        issue = await asyncio.to_thread(
-                            _gh_api, f"/repos/{repo}/issues/{num}", token
-                        )
-                        comments_raw = await asyncio.to_thread(
+                        issue = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
+                        comments_raw = await _to_thread(
                             _gh_api, f"/repos/{repo}/issues/{num}/comments?per_page=20", token
                         )
                         result_text = json.dumps(
@@ -1358,7 +1370,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     elif tu.name == "list_github_prs":
                         repo = inp["repo"]
                         state = inp.get("state", "open")
-                        prs = await asyncio.to_thread(
+                        prs = await _to_thread(
                             _gh_api, f"/repos/{repo}/pulls?state={state}&per_page=20", token
                         )
                         result_text = json.dumps(
@@ -1377,7 +1389,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     elif tu.name == "claim_github_issue":
                         repo = inp["repo"]
                         num = int(inp["issue_number"])
-                        await asyncio.to_thread(
+                        await _to_thread(
                             _gh_api_post,
                             f"/repos/{repo}/issues/{num}/assignees",
                             token,
@@ -1390,7 +1402,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         payload: dict = {"title": inp["title"], "body": inp.get("body", "")}
                         if inp.get("labels"):
                             payload["labels"] = inp["labels"]
-                        issue = await asyncio.to_thread(
+                        issue = await _to_thread(
                             _gh_api_post, f"/repos/{repo}/issues", token, payload
                         )
                         result_text = json.dumps(
@@ -1404,8 +1416,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     elif tu.name == "get_pr_status":
                         repo = inp["repo"]
                         num = int(inp["pr_number"])
-                        pr = await asyncio.to_thread(_gh_api, f"/repos/{repo}/pulls/{num}", token)
-                        reviews_raw = await asyncio.to_thread(
+                        pr = await _to_thread(_gh_api, f"/repos/{repo}/pulls/{num}", token)
+                        reviews_raw = await _to_thread(
                             _gh_api,
                             f"/repos/{repo}/pulls/{num}/reviews?per_page=20",
                             token,
@@ -1413,7 +1425,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         head_sha = (pr.get("head") or {}).get("sha")
                         check_runs: list = []
                         if head_sha:
-                            crs = await asyncio.to_thread(
+                            crs = await _to_thread(
                                 _gh_api,
                                 f"/repos/{repo}/commits/{head_sha}/check-runs?per_page=30",
                                 token,
@@ -1460,7 +1472,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             f"/search/issues?q={urllib.parse.quote(query)}"
                             f"+repo:{repo}{state_q}&per_page=10&sort=created&order=desc"
                         )
-                        data = await asyncio.to_thread(_gh_api, search_url, token)
+                        data = await _to_thread(_gh_api, search_url, token)
                         items = data.get("items", []) if isinstance(data, dict) else data
                         result_text = json.dumps(
                             [
@@ -1548,7 +1560,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     guild_id,
                                     _sup_exc,
                                 )
-                            review_data = await asyncio.to_thread(
+                            review_data = await _to_thread(
                                 _gh_api_post,
                                 f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
                                 token,
@@ -1586,12 +1598,12 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             pr_repo = pr_match.group(1)
                             pr_number = int(pr_match.group(2))
                             pr_data, diff_text = await asyncio.gather(
-                                asyncio.to_thread(
+                                _to_thread(
                                     _gh_api,
                                     f"/repos/{pr_repo}/pulls/{pr_number}",
                                     token,
                                 ),
-                                asyncio.to_thread(
+                                _to_thread(
                                     _gh_api_diff,
                                     f"/repos/{pr_repo}/pulls/{pr_number}",
                                     token,
@@ -1678,7 +1690,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     _sup_exc,
                                 )
                             try:
-                                review_data = await asyncio.to_thread(
+                                review_data = await _to_thread(
                                     _gh_api_post,
                                     f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
                                     token,
@@ -1694,7 +1706,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     "retrying without them",
                                     guild_id,
                                 )
-                                review_data = await asyncio.to_thread(
+                                review_data = await _to_thread(
                                     _gh_api_post,
                                     f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
                                     token,
@@ -1760,7 +1772,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             else:
                 try:
                     card_url = f"{agent_url}/.well-known/agent.json"
-                    card = await asyncio.to_thread(_fetch_agent_card, card_url)
+                    card = await _to_thread(_fetch_agent_card, card_url)
                     logger.debug("call_agent: fetched agent card from %s: %s", card_url, card)
                     skills = card.get("skills", [])
                     skill_ids = [s.get("id", "") for s in skills]
@@ -1784,7 +1796,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 "id": 1,
                             }
                         ).encode()
-                        response = await asyncio.to_thread(
+                        response = await _to_thread(
                             _post_agent_task,
                             f"{agent_url}/jsonrpc",
                             task_body,
