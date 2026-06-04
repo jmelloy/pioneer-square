@@ -1221,7 +1221,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 asyncio.to_thread(docker_client.containers.run, **run_kwargs),
                                 timeout=CONTAINER_RUN_TIMEOUT,
                             )
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             # The to_thread call keeps running; the daemon may have
                             # started the container already. Try to stop it by name.
                             try:
