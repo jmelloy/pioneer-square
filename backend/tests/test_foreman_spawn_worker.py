@@ -286,3 +286,66 @@ async def test_spawn_worker_docker_run_fails(db_session):
     with _sync_session(db_session) as session:
         count = session.execute(select(Worker)).scalars().all()
     assert len(count) == 1
+
+
+# ---------------------------------------------------------------------------
+# _to_thread helper tests (no DB required)
+# ---------------------------------------------------------------------------
+
+
+async def test_to_thread_runs_callable_in_thread():
+    """_to_thread offloads a blocking callable to a worker thread and returns its result."""
+    import threading
+
+    caller_ident = threading.current_thread().ident
+    thread_idents: list[int] = []
+
+    def work() -> str:
+        thread_idents.append(threading.current_thread().ident)
+        return "done"
+
+    result = await foreman_tools._to_thread(work)
+    assert result == "done"
+    assert thread_idents[0] != caller_ident, "callable must run in a worker thread"
+
+
+async def test_to_thread_raises_timeout_when_slow(monkeypatch):
+    """_to_thread raises TimeoutError when the callable blocks past EXTERNAL_CALL_TIMEOUT."""
+    import time
+
+    monkeypatch.setattr(foreman_tools, "EXTERNAL_CALL_TIMEOUT", 0.05)
+
+    def slow():
+        time.sleep(0.5)
+
+    with pytest.raises(TimeoutError):
+        await foreman_tools._to_thread(slow)
+
+
+async def test_spawn_worker_container_run_timeout_triggers_cleanup(db_session):
+    """When containers.run times out, orphan cleanup (containers.get + stop) is attempted."""
+    insert_guild(db_session, "guild06")
+
+    fake_orphan = MagicMock()
+    fake_docker_client = MagicMock()
+    # containers.get call #1: network-detection step (expected to fail)
+    # containers.get call #2: orphan lookup inside the TimeoutError cleanup block
+    fake_docker_client.containers.get.side_effect = [
+        Exception("no hostname"),
+        fake_orphan,
+    ]
+    # Simulate asyncio.wait_for expiring: raising TimeoutError from inside to_thread
+    # is equivalent to the event loop cancelling the wait after CONTAINER_RUN_TIMEOUT.
+    fake_docker_client.containers.run.side_effect = TimeoutError("simulated timeout")
+
+    with patch.object(foreman_tools, "_get_docker_client", return_value=fake_docker_client):
+        result = await _exec_one_tool(
+            "guild06",
+            _fake_tool_use("spawn_worker", {"repos": ["acme/backend"]}),
+        )
+
+    assert result.get("is_error")
+    # Both containers.get calls must be made: network detection + orphan lookup
+    assert fake_docker_client.containers.get.call_count == 2
+    # stop() must be called on the orphan container found during cleanup
+    fake_orphan.stop.assert_called_once()
