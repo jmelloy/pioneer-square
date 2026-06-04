@@ -7,11 +7,7 @@ queued) while invocations for different guilds proceed independently.
 from __future__ import annotations
 
 import asyncio
-import os
-import sys
-from unittest.mock import AsyncMock, patch
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from unittest.mock import patch
 
 
 async def _run_foreman_ai_patched(guild_id: str, impl_event: asyncio.Event | None = None):
