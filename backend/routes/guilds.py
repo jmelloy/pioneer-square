@@ -60,7 +60,7 @@ class GuildUpdate(BaseModel):
 
 class ForemanConfigUpdate(BaseModel):
     model: str | None = None
-    provider: Literal["anthropic", "openai", "google"] | None = None
+    provider: Literal["anthropic", "openai", "google", "bedrock"] | None = None
     system_prompt_suffix: str | None = Field(default=None, max_length=10000)
     max_rounds: int | None = Field(default=None, gt=0)
     poll_min_interval: int | None = Field(default=None, gt=0)
