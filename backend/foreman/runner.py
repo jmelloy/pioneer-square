@@ -41,6 +41,13 @@ POLL_MAX_SECS = 3600  # maximum poll interval: 60 minutes
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 
+# Per-guild locks to serialise foreman runs.  If a run is already in progress
+# for a guild, new invocations are dropped rather than queued — the poll loop
+# will re-trigger on the next tick.  Dropping (vs. queuing) keeps memory
+# bounded and avoids stale snapshots piling up under load.
+# Entries are popped in the finally block after each run so the dict stays small.
+_guild_locks: dict[str, asyncio.Lock] = {}
+
 # Module-level client — reused across calls so the underlying httpx connection
 # pool isn't thrown away every invocation. Lazily initialised so import works
 # without an API key (Anthropic) or AWS credentials (Bedrock).
@@ -292,6 +299,37 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
 
 
 async def run_foreman_ai(
+    guild_id: str,
+    human_message: str,
+    extra_context: str = "",
+    user_id: str | None = None,
+) -> None:
+    """Serialise per-guild and delegate to ``_run_foreman_ai``.
+
+    Uses a per-guild ``asyncio.Lock`` stored in ``_guild_locks``.  If the lock
+    is already held the invocation is dropped; the poll loop re-triggers on the
+    next tick.  Dropping is preferred over queuing to avoid unbounded build-up.
+
+    lock.locked() + lock.acquire() is atomic here: asyncio is single-threaded
+    and cooperative, so no other coroutine can run between the check and the
+    acquire (there is no ``await`` between them).
+    """
+    lock = _guild_locks.setdefault(guild_id, asyncio.Lock())
+    if lock.locked():
+        logger.info(
+            "guild=%s run_foreman_ai: dropping concurrent invocation (foreman already running)",
+            guild_id,
+        )
+        return
+    await lock.acquire()
+    try:
+        await _run_foreman_ai(guild_id, human_message, extra_context, user_id)
+    finally:
+        lock.release()
+        _guild_locks.pop(guild_id, None)
+
+
+async def _run_foreman_ai(
     guild_id: str,
     human_message: str,
     extra_context: str = "",
