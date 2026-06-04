@@ -26,6 +26,17 @@ from sqlmodel import col
 from utils import build_spawn_worker_env
 
 from foreman import tools as foreman_tools
+from foreman_core.tools_schema import FOREMAN_TOOLS
+
+# ---------------------------------------------------------------------------
+# Schema guard
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_worker_not_in_foreman_tools():
+    """Guard against spawn_worker being re-added before #551, #564, #566 are merged."""
+    assert not any(t["name"] == "spawn_worker" for t in FOREMAN_TOOLS)
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
