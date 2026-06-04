@@ -141,9 +141,7 @@ Be concise — one short paragraph maximum unless detail is requested.
 _EMPTY_WORKERS_BLOCKS = {"[]", "[\n]"}
 
 
-def _stable_system_text(
-    primary_repo: str | None, system_prompt_suffix: str | None = None
-) -> str:
+def _stable_system_text(primary_repo: str | None, system_prompt_suffix: str | None = None) -> str:
     """The cacheable persona prefix. Stable per guild."""
     repo_line = (
         f"\n\nThe primary repository for this guild is `{primary_repo}`."
