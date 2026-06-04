@@ -593,6 +593,134 @@ def _post_agent_task(task_url: str, body: bytes) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# spawn_worker implementation (intentionally excluded from FOREMAN_TOOLS until
+# async/lock fixes in #551, #564, #566 are merged and tested — see #567)
+# ---------------------------------------------------------------------------
+
+
+async def spawn_worker(
+    inp: dict,
+    guild_id: str,
+    guild_pk: int | None,
+    db,
+) -> tuple[str, bool]:
+    """Spawn a new worker container.
+
+    Returns (result_text, is_error).
+    """
+    repos: list = inp.get("repos") or []
+    tools_list: list[str] = inp.get("tools") or []
+    agent_count: int | None = inp.get("agent_count")
+    custom_name: str | None = inp.get("name")
+    if not repos:
+        return "spawn_worker requires at least one repo in the 'repos' list.", True
+
+    worker_id = "w-" + secrets.token_hex(3)
+    auth_token = secrets.token_urlsafe(32)
+    worker_name = custom_name or worker_display_name(worker_id, None)
+    created_at = datetime.now(UTC)
+    db.add(
+        Worker(
+            id=worker_id,
+            guild_id=guild_pk or 0,
+            repos=json.dumps(repos),
+            state="offline",
+            created_at=created_at,
+            auth_token=auth_token,
+            name=worker_name,
+        )
+    )
+    await db.commit()
+
+    creds_result = await db.exec(
+        select(col(ClaudeCredentials.credentials_blob)).where(
+            col(ClaudeCredentials.guild_id) == guild_pk
+        )
+    )
+    stored_blob = creds_result.one_or_none()
+
+    env = build_spawn_worker_env(
+        guild_id=guild_id,
+        repos=repos,
+        worker_name=worker_name,
+        source_env=dict(os.environ),
+        claude_oauth_token=decode_claude_oauth_token(stored_blob),
+        worker_id=worker_id,
+        auth_token=auth_token,
+        agent_count=agent_count,
+        tools=tools_list or None,
+    )
+
+    try:
+        docker_client = _get_docker_client()
+        image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
+
+        network = None
+        try:
+            me = docker_client.containers.get(os.environ.get("HOSTNAME", ""))
+            network = next(iter(me.attrs["NetworkSettings"]["Networks"].keys()), None)
+        except Exception as e:
+            logger.warning(
+                "Docker network detection failed, starting without explicit network: %s",
+                e,
+            )
+
+        labels = {
+            "com.pioneer.kind": "worker",
+            "com.pioneer.guild": guild_id,
+        }
+        container_name = f"pioneer-worker-{guild_id}-{secrets.token_hex(3)}"
+        run_kwargs: dict = dict(
+            image=image,
+            environment=env,
+            detach=True,
+            remove=True,
+            labels=labels,
+            name=container_name,
+        )
+        if network:
+            run_kwargs["network"] = network
+
+        container = await asyncio.to_thread(docker_client.containers.run, **run_kwargs)
+        result_text = json.dumps(
+            {
+                "worker_id": worker_id,
+                "container_id": container.id[:12],
+                "repos": repos,
+                "name": worker_name,
+            }
+        )
+        logger.info(
+            "spawn_worker: guild=%s worker_id=%s container=%s repos=%s",
+            guild_id,
+            worker_id,
+            container.id[:12],
+            repos,
+        )
+        return result_text, False
+    except ImportError:
+        await db.exec(
+            update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
+        )
+        await db.commit()
+        return (
+            f"Worker pre-registered as {worker_id} but the Docker SDK is not "
+            "installed on the backend — container was NOT started. "
+            f"To start manually: PIONEER_WORKER_ID={worker_id} "
+            f"PIONEER_AUTH_TOKEN={auth_token} "
+            "<worker-start-command>"
+        ), True
+    except Exception as exc:
+        await db.exec(
+            update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
+        )
+        await db.commit()
+        return (
+            f"Worker pre-registered as {worker_id} but failed to start container: {exc}"
+        ), True
+
+
+# ---------------------------------------------------------------------------
 # Tool executor
 # ---------------------------------------------------------------------------
 
@@ -1134,150 +1262,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     )
 
             elif tu.name == "spawn_worker":
-                repos = inp.get("repos") or []
-                tools_list: list[str] = inp.get("tools") or []
-                agent_count: int | None = inp.get("agent_count")
-                custom_name: str | None = inp.get("name")
-                if not repos:
-                    result_text = "spawn_worker requires at least one repo in the 'repos' list."
-                    is_error = True
-                else:
-                    # Pre-register the worker in the DB so the worker_id is known
-                    # before the container starts. The worker process will find
-                    # PIONEER_WORKER_ID + PIONEER_AUTH_TOKEN in its env and skip
-                    # its own self-registration step.
-                    worker_id = "w-" + secrets.token_hex(3)
-                    auth_token = secrets.token_urlsafe(32)
-                    worker_name = custom_name or worker_display_name(worker_id, None)
-                    created_at = datetime.now(UTC)
-                    db.add(
-                        Worker(
-                            id=worker_id,
-                            guild_id=guild_pk or 0,
-                            repos=json.dumps(repos),
-                            state="offline",
-                            created_at=created_at,
-                            auth_token=auth_token,
-                            name=worker_name,
-                        )
-                    )
-                    await db.commit()
-
-                    creds_result = await db.exec(
-                        select(col(ClaudeCredentials.credentials_blob)).where(
-                            col(ClaudeCredentials.guild_id) == guild_pk
-                        )
-                    )
-                    stored_blob = creds_result.one_or_none()
-
-                    env = build_spawn_worker_env(
-                        guild_id=guild_id,
-                        repos=repos,
-                        worker_name=worker_name,
-                        source_env=dict(os.environ),
-                        claude_oauth_token=decode_claude_oauth_token(stored_blob),
-                        worker_id=worker_id,
-                        auth_token=auth_token,
-                        agent_count=agent_count,
-                        tools=tools_list or None,
-                    )
-
-                    try:
-                        docker_client = await _get_docker_client()
-                        image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
-
-                        network = None
-                        try:
-                            me = await _to_thread(
-                                docker_client.containers.get, os.environ.get("HOSTNAME", "")
-                            )
-                            network = next(
-                                iter(me.attrs["NetworkSettings"]["Networks"].keys()), None
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                "Docker network detection failed, starting without explicit network: %s",
-                                e,
-                            )
-
-                        labels = {
-                            "com.pioneer.kind": "worker",
-                            "com.pioneer.guild": guild_id,
-                        }
-                        container_name = f"pioneer-worker-{guild_id}-{secrets.token_hex(3)}"
-                        run_kwargs: dict = dict(
-                            image=image,
-                            environment=env,
-                            detach=True,
-                            remove=True,
-                            labels=labels,
-                            name=container_name,
-                        )
-                        if network:
-                            run_kwargs["network"] = network
-
-                        try:
-                            container = await asyncio.wait_for(
-                                asyncio.to_thread(docker_client.containers.run, **run_kwargs),
-                                timeout=CONTAINER_RUN_TIMEOUT,
-                            )
-                        except TimeoutError:
-                            # The to_thread call keeps running; the daemon may have
-                            # started the container already. Try to stop it by name.
-                            try:
-                                orphan = await _to_thread(
-                                    docker_client.containers.get, container_name
-                                )
-                                await _to_thread(orphan.stop)
-                            except Exception as cleanup_exc:
-                                logger.warning(
-                                    "spawn_worker: orphan cleanup after timeout failed for %s: %s",
-                                    container_name,
-                                    cleanup_exc,
-                                )
-                            raise
-                        result_text = json.dumps(
-                            {
-                                "worker_id": worker_id,
-                                "container_id": container.id[:12],
-                                "repos": repos,
-                                "name": worker_name,
-                            }
-                        )
-                        logger.info(
-                            "spawn_worker: guild=%s worker_id=%s container=%s repos=%s",
-                            guild_id,
-                            worker_id,
-                            container.id[:12],
-                            repos,
-                        )
-                    except ImportError:
-                        await db.exec(
-                            update(Worker)
-                            .where(col(Worker.id) == worker_id)
-                            .values(state="spawn_failed")
-                        )
-                        await db.commit()
-                        result_text = (
-                            f"Worker pre-registered as {worker_id} but the Docker SDK is not "
-                            "installed on the backend — container was NOT started. "
-                            f"To start manually: PIONEER_WORKER_ID={worker_id} "
-                            f"PIONEER_AUTH_TOKEN={auth_token} "
-                            "<worker-start-command>"
-                        )
-                        is_error = True
-                    except Exception as exc:
-                        await db.exec(
-                            update(Worker)
-                            .where(col(Worker.id) == worker_id)
-                            .values(state="spawn_failed")
-                        )
-                        await db.commit()
-                        result_text = (
-                            f"Worker pre-registered as {worker_id} but failed to start "
-                            f"container: {exc}"
-                        )
-                        is_error = True
+                result_text, is_error = await spawn_worker(inp, guild_id, guild_pk, db)
 
             elif tu.name == "get_task_status":
                 task_id = inp["task_id"]
