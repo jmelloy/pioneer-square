@@ -42,11 +42,11 @@ POLL_MAX_SECS = 3600  # maximum poll interval: 60 minutes
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 
 # Per-guild locks to serialise foreman runs.  If a run is already in progress
-# for a guild, new invocations are dropped rather than queued — the poll loop
-# will re-trigger on the next tick.  Dropping (vs. queuing) keeps memory
-# bounded and avoids stale snapshots piling up under load.
+# for a (guild, user) pair, new invocations are dropped rather than queued —
+# the poll loop will re-trigger on the next tick.  Dropping (vs. queuing) keeps
+# memory bounded and avoids stale snapshots piling up under load.
 # Entries are popped in the finally block after each run so the dict stays small.
-_guild_locks: dict[str, asyncio.Lock] = {}
+_guild_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
 
 # Module-level client — reused across calls so the underlying httpx connection
 # pool isn't thrown away every invocation. Lazily initialised so import works
@@ -304,21 +304,24 @@ async def run_foreman_ai(
     extra_context: str = "",
     user_id: str | None = None,
 ) -> None:
-    """Serialise per-guild and delegate to ``_run_foreman_ai``.
+    """Serialise per-(guild, user) and delegate to ``_run_foreman_ai``.
 
-    Uses a per-guild ``asyncio.Lock`` stored in ``_guild_locks``.  If the lock
-    is already held the invocation is dropped; the poll loop re-triggers on the
-    next tick.  Dropping is preferred over queuing to avoid unbounded build-up.
+    Uses a per-(guild, user) ``asyncio.Lock`` stored in ``_guild_locks``.  If
+    the lock is already held the invocation is dropped; the poll loop
+    re-triggers on the next tick.  Dropping is preferred over queuing to avoid
+    unbounded build-up.
 
     lock.locked() + lock.acquire() is atomic here: asyncio is single-threaded
     and cooperative, so no other coroutine can run between the check and the
     acquire (there is no ``await`` between them).
     """
-    lock = _guild_locks.setdefault(guild_id, asyncio.Lock())
+    lock_key = (guild_id, user_id)
+    lock = _guild_locks.setdefault(lock_key, asyncio.Lock())
     if lock.locked():
         logger.info(
-            "guild=%s run_foreman_ai: dropping concurrent invocation (foreman already running)",
+            "guild=%s user=%s run_foreman_ai: dropping concurrent invocation (foreman already running)",
             guild_id,
+            user_id,
         )
         return
     await lock.acquire()
@@ -326,7 +329,7 @@ async def run_foreman_ai(
         await _run_foreman_ai(guild_id, human_message, extra_context, user_id)
     finally:
         lock.release()
-        _guild_locks.pop(guild_id, None)
+        _guild_locks.pop(lock_key, None)
 
 
 async def _run_foreman_ai(
