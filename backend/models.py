@@ -41,6 +41,8 @@ class Guild(SQLModel, table=True):
     description: str | None = None
     url: str | None = None
     version: str | None = None
+    # Per-guild foreman AI configuration (JSON text). NULL = use process defaults.
+    foreman_config: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     # UTC instant at which this guild is considered soft-deleted.
     # NULL = active; partial unique index enforces one active row per guild_id.
     deleted_at: datetime | None = Field(

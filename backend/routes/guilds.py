@@ -57,6 +57,15 @@ class GuildUpdate(BaseModel):
     version: str | None = None
 
 
+class ForemanConfigUpdate(BaseModel):
+    model: str | None = None
+    provider: str | None = None
+    system_prompt_suffix: str | None = None
+    max_rounds: int | None = None
+    poll_min_interval: int | None = None
+    poll_max_interval: int | None = None
+
+
 class MemberCreate(BaseModel):
     # Either a users.id (numeric GitHub id as text) or a github_login.
     user: str
@@ -366,6 +375,61 @@ async def get_webhook_secret(
     """
     secret = await _ensure_webhook_secret(db, guild_id)
     return {"guild_id": guild_id, "webhook_secret": secret}
+
+
+@router.get("/api/guilds/{guild_id}/foreman-config")
+async def get_foreman_config(
+    guild_id: str,
+    github_user_id: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return the guild's foreman configuration (owner only)."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    res = await db.exec(select(Guild).where(col(Guild.id) == guild_pk))
+    guild = res.one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    config: dict = {}
+    if guild.foreman_config:
+        try:
+            config = json.loads(guild.foreman_config)
+        except json.JSONDecodeError:
+            config = {}
+    return config
+
+
+@router.patch("/api/guilds/{guild_id}/foreman-config")
+async def update_foreman_config(
+    guild_id: str,
+    data: ForemanConfigUpdate,
+    github_user_id: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Update (merge) the guild's foreman configuration (owner only)."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    res = await db.exec(select(Guild).where(col(Guild.id) == guild_pk))
+    guild = res.one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    config: dict = {}
+    if guild.foreman_config:
+        try:
+            config = json.loads(guild.foreman_config)
+        except json.JSONDecodeError:
+            config = {}
+    for field in data.model_fields_set:
+        value = getattr(data, field)
+        if value is None:
+            config.pop(field, None)
+        else:
+            config[field] = value
+    guild.foreman_config = json.dumps(config)
+    await db.commit()
+    return config
 
 
 @router.delete("/api/guilds/{guild_id}/members/{user_id}")

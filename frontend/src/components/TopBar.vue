@@ -131,6 +131,92 @@
         <div v-if="claudeCredsError" class="creds-error">{{ claudeCredsError }}</div>
       </div>
 
+      <div class="settings-field">
+        <label class="settings-label">Foreman</label>
+        <button
+          class="pixel-btn foreman-toggle-btn"
+          @click="showForemanConfig = !showForemanConfig"
+        >
+          {{ showForemanConfig ? 'Hide' : 'Configure' }}
+        </button>
+        <div v-if="showForemanConfig" class="foreman-config-section">
+          <div class="foreman-field">
+            <label class="foreman-field-label">Model</label>
+            <input
+              v-model="foremanModel"
+              class="settings-input"
+              placeholder="claude-sonnet-4-6"
+            />
+          </div>
+          <div class="foreman-field">
+            <label class="foreman-field-label">Provider</label>
+            <select v-model="foremanProvider" class="settings-input">
+              <option value="">default (anthropic)</option>
+              <option value="anthropic">anthropic</option>
+              <option value="bedrock">bedrock</option>
+            </select>
+          </div>
+          <div class="foreman-field">
+            <label class="foreman-field-label">System Prompt Suffix</label>
+            <textarea
+              v-model="foremanSystemSuffix"
+              class="settings-input foreman-textarea"
+              placeholder="Additional instructions appended to the system prompt…"
+              rows="3"
+            />
+          </div>
+          <div class="foreman-field foreman-row">
+            <div class="foreman-half">
+              <label class="foreman-field-label">Max Rounds</label>
+              <input
+                v-model.number="foremanMaxRounds"
+                class="settings-input"
+                type="number"
+                min="1"
+                max="50"
+                placeholder="10"
+              />
+            </div>
+            <div class="foreman-half">
+              <label class="foreman-field-label">Poll Min (s)</label>
+              <input
+                v-model.number="foremanPollMin"
+                class="settings-input"
+                type="number"
+                min="10"
+                placeholder="60"
+              />
+            </div>
+            <div class="foreman-half">
+              <label class="foreman-field-label">Poll Max (s)</label>
+              <input
+                v-model.number="foremanPollMax"
+                class="settings-input"
+                type="number"
+                min="60"
+                placeholder="3600"
+              />
+            </div>
+          </div>
+          <div class="foreman-actions">
+            <button
+              class="pixel-btn settings-save-btn"
+              :disabled="foremanSaving"
+              @click="saveForemanConfig"
+            >
+              {{ foremanSaving ? 'Saving…' : 'Save' }}
+            </button>
+            <span
+              v-if="foremanStatus"
+              class="save-status"
+              :class="'save-status-' + foremanStatus"
+            >
+              {{ foremanStatus === 'saved' ? 'Saved' : 'Error' }}
+            </span>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-field settings-meta">
         <span class="settings-meta-label">Session ID</span>
         <code class="settings-meta-value">{{ currentGuild.id }}</code>
@@ -178,6 +264,80 @@ const claudeCredsStatus = ref<CredsStatus | null>(null)
 const claudeCredsDeleting = ref(false)
 const claudeCredsError = ref<string | null>(null)
 const claudeCredsConfirmDelete = ref(false)
+
+const showForemanConfig = ref(false)
+const foremanModel = ref('')
+const foremanProvider = ref('')
+const foremanSystemSuffix = ref('')
+const foremanMaxRounds = ref<number | ''>('')
+const foremanPollMin = ref<number | ''>('')
+const foremanPollMax = ref<number | ''>('')
+const foremanSaving = ref(false)
+const foremanStatus = ref<'' | 'saved' | 'error'>('')
+let foremanStatusTimer: ReturnType<typeof setTimeout> | null = null
+
+async function loadForemanConfig() {
+  if (!currentGuild.value) return
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/guilds/${encodeURIComponent(currentGuild.value.id)}/foreman-config`,
+      { headers: authStore.authHeaders() },
+    )
+    if (res.ok) {
+      const cfg = await res.json()
+      foremanModel.value = cfg.model ?? ''
+      foremanProvider.value = cfg.provider ?? ''
+      foremanSystemSuffix.value = cfg.system_prompt_suffix ?? ''
+      foremanMaxRounds.value = cfg.max_rounds ?? ''
+      foremanPollMin.value = cfg.poll_min_interval ?? ''
+      foremanPollMax.value = cfg.poll_max_interval ?? ''
+    }
+  } catch {
+    // non-fatal: fields stay blank (will use server defaults)
+  }
+}
+
+async function saveForemanConfig() {
+  if (!currentGuild.value) return
+  foremanSaving.value = true
+  foremanStatus.value = ''
+  try {
+    const body: Record<string, unknown> = {}
+    if (foremanModel.value) body.model = foremanModel.value
+    else body.model = null
+    if (foremanProvider.value) body.provider = foremanProvider.value
+    else body.provider = null
+    if (foremanSystemSuffix.value) body.system_prompt_suffix = foremanSystemSuffix.value
+    else body.system_prompt_suffix = null
+    if (foremanMaxRounds.value !== '') body.max_rounds = foremanMaxRounds.value
+    else body.max_rounds = null
+    if (foremanPollMin.value !== '') body.poll_min_interval = foremanPollMin.value
+    else body.poll_min_interval = null
+    if (foremanPollMax.value !== '') body.poll_max_interval = foremanPollMax.value
+    else body.poll_max_interval = null
+    const res = await fetch(
+      `${API_BASE}/api/guilds/${encodeURIComponent(currentGuild.value.id)}/foreman-config`,
+      {
+        method: 'PATCH',
+        headers: { ...authStore.authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    )
+    if (res.ok) {
+      foremanStatus.value = 'saved'
+    } else {
+      foremanStatus.value = 'error'
+    }
+  } catch {
+    foremanStatus.value = 'error'
+  } finally {
+    foremanSaving.value = false
+    if (foremanStatusTimer) clearTimeout(foremanStatusTimer)
+    foremanStatusTimer = setTimeout(() => {
+      foremanStatus.value = ''
+    }, 2000)
+  }
+}
 
 async function loadClaudeCredsStatus() {
   if (!currentGuild.value) return
@@ -239,9 +399,21 @@ watch(
     claudeCredsStatus.value = null
     claudeCredsError.value = null
     claudeCredsConfirmDelete.value = false
+    showForemanConfig.value = false
+    foremanModel.value = ''
+    foremanProvider.value = ''
+    foremanSystemSuffix.value = ''
+    foremanMaxRounds.value = ''
+    foremanPollMin.value = ''
+    foremanPollMax.value = ''
+    foremanStatus.value = ''
   },
   { immediate: true },
 )
+
+watch(showForemanConfig, (open) => {
+  if (open) loadForemanConfig()
+})
 
 watch(showSettings, (open) => {
   if (!open) {
@@ -281,6 +453,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocClick)
   if (renameStatusTimer) clearTimeout(renameStatusTimer)
   if (repoStatusTimer) clearTimeout(repoStatusTimer)
+  if (foremanStatusTimer) clearTimeout(foremanStatusTimer)
 })
 
 async function commitRename() {
@@ -672,6 +845,65 @@ function goHome() {
   font-family: var(--font-mono, monospace);
   font-size: 10px;
   color: var(--color-red, #e74c3c);
+}
+
+.foreman-toggle-btn {
+  font-size: 7px;
+  padding: 5px 9px;
+  align-self: flex-start;
+}
+
+.foreman-config-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 10px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 2px;
+}
+
+.foreman-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.foreman-field-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.foreman-textarea {
+  resize: vertical;
+  min-height: 60px;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+}
+
+.foreman-row {
+  flex-direction: row;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.foreman-half {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.foreman-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
 }
 
 .settings-meta {
