@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import weakref
 from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk
@@ -46,11 +45,8 @@ _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 # for a guild, new invocations are dropped rather than queued — the poll loop
 # will re-trigger on the next tick.  Dropping (vs. queuing) keeps memory
 # bounded and avoids stale snapshots piling up under load.
-#
-# WeakValueDictionary is used so that lock entries are GC-d automatically
-# once no coroutine holds a strong reference to the lock (i.e. after the
-# foreman run finishes and run_foreman_ai returns).  No manual pruning needed.
-_guild_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+# Entries are popped in the finally block after each run so the dict stays small.
+_guild_locks: dict[str, asyncio.Lock] = {}
 
 # Module-level client — reused across calls so the underlying httpx connection
 # pool isn't thrown away every invocation. Lazily initialised so import works
@@ -310,16 +306,13 @@ async def run_foreman_ai(
 ) -> None:
     """Serialise per-guild and delegate to ``_run_foreman_ai``.
 
-    Uses a per-guild ``asyncio.Lock`` stored in a ``WeakValueDictionary`` (so
-    entries are GC-d automatically when no coroutine holds the lock).  The
-    acquire is attempted with ``asyncio.wait_for(..., timeout=0)`` so the
-    check-and-acquire is atomic — no TOCTOU window between the check and the
-    actual acquire.  If the lock is already held, the new invocation is dropped
-    and the caller returns immediately.  The poll loop will re-trigger on the
-    next tick, so no work is permanently lost.
+    Uses a per-guild ``asyncio.Lock`` stored in ``_guild_locks``.  The acquire
+    is attempted with ``asyncio.wait_for(..., timeout=0)`` so the check-and-
+    acquire is atomic — no TOCTOU window.  If the lock is already held the new
+    invocation is dropped; the poll loop re-triggers on the next tick.  The
+    dict entry is popped in the finally block so the dict stays small.
     """
-    lock = asyncio.Lock()
-    lock = _guild_locks.setdefault(guild_id, lock)
+    lock = _guild_locks.setdefault(guild_id, asyncio.Lock())
     try:
         await asyncio.wait_for(lock.acquire(), timeout=0)
     except asyncio.TimeoutError:
@@ -332,6 +325,7 @@ async def run_foreman_ai(
         await _run_foreman_ai(guild_id, human_message, extra_context, user_id)
     finally:
         lock.release()
+        _guild_locks.pop(guild_id, None)
 
 
 async def _run_foreman_ai(
