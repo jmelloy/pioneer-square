@@ -598,6 +598,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
 
             guild_pk = await get_guild_pk(db, guild_id)
             if tu.name == "create_task":
+                # No lock needed: creates an unassigned task (worker_id=None) so
+                # there is no worker state to race on. Task ID collisions are
+                # statistically negligible and caught by the DB unique constraint.
                 name = (inp.get("name") or "")[:80]
                 desc = inp.get("description", name)
                 phase = inp.get("phase", "execute")
@@ -683,96 +686,139 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             f"full configured list."
                         )
                         is_error = True
-                if not is_error and existing_task_id:
-                    name_override = inp.get("name")
-                    update_values: dict = {
-                        "worker_id": wid,
-                        "description": desc,
-                        "tool": tool,
-                        "model": model,
-                        "provider": provider,
-                        "phase": phase,
-                        "state": "pending",
-                    }
-                    if name_override:
-                        update_values["name"] = name_override
-                    if inp.get("issue_number") is not None:
-                        update_values["issue_number"] = inp["issue_number"]
-                    if inp.get("issue_repo"):
-                        update_values["issue_repo"] = inp["issue_repo"]
-                    await db.exec(
-                        update(Task)
-                        .where(col(Task.id) == existing_task_id, col(Task.guild_id) == guild_pk)
-                        .values(**update_values)
+                if not is_error:
+                    # Prevent two concurrent foreman runs from double-assigning
+                    # the same idle worker.  Lock covers the window from worker
+                    # selection through task row written + worker notified.
+                    assign_lock_key = f"assign_task:{wid}"
+                    assign_lock_id = "".join(
+                        random.choices(string.ascii_lowercase + string.digits, k=8)
+                    )
+                    lock_acquired = await LockService(db).acquire(
+                        assign_lock_key, owner=assign_lock_id, ttl_seconds=60
                     )
                     await db.commit()
-                    name_result = await db.exec(
-                        select(col(Task.name)).where(col(Task.id) == existing_task_id)
-                    )
-                    task_name = name_result.one_or_none() or desc[:60]
-                    task_id = existing_task_id
-                    await broadcast(
-                        guild_id,
-                        TaskAssignedMsg(
-                            workerId=wid,
-                            taskId=task_id,
-                            name=task_name,
-                            description=desc,
-                            tool=tool,
-                            model=model,
-                            provider=provider,
-                            phase=phase,
-                            issueNumber=inp.get("issue_number"),
-                            issueRepo=inp.get("issue_repo"),
-                            repos=repos,
-                        ).model_dump(by_alias=True, exclude_none=True),
-                    )
-                    result_text = f"Task {task_id} assigned to {wid}."
-                elif not is_error:
-                    name = inp.get("name") or desc[:60]
-                    parent_task_id = inp.get("parent_task_id")
-                    task_id = "t-" + "".join(
-                        random.choices(string.ascii_lowercase + string.digits, k=6)
-                    )
-                    created_at = datetime.now(UTC)
-                    db.add(
-                        Task(
-                            id=task_id,
-                            worker_id=wid,
-                            guild_id=guild_pk or 0,
-                            name=name,
-                            description=desc,
-                            tool=tool,
-                            model=model,
-                            provider=provider,
-                            issue_number=inp.get("issue_number"),
-                            issue_repo=inp.get("issue_repo"),
-                            state="pending",
-                            phase=phase,
-                            parent_task_id=parent_task_id,
-                            created_at=created_at,
-                            user_id=user_id,
+                    if not lock_acquired:
+                        result_text = (
+                            f"Worker {wid} is already being assigned a task by a concurrent "
+                            "foreman run. Retry after the current assignment completes."
                         )
-                    )
-                    await db.commit()
-                    await broadcast(
-                        guild_id,
-                        TaskAssignedMsg(
-                            workerId=wid,
-                            taskId=task_id,
-                            name=name,
-                            description=desc,
-                            tool=tool,
-                            model=model,
-                            provider=provider,
-                            phase=phase,
-                            parentTaskId=parent_task_id,
-                            issueNumber=inp.get("issue_number"),
-                            issueRepo=inp.get("issue_repo"),
-                            repos=repos,
-                        ).model_dump(by_alias=True, exclude_none=True),
-                    )
-                    result_text = f"Task {task_id} queued for {wid}."
+                        is_error = True
+                    else:
+                        try:
+                            # Re-check worker availability inside the lock to close the
+                            # TOCTOU window: two concurrent foremen may have both seen the
+                            # worker as available before either acquired the lock.
+                            worker_recheck = await db.exec(
+                                select(col(Worker.id))
+                                .where(
+                                    col(Worker.id) == wid,
+                                    col(Worker.state) != "offline",
+                                )
+                                .limit(1)
+                            )
+                            if not worker_recheck.one_or_none():
+                                result_text = (
+                                    f"Worker {wid} went offline — task NOT assigned. "
+                                    "Pick a different worker and retry."
+                                )
+                                is_error = True
+                            elif existing_task_id:
+                                name_override = inp.get("name")
+                                update_values: dict = {
+                                    "worker_id": wid,
+                                    "description": desc,
+                                    "tool": tool,
+                                    "model": model,
+                                    "provider": provider,
+                                    "phase": phase,
+                                    "state": "pending",
+                                }
+                                if name_override:
+                                    update_values["name"] = name_override
+                                if inp.get("issue_number") is not None:
+                                    update_values["issue_number"] = inp["issue_number"]
+                                if inp.get("issue_repo"):
+                                    update_values["issue_repo"] = inp["issue_repo"]
+                                await db.exec(
+                                    update(Task)
+                                    .where(
+                                        col(Task.id) == existing_task_id,
+                                        col(Task.guild_id) == guild_pk,
+                                    )
+                                    .values(**update_values)
+                                )
+                                await db.commit()
+                                name_result = await db.exec(
+                                    select(col(Task.name)).where(col(Task.id) == existing_task_id)
+                                )
+                                task_name = name_result.one_or_none() or desc[:60]
+                                task_id = existing_task_id
+                                await broadcast(
+                                    guild_id,
+                                    TaskAssignedMsg(
+                                        workerId=wid,
+                                        taskId=task_id,
+                                        name=task_name,
+                                        description=desc,
+                                        tool=tool,
+                                        model=model,
+                                        provider=provider,
+                                        phase=phase,
+                                        issueNumber=inp.get("issue_number"),
+                                        issueRepo=inp.get("issue_repo"),
+                                        repos=repos,
+                                    ).model_dump(by_alias=True, exclude_none=True),
+                                )
+                                result_text = f"Task {task_id} assigned to {wid}."
+                            else:
+                                name = inp.get("name") or desc[:60]
+                                parent_task_id = inp.get("parent_task_id")
+                                task_id = "t-" + "".join(
+                                    random.choices(string.ascii_lowercase + string.digits, k=6)
+                                )
+                                created_at = datetime.now(UTC)
+                                db.add(
+                                    Task(
+                                        id=task_id,
+                                        worker_id=wid,
+                                        guild_id=guild_pk or 0,
+                                        name=name,
+                                        description=desc,
+                                        tool=tool,
+                                        model=model,
+                                        provider=provider,
+                                        issue_number=inp.get("issue_number"),
+                                        issue_repo=inp.get("issue_repo"),
+                                        state="pending",
+                                        phase=phase,
+                                        parent_task_id=parent_task_id,
+                                        created_at=created_at,
+                                        user_id=user_id,
+                                    )
+                                )
+                                await db.commit()
+                                await broadcast(
+                                    guild_id,
+                                    TaskAssignedMsg(
+                                        workerId=wid,
+                                        taskId=task_id,
+                                        name=name,
+                                        description=desc,
+                                        tool=tool,
+                                        model=model,
+                                        provider=provider,
+                                        phase=phase,
+                                        parentTaskId=parent_task_id,
+                                        issueNumber=inp.get("issue_number"),
+                                        issueRepo=inp.get("issue_repo"),
+                                        repos=repos,
+                                    ).model_dump(by_alias=True, exclude_none=True),
+                                )
+                                result_text = f"Task {task_id} queued for {wid}."
+                        finally:
+                            await LockService(db).release(assign_lock_key, owner=assign_lock_id)
+                            await db.commit()
 
             elif tu.name == "send_followup":
                 task_id = inp["task_id"]
