@@ -10,11 +10,17 @@ from datetime import datetime
 def fetch_prs():
     result = subprocess.run(
         [
-            "gh", "pr", "list",
-            "--repo", "jmelloy/pioneer-square",
-            "--state", "all",
-            "--json", "number,title,state,mergedAt,createdAt,closedAt,author,headRefName",
-            "--limit", "1000",
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "jmelloy/pioneer-square",
+            "--state",
+            "all",
+            "--json",
+            "number,title,state,mergedAt,createdAt,closedAt,author,headRefName",
+            "--limit",
+            "1000",
         ],
         capture_output=True,
         text=True,
