@@ -706,21 +706,21 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         is_error = True
                     else:
                         try:
-                            # Re-check idle state inside the lock to close the TOCTOU
-                            # window: two concurrent foremen may have both seen the worker
-                            # as idle before either acquired the lock.
-                            idle_check = await db.exec(
-                                select(col(Agent.id))
+                            # Re-check worker availability inside the lock to close the
+                            # TOCTOU window: two concurrent foremen may have both seen the
+                            # worker as available before either acquired the lock.
+                            worker_recheck = await db.exec(
+                                select(col(Worker.id))
                                 .where(
-                                    col(Agent.worker_id) == wid,
-                                    col(Agent.state) == "idle",
+                                    col(Worker.id) == wid,
+                                    col(Worker.state) != "offline",
                                 )
                                 .limit(1)
                             )
-                            if not idle_check.one_or_none():
+                            if not worker_recheck.one_or_none():
                                 result_text = (
-                                    f"Worker {wid} is no longer idle — task NOT assigned. "
-                                    "Pick a different idle worker and retry."
+                                    f"Worker {wid} went offline — task NOT assigned. "
+                                    "Pick a different worker and retry."
                                 )
                                 is_error = True
                             elif existing_task_id:
