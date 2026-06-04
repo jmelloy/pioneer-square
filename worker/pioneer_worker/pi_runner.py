@@ -1,4 +1,4 @@
-"""Run `pi --mode rpc --no-session` on a task and stream output."""
+"""Run `pi --mode rpc` on a task and stream output."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[[str], Awaitable[None]]
+UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
 
 # Seconds to wait for pi to exit after stdin is closed before killing it.
 _WAIT_TIMEOUT = 30
@@ -25,6 +26,31 @@ def _result_text(result: dict) -> str:
         if isinstance(blk, dict) and blk.get("type") == "text":
             parts.append(blk.get("text", ""))
     return "".join(parts)
+
+
+def _parse_pi_usage(event: dict) -> dict | None:
+    """Extract token counts from a pi event's usage block, if present.
+
+    Pi may use camelCase or snake_case field names depending on version.
+    Returns None when no usage block is found.
+    """
+    usage = event.get("usage") or event.get("tokenUsage")
+    if not isinstance(usage, dict):
+        return None
+    v = usage.get("inputTokens")
+    input_tokens = v if v is not None else usage.get("input_tokens", 0)
+    v = usage.get("outputTokens")
+    output_tokens = v if v is not None else usage.get("output_tokens", 0)
+    v = usage.get("cacheReadInputTokens")
+    cache_read = v if v is not None else usage.get("cache_read_input_tokens", 0)
+    v = usage.get("cacheCreationInputTokens")
+    cache_creation = v if v is not None else usage.get("cache_creation_input_tokens", 0)
+    return {
+        "input_tokens": int(input_tokens),
+        "output_tokens": int(output_tokens),
+        "cache_read_input_tokens": int(cache_read),
+        "cache_creation_input_tokens": int(cache_creation),
+    }
 
 
 def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, str]:
@@ -68,12 +94,28 @@ async def run_pi_auto(
     cwd: str,
     *,
     emit: EmitFn,
+    on_usage: UsageFn | None = None,
     pi_path: str = "pi",
     model: str | None = None,
     provider: str | None = None,
-) -> tuple[bool, str, str]:
-    """Run pi on *description* in *cwd*. Returns (success, stop_reason, last_text)."""
-    cmd = [pi_path, "--mode", "rpc", "--no-session"]
+) -> tuple[bool, str, str, str | None]:
+    """Run pi on *description* in *cwd*.
+
+    Returns (success, stop_reason, last_text, session_id).
+
+    Session tracking is enabled by default (no ``--no-session`` flag).
+    Pi emits a ``session_id`` field in ``agent_start`` (or a dedicated
+    ``session`` event); the value is extracted and returned so callers can
+    resume or reference the session.
+
+    If *on_usage* is provided it is called with usage-record dicts following
+    the same shape used by claude_runner:
+      - ``{"kind": "api_call", "model": ..., "input_tokens": ..., ...}`` for
+        per-message token counts emitted in ``message_update`` events.
+      - ``{"kind": "result", "model": ..., "cost_usd": ..., ...}`` for the
+        final summary emitted in ``agent_end``.
+    """
+    cmd = [pi_path, "--mode", "rpc"]
     if provider:
         cmd += ["--provider", provider]
     if model:
@@ -87,6 +129,7 @@ async def run_pi_auto(
     stop_reason = "no_events"
     event_count = 0
     agent_ended_ok = False
+    session_id: str | None = None
     proc: asyncio.subprocess.Process | None = None
     stderr_task: asyncio.Task[None] | None = None
     try:
@@ -151,6 +194,14 @@ async def run_pi_auto(
                 await emit(line_str)
                 continue
             etype = event.get("type")
+
+            # Extract session_id from agent_start or a dedicated session event.
+            if etype in ("agent_start", "session"):
+                sid = event.get("session_id") or event.get("sessionId")
+                if sid:
+                    session_id = sid
+                    logger.info("pi[%d] session_id=%s", proc.pid, session_id)
+
             if (
                 etype == "response"
                 and event.get("command") == "prompt"
@@ -165,12 +216,36 @@ async def run_pi_auto(
                 if accumulated.strip():
                     last_text = accumulated
                 accumulated = ""
+                # Emit final usage record if pi includes cost/token data here.
+                if on_usage is not None:
+                    usage_data = _parse_pi_usage(event)
+                    cost = event.get("cost_usd") or event.get("costUsd")
+                    if usage_data or cost is not None:
+                        rec: dict = {
+                            "kind": "result",
+                            "model": event.get("model"),
+                            "cost_usd": cost,
+                            "stop_reason": "success",
+                            **(usage_data or {}),
+                        }
+                        await on_usage(rec)
             if etype == "message_update":
                 ame = event.get("assistantMessageEvent", {})
                 if ame.get("type") == "error":
                     saw_error = True
                     reason = ame.get("reason", "error")
                     await emit(f"[pi] ✗ {reason}")
+                # Emit per-message token counts if present.
+                if on_usage is not None:
+                    usage_data = _parse_pi_usage(event)
+                    if usage_data:
+                        await on_usage(
+                            {
+                                "kind": "api_call",
+                                "model": event.get("model"),
+                                **usage_data,
+                            }
+                        )
             text, accumulated = parse_pi_event(event, accumulated)
             if text:
                 await emit(text)
@@ -204,16 +279,26 @@ async def run_pi_auto(
             stop_reason = "success"
         elif exit_code == 0:
             stop_reason = "success"
+        # Emit an explicit error when the subprocess exits non-zero without a
+        # clean agent_end so callers see a failure rather than a silent EOF.
+        # Guard with `not saw_error` to avoid emitting a second error when the
+        # message_update handler already forwarded one.
         agent_ended_ok = saw_agent_end and not saw_error
-        return (exit_code == 0 and agent_ended_ok), stop_reason, last_text
+        if exit_code != 0 and not agent_ended_ok and not saw_error:
+            msg = f"[pi] ✗ process exited with non-zero code {exit_code}"
+            logger.error("pi[%d] %s", proc.pid if proc else "?", msg)
+            await emit(msg)
+        if exit_code != 0 and not agent_ended_ok:
+            stop_reason = "error_during_execution"
+        return (exit_code == 0 and agent_ended_ok), stop_reason, last_text, session_id
     except FileNotFoundError:
         logger.error("`pi` CLI not found on PATH")
         await emit("[pi] ✗ `pi` CLI not found on PATH")
-        return False, "no_events", last_text
+        return False, "no_events", last_text, session_id
     except Exception as exc:  # pragma: no cover
         logger.exception("pi subprocess crashed: %s", exc)
         await emit(f"[pi] ✗ {exc}")
-        return False, "error_during_execution", last_text
+        return False, "error_during_execution", last_text, session_id
     finally:
         # Safety net: ensure the subprocess is gone even if we took an
         # exception or were cancelled before the normal cleanup above ran.
