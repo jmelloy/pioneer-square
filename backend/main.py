@@ -406,9 +406,7 @@ if _VITE_DEV_URL:
     # No timeout: this is a transparent dev proxy and Vite responses can be
     # slow or long-lived (HMR, SSE, large bundles). The default 5s httpx
     # timeout would otherwise raise httpx.ReadTimeout and crash the request.
-    _vite_client = httpx.AsyncClient(
-        base_url=_VITE_DEV_URL, follow_redirects=False, timeout=None
-    )
+    _vite_client = httpx.AsyncClient(base_url=_VITE_DEV_URL, follow_redirects=False, timeout=None)
 
     @app.api_route("/{path:path}", methods=["GET", "HEAD", "OPTIONS"])
     async def _vite_proxy(request: Request, path: str) -> Response:
