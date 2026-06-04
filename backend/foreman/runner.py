@@ -3,10 +3,11 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk
-from database import get_db
+from database import AsyncSessionLocal, get_db
 from events import broadcast_msg
 from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
 from foreman.tools import exec_tools
@@ -59,6 +60,16 @@ def _get_anthropic_client():
     if _anthropic_client is None:
         _anthropic_client = make_anthropic_client()
     return _anthropic_client
+
+
+async def _load_foreman_config(guild_id: str) -> dict:
+    """Load per-guild foreman config from the DB. Returns {} if unset."""
+    async with AsyncSessionLocal() as db:
+        result = await db.exec(
+            select(col(Guild.foreman_config)).where(col(Guild.guild_id) == guild_id)
+        )
+        raw = result.one_or_none()
+        return raw if isinstance(raw, dict) else {}
 
 
 async def _get_guild_user_id(guild_id: str) -> str | None:
@@ -186,8 +197,8 @@ async def _update_turn_tokens(turn_id: int, input_tokens: int, output_tokens: in
 async def _poll_loop(guild_id: str) -> None:
     """Background loop: check non-terminal tasks and call the foreman if any are found.
 
-    Interval doubles each cycle from POLL_MIN_SECS up to POLL_MAX_SECS.
-    Cancelled (via reset_foreman_poll) whenever a significant event arrives.
+    Interval doubles each cycle from POLL_MIN_SECS up to POLL_MAX_SECS (or per-guild
+    overrides). Cancelled (via reset_foreman_poll) whenever a significant event arrives.
     The foreman-poll-status broadcast is sent after each poll so the UI can
     display the countdown to the *next* check.
     """
@@ -203,12 +214,16 @@ async def _poll_loop(guild_id: str) -> None:
             return
 
         try:
+            # Reload config each cycle so guild owners see changes without restarting.
+            cfg = await _load_foreman_config(guild_id)
+            poll_max = int(cfg.get("poll_max_interval", POLL_MAX_SECS))
+
             # If an external foreman is connected for this guild it owns the
             # poll loop — skip the embedded run to avoid double-triggering.
             from events import foreman_connections
 
             if guild_id in foreman_connections:
-                next_interval = min(interval * 2, POLL_MAX_SECS)
+                next_interval = min(interval * 2, poll_max)
                 logger.debug(
                     "guild=%s external foreman connected, skipping embedded poll", guild_id
                 )
@@ -231,7 +246,7 @@ async def _poll_loop(guild_id: str) -> None:
                 await db.close()
 
             n = len(active_tasks)
-            next_interval = min(interval * 2, POLL_MAX_SECS)
+            next_interval = min(interval * 2, poll_max)
             logger.debug(
                 "guild=%s polling %d active tasks, next check in %.0fm",
                 guild_id,
@@ -359,6 +374,13 @@ async def _run_foreman_ai(
     if not user_id:
         user_id = await _get_guild_user_id(guild_id) or guild_id
 
+    # Load per-guild foreman config; fall back to env-var defaults for any unset field.
+    guild_cfg = await _load_foreman_config(guild_id)
+    cfg_provider: str | None = guild_cfg.get("provider")
+    cfg_model: str | None = guild_cfg.get("model")
+    cfg_system_prompt_suffix: str | None = guild_cfg.get("system_prompt_suffix")
+    cfg_max_rounds: int = int(guild_cfg.get("max_rounds", MAX_FOREMAN_ROUNDS))
+
     # Build live context for the system prompt.  The session is kept open until
     # the end of the function so the tool_use / tool_result Message rows and the
     # final chat Message can all be written without opening fresh connections.
@@ -420,11 +442,17 @@ async def _run_foreman_ai(
             s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
         ]
         tasks_block = json.dumps(summarized_tasks, indent=2)
-        system_blocks = build_system_blocks(primary_repo=primary_repo)
+        system_blocks = build_system_blocks(
+            primary_repo=primary_repo, system_prompt_suffix=cfg_system_prompt_suffix
+        )
         state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
         # Legacy single-string render — persisted for audit only, not sent to the API.
         audit_system = build_system_prompt(
-            workers_block, tasks_block, extra_context, primary_repo=primary_repo
+            workers_block,
+            tasks_block,
+            extra_context,
+            primary_repo=primary_repo,
+            system_prompt_suffix=cfg_system_prompt_suffix,
         )
 
         logger.info(
@@ -457,10 +485,15 @@ async def _run_foreman_ai(
         # with this call only — the DB still holds just the human's literal text.
         _inject_state_preamble(messages, state_preamble)
 
-        client = _get_anthropic_client()
+        # Use a per-guild client/model if the config overrides provider or model.
+        if cfg_provider and cfg_provider != os.environ.get("FOREMAN_PROVIDER", "anthropic").lower():
+            client = make_anthropic_client(provider=cfg_provider)
+        else:
+            client = _get_anthropic_client()
+        foreman_model = cfg_model or get_foreman_model(provider=cfg_provider)
 
         text_parts = []
-        for round_num in range(MAX_FOREMAN_ROUNDS):
+        for round_num in range(cfg_max_rounds):
             messages = prune_history(messages)
             messages = strip_orphaned_tool_results(messages)
             _stamp_message_cache_breakpoint(messages)
@@ -471,7 +504,7 @@ async def _run_foreman_ai(
                 len(messages),
             )
             resp = await client.messages.create(
-                model=get_foreman_model(),
+                model=foreman_model,
                 max_tokens=1024,
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]
@@ -643,13 +676,13 @@ async def _run_foreman_ai(
             logger.warning(
                 "guild=%s run_foreman_ai: hit %d-round safety cap, forcing wrap-up",
                 guild_id,
-                MAX_FOREMAN_ROUNDS,
+                cfg_max_rounds,
             )
             messages = prune_history(messages)
             messages = strip_orphaned_tool_results(messages)
             _stamp_message_cache_breakpoint(messages)
             wrap_resp = await client.messages.create(
-                model=get_foreman_model(),
+                model=foreman_model,
                 max_tokens=1024,
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]
@@ -679,7 +712,7 @@ async def _run_foreman_ai(
                         guild_id,
                         ChatMsg(from_="foreman", to="user", content=b.text.strip(), createdAt=_now),
                     )
-            cap_note = f"_(Foreman hit {MAX_FOREMAN_ROUNDS}-round safety cap and stopped.)_"
+            cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
             await broadcast_msg(
                 guild_id,

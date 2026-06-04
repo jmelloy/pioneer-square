@@ -141,7 +141,7 @@ Be concise — one short paragraph maximum unless detail is requested.
 _EMPTY_WORKERS_BLOCKS = {"[]", "[\n]"}
 
 
-def _stable_system_text(primary_repo: str | None) -> str:
+def _stable_system_text(primary_repo: str | None, system_prompt_suffix: str | None = None) -> str:
     """The cacheable persona prefix. Stable per guild."""
     repo_line = (
         f"\n\nThe primary repository for this guild is `{primary_repo}`."
@@ -149,10 +149,13 @@ def _stable_system_text(primary_repo: str | None) -> str:
         if primary_repo
         else ""
     )
-    return f"{FOREMAN_SYSTEM}{repo_line}"
+    suffix = f"\n\n{system_prompt_suffix.strip()}" if system_prompt_suffix else ""
+    return f"{FOREMAN_SYSTEM}{repo_line}{suffix}"
 
 
-def build_system_blocks(primary_repo: str | None = None) -> list[dict]:
+def build_system_blocks(
+    primary_repo: str | None = None, system_prompt_suffix: str | None = None
+) -> list[dict]:
     """Return the system prompt as a single cache-controlled block.
 
     Persona + per-guild repo line only. Live state (workers/tasks/extra_context)
@@ -162,7 +165,7 @@ def build_system_blocks(primary_repo: str | None = None) -> list[dict]:
     return [
         {
             "type": "text",
-            "text": _stable_system_text(primary_repo),
+            "text": _stable_system_text(primary_repo, system_prompt_suffix),
             "cache_control": {"type": "ephemeral"},
         }
     ]
@@ -194,6 +197,7 @@ def build_system_prompt(
     tasks_block: str,
     extra_context: str = "",
     primary_repo: str | None = None,
+    system_prompt_suffix: str | None = None,
 ) -> str:
     """Render the legacy single-string system prompt.
 
@@ -201,6 +205,6 @@ def build_system_prompt(
     helper is kept for the audit-log persistence path and for tests.
     """
     return (
-        f"{_stable_system_text(primary_repo)}\n\n"
+        f"{_stable_system_text(primary_repo, system_prompt_suffix)}\n\n"
         f"{build_state_preamble(workers_block, tasks_block, extra_context)}"
     )
