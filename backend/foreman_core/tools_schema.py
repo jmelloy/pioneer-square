@@ -528,5 +528,5 @@ FOREMAN_TOOLS = [
             "required": ["agent_url", "skill"],
         },
     },
-    # { "name": "spawn_worker", ... }  # intentionally disabled until async/lock fixes (#551, #564, #566) are merged and verified
+    # spawn_worker intentionally disabled — see issues #551, #564, #566
 ]

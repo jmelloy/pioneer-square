@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module
 from _test_config import TEST_DATABASE_URL
 from foreman.tools import _exec_one_tool
+from foreman_core.tools_schema import FOREMAN_TOOLS
 from helpers import _sync_session, create_db, insert_guild, truncate_all
 from models import Worker
 from sqlalchemy import select
@@ -26,7 +27,6 @@ from sqlmodel import col
 from utils import build_spawn_worker_env
 
 from foreman import tools as foreman_tools
-from foreman_core.tools_schema import FOREMAN_TOOLS
 
 # ---------------------------------------------------------------------------
 # Schema guard
@@ -36,6 +36,8 @@ from foreman_core.tools_schema import FOREMAN_TOOLS
 def test_spawn_worker_not_in_foreman_tools():
     """Guard against spawn_worker being re-added before #551, #564, #566 are merged."""
     assert not any(t["name"] == "spawn_worker" for t in FOREMAN_TOOLS)
+    # Ensure the backend implementation is still present so this test stays meaningful.
+    assert hasattr(foreman_tools, "build_spawn_worker_env")
 
 
 # ---------------------------------------------------------------------------
