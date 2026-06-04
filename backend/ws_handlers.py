@@ -669,7 +669,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
     # notify the foreman so it can decide how to handle them.
     if update_values.get("state") == "error" and task_id:
         queued_payloads: list[dict] = []
-        result = await ctx.db.execute(
+        result = await ctx.db.exec(
             select(TaskEvent.id, TaskEvent.payload_json)
             .where(TaskEvent.task_id == task_id, TaskEvent.event_type == "pending-followup")
             .order_by(TaskEvent.id)
@@ -678,7 +678,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         if rows:
             event_ids = [r[0] for r in rows]
             queued_payloads = [json.loads(r[1]) for r in rows]
-            await ctx.db.execute(delete(TaskEvent).where(TaskEvent.id.in_(event_ids)))
+            await ctx.db.exec(delete(TaskEvent).where(TaskEvent.id.in_(event_ids)))
         worker_id_upd = data.get("workerId", "a worker")
         task_uid = await _task_user_id(ctx.db, task_id)
         if queued_payloads:

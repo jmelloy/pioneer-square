@@ -112,7 +112,7 @@ async def _delete_tokens(tokens: list[str]) -> None:
         return
     db = await get_db()
     try:
-        await db.execute(delete(PushToken).where(PushToken.token.in_(tokens)))
+        await db.exec(delete(PushToken).where(PushToken.token.in_(tokens)))
         await db.commit()
     finally:
         await db.close()
@@ -135,7 +135,7 @@ async def send_to_user(
 
     db = await get_db()
     try:
-        result = await db.execute(select(PushToken.token).where(PushToken.user_id == user_id))
+        result = await db.exec(select(PushToken.token).where(PushToken.user_id == user_id))
         tokens = [row[0] for row in result.all()]
     finally:
         await db.close()
