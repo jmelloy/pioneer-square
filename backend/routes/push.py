@@ -69,7 +69,7 @@ async def register_push_token(
             },
         )
     )
-    await db.execute(stmt)
+    await db.exec(stmt)
     await db.commit()
     return {"status": "ok"}
 
@@ -89,7 +89,7 @@ async def unregister_push_token(
     Only deletes when the token is owned by the authenticated user, so one
     user can't silence another's device by guessing its token.
     """
-    await db.execute(
+    await db.exec(
         delete(PushToken).where(
             PushToken.token == body.token,
             PushToken.user_id == github_user_id,
@@ -109,7 +109,7 @@ async def list_my_tokens(
     Useful for a future "logged-in devices" settings screen and for
     debugging — exposes only the caller's own rows.
     """
-    result = await db.execute(
+    result = await db.exec(
         select(
             PushToken.token,
             PushToken.platform,
