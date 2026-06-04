@@ -336,6 +336,7 @@ app.add_middleware(
 
 from routes import agents as _agents_routes  # noqa: E402
 from routes import auth as _auth_routes  # noqa: E402
+from routes import debug as _debug_routes  # noqa: E402
 from routes import foreman as _foreman_routes  # noqa: E402
 from routes import guilds as _guilds_routes  # noqa: E402
 from routes import push as _push_routes  # noqa: E402
@@ -358,6 +359,7 @@ app.include_router(_foreman_routes.router)
 app.include_router(_webhooks_routes.router)
 app.include_router(_push_routes.router)
 app.include_router(_ws_routes.router)
+app.include_router(_debug_routes.router)
 
 
 # ---------------------------------------------------------------------------
