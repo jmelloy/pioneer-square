@@ -21,6 +21,17 @@ def test_foreman_tools_canonical_is_list():
     assert "assign_task" in names
 
 
+def test_spawn_worker_not_in_foreman_tools():
+    """spawn_worker must stay out of FOREMAN_TOOLS until async/lock fixes land (#567)."""
+    from backend.foreman_core.tools_schema import FOREMAN_TOOLS
+
+    names = [t["name"] for t in FOREMAN_TOOLS]
+    assert "spawn_worker" not in names, (
+        "spawn_worker must not be exposed to the foreman AI until issues #551, #564, #566 "
+        "are merged and tested (see #567)"
+    )
+
+
 def test_standalone_foreman_uses_canonical_tools():
     # foreman/ standalone entry point
     import pioneer_foreman.tools as foreman_tools

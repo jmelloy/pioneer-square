@@ -496,54 +496,6 @@ FOREMAN_TOOLS = [
         },
     },
     {
-        "name": "spawn_worker",
-        "description": (
-            "Start a new worker process pointed at a specific set of repos. "
-            "The worker is pre-registered in the database (so you have its worker_id "
-            "immediately) and a Docker container is launched automatically. "
-            "Use this when no idle worker covers the repos needed for a task — "
-            "call spawn_worker, wait briefly, then assign tasks to the returned worker_id. "
-            "Requires the Docker socket to be mounted on the backend."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "repos": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "List of owner/repo strings the worker should clone and work on, "
-                        'e.g. ["acme/backend", "acme/frontend"].'
-                    ),
-                },
-                "tools": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": ["claude", "codex", "pi"],
-                    },
-                    "description": (
-                        "Optional list of agent runners to enable on this worker. "
-                        "Defaults to all available runners. "
-                        'Example: ["claude"] to restrict to Claude only.'
-                    ),
-                },
-                "agent_count": {
-                    "type": "integer",
-                    "description": (
-                        "Number of concurrent agent slots on this worker (default: 4). "
-                        "Increase for high-throughput workers; decrease to limit resource use."
-                    ),
-                },
-                "name": {
-                    "type": "string",
-                    "description": "Optional human-readable name for the worker.",
-                },
-            },
-            "required": ["repos"],
-        },
-    },
-    {
         "name": "call_agent",
         "description": (
             "Call a skill on a remote A2A-compatible HTTP agent. "
@@ -576,4 +528,5 @@ FOREMAN_TOOLS = [
             "required": ["agent_url", "skill"],
         },
     },
+    # spawn_worker intentionally disabled — see issues #551, #564, #566, #567
 ]
