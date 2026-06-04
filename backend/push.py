@@ -136,7 +136,7 @@ async def send_to_user(
     db = await get_db()
     try:
         result = await db.exec(select(PushToken.token).where(PushToken.user_id == user_id))
-        tokens = [row[0] for row in result.all()]
+        tokens = result.all()
     finally:
         await db.close()
 
