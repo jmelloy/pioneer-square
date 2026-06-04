@@ -107,7 +107,21 @@ async def _fetch_github_timeline(pr_url: str, token: str | None) -> tuple[list[d
                     "source": "github",
                     "event_type": "pr_opened",
                     "summary": f"PR #{pr_number} opened: {pr_data.get('title', '')}",
-                    "detail": pr_data,
+                    "detail": {
+                        "number": pr_data.get("number"),
+                        "title": pr_data.get("title"),
+                        "state": pr_data.get("state"),
+                        "user": (pr_data.get("user") or {}).get("login"),
+                        "created_at": pr_data.get("created_at"),
+                        "updated_at": pr_data.get("updated_at"),
+                        "head_sha": (pr_data.get("head") or {}).get("sha"),
+                        "head_ref": (pr_data.get("head") or {}).get("ref"),
+                        "base_ref": (pr_data.get("base") or {}).get("ref"),
+                        "html_url": pr_data.get("html_url"),
+                        "draft": pr_data.get("draft"),
+                        "mergeable": pr_data.get("mergeable"),
+                        "body": pr_data.get("body"),
+                    },
                 }
             )
             if pr_data.get("merged_at"):
@@ -158,7 +172,14 @@ async def _fetch_github_timeline(pr_url: str, token: str | None) -> tuple[list[d
                         "source": "github",
                         "event_type": "commit_pushed",
                         "summary": f"Commit {c.get('sha', '')[:7]}: {first_line[:100]}",
-                        "detail": c,
+                        "detail": {
+                            "sha": c.get("sha"),
+                            "message": commit_info.get("message"),
+                            "author_name": (commit_info.get("author") or {}).get("name"),
+                            "author_date": (commit_info.get("author") or {}).get("date"),
+                            "committer_date": (commit_info.get("committer") or {}).get("date"),
+                            "html_url": c.get("html_url"),
+                        },
                     }
                 )
 
@@ -177,7 +198,14 @@ async def _fetch_github_timeline(pr_url: str, token: str | None) -> tuple[list[d
                         "source": "github",
                         "event_type": "pr_review",
                         "summary": f"Review by {login}: {rev.get('state', '')}",
-                        "detail": rev,
+                        "detail": {
+                            "id": rev.get("id"),
+                            "user": login,
+                            "state": rev.get("state"),
+                            "submitted_at": rev.get("submitted_at"),
+                            "body": rev.get("body"),
+                            "html_url": rev.get("html_url"),
+                        },
                     }
                 )
 
@@ -202,7 +230,17 @@ async def _fetch_github_timeline(pr_url: str, token: str | None) -> tuple[list[d
                             "source": "github",
                             "event_type": etype,
                             "summary": f"Check '{cr.get('name', '')}': {conclusion}",
-                            "detail": cr,
+                            "detail": {
+                                "id": cr.get("id"),
+                                "name": cr.get("name"),
+                                "status": cr.get("status"),
+                                "conclusion": cr.get("conclusion"),
+                                "started_at": cr.get("started_at"),
+                                "completed_at": cr.get("completed_at"),
+                                "html_url": cr.get("html_url"),
+                                "output_title": (cr.get("output") or {}).get("title"),
+                                "output_summary": (cr.get("output") or {}).get("summary"),
+                            },
                         }
                     )
 
@@ -224,16 +262,24 @@ async def _fetch_github_timeline(pr_url: str, token: str | None) -> tuple[list[d
                         "source": "github",
                         "event_type": "pr_comment",
                         "summary": f"Comment by {login}: {body_preview}",
-                        "detail": cm,
+                        "detail": {
+                            "id": cm.get("id"),
+                            "user": login,
+                            "created_at": cm.get("created_at"),
+                            "updated_at": cm.get("updated_at"),
+                            "body": cm.get("body"),
+                            "html_url": cm.get("html_url"),
+                        },
                     }
                 )
 
         # PR timeline events (requires mockingbird preview)
-        tl_headers = {"Accept": "application/vnd.github.mockingbird-preview+json"}
+        # Merge base_headers so Authorization is not dropped — overriding headers=
+        # in httpx replaces the client's default headers entirely.
         tl_events, err = await _gh_get(
             client,
             f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{pr_number}/timeline",
-            headers=tl_headers,
+            headers={**base_headers, "Accept": "application/vnd.github.mockingbird-preview+json"},
             params={"per_page": 100},
         )
         if err:
@@ -251,7 +297,13 @@ async def _fetch_github_timeline(pr_url: str, token: str | None) -> tuple[list[d
                         "source": "github",
                         "event_type": etype,
                         "summary": f"Timeline: {etype}" + (f" by {actor}" if actor else ""),
-                        "detail": ev,
+                        "detail": {
+                            "event": etype,
+                            "actor": actor or None,
+                            "created_at": ev.get("created_at"),
+                            "submitted_at": ev.get("submitted_at"),
+                            "label": (ev.get("label") or {}).get("name") if ev.get("label") else None,
+                        },
                     }
                 )
 
@@ -414,7 +466,7 @@ async def get_task_debug_timeline(
         timeline.append(
             {
                 "timestamp": _iso(usage.created_at),
-                "source": "worker",
+                "source": "claude",
                 "event_type": f"usage_{usage.kind}",
                 "summary": summary,
                 "detail": row_to_dict(usage),
@@ -423,6 +475,11 @@ async def get_task_debug_timeline(
 
     # ── 5. Live GitHub API ────────────────────────────────────────────────────
     if task.pr_url:
+        # GITHUB_TOKEN is a shared server credential with broad read access to
+        # all repos the server account can see.  This endpoint is intentionally
+        # server-side: it is an internal debug view gated by guild membership,
+        # not a per-user GitHub proxy.  If per-user visibility scoping is ever
+        # required, replace this with a per-user OAuth token lookup.
         github_token: str | None = os.getenv("GITHUB_TOKEN")
         if not github_token:
             tok_result = await db.exec(
