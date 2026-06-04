@@ -302,7 +302,9 @@ async def _fetch_github_timeline(pr_url: str, token: str | None) -> tuple[list[d
                             "actor": actor or None,
                             "created_at": ev.get("created_at"),
                             "submitted_at": ev.get("submitted_at"),
-                            "label": (ev.get("label") or {}).get("name") if ev.get("label") else None,
+                            "label": (ev.get("label") or {}).get("name")
+                            if ev.get("label")
+                            else None,
                         },
                     }
                 )
