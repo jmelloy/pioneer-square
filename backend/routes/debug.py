@@ -62,6 +62,21 @@ def _parse_ts(ts: str | None) -> datetime:
         return datetime.max.replace(tzinfo=UTC)
 
 
+def _redact(obj: Any, sensitive: list[str]) -> Any:
+    """Recursively replace every occurrence of each sensitive string with '<redacted>'."""
+    if not sensitive:
+        return obj
+    if isinstance(obj, str):
+        for s in sensitive:
+            obj = obj.replace(s, "<redacted>")
+        return obj
+    if isinstance(obj, dict):
+        return {k: _redact(v, sensitive) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact(item, sensitive) for item in obj]
+    return obj
+
+
 async def _gh_get(client: httpx.AsyncClient, url: str, **kwargs: Any) -> tuple[Any, str | None]:
     """GET *url* via *client*; return (data, error_string)."""
     try:
@@ -468,12 +483,19 @@ async def get_task_debug_timeline(
         timeline.append(
             {
                 "timestamp": _iso(usage.created_at),
-                "source": "claude",
+                "source": "worker",
                 "event_type": f"usage_{usage.kind}",
                 "summary": summary,
                 "detail": row_to_dict(usage),
             }
         )
+
+    # Collect all sensitive credential strings now so we can scrub them from
+    # the response regardless of which code path set them.
+    _sensitive: list[str] = []
+    _env_gh_token: str | None = os.getenv("GITHUB_TOKEN")
+    if _env_gh_token:
+        _sensitive.append(_env_gh_token)
 
     # ── 5. Live GitHub API ────────────────────────────────────────────────────
     if task.pr_url:
@@ -482,7 +504,7 @@ async def get_task_debug_timeline(
         # server-side: it is an internal debug view gated by guild membership,
         # not a per-user GitHub proxy.  If per-user visibility scoping is ever
         # required, replace this with a per-user OAuth token lookup.
-        github_token: str | None = os.getenv("GITHUB_TOKEN")
+        github_token: str | None = _env_gh_token
         if not github_token:
             tok_result = await db.exec(
                 select(col(GithubToken.access_token)).where(
@@ -490,6 +512,8 @@ async def get_task_debug_timeline(
                 )
             )
             github_token = tok_result.one_or_none()
+            if github_token:
+                _sensitive.append(github_token)
 
         gh_events, gh_warnings = await _fetch_github_timeline(task.pr_url, github_token)
         timeline.extend(gh_events)
@@ -501,4 +525,8 @@ async def get_task_debug_timeline(
     response: dict[str, Any] = {"task": task_dict, "timeline": timeline}
     if warnings:
         response["warnings"] = warnings
+    # Strip any credential strings that may have leaked into log lines or
+    # detail payloads before serialising to the caller.
+    if _sensitive:
+        response = _redact(response, _sensitive)
     return response
