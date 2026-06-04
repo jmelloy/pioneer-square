@@ -1,4 +1,9 @@
-"""Tests for the foreman spawn_worker tool and related helpers."""
+"""Tests for the foreman spawn_worker tool and related helpers.
+
+# NOTE: This test is intentionally temporary. Delete it (don't just update it)
+# once issues #551, #564, and #566 are merged and the spawn_worker re-enablement
+# is complete.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +42,10 @@ def test_spawn_worker_not_in_foreman_tools():
     """Guard against spawn_worker being re-added before #551, #564, #566 are merged."""
     assert not any(t["name"] == "spawn_worker" for t in FOREMAN_TOOLS)
     # Ensure the backend implementation is still present so this test stays meaningful.
-    assert hasattr(foreman_tools, "build_spawn_worker_env")
+    assert hasattr(foreman_tools, "spawn_worker"), (
+        "spawn_worker implementation removed — delete this test and update "
+        "the re-enablement plan in issues #551, #564, #566, #567"
+    )
 
 
 # ---------------------------------------------------------------------------
