@@ -55,9 +55,13 @@ class LockService:
         except IntegrityError:
             return False
 
-    async def release(self, key: str) -> None:
-        """Release *key*. Safe to call even if the lock is not held (idempotent)."""
-        await self._db.exec(delete(Lock).where(col(Lock.key) == key))
+    async def release(self, key: str, owner: str | None = None) -> None:
+        """Release *key*. If *owner* is given, only releases if the caller owns the lock.
+        Safe to call even if the lock is not held (idempotent)."""
+        stmt = delete(Lock).where(col(Lock.key) == key)
+        if owner is not None:
+            stmt = stmt.where(col(Lock.owner) == owner)
+        await self._db.exec(stmt)
 
     async def is_locked(self, key: str) -> bool:
         """Return True if a non-expired lock exists for *key*."""

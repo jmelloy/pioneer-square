@@ -706,7 +706,24 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         is_error = True
                     else:
                         try:
-                            if existing_task_id:
+                            # Re-check idle state inside the lock to close the TOCTOU
+                            # window: two concurrent foremen may have both seen the worker
+                            # as idle before either acquired the lock.
+                            idle_check = await db.exec(
+                                select(col(Agent.id))
+                                .where(
+                                    col(Agent.worker_id) == wid,
+                                    col(Agent.state) == "idle",
+                                )
+                                .limit(1)
+                            )
+                            if not idle_check.one_or_none():
+                                result_text = (
+                                    f"Worker {wid} is no longer idle — task NOT assigned. "
+                                    "Pick a different idle worker and retry."
+                                )
+                                is_error = True
+                            elif existing_task_id:
                                 name_override = inp.get("name")
                                 update_values: dict = {
                                     "worker_id": wid,
@@ -802,7 +819,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 )
                                 result_text = f"Task {task_id} queued for {wid}."
                         finally:
-                            await LockService(db).release(assign_lock_key)
+                            await LockService(db).release(assign_lock_key, owner=assign_lock_id)
                             await db.commit()
 
             elif tu.name == "send_followup":
