@@ -1231,8 +1231,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 await _to_thread(orphan.stop)
                             except Exception as cleanup_exc:
                                 logger.warning(
-                                    "spawn_worker: orphan cleanup after timeout failed"
-                                    " for %s: %s",
+                                    "spawn_worker: orphan cleanup after timeout failed for %s: %s",
                                     container_name,
                                     cleanup_exc,
                                 )
