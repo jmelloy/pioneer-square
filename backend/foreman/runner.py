@@ -315,6 +315,10 @@ async def run_foreman_ai(
     and cooperative, so no other coroutine can run between the check and the
     acquire (there is no ``await`` between them).
     """
+    # When user_id is None (system-triggered/poll runs), all such invocations
+    # within the same guild share key (guild_id, None) and serialize against
+    # each other.  This is intentional — system runs are per-guild work and
+    # should not overlap with themselves.
     lock_key = (guild_id, user_id)
     lock = _guild_locks.setdefault(lock_key, asyncio.Lock())
     if lock.locked():
