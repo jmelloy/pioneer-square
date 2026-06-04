@@ -53,11 +53,13 @@ RUN pip install --no-cache-dir \
         uv \
         pipx
 
-# AI coding CLIs — this layer is the one most likely to update
+# AI coding CLIs — this layer is the one most likely to update.
+# pi moved scopes: @mariozechner/pi-coding-agent is deprecated and frozen at
+# 0.73.1 (old RPC protocol); the maintained package is @earendil-works.
 RUN npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
-        @mariozechner/pi-coding-agent
+        @earendil-works/pi-coding-agent
 
 WORKDIR /app
 

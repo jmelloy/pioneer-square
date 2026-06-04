@@ -5,6 +5,13 @@ import path from 'path'
 const backendUrl = process.env.BACKEND_URL ?? 'http://localhost:8000'
 const backendWsUrl = backendUrl.replace(/^http/, 'ws')
 
+// When the SPA is reached through the backend dev proxy (e.g. localhost:8056),
+// the backend does not forward Vite's HMR WebSocket. Point the HMR client at
+// the directly-exposed Vite port instead. Configurable via HMR_CLIENT_PORT.
+const hmrClientPort = process.env.HMR_CLIENT_PORT
+  ? Number(process.env.HMR_CLIENT_PORT)
+  : undefined
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
@@ -15,6 +22,9 @@ export default defineConfig({
   },
   server: {
     allowedHosts: ['localhost', 'frontend', 'pioneer-square.melloy.life'],
+    ...(hmrClientPort
+      ? { hmr: { protocol: 'ws', host: 'localhost', clientPort: hmrClientPort } }
+      : {}),
     // Forward backend routes when running `npm run dev` so the SPA can
     // call /auth, /guilds, /ws against the dev server. In production
     // these are handled by nginx-in-container (see frontend/nginx.conf).
