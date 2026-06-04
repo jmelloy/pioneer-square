@@ -715,9 +715,7 @@ async def spawn_worker(
             update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
         )
         await db.commit()
-        return (
-            f"Worker pre-registered as {worker_id} but failed to start container: {exc}"
-        ), True
+        return (f"Worker pre-registered as {worker_id} but failed to start container: {exc}"), True
 
 
 # ---------------------------------------------------------------------------
