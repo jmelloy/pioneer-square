@@ -750,9 +750,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 )
                                 await db.commit()
                                 name_result = await db.exec(
-                                    select(col(Task.name)).where(
-                                        col(Task.id) == existing_task_id
-                                    )
+                                    select(col(Task.name)).where(col(Task.id) == existing_task_id)
                                 )
                                 task_name = name_result.one_or_none() or desc[:60]
                                 task_id = existing_task_id
