@@ -25,7 +25,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.add_column(
         "guilds",
-        sa.Column("foreman_config", sa.Text(), nullable=True),
+        sa.Column("foreman_config", sa.JSON(), nullable=True),
     )
 
 

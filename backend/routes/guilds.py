@@ -10,13 +10,14 @@ import json
 import logging
 import secrets
 from datetime import UTC, datetime
+from typing import Literal
 
 from auth_deps import get_guild_pk, require_member, require_user, require_worker_or_member_path
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -59,11 +60,11 @@ class GuildUpdate(BaseModel):
 
 class ForemanConfigUpdate(BaseModel):
     model: str | None = None
-    provider: str | None = None
-    system_prompt_suffix: str | None = None
-    max_rounds: int | None = None
-    poll_min_interval: int | None = None
-    poll_max_interval: int | None = None
+    provider: Literal["anthropic", "openai", "google"] | None = None
+    system_prompt_suffix: str | None = Field(default=None, max_length=10000)
+    max_rounds: int | None = Field(default=None, gt=0)
+    poll_min_interval: int | None = Field(default=None, gt=0)
+    poll_max_interval: int | None = Field(default=None, gt=0)
 
 
 class MemberCreate(BaseModel):
@@ -384,20 +385,11 @@ async def get_foreman_config(
     db: AsyncSession = Depends(get_db_dep),
 ):
     """Return the guild's foreman configuration (owner only)."""
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-    res = await db.exec(select(Guild).where(col(Guild.id) == guild_pk))
+    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    config: dict = {}
-    if guild.foreman_config:
-        try:
-            config = json.loads(guild.foreman_config)
-        except json.JSONDecodeError:
-            config = {}
-    return config
+    return guild.foreman_config or {}
 
 
 @router.patch("/api/guilds/{guild_id}/foreman-config")
@@ -408,26 +400,18 @@ async def update_foreman_config(
     db: AsyncSession = Depends(get_db_dep),
 ):
     """Update (merge) the guild's foreman configuration (owner only)."""
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-    res = await db.exec(select(Guild).where(col(Guild.id) == guild_pk))
+    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    config: dict = {}
-    if guild.foreman_config:
-        try:
-            config = json.loads(guild.foreman_config)
-        except json.JSONDecodeError:
-            config = {}
+    config: dict = dict(guild.foreman_config or {})
     for field in data.model_fields_set:
         value = getattr(data, field)
         if value is None:
             config.pop(field, None)
         else:
             config[field] = value
-    guild.foreman_config = json.dumps(config)
+    guild.foreman_config = config
     await db.commit()
     return config
 

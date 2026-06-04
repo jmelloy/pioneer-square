@@ -7,7 +7,7 @@ import os
 from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk
-from database import get_db
+from database import AsyncSessionLocal, get_db
 from events import broadcast_msg
 from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
 from foreman.tools import exec_tools
@@ -29,10 +29,6 @@ from foreman_core.message_utils import (
 )
 from foreman_core.tools_schema import FOREMAN_TOOLS
 from models import Agent, ForemanTurn, Guild, GuildMember, Message, Task, Worker, live_tasks_filter
-
-_FOREMAN_CONFIG_FIELDS = frozenset(
-    {"model", "provider", "system_prompt_suffix", "max_rounds", "poll_min_interval", "poll_max_interval"}
-)
 from sqlalchemy import delete, func
 from sqlmodel import col, select
 from util.tasks import spawn
@@ -60,21 +56,13 @@ def _get_anthropic_client():
 
 
 async def _load_foreman_config(guild_id: str) -> dict:
-    """Load per-guild foreman config from the DB. Returns {} if unset or unparseable."""
-    db = await get_db()
-    try:
+    """Load per-guild foreman config from the DB. Returns {} if unset."""
+    async with AsyncSessionLocal() as db:
         result = await db.exec(
             select(col(Guild.foreman_config)).where(col(Guild.guild_id) == guild_id)
         )
         raw = result.one_or_none()
-        if raw:
-            try:
-                return json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                pass
-        return {}
-    finally:
-        await db.close()
+        return raw if isinstance(raw, dict) else {}
 
 
 async def _get_guild_user_id(guild_id: str) -> str | None:
@@ -207,10 +195,7 @@ async def _poll_loop(guild_id: str) -> None:
     The foreman-poll-status broadcast is sent after each poll so the UI can
     display the countdown to the *next* check.
     """
-    cfg = await _load_foreman_config(guild_id)
-    poll_min = int(cfg.get("poll_min_interval", POLL_MIN_SECS))
-    poll_max = int(cfg.get("poll_max_interval", POLL_MAX_SECS))
-    interval = poll_min
+    interval = POLL_MIN_SECS
     while True:
         try:
             await asyncio.sleep(interval)
@@ -222,6 +207,10 @@ async def _poll_loop(guild_id: str) -> None:
             return
 
         try:
+            # Reload config each cycle so guild owners see changes without restarting.
+            cfg = await _load_foreman_config(guild_id)
+            poll_max = int(cfg.get("poll_max_interval", POLL_MAX_SECS))
+
             # If an external foreman is connected for this guild it owns the
             # poll loop — skip the embedded run to avoid double-triggering.
             from events import foreman_connections
