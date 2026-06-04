@@ -41,6 +41,12 @@ POLL_MAX_SECS = 3600  # maximum poll interval: 60 minutes
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 
+# Per-guild locks to serialise foreman runs.  If a run is already in progress
+# for a guild, new invocations are dropped rather than queued — the poll loop
+# will re-trigger on the next tick.  Dropping (vs. queuing) keeps memory
+# bounded and avoids stale snapshots piling up under load.
+_guild_locks: dict[str, asyncio.Lock] = {}
+
 # Module-level client — reused across calls so the underlying httpx connection
 # pool isn't thrown away every invocation. Lazily initialised so import works
 # without an API key (Anthropic) or AWS credentials (Bedrock).
@@ -292,6 +298,30 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
 
 
 async def run_foreman_ai(
+    guild_id: str,
+    human_message: str,
+    extra_context: str = "",
+    user_id: str | None = None,
+) -> None:
+    """Serialise per-guild and delegate to ``_run_foreman_ai``.
+
+    Uses a per-guild ``asyncio.Lock``.  If the lock is already held (i.e. a
+    foreman run is in progress for this guild) the new invocation is dropped
+    and the caller returns immediately.  The poll loop will re-trigger on the
+    next tick, so no work is permanently lost.
+    """
+    lock = _guild_locks.setdefault(guild_id, asyncio.Lock())
+    if lock.locked():
+        logger.info(
+            "guild=%s run_foreman_ai: dropping concurrent invocation (foreman already running)",
+            guild_id,
+        )
+        return
+    async with lock:
+        await _run_foreman_ai(guild_id, human_message, extra_context, user_id)
+
+
+async def _run_foreman_ai(
     guild_id: str,
     human_message: str,
     extra_context: str = "",
