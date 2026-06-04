@@ -306,21 +306,22 @@ async def run_foreman_ai(
 ) -> None:
     """Serialise per-guild and delegate to ``_run_foreman_ai``.
 
-    Uses a per-guild ``asyncio.Lock`` stored in ``_guild_locks``.  The acquire
-    is attempted with ``asyncio.wait_for(..., timeout=0)`` so the check-and-
-    acquire is atomic — no TOCTOU window.  If the lock is already held the new
-    invocation is dropped; the poll loop re-triggers on the next tick.  The
-    dict entry is popped in the finally block so the dict stays small.
+    Uses a per-guild ``asyncio.Lock`` stored in ``_guild_locks``.  If the lock
+    is already held the invocation is dropped; the poll loop re-triggers on the
+    next tick.  Dropping is preferred over queuing to avoid unbounded build-up.
+
+    lock.locked() + lock.acquire() is atomic here: asyncio is single-threaded
+    and cooperative, so no other coroutine can run between the check and the
+    acquire (there is no ``await`` between them).
     """
     lock = _guild_locks.setdefault(guild_id, asyncio.Lock())
-    try:
-        await asyncio.wait_for(lock.acquire(), timeout=0)
-    except asyncio.TimeoutError:
+    if lock.locked():
         logger.info(
             "guild=%s run_foreman_ai: dropping concurrent invocation (foreman already running)",
             guild_id,
         )
         return
+    await lock.acquire()
     try:
         await _run_foreman_ai(guild_id, human_message, extra_context, user_id)
     finally:
