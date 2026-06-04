@@ -65,6 +65,11 @@ DEFAULT_FINALIZE_TTL_SECONDS = 3 * 24 * 60 * 60  # 3 days
 # event loop indefinitely.
 EXTERNAL_CALL_TIMEOUT = 30
 
+# Separate, larger timeout for docker_client.containers.run (detach=True).
+# The Docker API call itself should complete once the daemon confirms the container
+# started, but can legitimately take longer than a GitHub REST call on a loaded host.
+CONTAINER_RUN_TIMEOUT = 600
+
 # Module-level Docker client — created once per process to reuse the Unix-socket
 # connection across repeated spawn_worker calls instead of opening a new socket
 # each time.  None until first successful from_env(); tests can patch
@@ -72,18 +77,28 @@ EXTERNAL_CALL_TIMEOUT = 30
 _docker_client: Any = None
 
 
-def _get_docker_client() -> Any:
-    """Return the cached Docker client, importing the SDK and calling from_env() once."""
-    global _docker_client
-    if _docker_client is None:
-        import docker  # ImportError propagated to caller if SDK not installed
+async def _get_docker_client() -> Any:
+    """Return the cached Docker client, importing the SDK and calling from_env() once.
 
-        _docker_client = docker.from_env()
+    Skips the thread hop on subsequent calls once the client is cached.
+    """
+    global _docker_client
+    if _docker_client is not None:
+        return _docker_client
+    import docker  # ImportError propagated to caller if SDK not installed
+
+    _docker_client = await _to_thread(docker.from_env)
     return _docker_client
 
 
 async def _to_thread(fn, /, *args, **kwargs):
-    """Off-load a blocking I/O call to the thread pool with a global timeout."""
+    """Run a blocking callable in a thread pool with a global timeout.
+
+    WARNING: asyncio cancellation/timeout does NOT interrupt the underlying thread.
+    If fn has side effects (e.g. spawning containers, open sockets), callers must
+    handle cleanup in an except block — the thread will continue running to
+    completion even after a TimeoutError is raised to the caller.
+    """
     return await asyncio.wait_for(
         asyncio.to_thread(fn, *args, **kwargs),
         timeout=EXTERNAL_CALL_TIMEOUT,
@@ -1168,7 +1183,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     )
 
                     try:
-                        docker_client = await _to_thread(_get_docker_client)
+                        docker_client = await _get_docker_client()
                         image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
 
                         network = None
@@ -1201,7 +1216,27 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         if network:
                             run_kwargs["network"] = network
 
-                        container = await _to_thread(docker_client.containers.run, **run_kwargs)
+                        try:
+                            container = await asyncio.wait_for(
+                                asyncio.to_thread(docker_client.containers.run, **run_kwargs),
+                                timeout=CONTAINER_RUN_TIMEOUT,
+                            )
+                        except asyncio.TimeoutError:
+                            # The to_thread call keeps running; the daemon may have
+                            # started the container already. Try to stop it by name.
+                            try:
+                                orphan = await _to_thread(
+                                    docker_client.containers.get, container_name
+                                )
+                                await _to_thread(orphan.stop)
+                            except Exception as cleanup_exc:
+                                logger.warning(
+                                    "spawn_worker: orphan cleanup after timeout failed"
+                                    " for %s: %s",
+                                    container_name,
+                                    cleanup_exc,
+                                )
+                            raise
                         result_text = json.dumps(
                             {
                                 "worker_id": worker_id,
