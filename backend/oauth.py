@@ -179,7 +179,7 @@ async def create_session(code: str, state: str) -> dict:
                 "updated_at": stmt.excluded.updated_at,
             },
         )
-        await db.execute(stmt)
+        await db.exec(stmt)
 
         user_stmt = pg_insert(User).values(
             id=github_user_id,
@@ -201,7 +201,7 @@ async def create_session(code: str, state: str) -> dict:
                 "updated_at": user_stmt.excluded.updated_at,
             },
         )
-        await db.execute(user_stmt)
+        await db.exec(user_stmt)
         db.add(UserSession(token=login_token, github_user_id=github_user_id, created_at=now))
         await db.commit()
     finally:
