@@ -236,8 +236,24 @@ class WSContext:
 
 
 async def handle_ping(ctx: WSContext, data: dict) -> None:
-    """Application-level heartbeat. Reply with pong so the worker can detect a
-    half-open socket too."""
+    """Application-level heartbeat from a worker.
+
+    Updates ``last_seen`` so the stale-worker sweeper knows the connection is
+    alive, then replies with a pong so the worker can detect a half-open socket.
+
+    Deliberately never touches ``Worker.state``.  Transitioning a worker to
+    ``online`` is reserved for an explicit ``worker-register`` message — a
+    heartbeat from a reconnecting worker must not mask the fact that it has not
+    yet re-announced its repos/tools/agents.
+    """
+    worker_id = data.get("workerId")
+    if worker_id and ctx.guild_pk is not None:
+        await ctx.db.exec(
+            update(Worker)
+            .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)
+            .values(last_seen=datetime.now(UTC))
+        )
+        await ctx.db.commit()
     await send_ws_message(ctx.websocket, PongMsg(timestamp=datetime.now(UTC).isoformat()))
 
 
@@ -646,7 +662,6 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
             f"[worker-offline] worker_id={worker_id} reason=shutdown",
             task_name=f"foreman.worker-offline:{worker_id}",
         )
-    reset_foreman_poll(ctx.guild_id)
 
 
 async def handle_task_update(ctx: WSContext, data: dict) -> None:

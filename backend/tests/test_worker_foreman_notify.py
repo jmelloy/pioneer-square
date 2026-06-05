@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -26,7 +26,7 @@ import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 import ws_handlers  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import insert_guild, insert_task, insert_worker  # noqa: E402
+from helpers import insert_guild, insert_task, insert_worker, raw_conn  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -349,4 +349,79 @@ def test_worker_online_fresh_join_no_reconnect_tag(client):
     _event, msg = online[0]
     assert "reconnect=true" not in msg, (
         f"Expected no reconnect=true for offline→online transition, got: {msg}"
+    )
+
+
+def test_heartbeat_ping_does_not_mark_worker_online(client):
+    """A ping (heartbeat) must never transition a worker's state to 'online'.
+    Only an explicit worker-register message may do that."""
+    test_client, db_url = client
+    guild_id = "nfy007"
+    worker_id = "w-nfy007"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="offline")
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+        # Send heartbeat ping without a prior join — simulates the period between
+        # reconnect and registration completing.
+        ws.send_json({"type": "ping", "workerId": worker_id, "timestamp": "2026-01-01T00:00:00Z"})
+        ws.receive_json()  # pong
+
+    with raw_conn(db_url) as (_conn, cur):
+        cur.execute("SELECT state FROM workers WHERE id = %s", (worker_id,))
+        row = cur.fetchone()
+
+    assert row is not None
+    assert row["state"] == "offline", (
+        f"Heartbeat ping must not change worker state; expected 'offline', got {row['state']!r}"
+    )
+
+
+def test_worker_offline_does_not_reset_foreman_poll(client):
+    """A worker-offline event must not reset the foreman's periodic poll timer.
+    The poll cycle is independent of individual worker lifecycle events."""
+    test_client, db_url = client
+    guild_id = "nfy008"
+    worker_id = "w-nfy008"
+    agent_id = "a-nfy008"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+
+    poll_reset_calls: list[str] = []
+
+    def spy_reset(gid: str) -> None:
+        poll_reset_calls.append(gid)
+
+    with patch.object(ws_handlers, "reset_foreman_poll", new=spy_reset):
+        with patch.object(ws_handlers, "_trigger_foreman", new=AsyncMock()):
+            with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+                ws.send_json(
+                    {
+                        "type": "join",
+                        "agentId": agent_id,
+                        "agentName": "Test Worker",
+                        "agentType": "worker",
+                        "workerId": worker_id,
+                    }
+                )
+                ws.receive_json()  # agent-joined
+
+                # Capture any resets that happened during join
+                baseline_count = len(poll_reset_calls)
+
+                ws.send_json({"type": "worker-disconnect", "workerId": worker_id})
+                ws.receive_json()  # agent-state offline broadcast
+
+                # Sync: ensure handler processing is complete before reading
+                ws.send_json({"type": "ping"})
+                ws.receive_json()  # pong
+
+                calls_after_disconnect = poll_reset_calls[baseline_count:]
+
+    assert calls_after_disconnect == [], (
+        f"worker-offline must not reset the foreman poll timer; "
+        f"reset_foreman_poll was called {len(calls_after_disconnect)} extra time(s): "
+        f"{calls_after_disconnect}"
     )
