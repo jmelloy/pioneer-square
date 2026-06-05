@@ -140,6 +140,7 @@ class ForemanHTTPClient:
         is_tool_response: bool = False,
         parent_id: int | None = None,
         api_calls: list | None = None,
+        task_id: str | None = None,
     ) -> dict:
         """Persist one foreman conversation turn. Returns {id, created_at}."""
         body: dict = {
@@ -152,6 +153,8 @@ class ForemanHTTPClient:
             body["parent_id"] = parent_id
         if api_calls:
             body["api_calls"] = api_calls
+        if task_id is not None:
+            body["task_id"] = task_id
         return await self._post(self._guild_url("/foreman/history"), body)
 
     async def update_turn_tokens(self, turn_id: int, input_tokens: int, output_tokens: int) -> None:

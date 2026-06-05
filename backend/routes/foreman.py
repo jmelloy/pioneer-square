@@ -59,6 +59,22 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+async def _require_task_in_guild(db: AsyncSession, task_id: str, guild_pk: int) -> None:
+    """Raise HTTP 404 if task_id does not exist or belongs to a different guild.
+
+    Task.id is the string PK (e.g. "t-abc123"), not an integer. guild_pk is the
+    integer FK from guilds.id. This check enforces guild ownership, which a bare
+    FK constraint cannot express.
+    """
+    result = await db.exec(
+        select(col(Task.id)).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+    )
+    if result.one_or_none() is None:
+        raise HTTPException(
+            status_code=404, detail="Task not found or does not belong to this guild"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Existing debug endpoints (unchanged)
 # ---------------------------------------------------------------------------
@@ -339,6 +355,7 @@ class ForemanTurnCreate(BaseModel):
     is_tool_response: bool = False
     parent_id: int | None = None
     api_calls: list | None = None  # per-HTTP-call metadata from tool execution
+    task_id: str | None = None
 
 
 @router.post("/guilds/{guild_id}/foreman/history")
@@ -360,6 +377,8 @@ async def create_foreman_turn(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
+    if body.task_id is not None:
+        await _require_task_in_guild(db, body.task_id, guild_pk)
     created_at = datetime.now(UTC)
     turn = ForemanTurn(
         guild_id=guild_pk,
@@ -370,6 +389,7 @@ async def create_foreman_turn(
         parent_id=body.parent_id,
         created_at=created_at,
         api_calls_json=_json.dumps(body.api_calls) if body.api_calls else None,
+        task_id=body.task_id,
     )
     db.add(turn)
     await db.commit()

@@ -85,6 +85,7 @@ class Foreman:
                 human_message = data.get("humanMessage", "")
                 user_id = data.get("userId")
                 extra_context = data.get("extraContext", "")
+                trigger_task_id = data.get("taskId")
                 if not guild_id or not human_message:
                     logger.warning("Ignoring malformed foreman-trigger: %s", data)
                     return
@@ -94,6 +95,7 @@ class Foreman:
                         human_message,
                         extra_context=extra_context,
                         user_id=user_id,
+                        task_id=trigger_task_id,
                         http=self._http,
                         ws_send=_ws_send,
                         config=self._config,
