@@ -212,6 +212,7 @@ def insert_worker(
     state: str = "online",
     repos: str = "[]",
     org: str | None = None,
+    tools: str = "[]",
 ) -> None:
     """Insert a worker row for a guild."""
     now = datetime.now(UTC)
@@ -225,7 +226,13 @@ def insert_worker(
         session.execute(
             pg_insert(Worker)
             .values(
-                id=worker_id, guild_id=guild_pk, repos=repos, state=state, org=org, created_at=now
+                id=worker_id,
+                guild_id=guild_pk,
+                repos=repos,
+                tools=tools,
+                state=state,
+                org=org,
+                created_at=now,
             )
             .on_conflict_do_nothing(index_elements=["id"])
         )

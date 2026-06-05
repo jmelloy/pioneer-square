@@ -869,7 +869,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         "review comments on the original PR.",
                         wid,
                     )
-                tool = inp.get("tool", "claude")
+                requested_tool: str | None = inp.get("tool")
+                tool = requested_tool or "claude"  # may be replaced below during tool validation
                 model = inp.get("model") or None
                 provider = inp.get("provider") or None
                 existing_task_id = inp.get("task_id")
@@ -879,32 +880,48 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 primary_repo: str | None = guild_result.one_or_none()
                 repos: list[str] = inp.get("repos") or ([primary_repo] if primary_repo else [])
                 worker_result = await db.exec(
-                    select(col(Worker.id), col(Worker.repos), col(Worker.org)).where(
-                        col(Worker.id) == wid, col(Worker.guild_id) == guild_pk
-                    )
+                    select(
+                        col(Worker.id), col(Worker.repos), col(Worker.org), col(Worker.tools)
+                    ).where(col(Worker.id) == wid, col(Worker.guild_id) == guild_pk)
                 )
                 worker_row = worker_result.one_or_none()
                 if not worker_row:
                     result_text = f"Worker {wid} not found — task NOT queued."
                     is_error = True
-                elif repos:
-                    worker_repos: list[str] = json.loads(worker_row.repos or "[]")
-                    worker_org: str | None = worker_row.org
-                    unreachable = [
-                        r
-                        for r in repos
-                        if r not in worker_repos
-                        and not (worker_org and r.startswith(f"{worker_org}/"))
-                    ]
-                    if unreachable:
+                else:
+                    worker_tools: list[str] = json.loads(worker_row.tools or "[]")
+                    if requested_tool is None:
+                        tool = worker_tools[0] if worker_tools else "claude"
+                    elif worker_tools and requested_tool not in worker_tools:
+                        available = ", ".join(worker_tools)
                         result_text = (
-                            f"Worker {wid} cannot access repo(s) {unreachable} — "
-                            f"task NOT queued. Worker has {len(worker_repos)} registered "
-                            f"repo(s) and org={worker_org!r}. Choose a worker that has "
-                            f"access to these repos, or omit repos to use the worker's "
-                            f"full configured list."
+                            f"Worker {wid} does not support tool {requested_tool!r}. "
+                            f"Available tools: {available}"
                         )
                         is_error = True
+                    elif not worker_tools:
+                        # legacy worker: no tools registered, accept any requested tool
+                        tool = requested_tool
+                    else:
+                        tool = requested_tool
+                    if not is_error and repos:
+                        worker_repos: list[str] = json.loads(worker_row.repos or "[]")
+                        worker_org: str | None = worker_row.org
+                        unreachable = [
+                            r
+                            for r in repos
+                            if r not in worker_repos
+                            and not (worker_org and r.startswith(f"{worker_org}/"))
+                        ]
+                        if unreachable:
+                            result_text = (
+                                f"Worker {wid} cannot access repo(s) {unreachable} — "
+                                f"task NOT queued. Worker has {len(worker_repos)} registered "
+                                f"repo(s) and org={worker_org!r}. Choose a worker that has "
+                                f"access to these repos, or omit repos to use the worker's "
+                                f"full configured list."
+                            )
+                            is_error = True
                 if not is_error:
                     # Prevent two concurrent foreman runs from double-assigning
                     # the same idle worker.  Lock covers the window from worker
