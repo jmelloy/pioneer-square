@@ -1114,6 +1114,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
 
             elif tu.name == "finalize_task":
                 task_id = inp["task_id"]
+                raw_outcome = inp.get("outcome", "done")
+                outcome = raw_outcome if raw_outcome in ("done", "failed") else "done"
                 deleted_at, err = _resolve_finalize_deleted_at(inp)
                 if err:
                     result_text = err
@@ -1131,12 +1133,12 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             update(Task)
                             .where(col(Task.id) == task_id)
                             .values(
-                                state="done",
+                                state=outcome,
                                 finished_at=finished_at,
                                 deleted_at=deleted_at,
                             )
                         )
-                        # Discard any queued follow-up events — the task is done.
+                        # Discard any queued follow-up events — the task is closed.
                         await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
                         await LockService(db).release(f"task:{task_id}")
                         await db.commit()
@@ -1148,7 +1150,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             guild_id,
                             TaskUpdateMsg(
                                 taskId=task_id,
-                                state="done",
+                                state=outcome,
                                 finishedAt=finished_at.isoformat(),
                                 deletedAt=deleted_at.isoformat()
                                 if deleted_at is not None
@@ -1156,7 +1158,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             ),
                         )
                         result_text = (
-                            f"Task {task_id} finalized; soft-delete at "
+                            f"Task {task_id} finalized as {outcome}; soft-delete at "
                             f"{deleted_at.isoformat() if deleted_at is not None else 'unknown'}."
                         )
 

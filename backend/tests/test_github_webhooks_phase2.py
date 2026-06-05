@@ -33,13 +33,16 @@ import database as database_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from foreman.tools import exec_tools  # noqa: E402
 from helpers import _sync_session, create_db, insert_guild, insert_task, insert_worker  # noqa: E402
-from models import Guild  # noqa: E402
+from models import (
+    Guild,  # noqa: E402
+    Task,  # noqa: E402
+)
 from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
     _should_dispatch_to_foreman,
 )
 from sqlalchemy import update  # noqa: E402
-from sqlmodel import col  # noqa: E402
+from sqlmodel import col, select  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers (mirror test_github_webhooks.py to keep these focused on Phase 2)
@@ -169,7 +172,7 @@ class TestBuildSummary:
         )
         assert "[github-event] pull_request/closed on owner/repo#42 (task t-1)" in s
         assert "merged" in s.lower()
-        assert "finalize_task" in s
+        assert "automatically finalized" in s
 
     def test_pr_closed_unmerged(self):
         payload = {"pull_request": {"merged": False}}
@@ -177,7 +180,7 @@ class TestBuildSummary:
             "pull_request", "closed", payload, "owner/repo", 42, "t-1", "human"
         )
         assert "without merging" in s.lower()
-        assert "send_followup" in s
+        assert "automatically marked as failed" in s
 
     def test_review_changes_requested(self):
         payload = {"review": {"state": "changes_requested", "body": "needs work"}}
@@ -263,6 +266,91 @@ def test_webhook_dispatches_to_foreman_when_task_matches(client):
     assert guild_arg == "gd1"
     assert "pull_request" in summary_arg
     assert user_arg == "user-42"
+
+
+def _get_task_state(db_url: str, task_id: str) -> str | None:
+    """Read a task's current state directly from the DB."""
+    with _sync_session(db_url) as session:
+        return session.scalar(select(col(Task.state)).where(col(Task.id) == task_id))
+
+
+def test_pr_merge_webhook_auto_finalizes_task(client):
+    """PR merge webhook must directly set task state to 'done' without AI involvement."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-merge-1")
+    _set_webhook_secret(db_url, "gd-merge-1", "secret-m1")
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-merge-1",
+        guild_id="gd-merge-1",
+        pr_url="https://github.com/o/r/pull/10",
+        pr_number=10,
+        pr_repo="o/r",
+    )
+    payload = _pr_payload(
+        action="closed", repo="o/r", number=10, pull_request_extra={"merged": True}
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-m1", body, event="pull_request", delivery="d-merge-1")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-merge-1", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert _get_task_state(db_url, "t-merge-1") == "done"
+
+
+def test_pr_close_unmerged_webhook_auto_fails_task(client):
+    """PR closed without merge must directly set task state to 'failed'."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-close-1")
+    _set_webhook_secret(db_url, "gd-close-1", "secret-c1")
+    _insert_task_with_worker(
+        db_url,
+        task_id="t-close-1",
+        guild_id="gd-close-1",
+        pr_url="https://github.com/o/r/pull/11",
+        pr_number=11,
+        pr_repo="o/r",
+    )
+    payload = _pr_payload(
+        action="closed", repo="o/r", number=11, pull_request_extra={"merged": False}
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-c1", body, event="pull_request", delivery="d-close-1")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-close-1", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert _get_task_state(db_url, "t-close-1") == "failed"
+
+
+def test_pr_merge_skips_already_terminal_task(client):
+    """Auto-finalize on PR merge must not overwrite a task already in a terminal state."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-term-1")
+    _set_webhook_secret(db_url, "gd-term-1", "secret-t1")
+    insert_worker(db_url, "gd-term-1", "w-term-1", state="online")
+    insert_task(
+        db_url,
+        "gd-term-1",
+        "t-term-1",
+        worker_id="w-term-1",
+        state="cancelled",
+        pr_url="https://github.com/o/r/pull/12",
+        pr_number=12,
+        pr_repo="o/r",
+    )
+    payload = _pr_payload(
+        action="closed", repo="o/r", number=12, pull_request_extra={"merged": True}
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-t1", body, event="pull_request", delivery="d-term-1")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-term-1", content=body, headers=headers)
+    assert resp.status_code == 202
+    # State must remain cancelled — not overwritten to done
+    assert _get_task_state(db_url, "t-term-1") == "cancelled"
 
 
 def test_webhook_skips_foreman_when_no_task_match(client):

@@ -20,19 +20,20 @@ import hmac
 import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from models import GithubEvent, Guild, Message, Task
+from lock_service import LockService
+from models import GithubEvent, Guild, Message, Task, TaskEvent
 from pydantic import BaseModel
-from sqlalchemy import update
+from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from ws_types import ChatMsg, GithubEventMsg
+from ws_types import ChatMsg, GithubEventMsg, TaskFinalizeMsg, TaskUpdateMsg
 
 from foreman import reset_foreman_poll, run_foreman_ai
 
@@ -227,6 +228,98 @@ class DebounceQueue:
 
 _debounce_queue = DebounceQueue()
 
+_DEFAULT_FINALIZE_TTL_SECS = 3 * 24 * 60 * 60  # 3 days
+_DEFAULT_FAIL_TTL_SECS = 24 * 60 * 60  # 1 day
+_WEBHOOK_TERMINAL_STATES = frozenset({"done", "failed", "cancelled"})
+
+
+async def _auto_finalize_task_on_pr_merge(
+    db: AsyncSession,
+    guild_pk: int,
+    guild_id: str,
+    task_id: str,
+) -> bool:
+    """Directly transition a task to 'done' when its PR is merged.
+
+    Skips tasks already in a terminal state. Returns True if finalization occurred.
+    Releases any in-progress lock, discards queued follow-up events, and broadcasts
+    TaskFinalizeMsg + TaskUpdateMsg so the frontend reflects the change immediately.
+    """
+    result = await db.exec(
+        select(col(Task.worker_id), col(Task.state)).where(
+            col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+        )
+    )
+    row = result.one_or_none()
+    if not row or row[1] in _WEBHOOK_TERMINAL_STATES:
+        return False
+
+    worker_id = row[0]
+    now = datetime.now(UTC)
+    deleted_at = now + timedelta(seconds=_DEFAULT_FINALIZE_TTL_SECS)
+
+    await db.exec(
+        update(Task)
+        .where(col(Task.id) == task_id)
+        .values(state="done", finished_at=now, deleted_at=deleted_at)
+    )
+    await LockService(db).release(f"task:{task_id}")
+    await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
+    await db.commit()
+
+    await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
+    await broadcast_msg(
+        guild_id,
+        TaskUpdateMsg(
+            taskId=task_id,
+            state="done",
+            finishedAt=now.isoformat(),
+            deletedAt=deleted_at.isoformat(),
+        ),
+    )
+    return True
+
+
+async def _auto_fail_task_on_pr_close(
+    db: AsyncSession,
+    guild_pk: int,
+    guild_id: str,
+    task_id: str,
+) -> bool:
+    """Directly transition a task to 'failed' when its PR is closed without merging.
+
+    Skips tasks already in a terminal state. Returns True if the transition occurred.
+    Releases any in-progress lock and broadcasts TaskUpdateMsg so the frontend updates.
+    """
+    state = await db.exec(
+        select(col(Task.state)).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+    )
+    current_state = state.one_or_none()
+    if current_state is None or current_state in _WEBHOOK_TERMINAL_STATES:
+        return False
+
+    now = datetime.now(UTC)
+    deleted_at = now + timedelta(seconds=_DEFAULT_FAIL_TTL_SECS)
+
+    await db.exec(
+        update(Task)
+        .where(col(Task.id) == task_id)
+        .values(state="failed", finished_at=now, deleted_at=deleted_at)
+    )
+    await LockService(db).release(f"task:{task_id}")
+    await db.commit()
+
+    await broadcast_msg(
+        guild_id,
+        TaskUpdateMsg(
+            taskId=task_id,
+            state="failed",
+            finishedAt=now.isoformat(),
+            deletedAt=deleted_at.isoformat(),
+        ),
+    )
+    return True
+
 
 async def shutdown_debouncer() -> None:
     """Cancel all in-flight debounce timers and wait for them to complete.
@@ -361,14 +454,14 @@ def _build_foreman_summary(
         merged = pr.get("merged")
         if action == "closed" and merged:
             detail = (
-                "PR was merged. Call finalize_task — "
-                "the work has landed and no follow-up is needed."
+                "PR was merged. The task has been automatically finalized (state=done). "
+                "No action needed — this message is informational."
             )
         elif action == "closed":
             detail = (
-                "PR was closed without merging. Investigate why "
-                "(check_pr_status, get_task_status), then either send_followup "
-                "to address the rejection or finalize_task if the work is being abandoned."
+                "PR was closed without merging. The task has been automatically marked as failed. "
+                "If the work should be retried, use send_followup or assign_task to create "
+                "a new task on a fresh branch."
             )
         else:
             detail = (
@@ -594,6 +687,28 @@ async def github_webhook(
             .values(pr_url=pr_url)
         )
         await db.commit()
+
+    # Deterministic lifecycle transitions: finalize on merge, fail on close-without-merge.
+    # These happen directly — no AI decision needed for these clear-cut outcomes.
+    if task_id and event_type == "pull_request" and action == "closed":
+        pr = payload.get("pull_request") or {}
+        merged = pr.get("merged")
+        if merged:
+            finalized = await _auto_finalize_task_on_pr_merge(db, guild_pk, guild_id, task_id)
+            if finalized:
+                logger.info(
+                    "github webhook auto-finalized task=%s on PR merge guild=%s",
+                    task_id,
+                    guild_id,
+                )
+        else:
+            failed = await _auto_fail_task_on_pr_close(db, guild_pk, guild_id, task_id)
+            if failed:
+                logger.info(
+                    "github webhook auto-failed task=%s on unmerged PR close guild=%s",
+                    task_id,
+                    guild_id,
+                )
 
     logger.info(
         "github webhook accepted guild=%s delivery=%s event=%s action=%s repo=%s pr=%s task=%s",
