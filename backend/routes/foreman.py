@@ -361,6 +361,16 @@ async def create_foreman_turn(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
+    if body.task_id is not None:
+        task_check = await db.exec(
+            select(col(Task.id)).where(
+                col(Task.id) == body.task_id, col(Task.guild_id) == guild_pk
+            )
+        )
+        if task_check.one_or_none() is None:
+            raise HTTPException(
+                status_code=404, detail="Task not found or does not belong to this guild"
+            )
     created_at = datetime.now(UTC)
     turn = ForemanTurn(
         guild_id=guild_pk,

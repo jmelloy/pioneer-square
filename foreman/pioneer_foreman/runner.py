@@ -141,7 +141,14 @@ async def run_foreman_ai(
     primary_repo = guild_data.get("primary_repo")
     worker_rows = state.get("workers") or []
     task_rows = state.get("tasks") or []
-    _task_id: str | None = task_rows[0]["id"] if len(task_rows) == 1 else None
+    if len(task_rows) == 1:
+        _task_id: str | None = task_rows[0]["id"]
+    else:
+        if len(task_rows) > 1:
+            logger.warning(
+                "Ambiguous task lookup: %d tasks found, task_id will be NULL", len(task_rows)
+            )
+        _task_id = None
 
     # Resolve user_id from guild owner if not provided
     if not user_id:
