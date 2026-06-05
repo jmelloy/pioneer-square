@@ -37,8 +37,10 @@ FOREMAN_TOOLS = [
         "name": "assign_task",
         "description": (
             "Queue a coding task for a worker agent. The worker creates a git worktree, "
-            "runs the chosen coding agent on the description, then pushes the branch and "
-            "opens a PR. "
+            "runs the chosen coding agent on the description, and pushes its work. "
+            "For execute-phase tasks the worker opens a PR; for plan-phase tasks, the "
+            "Foreman should post findings as a comment on the linked GitHub issue instead "
+            "— do NOT open a PR for a document, spec, or outline. "
             "Pass task_id (from create_task) to assign that existing task to a worker instead "
             "of creating a duplicate — this is the preferred flow. "
             "WARNING: do NOT use assign_task to perform a PR code review. Workers always "
@@ -156,9 +158,9 @@ FOREMAN_TOOLS = [
             "to use the default 3 days, or pass expires_in_seconds = 259200\n"
             "  - Error / failed tasks: expires_in_seconds = 86400 (1 day)\n"
             "Pass deleted_at instead if you need an exact ISO-8601 timestamp.\n"
-            "NOTE: Do NOT call finalize_task for tasks that have an open PR — those are "
-            "automatically finalized when the PR is merged (or failed when the PR is closed "
-            "without merging) via the GitHub webhook."
+            "NOTE: For tasks that have an open PR, the GitHub webhook *may* deliver a "
+            "'PR merged' event — but do not rely on it firing reliably. Always call "
+            "get_pr_status to confirm the merged state before calling finalize_task."
         ),
         "input_schema": {
             "type": "object",
