@@ -144,33 +144,28 @@
             <label class="foreman-field-label">Provider</label>
             <select v-model="foremanProvider" class="settings-input" @change="foremanModel = ''">
               <option value="">default (anthropic)</option>
-              <option
-                v-for="p in modelsStore.providers"
-                :key="p.id"
-                :value="p.id"
-              >{{ p.name }}</option>
+              <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
+                {{ p.name }}
+              </option>
             </select>
           </div>
           <div class="foreman-field">
             <label class="foreman-field-label">Model</label>
-            <select
-              v-if="foremanProviderModels.length"
+            <input
               v-model="foremanModel"
               class="settings-input"
-            >
-              <option value="">default</option>
+              list="foreman-model-hints"
+              placeholder="default"
+              autocomplete="off"
+            />
+            <datalist id="foreman-model-hints">
               <option
                 v-for="m in foremanProviderModels"
                 :key="m.id"
                 :value="m.id"
-              >{{ m.name }}</option>
-            </select>
-            <input
-              v-else
-              v-model="foremanModel"
-              class="settings-input"
-              placeholder="claude-sonnet-4-6"
-            />
+                :label="m.name"
+              />
+            </datalist>
           </div>
           <div class="foreman-field">
             <label class="foreman-field-label">System Prompt Suffix</label>
@@ -238,7 +233,9 @@
                     class="env-var-change-btn pixel-btn"
                     @click="unlockEnvVar(i)"
                     title="Change value"
-                  >✎</button>
+                  >
+                    ✎
+                  </button>
                 </template>
                 <template v-else>
                   <input
@@ -249,19 +246,12 @@
                     autocomplete="new-password"
                   />
                 </template>
-                <button
-                  class="env-var-delete-btn"
-                  @click="removeEnvVar(i)"
-                  title="Remove variable"
-                >✕</button>
+                <button class="env-var-delete-btn" @click="removeEnvVar(i)" title="Remove variable">
+                  ✕
+                </button>
               </div>
               <datalist id="foreman-env-key-hints">
-                <option value="ANTHROPIC_API_KEY" />
-                <option value="OPENAI_API_KEY" />
-                <option value="GITHUB_TOKEN" />
-                <option value="GEMINI_API_KEY" />
-                <option value="AWS_ACCESS_KEY_ID" />
-                <option value="AWS_SECRET_ACCESS_KEY" />
+                <option v-for="key in foremanEnvKeyHints" :key="key" :value="key" />
               </datalist>
               <button class="pixel-btn env-var-add-btn" @click="addEnvVar">+ Add Variable</button>
             </div>
@@ -275,11 +265,7 @@
             >
               {{ foremanSaving ? 'Saving…' : 'Save' }}
             </button>
-            <span
-              v-if="foremanStatus"
-              class="save-status"
-              :class="'save-status-' + foremanStatus"
-            >
+            <span v-if="foremanStatus" class="save-status" :class="'save-status-' + foremanStatus">
               {{ foremanStatus === 'saved' ? 'Saved' : 'Error' }}
             </span>
           </div>
@@ -321,6 +307,17 @@ const modelsStore = reactive(useModels())
 const foremanProviderModels = computed(() =>
   foremanProvider.value ? modelsStore.modelsForProvider(foremanProvider.value) : [],
 )
+const FOREMAN_ENV_KEY_HINTS: Record<string, string[]> = {
+  anthropic: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_URL'],
+  bedrock: [
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+    'AWS_DEFAULT_REGION',
+    'AWS_REGION',
+    'AWS_PROFILE',
+  ],
+}
 
 const showGitHubModal = ref(false)
 const showSettings = ref(false)
@@ -350,6 +347,10 @@ const foremanPollMax = ref<number | ''>('')
 const foremanSaving = ref(false)
 const foremanStatus = ref<'' | 'saved' | 'error'>('')
 let foremanStatusTimer: ReturnType<typeof setTimeout> | null = null
+const foremanEnvKeyHints = computed(() => {
+  const provider = foremanProvider.value || 'anthropic'
+  return FOREMAN_ENV_KEY_HINTS[provider] ?? []
+})
 
 interface EnvVarRow {
   key: string
