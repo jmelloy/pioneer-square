@@ -20,6 +20,7 @@ from events import (
     broadcast_msg,
     connections,
     foreman_connections,
+    pending_worker_probes,
 )
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from models import Agent, Guild, UserSession, Worker
@@ -35,40 +36,37 @@ logger = logging.getLogger(__name__)
 async def _touch_agent(
     db, guild_pk: int | None, agent_id: str | None, worker_id: str | None = None
 ) -> None:
-    """Refresh ``last_seen`` for the agent (and its worker) so the sweeper
-    knows the connection is still alive. Called for every inbound WS frame.
+    """Refresh ``last_seen`` for the sender named by an inbound WS frame.
 
-    If *worker_id* isn't passed we look it up from the agent row so messages
-    that only carry an ``agentId`` (most of them) still keep the worker fresh.
-    Once we know the worker, we also refresh every other agent owned by it —
-    a single worker process owns all its slots over one socket, so any
-    inbound frame proves the whole worker is alive.
+    Agent-scoped frames refresh that agent and its parent worker. Worker-scoped
+    frames refresh only the worker row; they do not imply that sibling agent
+    slots emitted anything.
     """
     if not guild_pk:
         return
     if not agent_id and not worker_id:
         return
     now = datetime.now(UTC)
-    if agent_id and worker_id is None:
-        res = await db.exec(select(col(Agent.worker_id)).where(col(Agent.id) == agent_id))
-        worker_id = res.one_or_none()
+    if agent_id:
+        if worker_id is None:
+            res = await db.exec(
+                select(col(Agent.worker_id)).where(
+                    col(Agent.id) == agent_id, col(Agent.guild_id) == guild_pk
+                )
+            )
+            worker_id = res.one_or_none()
+        await db.exec(
+            update(Agent)
+            .where(col(Agent.id) == agent_id, col(Agent.guild_id) == guild_pk)
+            .values(last_seen=now)
+        )
     if worker_id:
         await db.exec(
             update(Worker)
             .where(col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk)
             .values(last_seen=now)
         )
-        await db.exec(
-            update(Agent)
-            .where(col(Agent.worker_id) == worker_id, col(Agent.guild_id) == guild_pk)
-            .values(last_seen=now)
-        )
-    elif agent_id:
-        await db.exec(
-            update(Agent)
-            .where(col(Agent.id) == agent_id, col(Agent.guild_id) == guild_pk)
-            .values(last_seen=now)
-        )
+        pending_worker_probes.pop((guild_pk, worker_id), None)
     await db.commit()
 
 
@@ -130,9 +128,9 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         while True:
             data = await websocket.receive_json()
 
-            # Refresh last_seen for any inbound frame so the sweeper knows
-            # this worker is still alive. Cheap no-op for browser users
-            # (they don't carry an agentId/workerId).
+            # Refresh last_seen for the inbound frame's sender. Worker-scoped
+            # messages only touch Worker.last_seen; agent-scoped messages touch
+            # that agent and the parent worker.
             await _touch_agent(db, ctx.guild_pk, data.get("agentId"), data.get("workerId"))
 
             await ws_handlers.dispatch(ctx, data)

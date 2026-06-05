@@ -68,9 +68,8 @@ class Agent(SQLModel, table=True):
     # share a worker_id.
     current_task_id: str | None = None
     joined_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    # UTC instant of the last message received from this agent over the
-    # WebSocket. Refreshed by every inbound frame (incl. application-level
-    # `ping`); the sweeper marks the agent offline when this gets stale.
+    # UTC instant of the last agent-scoped message received over the WebSocket.
+    # Worker-scoped liveness frames update Worker.last_seen instead.
     last_seen: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
@@ -111,6 +110,9 @@ class Worker(SQLModel, table=True):
     org: str | None = None
     state: str = Field(default="idle", sa_column_kwargs={"server_default": "'idle'"})
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    # UTC instant of the last worker-scoped or agent-scoped frame received from
+    # this worker process. The backend probes stale workers before marking them
+    # and their agents offline.
     last_seen: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )

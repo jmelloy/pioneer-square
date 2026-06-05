@@ -247,6 +247,13 @@ class WorkerShutdownMsg(_WS):
     reason: str | None = None
 
 
+class WorkerPingMsg(_WS):
+    type: Literal["worker-ping"] = "worker-ping"
+    workerId: str
+    timestamp: str
+    from_: str = Field("foreman", alias="from")
+
+
 class ForemanTriggerMsg(_WS):
     type: Literal["foreman-trigger"] = "foreman-trigger"
     event: str
@@ -360,6 +367,12 @@ class WorkerDisconnectMsg(_WS):
     workerId: str | None = None
 
 
+class WorkerPongMsg(_WS):
+    type: Literal["worker-pong"] = "worker-pong"
+    workerId: str
+    timestamp: str | None = None
+
+
 class ForemanBroadcastMsg(_WS):
     type: Literal["foreman-broadcast"] = "foreman-broadcast"
     payload: dict[str, Any]
@@ -389,6 +402,7 @@ OutboundWSMessage = Annotated[
     | WorkerAuthResponseMsg
     | WorkerMessageMsg
     | WorkerShutdownMsg
+    | WorkerPingMsg
     | ForemanTriggerMsg
     | ForemanRegisteredMsg
     | ForemanEvictedMsg
@@ -411,6 +425,7 @@ InboundWSMessage = Annotated[
     | TerminalOutputMsg
     | WorkerRegisterMsg
     | WorkerDisconnectMsg
+    | WorkerPongMsg
     | TaskUpdateMsg
     | TaskCompleteMsg
     | TaskFollowupDoneMsg
@@ -437,6 +452,7 @@ KNOWN_INBOUND_TYPES: frozenset[str] = frozenset(
         "terminal-output",
         "worker-register",
         "worker-disconnect",
+        "worker-pong",
         "task-update",
         "task-complete",
         "task-followup-done",

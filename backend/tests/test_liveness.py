@@ -1,10 +1,9 @@
 """Tests for WebSocket liveness tracking.
 
 Covers:
-  - inbound frames refresh ``last_seen`` on the agent and worker rows
+  - inbound frames refresh ``last_seen`` only for the sender and parent worker
   - the ``ping`` message is answered with ``pong``
-  - the stale-worker sweeper marks workers offline once ``last_seen`` is
-    older than the configured threshold and broadcasts the state change
+  - the stale-worker sweeper probes workers before marking them offline
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
+import events as events_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_worker, truncate_all  # noqa: E402
@@ -59,6 +59,13 @@ def client():
         yield c, db_url
 
     mp.undo()
+
+
+@pytest.fixture(autouse=True)
+def _clear_liveness_state():
+    events_module.pending_worker_probes.clear()
+    yield
+    events_module.pending_worker_probes.clear()
 
 
 def _setup_guild_and_worker(db_url: str, guild_id: str, worker_id: str) -> None:
@@ -107,8 +114,8 @@ def test_join_initialises_last_seen(client):
     assert worker_seen >= before - timedelta(seconds=5)
 
 
-def test_ping_message_replies_pong_and_refreshes_last_seen(client):
-    """Application-level ping is acknowledged with pong and bumps last_seen."""
+def test_ping_message_replies_pong_and_refreshes_worker_last_seen_only(client):
+    """Worker-scoped ping is acknowledged and bumps only Worker.last_seen."""
     test_client, db_url = client
     guild_id = "lvg002"
     worker_id = "w-lvb002"
@@ -138,21 +145,18 @@ def test_ping_message_replies_pong_and_refreshes_last_seen(client):
             )
             session.commit()
 
-        # Heartbeat ping carries only workerId — backend looks up agents from
-        # the worker_id and refreshes them all together.
         ws.send_json({"type": "ping", "workerId": worker_id})
         reply = ws.receive_json()
         assert reply["type"] == "pong"
         assert "timestamp" in reply
 
     agent_seen, worker_seen = _read_last_seen(db_url, agent_id, worker_id)
-    assert agent_seen is not None and str(agent_seen) != old_ts
-    assert worker_seen is not None and str(worker_seen) != old_ts
+    assert str(agent_seen) == str(old_ts)
+    assert worker_seen is not None and str(worker_seen) != str(old_ts)
 
 
-def test_any_inbound_frame_touches_sibling_agents(client):
-    """A ping carrying agent slot 0's id must also refresh sibling slot rows
-    so that idle slots aren't swept offline while their parent worker is alive."""
+def test_agent_scoped_frame_touches_agent_and_parent_but_not_siblings(client):
+    """An agent-scoped frame refreshes that slot and its worker, not siblings."""
     test_client, db_url = client
     guild_id = "lvg003"
     worker_id = "w-lvc003"
@@ -180,20 +184,129 @@ def test_any_inbound_frame_touches_sibling_agents(client):
             session.execute(
                 update(Agent).where(col(Agent.worker_id) == worker_id).values(last_seen=old_ts)
             )
+            session.execute(
+                update(Worker).where(col(Worker.id) == worker_id).values(last_seen=old_ts)
+            )
             session.commit()
 
-        ws.send_json({"type": "ping", "workerId": worker_id})
-        ws.receive_json()  # pong
+        ws.send_json(
+            {
+                "type": "agent-state",
+                "agentId": slot0,
+                "workerId": worker_id,
+                "state": "idle",
+            }
+        )
+        ws.receive_json()  # agent-state broadcast
 
-    seen0, _ = _read_last_seen(db_url, slot0, worker_id)
+    seen0, worker_seen = _read_last_seen(db_url, slot0, worker_id)
     seen1, _ = _read_last_seen(db_url, slot1, worker_id)
-    assert str(seen0) != old_ts, "slot 0 should be refreshed via the worker_id ping"
-    assert str(seen1) != old_ts, "slot 1 should be refreshed via the worker_id ping"
+    assert str(seen0) != str(old_ts), "slot 0 should be refreshed by its own frame"
+    assert str(seen1) == str(old_ts), "sibling slots should not be refreshed"
+    assert worker_seen is not None and str(worker_seen) != str(old_ts)
+
+
+def test_sweeper_probes_stale_connected_worker_before_marking_offline(client, monkeypatch):
+    """A stale worker with an owned socket gets worker-ping before offline cleanup."""
+    test_client, db_url = client
+    guild_id = "lvg0p1"
+    worker_id = "w-lvp001"
+    agent_id = "a-lvp001"
+
+    _setup_guild_and_worker(db_url, guild_id, worker_id)
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+        ws.send_json(
+            {
+                "type": "join",
+                "agentId": agent_id,
+                "agentName": "Test",
+                "agentType": "worker",
+                "workerId": worker_id,
+            }
+        )
+        ws.receive_json()  # agent-joined
+
+        old_ts = datetime.now(UTC) - timedelta(minutes=5)
+        with _sync_session(db_url) as session:
+            session.execute(update(Agent).where(col(Agent.id) == agent_id).values(last_seen=old_ts))
+            session.execute(
+                update(Worker).where(col(Worker.id) == worker_id).values(last_seen=old_ts)
+            )
+            session.commit()
+
+        monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
+        monkeypatch.setattr(main_module, "WORKER_PROBE_TIMEOUT_SECONDS", 10.0)
+
+        marked = asyncio.run(main_module._sweep_stale_workers_once())
+        assert marked == 0
+
+        probe = ws.receive_json()
+        assert probe["type"] == "worker-ping"
+        assert probe["workerId"] == worker_id
+        assert probe["from"] == "foreman"
+
+        ws.send_json({"type": "worker-pong", "workerId": worker_id})
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+
+        agent_seen, worker_seen = _read_last_seen(db_url, agent_id, worker_id)
+        assert str(agent_seen) == str(old_ts)
+        assert worker_seen is not None and str(worker_seen) != str(old_ts)
+
+
+def test_sweeper_marks_stale_connected_worker_after_probe_timeout(client, monkeypatch):
+    """If a stale connected worker does not answer worker-ping, it is marked offline."""
+    test_client, db_url = client
+    guild_id = "lvg0p2"
+    worker_id = "w-lvp002"
+    agent_id = "a-lvp002"
+
+    _setup_guild_and_worker(db_url, guild_id, worker_id)
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+        ws.send_json(
+            {
+                "type": "join",
+                "agentId": agent_id,
+                "agentName": "Test",
+                "agentType": "worker",
+                "workerId": worker_id,
+            }
+        )
+        ws.receive_json()  # agent-joined
+
+        old_ts = datetime.now(UTC) - timedelta(minutes=5)
+        with _sync_session(db_url) as session:
+            session.execute(update(Agent).where(col(Agent.id) == agent_id).values(last_seen=old_ts))
+            session.execute(
+                update(Worker).where(col(Worker.id) == worker_id).values(last_seen=old_ts)
+            )
+            session.commit()
+
+        monkeypatch.setattr(main_module, "WORKER_OFFLINE_AFTER_SECONDS", 1.0)
+        monkeypatch.setattr(main_module, "WORKER_PROBE_TIMEOUT_SECONDS", 0.0)
+
+        marked = asyncio.run(main_module._sweep_stale_workers_once())
+        assert marked == 0
+        assert ws.receive_json()["type"] == "worker-ping"
+
+        marked = asyncio.run(main_module._sweep_stale_workers_once())
+        assert marked == 1
+        offline = ws.receive_json()
+        assert offline["type"] == "agent-state"
+        assert offline["agentId"] == agent_id
+        assert offline["state"] == "offline"
+
+        with _sync_session(db_url) as session:
+            a_state = session.scalar(select(col(Agent.state)).where(col(Agent.id) == agent_id))
+            w_state = session.scalar(select(col(Worker.state)).where(col(Worker.id) == worker_id))
+        assert a_state == "offline"
+        assert w_state == "offline"
 
 
 def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
-    """The sweeper marks any agent whose last_seen is past the cutoff offline,
-    cascades to the worker row, and emits an agent-state offline broadcast."""
+    """A stale worker with no owned socket is marked offline immediately."""
     test_client, db_url = client
     guild_id = "lvg004"
     worker_id = "w-lvd004"
