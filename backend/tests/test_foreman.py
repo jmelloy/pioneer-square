@@ -41,7 +41,7 @@ from foreman_core.message_utils import (
     truncate_tool_result,
 )
 from helpers import _sync_session, create_db, insert_agent, insert_guild, insert_task, insert_worker
-from models import Guild, Lock, Task, TaskEvent, TaskLog  # noqa: E402
+from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
@@ -1590,6 +1590,25 @@ class TestForemanHistory:
         assert len(tool_results) == 1
         assert tool_results[0]["tool_use_id"] == "tu-42"
         assert tool_results[0]["content"] == "Created t-xyz"
+
+    async def test_save_turn_persists_task_id(self, db_session):
+        """task_id passed to _save_turn must be stored on the ForemanTurn row."""
+        insert_guild(db_session, "g-hist-taskid")
+        insert_task(db_session, "g-hist-taskid", "t-taskid1")
+        await _save_turn("g-hist-taskid", "u-1", "user", "Hello", task_id="t-taskid1")
+        with _sync_session(db_session) as session:
+            turn = session.scalar(select(ForemanTurn).order_by(col(ForemanTurn.id).desc()).limit(1))
+        assert turn is not None
+        assert turn.task_id == "t-taskid1"
+
+    async def test_save_turn_task_id_none_by_default(self, db_session):
+        """When task_id is not provided, ForemanTurn.task_id must be NULL."""
+        insert_guild(db_session, "g-hist-taskid-null")
+        await _save_turn("g-hist-taskid-null", "u-1", "user", "Hello")
+        with _sync_session(db_session) as session:
+            turn = session.scalar(select(ForemanTurn).order_by(col(ForemanTurn.id).desc()).limit(1))
+        assert turn is not None
+        assert turn.task_id is None
 
 
 # ---------------------------------------------------------------------------

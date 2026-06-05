@@ -339,6 +339,7 @@ class ForemanTurnCreate(BaseModel):
     is_tool_response: bool = False
     parent_id: int | None = None
     api_calls: list | None = None  # per-HTTP-call metadata from tool execution
+    task_id: str | None = None
 
 
 @router.post("/guilds/{guild_id}/foreman/history")
@@ -370,6 +371,7 @@ async def create_foreman_turn(
         parent_id=body.parent_id,
         created_at=created_at,
         api_calls_json=_json.dumps(body.api_calls) if body.api_calls else None,
+        task_id=body.task_id,
     )
     db.add(turn)
     await db.commit()

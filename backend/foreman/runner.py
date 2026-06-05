@@ -537,8 +537,8 @@ async def _run_foreman_ai(
 
         # Persist the rendered prompt + human turn for auditing; the API receives
         # `system_blocks` (cacheable) and the state preamble injected at send time.
-        await _save_turn(guild_id, user_id, "system", audit_system)
-        await _save_turn(guild_id, user_id, "user", human_message)
+        await _save_turn(guild_id, user_id, "system", audit_system, task_id=_task_id)
+        await _save_turn(guild_id, user_id, "user", human_message, task_id=_task_id)
         messages = await _load_history(guild_id, user_id)
 
         logger.info(
@@ -633,6 +633,7 @@ async def _run_foreman_ai(
                 resp.content,
                 api_calls=[_api_call_meta],
                 api_log_id=api_log_id,
+                task_id=_task_id,
             )
             messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
             # Re-parse so messages stays as plain dicts (not SDK objects)
@@ -759,6 +760,7 @@ async def _run_foreman_ai(
                 trimmed,
                 is_tool_response=True,
                 parent_id=asst_turn_id,
+                task_id=_task_id,
             )
             logger.info(
                 "guild=%s round %d: %d tool call(s) dispatched: %s",
@@ -848,6 +850,7 @@ async def _run_foreman_ai(
                 wrap_resp.content,
                 api_calls=[_wrap_api_meta],
                 api_log_id=_wrap_api_log_id,
+                task_id=_task_id,
             )
             _now = datetime.now(UTC).isoformat()
             for b in wrap_resp.content:
