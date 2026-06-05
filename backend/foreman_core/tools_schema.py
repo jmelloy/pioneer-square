@@ -145,21 +145,34 @@ FOREMAN_TOOLS = [
     {
         "name": "finalize_task",
         "description": (
-            "Mark a task complete with no further follow-up needed. "
-            "Call after reviewing a completed task when no additional work is required. "
-            "Tasks are soft-deleted after their expiry window so the table doesn't "
-            "accumulate cruft. Pick the window by task type:\n"
+            "Close a task with no further follow-up needed. "
+            "Call after reviewing a completed or errored task when no additional work is required. "
+            "Use outcome='failed' when the task did not succeed (push errors, agent errors, "
+            "abandoned work). Tasks are soft-deleted after their expiry window so the table "
+            "doesn't accumulate cruft. Pick the window by task type:\n"
             "  - Ephemeral tasks (periodic-check, status-poll, automated health "
             "checks): expires_in_seconds = 1200 (20 minutes)\n"
             "  - Code tasks (execute / review / followup phases): omit the field "
             "to use the default 3 days, or pass expires_in_seconds = 259200\n"
             "  - Error / failed tasks: expires_in_seconds = 86400 (1 day)\n"
-            "Pass deleted_at instead if you need an exact ISO-8601 timestamp."
+            "Pass deleted_at instead if you need an exact ISO-8601 timestamp.\n"
+            "NOTE: Do NOT call finalize_task for tasks that have an open PR — those are "
+            "automatically finalized when the PR is merged (or failed when the PR is closed "
+            "without merging) via the GitHub webhook."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID to finalize."},
+                "outcome": {
+                    "type": "string",
+                    "enum": ["done", "failed"],
+                    "description": (
+                        "Final state to set on the task. "
+                        "'done' (default) for successful completion; "
+                        "'failed' for tasks that errored, hit push failures, or were abandoned."
+                    ),
+                },
                 "expires_in_seconds": {
                     "type": "integer",
                     "description": (

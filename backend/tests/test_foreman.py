@@ -552,6 +552,39 @@ class TestExecToolsDispatching:
             state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-fin1"))
         assert state == "done"
 
+    async def test_finalize_task_marks_failed_with_outcome(self, db_session):
+        """finalize_task with outcome='failed' sets task state to 'failed', not 'done'."""
+        insert_guild(db_session, "g-finalize-fail")
+        _insert_worker(db_session, "g-finalize-fail", "w-fin-fail")
+        _insert_task(db_session, "t-fin-fail", "g-finalize-fail", "w-fin-fail")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-finalize-fail",
+                [_fake_tool_use("finalize_task", {"task_id": "t-fin-fail", "outcome": "failed"})],
+            )
+        assert "finalized" in results[0]["content"].lower()
+        assert "failed" in results[0]["content"].lower()
+
+        with _sync_session(db_session) as session:
+            state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-fin-fail"))
+        assert state == "failed"
+
+    async def test_finalize_task_invalid_outcome_defaults_to_done(self, db_session):
+        """An unrecognised outcome value must not break finalize_task — it falls back to 'done'."""
+        insert_guild(db_session, "g-finalize-inv")
+        _insert_worker(db_session, "g-finalize-inv", "w-fin-inv")
+        _insert_task(db_session, "t-fin-inv", "g-finalize-inv", "w-fin-inv")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-finalize-inv",
+                [_fake_tool_use("finalize_task", {"task_id": "t-fin-inv", "outcome": "bogus"})],
+            )
+        assert not results[0].get("is_error")
+
+        with _sync_session(db_session) as session:
+            state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-fin-inv"))
+        assert state == "done"
+
     async def test_message_worker_dispatches(self, db_session):
         insert_guild(db_session, "g-msgwkr")
         _insert_worker(db_session, "g-msgwkr", "w-msgwkr")
