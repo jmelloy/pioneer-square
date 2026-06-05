@@ -37,7 +37,7 @@ from ws_types import ChatMsg, ForemanPollStatusMsg
 logger = logging.getLogger(__name__)
 
 POLL_MIN_SECS = 60  # initial poll interval: 1 minute
-POLL_MAX_SECS = 3600  # maximum poll interval: 60 minutes
+POLL_MAX_SECS = 14400  # maximum poll interval: 4 hours
 
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
