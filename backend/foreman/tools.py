@@ -870,7 +870,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         wid,
                     )
                 requested_tool: str | None = inp.get("tool")
-                tool = requested_tool or "claude"  # overwritten during worker tool validation
+                tool = requested_tool or "claude"  # may be replaced below during tool validation
                 model = inp.get("model") or None
                 provider = inp.get("provider") or None
                 existing_task_id = inp.get("task_id")
@@ -899,6 +899,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             f"Available tools: {available}"
                         )
                         is_error = True
+                    elif not worker_tools:
+                        # legacy worker: no tools registered, accept any requested tool
+                        tool = requested_tool
                     else:
                         tool = requested_tool
                     if not is_error and repos:

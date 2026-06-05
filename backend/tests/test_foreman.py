@@ -408,8 +408,10 @@ class TestExecToolsDispatching:
                     )
                 ],
             )
-        assert "queued" in results[0]["content"].lower()
-        assert "w-worker1" in results[0]["content"]
+        content = results[0]["content"]
+        assert "queued" in content.lower()
+        assert "does not support" not in content
+        assert "w-worker1" in content
 
     async def test_assign_task_with_existing_task_id(self, db_session):
         insert_guild(db_session, "g-assign-existing")
