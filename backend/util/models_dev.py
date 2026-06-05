@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 MODELS_DEV_URL = "https://models.dev/api.json"
 _CACHE_TTL = 3600  # 1 hour
 
+# Only surface these providers in the UI for now.
+_ALLOWED_PROVIDERS = {"anthropic", "openai", "bedrock"}
+
 # Minimal fallback so the UI always has something to show.
 _FALLBACK_PROVIDERS: list[dict[str, Any]] = [
     {
@@ -38,14 +41,6 @@ _FALLBACK_PROVIDERS: list[dict[str, Any]] = [
         ],
     },
     {
-        "id": "google",
-        "name": "Google",
-        "models": [
-            {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
-            {"id": "gemini-2.0-flash-lite", "name": "Gemini 2.0 Flash Lite"},
-        ],
-    },
-    {
         "id": "bedrock",
         "name": "AWS Bedrock",
         "models": [
@@ -62,6 +57,8 @@ def _parse_response(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Convert the models.dev API response into a flat list of provider dicts."""
     providers: list[dict[str, Any]] = []
     for provider_id, entry in data.items():
+        if provider_id not in _ALLOWED_PROVIDERS:
+            continue
         if not isinstance(entry, dict):
             continue
         raw_models = entry.get("models", {})

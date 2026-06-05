@@ -42,6 +42,20 @@ SAMPLE_RESPONSE = {
             "gpt-4o": {"id": "gpt-4o", "name": "GPT-4o"},
         },
     },
+    "google": {
+        "id": "google",
+        "name": "Google",
+        "models": {
+            "gemini-2.5-flash": {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
+        },
+    },
+    "bedrock": {
+        "id": "bedrock",
+        "name": "AWS Bedrock",
+        "models": {
+            "claude-sonnet-4-6": {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Bedrock)"},
+        },
+    },
     "empty-provider": {
         "id": "empty-provider",
         "name": "Empty",
@@ -55,8 +69,18 @@ def test_parse_response_basic():
     ids = {p["id"] for p in result}
     assert "anthropic" in ids
     assert "openai" in ids
+    assert "bedrock" in ids
     # providers with no models are excluded
     assert "empty-provider" not in ids
+
+
+def test_parse_response_filters_non_allowed_providers():
+    result = _parse_response(SAMPLE_RESPONSE)
+    ids = {p["id"] for p in result}
+    # google is not in the allowed provider list
+    assert "google" not in ids
+    # only anthropic, openai, bedrock are allowed
+    assert ids == {"anthropic", "openai", "bedrock"}
 
 
 def test_parse_response_model_fields():
