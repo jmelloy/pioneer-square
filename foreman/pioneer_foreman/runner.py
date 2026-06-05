@@ -90,6 +90,7 @@ async def _save_turn(
     http: ForemanHTTPClient,
     is_tool_response: bool = False,
     parent_id: int | None = None,
+    api_calls: list | None = None,
 ) -> int:
     """Persist one turn via REST. Returns the new row's id."""
     result = await http.save_turn(
@@ -98,6 +99,7 @@ async def _save_turn(
         _serialize_content(content),
         is_tool_response=is_tool_response,
         parent_id=parent_id,
+        api_calls=api_calls,
     )
     return result["id"]
 
@@ -265,11 +267,19 @@ async def run_foreman_ai(
 
             tool_results = await exec_tools(guild_id, tool_uses, http=http, user_id=user_id)
             current_tool_use_ids = {tu.id for tu in tool_uses}
-            trimmed = [
-                {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r
-                for r in tool_results
-                if r.get("tool_use_id") in current_tool_use_ids
-            ]
+            # Extract api_calls metadata before building trimmed — the Anthropic API
+            # only accepts {type, tool_use_id, content, is_error} in tool_result blocks.
+            all_api_calls: list[dict] = []
+            trimmed: list[dict] = []
+            for r in tool_results:
+                if r.get("tool_use_id") not in current_tool_use_ids:
+                    continue
+                for call in r.get("api_calls") or []:
+                    all_api_calls.append({"tool_use_id": r["tool_use_id"], **call})
+                entry = {k: v for k, v in r.items() if k != "api_calls"}
+                if entry.get("content"):
+                    entry = {**entry, "content": truncate_tool_result(entry["content"])}
+                trimmed.append(entry)
 
             _now = datetime.now(UTC).isoformat()
             for result in trimmed:
@@ -295,6 +305,7 @@ async def run_foreman_ai(
                 http=http,
                 is_tool_response=True,
                 parent_id=asst_turn_id,
+                api_calls=all_api_calls if all_api_calls else None,
             )
             logger.info(
                 "guild=%s round %d: %d tool call(s): %s",

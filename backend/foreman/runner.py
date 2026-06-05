@@ -156,6 +156,7 @@ async def _save_turn(
     *,
     is_tool_response: bool = False,
     parent_id: int | None = None,
+    api_calls: list | None = None,
 ) -> int:
     """Persist one turn to the DB. Returns the new row's id."""
     db = await get_db()
@@ -169,6 +170,7 @@ async def _save_turn(
             is_tool_response=1 if is_tool_response else 0,
             parent_id=parent_id,
             created_at=datetime.now(UTC),
+            api_calls_json=json.dumps(api_calls) if api_calls else None,
         )
         db.add(turn)
         await db.commit()
@@ -574,12 +576,20 @@ async def _run_foreman_ai(
             tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
             # Truncate verbose results; filter to only IDs in the current batch so
             # stale results that survived history trimming are never persisted.
+            # Extract api_calls metadata before building trimmed — the Anthropic API
+            # only accepts {type, tool_use_id, content, is_error} in tool_result blocks.
             current_tool_use_ids = {tu.id for tu in tool_uses}
-            trimmed = [
-                {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r
-                for r in tool_results
-                if r.get("tool_use_id") in current_tool_use_ids
-            ]
+            all_api_calls: list[dict] = []
+            trimmed: list[dict] = []
+            for r in tool_results:
+                if r.get("tool_use_id") not in current_tool_use_ids:
+                    continue
+                for call in r.get("api_calls") or []:
+                    all_api_calls.append({"tool_use_id": r["tool_use_id"], **call})
+                entry = {k: v for k, v in r.items() if k != "api_calls"}
+                if entry.get("content"):
+                    entry = {**entry, "content": truncate_tool_result(entry["content"])}
+                trimmed.append(entry)
 
             # Broadcast tool-result events
             _now = datetime.now(UTC)
@@ -651,6 +661,7 @@ async def _run_foreman_ai(
                 trimmed,
                 is_tool_response=True,
                 parent_id=asst_turn_id,
+                api_calls=all_api_calls if all_api_calls else None,
             )
             logger.info(
                 "guild=%s round %d: %d tool call(s) dispatched: %s",
@@ -662,6 +673,21 @@ async def _run_foreman_ai(
                         "tool_use_id": r["tool_use_id"],
                         "name": r.get("name"),
                         "is_error": r.get("is_error", False),
+                        **(
+                            {
+                                "x_github_request_id": next(
+                                    (
+                                        c["x_github_request_id"]
+                                        for c in all_api_calls
+                                        if c.get("tool_use_id") == r["tool_use_id"]
+                                        and c.get("x_github_request_id")
+                                    ),
+                                    None,
+                                )
+                            }
+                            if r.get("is_error", False)
+                            else {}
+                        ),
                     }
                     for r in trimmed
                 ],
@@ -805,6 +831,7 @@ async def get_foreman_history(guild_id: str, user_id: str) -> dict:
             "created_at": t.created_at,
             "input_tokens": t.input_tokens,
             "output_tokens": t.output_tokens,
+            "api_calls": json.loads(t.api_calls_json) if t.api_calls_json else None,
         }
         for t in turns
         if t.role != "system"

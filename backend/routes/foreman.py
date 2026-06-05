@@ -249,6 +249,7 @@ async def get_foreman_history_for_user(
             col(ForemanTurn.is_tool_response),
             col(ForemanTurn.parent_id),
             col(ForemanTurn.created_at),
+            col(ForemanTurn.api_calls_json),
         )
         .where(col(ForemanTurn.guild_id) == guild_pk, col(ForemanTurn.user_id) == user_id)
         .order_by(col(ForemanTurn.id))
@@ -266,6 +267,7 @@ async def get_foreman_history_for_user(
             "is_tool_response": bool(t.is_tool_response),
             "parent_id": t.parent_id,
             "created_at": t.created_at,
+            "api_calls_json": t.api_calls_json,
         }
         for t in turns
     ]
@@ -314,6 +316,7 @@ class ForemanTurnCreate(BaseModel):
     content_json: str  # JSON-serialised content blocks (string, list, …)
     is_tool_response: bool = False
     parent_id: int | None = None
+    api_calls: list | None = None  # per-HTTP-call metadata from tool execution
 
 
 @router.post("/guilds/{guild_id}/foreman/history")
@@ -330,6 +333,8 @@ async def create_foreman_turn(
 
     Response: ``{ "id": int, "created_at": str }``
     """
+    import json as _json
+
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
@@ -342,6 +347,7 @@ async def create_foreman_turn(
         is_tool_response=1 if body.is_tool_response else 0,
         parent_id=body.parent_id,
         created_at=created_at,
+        api_calls_json=_json.dumps(body.api_calls) if body.api_calls else None,
     )
     db.add(turn)
     await db.commit()

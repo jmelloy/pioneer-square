@@ -282,6 +282,10 @@ class ForemanTurn(SQLModel, table=True):
     # Token usage from the API response (assistant turns only; NULL for user/system turns)
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # JSON array of per-HTTP-call metadata captured during tool execution.
+    # Each entry: {tool_use_id, path, status, x_request_id?, x_github_request_id?, ts}
+    # Set on is_tool_response=1 turns; NULL otherwise.
+    api_calls_json: str | None = None
 
 
 class GithubEvent(SQLModel, table=True):
