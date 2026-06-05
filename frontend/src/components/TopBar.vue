@@ -141,20 +141,36 @@
         </button>
         <div v-if="showForemanConfig" class="foreman-config-section">
           <div class="foreman-field">
+            <label class="foreman-field-label">Provider</label>
+            <select v-model="foremanProvider" class="settings-input" @change="foremanModel = ''">
+              <option value="">default (anthropic)</option>
+              <option
+                v-for="p in modelsStore.providers"
+                :key="p.id"
+                :value="p.id"
+              >{{ p.name }}</option>
+            </select>
+          </div>
+          <div class="foreman-field">
             <label class="foreman-field-label">Model</label>
+            <select
+              v-if="foremanProviderModels.length"
+              v-model="foremanModel"
+              class="settings-input"
+            >
+              <option value="">default</option>
+              <option
+                v-for="m in foremanProviderModels"
+                :key="m.id"
+                :value="m.id"
+              >{{ m.name }}</option>
+            </select>
             <input
+              v-else
               v-model="foremanModel"
               class="settings-input"
               placeholder="claude-sonnet-4-6"
             />
-          </div>
-          <div class="foreman-field">
-            <label class="foreman-field-label">Provider</label>
-            <select v-model="foremanProvider" class="settings-input">
-              <option value="">default (anthropic)</option>
-              <option value="anthropic">anthropic</option>
-              <option value="bedrock">bedrock</option>
-            </select>
           </div>
           <div class="foreman-field">
             <label class="foreman-field-label">System Prompt Suffix</label>
@@ -233,6 +249,7 @@ import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useAuthStore } from '../stores/auth'
+import { useModels } from '../composables/useModels'
 import GitHubConfigModal from './GitHubConfigModal.vue'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
@@ -246,6 +263,11 @@ const ghStore = useGitHubStore()
 const authStore = useAuthStore()
 
 const currentGuild = computed(() => guildStore.currentGuild)
+
+const modelsStore = useModels()
+const foremanProviderModels = computed(() =>
+  foremanProvider.value ? modelsStore.modelsForProvider(foremanProvider.value) : [],
+)
 
 const showGitHubModal = ref(false)
 const showSettings = ref(false)
@@ -412,7 +434,10 @@ watch(
 )
 
 watch(showForemanConfig, (open) => {
-  if (open) loadForemanConfig()
+  if (open) {
+    loadForemanConfig()
+    modelsStore.loadModels()
+  }
 })
 
 watch(showSettings, (open) => {
