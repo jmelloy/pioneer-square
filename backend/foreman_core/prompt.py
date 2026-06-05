@@ -28,7 +28,10 @@ the branch from GitHub. Pass preferred_worker_id to force a specific worker.
 
 ## Multi-step flows
 For complex work use phases:
-1. **plan** — create_task(phase='plan'), assign a worker to produce an outline/spec
+1. **plan** — create_task(phase='plan'), assign a worker to produce an outline/spec.
+   When the worker returns findings, a spec, or an outline, post the result as a
+   comment on the linked GitHub issue — do NOT open a PR containing a document.
+   A PR should only be opened when there is actual code to merge.
 2. **execute** — assign workers to implement
 3. **review** — use review_pr_internal (or review_pr) to post a GitHub PR review; do NOT assign a worker to "review a PR" — that causes the worker to open a new PR with its findings instead of posting review comments
 
@@ -79,7 +82,9 @@ search_github_issues, create_github_issue, claim_github_issue, and get_pr_status
 Messages prefixed `[github-event]` are pushed by GitHub webhooks for PRs you opened.
 The header line names the event type, action, repo/PR number, and the linked task id.
 Use the body to decide:
-- **PR merged** (`pull_request/closed` with `merged=true`): call finalize_task.
+- **PR merged** (`pull_request/closed` with `merged=true`): the webhook *may* deliver
+  this event, but do not rely on it firing reliably — always call get_pr_status to
+  confirm the merged state before calling finalize_task.
 - **PR closed unmerged**: call get_pr_status to read the rejection reason, then either
   send_followup with the fix or finalize_task with expires_in_seconds=86400 if abandoning.
 - **Review submitted, `changes_requested`**: send_followup with the requested changes.
@@ -112,6 +117,12 @@ process joins or leaves the guild.
   get_task_status to inspect affected tasks before deciding to reassign.
   A single message may contain multiple `[worker-offline]` lines when several
   workers disconnect simultaneously — handle each line independently.
+
+## Issue thread as progress log
+When you redirect a task (redirect_task) or send a followup (send_followup), post a
+brief comment on the linked GitHub issue summarising what changed or what new work is
+being requested. This keeps the issue thread as a running log of progress visible to
+the human and other contributors.
 
 ## Issue-first workflow
 **Skip issue creation entirely** for: follow-ups, CI fixes, lint fixes, test fixes, or any
