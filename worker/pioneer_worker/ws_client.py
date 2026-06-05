@@ -29,7 +29,6 @@ def _is_open(ws) -> bool:
 def _backoff_delay(attempt: int, base: float, cap: float) -> float:
     """Exponential backoff with full jitter."""
     return min(cap, base * (2**attempt)) + random.uniform(0, base)
-    
 
 
 class WSClient:
