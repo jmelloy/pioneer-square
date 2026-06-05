@@ -111,6 +111,7 @@ async def run_foreman_ai(
     human_message: str,
     extra_context: str = "",
     user_id: str | None = None,
+    task_id: str | None = None,
     *,
     http: ForemanHTTPClient,
     ws_send: Callable[[dict], Awaitable[None]],
@@ -119,6 +120,8 @@ async def run_foreman_ai(
     """Process a human message (or system escalation) through the Claude foreman AI.
 
     Standalone version — uses REST for state/history, WS for broadcasts.
+    ``task_id`` must be passed explicitly by the caller; it is not inferred from
+    guild state so there is no ambiguity when multiple tasks are active.
     """
     from .tools import FOREMAN_TOOLS, exec_tools
 
@@ -141,14 +144,6 @@ async def run_foreman_ai(
     primary_repo = guild_data.get("primary_repo")
     worker_rows = state.get("workers") or []
     task_rows = state.get("tasks") or []
-    if len(task_rows) == 1:
-        _task_id: str | None = task_rows[0]["id"]
-    else:
-        if len(task_rows) > 1:
-            logger.warning(
-                "Ambiguous task lookup: %d tasks found, task_id will be NULL", len(task_rows)
-            )
-        _task_id = None
 
     # Resolve user_id from guild owner if not provided
     if not user_id:
@@ -192,8 +187,8 @@ async def run_foreman_ai(
             len(extra_context),
         )
 
-        await _save_turn(guild_id, user_id, "system", audit_system, http=http, task_id=_task_id)
-        await _save_turn(guild_id, user_id, "user", human_message, http=http, task_id=_task_id)
+        await _save_turn(guild_id, user_id, "system", audit_system, http=http, task_id=task_id)
+        await _save_turn(guild_id, user_id, "user", human_message, http=http, task_id=task_id)
         messages = await _load_history(guild_id, user_id, http=http)
 
         _inject_state_preamble(messages, state_preamble)
@@ -256,7 +251,7 @@ async def run_foreman_ai(
                 resp.content,
                 http=http,
                 api_calls=[_api_call_meta],
-                task_id=_task_id,
+                task_id=task_id,
             )
             await http.update_turn_tokens(asst_turn_id, _input_tokens, _output_tokens)
             messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
@@ -333,7 +328,7 @@ async def run_foreman_ai(
                 http=http,
                 is_tool_response=True,
                 parent_id=asst_turn_id,
-                task_id=_task_id,
+                task_id=task_id,
             )
             logger.info(
                 "guild=%s round %d: %d tool call(s): %s",
@@ -393,7 +388,7 @@ async def run_foreman_ai(
                 wrap_resp.content,
                 http=http,
                 api_calls=[_wrap_api_meta],
-                task_id=_task_id,
+                task_id=task_id,
             )
             await http.update_turn_tokens(wrap_turn_id, _wrap_input, _wrap_output)
             _now = datetime.now(UTC).isoformat()

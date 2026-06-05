@@ -234,3 +234,25 @@ def test_create_foreman_turn_null_task_id_by_default(client):
         turn = session.scalar(select(ForemanTurn).where(col(ForemanTurn.id) == turn_id))
     assert turn is not None
     assert turn.task_id is None
+
+
+def test_create_foreman_turn_cross_guild_task_returns_404(client):
+    """task_id that belongs to a different guild must return 404."""
+    test_client, db_url = client
+    insert_guild(db_url, "g-xguild-a")
+    insert_guild(db_url, "g-xguild-b")
+    token = make_auth_token(db_url)
+    insert_task(db_url, "g-xguild-a", "t-xguild1")
+
+    # Reference guild-A's task from guild-B's endpoint — must be rejected.
+    resp = test_client.post(
+        "/guilds/g-xguild-b/foreman/history",
+        json={
+            "user_id": "gh-user-test",
+            "role": "user",
+            "content_json": '"Hello"',
+            "task_id": "t-xguild1",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
