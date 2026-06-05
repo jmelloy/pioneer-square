@@ -4,9 +4,9 @@ Revision ID: 20260605_000001_add_api_calls_to_foreman_turns
 Revises: 20260605_000000_add_database_indexes
 Create Date: 2026-06-05
 
-Stores per-HTTP-call metadata (GitHub request IDs, status codes, timestamps)
-captured during foreman tool execution. Attached to the tool_result turn
-(is_tool_response=1) so failures can be correlated with provider-side logs.
+Stores Anthropic API call metadata (request IDs, model, token counts, timestamps)
+captured from each messages.create() call. Attached to the assistant turn so
+failures can be correlated with Anthropic-side logs via the request-id header.
 """
 
 from __future__ import annotations

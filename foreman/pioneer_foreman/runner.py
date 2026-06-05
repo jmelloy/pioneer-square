@@ -201,30 +201,47 @@ async def run_foreman_ai(
                 round_num,
                 len(messages),
             )
-            resp = await client.messages.create(
+            _raw = await client.messages.with_raw_response.create(
                 model=config.effective_model,
                 max_tokens=1024,
                 system=system_blocks,
                 messages=messages,
                 tools=FOREMAN_TOOLS,
             )
+            resp = _raw.parse()
             usage = resp.usage
             _input_tokens = getattr(usage, "input_tokens", 0) or 0
             _output_tokens = getattr(usage, "output_tokens", 0) or 0
+            _cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            _cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+            _anthropic_request_id = _raw.headers.get("request-id")
             logger.info(
                 "guild=%s round %d: stop_reason=%s content_blocks=%d "
-                "input=%d cache_read=%d cache_write=%d output=%d",
+                "input=%d cache_read=%d cache_write=%d output=%d request_id=%s",
                 guild_id,
                 round_num,
                 resp.stop_reason,
                 len(resp.content),
                 _input_tokens,
-                getattr(usage, "cache_read_input_tokens", 0) or 0,
-                getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                _cache_read,
+                _cache_write,
                 _output_tokens,
+                _anthropic_request_id,
             )
 
-            asst_turn_id = await _save_turn(guild_id, user_id, "assistant", resp.content, http=http)
+            _api_call_meta = {
+                "request_id": _anthropic_request_id,
+                "model": config.effective_model,
+                "input_tokens": _input_tokens,
+                "output_tokens": _output_tokens,
+                "cache_read_tokens": _cache_read,
+                "cache_write_tokens": _cache_write,
+                "ts": datetime.now(UTC).isoformat(),
+            }
+
+            asst_turn_id = await _save_turn(
+                guild_id, user_id, "assistant", resp.content, http=http, api_calls=[_api_call_meta]
+            )
             await http.update_turn_tokens(asst_turn_id, _input_tokens, _output_tokens)
             messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
             # Re-parse so messages stays as plain dicts (not SDK objects)
@@ -267,15 +284,10 @@ async def run_foreman_ai(
 
             tool_results = await exec_tools(guild_id, tool_uses, http=http, user_id=user_id)
             current_tool_use_ids = {tu.id for tu in tool_uses}
-            # Extract api_calls metadata before building trimmed — the Anthropic API
-            # only accepts {type, tool_use_id, content, is_error} in tool_result blocks.
-            all_api_calls: list[dict] = []
             trimmed: list[dict] = []
             for r in tool_results:
                 if r.get("tool_use_id") not in current_tool_use_ids:
                     continue
-                for call in r.get("api_calls") or []:
-                    all_api_calls.append({"tool_use_id": r["tool_use_id"], **call})
                 entry = {k: v for k, v in r.items() if k != "api_calls"}
                 if entry.get("content"):
                     entry = {**entry, "content": truncate_tool_result(entry["content"])}
@@ -305,14 +317,16 @@ async def run_foreman_ai(
                 http=http,
                 is_tool_response=True,
                 parent_id=asst_turn_id,
-                api_calls=all_api_calls if all_api_calls else None,
             )
             logger.info(
                 "guild=%s round %d: %d tool call(s): %s",
                 guild_id,
                 round_num,
                 len(trimmed),
-                [r.get("tool_use_id") for r in trimmed],
+                [
+                    {"tool_use_id": r.get("tool_use_id"), "is_error": r.get("is_error", False)}
+                    for r in trimmed
+                ],
             )
             messages.append({"role": "user", "content": trimmed})
         else:
@@ -321,7 +335,7 @@ async def run_foreman_ai(
             messages = prune_history(messages)
             messages = strip_orphaned_tool_results(messages)
             _stamp_message_cache_breakpoint(messages)
-            wrap_resp = await client.messages.create(
+            _wrap_raw = await client.messages.with_raw_response.create(
                 model=config.effective_model,
                 max_tokens=1024,
                 system=system_blocks,
@@ -329,20 +343,39 @@ async def run_foreman_ai(
                 tools=FOREMAN_TOOLS,
                 tool_choice={"type": "none"},
             )
+            wrap_resp = _wrap_raw.parse()
             wrap_usage = wrap_resp.usage
             _wrap_input = getattr(wrap_usage, "input_tokens", 0) or 0
             _wrap_output = getattr(wrap_usage, "output_tokens", 0) or 0
+            _wrap_cache_read = getattr(wrap_usage, "cache_read_input_tokens", 0) or 0
+            _wrap_cache_write = getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0
+            _wrap_request_id = _wrap_raw.headers.get("request-id")
             logger.info(
-                "guild=%s wrap-up: stop_reason=%s input=%d cache_read=%d cache_write=%d output=%d",
+                "guild=%s wrap-up: stop_reason=%s input=%d cache_read=%d cache_write=%d output=%d request_id=%s",
                 guild_id,
                 wrap_resp.stop_reason,
                 _wrap_input,
-                getattr(wrap_usage, "cache_read_input_tokens", 0) or 0,
-                getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0,
+                _wrap_cache_read,
+                _wrap_cache_write,
                 _wrap_output,
+                _wrap_request_id,
             )
+            _wrap_api_meta = {
+                "request_id": _wrap_request_id,
+                "model": config.effective_model,
+                "input_tokens": _wrap_input,
+                "output_tokens": _wrap_output,
+                "cache_read_tokens": _wrap_cache_read,
+                "cache_write_tokens": _wrap_cache_write,
+                "ts": datetime.now(UTC).isoformat(),
+            }
             wrap_turn_id = await _save_turn(
-                guild_id, user_id, "assistant", wrap_resp.content, http=http
+                guild_id,
+                user_id,
+                "assistant",
+                wrap_resp.content,
+                http=http,
+                api_calls=[_wrap_api_meta],
             )
             await http.update_turn_tokens(wrap_turn_id, _wrap_input, _wrap_output)
             _now = datetime.now(UTC).isoformat()
