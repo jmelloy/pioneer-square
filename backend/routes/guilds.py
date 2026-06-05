@@ -10,7 +10,6 @@ import json
 import logging
 import secrets
 from datetime import UTC, datetime
-from typing import Literal
 
 from auth_deps import get_guild_pk, require_member, require_user, require_worker_or_member_path
 from database import get_db_dep
@@ -60,7 +59,7 @@ class GuildUpdate(BaseModel):
 
 class ForemanConfigUpdate(BaseModel):
     model: str | None = None
-    provider: Literal["anthropic", "openai", "google", "bedrock"] | None = None
+    provider: str | None = None
     system_prompt_suffix: str | None = Field(default=None, max_length=10000)
     max_rounds: int | None = Field(default=None, gt=0)
     poll_min_interval: int | None = Field(default=None, gt=0)

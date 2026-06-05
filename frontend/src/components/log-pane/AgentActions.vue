@@ -2,12 +2,23 @@
   <div class="actions-panel">
     <div class="actions-header">ACTIONS</div>
     <div class="run-bar">
-      <select v-model="runTool" class="tool-select" :disabled="isRunning">
+      <select v-model="runTool" class="tool-select" :disabled="isRunning" @change="runModel = ''">
         <option value="claude">claude</option>
         <option value="codex">codex</option>
         <option value="pi">pi</option>
       </select>
+      <select
+        v-if="toolModels.length"
+        v-model="runModel"
+        class="model-input"
+        :disabled="isRunning"
+        title="Model (optional)"
+      >
+        <option value="">{{ modelPlaceholder }}</option>
+        <option v-for="m in toolModels" :key="m.id" :value="m.id">{{ m.name }}</option>
+      </select>
       <input
+        v-else
         v-model="runModel"
         class="model-input"
         :placeholder="modelPlaceholder"
@@ -47,12 +58,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useAgentsStore } from '../../stores/agents'
+import { useModels } from '../../composables/useModels'
 
 const props = defineProps<{ agentId: string; agentState?: string }>()
 
 const agentsStore = useAgentsStore()
+const modelsStore = useModels()
 
 const runTool = ref('claude')
 const runPrompt = ref('')
@@ -63,9 +76,24 @@ const runError = ref('')
 const isRunning = computed(() => ['working', 'thinking', 'busy'].includes(props.agentState ?? ''))
 
 const modelPlaceholder = computed(() => {
-  if (runTool.value === 'claude') return 'claude-opus-4-7'
-  if (runTool.value === 'codex') return 'o4-mini'
+  if (runTool.value === 'claude') return 'model (default)'
+  if (runTool.value === 'codex') return 'model (default)'
   return 'model (optional)'
+})
+
+const TOOL_PROVIDER: Record<string, string> = {
+  claude: 'anthropic',
+  codex: 'openai',
+}
+
+const toolModels = computed(() => {
+  const providerId = TOOL_PROVIDER[runTool.value]
+  if (!providerId) return []
+  return modelsStore.modelsForProvider(providerId)
+})
+
+onMounted(() => {
+  modelsStore.loadModels()
 })
 
 async function handleRun() {

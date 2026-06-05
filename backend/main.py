@@ -282,6 +282,10 @@ async def lifespan(app: FastAPI):
     _log_format = os.environ.get("LOG_FORMAT", "colored")
     logging.config.dictConfig(_get_logging_config(_log_level, _log_format))
     await reset_connection_state()
+    # Pre-warm the models.dev cache so the first /api/models request is fast.
+    from util.models_dev import fetch_providers as _fetch_providers  # noqa: PLC0415
+
+    asyncio.ensure_future(_fetch_providers())
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
     try:
         yield
@@ -339,6 +343,7 @@ from routes import auth as _auth_routes  # noqa: E402
 from routes import debug as _debug_routes  # noqa: E402
 from routes import foreman as _foreman_routes  # noqa: E402
 from routes import guilds as _guilds_routes  # noqa: E402
+from routes import models as _models_routes  # noqa: E402
 from routes import push as _push_routes  # noqa: E402
 from routes import tasks as _tasks_routes  # noqa: E402
 from routes import usage as _usage_routes  # noqa: E402
@@ -360,6 +365,7 @@ app.include_router(_webhooks_routes.router)
 app.include_router(_push_routes.router)
 app.include_router(_ws_routes.router)
 app.include_router(_debug_routes.router)
+app.include_router(_models_routes.router)
 
 
 # ---------------------------------------------------------------------------
