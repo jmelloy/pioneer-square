@@ -244,7 +244,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
@@ -264,7 +264,7 @@ const authStore = useAuthStore()
 
 const currentGuild = computed(() => guildStore.currentGuild)
 
-const modelsStore = useModels()
+const modelsStore = reactive(useModels())
 const foremanProviderModels = computed(() =>
   foremanProvider.value ? modelsStore.modelsForProvider(foremanProvider.value) : [],
 )

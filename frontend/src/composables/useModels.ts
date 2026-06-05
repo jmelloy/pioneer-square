@@ -1,4 +1,4 @@
-import { ref, readonly } from 'vue'
+import { ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 
 export interface ModelEntry {
@@ -46,9 +46,9 @@ export function useModels() {
   }
 
   return {
-    providers: readonly(providers),
-    loading: readonly(loading),
-    error: readonly(error),
+    providers,
+    loading,
+    error,
     loadModels,
     modelsForProvider,
   }
