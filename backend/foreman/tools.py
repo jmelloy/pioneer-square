@@ -639,6 +639,19 @@ async def spawn_worker(
     )
     stored_blob = creds_result.one_or_none()
 
+    # Fetch guild-level env vars from foreman config and pass them to the worker.
+    foreman_env_vars: dict[str, str] = {}
+    if guild_pk is not None:
+        guild_res = await db.exec(
+            select(col(Guild.foreman_config)).where(col(Guild.id) == guild_pk)
+        )
+        guild_cfg = guild_res.one_or_none() or {}
+        foreman_env_vars = {
+            e["key"]: e["value"]
+            for e in (guild_cfg.get("env_vars") or [])
+            if e.get("key") and e.get("value") is not None
+        }
+
     env = build_spawn_worker_env(
         guild_id=guild_id,
         repos=repos,
@@ -649,6 +662,7 @@ async def spawn_worker(
         auth_token=auth_token,
         agent_count=agent_count,
         tools=tools_list or None,
+        extra_env=foreman_env_vars or None,
     )
 
     try:

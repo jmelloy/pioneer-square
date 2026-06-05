@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 from datetime import UTC, datetime
 
@@ -16,7 +17,7 @@ from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildMember, Message, User, Worker
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -57,6 +58,27 @@ class GuildUpdate(BaseModel):
     version: str | None = None
 
 
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MAX_FOREMAN_ENV_VARS = 20
+_MAX_ENV_VALUE_LEN = 4096
+_MASK_PLACEHOLDER = "••••••"
+
+
+class EnvVarItem(BaseModel):
+    key: str
+    # None → keep the currently stored value (used when the UI has a masked placeholder)
+    value: str | None = None
+
+
+def _mask_foreman_config(config: dict) -> dict:
+    """Return a shallow copy of foreman_config with env var values replaced by the mask."""
+    if "env_vars" not in config:
+        return config
+    masked = dict(config)
+    masked["env_vars"] = [{"key": e["key"], "value": _MASK_PLACEHOLDER} for e in config["env_vars"]]
+    return masked
+
+
 class ForemanConfigUpdate(BaseModel):
     model: str | None = None
     provider: str | None = None
@@ -64,6 +86,27 @@ class ForemanConfigUpdate(BaseModel):
     max_rounds: int | None = Field(default=None, gt=0)
     poll_min_interval: int | None = Field(default=None, gt=0)
     poll_max_interval: int | None = Field(default=None, gt=0)
+    # None (field absent) → leave existing env_vars unchanged.
+    # Empty list → clear all env_vars.
+    env_vars: list[EnvVarItem] | None = None
+
+    @field_validator("env_vars")
+    @classmethod
+    def validate_env_vars(cls, v: list[EnvVarItem] | None) -> list[EnvVarItem] | None:
+        if v is None:
+            return v
+        if len(v) > _MAX_FOREMAN_ENV_VARS:
+            raise ValueError(f"Too many env vars (max {_MAX_FOREMAN_ENV_VARS})")
+        for item in v:
+            if not _ENV_KEY_RE.match(item.key):
+                raise ValueError(
+                    f"Invalid env var key {item.key!r}; must match ^[A-Za-z_][A-Za-z0-9_]*$"
+                )
+            if item.value is not None and len(item.value) > _MAX_ENV_VALUE_LEN:
+                raise ValueError(
+                    f"Value for {item.key!r} exceeds max length ({_MAX_ENV_VALUE_LEN} chars)"
+                )
+        return v
 
 
 class MemberCreate(BaseModel):
@@ -383,12 +426,12 @@ async def get_foreman_config(
     github_user_id: str = Depends(require_member("owner")),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Return the guild's foreman configuration (owner only)."""
+    """Return the guild's foreman configuration (owner only). Env var values are masked."""
     res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    return guild.foreman_config or {}
+    return _mask_foreman_config(guild.foreman_config or {})
 
 
 @router.patch("/api/guilds/{guild_id}/foreman-config")
@@ -398,7 +441,13 @@ async def update_foreman_config(
     github_user_id: str = Depends(require_member("owner")),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Update (merge) the guild's foreman configuration (owner only)."""
+    """Update (merge) the guild's foreman configuration (owner only).
+
+    Env var values sent as null preserve the existing stored secret — the UI uses
+    this for masked (unchanged) rows so secrets don't round-trip through the browser.
+    Env var values sent as empty string or a new string replace the stored value.
+    Keys absent from the submitted list are deleted.
+    """
     res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
     guild = res.one_or_none()
     if not guild:
@@ -406,13 +455,30 @@ async def update_foreman_config(
     config: dict = dict(guild.foreman_config or {})
     for field in data.model_fields_set:
         value = getattr(data, field)
-        if value is None:
+        if field == "env_vars":
+            if value is None:
+                # Explicit null → clear all env vars
+                config.pop("env_vars", None)
+            else:
+                existing_map: dict[str, str] = {
+                    e["key"]: e["value"] for e in config.get("env_vars", [])
+                }
+                new_env_vars: list[dict] = []
+                for item in value:
+                    if item.value is None:
+                        # Masked / unchanged: keep the existing stored value if present
+                        if item.key in existing_map:
+                            new_env_vars.append({"key": item.key, "value": existing_map[item.key]})
+                    else:
+                        new_env_vars.append({"key": item.key, "value": item.value})
+                config["env_vars"] = new_env_vars
+        elif value is None:
             config.pop(field, None)
         else:
             config[field] = value
     guild.foreman_config = config
     await db.commit()
-    return config
+    return _mask_foreman_config(config)
 
 
 @router.delete("/api/guilds/{guild_id}/members/{user_id}")
