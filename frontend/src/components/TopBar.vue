@@ -214,6 +214,59 @@
               />
             </div>
           </div>
+
+          <div class="foreman-field">
+            <label class="foreman-field-label">Environment Variables / API Keys</label>
+            <div class="env-var-list">
+              <div v-for="(row, i) in envVarRows" :key="i" class="env-var-row">
+                <input
+                  v-model="row.key"
+                  class="settings-input env-var-key"
+                  placeholder="KEY_NAME"
+                  list="foreman-env-key-hints"
+                  :readonly="row.masked"
+                  @input="onEnvKeyInput(i)"
+                />
+                <template v-if="row.masked">
+                  <input
+                    class="settings-input env-var-value env-var-value--masked"
+                    value="••••••"
+                    readonly
+                    title="Click Change to update value"
+                  />
+                  <button
+                    class="env-var-change-btn pixel-btn"
+                    @click="unlockEnvVar(i)"
+                    title="Change value"
+                  >✎</button>
+                </template>
+                <template v-else>
+                  <input
+                    v-model="row.value"
+                    type="password"
+                    class="settings-input env-var-value"
+                    placeholder="value"
+                    autocomplete="new-password"
+                  />
+                </template>
+                <button
+                  class="env-var-delete-btn"
+                  @click="removeEnvVar(i)"
+                  title="Remove variable"
+                >✕</button>
+              </div>
+              <datalist id="foreman-env-key-hints">
+                <option value="ANTHROPIC_API_KEY" />
+                <option value="OPENAI_API_KEY" />
+                <option value="GITHUB_TOKEN" />
+                <option value="GEMINI_API_KEY" />
+                <option value="AWS_ACCESS_KEY_ID" />
+                <option value="AWS_SECRET_ACCESS_KEY" />
+              </datalist>
+              <button class="pixel-btn env-var-add-btn" @click="addEnvVar">+ Add Variable</button>
+            </div>
+          </div>
+
           <div class="foreman-actions">
             <button
               class="pixel-btn settings-save-btn"
@@ -298,6 +351,13 @@ const foremanSaving = ref(false)
 const foremanStatus = ref<'' | 'saved' | 'error'>('')
 let foremanStatusTimer: ReturnType<typeof setTimeout> | null = null
 
+interface EnvVarRow {
+  key: string
+  value: string
+  masked: boolean
+}
+const envVarRows = ref<EnvVarRow[]>([])
+
 async function loadForemanConfig() {
   if (!currentGuild.value) return
   try {
@@ -313,9 +373,37 @@ async function loadForemanConfig() {
       foremanMaxRounds.value = cfg.max_rounds ?? ''
       foremanPollMin.value = cfg.poll_min_interval ?? ''
       foremanPollMax.value = cfg.poll_max_interval ?? ''
+      // Env vars come back with masked values (••••••); track them as masked rows
+      envVarRows.value = (cfg.env_vars ?? []).map((e: { key: string }) => ({
+        key: e.key,
+        value: '',
+        masked: true,
+      }))
     }
   } catch {
     // non-fatal: fields stay blank (will use server defaults)
+  }
+}
+
+function addEnvVar() {
+  envVarRows.value.push({ key: '', value: '', masked: false })
+}
+
+function removeEnvVar(i: number) {
+  envVarRows.value.splice(i, 1)
+}
+
+function unlockEnvVar(i: number) {
+  envVarRows.value[i].masked = false
+  envVarRows.value[i].value = ''
+}
+
+function onEnvKeyInput(i: number) {
+  // If user edits the key of a masked row, the backend can no longer match the
+  // existing stored value, so unlock it so they must enter the value explicitly.
+  if (envVarRows.value[i].masked) {
+    envVarRows.value[i].masked = false
+    envVarRows.value[i].value = ''
   }
 }
 
@@ -337,6 +425,11 @@ async function saveForemanConfig() {
     else body.poll_min_interval = null
     if (foremanPollMax.value !== '') body.poll_max_interval = foremanPollMax.value
     else body.poll_max_interval = null
+    // Build env_vars: masked rows send null value (keep existing), unlocked rows send actual value.
+    // Skip rows with empty keys.
+    body.env_vars = envVarRows.value
+      .filter((r) => r.key.trim())
+      .map((r) => ({ key: r.key.trim(), value: r.masked ? null : r.value }))
     const res = await fetch(
       `${API_BASE}/api/guilds/${encodeURIComponent(currentGuild.value.id)}/foreman-config`,
       {
@@ -347,6 +440,13 @@ async function saveForemanConfig() {
     )
     if (res.ok) {
       foremanStatus.value = 'saved'
+      // Re-load to sync masked state with what the server now has
+      const saved = await res.json()
+      envVarRows.value = (saved.env_vars ?? []).map((e: { key: string }) => ({
+        key: e.key,
+        value: '',
+        masked: true,
+      }))
     } else {
       foremanStatus.value = 'error'
     }
@@ -429,6 +529,7 @@ watch(
     foremanPollMin.value = ''
     foremanPollMax.value = ''
     foremanStatus.value = ''
+    envVarRows.value = []
   },
   { immediate: true },
 )
@@ -928,6 +1029,78 @@ function goHome() {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-top: 2px;
+}
+
+.env-var-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.env-var-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.env-var-key {
+  flex: 0 0 130px;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.env-var-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.env-var-value--masked {
+  color: var(--color-text-dim);
+  letter-spacing: 2px;
+  cursor: default;
+}
+
+.env-var-change-btn {
+  font-size: 10px;
+  padding: 3px 6px;
+  flex-shrink: 0;
+  border-color: var(--color-teal);
+  color: var(--color-teal);
+}
+
+.env-var-change-btn:hover {
+  background: rgba(0, 187, 170, 0.12);
+}
+
+.env-var-delete-btn {
+  background: none;
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text-dim);
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  flex-shrink: 0;
+  transition:
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.env-var-delete-btn:hover {
+  border-color: var(--color-red, #c0392b);
+  color: var(--color-red, #c0392b);
+}
+
+.env-var-add-btn {
+  font-size: 7px;
+  padding: 4px 8px;
+  align-self: flex-start;
   margin-top: 2px;
 }
 

@@ -273,6 +273,28 @@ async def get_foreman_history_for_user(
     ]
 
 
+@router.get("/guilds/{guild_id}/foreman/env-vars")
+async def get_foreman_env_vars(
+    guild_id: str,
+    _caller: str = Depends(require_worker_or_member_path),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return the guild's foreman env vars with real (unmasked) values.
+
+    Used by standalone workers at startup to apply guild-configured API keys
+    (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) into their process environment.
+    Requires a valid worker auth_token or member login_token.
+
+    Response: ``{ "env_vars": [{"key": str, "value": str}, ...] }``
+    """
+    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    guild = res.one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    config = guild.foreman_config or {}
+    return {"env_vars": config.get("env_vars", [])}
+
+
 @router.get("/guilds/{guild_id}/guild-key")
 async def get_guild_key(
     guild_id: str,

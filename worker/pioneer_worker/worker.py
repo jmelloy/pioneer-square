@@ -275,6 +275,38 @@ class Worker:
             os.environ["GITHUB_TOKEN"] = self.cfg.github_token
             logger.info("GITHUB_TOKEN set in environment for gh CLI and subprocesses")
 
+    async def _fetch_guild_env_vars(self) -> None:
+        """Fetch guild-level env vars from foreman config and apply to the process environment.
+
+        Only sets vars not already present — docker-provided env vars take precedence
+        so production deployments aren't overridden unexpectedly.
+        """
+        try:
+            async with await self._http(authed=True) as client:
+                resp = await client.get(f"/guilds/{self.cfg.guild_id}/foreman/env-vars")
+            if resp.status_code != 200:
+                logger.debug(
+                    "Foreman env vars: status %d (no vars or not auth'd)", resp.status_code
+                )
+                return
+            env_vars = resp.json().get("env_vars", [])
+            applied = 0
+            for item in env_vars:
+                key = item.get("key", "")
+                value = item.get("value")
+                if not key or value is None:
+                    continue
+                if key not in os.environ:
+                    os.environ[key] = value
+                    applied += 1
+                    logger.info("Applied foreman env var: %s (len=%d)", key, len(str(value)))
+                else:
+                    logger.debug("Skipping foreman env var %s (already set in environment)", key)
+            if applied:
+                logger.info("Applied %d foreman env var(s) to process environment", applied)
+        except Exception as exc:
+            logger.warning("Could not fetch foreman env vars: %s", exc)
+
     async def _check_gh_auth(self) -> None:
         """Run `gh auth status` and log the result as a startup health check."""
         try:
@@ -1181,6 +1213,7 @@ class Worker:
         assert self.cfg.worker_id, "worker_id must be set after registration"
 
         await self._fetch_github_token_if_needed()
+        await self._fetch_guild_env_vars()
         await self._refresh_github_repos()
         await self._check_gh_auth()
         await self._check_codex_doctor()

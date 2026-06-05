@@ -20,7 +20,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeCredentials, Task, UserSpawnSettings, Worker, live_tasks_filter
+from models import ClaudeCredentials, Guild, Task, UserSpawnSettings, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -175,6 +175,19 @@ async def spawn_worker_container(
     )
     stored_blob = result.one_or_none()
 
+    # Merge guild-level foreman env vars (base) with user-supplied env vars (override).
+    guild_cfg_res = await db.exec(
+        select(col(Guild.foreman_config)).where(col(Guild.id) == guild_pk)
+    )
+    guild_cfg = guild_cfg_res.one_or_none() or {}
+    foreman_env_vars: dict[str, str] = {
+        e["key"]: e["value"]
+        for e in (guild_cfg.get("env_vars") or [])
+        if e.get("key") and e.get("value") is not None
+    }
+    # User-supplied vars at spawn time override guild defaults.
+    extra_env: dict[str, str] = {**foreman_env_vars, **(data.env_vars or {})}
+
     # Pre-register the worker so the container inherits a known worker_id and
     # can skip self-registration on startup.
     worker_id = "w-" + secrets.token_hex(3)
@@ -207,7 +220,7 @@ async def spawn_worker_container(
         auth_token=auth_token,
         agent_count=data.agent_count,
         tools=data.tools or None,
-        extra_env=data.env_vars or None,
+        extra_env=extra_env or None,
     )
 
     # Join the same Docker network as the backend so the worker can reach it.
