@@ -156,6 +156,7 @@ async def _save_turn(
     *,
     is_tool_response: bool = False,
     parent_id: int | None = None,
+    api_calls: list | None = None,
 ) -> int:
     """Persist one turn to the DB. Returns the new row's id."""
     db = await get_db()
@@ -169,6 +170,7 @@ async def _save_turn(
             is_tool_response=1 if is_tool_response else 0,
             parent_id=parent_id,
             created_at=datetime.now(UTC),
+            api_calls_json=json.dumps(api_calls) if api_calls else None,
         )
         db.add(turn)
         await db.commit()
@@ -503,31 +505,48 @@ async def _run_foreman_ai(
                 round_num,
                 len(messages),
             )
-            resp = await client.messages.create(
+            _raw = await client.messages.with_raw_response.create(
                 model=foreman_model,
                 max_tokens=1024,
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]
                 tools=FOREMAN_TOOLS,  # type: ignore[arg-type]
             )
+            resp = _raw.parse()
             usage = resp.usage
             _input_tokens = getattr(usage, "input_tokens", 0) or 0
             _output_tokens = getattr(usage, "output_tokens", 0) or 0
+            _cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            _cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+            _anthropic_request_id = _raw.headers.get("request-id")
             logger.info(
                 "guild=%s run_foreman_ai round %d: stop_reason=%s content_blocks=%d "
-                "input=%d cache_read=%d cache_write=%d output=%d",
+                "input=%d cache_read=%d cache_write=%d output=%d request_id=%s",
                 guild_id,
                 round_num,
                 resp.stop_reason,
                 len(resp.content),
                 _input_tokens,
-                getattr(usage, "cache_read_input_tokens", 0) or 0,
-                getattr(usage, "cache_creation_input_tokens", 0) or 0,
+                _cache_read,
+                _cache_write,
                 _output_tokens,
+                _anthropic_request_id,
             )
 
+            _api_call_meta = {
+                "request_id": _anthropic_request_id,
+                "model": foreman_model,
+                "input_tokens": _input_tokens,
+                "output_tokens": _output_tokens,
+                "cache_read_tokens": _cache_read,
+                "cache_write_tokens": _cache_write,
+                "ts": datetime.now(UTC).isoformat(),
+            }
+
             # Persist assistant turn and append to local messages
-            asst_turn_id = await _save_turn(guild_id, user_id, "assistant", resp.content)
+            asst_turn_id = await _save_turn(
+                guild_id, user_id, "assistant", resp.content, api_calls=[_api_call_meta]
+            )
             await _update_turn_tokens(asst_turn_id, _input_tokens, _output_tokens)
             messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
             # Re-parse so messages stays as plain dicts (not SDK objects)
@@ -575,11 +594,14 @@ async def _run_foreman_ai(
             # Truncate verbose results; filter to only IDs in the current batch so
             # stale results that survived history trimming are never persisted.
             current_tool_use_ids = {tu.id for tu in tool_uses}
-            trimmed = [
-                {**r, "content": truncate_tool_result(r["content"])} if r.get("content") else r
-                for r in tool_results
-                if r.get("tool_use_id") in current_tool_use_ids
-            ]
+            trimmed: list[dict] = []
+            for r in tool_results:
+                if r.get("tool_use_id") not in current_tool_use_ids:
+                    continue
+                entry = {k: v for k, v in r.items() if k != "api_calls"}
+                if entry.get("content"):
+                    entry = {**entry, "content": truncate_tool_result(entry["content"])}
+                trimmed.append(entry)
 
             # Broadcast tool-result events
             _now = datetime.now(UTC)
@@ -658,11 +680,7 @@ async def _run_foreman_ai(
                 round_num,
                 len(trimmed),
                 [
-                    {
-                        "tool_use_id": r["tool_use_id"],
-                        "name": r.get("name"),
-                        "is_error": r.get("is_error", False),
-                    }
+                    {"tool_use_id": r["tool_use_id"], "is_error": r.get("is_error", False)}
                     for r in trimmed
                 ],
             )
@@ -681,7 +699,7 @@ async def _run_foreman_ai(
             messages = prune_history(messages)
             messages = strip_orphaned_tool_results(messages)
             _stamp_message_cache_breakpoint(messages)
-            wrap_resp = await client.messages.create(
+            _wrap_raw = await client.messages.with_raw_response.create(
                 model=foreman_model,
                 max_tokens=1024,
                 system=system_blocks,  # type: ignore[arg-type]
@@ -689,20 +707,36 @@ async def _run_foreman_ai(
                 tools=FOREMAN_TOOLS,  # type: ignore[arg-type]
                 tool_choice={"type": "none"},  # type: ignore[arg-type]
             )
+            wrap_resp = _wrap_raw.parse()
             wrap_usage = wrap_resp.usage
             _wrap_input = getattr(wrap_usage, "input_tokens", 0) or 0
             _wrap_output = getattr(wrap_usage, "output_tokens", 0) or 0
+            _wrap_cache_read = getattr(wrap_usage, "cache_read_input_tokens", 0) or 0
+            _wrap_cache_write = getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0
+            _wrap_request_id = _wrap_raw.headers.get("request-id")
             logger.info(
                 "guild=%s run_foreman_ai wrap-up: stop_reason=%s "
-                "input=%d cache_read=%d cache_write=%d output=%d",
+                "input=%d cache_read=%d cache_write=%d output=%d request_id=%s",
                 guild_id,
                 wrap_resp.stop_reason,
                 _wrap_input,
-                getattr(wrap_usage, "cache_read_input_tokens", 0) or 0,
-                getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0,
+                _wrap_cache_read,
+                _wrap_cache_write,
                 _wrap_output,
+                _wrap_request_id,
             )
-            wrap_turn_id = await _save_turn(guild_id, user_id, "assistant", wrap_resp.content)
+            _wrap_api_meta = {
+                "request_id": _wrap_request_id,
+                "model": foreman_model,
+                "input_tokens": _wrap_input,
+                "output_tokens": _wrap_output,
+                "cache_read_tokens": _wrap_cache_read,
+                "cache_write_tokens": _wrap_cache_write,
+                "ts": datetime.now(UTC).isoformat(),
+            }
+            wrap_turn_id = await _save_turn(
+                guild_id, user_id, "assistant", wrap_resp.content, api_calls=[_wrap_api_meta]
+            )
             await _update_turn_tokens(wrap_turn_id, _wrap_input, _wrap_output)
             _now = datetime.now(UTC).isoformat()
             for b in wrap_resp.content:
@@ -805,6 +839,7 @@ async def get_foreman_history(guild_id: str, user_id: str) -> dict:
             "created_at": t.created_at,
             "input_tokens": t.input_tokens,
             "output_tokens": t.output_tokens,
+            "api_calls": json.loads(t.api_calls_json) if t.api_calls_json else None,
         }
         for t in turns
         if t.role != "system"

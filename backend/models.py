@@ -282,6 +282,10 @@ class ForemanTurn(SQLModel, table=True):
     # Token usage from the API response (assistant turns only; NULL for user/system turns)
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # JSON array of Anthropic API call metadata captured for each messages.create() call.
+    # Each entry: {request_id?, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, ts}
+    # Set on assistant turns; NULL otherwise.
+    api_calls_json: str | None = None
 
 
 class GithubEvent(SQLModel, table=True):

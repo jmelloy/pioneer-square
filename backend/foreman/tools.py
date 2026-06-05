@@ -6,6 +6,7 @@ of truth shared with the standalone foreman.  This module owns the embedded exec
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -75,6 +76,30 @@ CONTAINER_RUN_TIMEOUT = 600
 # each time.  None until first successful from_env(); tests can patch
 # _get_docker_client() directly to avoid touching sys.modules.
 _docker_client: Any = None
+
+# Per-tool-call collector for GitHub API response metadata (request IDs, status codes).
+# Each _exec_one_tool invocation sets a fresh list via _api_calls_ctx.set([]) using the
+# token-reset pattern so concurrent coroutines never share a list.  asyncio.to_thread
+# copies the context so thread-pool calls can also append to the same list.
+_api_calls_ctx: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "_api_calls_ctx", default=None
+)
+
+
+def _record_api_call(path: str, status: int, headers: Any) -> None:
+    """Append one HTTP-call record to the per-tool-call collector (no-op if unset)."""
+    calls = _api_calls_ctx.get(None)
+    if calls is None:
+        return
+    entry: dict = {"path": path, "status": status, "ts": datetime.now(UTC).isoformat()}
+    if headers:
+        rid = headers.get("x-request-id")
+        ghrid = headers.get("x-github-request-id")
+        if rid:
+            entry["x_request_id"] = rid
+        if ghrid:
+            entry["x_github_request_id"] = ghrid
+    calls.append(entry)
 
 
 async def _get_docker_client() -> Any:
@@ -147,8 +172,14 @@ def _gh_api(path: str, token: str) -> Any:
             "Accept": "application/vnd.github.v3+json",
         },
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            _record_api_call(path, resp.status, resp.headers)
+            return data
+    except urllib.error.HTTPError as exc:
+        _record_api_call(path, exc.code, exc.headers)
+        raise
 
 
 def _gh_api_post(path: str, token: str, payload: dict, method: str = "POST") -> Any:
@@ -164,8 +195,14 @@ def _gh_api_post(path: str, token: str, payload: dict, method: str = "POST") -> 
         },
         method=method,
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            _record_api_call(path, resp.status, resp.headers)
+            return data
+    except urllib.error.HTTPError as exc:
+        _record_api_call(path, exc.code, exc.headers)
+        raise
 
 
 def _gh_api_diff(path: str, token: str) -> str:
@@ -177,8 +214,14 @@ def _gh_api_diff(path: str, token: str) -> str:
             "Accept": "application/vnd.github.v3.diff",
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+            _record_api_call(path, resp.status, resp.headers)
+            return text
+    except urllib.error.HTTPError as exc:
+        _record_api_call(path, exc.code, exc.headers)
+        raise
 
 
 def _gh_graphql(token: str, query: str, variables: dict) -> dict:
@@ -194,8 +237,14 @@ def _gh_graphql(token: str, query: str, variables: dict) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            _record_api_call("/graphql", resp.status, resp.headers)
+            return data
+    except urllib.error.HTTPError as exc:
+        _record_api_call("/graphql", exc.code, exc.headers)
+        raise
 
 
 def _parse_review_from_claude(text: str) -> dict:
@@ -746,6 +795,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
     inp = tu.input
     result_text = ""
     is_error = False
+    _ctx_token = _api_calls_ctx.set([])
     try:
         db = await get_db()
         try:
@@ -1844,8 +1894,20 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
     except Exception as exc:
         result_text = f"Tool {tu.name} failed: {exc}"
         is_error = True
+    finally:
+        _api_call_log = _api_calls_ctx.get([])
+        _api_calls_ctx.reset(_ctx_token)
+
+    # Surface GitHub request IDs in error responses so failures can be correlated
+    # with provider-side logs without digging through the database.
+    if is_error and _api_call_log:
+        req_ids = [c["x_github_request_id"] for c in _api_call_log if c.get("x_github_request_id")]
+        if req_ids:
+            result_text = f"{result_text}\n[x-github-request-id: {', '.join(req_ids)}]"
 
     block: dict = {"type": "tool_result", "tool_use_id": tu.id, "content": result_text}
     if is_error:
         block["is_error"] = True
+    if _api_call_log:
+        block["api_calls"] = _api_call_log
     return block
