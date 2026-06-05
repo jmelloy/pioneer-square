@@ -28,7 +28,17 @@ from foreman_core.message_utils import (
     truncate_tool_result,
 )
 from foreman_core.tools_schema import FOREMAN_TOOLS
-from models import Agent, ForemanTurn, Guild, GuildMember, Message, Task, Worker, live_tasks_filter
+from models import (
+    Agent,
+    ApiRequestLog,
+    ForemanTurn,
+    Guild,
+    GuildMember,
+    Message,
+    Task,
+    Worker,
+    live_tasks_filter,
+)
 from sqlalchemy import delete, func
 from sqlmodel import col, select
 from util.tasks import spawn
@@ -157,6 +167,8 @@ async def _save_turn(
     is_tool_response: bool = False,
     parent_id: int | None = None,
     api_calls: list | None = None,
+    api_log_id: int | None = None,
+    task_id: str | None = None,
 ) -> int:
     """Persist one turn to the DB. Returns the new row's id."""
     db = await get_db()
@@ -171,6 +183,8 @@ async def _save_turn(
             parent_id=parent_id,
             created_at=datetime.now(UTC),
             api_calls_json=json.dumps(api_calls) if api_calls else None,
+            request_id=api_log_id,
+            task_id=task_id,
         )
         db.add(turn)
         await db.commit()
@@ -180,16 +194,64 @@ async def _save_turn(
         await db.close()
 
 
-async def _update_turn_tokens(turn_id: int, input_tokens: int, output_tokens: int) -> None:
-    """Write token counts back to an existing ForemanTurn row."""
+async def _create_api_request_log(
+    model: str,
+    system_blocks: list,
+    messages: list,
+    extra: dict,
+    task_id: str | None = None,
+) -> int:
+    """Insert an api_request_log row before making the Anthropic API call.
+
+    Returns the new row's id so it can be updated after the call completes.
+    """
+    db = await get_db()
+    try:
+        log = ApiRequestLog(
+            created_at=datetime.now(UTC),
+            model=model,
+            system=json.dumps(system_blocks),
+            messages=messages,
+            extra=extra or None,
+            task_id=task_id,
+        )
+        db.add(log)
+        await db.commit()
+        await db.refresh(log)
+        return log.id or 0
+    finally:
+        await db.close()
+
+
+async def _complete_api_request_log(
+    log_id: int,
+    *,
+    request_id: str | None,
+    response_dict: dict,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+    stop_reason: str | None,
+) -> None:
+    """Update an api_request_log row after the Anthropic API call completes."""
     from sqlalchemy import update as sa_update
 
     db = await get_db()
     try:
         await db.exec(
-            sa_update(ForemanTurn)
-            .where(col(ForemanTurn.id) == turn_id)
-            .values(input_tokens=input_tokens, output_tokens=output_tokens)
+            sa_update(ApiRequestLog)
+            .where(col(ApiRequestLog.id) == log_id)
+            .values(
+                request_id=request_id,
+                response=response_dict,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                stop_reason=stop_reason,
+                completed_at=datetime.now(UTC),
+            )
         )
         await db.commit()
     finally:
@@ -505,6 +567,12 @@ async def _run_foreman_ai(
                 round_num,
                 len(messages),
             )
+            api_log_id = await _create_api_request_log(
+                model=foreman_model,
+                system_blocks=system_blocks,
+                messages=messages,
+                extra={"max_tokens": 1024, "tools": [t["name"] for t in FOREMAN_TOOLS]},
+            )
             _raw = await client.messages.with_raw_response.create(
                 model=foreman_model,
                 max_tokens=1024,
@@ -532,6 +600,16 @@ async def _run_foreman_ai(
                 _output_tokens,
                 _anthropic_request_id,
             )
+            await _complete_api_request_log(
+                api_log_id,
+                request_id=_anthropic_request_id,
+                response_dict=json.loads(_serialize_content(resp.content)),
+                input_tokens=_input_tokens,
+                output_tokens=_output_tokens,
+                cache_read_tokens=_cache_read,
+                cache_write_tokens=_cache_write,
+                stop_reason=resp.stop_reason,
+            )
 
             _api_call_meta = {
                 "request_id": _anthropic_request_id,
@@ -545,9 +623,13 @@ async def _run_foreman_ai(
 
             # Persist assistant turn and append to local messages
             asst_turn_id = await _save_turn(
-                guild_id, user_id, "assistant", resp.content, api_calls=[_api_call_meta]
+                guild_id,
+                user_id,
+                "assistant",
+                resp.content,
+                api_calls=[_api_call_meta],
+                api_log_id=api_log_id,
             )
-            await _update_turn_tokens(asst_turn_id, _input_tokens, _output_tokens)
             messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
             # Re-parse so messages stays as plain dicts (not SDK objects)
             messages[-1]["content"] = json.loads(messages[-1]["content"])
@@ -699,6 +781,16 @@ async def _run_foreman_ai(
             messages = prune_history(messages)
             messages = strip_orphaned_tool_results(messages)
             _stamp_message_cache_breakpoint(messages)
+            _wrap_api_log_id = await _create_api_request_log(
+                model=foreman_model,
+                system_blocks=system_blocks,
+                messages=messages,
+                extra={
+                    "max_tokens": 1024,
+                    "tools": [t["name"] for t in FOREMAN_TOOLS],
+                    "tool_choice": {"type": "none"},
+                },
+            )
             _wrap_raw = await client.messages.with_raw_response.create(
                 model=foreman_model,
                 max_tokens=1024,
@@ -725,6 +817,16 @@ async def _run_foreman_ai(
                 _wrap_output,
                 _wrap_request_id,
             )
+            await _complete_api_request_log(
+                _wrap_api_log_id,
+                request_id=_wrap_request_id,
+                response_dict=json.loads(_serialize_content(wrap_resp.content)),
+                input_tokens=_wrap_input,
+                output_tokens=_wrap_output,
+                cache_read_tokens=_wrap_cache_read,
+                cache_write_tokens=_wrap_cache_write,
+                stop_reason=wrap_resp.stop_reason,
+            )
             _wrap_api_meta = {
                 "request_id": _wrap_request_id,
                 "model": foreman_model,
@@ -734,10 +836,14 @@ async def _run_foreman_ai(
                 "cache_write_tokens": _wrap_cache_write,
                 "ts": datetime.now(UTC).isoformat(),
             }
-            wrap_turn_id = await _save_turn(
-                guild_id, user_id, "assistant", wrap_resp.content, api_calls=[_wrap_api_meta]
+            await _save_turn(
+                guild_id,
+                user_id,
+                "assistant",
+                wrap_resp.content,
+                api_calls=[_wrap_api_meta],
+                api_log_id=_wrap_api_log_id,
             )
-            await _update_turn_tokens(wrap_turn_id, _wrap_input, _wrap_output)
             _now = datetime.now(UTC).isoformat()
             for b in wrap_resp.content:
                 if b.type == "text" and b.text.strip():
