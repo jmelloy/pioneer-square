@@ -432,6 +432,46 @@ class TestExecToolsDispatching:
         assert "assigned" in results[0]["content"].lower()
         assert "t-exist1" in results[0]["content"]
 
+    async def test_assign_task_unsupported_tool(self, db_session):
+        insert_guild(db_session, "g-assign-toolcheck")
+        insert_worker(db_session, "g-assign-toolcheck", "w-toolcheck", tools='["claude", "pi"]')
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-assign-toolcheck",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-toolcheck", "description": "Run it", "tool": "codex"},
+                    )
+                ],
+            )
+        content = results[0]["content"]
+        assert "does not support tool" in content
+        assert "codex" in content
+        assert "claude" in content
+        assert "pi" in content
+
+    async def test_assign_task_defaults_to_first_tool(self, db_session):
+        insert_guild(db_session, "g-assign-tooldefault")
+        insert_worker(db_session, "g-assign-tooldefault", "w-tooldefault", tools='["pi", "claude"]')
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-assign-tooldefault",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-tooldefault", "description": "Do something"},
+                    )
+                ],
+            )
+        assert "queued" in results[0]["content"].lower()
+
+        with _sync_session(db_session) as session:
+            task_tool = session.scalar(
+                select(col(Task.tool)).where(col(Task.worker_id) == "w-tooldefault")
+            )
+        assert task_tool == "pi"
+
     async def test_send_followup_task_not_found(self, db_session):
         insert_guild(db_session, "g-followup-missing")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
