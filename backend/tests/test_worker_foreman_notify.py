@@ -256,3 +256,97 @@ def test_task_complete_max_turns_notifies_foreman(client):
     assert "I was working on the migration" in msg, (
         f"Expected lastText snippet in message, got: {msg}"
     )
+
+
+def test_worker_online_fast_reconnect_tags_reconnect(client):
+    """A worker that was already online (fast reconnect) must include
+    reconnect=true in the worker-online foreman trigger so the AI knows not
+    to treat it as a fresh registration."""
+    test_client, db_url = client
+    guild_id = "nfy005"
+    worker_id = "w-nfy005"
+    agent_id = "a-nfy005"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    # Worker already online — simulates a fast reconnect before offline was registered.
+    insert_worker(db_url, guild_id, worker_id, state="online")
+
+    triggered, fake_trigger = _make_trigger_spy()
+
+    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # agent-joined broadcast
+
+            ws.send_json(
+                {
+                    "type": "worker-register",
+                    "workerId": worker_id,
+                    "repos": ["org/repo1"],
+                    "tools": ["claude"],
+                }
+            )
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong
+
+    online = [(e, m) for e, m in triggered if e == "worker-online"]
+    assert online, f"Expected worker-online trigger, got: {triggered}"
+    _event, msg = online[0]
+    assert "reconnect=true" in msg, (
+        f"Expected reconnect=true in message for fast reconnect, got: {msg}"
+    )
+
+
+def test_worker_online_fresh_join_no_reconnect_tag(client):
+    """A brand-new worker (never registered before) must NOT include reconnect=true
+    in the worker-online foreman trigger."""
+    test_client, db_url = client
+    guild_id = "nfy006"
+    worker_id = "w-nfy006"
+    agent_id = "a-nfy006"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    # Worker is inserted as offline to simulate a previously registered but
+    # disconnected worker coming back after the backend marked it offline.
+    insert_worker(db_url, guild_id, worker_id, state="offline")
+
+    triggered, fake_trigger = _make_trigger_spy()
+
+    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # agent-joined broadcast
+
+            ws.send_json(
+                {
+                    "type": "worker-register",
+                    "workerId": worker_id,
+                    "repos": ["org/repo1"],
+                    "tools": ["claude"],
+                }
+            )
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong
+
+    online = [(e, m) for e, m in triggered if e == "worker-online"]
+    assert online, f"Expected worker-online trigger, got: {triggered}"
+    _event, msg = online[0]
+    assert "reconnect=true" not in msg, (
+        f"Expected no reconnect=true for offline→online transition, got: {msg}"
+    )

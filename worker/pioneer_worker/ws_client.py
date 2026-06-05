@@ -40,11 +40,19 @@ class WSClient:
         max_backoff: float = 30.0,
         base_backoff: float = 1.0,
         send_retries: int = 3,
+        ping_interval: float = 60.0,
+        ping_timeout: float = 30.0,
     ) -> None:
         self.url = url
         self.max_backoff = max_backoff
         self.base_backoff = base_backoff
         self.send_retries = max(1, send_retries)
+        # Transport-level ping settings. 60 s interval + 30 s timeout gives a
+        # 90 s window before the websockets library forcibly closes a dead TCP
+        # connection — enough to survive a brief laptop sleep or WiFi handoff
+        # without triggering spurious offline/online churn.
+        self.ping_interval = ping_interval
+        self.ping_timeout = ping_timeout
         self._ws = None
         self._lock = asyncio.Lock()
         # Fired after every successful reconnect (not the initial connect).
@@ -68,7 +76,10 @@ class WSClient:
                 try:
                     logger.info("Connecting to %s (attempt %d)", self.url, attempt + 1)
                     self._ws = await websockets.connect(
-                        self.url, ping_interval=20, ping_timeout=20, max_size=8 * 1024 * 1024
+                        self.url,
+                        ping_interval=self.ping_interval,
+                        ping_timeout=self.ping_timeout,
+                        max_size=8 * 1024 * 1024,
                     )
                     if attempt > 0:
                         logger.info("WebSocket reconnected after %d attempts", attempt + 1)

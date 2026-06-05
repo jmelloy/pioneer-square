@@ -1102,8 +1102,12 @@ class Worker:
         )
         loop.create_task(self._initiate_shutdown(f"signal {sig.name}"))
 
-    # Interval between application-level pings sent to the backend. Three
-    # missed heartbeats (~75s) is enough to trip the backend's 90s sweeper.
+    # Interval between application-level pings sent to the backend.  The
+    # backend sweeper marks a worker offline after WORKER_OFFLINE_AFTER_SECONDS
+    # (default 90s), so three missed heartbeats at 25s = 75s stays safely under
+    # that threshold.  The transport-level ping (WSClient default: 60s interval,
+    # 30s timeout) is intentionally longer — it only exists to close truly dead
+    # TCP connections, not to drive the backend's liveness logic.
     HEARTBEAT_INTERVAL_SECONDS: float = 25.0
 
     async def _heartbeat(self) -> None:
@@ -1114,8 +1118,22 @@ class Worker:
         on application messages. Without this loop a worker that finishes
         all its tasks would go silent and the sweeper would mark it offline
         even though the connection is healthy.
+
+        Fast wake-up recovery: if the underlying socket is already closed when
+        the heartbeat fires (e.g. the host woke from sleep after the transport-
+        level ping timed out), we proactively close it so the messages() loop
+        reconnects on its very next iteration instead of waiting up to another
+        full ping_interval.
         """
+        from .ws_client import _is_open
+
         while not self._shutdown_event.is_set():
+            # Detect a stale socket before attempting to send so the messages()
+            # loop gets a closed socket and reconnects on its next recv().
+            if self.ws._ws is not None and not _is_open(self.ws._ws):
+                logger.info("Heartbeat: detected closed WS socket — closing for reconnect")
+                await self.ws.close()
+
             try:
                 await self._send(
                     {

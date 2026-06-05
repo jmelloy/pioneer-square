@@ -222,6 +222,12 @@ class WSContext:
     joined_agents: set[str] = field(default_factory=set)
     ws_user_id: str | None = None
     guild_pk: int | None = None
+    # Set to True by handle_join when the joining worker was already "online"
+    # in the DB before this connection arrived (i.e. a fast reconnect where the
+    # backend never marked it offline).  handle_worker_register uses this flag
+    # to tag the foreman trigger so the AI can distinguish a reconnect from a
+    # genuine first-time registration.
+    worker_was_online: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +249,18 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     joined_at = datetime.now(UTC)
     is_external_foreman = agent_type == "foreman" and data.get("external") is True
     if not is_external_foreman:
+        if agent_type == "worker" and worker_id:
+            # Check the worker's current DB state *before* the upsert so
+            # handle_worker_register can tag reconnects.  "online" means the
+            # worker reconnected so fast that the backend never marked it
+            # offline — the foreman should not treat this as a brand-new join.
+            prev_state_res = await ctx.db.exec(
+                select(col(Worker.state)).where(
+                    col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk
+                )
+            )
+            ctx.worker_was_online = prev_state_res.one_or_none() == "online"
+
         stmt = pg_insert(Agent).values(
             id=agent_id,
             guild_id=ctx.guild_pk,
@@ -586,10 +604,16 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     )
     agent_count = count_res.one()
     tools_suffix = f" tools={tools_str}" if tools_str else ""
+    # Tag fast reconnects so the foreman AI knows the worker never actually went
+    # offline from the backend's perspective (e.g. brief WiFi blip or laptop
+    # sleep shorter than the ping timeout).  Without this tag, the foreman may
+    # treat the reconnect as a fresh join and re-assign tasks that are still
+    # in flight.
+    reconnect_suffix = " reconnect=true" if ctx.worker_was_online else ""
     await _trigger_foreman(
         ctx.guild_id,
         "worker-online",
-        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}{tools_suffix}",
+        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}{tools_suffix}{reconnect_suffix}",
         task_name=f"foreman.worker-online:{worker_id}",
     )
 

@@ -4,16 +4,19 @@ Verifies that:
   1. _notify_offline() sends a worker-disconnect message to the server.
   2. Worker.run() calls _notify_offline() in its finally block before closing
      the WebSocket, even when the task is cancelled.
+  3. WSClient uses sane ping_interval / ping_timeout defaults.
+  4. _heartbeat detects a closed socket and closes it for fast reconnect.
 """
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pioneer_worker.config import Config
 from pioneer_worker.worker import Worker
+from pioneer_worker.ws_client import WSClient
 
 
 def _make_cfg(**kwargs) -> Config:
@@ -235,3 +238,51 @@ async def test_heartbeat_swallows_send_failures(monkeypatch):
     # Should not raise even though the first send failed.
     await asyncio.wait_for(worker._heartbeat(), timeout=2.0)
     assert calls >= 2, f"Loop should keep going after send failure, got {calls} calls"
+
+
+def test_ws_client_default_ping_settings():
+    """WSClient must default to 60s ping interval and 30s timeout — sane values
+    that survive brief laptop sleeps without triggering spurious reconnects."""
+    client = WSClient("ws://localhost:8000")
+    assert client.ping_interval == 60.0, f"Expected 60s interval, got {client.ping_interval}"
+    assert client.ping_timeout == 30.0, f"Expected 30s timeout, got {client.ping_timeout}"
+
+
+def test_ws_client_configurable_ping_settings():
+    """WSClient must accept custom ping_interval and ping_timeout."""
+    client = WSClient("ws://localhost:8000", ping_interval=120.0, ping_timeout=45.0)
+    assert client.ping_interval == 120.0
+    assert client.ping_timeout == 45.0
+
+
+async def test_heartbeat_closes_stale_socket_on_wake(monkeypatch):
+    """_heartbeat must proactively close a socket that is already dead (e.g.
+    the host woke from sleep after the transport-level ping timed out) so the
+    messages() loop reconnects immediately instead of waiting for the next
+    transport-level ping cycle."""
+    monkeypatch.setattr(Worker, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
+    worker = Worker(_make_cfg())
+
+    # Simulate a stale (closed) socket by setting _ws to a mock with state=CLOSED
+    from websockets.protocol import State
+
+    stale_ws = MagicMock()
+    stale_ws.state = State.CLOSED
+    worker.ws._ws = stale_ws
+
+    close_calls: list[bool] = []
+    orig_close = worker.ws.close
+
+    async def spy_close() -> None:
+        close_calls.append(True)
+        await orig_close()
+
+    worker.ws.close = spy_close
+    worker._send = AsyncMock()
+
+    task = asyncio.create_task(worker._heartbeat())
+    await asyncio.sleep(0.15)
+    worker._shutdown_event.set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert close_calls, "Heartbeat should have called ws.close() on detecting a stale socket"
