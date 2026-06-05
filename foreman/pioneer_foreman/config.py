@@ -43,7 +43,7 @@ class Config:
     history_limit: int = 40
     # Poll settings
     poll_min_interval: int = 60
-    poll_max_interval: int = 3600
+    poll_max_interval: int = 14400
     # Logging
     log_level: str = "INFO"
 
@@ -200,7 +200,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             overrides.get("poll_min_interval", poll_block.get("min_interval", 60))
         ),
         poll_max_interval=int(
-            overrides.get("poll_max_interval", poll_block.get("max_interval", 3600))
+            overrides.get("poll_max_interval", poll_block.get("max_interval", 14400))
         ),
         log_level=log_level.upper(),
         config_path=cfg_path,
