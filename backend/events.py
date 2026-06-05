@@ -57,6 +57,10 @@ _agent_owner_locks: dict[str, asyncio.Lock] = {}
 # WS message or fall back to the embedded run_foreman_ai().
 foreman_connections: dict[str, WebSocket] = {}
 
+# Worker liveness probes currently awaiting a response. Keys are
+# (guild_pk, worker_id); values are the UTC instant the backend sent worker-ping.
+pending_worker_probes: dict[tuple[int, str], datetime] = {}
+
 # Optional broadcast override for the standalone foreman process.
 # When set (to an async callable with the same signature as broadcast), all
 # broadcast() calls are routed through this function instead of the in-process

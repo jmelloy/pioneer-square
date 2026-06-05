@@ -1134,38 +1134,6 @@ class Worker:
         )
         loop.create_task(self._initiate_shutdown(f"signal {sig.name}"))
 
-    # Interval between application-level pings sent to the backend. Three
-    # missed heartbeats (~75s) is enough to trip the backend's 90s sweeper.
-    HEARTBEAT_INTERVAL_SECONDS: float = 25.0
-
-    async def _heartbeat(self) -> None:
-        """Send an application-level ping to the backend on a steady cadence.
-
-        The websockets library handles transport-level ping/pong on its own,
-        but the backend can't see those frames — its liveness tracking runs
-        on application messages. Without this loop a worker that finishes
-        all its tasks would go silent and the sweeper would mark it offline
-        even though the connection is healthy.
-        """
-        while not self._shutdown_event.is_set():
-            try:
-                await self._send(
-                    {
-                        "type": "ping",
-                        "workerId": self.cfg.worker_id,
-                        "timestamp": _now_iso(),
-                    }
-                )
-            except Exception as exc:
-                logger.debug("Heartbeat send failed (ignored): %s", exc)
-            try:
-                await asyncio.wait_for(
-                    self._shutdown_event.wait(), timeout=self.HEARTBEAT_INTERVAL_SECONDS
-                )
-                return  # shutdown event fired
-            except TimeoutError:
-                continue
-
     async def _notify_offline(self) -> None:
         """Send an explicit worker-disconnect message before the WebSocket closes.
 
@@ -1271,13 +1239,12 @@ class Worker:
 
         runners = [asyncio.create_task(self._agent_loop(slot)) for slot in self.agents]
         puller = asyncio.create_task(self._idle_puller())
-        heartbeat = asyncio.create_task(self._heartbeat())
         sweeper = asyncio.create_task(self._worktree_sweeper())
         try:
             # Wait for either: all runners exit (graceful shutdown), or one of
             # the auxiliary tasks crashes (unexpected).
             done, _pending = await asyncio.wait(
-                [listener, puller, heartbeat, sweeper, *runners],
+                [listener, puller, sweeper, *runners],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             # Surface any non-cancellation exception that fired first.
@@ -1298,12 +1265,9 @@ class Worker:
             # Stop the auxiliary tasks; the agent loops drain themselves.
             listener.cancel()
             puller.cancel()
-            heartbeat.cancel()
             sweeper.cancel()
 
-            await asyncio.gather(
-                listener, puller, heartbeat, sweeper, *runners, return_exceptions=True
-            )
+            await asyncio.gather(listener, puller, sweeper, *runners, return_exceptions=True)
 
             if first_exc is not None:
                 raise first_exc
@@ -1319,9 +1283,9 @@ class Worker:
         logger.info("Listener started")
         # Message types safe to process before _join() completes — auth-related
         # messages flow during the pre-join window (claude setup-token), and
-        # heartbeats are protocol-level. Everything else (task assignments,
-        # follow-ups, redirects, etc.) must wait until we've actually joined,
-        # otherwise we'd start work before the backend sees us online.
+        # Everything else (task assignments, follow-ups, redirects, etc.) must
+        # wait until we've actually joined, otherwise we'd start work before
+        # the backend sees us online.
         _PRE_JOIN_ALLOWED = {"pong", "worker-message", "worker-auth-response"}
         async for msg in self.ws.messages():
             mtype = msg.get("type")
@@ -1332,7 +1296,20 @@ class Worker:
                 continue
 
             if mtype == "pong":
-                # Heartbeat reply from the backend; nothing to do.
+                # Generic ping reply from the backend; nothing to do.
+                continue
+
+            if mtype == "worker-ping":
+                target = msg.get("workerId")
+                if target and target != self.cfg.worker_id:
+                    continue
+                await self._send(
+                    {
+                        "type": "worker-pong",
+                        "workerId": self.cfg.worker_id,
+                        "timestamp": _now_iso(),
+                    }
+                )
                 continue
 
             if mtype == "task-assigned":

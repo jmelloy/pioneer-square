@@ -230,9 +230,17 @@ class WSContext:
 
 
 async def handle_ping(ctx: WSContext, data: dict) -> None:
-    """Application-level heartbeat. Reply with pong so the worker can detect a
-    half-open socket too."""
+    """Generic application-level ping used by tests and legacy clients."""
     await send_ws_message(ctx.websocket, PongMsg(timestamp=datetime.now(UTC).isoformat()))
+
+
+async def handle_worker_pong(ctx: WSContext, data: dict) -> None:
+    """Worker liveness probe reply.
+
+    ``routes.websocket._touch_agent`` already refreshed Worker.last_seen before
+    dispatch. The explicit handler keeps this protocol message from falling
+    through to legacy broadcast behaviour.
+    """
 
 
 async def handle_join(ctx: WSContext, data: dict) -> None:
@@ -1007,6 +1015,7 @@ HANDLERS: dict[str, Any] = {
     "terminal-output": handle_terminal_output,
     "worker-register": handle_worker_register,
     "worker-disconnect": handle_worker_disconnect,
+    "worker-pong": handle_worker_pong,
     "task-update": handle_task_update,
     "task-complete": handle_task_complete,
     "task-followup-done": handle_task_followup_done,

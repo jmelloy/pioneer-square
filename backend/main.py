@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from database import AsyncSessionLocal
-from events import agent_owners, broadcast
+from events import agent_owners, broadcast, pending_worker_probes, send_ws_message
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +35,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from util.tasks import spawn
+from ws_types import WorkerPingMsg
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
 # code reads os.environ, so ANTHROPIC_API_KEY etc. are available.
@@ -63,10 +64,14 @@ logger = logging.getLogger(__name__)
 # Liveness / sweeper config
 # ---------------------------------------------------------------------------
 
-# How long an agent/worker can go without sending any WebSocket message before
-# the sweeper marks it offline. Workers send an application-level `ping` every
-# ~25s, so 90s = three missed heartbeats.
+# How long a worker can go without sending any WebSocket message before the
+# sweeper probes it. If the worker does not answer the probe, the next sweep
+# marks it and its agents offline.
 WORKER_OFFLINE_AFTER_SECONDS = float(os.environ.get("WORKER_OFFLINE_AFTER_SECONDS", "90"))
+# How long an unanswered worker-ping is allowed to sit before the worker is
+# considered offline. The sweeper checks this on its normal interval, so the
+# practical delay is this timeout plus up to WORKER_SWEEP_INTERVAL_SECONDS.
+WORKER_PROBE_TIMEOUT_SECONDS = float(os.environ.get("WORKER_PROBE_TIMEOUT_SECONDS", "10"))
 # How often the sweeper task wakes up to look for stale agents.
 WORKER_SWEEP_INTERVAL_SECONDS = float(os.environ.get("WORKER_SWEEP_INTERVAL_SECONDS", "30"))
 
@@ -88,77 +93,136 @@ async def reset_connection_state() -> None:
 
 
 async def _sweep_stale_workers_once() -> int:
-    """One pass of the stale-worker sweep. Returns the total number of agents
-    and zombie workers marked offline. Extracted for direct testing."""
-    cutoff = datetime.now(UTC) - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)
-    stale_agents: list[Any] = []
-    zombie_workers: list[Any] = []
-    agent_cascade_wids: set[str] = set()
+    """One stale-worker sweep pass. Returns workers/agent-only presences marked offline."""
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=WORKER_OFFLINE_AFTER_SECONDS)
+    probe_cutoff = now - timedelta(seconds=WORKER_PROBE_TIMEOUT_SECONDS)
+    workers_marked_offline: list[Any] = []
+    agents_marked_offline: list[Any] = []
     async with AsyncSessionLocal() as db:
-        # Zombie-worker pass runs first so the agent-state guard sees pre-update
-        # states.  A zombie is a worker stuck "online" with a stale last_seen
-        # whose agents are ALL already offline (the WS close handler marked them
-        # offline but failed to flip the Worker row due to the agent_id/worker_id
-        # bug).  Workers that still have any non-offline agent are skipped here
-        # and handled via the agent cascade below.
-        zombie_workers = (
+        stale_workers = (
             await db.exec(
                 select(
                     col(Worker.id),
                     col(Worker.guild_id),
                     col(Guild.guild_id).label("guild_slug"),
+                    col(Worker.last_seen),
                 )
                 .join(Guild, col(Guild.id) == col(Worker.guild_id))
                 .where(col(Worker.state) != "offline")
                 .where(col(Worker.last_seen).isnot(None))
                 .where(col(Worker.last_seen) < cutoff)
-                .where(
-                    ~select(col(Agent.id))
-                    .where(col(Agent.worker_id) == col(Worker.id))
-                    .where(col(Agent.state) != "offline")
-                    .exists()
-                )
             )
         ).all()
 
-        stale_agents = (
+        # Agent rows that do not belong to a worker still use their own timestamp
+        # as the liveness source. Worker-owned agents are taken offline only when
+        # their parent worker fails the active probe below.
+        stale_agent_only_rows = (
             await db.exec(
                 select(
                     col(Agent.id),
                     col(Agent.guild_id),
-                    col(Agent.worker_id),
                     col(Guild.guild_id).label("guild_slug"),
                 )
                 .join(Guild, col(Guild.id) == col(Agent.guild_id))
                 .where(col(Agent.state) != "offline")
+                .where(col(Agent.worker_id).is_(None))
                 .where(col(Agent.last_seen).isnot(None))
                 .where(col(Agent.last_seen) < cutoff)
             )
         ).all()
-        # stale_worker_keys stores (worker_id, guild_id) where guild_id is the
-        # integer FK to guilds.id (not the text slug guild_slug selected above).
-        stale_worker_keys: set[tuple[str, int]] = set()
-        for row in stale_agents:
+
+        for row in stale_agent_only_rows:
             await db.exec(
                 update(Agent)
                 .where(col(Agent.id) == row.id, col(Agent.guild_id) == row.guild_id)
                 .values(state="offline", activity=None, current_task_id=None)
             )
-            if row.worker_id:
-                stale_worker_keys.add((row.worker_id, row.guild_id))
-                agent_cascade_wids.add(row.worker_id)
             agent_owners.pop(row.id, None)
+            agents_marked_offline.append(row)
 
-        for row in zombie_workers:
-            stale_worker_keys.add((row.id, row.guild_id))
+        for row in stale_workers:
+            key = (row.guild_id, row.id)
+            agent_ids = (
+                await db.exec(
+                    select(col(Agent.id)).where(
+                        col(Agent.worker_id) == row.id,
+                        col(Agent.guild_id) == row.guild_id,
+                        col(Agent.state) != "offline",
+                    )
+                )
+            ).all()
+            owner_ws = next(
+                (ws for agent_id in agent_ids if (ws := agent_owners.get(agent_id)) is not None),
+                None,
+            )
+            pending_since = pending_worker_probes.get(key)
+            should_mark_offline = False
 
-        for worker_id, gpk in stale_worker_keys:
+            if owner_ws is None:
+                should_mark_offline = True
+            elif pending_since is not None and pending_since < probe_cutoff:
+                should_mark_offline = True
+            elif pending_since is None:
+                try:
+                    await send_ws_message(
+                        owner_ws,
+                        WorkerPingMsg(workerId=row.id, timestamp=now.isoformat()),
+                    )
+                    pending_worker_probes[key] = now
+                    logger.info(
+                        "Sent liveness probe to worker %s after %.0fs without inbound WS frame"
+                        " (guild=%s)",
+                        row.id,
+                        WORKER_OFFLINE_AFTER_SECONDS,
+                        row.guild_slug,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Worker liveness probe failed for %s (guild=%s); marking offline",
+                        row.id,
+                        row.guild_slug,
+                        exc_info=True,
+                    )
+                    should_mark_offline = True
+
+            if not should_mark_offline:
+                continue
+
+            workers_marked_offline.append(row)
+            pending_worker_probes.pop(key, None)
+            worker_agent_rows = (
+                await db.exec(
+                    select(
+                        col(Agent.id),
+                        col(Agent.guild_id),
+                        col(Guild.guild_id).label("guild_slug"),
+                    )
+                    .join(Guild, col(Guild.id) == col(Agent.guild_id))
+                    .where(
+                        col(Agent.worker_id) == row.id,
+                        col(Agent.guild_id) == row.guild_id,
+                        col(Agent.state) != "offline",
+                    )
+                )
+            ).all()
+            for agent_row in worker_agent_rows:
+                await db.exec(
+                    update(Agent)
+                    .where(col(Agent.id) == agent_row.id, col(Agent.guild_id) == row.guild_id)
+                    .values(state="offline", activity=None, current_task_id=None)
+                )
+                agent_owners.pop(agent_row.id, None)
+                agents_marked_offline.append(agent_row)
+
             await db.exec(
                 update(Worker)
-                .where(col(Worker.id) == worker_id, col(Worker.guild_id) == gpk)
+                .where(col(Worker.id) == row.id, col(Worker.guild_id) == row.guild_id)
                 .values(state="offline")
             )
-        if stale_agents or zombie_workers:
+
+        if agents_marked_offline or workers_marked_offline:
             await db.commit()
 
     async with AsyncSessionLocal() as db:
@@ -222,9 +286,9 @@ async def _sweep_stale_workers_once() -> int:
             WORKER_OFFLINE_AFTER_SECONDS,
         )
 
-    for row in stale_agents:
+    for row in agents_marked_offline:
         logger.warning(
-            "Marking %s offline: no ping in over %.0fs (guild=%s)",
+            "Marking %s offline: no live parent worker or agent frame in over %.0fs (guild=%s)",
             row.id,
             WORKER_OFFLINE_AFTER_SECONDS,
             row.guild_slug,
@@ -233,27 +297,18 @@ async def _sweep_stale_workers_once() -> int:
             row.guild_slug,
             {"type": "agent-state", "agentId": row.id, "state": "offline"},
         )
-    # Log zombie workers not already covered by the per-agent log above.
-    for row in zombie_workers:
-        if row.id not in agent_cascade_wids:
-            logger.warning(
-                "Marking zombie worker %s offline: no ping in over %.0fs,"
-                " no active agents (guild=%s)",
-                row.id,
-                WORKER_OFFLINE_AFTER_SECONDS,
-                row.guild_slug,
-            )
-    return len(stale_agents) + len(zombie_workers)
+    for row in workers_marked_offline:
+        logger.warning(
+            "Marking worker %s offline: no liveness probe response after %.0fs stale (guild=%s)",
+            row.id,
+            WORKER_OFFLINE_AFTER_SECONDS,
+            row.guild_slug,
+        )
+    return len(workers_marked_offline) + len(stale_agent_only_rows)
 
 
 async def _stale_worker_sweeper() -> None:
-    """Background task: mark workers/agents offline if they haven't pinged recently.
-
-    Runs forever (cancelled at app shutdown). The websocket library's own
-    ping/pong catches dead TCP connections, but a worker process could be
-    stuck in a way that still answers protocol pings; the application-level
-    `ping` heartbeat is what this sweeper actually relies on.
-    """
+    """Background task: probe stale workers and mark unresponsive workers offline."""
     logger.info(
         "Stale-worker sweeper started: threshold=%.1fs interval=%.1fs",
         WORKER_OFFLINE_AFTER_SECONDS,
