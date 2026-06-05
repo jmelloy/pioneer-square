@@ -52,11 +52,12 @@ class Guild(SQLModel, table=True):
 
 class Agent(SQLModel, table=True):
     __tablename__ = "agents"  # type: ignore[assignment]
+    __table_args__ = (Index("ix_agents_guild_id_state", "guild_id", "state"),)
 
     id: str = Field(primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
-    worker_id: str | None = Field(default=None, foreign_key="workers.id")
+    worker_id: str | None = Field(default=None, foreign_key="workers.id", index=True)
     name: str
     type: str = Field(default="worker", sa_column_kwargs={"server_default": "'worker'"})
     state: str = Field(default="idle", sa_column_kwargs={"server_default": "'idle'"})
@@ -77,6 +78,7 @@ class Agent(SQLModel, table=True):
 
 class Message(SQLModel, table=True):
     __tablename__ = "messages"  # type: ignore[assignment]
+    __table_args__ = (Index("ix_messages_guild_id_created_at", "guild_id", "created_at"),)
 
     id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -93,6 +95,10 @@ class Message(SQLModel, table=True):
 
 class Worker(SQLModel, table=True):
     __tablename__ = "workers"  # type: ignore[assignment]
+    __table_args__ = (
+        Index("ix_workers_guild_id_created_at", "guild_id", "created_at"),
+        Index("ix_workers_state_last_seen", "state", "last_seen"),
+    )
 
     id: str = Field(primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
@@ -124,10 +130,14 @@ class Worker(SQLModel, table=True):
 
 class Task(SQLModel, table=True):
     __tablename__ = "tasks"  # type: ignore[assignment]
+    __table_args__ = (
+        Index("ix_tasks_guild_id_deleted_at_created_at", "guild_id", "deleted_at", "created_at"),
+        Index("ix_tasks_state", "state"),
+    )
 
     id: str = Field(primary_key=True)
     worker_id: str | None = Field(
-        default=None, foreign_key="workers.id"
+        default=None, foreign_key="workers.id", index=True
     )  # NULL for foreman-owned tasks
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
@@ -202,6 +212,7 @@ class User(SQLModel, table=True):
 
 class GuildMember(SQLModel, table=True):
     __tablename__ = "guild_members"  # type: ignore[assignment]
+    __table_args__ = (Index("ix_guild_members_guild_id_role", "guild_id", "role"),)
 
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id", primary_key=True)
@@ -216,7 +227,7 @@ class TaskLog(SQLModel, table=True):
     __tablename__ = "task_logs"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
-    task_id: str | None = Field(default=None, foreign_key="tasks.id")
+    task_id: str | None = Field(default=None, foreign_key="tasks.id", index=True)
     timestamp: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     line: str
     worker_id: str | None = None
