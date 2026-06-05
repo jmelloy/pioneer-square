@@ -17,8 +17,13 @@ logger = logging.getLogger(__name__)
 MODELS_DEV_URL = "https://models.dev/api.json"
 _CACHE_TTL = 3600  # 1 hour
 
-# Only surface these providers in the UI for now.
-_ALLOWED_PROVIDERS = {"anthropic", "openai", "bedrock"}
+# Only surface Foreman-supported providers in the UI for now. models.dev uses
+# "amazon-bedrock"; the rest of this app expects "bedrock" in config.
+_PROVIDER_ALIASES = {
+    "anthropic": "anthropic",
+    "amazon-bedrock": "bedrock",
+    "bedrock": "bedrock",
+}
 
 # Minimal fallback so the UI always has something to show.
 _FALLBACK_PROVIDERS: list[dict[str, Any]] = [
@@ -32,17 +37,8 @@ _FALLBACK_PROVIDERS: list[dict[str, Any]] = [
         ],
     },
     {
-        "id": "openai",
-        "name": "OpenAI",
-        "models": [
-            {"id": "gpt-4o", "name": "GPT-4o"},
-            {"id": "o4-mini", "name": "o4-mini"},
-            {"id": "gpt-4.1", "name": "GPT-4.1"},
-        ],
-    },
-    {
         "id": "bedrock",
-        "name": "AWS Bedrock",
+        "name": "Amazon Bedrock",
         "models": [
             {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Bedrock)"},
         ],
@@ -57,7 +53,8 @@ def _parse_response(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Convert the models.dev API response into a flat list of provider dicts."""
     providers: list[dict[str, Any]] = []
     for provider_id, entry in data.items():
-        if provider_id not in _ALLOWED_PROVIDERS:
+        normalized_provider_id = _PROVIDER_ALIASES.get(provider_id)
+        if normalized_provider_id is None:
             continue
         if not isinstance(entry, dict):
             continue
@@ -73,7 +70,7 @@ def _parse_response(data: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         providers.append(
             {
-                "id": provider_id,
+                "id": normalized_provider_id,
                 "name": entry.get("name", provider_id),
                 "models": models,
             }

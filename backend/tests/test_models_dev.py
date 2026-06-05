@@ -49,9 +49,9 @@ SAMPLE_RESPONSE = {
             "gemini-2.5-flash": {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
         },
     },
-    "bedrock": {
-        "id": "bedrock",
-        "name": "AWS Bedrock",
+    "amazon-bedrock": {
+        "id": "amazon-bedrock",
+        "name": "Amazon Bedrock",
         "models": {
             "claude-sonnet-4-6": {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Bedrock)"},
         },
@@ -68,8 +68,8 @@ def test_parse_response_basic():
     result = _parse_response(SAMPLE_RESPONSE)
     ids = {p["id"] for p in result}
     assert "anthropic" in ids
-    assert "openai" in ids
     assert "bedrock" in ids
+    assert "openai" not in ids
     # providers with no models are excluded
     assert "empty-provider" not in ids
 
@@ -79,8 +79,14 @@ def test_parse_response_filters_non_allowed_providers():
     ids = {p["id"] for p in result}
     # google is not in the allowed provider list
     assert "google" not in ids
-    # only anthropic, openai, bedrock are allowed
-    assert ids == {"anthropic", "openai", "bedrock"}
+    # only foreman-supported providers are allowed
+    assert ids == {"anthropic", "bedrock"}
+
+
+def test_parse_response_normalizes_amazon_bedrock_provider_id():
+    result = _parse_response(SAMPLE_RESPONSE)
+    bedrock = next(p for p in result if p["id"] == "bedrock")
+    assert bedrock["name"] == "Amazon Bedrock"
 
 
 def test_parse_response_model_fields():
@@ -110,8 +116,8 @@ async def test_fetch_providers_success():
     with patch("util.models_dev.httpx.AsyncClient", return_value=mock_client):
         result = await fetch_providers()
 
-    assert len(result) >= 2
-    assert any(p["id"] == "anthropic" for p in result)
+    ids = {p["id"] for p in result}
+    assert ids == {"anthropic", "bedrock"}
 
 
 async def test_fetch_providers_uses_cache():
@@ -140,6 +146,8 @@ async def test_fetch_providers_fallback_on_error():
     assert result is _FALLBACK_PROVIDERS
     assert len(result) > 0
     assert any(p["id"] == "anthropic" for p in result)
+    assert any(p["id"] == "bedrock" for p in result)
+    assert not any(p["id"] == "openai" for p in result)
 
 
 async def test_fetch_providers_force_refresh():
