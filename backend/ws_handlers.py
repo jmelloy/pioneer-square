@@ -270,10 +270,13 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
             # handle_worker_register can tag reconnects.  "online" means the
             # worker reconnected so fast that the backend never marked it
             # offline — the foreman should not treat this as a brand-new join.
+            # SELECT FOR UPDATE serializes concurrent reconnects from the same
+            # worker so both can't read "online", set worker_was_online=True,
+            # and emit reconnect=true simultaneously (TOCTOU fix).
             prev_state_res = await ctx.db.exec(
-                select(col(Worker.state)).where(
-                    col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk
-                )
+                select(col(Worker.state))
+                .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)
+                .with_for_update()
             )
             ctx.worker_was_online = prev_state_res.one_or_none() == "online"
 
@@ -656,6 +659,11 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
             AgentStateMsg(agentId=agent_id, state="offline"),
         )
     if worker_id:
+        # reset_foreman_poll is intentionally omitted: _trigger_foreman already
+        # wakes the foreman immediately via the worker-offline event. An extra
+        # reset_foreman_poll would restart the poll countdown and could cause
+        # premature task redistribution before a transiently-offline worker
+        # (e.g. laptop sleep) has had a chance to reconnect.
         await _trigger_foreman(
             ctx.guild_id,
             "worker-offline",

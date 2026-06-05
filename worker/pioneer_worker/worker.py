@@ -18,7 +18,7 @@ import httpx
 from . import claude_runner, codex_runner, git_ops, github_pr, pi_runner
 from . import config as config_mod
 from .control_api import ControlServer
-from .ws_client import WSClient
+from .ws_client import WSClient, _is_open
 
 logger = logging.getLogger(__name__)
 
@@ -1125,14 +1125,13 @@ class Worker:
         reconnects on its very next iteration instead of waiting up to another
         full ping_interval.
         """
-        from .ws_client import _is_open
-
         while not self._shutdown_event.is_set():
             # Detect a stale socket before attempting to send so the messages()
             # loop gets a closed socket and reconnects on its next recv().
             if self.ws._ws is not None and not _is_open(self.ws._ws):
                 logger.info("Heartbeat: detected closed WS socket — closing for reconnect")
                 await self.ws.close()
+                continue
 
             try:
                 await self._send(
