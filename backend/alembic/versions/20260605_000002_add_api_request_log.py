@@ -32,8 +32,8 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("model", sa.Text(), nullable=False),
-        # Full JSON of the system blocks sent (serialized list of content block dicts).
-        sa.Column("system", sa.Text(), nullable=True),
+        # Full list of system content blocks sent (matches the list passed to the API).
+        sa.Column("system", sa.JSON(), nullable=True),
         # Full outbound messages array as JSONB.
         sa.Column("messages", sa.JSON(), nullable=True),
         # Full response body from Anthropic as JSONB.

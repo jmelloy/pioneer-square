@@ -283,8 +283,8 @@ class ApiRequestLog(SQLModel, table=True):
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     model: str
-    # Full JSON of the system blocks sent (serialized list of content blocks).
-    system: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    # Full list of system content blocks sent (matches the list passed to the API).
+    system: list | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     # Full outbound messages array.
     messages: list | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     # Full response body from Anthropic (model_dump() of the SDK Message object).

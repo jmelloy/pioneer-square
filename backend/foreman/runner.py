@@ -210,7 +210,7 @@ async def _create_api_request_log(
         log = ApiRequestLog(
             created_at=datetime.now(UTC),
             model=model,
-            system=json.dumps(system_blocks),
+            system=system_blocks,
             messages=messages,
             extra=extra or None,
             task_id=task_id,
@@ -218,7 +218,9 @@ async def _create_api_request_log(
         db.add(log)
         await db.commit()
         await db.refresh(log)
-        return log.id or 0
+        if log.id is None:
+            raise RuntimeError("api_request_log row has no id after commit")
+        return log.id
     finally:
         await db.close()
 
@@ -482,6 +484,7 @@ async def _run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.all()
         ]
+        _task_id: str | None = task_rows[0]["id"] if len(task_rows) == 1 else None
     except Exception:
         await db.close()
         raise
@@ -571,7 +574,8 @@ async def _run_foreman_ai(
                 model=foreman_model,
                 system_blocks=system_blocks,
                 messages=messages,
-                extra={"max_tokens": 1024, "tools": [t["name"] for t in FOREMAN_TOOLS]},
+                extra={"max_tokens": 1024, "tools": FOREMAN_TOOLS},
+                task_id=_task_id,
             )
             _raw = await client.messages.with_raw_response.create(
                 model=foreman_model,
@@ -603,7 +607,7 @@ async def _run_foreman_ai(
             await _complete_api_request_log(
                 api_log_id,
                 request_id=_anthropic_request_id,
-                response_dict=json.loads(_serialize_content(resp.content)),
+                response_dict=resp.model_dump(),
                 input_tokens=_input_tokens,
                 output_tokens=_output_tokens,
                 cache_read_tokens=_cache_read,
@@ -787,9 +791,10 @@ async def _run_foreman_ai(
                 messages=messages,
                 extra={
                     "max_tokens": 1024,
-                    "tools": [t["name"] for t in FOREMAN_TOOLS],
+                    "tools": FOREMAN_TOOLS,
                     "tool_choice": {"type": "none"},
                 },
+                task_id=_task_id,
             )
             _wrap_raw = await client.messages.with_raw_response.create(
                 model=foreman_model,
@@ -820,7 +825,7 @@ async def _run_foreman_ai(
             await _complete_api_request_log(
                 _wrap_api_log_id,
                 request_id=_wrap_request_id,
-                response_dict=json.loads(_serialize_content(wrap_resp.content)),
+                response_dict=wrap_resp.model_dump(),
                 input_tokens=_wrap_input,
                 output_tokens=_wrap_output,
                 cache_read_tokens=_wrap_cache_read,
