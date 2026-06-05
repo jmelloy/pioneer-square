@@ -267,6 +267,41 @@ class GuildKey(SQLModel, table=True):
     private_key_jwk: str | None = None
 
 
+class ApiRequestLog(SQLModel, table=True):
+    """Full record of one Anthropic messages.create() call made by the foreman.
+
+    Created before the call (with model/system/messages/extra) and updated
+    after with request_id, response body, token usage, stop_reason, and
+    completed_at. Linked from foreman_turns.request_id (FK to this table's id).
+    """
+
+    __tablename__ = "api_request_log"  # type: ignore[assignment]
+
+    id: int | None = Field(default=None, primary_key=True)
+    # Anthropic x-request-id response header; set after the call completes.
+    request_id: str | None = Field(default=None, unique=True)
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    completed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    model: str
+    # Full list of system content blocks sent (matches the list passed to the API).
+    system: list | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # Full outbound messages array.
+    messages: list | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # Full response body from Anthropic (model_dump() of the SDK Message object).
+    response: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    stop_reason: str | None = None
+    # Task this API call was made on behalf of (nullable; foreman may handle multiple tasks).
+    task_id: str | None = Field(default=None, foreign_key="tasks.id")
+    # Extra API parameters: max_tokens, tools list, tool_choice, etc.
+    extra: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+
+
 class ForemanTurn(SQLModel, table=True):
     __tablename__ = "foreman_turns"  # type: ignore[assignment]
 
@@ -281,13 +316,19 @@ class ForemanTurn(SQLModel, table=True):
     # For tool_result turns: id of the assistant turn whose tool_use blocks this answers
     parent_id: int | None = Field(default=None, foreign_key="foreman_turns.id")
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    # Token usage from the API response (assistant turns only; NULL for user/system turns)
+    # Token usage — deprecated; use api_request_log for usage going forward.
+    # Kept nullable so existing rows are not affected.
     input_tokens: int | None = None
     output_tokens: int | None = None
     # JSON array of Anthropic API call metadata captured for each messages.create() call.
     # Each entry: {request_id?, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, ts}
     # Set on assistant turns; NULL otherwise.
     api_calls_json: str | None = None
+    # FK to api_request_log.id for the API call that produced this assistant turn.
+    # NULL on user/system turns and on turns predating this column.
+    request_id: int | None = Field(default=None, foreign_key="api_request_log.id")
+    # Task this turn was produced for (mirrors api_request_log.task_id for convenience).
+    task_id: str | None = Field(default=None, foreign_key="tasks.id")
 
 
 class GithubEvent(SQLModel, table=True):
