@@ -37,7 +37,7 @@ class WSClient:
         self,
         url: str,
         *,
-        max_backoff: float = 4 * 3600.0,
+        max_backoff: float = 2 * 3600.0,
         base_backoff: float = 5.0,
         send_retries: int = 3,
     ) -> None:
