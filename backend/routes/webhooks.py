@@ -241,28 +241,40 @@ async def _auto_finalize_task_on_pr_merge(
 ) -> bool:
     """Directly transition a task to 'done' when its PR is merged.
 
-    Skips tasks already in a terminal state. Returns True if finalization occurred.
+    Uses a single conditional UPDATE to prevent TOCTOU races with concurrent
+    state transitions. Returns True if finalization occurred.
     Releases any in-progress lock, discards queued follow-up events, and broadcasts
     TaskFinalizeMsg + TaskUpdateMsg so the frontend reflects the change immediately.
     """
-    result = await db.exec(
-        select(col(Task.worker_id), col(Task.state)).where(
+    # Fetch worker_id for the broadcast; existence check only — state filtering
+    # is delegated entirely to the conditional UPDATE to eliminate SELECT→UPDATE TOCTOU.
+    row_result = await db.exec(
+        select(col(Task.id), col(Task.worker_id)).where(
             col(Task.id) == task_id, col(Task.guild_id) == guild_pk
         )
     )
-    row = result.one_or_none()
-    if not row or row[1] in _WEBHOOK_TERMINAL_STATES:
+    task_row = row_result.one_or_none()
+    if task_row is None:
         return False
+    worker_id = task_row[1]
 
-    worker_id = row[0]
     now = datetime.now(UTC)
     deleted_at = now + timedelta(seconds=_DEFAULT_FINALIZE_TTL_SECS)
 
-    await db.exec(
+    # Single conditional UPDATE — only fires if task is not already in a terminal
+    # state, eliminating the race between two concurrent state transitions.
+    upd = await db.exec(
         update(Task)
-        .where(col(Task.id) == task_id)
+        .where(
+            col(Task.id) == task_id,
+            col(Task.guild_id) == guild_pk,
+            col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
+        )
         .values(state="done", finished_at=now, deleted_at=deleted_at)
     )
+    if (getattr(upd, "rowcount", 0) or 0) == 0:
+        return False
+
     await LockService(db).release(f"task:{task_id}")
     await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
     await db.commit()
@@ -288,27 +300,45 @@ async def _auto_fail_task_on_pr_close(
 ) -> bool:
     """Directly transition a task to 'failed' when its PR is closed without merging.
 
-    Skips tasks already in a terminal state. Returns True if the transition occurred.
-    Releases any in-progress lock and broadcasts TaskUpdateMsg so the frontend updates.
+    Uses a single conditional UPDATE to prevent TOCTOU races with concurrent
+    state transitions. Returns True if the transition occurred.
+    Releases any in-progress lock, discards queued follow-up events, and broadcasts
+    TaskFinalizeMsg + TaskUpdateMsg so the frontend updates.
     """
-    state = await db.exec(
-        select(col(Task.state)).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+    # Fetch worker_id for TaskFinalizeMsg; state filtering is delegated to the
+    # conditional UPDATE to eliminate the SELECT→UPDATE TOCTOU.
+    row_result = await db.exec(
+        select(col(Task.id), col(Task.worker_id)).where(
+            col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+        )
     )
-    current_state = state.one_or_none()
-    if current_state is None or current_state in _WEBHOOK_TERMINAL_STATES:
+    task_row = row_result.one_or_none()
+    if task_row is None:
         return False
+    worker_id = task_row[1]
 
     now = datetime.now(UTC)
     deleted_at = now + timedelta(seconds=_DEFAULT_FAIL_TTL_SECS)
 
-    await db.exec(
+    # Single conditional UPDATE — only fires if task is not already in a terminal
+    # state, eliminating the race between two concurrent state transitions.
+    upd = await db.exec(
         update(Task)
-        .where(col(Task.id) == task_id)
+        .where(
+            col(Task.id) == task_id,
+            col(Task.guild_id) == guild_pk,
+            col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
+        )
         .values(state="failed", finished_at=now, deleted_at=deleted_at)
     )
+    if (getattr(upd, "rowcount", 0) or 0) == 0:
+        return False
+
     await LockService(db).release(f"task:{task_id}")
+    await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
     await db.commit()
 
+    await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
     await broadcast_msg(
         guild_id,
         TaskUpdateMsg(

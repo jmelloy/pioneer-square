@@ -1116,13 +1116,19 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 task_id = inp["task_id"]
                 raw_outcome = inp.get("outcome", "done")
                 outcome = raw_outcome if raw_outcome in ("done", "failed") else "done"
+                if outcome != raw_outcome:
+                    logger.warning(
+                        "finalize_task: unknown outcome %r, defaulting to 'done'", raw_outcome
+                    )
                 deleted_at, err = _resolve_finalize_deleted_at(inp)
                 if err:
                     result_text = err
                     is_error = True
                 else:
                     result = await db.exec(
-                        select(Task).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+                        select(Task)
+                        .where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+                        .with_for_update()
                     )
                     task = result.one_or_none()
                     if not task:
