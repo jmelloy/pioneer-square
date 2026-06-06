@@ -11,6 +11,8 @@ dependencies = []
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.49"]
+# boto3 is already a transitive dep of anthropic[bedrock], but we pin the lower
+# bound explicitly to guarantee the bedrock-runtime client API we rely on.
 bedrock = ["anthropic[bedrock]>=0.49", "boto3>=1.34.0"]
 
 [tool.setuptools]

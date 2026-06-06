@@ -9,7 +9,9 @@ sqlmodel
 alembic
 python-multipart
 anthropic
-boto3>=1.34.0
+# boto3 is NOT installed by default — it is a large optional dependency (~10 MB + botocore).
+# To use FOREMAN_PROVIDER=bedrock, install the extra:  pip install -e ".[bedrock]"
+# (or manually: pip install "boto3>=1.34.0")
 python-dotenv
 docker
 httpx

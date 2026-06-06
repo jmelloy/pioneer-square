@@ -1,1 +1,4 @@
+# Root-level requirements for Bedrock support.
+# Install this alongside backend/requirements.txt when running workers with
+# FOREMAN_PROVIDER=bedrock (i.e. boto3.client("bedrock-runtime") must be importable).
 boto3>=1.34.0
