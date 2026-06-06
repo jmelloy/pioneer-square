@@ -98,6 +98,7 @@ class Foreman:
                 extra_context: str = "",
                 user_id: str | None = None,
                 task_id: str | None = None,
+                required_tool: str | None = None,
                 task_name: str = "foreman.run",
             ) -> None:
                 """Wrapper that enforces the in-flight flag and updates last_action_at."""
@@ -116,6 +117,7 @@ class Foreman:
                         extra_context=extra_context,
                         user_id=user_id,
                         task_id=task_id,
+                        required_tool=required_tool,
                         http=self._http,
                         ws_send=_ws_send,
                         config=self._config,
@@ -134,6 +136,7 @@ class Foreman:
                 user_id = data.get("userId")
                 extra_context = data.get("extraContext", "")
                 trigger_task_id = data.get("taskId")
+                required_tool = data.get("requiredTool")
                 if not guild_id or not human_message:
                     logger.warning("Ignoring malformed foreman-trigger: %s", data)
                     return
@@ -144,6 +147,7 @@ class Foreman:
                         extra_context=extra_context,
                         user_id=user_id,
                         task_id=trigger_task_id,
+                        required_tool=required_tool,
                         task_name=f"foreman.trigger:{guild_id}:{data.get('event', '?')}",
                     ),
                     name=f"foreman.trigger:{guild_id}:{data.get('event', '?')}",

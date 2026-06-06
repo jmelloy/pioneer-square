@@ -426,6 +426,7 @@ async def run_foreman_ai(
     human_message: str,
     extra_context: str = "",
     user_id: str | None = None,
+    required_tool: str | None = None,
 ) -> None:
     """Serialise per-(guild, user) and delegate to ``_run_foreman_ai``.
 
@@ -453,7 +454,7 @@ async def run_foreman_ai(
         return
     await lock.acquire()
     try:
-        await _run_foreman_ai(guild_id, human_message, extra_context, user_id)
+        await _run_foreman_ai(guild_id, human_message, extra_context, user_id, required_tool)
     finally:
         lock.release()
         _guild_locks.pop(lock_key, None)
@@ -464,6 +465,7 @@ async def _run_foreman_ai(
     human_message: str,
     extra_context: str = "",
     user_id: str | None = None,
+    required_tool: str | None = None,
 ):
     """Process a human message (or system escalation) through the Claude foreman AI."""
     if not HAS_ANTHROPIC:
@@ -612,11 +614,14 @@ async def _run_foreman_ai(
                 round_num,
                 len(messages),
             )
+            _tool_choice_kw: dict = {}
+            if required_tool and round_num == 0:
+                _tool_choice_kw = {"tool_choice": {"type": "tool", "name": required_tool}}
             api_log_id = await _create_api_request_log(
                 model=foreman_model,
                 system_blocks=system_blocks,
                 messages=messages,
-                extra={"max_tokens": 1024, "tools": FOREMAN_TOOLS},
+                extra={"max_tokens": 1024, "tools": FOREMAN_TOOLS, **_tool_choice_kw},
                 task_id=_task_id,
             )
             _raw = await client.messages.with_raw_response.create(
@@ -625,6 +630,7 @@ async def _run_foreman_ai(
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]
                 tools=FOREMAN_TOOLS,  # type: ignore[arg-type]
+                **_tool_choice_kw,  # type: ignore[arg-type]
             )
             resp = _raw.parse()
             usage = resp.usage
@@ -699,6 +705,10 @@ async def _run_foreman_ai(
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
+                if required_tool and round_num == 0:
+                    raise RuntimeError(
+                        f"Foreman returned no tool call on round 0 despite required_tool={required_tool!r}"
+                    )
                 break  # end_turn — foreman is done
 
             _record_guild_action(guild_id)
@@ -932,6 +942,8 @@ async def _run_foreman_ai(
             guild_id,
             ChatMsg(from_="foreman", to="user", content=f"Foreman error: {exc}", createdAt=now),
         )
+        if isinstance(exc, RuntimeError) and "required_tool" in str(exc):
+            raise
     finally:
         await db.close()
 

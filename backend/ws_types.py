@@ -261,6 +261,7 @@ class ForemanTriggerMsg(_WS):
     humanMessage: str
     userId: str | None = None
     taskId: str | None = None
+    requiredTool: str | None = None
 
 
 class ForemanRegisteredMsg(_WS):

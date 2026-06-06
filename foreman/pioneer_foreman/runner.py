@@ -112,6 +112,7 @@ async def run_foreman_ai(
     extra_context: str = "",
     user_id: str | None = None,
     task_id: str | None = None,
+    required_tool: str | None = None,
     *,
     http: ForemanHTTPClient,
     ws_send: Callable[[dict], Awaitable[None]],
@@ -210,12 +211,16 @@ async def run_foreman_ai(
                 round_num,
                 len(messages),
             )
+            _tool_choice_kw: dict = {}
+            if required_tool and round_num == 0:
+                _tool_choice_kw = {"tool_choice": {"type": "tool", "name": required_tool}}
             _raw = await client.messages.with_raw_response.create(
                 model=config.effective_model,
                 max_tokens=1024,
                 system=system_blocks,
                 messages=messages,
                 tools=FOREMAN_TOOLS,
+                **_tool_choice_kw,
             )
             resp = _raw.parse()
             usage = resp.usage
@@ -278,6 +283,10 @@ async def run_foreman_ai(
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
+                if required_tool and round_num == 0:
+                    raise RuntimeError(
+                        f"Foreman returned no tool call on round 0 despite required_tool={required_tool!r}"
+                    )
                 break
 
             made_tool_calls = True
@@ -443,6 +452,8 @@ async def run_foreman_ai(
                 "createdAt": now,
             }
         )
+        if isinstance(exc, RuntimeError) and "required_tool" in str(exc):
+            raise
         return False
 
     return made_tool_calls

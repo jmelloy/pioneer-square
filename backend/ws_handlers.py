@@ -146,6 +146,7 @@ async def _trigger_foreman(
     user_id: str | None = None,
     task_id: str | None = None,
     task_name: str = "foreman.unknown",
+    required_tool: str | None = None,
 ) -> None:
     """Send a ``foreman-trigger`` WS message to an external foreman if one is
     connected for this guild; otherwise fall back to the embedded foreman.
@@ -180,6 +181,7 @@ async def _trigger_foreman(
             humanMessage=human_message,
             userId=user_id or None,  # coerce empty string to None
             taskId=task_id or None,  # coerce empty string to None
+            requiredTool=required_tool or None,
         )
         try:
             await send_ws_message(ws, msg)
@@ -198,7 +200,7 @@ async def _trigger_foreman(
             foreman_connections.pop(guild_id, None)
     # Embedded fallback — identical to the pre-Phase-2 behaviour.
     spawn(
-        run_foreman_ai(guild_id, human_message, user_id=user_id),
+        run_foreman_ai(guild_id, human_message, user_id=user_id, required_tool=required_tool),
         name=task_name,
     )
 
@@ -801,6 +803,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         user_id=task_uid,
         task_id=task_id,
         task_name=f"foreman.task-complete:{task_id}",
+        required_tool="send_followup" if stop_reason == "max_turns" else None,
     )
     reset_foreman_poll(ctx.guild_id)
 
@@ -886,6 +889,7 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
         user_id=task_uid,
         task_id=task_id,
         task_name=f"foreman.followup-done:{task_id}",
+        required_tool="send_followup" if stop_reason == "max_turns" else None,
     )
     reset_foreman_poll(ctx.guild_id)
 
