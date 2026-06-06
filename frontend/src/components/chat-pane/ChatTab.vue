@@ -111,12 +111,32 @@ function onSend() {
   const text = inputText.value.trim()
   if (!text) return
 
-  guildStore.sendMessage({
+  const sent = guildStore.sendMessage({
     type: 'chat',
     from: 'user',
     to: 'foreman',
     content: text,
   })
+
+  if (sent) {
+    // Show the message immediately; the server echo will replace this entry when it arrives
+    guildStore.messages.push({
+      type: 'chat',
+      from: 'user',
+      to: 'foreman',
+      content: text,
+      createdAt: new Date().toISOString(),
+      _local: true,
+    })
+  } else {
+    guildStore.messages.push({
+      type: 'chat',
+      from: 'system',
+      content: 'Not connected — message not sent.',
+      createdAt: new Date().toISOString(),
+    })
+  }
+
   inputText.value = ''
 }
 
