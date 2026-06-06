@@ -71,15 +71,11 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { useGuildStore } from '../../stores/guild'
-import { useAgentsStore } from '../../stores/agents'
 import { formatClock } from '../../utils/format'
 import { useChatGrouping, isToolUseGroup } from '../../composables/useChatGrouping'
-import type { ChatMessage, WSInbound } from '../../types'
+import type { ChatMessage } from '../../types'
 
 const guildStore = useGuildStore()
-const agentsStore = useAgentsStore()
-
-const ISSUE_PATTERN = /Work on issue #(\d+) in ([^:]+): "(.+)"/
 
 const inputText = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
@@ -132,33 +128,6 @@ function onSend() {
       createdAt: new Date().toISOString(),
       _local: true,
     })
-
-    if (ISSUE_PATTERN.test(text)) {
-      const worker = agentsStore.firstIdleWorker()
-      if (!worker) {
-        guildStore.messages.push({
-          type: 'chat',
-          from: 'system',
-          content: 'No idle worker available. Deploy a worker first.',
-          createdAt: new Date().toISOString(),
-        })
-      } else {
-        // Listen for the foreman's task-assigned event to confirm the assignment
-        const handler = (data: WSInbound) => {
-          if (data.type === 'task-assigned') {
-            guildStore.messages.push({
-              type: 'chat',
-              from: 'system',
-              content: `Task assigned to ${agentsStore.workerDisplayName(data.workerId)}`,
-              createdAt: new Date().toISOString(),
-            })
-            guildStore.removeMessageHandler(handler)
-          }
-        }
-        guildStore.addMessageHandler(handler)
-        setTimeout(() => guildStore.removeMessageHandler(handler), 30000)
-      }
-    }
   } else {
     guildStore.messages.push({
       type: 'chat',
