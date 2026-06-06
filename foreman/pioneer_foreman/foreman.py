@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING
 
 import websockets
@@ -24,6 +25,16 @@ class Foreman:
     def __init__(self, config: Config):
         self._config = config
         self._http: ForemanHTTPClient | None = None
+        # In-flight flag: True while a foreman run coroutine is executing.
+        # Checked before spawning a new trigger run or poll run so we never
+        # have two concurrent runs for the same guild.
+        self._in_flight: bool = False
+        # Monotonic timestamp of the last run that made at least one tool call.
+        # Used to decide whether to reset the poll backoff.
+        self._last_action_at: float = 0.0
+        # Current poll interval in seconds.  Reset to poll_min_interval when
+        # the foreman makes tool calls; otherwise advanced exponentially each tick.
+        self._poll_interval: int = config.poll_min_interval
 
     async def run(self) -> None:
         """Connect to the backend and handle triggers until stopped."""
@@ -80,6 +91,43 @@ class Foreman:
                 except Exception as exc:
                     logger.warning("_ws_send failed: %s", exc)
 
+            async def _run_foreman(
+                guild_id: str,
+                human_message: str,
+                *,
+                extra_context: str = "",
+                user_id: str | None = None,
+                task_id: str | None = None,
+                task_name: str = "foreman.run",
+            ) -> None:
+                """Wrapper that enforces the in-flight flag and updates last_action_at."""
+                if self._in_flight:
+                    logger.info(
+                        "guild=%s %s: dropped — run already in-flight",
+                        guild_id,
+                        task_name,
+                    )
+                    return
+                self._in_flight = True
+                try:
+                    made_calls = await run_foreman_ai(
+                        guild_id,
+                        human_message,
+                        extra_context=extra_context,
+                        user_id=user_id,
+                        task_id=task_id,
+                        http=self._http,
+                        ws_send=_ws_send,
+                        config=self._config,
+                    )
+                    if made_calls:
+                        self._last_action_at = time.monotonic()
+                        self._poll_interval = self._config.poll_min_interval
+                except Exception:
+                    logger.exception("guild=%s %s: unhandled error", guild_id, task_name)
+                finally:
+                    self._in_flight = False
+
             async def _handle_trigger(data: dict) -> None:
                 guild_id = data.get("guildId", "")
                 human_message = data.get("humanMessage", "")
@@ -90,25 +138,25 @@ class Foreman:
                     logger.warning("Ignoring malformed foreman-trigger: %s", data)
                     return
                 asyncio.create_task(
-                    run_foreman_ai(
+                    _run_foreman(
                         guild_id,
                         human_message,
                         extra_context=extra_context,
                         user_id=user_id,
                         task_id=trigger_task_id,
-                        http=self._http,
-                        ws_send=_ws_send,
-                        config=self._config,
+                        task_name=f"foreman.trigger:{guild_id}:{data.get('event', '?')}",
                     ),
                     name=f"foreman.trigger:{guild_id}:{data.get('event', '?')}",
                 )
 
             async def _poll_loop() -> None:
                 """Background poll — check active tasks periodically."""
-                interval = self._config.poll_min_interval
                 while True:
+                    # Capture the sleep duration so we can detect if a run reset
+                    # self._poll_interval during the sleep.
+                    sleep_duration = self._poll_interval
                     try:
-                        await asyncio.sleep(interval)
+                        await asyncio.sleep(sleep_duration)
                     except asyncio.CancelledError:
                         return
 
@@ -120,30 +168,33 @@ class Foreman:
                             if t.get("state") not in ("done", "failed", "cancelled")
                         ]
                         n = len(active)
-                        next_interval = min(interval * 2, self._config.poll_max_interval)
 
-                        if active:
+                        # Advance the interval for the next tick.  If a triggered run
+                        # reset self._poll_interval to poll_min_interval during our
+                        # sleep, that value will be smaller than sleep_duration, so
+                        # we advance from the reset value (not from sleep_duration).
+                        base = min(self._poll_interval, sleep_duration)
+                        self._poll_interval = min(base * 2, self._config.poll_max_interval)
+
+                        if active and not self._in_flight:
                             task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active)
                             msg = (
                                 f"[periodic-check] Automated status poll — {n} non-terminal "
                                 f"task(s): {task_summary}. Check whether any are stalled."
                             )
                             asyncio.create_task(
-                                run_foreman_ai(
+                                _run_foreman(
                                     self._config.guild_id,
                                     msg,
-                                    http=self._http,
-                                    ws_send=_ws_send,
-                                    config=self._config,
+                                    task_name=f"foreman.poll:{self._config.guild_id}",
                                 ),
                                 name=f"foreman.poll:{self._config.guild_id}",
                             )
 
-                        interval = next_interval
                         await _ws_send(
                             {
                                 "type": "foreman-poll-status",
-                                "nextCheckIn": interval,
+                                "nextCheckIn": self._poll_interval,
                             }
                         )
                     except asyncio.CancelledError:

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk
@@ -58,6 +59,22 @@ _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 # memory bounded and avoids stale snapshots piling up under load.
 # Entries are popped in the finally block after each run so the dict stays small.
 _guild_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
+
+# Monotonic timestamp (time.monotonic()) of the last foreman run that made at
+# least one tool call, keyed by guild_id.  Used by reset_foreman_poll to decide
+# whether to reset the backoff: only reset when the foreman was recently active.
+_guild_last_action_at: dict[str, float] = {}
+
+
+def _record_guild_action(guild_id: str) -> None:
+    """Record that the foreman made tool calls for *guild_id* right now."""
+    _guild_last_action_at[guild_id] = time.monotonic()
+
+
+def _guild_active_recently(guild_id: str) -> bool:
+    """Return True if the foreman made tool calls within the last POLL_MIN_SECS."""
+    return (time.monotonic() - _guild_last_action_at.get(guild_id, 0.0)) <= POLL_MIN_SECS
+
 
 # Module-level client — reused across calls so the underlying httpx connection
 # pool isn't thrown away every invocation. Lazily initialised so import works
@@ -340,16 +357,41 @@ async def _poll_loop(guild_id: str) -> None:
 
 
 def reset_foreman_poll(guild_id: str) -> None:
-    """Cancel any running poll loop for this guild and start a fresh one at POLL_MIN_SECS.
+    """Ensure a poll loop is running for this guild, resetting the backoff only when appropriate.
 
-    Call whenever a significant event occurs (human message, worker state change,
-    task transition) to reset the backoff so the next check happens in 1 minute.
+    The backoff is only reset to POLL_MIN_SECS when the foreman was recently
+    active (made at least one tool call within the last POLL_MIN_SECS seconds).
+    If the foreman is idle, the existing loop is left undisturbed so the interval
+    continues to grow — spurious events from worker completions/state changes will
+    not spam the Claude API by repeatedly resetting the timer to 60 s.
+
+    If a foreman run is already in-flight for this guild, the call is a no-op:
+    the in-flight run was already triggered by _trigger_foreman and the poll loop
+    will re-fire on its next tick anyway.
     """
-    old = _poll_tasks.pop(guild_id, None)
-    if old and not old.done():
-        old.cancel()
-    task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
-    _poll_tasks[guild_id] = task
+    # Debounce: any in-flight run for this guild (regardless of user_id) means we
+    # skip the reset entirely.  The run was already dispatched; another timer reset
+    # would be wasteful and could mask the first run's backoff contribution.
+    in_flight = any(k[0] == guild_id and lock.locked() for k, lock in _guild_locks.items())
+    if in_flight:
+        logger.debug("guild=%s reset_foreman_poll: run in-flight, skipping timer reset", guild_id)
+        return
+
+    if _guild_active_recently(guild_id):
+        # Foreman was active recently — cancel and restart at the minimum interval
+        # so the next check happens in POLL_MIN_SECS.
+        old = _poll_tasks.pop(guild_id, None)
+        if old and not old.done():
+            old.cancel()
+        task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
+        _poll_tasks[guild_id] = task
+    else:
+        # Foreman is idle — only start a loop if none exists; do not interrupt
+        # the current loop's sleep so the backoff continues to grow naturally.
+        existing = _poll_tasks.get(guild_id)
+        if existing is None or existing.done():
+            task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
+            _poll_tasks[guild_id] = task
 
 
 async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
@@ -658,6 +700,8 @@ async def _run_foreman_ai(
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
                 break  # end_turn — foreman is done
+
+            _record_guild_action(guild_id)
 
             # Broadcast tool-use events so the frontend chat shows them live
             for tu in tool_uses:
