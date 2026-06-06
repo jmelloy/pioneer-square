@@ -505,9 +505,9 @@ class TestExecToolsDispatching:
                 ],
             )
         assert "t-flwup-tool" in results[0]["content"]
-        followup_msgs = [m for m in broadcast_calls if getattr(m, "type", None) == "task-followup"]
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
         assert len(followup_msgs) == 1
-        assert followup_msgs[0].tool == "pi"
+        assert followup_msgs[0]["tool"] == "pi"
 
     async def test_send_followup_task_not_found(self, db_session):
         insert_guild(db_session, "g-followup-missing")
