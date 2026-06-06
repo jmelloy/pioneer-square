@@ -191,6 +191,38 @@ class TestBuildSystemPrompt:
         assert workers in prompt
         assert "No workers are currently online" not in prompt
 
+    def test_review_phase_dispatched_as_worker_task(self):
+        """Prompt must describe full reviews as worker tasks (phase='review'), not foreman-only."""
+        prompt = build_system_prompt("[]", "[]")
+        # Worker-based review is the primary path
+        assert "phase='review'" in prompt or 'phase="review"' in prompt
+        assert "assign_task" in prompt
+        # Standard worker review instructions must appear
+        assert "gh pr review" in prompt
+        assert "Do NOT commit" in prompt or "Do NOT open a new PR" in prompt
+
+    def test_review_prompt_forbids_new_pr_from_review_task(self):
+        """Prompt must explicitly instruct workers not to open a new PR for reviews."""
+        prompt = build_system_prompt("[]", "[]")
+        assert "Do NOT open a new PR" in prompt
+
+    def test_review_prompt_no_blanket_never_assign_worker(self):
+        """Old blanket 'NEVER assign a worker to review a PR' rule must be gone."""
+        prompt = build_system_prompt("[]", "[]")
+        assert "NEVER assign a worker to review a PR" not in prompt
+
+    def test_review_pr_internal_described_as_fallback(self):
+        """review_pr_internal must be positioned as shallow/fallback, not the primary path."""
+        from foreman.prompt import FOREMAN_SYSTEM
+
+        assert "shallow" in FOREMAN_SYSTEM or "fallback" in FOREMAN_SYSTEM
+
+    def test_review_task_assign_requires_parent_task_id(self):
+        """Prompt must instruct Foreman to pass parent_task_id when dispatching review sub-tasks."""
+        from foreman.prompt import FOREMAN_SYSTEM
+
+        assert "parent_task_id" in FOREMAN_SYSTEM
+
 
 # ---------------------------------------------------------------------------
 # 1b. _fetch_online_workers (filters workers by state=='online')

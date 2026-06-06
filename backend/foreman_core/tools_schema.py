@@ -43,9 +43,11 @@ FOREMAN_TOOLS = [
             "— do NOT open a PR for a document, spec, or outline. "
             "Pass task_id (from create_task) to assign that existing task to a worker instead "
             "of creating a duplicate — this is the preferred flow. "
-            "WARNING: do NOT use assign_task to perform a PR code review. Workers always "
-            "end by committing and opening a new PR — they cannot post GitHub PR review "
-            "comments. For PR reviews use review_pr_internal or review_pr instead."
+            "For review-phase tasks (phase='review'), include explicit instructions telling the "
+            "worker to post findings via 'gh pr review' and NOT to commit or open a new PR — "
+            "the worker runtime injects standard review guardrails automatically. "
+            "For shallow/fallback reviews without dispatching a worker, use review_pr_internal "
+            "or review_pr instead."
         ),
         "input_schema": {
             "type": "object",
@@ -82,7 +84,13 @@ FOREMAN_TOOLS = [
                 },
                 "parent_task_id": {
                     "type": "string",
-                    "description": "Foreman task ID this worker task belongs to (optional, ignored if task_id provided).",
+                    "description": (
+                        "Foreman task ID of the parent work item this sub-task belongs to. "
+                        "Set this when the review or sub-task is spawned in the context of an existing "
+                        "piece of work (e.g. assigning a review task for a PR that was opened by a "
+                        "parent execute task). Populates the DB hierarchy so the relationship is "
+                        "visible in the sidebar. Ignored when task_id is provided."
+                    ),
                 },
                 "phase": {
                     "type": "string",
@@ -411,13 +419,15 @@ FOREMAN_TOOLS = [
     {
         "name": "review_pr",
         "description": (
-            "Request an automated code review via the EXTERNAL code-review-agent MCP server "
+            "Request a shallow automated code review via the EXTERNAL code-review-agent MCP server "
             "at agent.meyers.life (override with REVIEWER_AGENT_URL env var). "
             "The remote agent fetches the PR diff, runs a Claude-powered review, and posts "
             "the result as a GitHub PR review (APPROVE / REQUEST_CHANGES / COMMENT with "
-            "inline comments). This is the CORRECT way to review a PR — findings are posted "
-            "as review comments on the original PR, never as a new PR. "
-            "Use this when you want a specialised external reviewer. "
+            "inline comments). Findings are posted as review comments on the original PR, never "
+            "as a new PR. "
+            "Use this for a quick external review when no worker is available, or as a fallback. "
+            "For a full review that checks out the branch and runs tests/lint, use "
+            "create_task(phase='review') + assign_task instead. "
             "For a self-contained internal review without any external dependency, "
             "use review_pr_internal instead."
         ),
@@ -437,16 +447,17 @@ FOREMAN_TOOLS = [
     {
         "name": "review_pr_internal",
         "description": (
-            "Perform an internal agent-driven code review of a GitHub pull request "
-            "without calling any external service. "
+            "Perform a shallow internal code review of a GitHub pull request without calling "
+            "any external service or dispatching a worker. "
             "Fetches the PR diff directly from the GitHub API, uses the Foreman AI to "
             "analyse it, then posts a GitHub PR review with a 3–5 bullet-point summary "
             "and up to 5 inline comments on specific lines. "
             "Supports action values APPROVE, REQUEST_CHANGES, or COMMENT (default COMMENT). "
-            "This is the CORRECT way to review a PR — findings are posted as review "
-            "comments on the original PR via the GitHub Reviews API, never as a new PR. "
-            "Use this instead of review_pr when you want a quick review with no external "
-            "dependency, or when agent.meyers.life is unavailable."
+            "Findings are posted as review comments on the original PR via the GitHub Reviews "
+            "API, never as a new PR. "
+            "Use this for a quick diff-only review when no worker is available, or when "
+            "agent.meyers.life is unavailable. For a full review that checks out the branch "
+            "and runs tests/lint, use create_task(phase='review') + assign_task instead."
         ),
         "input_schema": {
             "type": "object",
