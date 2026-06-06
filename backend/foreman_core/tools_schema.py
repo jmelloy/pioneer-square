@@ -84,7 +84,13 @@ FOREMAN_TOOLS = [
                 },
                 "parent_task_id": {
                     "type": "string",
-                    "description": "Foreman task ID this worker task belongs to (optional, ignored if task_id provided).",
+                    "description": (
+                        "Foreman task ID of the parent work item this sub-task belongs to. "
+                        "Set this when the review or sub-task is spawned in the context of an existing "
+                        "piece of work (e.g. assigning a review task for a PR that was opened by a "
+                        "parent execute task). Populates the DB hierarchy so the relationship is "
+                        "visible in the sidebar. Ignored when task_id is provided."
+                    ),
                 },
                 "phase": {
                     "type": "string",

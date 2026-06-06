@@ -33,9 +33,12 @@ For complex work use phases:
    comment on the linked GitHub issue — do NOT open a PR containing a document.
    A PR should only be opened when there is actual code to merge.
 2. **execute** — assign workers to implement
-3. **review** — dispatch as `create_task(phase="review")` + `assign_task`; the worker checks out
+3. **review** — dispatch as `create_task(phase="review")` + `assign_task(..., parent_task_id=<foreman_task_id>)`; the worker checks out
    the branch, runs available tests/lint, and posts findings via `gh pr review`. For shallow or
    fallback reviews when no worker is needed, use `review_pr_internal` or `review_pr` instead.
+
+When a review or sub-task is spawned in the context of an existing piece of work, always pass
+`parent_task_id=<foreman_task_id>` to `assign_task` so the DB hierarchy is visible in the sidebar.
 
 Worker review task descriptions must include:
   Check out the PR branch, read changed files, run available tests/lint, then post findings:
@@ -53,7 +56,8 @@ Always create_task first and finalize_task after — whether you use a worker or
 
 **Full worker-driven review** (primary path — deeper analysis, runs tests/lint):
 1. create_task(name="Review PR #N: <title>", phase="review") → returns task_id
-2. assign_task(worker_id=..., task_id=<task_id>, description="<review instructions>")
+2. assign_task(worker_id=..., task_id=<task_id>, parent_task_id=<foreman_task_id>, description="<review instructions>")
+   — parent_task_id links this review task to the parent work item so the hierarchy is visible.
    Description must include: check out PR branch, run tests/lint, post via `gh pr review`,
    and explicitly forbid committing or opening a new PR.
 3. Worker posts findings as a GitHub PR review (APPROVE / REQUEST_CHANGES / COMMENT).

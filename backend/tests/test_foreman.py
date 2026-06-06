@@ -217,6 +217,12 @@ class TestBuildSystemPrompt:
 
         assert "shallow" in FOREMAN_SYSTEM or "fallback" in FOREMAN_SYSTEM
 
+    def test_review_task_assign_requires_parent_task_id(self):
+        """Prompt must instruct Foreman to pass parent_task_id when dispatching review sub-tasks."""
+        from foreman.prompt import FOREMAN_SYSTEM
+
+        assert "parent_task_id" in FOREMAN_SYSTEM
+
 
 # ---------------------------------------------------------------------------
 # 1b. _fetch_online_workers (filters workers by state=='online')
