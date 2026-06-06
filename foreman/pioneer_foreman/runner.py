@@ -116,12 +116,15 @@ async def run_foreman_ai(
     http: ForemanHTTPClient,
     ws_send: Callable[[dict], Awaitable[None]],
     config: Config,
-) -> None:
+) -> bool:
     """Process a human message (or system escalation) through the Claude foreman AI.
 
     Standalone version — uses REST for state/history, WS for broadcasts.
     ``task_id`` must be passed explicitly by the caller; it is not inferred from
     guild state so there is no ambiguity when multiple tasks are active.
+
+    Returns True if the foreman made at least one tool call, False otherwise.
+    Callers use this to decide whether to reset the poll backoff.
     """
     from .tools import FOREMAN_TOOLS, exec_tools
 
@@ -136,7 +139,7 @@ async def run_foreman_ai(
                 "createdAt": now,
             }
         )
-        return
+        return False
 
     # Fetch guild state
     state = await http.get_state()
@@ -149,6 +152,7 @@ async def run_foreman_ai(
     if not user_id:
         user_id = guild_data.get("owner_user_id") or guild_id
 
+    made_tool_calls = False
     try:
         workers_block = json.dumps(
             [
@@ -275,6 +279,8 @@ async def run_foreman_ai(
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
                 break
+
+            made_tool_calls = True
 
             for tu in tool_uses:
                 await ws_send(
@@ -437,3 +443,6 @@ async def run_foreman_ai(
                 "createdAt": now,
             }
         )
+        return False
+
+    return made_tool_calls
