@@ -31,6 +31,7 @@ python-dotenv>=1.0
 # ── Amazon Bedrock ────────────────────────────────────────────────────────────
 # Enabled via FOREMAN_PROVIDER=bedrock. Requires AWS credentials in env /
 # IAM role and Bedrock model access enabled in your AWS account.
+boto3>=1.34.0
 
 # ── Development / testing ─────────────────────────────────────────────────────
 # pytest>=8.0

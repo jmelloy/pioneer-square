@@ -11,7 +11,7 @@ dependencies = []
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.49"]
-bedrock = ["anthropic[bedrock]>=0.49"]
+bedrock = ["anthropic[bedrock]>=0.49", "boto3>=1.34.0"]
 
 [tool.setuptools]
 packages = ["backend", "backend.foreman_core"]

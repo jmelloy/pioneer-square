@@ -9,6 +9,7 @@ sqlmodel
 alembic
 python-multipart
 anthropic
+boto3>=1.34.0
 python-dotenv
 docker
 httpx
