@@ -474,6 +474,41 @@ class TestExecToolsDispatching:
             )
         assert task_tool == "pi"
 
+    async def test_send_followup_defaults_to_first_worker_tool(self, db_session):
+        insert_guild(db_session, "g-followup-tooldefault")
+        insert_worker(
+            db_session, "g-followup-tooldefault", "w-flwup-tool", tools='["pi", "claude"]'
+        )
+        _insert_agent(db_session, "g-followup-tooldefault", "w-flwup-tool", "a-flwup-tool")
+        # Insert task with empty tool so the falsy fallback triggers
+        insert_task(
+            db_session,
+            "g-followup-tooldefault",
+            "t-flwup-tool",
+            worker_id="w-flwup-tool",
+            tool="",
+            branch="claude/test-tool-branch",
+        )
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-followup-tooldefault",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {"task_id": "t-flwup-tool", "instructions": "Continue work"},
+                    )
+                ],
+            )
+        assert "t-flwup-tool" in results[0]["content"]
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 1
+        assert followup_msgs[0]["tool"] == "pi"
+
     async def test_send_followup_task_not_found(self, db_session):
         insert_guild(db_session, "g-followup-missing")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
