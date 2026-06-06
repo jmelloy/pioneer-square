@@ -63,6 +63,7 @@ def _make_trigger_spy():
         user_id: str | None = None,
         task_id: str | None = None,
         task_name: str = "",
+        required_tool: str | None = None,
     ) -> None:
         triggered.append((event, msg))
 
