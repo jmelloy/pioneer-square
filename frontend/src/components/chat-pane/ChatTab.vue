@@ -71,21 +71,17 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import { renderMarkdown } from '../../utils/markdown'
 import { useGuildStore } from '../../stores/guild'
-import { useAgentsStore } from '../../stores/agents'
 import { formatClock } from '../../utils/format'
 import { useChatGrouping, isToolUseGroup } from '../../composables/useChatGrouping'
 import type { ChatMessage } from '../../types'
 
 const guildStore = useGuildStore()
-const agentsStore = useAgentsStore()
 
 const inputText = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
 const messages = computed(() => guildStore.messages)
 const groupedMessages = useChatGrouping(messages)
-
-const ISSUE_PATTERN = /Work on issue #(\d+) in ([^:]+): "(.+)"/
 
 function msgSender(msg: ChatMessage): string {
   return (msg.from || msg.from_agent || 'unknown') as string
@@ -111,55 +107,37 @@ function senderLabel(msg: ChatMessage): string {
 
 const formatTime = (iso?: string) => formatClock(iso)
 
-async function onSend() {
+function onSend() {
   const text = inputText.value.trim()
   if (!text) return
 
-  guildStore.sendMessage({
+  const sent = guildStore.sendMessage({
     type: 'chat',
     from: 'user',
     to: 'foreman',
     content: text,
   })
-  inputText.value = ''
 
-  const match = text.match(ISSUE_PATTERN)
-  if (match) {
-    const [, issueNum, repoName] = match
-    const worker = agentsStore.firstIdleWorker()
-    if (worker) {
-      try {
-        await agentsStore.assignTask(worker.id, {
-          description: text,
-          issueNumber: parseInt(issueNum, 10),
-          issueRepo: repoName.trim(),
-        })
-        guildStore.messages.push({
-          type: 'chat',
-          from: 'system',
-          to: 'user',
-          content: `Task assigned to ${worker.name}`,
-          createdAt: new Date().toISOString(),
-        })
-      } catch (e: unknown) {
-        guildStore.messages.push({
-          type: 'chat',
-          from: 'system',
-          to: 'user',
-          content: `Could not assign task: ${e instanceof Error ? e.message : String(e)}`,
-          createdAt: new Date().toISOString(),
-        })
-      }
-    } else {
-      guildStore.messages.push({
-        type: 'chat',
-        from: 'system',
-        to: 'user',
-        content: 'No idle worker available. Deploy a worker first.',
-        createdAt: new Date().toISOString(),
-      })
-    }
+  if (sent) {
+    // Show the message immediately; the server echo will replace this entry when it arrives
+    guildStore.messages.push({
+      type: 'chat',
+      from: 'user',
+      to: 'foreman',
+      content: text,
+      createdAt: new Date().toISOString(),
+      _local: true,
+    })
+  } else {
+    guildStore.messages.push({
+      type: 'chat',
+      from: 'system',
+      content: 'Not connected — message not sent.',
+      createdAt: new Date().toISOString(),
+    })
   }
+
+  inputText.value = ''
 }
 
 defineExpose({

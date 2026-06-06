@@ -119,7 +119,15 @@ export const useGuildStore = defineStore('guild', () => {
         if (data.type === 'chat') {
           const chatMsg = data as ChatMessage
           if ((chatMsg.from || chatMsg.from_agent) !== 'github') {
-            messages.value.push(chatMsg)
+            // Replace any matching optimistic local entry instead of duplicating
+            const localIdx = messages.value.findIndex(
+              (m) => m._local && m.from === chatMsg.from && m.content === chatMsg.content,
+            )
+            if (localIdx !== -1) {
+              messages.value.splice(localIdx, 1, chatMsg)
+            } else {
+              messages.value.push(chatMsg)
+            }
           }
         }
         if (data.type === 'guild-updated') {
