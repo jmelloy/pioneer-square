@@ -98,26 +98,43 @@ def _apply_runner_patches(stack: ExitStack, client_mock=None, exec_tools_mock=No
 
     stack.enter_context(patch("foreman.runner._get_anthropic_client", return_value=client_mock))
     stack.enter_context(patch("foreman.runner.get_foreman_model", return_value="claude-test"))
-    stack.enter_context(patch("foreman.runner._load_foreman_config", new=AsyncMock(return_value={})))
-    stack.enter_context(patch("foreman.runner._get_guild_user_id", new=AsyncMock(return_value="user-1")))
+    stack.enter_context(
+        patch("foreman.runner._load_foreman_config", new=AsyncMock(return_value={}))
+    )
+    stack.enter_context(
+        patch("foreman.runner._get_guild_user_id", new=AsyncMock(return_value="user-1"))
+    )
     stack.enter_context(patch("foreman.runner.get_db", new=AsyncMock(return_value=db)))
     stack.enter_context(patch("foreman.runner.get_guild_pk", new=AsyncMock(return_value=1)))
-    stack.enter_context(patch("foreman.runner._fetch_online_workers", new=AsyncMock(return_value=[])))
-    stack.enter_context(patch("foreman.runner._load_history", new=AsyncMock(return_value=[
-        {"role": "user", "content": "test message"}
-    ])))
+    stack.enter_context(
+        patch("foreman.runner._fetch_online_workers", new=AsyncMock(return_value=[]))
+    )
+    stack.enter_context(
+        patch(
+            "foreman.runner._load_history",
+            new=AsyncMock(return_value=[{"role": "user", "content": "test message"}]),
+        )
+    )
     stack.enter_context(patch("foreman.runner._save_turn", new=AsyncMock(return_value=1)))
-    stack.enter_context(patch("foreman.runner._create_api_request_log", new=AsyncMock(return_value=42)))
+    stack.enter_context(
+        patch("foreman.runner._create_api_request_log", new=AsyncMock(return_value=42))
+    )
     stack.enter_context(patch("foreman.runner._complete_api_request_log", new=AsyncMock()))
     stack.enter_context(patch("foreman.runner.broadcast_msg", new=AsyncMock()))
     stack.enter_context(patch("foreman.runner.prune_history", side_effect=lambda m: m))
-    stack.enter_context(patch("foreman.runner.strip_orphaned_tool_results", side_effect=lambda m: m))
+    stack.enter_context(
+        patch("foreman.runner.strip_orphaned_tool_results", side_effect=lambda m: m)
+    )
     stack.enter_context(patch("foreman.runner._stamp_message_cache_breakpoint"))
-    stack.enter_context(patch("foreman.runner.build_system_blocks", return_value=[{"type": "text", "text": "sys"}]))
+    stack.enter_context(
+        patch("foreman.runner.build_system_blocks", return_value=[{"type": "text", "text": "sys"}])
+    )
     stack.enter_context(patch("foreman.runner.build_state_preamble", return_value="preamble"))
     stack.enter_context(patch("foreman.runner.build_system_prompt", return_value="audit"))
     stack.enter_context(patch("foreman.runner._inject_state_preamble"))
-    stack.enter_context(patch("foreman.runner._serialize_content", side_effect=lambda c: json.dumps(str(c))))
+    stack.enter_context(
+        patch("foreman.runner._serialize_content", side_effect=lambda c: json.dumps(str(c)))
+    )
     stack.enter_context(patch("foreman.runner._summarize_task", return_value=None))
     stack.enter_context(patch("foreman.runner.HAS_ANTHROPIC", True))
     stack.enter_context(patch("foreman.runner.Message"))
@@ -155,6 +172,7 @@ def test_required_tool_passes_tool_choice_to_api():
     with ExitStack() as stack:
         _apply_runner_patches(stack, client_mock=client_mock, exec_tools_mock=exec_tools_mock)
         from foreman import runner as fr
+
         _run(fr._run_foreman_ai("guild1", "continue please", required_tool="send_followup"))
 
     assert api_calls, "API was never called"
@@ -177,6 +195,7 @@ def test_no_required_tool_omits_tool_choice():
     with ExitStack() as stack:
         _apply_runner_patches(stack, client_mock=client_mock)
         from foreman import runner as fr
+
         _run(fr._run_foreman_ai("guild1", "just chatting", required_tool=None))
 
     assert api_calls, "API was never called"
@@ -215,6 +234,7 @@ def test_no_required_tool_text_only_response_does_not_raise():
     with ExitStack() as stack:
         _apply_runner_patches(stack, client_mock=client_mock)
         from foreman import runner as fr
+
         # Should not raise — text-only is acceptable when no tool is required
         _run(fr._run_foreman_ai("guild1", "hi there", required_tool=None))
 
@@ -243,6 +263,7 @@ def test_required_tool_valid_response_dispatches_tool():
     with ExitStack() as stack:
         _apply_runner_patches(stack, client_mock=client_mock, exec_tools_mock=exec_tools_mock)
         from foreman import runner as fr
+
         _run(fr._run_foreman_ai("guild1", "continue the task", required_tool="send_followup"))
 
     exec_tools_mock.assert_called_once()
