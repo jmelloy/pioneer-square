@@ -8,7 +8,7 @@ sqlalchemy[asyncio]
 sqlmodel
 alembic
 python-multipart
-anthropic
+anthropic[bedrock]
 python-dotenv
 docker
 httpx

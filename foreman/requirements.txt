@@ -28,10 +28,6 @@ cryptography>=42.0
 # .env file loading (optional; convenient for local dev)
 python-dotenv>=1.0
 
-# ── Amazon Bedrock ────────────────────────────────────────────────────────────
-# Enabled via FOREMAN_PROVIDER=bedrock. Requires AWS credentials in env /
-# IAM role and Bedrock model access enabled in your AWS account.
-
 # ── Development / testing ─────────────────────────────────────────────────────
 # pytest>=8.0
 # pytest-asyncio>=0.23
