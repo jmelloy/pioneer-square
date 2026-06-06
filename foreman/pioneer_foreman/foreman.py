@@ -25,10 +25,11 @@ class Foreman:
     def __init__(self, config: Config):
         self._config = config
         self._http: ForemanHTTPClient | None = None
-        # In-flight flag: True while a foreman run coroutine is executing.
-        # Checked before spawning a new trigger run or poll run so we never
-        # have two concurrent runs for the same guild.
-        self._in_flight: bool = False
+        # In-flight lock: held while a foreman run coroutine is executing.
+        # _run_foreman checks lock.locked() (no await between check and acquire,
+        # so it is atomic in asyncio's cooperative scheduler) and drops the call
+        # if the lock is already held — preventing concurrent runs per guild.
+        self._in_flight: asyncio.Lock = asyncio.Lock()
         # Monotonic timestamp of the last run that made at least one tool call.
         # Used to decide whether to reset the poll backoff.
         self._last_action_at: float = 0.0
@@ -100,15 +101,15 @@ class Foreman:
                 task_id: str | None = None,
                 task_name: str = "foreman.run",
             ) -> None:
-                """Wrapper that enforces the in-flight flag and updates last_action_at."""
-                if self._in_flight:
+                """Wrapper that enforces the in-flight lock and updates last_action_at."""
+                if self._in_flight.locked():
                     logger.info(
                         "guild=%s %s: dropped — run already in-flight",
                         guild_id,
                         task_name,
                     )
                     return
-                self._in_flight = True
+                await self._in_flight.acquire()
                 try:
                     made_calls = await run_foreman_ai(
                         guild_id,
@@ -126,7 +127,7 @@ class Foreman:
                 except Exception:
                     logger.exception("guild=%s %s: unhandled error", guild_id, task_name)
                 finally:
-                    self._in_flight = False
+                    self._in_flight.release()
 
             async def _handle_trigger(data: dict) -> None:
                 guild_id = data.get("guildId", "")
@@ -176,7 +177,7 @@ class Foreman:
                         base = min(self._poll_interval, sleep_duration)
                         self._poll_interval = min(base * 2, self._config.poll_max_interval)
 
-                        if active and not self._in_flight:
+                        if active and not self._in_flight.locked():
                             task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active)
                             msg = (
                                 f"[periodic-check] Automated status poll — {n} non-terminal "

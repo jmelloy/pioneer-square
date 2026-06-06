@@ -89,6 +89,31 @@ def test_reset_poll_skips_when_run_in_flight():
     _run(_test())
 
 
+def test_reset_poll_skips_when_run_pending():
+    """reset_foreman_poll must not restart the loop when a task is spawned but hasn't locked yet."""
+
+    async def _test():
+        import foreman.runner as runner
+
+        guild = "g-pending"
+        runner._guild_locks.clear()
+        runner._guild_pending.discard(guild)
+        runner._poll_tasks.pop(guild, None)
+        runner._guild_last_action_at[guild] = time.monotonic()  # recently active
+
+        # Simulate a task that was spawned but hasn't acquired its lock yet.
+        runner._guild_pending.add(guild)
+
+        spawned = []
+        with patch.object(runner, "spawn", side_effect=lambda c, **kw: spawned.append(c)):
+            runner.reset_foreman_poll(guild)
+
+        runner._guild_pending.discard(guild)
+        assert spawned == [], "spawn must not be called while a run is pending (pre-lock)"
+
+    _run(_test())
+
+
 # ---------------------------------------------------------------------------
 # reset_foreman_poll — idle guard (no recent tool calls)
 # ---------------------------------------------------------------------------

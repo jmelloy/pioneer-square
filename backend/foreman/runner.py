@@ -63,7 +63,16 @@ _guild_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
 # Monotonic timestamp (time.monotonic()) of the last foreman run that made at
 # least one tool call, keyed by guild_id.  Used by reset_foreman_poll to decide
 # whether to reset the backoff: only reset when the foreman was recently active.
+# Entries are pruned in _poll_loop's finally block when the guild is no longer
+# active to prevent unbounded growth in long-running deployments.
 _guild_last_action_at: dict[str, float] = {}
+
+# Guilds for which a run_foreman_ai coroutine has been spawned as an asyncio
+# Task but has not yet acquired its _guild_locks entry.  This bridges the
+# window between task creation and lock acquisition so that reset_foreman_poll
+# treats the pending run as "in-flight" and does not restart the poll loop.
+# Entries are discarded at the top of run_foreman_ai (before the lock check).
+_guild_pending: set[str] = set()
 
 
 def _record_guild_action(guild_id: str) -> None:
@@ -286,74 +295,81 @@ async def _poll_loop(guild_id: str) -> None:
     display the countdown to the *next* check.
     """
     interval = POLL_MIN_SECS
-    while True:
-        try:
-            await asyncio.sleep(interval)
-        except asyncio.CancelledError:
-            return
+    try:
+        while True:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
 
-        # Bail if this task was superseded by a reset.
-        if asyncio.current_task() is not _poll_tasks.get(guild_id):
-            return
+            # Bail if this task was superseded by a reset.
+            if asyncio.current_task() is not _poll_tasks.get(guild_id):
+                return
 
-        try:
-            # Reload config each cycle so guild owners see changes without restarting.
-            cfg = await _load_foreman_config(guild_id)
-            poll_max = int(cfg.get("poll_max_interval", POLL_MAX_SECS))
+            try:
+                # Reload config each cycle so guild owners see changes without restarting.
+                cfg = await _load_foreman_config(guild_id)
+                poll_max = int(cfg.get("poll_max_interval", POLL_MAX_SECS))
 
-            # If an external foreman is connected for this guild it owns the
-            # poll loop — skip the embedded run to avoid double-triggering.
-            from events import foreman_connections
+                # If an external foreman is connected for this guild it owns the
+                # poll loop — skip the embedded run to avoid double-triggering.
+                from events import foreman_connections
 
-            if guild_id in foreman_connections:
+                if guild_id in foreman_connections:
+                    next_interval = min(interval * 2, poll_max)
+                    logger.debug(
+                        "guild=%s external foreman connected, skipping embedded poll", guild_id
+                    )
+                    interval = next_interval
+                    await broadcast_msg(guild_id, ForemanPollStatusMsg(nextCheckIn=interval))
+                    continue
+
+                db = await get_db()
+                try:
+                    guild_pk_val = await get_guild_pk(db, guild_id)
+                    result = await db.exec(
+                        select(col(Task.id), col(Task.state), col(Task.name)).where(
+                            col(Task.guild_id) == guild_pk_val,
+                            ~col(Task.state).in_(list(_TERMINAL_STATES)),
+                            live_tasks_filter(),
+                        )
+                    )
+                    active_tasks = [dict(r._mapping) for r in result.all()]
+                finally:
+                    await db.close()
+
+                n = len(active_tasks)
                 next_interval = min(interval * 2, poll_max)
                 logger.debug(
-                    "guild=%s external foreman connected, skipping embedded poll", guild_id
+                    "guild=%s polling %d active tasks, next check in %.0fm",
+                    guild_id,
+                    n,
+                    next_interval / 60,
                 )
+
+                if active_tasks:
+                    task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
+                    msg = (
+                        f"[periodic-check] Automated status poll — {n} non-terminal "
+                        f"task(s): {task_summary}. Check whether any are stalled. "
+                        "Use get_task_status to inspect a task if it looks stuck. "
+                        "If everything looks healthy, no action is needed."
+                    )
+                    _guild_pending.add(guild_id)
+                    spawn(run_foreman_ai(guild_id, msg), name=f"foreman.poll:{guild_id}")
+
+                # Announce next check interval so the UI can display a countdown.
                 interval = next_interval
                 await broadcast_msg(guild_id, ForemanPollStatusMsg(nextCheckIn=interval))
-                continue
-
-            db = await get_db()
-            try:
-                guild_pk_val = await get_guild_pk(db, guild_id)
-                result = await db.exec(
-                    select(col(Task.id), col(Task.state), col(Task.name)).where(
-                        col(Task.guild_id) == guild_pk_val,
-                        ~col(Task.state).in_(list(_TERMINAL_STATES)),
-                        live_tasks_filter(),
-                    )
-                )
-                active_tasks = [dict(r._mapping) for r in result.all()]
-            finally:
-                await db.close()
-
-            n = len(active_tasks)
-            next_interval = min(interval * 2, poll_max)
-            logger.debug(
-                "guild=%s polling %d active tasks, next check in %.0fm",
-                guild_id,
-                n,
-                next_interval / 60,
-            )
-
-            if active_tasks:
-                task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
-                msg = (
-                    f"[periodic-check] Automated status poll — {n} non-terminal "
-                    f"task(s): {task_summary}. Check whether any are stalled. "
-                    "Use get_task_status to inspect a task if it looks stuck. "
-                    "If everything looks healthy, no action is needed."
-                )
-                spawn(run_foreman_ai(guild_id, msg), name=f"foreman.poll:{guild_id}")
-
-            # Announce next check interval so the UI can display a countdown.
-            interval = next_interval
-            await broadcast_msg(guild_id, ForemanPollStatusMsg(nextCheckIn=interval))
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("guild=%s _poll_loop iteration failed", guild_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("guild=%s _poll_loop iteration failed", guild_id)
+    finally:
+        # Prune the last_action_at entry when this loop exits for an idle guild
+        # so the module-level dict doesn't grow without bound.
+        if not _guild_active_recently(guild_id):
+            _guild_last_action_at.pop(guild_id, None)
 
 
 def reset_foreman_poll(guild_id: str) -> None:
@@ -369,12 +385,13 @@ def reset_foreman_poll(guild_id: str) -> None:
     the in-flight run was already triggered by _trigger_foreman and the poll loop
     will re-fire on its next tick anyway.
     """
-    # Debounce: any in-flight run for this guild (regardless of user_id) means we
-    # skip the reset entirely.  The run was already dispatched; another timer reset
-    # would be wasteful and could mask the first run's backoff contribution.
+    # Debounce: skip if a run is in-flight (lock held) OR if one has been spawned
+    # as a Task but hasn't acquired its lock yet (_guild_pending).  Without the
+    # pending check there is a window between spawn and lock-acquire where a
+    # concurrent reset_foreman_poll would see no held lock and restart the loop.
     in_flight = any(k[0] == guild_id and lock.locked() for k, lock in _guild_locks.items())
-    if in_flight:
-        logger.debug("guild=%s reset_foreman_poll: run in-flight, skipping timer reset", guild_id)
+    if in_flight or guild_id in _guild_pending:
+        logger.debug("guild=%s reset_foreman_poll: run in-flight or pending, skipping timer reset", guild_id)
         return
 
     if _guild_active_recently(guild_id):
@@ -438,6 +455,9 @@ async def run_foreman_ai(
     and cooperative, so no other coroutine can run between the check and the
     acquire (there is no ``await`` between them).
     """
+    # Clear the pending marker set by _poll_loop before task creation; this run
+    # is now executing and will acquire the lock (or drop if already held).
+    _guild_pending.discard(guild_id)
     # When user_id is None (system-triggered/poll runs), all such invocations
     # within the same guild share key (guild_id, None) and serialize against
     # each other.  This is intentional — system runs are per-guild work and

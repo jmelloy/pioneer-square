@@ -443,6 +443,8 @@ async def run_foreman_ai(
                 "createdAt": now,
             }
         )
-        return False
+        # Return made_tool_calls rather than False so that tool calls made
+        # before the exception still trigger a backoff reset in the caller.
+        return made_tool_calls
 
     return made_tool_calls
