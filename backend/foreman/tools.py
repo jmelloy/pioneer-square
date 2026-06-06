@@ -1167,14 +1167,15 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 ).model_dump(by_alias=True, exclude_none=True),
                             )
                             followup_worker_result = await db.exec(
-                                select(col(Worker.tools)).where(
-                                    col(Worker.id) == target_worker_id
-                                )
+                                select(col(Worker.tools)).where(col(Worker.id) == target_worker_id)
                             )
                             followup_worker_tools_json = followup_worker_result.one_or_none()
-                            followup_worker_tools: list[str] = json.loads(
-                                followup_worker_tools_json or "[]"
-                            )
+                            if isinstance(followup_worker_tools_json, str):
+                                followup_worker_tools: list[str] = json.loads(
+                                    followup_worker_tools_json or "[]"
+                                )
+                            else:
+                                followup_worker_tools = followup_worker_tools_json or []
                             await broadcast(
                                 guild_id,
                                 TaskFollowupMsg(
@@ -1182,7 +1183,12 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     taskId=task_id,
                                     name=task_name or "",
                                     description=task_desc or "",
-                                    tool=task_tool or (followup_worker_tools[0] if followup_worker_tools else "claude"),
+                                    tool=task_tool
+                                    or (
+                                        followup_worker_tools[0]
+                                        if followup_worker_tools
+                                        else "claude"
+                                    ),
                                     model=task_model,
                                     provider=task_provider,
                                     branch=branch,
