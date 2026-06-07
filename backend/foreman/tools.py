@@ -1725,9 +1725,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             head_ref = (pr_data.get("head") or {}).get("ref", "")
 
                             try:
-                                import anthropic as _anthropic
+                                # Use the shared factory so alternate providers (e.g. Bedrock)
+                                # are handled correctly — avoids hardcoding AsyncAnthropic().
+                                from foreman_core.llm import make_anthropic_client as _make_client
 
-                                _ai = _anthropic.AsyncAnthropic()
+                                _ai = _make_client()
                                 review_prompt = (
                                     "You are a thorough code reviewer. Review the following "
                                     "GitHub pull request and provide structured feedback.\n\n"
