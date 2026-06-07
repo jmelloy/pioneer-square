@@ -1401,10 +1401,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "pr_url": task.pr_url,
                             "created_at": task.created_at,
                             "finished_at": task.finished_at,
-                            "recent_logs": [
-                                {"time": r[0], "line": r[1]}
-                                for r in log_rows
-                            ],
+                            "recent_logs": [{"time": r[0], "line": r[1]} for r in log_rows],
                         },
                         default=_json_default,
                     )
