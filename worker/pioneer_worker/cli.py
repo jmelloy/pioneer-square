@@ -16,9 +16,9 @@ from .mock_worker import MockWorker
 from .worker import Worker
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_worker_parser(prog: str = "pioneer-square worker") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pioneer-worker",
+        prog=prog,
         description="Run a Pioneer Square worker agent that connects to the backend over WebSocket.",
     )
     parser.add_argument(
@@ -120,7 +120,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"pioneer-worker {__version__}",
+        version=f"pioneer-square worker {__version__}",
     )
 
     # Mock mode (for e2e tests). Skips all subprocess/git/claude work and
@@ -146,11 +146,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    args = _build_worker_parser(prog="pioneer-square worker").parse_args(argv)
     log_format = os.environ.get("LOG_FORMAT", "colored")
     logging.config.dictConfig(get_logging_config(log_level=args.log_level, log_format=log_format))
     log = logging.getLogger("pioneer_worker.cli")
-    log.info("pioneer-worker CLI starting (log_level=%s)", args.log_level)
+    log.info("pioneer-square worker starting (log_level=%s)", args.log_level)
 
     overrides = {
         k: v
@@ -228,6 +228,34 @@ def main(argv: list[str] | None = None) -> int:
         print("\nShutting down.", file=sys.stderr)
         return 0
     return 0
+
+
+def pioneer_square_main() -> None:
+    """Unified ``pioneer-square`` entry point provided by the worker package."""
+    argv = sys.argv[1:]
+
+    if not argv or argv[0] in ("-h", "--help"):
+        print("usage: pioneer-square {foreman,worker} [options]")
+        print("")
+        print("subcommands:")
+        print("  foreman    Run the standalone foreman agent (requires pioneer-foreman).")
+        print("  worker     Run a worker agent.")
+        sys.exit(0 if (argv and argv[0] in ("-h", "--help")) else 2)
+
+    subcommand, rest = argv[0], argv[1:]
+
+    if subcommand == "worker":
+        raise SystemExit(main(rest))
+    elif subcommand == "foreman":
+        sys.stderr.write(
+            "pioneer-square: the 'foreman' subcommand requires the "
+            "pioneer-foreman package to be installed.\n"
+        )
+        sys.exit(1)
+    else:
+        sys.stderr.write(f"pioneer-square: unknown subcommand '{subcommand}'\n")
+        sys.stderr.write("Run 'pioneer-square --help' for usage.\n")
+        sys.exit(2)
 
 
 if __name__ == "__main__":

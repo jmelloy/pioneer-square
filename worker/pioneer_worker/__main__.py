@@ -1,4 +1,5 @@
-from pioneer_worker.cli import main
+"""Allow running as: python -m pioneer_worker [subcommand]"""
 
-if __name__ == "__main__":
-    main()
+from pioneer_worker.cli import pioneer_square_main
+
+pioneer_square_main()

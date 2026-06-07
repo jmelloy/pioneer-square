@@ -11,9 +11,9 @@ from .foreman import Foreman
 from .logging_config import setup_logging
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_foreman_parser(prog: str = "pioneer-square foreman") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="pioneer-foreman",
+        prog=prog,
         description="Standalone foreman agent for Pioneer Square.",
     )
     p.add_argument("--config", metavar="PATH", help="Path to TOML config file.")
@@ -40,10 +40,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> None:
-    parser = _build_parser()
-    args = parser.parse_args()
-
+def _run_foreman(args: argparse.Namespace) -> None:
     overrides: dict = {}
     if args.backend_url:
         overrides["backend_url"] = args.backend_url
@@ -71,3 +68,38 @@ def main() -> None:
         asyncio.run(foreman.run())
     except KeyboardInterrupt:
         pass
+
+
+def main() -> None:
+    """Direct foreman entry point (``pioneer-square foreman``)."""
+    args = _build_foreman_parser(prog="pioneer-square foreman").parse_args()
+    _run_foreman(args)
+
+
+def pioneer_square_main() -> None:
+    """Unified ``pioneer-square`` entry point provided by the foreman package."""
+    argv = sys.argv[1:]
+
+    if not argv or argv[0] in ("-h", "--help"):
+        print("usage: pioneer-square {foreman,worker} [options]")
+        print("")
+        print("subcommands:")
+        print("  foreman    Run the standalone foreman agent.")
+        print("  worker     Run a worker agent (requires pioneer-worker).")
+        sys.exit(0 if (argv and argv[0] in ("-h", "--help")) else 2)
+
+    subcommand, rest = argv[0], argv[1:]
+
+    if subcommand == "foreman":
+        args = _build_foreman_parser(prog="pioneer-square foreman").parse_args(rest)
+        _run_foreman(args)
+    elif subcommand == "worker":
+        sys.stderr.write(
+            "pioneer-square: the 'worker' subcommand requires the "
+            "pioneer-worker package to be installed.\n"
+        )
+        sys.exit(1)
+    else:
+        sys.stderr.write(f"pioneer-square: unknown subcommand '{subcommand}'\n")
+        sys.stderr.write("Run 'pioneer-square --help' for usage.\n")
+        sys.exit(2)

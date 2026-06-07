@@ -73,4 +73,4 @@ RUN useradd --create-home --shell /bin/bash worker \
 
 USER worker
 
-CMD ["pioneer-worker", "--config", "/config/pioneer-worker.toml"]
+CMD ["pioneer-square", "worker", "--config", "/config/pioneer-worker.toml"]

@@ -26,4 +26,4 @@ RUN pip install -e /app/foreman
 
 WORKDIR /app/foreman
 
-CMD ["pioneer-foreman"]
+CMD ["pioneer-square", "foreman"]

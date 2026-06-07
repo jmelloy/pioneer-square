@@ -101,10 +101,10 @@ services:
       - ./worker/pioneer-worker.toml:/config/pioneer-worker.toml:ro
       - worker-repos:/work/repos
       - worker-worktrees:/work/worktrees
-    # Re-declare the entrypoint so we can interpolate WORKER_LOG_LEVEL at compose
+    # Re-declare the command so we can interpolate WORKER_LOG_LEVEL at compose
     # time. Run with WORKER_LOG_LEVEL=DEBUG to see verbose worker logs:
     #   WORKER_LOG_LEVEL=DEBUG docker compose --profile worker up worker
-    command: pioneer-worker --config /config/pioneer-worker.toml --log-level ${WORKER_LOG_LEVEL:-INFO}
+    command: pioneer-square worker --config /config/pioneer-worker.toml --log-level ${WORKER_LOG_LEVEL:-INFO}
     depends_on:
       - backend
     restart: unless-stopped
