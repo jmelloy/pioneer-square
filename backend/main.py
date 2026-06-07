@@ -337,15 +337,21 @@ async def lifespan(app: FastAPI):
     _log_format = os.environ.get("LOG_FORMAT", "colored")
     logging.config.dictConfig(_get_logging_config(_log_level, _log_format))
 
-    # Detect and drain stale workers BEFORE reset_connection_state() wipes the
-    # DB state needed to distinguish stale from fresh rows. The drain sleeps up
-    # to PIONEER_WORKER_DRAIN_TIMEOUT seconds before force-killing, so it runs
-    # in the background and does not block the rest of startup.
-    from worker_lifecycle import drain_stale_workers_on_startup  # noqa: PLC0415
+    # Phase 1: detect stale workers and send graceful-shutdown signals.
+    # Must be awaited directly before reset_connection_state() so the DB still
+    # holds the non-offline state that identifies which workers were stale.
+    from worker_lifecycle import (  # noqa: PLC0415
+        drain_stale_workers_on_startup,
+        force_kill_stale_workers,
+    )
 
-    drain_bg = spawn(drain_stale_workers_on_startup(), name="stale-worker-drain")
+    stale_ids = await drain_stale_workers_on_startup()
 
     await reset_connection_state()
+
+    # Phase 2: after the drain window, force-kill any surviving stale containers.
+    # Runs in background so it does not block startup or the first request.
+    drain_bg = spawn(force_kill_stale_workers(stale_ids), name="stale-worker-drain") if stale_ids else None
     # Pre-warm the models.dev cache so the first /api/models request is fast.
     from util.models_dev import fetch_providers as _fetch_providers  # noqa: PLC0415
 
@@ -355,15 +361,17 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         sweeper.cancel()
-        drain_bg.cancel()
+        if drain_bg is not None:
+            drain_bg.cancel()
         try:
             await sweeper
         except (asyncio.CancelledError, Exception):
             pass
-        try:
-            await drain_bg
-        except (asyncio.CancelledError, Exception):
-            pass
+        if drain_bg is not None:
+            try:
+                await drain_bg
+            except (asyncio.CancelledError, Exception):
+                pass
         await _shutdown_webhook_debouncer()
 
 

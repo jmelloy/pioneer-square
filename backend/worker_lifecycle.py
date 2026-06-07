@@ -2,14 +2,16 @@
 
 Lifecycle steps on backend startup
 ───────────────────────────────────
-1. get_current_version()  — PIONEER_VERSION env var or git short SHA
-2. detect_stale_workers() — workers whose spawned_version differs from current
-3. Send graceful worker-shutdown WS signal to each stale worker (best-effort;
-   sockets are typically dead on a cold restart, but works for hot reloads)
-4. Record drain_requested_at timestamp
-5. Wait PIONEER_WORKER_DRAIN_TIMEOUT seconds (default 60)
-6. Force-kill any surviving containers via Docker SDK using stored container_id
-   (skipped when container_id is NULL — non-Docker workers rely on step 3 only)
+1. get_current_version()         — PIONEER_VERSION env var or git short SHA
+2. drain_stale_workers_on_startup() — find workers whose spawned_version differs
+   from current; send graceful WS shutdown signal; record drain_requested_at.
+   Returns list of stale worker IDs.
+3. reset_connection_state()      — called by main.py AFTER step 2, sets all
+   workers offline in the DB.
+4. force_kill_stale_workers(ids) — spawned as a background task AFTER step 3;
+   waits PIONEER_WORKER_DRAIN_TIMEOUT seconds then force-kills surviving
+   containers via Docker SDK using the stored container_id.
+   (Skipped when container_id is NULL — non-Docker workers rely on step 2 only.)
 """
 
 from __future__ import annotations
@@ -54,20 +56,22 @@ def get_current_version() -> str | None:
         return None
 
 
-async def drain_stale_workers_on_startup() -> None:
-    """Detect and drain workers spawned by a previous backend version.
+async def drain_stale_workers_on_startup() -> list[str]:
+    """Detect workers spawned by a previous backend version and send shutdown signals.
 
-    Must be called *before* reset_connection_state() so the DB still holds the
-    non-offline state that identifies which workers were running before this restart.
-    The function runs the 60-second drain window asynchronously, so callers
-    should use spawn() rather than awaiting it directly during lifespan startup.
+    Must be awaited directly *before* reset_connection_state() so the DB still
+    holds the non-offline state that identifies which workers were running before
+    this restart.
+
+    Returns the list of stale worker IDs so the caller can pass them to
+    force_kill_stale_workers() as a background task after reset_connection_state().
     """
     current_version = get_current_version()
     if current_version is None:
         logger.warning(
             "worker_lifecycle: cannot determine backend version; skipping stale-worker drain"
         )
-        return
+        return []
 
     # Step 1: find workers whose recorded version differs from the current deploy.
     async with AsyncSessionLocal() as db:
@@ -87,7 +91,7 @@ async def drain_stale_workers_on_startup() -> None:
         logger.info(
             "worker_lifecycle: no stale workers found (current version=%s)", current_version
         )
-        return
+        return []
 
     logger.info(
         "worker_lifecycle: %d stale worker(s) from a previous deploy — "
@@ -124,29 +128,37 @@ async def drain_stale_workers_on_startup() -> None:
             )
         await db.commit()
 
-    # Step 3: wait the drain window, then force-kill surviving containers.
+    return [worker.id for worker, _ in rows]
+
+
+async def force_kill_stale_workers(stale_ids: list[str]) -> None:
+    """Wait the drain window then force-kill surviving stale containers.
+
+    Must be spawned as a background task *after* reset_connection_state() has
+    run.  Because reset_connection_state() marks all workers offline in the DB,
+    we identify survivors by container_id rather than by DB state.
+    """
+    if not stale_ids:
+        return
+
     await asyncio.sleep(WORKER_DRAIN_TIMEOUT)
 
-    stale_ids = [worker.id for worker, _ in rows]
+    # Step 3: fetch stale workers that have a container_id to kill.
     async with AsyncSessionLocal() as db:
-        still_alive = (
-            await db.exec(
-                select(Worker).where(
-                    col(Worker.id).in_(stale_ids),
-                    col(Worker.state) != "offline",
-                )
-            )
+        workers = (
+            await db.exec(select(Worker).where(col(Worker.id).in_(stale_ids)))
         ).all()
 
-    for worker in still_alive:
+    for worker in workers:
         if worker.container_id:
             # Step 4: force-kill the Docker container.
             try:
                 import docker  # noqa: PLC0415
 
-                client = docker.from_env()
-                container = client.containers.get(worker.container_id)
-                container.kill()
+                # Use asyncio.to_thread for all blocking Docker SDK calls.
+                client = await asyncio.to_thread(docker.from_env)
+                container = await asyncio.to_thread(client.containers.get, worker.container_id)
+                await asyncio.to_thread(container.kill)
                 logger.info(
                     "worker_lifecycle: force-killed container %s (worker %s)",
                     worker.container_id[:12],

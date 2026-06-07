@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 # Make backend importable from tests/
-import sys
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from worker_lifecycle import WORKER_DRAIN_TIMEOUT, drain_stale_workers_on_startup, get_current_version
-
+from worker_lifecycle import (  # noqa: E402
+    WORKER_DRAIN_TIMEOUT,
+    drain_stale_workers_on_startup,
+    force_kill_stale_workers,
+    get_current_version,
+)
 
 # ---------------------------------------------------------------------------
 # get_current_version
@@ -67,8 +70,9 @@ async def test_drain_skipped_when_no_version(monkeypatch):
         patch("worker_lifecycle.get_current_version", return_value=None),
         patch("worker_lifecycle.AsyncSessionLocal") as mock_session,
     ):
-        await drain_stale_workers_on_startup()
+        result = await drain_stale_workers_on_startup()
     mock_session.assert_not_called()
+    assert result == []
 
 
 @pytest.mark.asyncio
@@ -85,10 +89,11 @@ async def test_drain_skipped_when_no_stale_workers(monkeypatch):
         patch("worker_lifecycle.get_current_version", return_value="abc123"),
         patch("worker_lifecycle.AsyncSessionLocal", mock_session),
     ):
-        await drain_stale_workers_on_startup()
+        result = await drain_stale_workers_on_startup()
 
     # Only one DB session opened (the initial stale-worker query).
     assert mock_session.call_count == 1
+    assert result == []
 
 
 @pytest.mark.asyncio
@@ -101,12 +106,9 @@ async def test_drain_sends_shutdown_and_records_timestamp(monkeypatch):
 
     # Session 1: stale detection → returns one stale row.
     # Session 2: write drain_requested_at.
-    # Session 3: check still-alive after drain timeout → none alive.
-    call_count = 0
     session_results = [
         [(fake_worker, "g-myguild")],  # session 1: stale rows
         None,  # session 2: update + commit
-        [],  # session 3: still alive
     ]
 
     class FakeDB:
@@ -138,9 +140,8 @@ async def test_drain_sends_shutdown_and_records_timestamp(monkeypatch):
         patch("worker_lifecycle.get_current_version", return_value="new-ver"),
         patch("worker_lifecycle.AsyncSessionLocal", make_session),
         patch("worker_lifecycle.broadcast_msg", fake_broadcast),
-        patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
     ):
-        await drain_stale_workers_on_startup()
+        stale_ids = await drain_stale_workers_on_startup()
 
     # Shutdown signal was broadcast to the correct guild.
     assert len(broadcast_calls) == 1
@@ -153,6 +154,14 @@ async def test_drain_sends_shutdown_and_records_timestamp(monkeypatch):
     session_2 = sessions[1]
     session_2.exec.assert_called()
     session_2.commit.assert_called()
+
+    # Stale IDs returned for the force-kill background task.
+    assert stale_ids == ["w-stale1"]
+
+
+# ---------------------------------------------------------------------------
+# force_kill_stale_workers
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -176,11 +185,8 @@ async def test_drain_force_kills_surviving_container(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-    sessions = [
-        FakeDB([(fake_worker, "g-guild2")]),  # stale detection
-        FakeDB(None),  # drain_requested_at update
-        FakeDB([fake_worker]),  # still alive after timeout
-    ]
+    # force_kill_stale_workers opens one DB session to fetch the workers.
+    sessions = [FakeDB([fake_worker])]
     session_iter = iter(sessions)
 
     fake_container = MagicMock()
@@ -190,13 +196,11 @@ async def test_drain_force_kills_surviving_container(monkeypatch):
     fake_docker_module.from_env.return_value = fake_docker_client
 
     with (
-        patch("worker_lifecycle.get_current_version", return_value="new-ver"),
         patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle.broadcast_msg", AsyncMock()),
         patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
         patch.dict("sys.modules", {"docker": fake_docker_module}),
     ):
-        await drain_stale_workers_on_startup()
+        await force_kill_stale_workers(["w-stale2"])
 
     fake_docker_client.containers.get.assert_called_once_with("abc123deadbeef")
     fake_container.kill.assert_called_once()
@@ -223,26 +227,28 @@ async def test_drain_skips_kill_when_no_container_id(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-    sessions = [
-        FakeDB([(fake_worker, "g-guild3")]),
-        FakeDB(None),
-        FakeDB([fake_worker]),  # still alive → but no container_id
-    ]
+    sessions = [FakeDB([fake_worker])]
     session_iter = iter(sessions)
 
     fake_docker_module = MagicMock()
 
     with (
-        patch("worker_lifecycle.get_current_version", return_value="new-ver"),
         patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle.broadcast_msg", AsyncMock()),
         patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
         patch.dict("sys.modules", {"docker": fake_docker_module}),
     ):
-        await drain_stale_workers_on_startup()
+        await force_kill_stale_workers(["w-nocontainer"])
 
     # Docker was never asked to kill anything.
     fake_docker_module.from_env.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_force_kill_no_op_when_empty_ids():
+    """force_kill_stale_workers returns immediately when given an empty list."""
+    with patch("worker_lifecycle.asyncio.sleep", AsyncMock()) as mock_sleep:
+        await force_kill_stale_workers([])
+    mock_sleep.assert_not_called()
 
 
 def test_drain_timeout_default():
@@ -252,6 +258,7 @@ def test_drain_timeout_default():
 def test_drain_timeout_env_override(monkeypatch):
     monkeypatch.setenv("PIONEER_WORKER_DRAIN_TIMEOUT", "120")
     import importlib
+
     import worker_lifecycle as wl
 
     importlib.reload(wl)
