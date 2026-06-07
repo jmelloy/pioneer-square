@@ -185,7 +185,8 @@ async def test_drain_force_kills_surviving_container(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
-    # force_kill_stale_workers opens one DB session to fetch the workers.
+    # Patch drain timeout to 0 so the polling loop is skipped; only the final
+    # container-fetch session is needed.
     sessions = [FakeDB([fake_worker])]
     session_iter = iter(sessions)
 
@@ -198,12 +199,51 @@ async def test_drain_force_kills_surviving_container(monkeypatch):
     with (
         patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
         patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
+        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.0),
         patch.dict("sys.modules", {"docker": fake_docker_module}),
     ):
         await force_kill_stale_workers(["w-stale2"])
 
     fake_docker_client.containers.get.assert_called_once_with("abc123deadbeef")
     fake_container.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_force_kill_exits_early_when_workers_self_terminate():
+    """Polling loop exits before the full drain timeout once all workers go offline."""
+
+    class FakeDB:
+        def __init__(self, rows):
+            self._rows = rows
+            self.exec = AsyncMock(
+                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
+            )
+            self.commit = AsyncMock()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    # First poll: worker still alive. Second poll: worker gone → early exit.
+    sessions = [FakeDB(["w-early"]), FakeDB([])]
+    session_iter = iter(sessions)
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(s):
+        sleep_calls.append(s)
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.asyncio.sleep", fake_sleep),
+        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 60.0),
+    ):
+        await force_kill_stale_workers(["w-early"])
+
+    # Returned after the second DB poll — only one sleep occurred (after first poll).
+    assert len(sleep_calls) == 1
+    # Docker kill was never reached because function returned early.
 
 
 @pytest.mark.asyncio
@@ -227,6 +267,7 @@ async def test_drain_skips_kill_when_no_container_id(monkeypatch):
         async def __aexit__(self, *a):
             return False
 
+    # Patch drain timeout to 0 so the polling loop is skipped.
     sessions = [FakeDB([fake_worker])]
     session_iter = iter(sessions)
 
@@ -235,6 +276,7 @@ async def test_drain_skips_kill_when_no_container_id(monkeypatch):
     with (
         patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
         patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
+        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.0),
         patch.dict("sys.modules", {"docker": fake_docker_module}),
     ):
         await force_kill_stale_workers(["w-nocontainer"])

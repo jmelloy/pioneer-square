@@ -86,6 +86,24 @@ async def drain_stale_workers_on_startup() -> list[str]:
                 )
             )
         ).all()
+        # Workers that are online but have no version stamp cannot be compared;
+        # log a warning rather than silently skipping them.
+        unversioned = (
+            await db.exec(
+                select(col(Worker.id)).where(
+                    col(Worker.spawned_version).is_(None),
+                    col(Worker.state) != "offline",
+                )
+            )
+        ).all()
+
+    if unversioned:
+        logger.warning(
+            "worker_lifecycle: %d online worker(s) have no spawned_version and cannot "
+            "be compared against current version %s — they will not be drained",
+            len(unversioned),
+            current_version,
+        )
 
     if not rows:
         logger.info(
@@ -139,7 +157,24 @@ async def force_kill_stale_workers(stale_ids: list[str]) -> None:
     if not stale_ids:
         return
 
-    await asyncio.sleep(WORKER_DRAIN_TIMEOUT)
+    # Poll every 5 s so we exit early if all stale workers self-terminate
+    # before the full drain window elapses.
+    poll_interval = 5.0
+    elapsed = 0.0
+    while elapsed < WORKER_DRAIN_TIMEOUT:
+        async with AsyncSessionLocal() as db:
+            remaining = (
+                await db.exec(
+                    select(col(Worker.id)).where(
+                        col(Worker.id).in_(stale_ids), col(Worker.state) != "offline"
+                    )
+                )
+            ).all()
+        if not remaining:
+            logger.info("worker_lifecycle: all stale workers exited cleanly after %.0fs", elapsed)
+            return
+        await asyncio.sleep(min(poll_interval, WORKER_DRAIN_TIMEOUT - elapsed))
+        elapsed += poll_interval
 
     # Step 3: fetch stale workers that have a container_id to kill.
     async with AsyncSessionLocal() as db:
