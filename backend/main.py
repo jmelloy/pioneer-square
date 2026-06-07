@@ -35,6 +35,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from util.tasks import spawn
+from worker_lifecycle import drain_stale_workers_on_startup, force_kill_stale_workers
 from ws_types import WorkerPingMsg
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -340,11 +341,6 @@ async def lifespan(app: FastAPI):
     # Phase 1: detect stale workers and send graceful-shutdown signals.
     # Must be awaited directly before reset_connection_state() so the DB still
     # holds the non-offline state that identifies which workers were stale.
-    from worker_lifecycle import (  # noqa: PLC0415
-        drain_stale_workers_on_startup,
-        force_kill_stale_workers,
-    )
-
     stale_ids = await drain_stale_workers_on_startup()
 
     await reset_connection_state()
