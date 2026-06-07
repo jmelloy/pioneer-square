@@ -23,6 +23,7 @@ from typing import Any
 from database import get_db
 from events import broadcast, broadcast_msg, emit_terminal_line
 from foreman_core.llm import get_foreman_model
+from foreman_core.message_utils import _json_default
 from foreman_core.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
@@ -1398,15 +1399,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "agent": agent_info,
                             "branch": task.branch,
                             "pr_url": task.pr_url,
-                            "created_at": task.created_at.isoformat(),
-                            "finished_at": task.finished_at.isoformat()
-                            if task.finished_at
-                            else None,
-                            "recent_logs": [
-                                {"time": r[0].isoformat() if r[0] else None, "line": r[1]}
-                                for r in log_rows
-                            ],
-                        }
+                            "created_at": task.created_at,
+                            "finished_at": task.finished_at,
+                            "recent_logs": [{"time": r[0], "line": r[1]} for r in log_rows],
+                        },
+                        default=_json_default,
                     )
         finally:
             await db.close()

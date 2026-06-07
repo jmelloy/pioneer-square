@@ -21,6 +21,7 @@ from foreman_core.constants import (
 from foreman_core.llm import HAS_ANTHROPIC, get_foreman_model, make_anthropic_client
 from foreman_core.message_utils import (
     _inject_state_preamble,
+    _json_default,
     _serialize_content,
     _stamp_message_cache_breakpoint,
     _summarize_task,
@@ -545,12 +546,13 @@ async def _run_foreman_ai(
                 for r in worker_rows
             ],
             indent=2,
+            default=_json_default,
         )
         cutoff_ts = datetime.now(UTC).timestamp() - _24H_SECS
         summarized_tasks = [
             s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
         ]
-        tasks_block = json.dumps(summarized_tasks, indent=2)
+        tasks_block = json.dumps(summarized_tasks, indent=2, default=_json_default)
         system_blocks = build_system_blocks(
             primary_repo=primary_repo, system_prompt_suffix=cfg_system_prompt_suffix
         )
