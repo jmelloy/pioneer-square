@@ -22,7 +22,7 @@ from typing import Any
 
 from database import get_db
 from events import broadcast, broadcast_msg, emit_terminal_line
-from foreman_core.llm import get_foreman_model
+from foreman_core.llm import get_foreman_model, make_anthropic_client
 from foreman_core.message_utils import _json_default
 from foreman_core.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
@@ -1725,9 +1725,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             head_ref = (pr_data.get("head") or {}).get("ref", "")
 
                             try:
-                                import anthropic as _anthropic
-
-                                _ai = _anthropic.AsyncAnthropic()
+                                _ai = make_anthropic_client()
                                 review_prompt = (
                                     "You are a thorough code reviewer. Review the following "
                                     "GitHub pull request and provide structured feedback.\n\n"

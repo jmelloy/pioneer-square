@@ -63,7 +63,9 @@ def make_anthropic_client(
     if not HAS_ANTHROPIC or _anthropic_mod is None:
         raise ImportError("anthropic package is not installed")
 
-    resolved_provider = (provider or FOREMAN_PROVIDER).lower()
+    # Read env dynamically (same as get_foreman_model) so patching os.environ in
+    # tests works and a late-set FOREMAN_PROVIDER env var is picked up correctly.
+    resolved_provider = (provider or os.environ.get("FOREMAN_PROVIDER", "anthropic")).lower()
     resolved_region = region or _BEDROCK_REGION
 
     if resolved_provider == "bedrock":
