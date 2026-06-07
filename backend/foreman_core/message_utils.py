@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any
 
 from .constants import _TERMINAL_STATES, MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS
+
+
+def _json_default(obj: Any) -> Any:
+    """JSON encoder fallback: serialize datetime/date objects as ISO strings."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
 def truncate_tool_result(content: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
