@@ -79,125 +79,108 @@ class TestMakeAnthropicClient:
     def test_default_creates_anthropic_client(self, monkeypatch):
         """When no provider is specified and FOREMAN_PROVIDER is unset, use AsyncAnthropic."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman_core.llm as llm_mod
+
         mock_mod = _make_mock_anthropic()
-        with patch.dict("sys.modules", {"anthropic": mock_mod}):
-            import importlib
-
-            import foreman_core.llm as llm_mod
-
-            importlib.reload(llm_mod)
-            llm_mod.make_anthropic_client()
-            mock_mod.AsyncAnthropic.assert_called_once()
-            mock_mod.AsyncAnthropicBedrock.assert_not_called()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client()
+        mock_mod.AsyncAnthropic.assert_called_once()
+        mock_mod.AsyncAnthropicBedrock.assert_not_called()
 
     def test_bedrock_env_creates_bedrock_client(self, monkeypatch):
         """FOREMAN_PROVIDER=bedrock must produce an AsyncAnthropicBedrock client."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
+        import foreman_core.llm as llm_mod
+
         mock_mod = _make_mock_anthropic()
-        with patch.dict("sys.modules", {"anthropic": mock_mod}):
-            import importlib
-
-            import foreman_core.llm as llm_mod
-
-            importlib.reload(llm_mod)
-            llm_mod.make_anthropic_client()
-            mock_mod.AsyncAnthropicBedrock.assert_called_once()
-            mock_mod.AsyncAnthropic.assert_not_called()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client()
+        mock_mod.AsyncAnthropicBedrock.assert_called_once()
+        mock_mod.AsyncAnthropic.assert_not_called()
 
     def test_explicit_bedrock_provider_arg_overrides_env(self, monkeypatch):
         """Passing provider='bedrock' explicitly must use Bedrock even if env says anthropic."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "anthropic")
+        import foreman_core.llm as llm_mod
+
         mock_mod = _make_mock_anthropic()
-        with patch.dict("sys.modules", {"anthropic": mock_mod}):
-            import importlib
-
-            import foreman_core.llm as llm_mod
-
-            importlib.reload(llm_mod)
-            llm_mod.make_anthropic_client(provider="bedrock")
-            mock_mod.AsyncAnthropicBedrock.assert_called_once()
-            mock_mod.AsyncAnthropic.assert_not_called()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(provider="bedrock")
+        mock_mod.AsyncAnthropicBedrock.assert_called_once()
+        mock_mod.AsyncAnthropic.assert_not_called()
 
     def test_explicit_anthropic_provider_arg_overrides_bedrock_env(self, monkeypatch):
         """Passing provider='anthropic' must use AsyncAnthropic even if env says bedrock."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        import foreman_core.llm as llm_mod
+
         mock_mod = _make_mock_anthropic()
-        with patch.dict("sys.modules", {"anthropic": mock_mod}):
-            import importlib
-
-            import foreman_core.llm as llm_mod
-
-            importlib.reload(llm_mod)
-            llm_mod.make_anthropic_client(provider="anthropic", api_key="test-key")
-            mock_mod.AsyncAnthropic.assert_called_once()
-            mock_mod.AsyncAnthropicBedrock.assert_not_called()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(provider="anthropic", api_key="test-key")
+        mock_mod.AsyncAnthropic.assert_called_once()
+        mock_mod.AsyncAnthropicBedrock.assert_not_called()
 
     def test_bedrock_passes_region(self, monkeypatch):
         """The aws_region argument must be forwarded to AsyncAnthropicBedrock."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
-        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+        import foreman_core.llm as llm_mod
+
         mock_mod = _make_mock_anthropic()
-        with patch.dict("sys.modules", {"anthropic": mock_mod}):
-            import importlib
-
-            import foreman_core.llm as llm_mod
-
-            importlib.reload(llm_mod)
-            llm_mod.make_anthropic_client()
-            mock_mod.AsyncAnthropicBedrock.assert_called_once_with(aws_region="eu-west-1")
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        # Patch the module-level constant directly rather than relying on env + reload.
+        monkeypatch.setattr(llm_mod, "_BEDROCK_REGION", "eu-west-1")
+        llm_mod.make_anthropic_client()
+        mock_mod.AsyncAnthropicBedrock.assert_called_once_with(aws_region="eu-west-1")
 
     def test_bedrock_region_explicit_arg_overrides_env(self, monkeypatch):
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
-        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        import foreman_core.llm as llm_mod
+
         mock_mod = _make_mock_anthropic()
-        with patch.dict("sys.modules", {"anthropic": mock_mod}):
-            import importlib
-
-            import foreman_core.llm as llm_mod
-
-            importlib.reload(llm_mod)
-            llm_mod.make_anthropic_client(provider="bedrock", region="ap-southeast-1")
-            mock_mod.AsyncAnthropicBedrock.assert_called_once_with(aws_region="ap-southeast-1")
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        monkeypatch.setattr(llm_mod, "_BEDROCK_REGION", "us-east-1")
+        llm_mod.make_anthropic_client(provider="bedrock", region="ap-southeast-1")
+        mock_mod.AsyncAnthropicBedrock.assert_called_once_with(aws_region="ap-southeast-1")
 
     def test_api_key_forwarded_to_anthropic_client(self, monkeypatch):
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman_core.llm as llm_mod
+
         mock_mod = _make_mock_anthropic()
-        with patch.dict("sys.modules", {"anthropic": mock_mod}):
-            import importlib
-
-            import foreman_core.llm as llm_mod
-
-            importlib.reload(llm_mod)
-            llm_mod.make_anthropic_client(api_key="sk-test-123")
-            mock_mod.AsyncAnthropic.assert_called_once_with(api_key="sk-test-123")
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(api_key="sk-test-123")
+        mock_mod.AsyncAnthropic.assert_called_once_with(api_key="sk-test-123")
 
     def test_no_api_key_omitted_from_kwargs(self, monkeypatch):
         """When api_key is None, it must not be passed to AsyncAnthropic (lets SDK read env)."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman_core.llm as llm_mod
+
         mock_mod = _make_mock_anthropic()
-        with patch.dict("sys.modules", {"anthropic": mock_mod}):
-            import importlib
-
-            import foreman_core.llm as llm_mod
-
-            importlib.reload(llm_mod)
-            llm_mod.make_anthropic_client()
-            mock_mod.AsyncAnthropic.assert_called_once_with()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client()
+        mock_mod.AsyncAnthropic.assert_called_once_with()
 
     def test_missing_anthropic_package_raises(self, monkeypatch):
         """If anthropic is not installed, make_anthropic_client must raise ImportError."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        with patch.dict("sys.modules", {"anthropic": None}):
-            import importlib
+        import foreman_core.llm as llm_mod
 
-            import foreman_core.llm as llm_mod
-
-            importlib.reload(llm_mod)
-            # HAS_ANTHROPIC will be False after reload with anthropic=None in sys.modules
-            if not llm_mod.HAS_ANTHROPIC:
-                with pytest.raises(ImportError):
-                    llm_mod.make_anthropic_client()
+        # Explicitly force the "no anthropic" path regardless of CI environment so the
+        # test exercises the ImportError branch even when the package is installed.
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", False)
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", None)
+        with pytest.raises(ImportError):
+            llm_mod.make_anthropic_client()
 
 
 # ---------------------------------------------------------------------------
@@ -218,11 +201,7 @@ class TestMakeAnthropicClientDynamicEnv:
         # Start with anthropic, import module, then switch to bedrock — the call must still
         # create AsyncAnthropicBedrock because we read os.environ dynamically.
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import importlib
-
         import foreman_core.llm as llm_mod
-
-        importlib.reload(llm_mod)  # captures "anthropic" in any cached constant
 
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
         mock_mod = _make_mock_anthropic()
@@ -235,11 +214,7 @@ class TestMakeAnthropicClientDynamicEnv:
     def test_anthropic_env_set_after_bedrock_reload(self, monkeypatch):
         """Switching from bedrock back to anthropic must produce an AsyncAnthropic client."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
-        import importlib
-
         import foreman_core.llm as llm_mod
-
-        importlib.reload(llm_mod)
 
         monkeypatch.setenv("FOREMAN_PROVIDER", "anthropic")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
