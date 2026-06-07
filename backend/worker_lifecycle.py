@@ -240,6 +240,9 @@ async def force_kill_stale_workers(stale_ids: list[str]) -> None:
     async with AsyncSessionLocal() as db:
         workers = (await db.exec(select(Worker).where(col(Worker.id).in_(stale_ids)))).all()
 
+    # Create the Docker client once; avoids per-container connection overhead and
+    # ensures consistent failure behaviour across all kills in this batch.
+    docker_client = None
     for worker in workers:
         if worker.container_id:
             # Step 4: force-kill the Docker container.
@@ -247,8 +250,11 @@ async def force_kill_stale_workers(stale_ids: list[str]) -> None:
                 import docker  # noqa: PLC0415
 
                 # Use asyncio.to_thread for all blocking Docker SDK calls.
-                client = await asyncio.to_thread(docker.from_env)
-                container = await asyncio.to_thread(client.containers.get, worker.container_id)
+                if docker_client is None:
+                    docker_client = await asyncio.to_thread(docker.from_env)
+                container = await asyncio.to_thread(
+                    docker_client.containers.get, worker.container_id
+                )
                 await asyncio.to_thread(container.kill)
                 logger.info(
                     "worker_lifecycle: force-killed container %s (worker %s)",

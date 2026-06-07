@@ -308,11 +308,13 @@ def test_drain_timeout_env_override(monkeypatch):
 
     import worker_lifecycle as wl
 
-    importlib.reload(wl)
-    assert wl.WORKER_DRAIN_TIMEOUT == 120.0
-    # Restore.
-    monkeypatch.delenv("PIONEER_WORKER_DRAIN_TIMEOUT", raising=False)
-    importlib.reload(wl)
+    try:
+        importlib.reload(wl)
+        assert wl.WORKER_DRAIN_TIMEOUT == 120.0
+    finally:
+        # Always restore module state so later tests see the default value.
+        monkeypatch.delenv("PIONEER_WORKER_DRAIN_TIMEOUT", raising=False)
+        importlib.reload(wl)
 
 
 # ---------------------------------------------------------------------------
