@@ -522,10 +522,13 @@ async def _run_foreman_ai(
             )
             .order_by(col(Task.created_at).desc())
         )
-        task_rows = [
-            {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
-            for r in task_result.all()
-        ]
+        task_rows = []
+        for r in task_result.all():
+            row = dict(r._mapping)
+            row["description"] = row.get("description") or ""
+            if isinstance(row.get("finished_at"), datetime):
+                row["finished_at"] = row["finished_at"].isoformat()
+            task_rows.append(row)
         _task_id: str | None = task_rows[0]["id"] if len(task_rows) == 1 else None
     except Exception:
         await db.close()
