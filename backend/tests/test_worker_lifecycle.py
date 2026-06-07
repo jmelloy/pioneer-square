@@ -15,9 +15,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from worker_lifecycle import (  # noqa: E402
     WORKER_DRAIN_TIMEOUT,
+    _spawn_replacement_workers,
     drain_stale_workers_on_startup,
     force_kill_stale_workers,
     get_current_version,
+    record_worker_spawn,
 )
 
 # ---------------------------------------------------------------------------
@@ -201,6 +203,7 @@ async def test_drain_force_kills_surviving_container(monkeypatch):
         patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
         patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.0),
         patch.dict("sys.modules", {"docker": fake_docker_module}),
+        patch("worker_lifecycle._spawn_replacement_workers", AsyncMock()),
     ):
         await force_kill_stale_workers(["w-stale2"])
 
@@ -238,6 +241,7 @@ async def test_force_kill_exits_early_when_workers_self_terminate():
         patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
         patch("worker_lifecycle.asyncio.sleep", fake_sleep),
         patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 60.0),
+        patch("worker_lifecycle._spawn_replacement_workers", AsyncMock()),
     ):
         await force_kill_stale_workers(["w-early"])
 
@@ -278,6 +282,7 @@ async def test_drain_skips_kill_when_no_container_id(monkeypatch):
         patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
         patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.0),
         patch.dict("sys.modules", {"docker": fake_docker_module}),
+        patch("worker_lifecycle._spawn_replacement_workers", AsyncMock()),
     ):
         await force_kill_stale_workers(["w-nocontainer"])
 
@@ -308,3 +313,116 @@ def test_drain_timeout_env_override(monkeypatch):
     # Restore.
     monkeypatch.delenv("PIONEER_WORKER_DRAIN_TIMEOUT", raising=False)
     importlib.reload(wl)
+
+
+# ---------------------------------------------------------------------------
+# record_worker_spawn
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_worker_spawn_writes_fields():
+    """record_worker_spawn updates container_id, spawned_version, and started_at."""
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    with patch("worker_lifecycle.get_current_version", return_value="v-test"):
+        await record_worker_spawn(mock_db, "w-abc123", "container-deadbeef")
+
+    mock_db.exec.assert_called_once()
+    mock_db.commit.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _spawn_replacement_workers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spawn_replacement_workers_no_op_on_empty():
+    """Empty stale_ids list → no DB or spawn calls."""
+    with patch("worker_lifecycle.AsyncSessionLocal") as mock_session:
+        await _spawn_replacement_workers([])
+    mock_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_spawn_replacement_workers_calls_spawn_for_each():
+    """One replacement worker is spawned per stale worker."""
+    fake_worker = MagicMock()
+    fake_worker.id = "w-old1"
+    fake_worker.guild_id = 42
+    fake_worker.repos = '["owner/repo"]'
+    fake_worker.name = "old-worker"
+
+    class FakeDB:
+        def __init__(self, rows):
+            self._rows = rows
+            self.exec = AsyncMock(
+                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
+            )
+            self.commit = AsyncMock()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    # Session 1: query workers + guild slugs.
+    # Session 2: passed to spawn_worker call.
+    sessions = [FakeDB([(fake_worker, "g-myguild")]), FakeDB([])]
+    session_iter = iter(sessions)
+    spawn_calls: list[dict] = []
+
+    async def fake_spawn(inp, guild_id, guild_pk, db):
+        spawn_calls.append({"inp": inp, "guild_id": guild_id, "guild_pk": guild_pk})
+        return ("ok", False)
+
+    fake_tools = MagicMock()
+    fake_tools.spawn_worker = fake_spawn
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch.dict("sys.modules", {"foreman": MagicMock(), "foreman.tools": fake_tools}),
+    ):
+        await _spawn_replacement_workers(["w-old1"])
+
+    assert len(spawn_calls) == 1
+    assert spawn_calls[0]["guild_id"] == "g-myguild"
+    assert spawn_calls[0]["guild_pk"] == 42
+    assert spawn_calls[0]["inp"]["repos"] == ["owner/repo"]
+
+
+@pytest.mark.asyncio
+async def test_force_kill_spawns_replacements_after_drain():
+    """force_kill_stale_workers calls _spawn_replacement_workers with the stale ids."""
+    spawn_mock = AsyncMock()
+
+    class FakeDB:
+        def __init__(self, rows):
+            self._rows = rows
+            self.exec = AsyncMock(
+                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
+            )
+            self.commit = AsyncMock()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    # Drain timeout = 0 → polling loop skipped → single DB session for kill fetch.
+    sessions = [FakeDB([])]
+    session_iter = iter(sessions)
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
+        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.0),
+        patch("worker_lifecycle._spawn_replacement_workers", spawn_mock),
+    ):
+        await force_kill_stale_workers(["w-s1", "w-s2"])
+
+    spawn_mock.assert_awaited_once_with(["w-s1", "w-s2"])

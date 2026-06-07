@@ -17,6 +17,7 @@ Lifecycle steps on backend startup
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -54,6 +55,65 @@ def get_current_version() -> str | None:
         return sha or None
     except Exception:
         return None
+
+
+async def record_worker_spawn(db, worker_id: str, container_id: str) -> None:
+    """Persist container_id, spawned_version, and started_at after a successful worker spawn."""
+    await db.exec(
+        update(Worker)
+        .where(col(Worker.id) == worker_id)
+        .values(
+            container_id=container_id,
+            spawned_version=get_current_version(),
+            started_at=datetime.now(UTC),
+        )
+    )
+    await db.commit()
+
+
+async def _spawn_replacement_workers(stale_ids: list[str]) -> None:
+    """Spawn one fresh replacement worker for each drained stale worker."""
+    if not stale_ids:
+        return
+
+    from foreman.tools import spawn_worker as _spawn_worker  # noqa: PLC0415
+
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.exec(
+                select(Worker, col(Guild.guild_id).label("guild_slug"))
+                .join(Guild, col(Guild.id) == col(Worker.guild_id))
+                .where(col(Worker.id).in_(stale_ids))
+            )
+        ).all()
+
+    for worker, guild_slug in rows:
+        try:
+            inp = {
+                "repos": json.loads(worker.repos or "[]"),
+                "name": worker.name,
+            }
+            async with AsyncSessionLocal() as db:
+                result_text, is_error = await _spawn_worker(
+                    inp=inp,
+                    guild_id=guild_slug,
+                    guild_pk=worker.guild_id,
+                    db=db,
+                )
+            if is_error:
+                logger.warning(
+                    "worker_lifecycle: failed to respawn replacement for guild %s: %s",
+                    guild_slug,
+                    result_text,
+                )
+            else:
+                logger.info("worker_lifecycle: spawned replacement worker for guild %s", guild_slug)
+        except Exception:
+            logger.warning(
+                "worker_lifecycle: exception respawning worker for guild %s",
+                guild_slug,
+                exc_info=True,
+            )
 
 
 async def drain_stale_workers_on_startup() -> list[str]:
@@ -208,3 +268,6 @@ async def force_kill_stale_workers(stale_ids: list[str]) -> None:
                 "relying on graceful-shutdown signal only",
                 worker.id,
             )
+
+    # Step 5: spawn one fresh worker to replace each drained stale worker.
+    await _spawn_replacement_workers(stale_ids)
