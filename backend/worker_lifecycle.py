@@ -122,9 +122,7 @@ async def drain_stale_workers_on_startup() -> list[str]:
                     exc_info=True,
                 )
             await db.exec(
-                update(Worker)
-                .where(col(Worker.id) == worker.id)
-                .values(drain_requested_at=now)
+                update(Worker).where(col(Worker.id) == worker.id).values(drain_requested_at=now)
             )
         await db.commit()
 
@@ -145,9 +143,7 @@ async def force_kill_stale_workers(stale_ids: list[str]) -> None:
 
     # Step 3: fetch stale workers that have a container_id to kill.
     async with AsyncSessionLocal() as db:
-        workers = (
-            await db.exec(select(Worker).where(col(Worker.id).in_(stale_ids)))
-        ).all()
+        workers = (await db.exec(select(Worker).where(col(Worker.id).in_(stale_ids)))).all()
 
     for worker in workers:
         if worker.container_id:
