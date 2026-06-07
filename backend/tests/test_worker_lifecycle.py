@@ -65,16 +65,48 @@ def test_get_current_version_returns_none_when_git_returns_empty(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_drain_skipped_when_no_version(monkeypatch):
-    """No version → drain is skipped with a warning, no DB calls."""
+async def test_drain_treats_all_workers_as_stale_when_no_version(monkeypatch):
+    """No version → conservatively drain all online workers rather than silently skipping."""
     monkeypatch.delenv("PIONEER_VERSION", raising=False)
+
+    fake_worker = MagicMock()
+    fake_worker.id = "w-unknown-ver"
+    fake_worker.container_id = None
+
+    # Session 1: returns the online worker.
+    # Session 2: write drain_requested_at.
+    class FakeDB:
+        def __init__(self, rows):
+            self._rows = rows
+            self.exec = AsyncMock(
+                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
+            )
+            self.commit = AsyncMock()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    sessions = [FakeDB([(fake_worker, "g-guild")]), FakeDB(None)]
+    session_iter = iter(sessions)
+    broadcast_calls = []
+
+    async def fake_broadcast(guild_slug, msg, *a, **kw):
+        broadcast_calls.append((guild_slug, msg))
+
     with (
         patch("worker_lifecycle.get_current_version", return_value=None),
-        patch("worker_lifecycle.AsyncSessionLocal") as mock_session,
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.broadcast_msg", fake_broadcast),
     ):
         result = await drain_stale_workers_on_startup()
-    mock_session.assert_not_called()
-    assert result == []
+
+    # All online workers are treated as stale and get a shutdown signal.
+    assert result == ["w-unknown-ver"]
+    assert len(broadcast_calls) == 1
+    assert broadcast_calls[0][0] == "g-guild"
 
 
 @pytest.mark.asyncio

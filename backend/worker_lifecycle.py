@@ -127,43 +127,52 @@ async def drain_stale_workers_on_startup() -> list[str]:
     force_kill_stale_workers() as a background task after reset_connection_state().
     """
     current_version = get_current_version()
-    if current_version is None:
-        logger.warning(
-            "worker_lifecycle: cannot determine backend version; skipping stale-worker drain"
-        )
-        return []
 
-    # Step 1: find workers whose recorded version differs from the current deploy.
+    # Step 1: find stale workers.  When the version is undetermined we cannot
+    # safely compare, so we conservatively treat *all* online workers as stale
+    # rather than silently leaving potential zombies from a previous deploy.
     async with AsyncSessionLocal() as db:
-        rows = (
-            await db.exec(
-                select(Worker, col(Guild.guild_id).label("guild_slug"))
-                .join(Guild, col(Guild.id) == col(Worker.guild_id))
-                .where(
-                    col(Worker.spawned_version).isnot(None),
-                    col(Worker.spawned_version) != current_version,
-                    col(Worker.state) != "offline",
-                )
+        if current_version is None:
+            logger.warning(
+                "worker_lifecycle: cannot determine backend version; "
+                "treating all online workers as stale to avoid leaving zombies running"
             )
-        ).all()
-        # Workers that are online but have no version stamp cannot be compared;
-        # log a warning rather than silently skipping them.
-        unversioned = (
-            await db.exec(
-                select(col(Worker.id)).where(
-                    col(Worker.spawned_version).is_(None),
-                    col(Worker.state) != "offline",
+            rows = (
+                await db.exec(
+                    select(Worker, col(Guild.guild_id).label("guild_slug"))
+                    .join(Guild, col(Guild.id) == col(Worker.guild_id))
+                    .where(col(Worker.state) != "offline")
                 )
-            )
-        ).all()
-
-    if unversioned:
-        logger.warning(
-            "worker_lifecycle: %d online worker(s) have no spawned_version and cannot "
-            "be compared against current version %s — they will not be drained",
-            len(unversioned),
-            current_version,
-        )
+            ).all()
+        else:
+            rows = (
+                await db.exec(
+                    select(Worker, col(Guild.guild_id).label("guild_slug"))
+                    .join(Guild, col(Guild.id) == col(Worker.guild_id))
+                    .where(
+                        col(Worker.spawned_version).isnot(None),
+                        col(Worker.spawned_version) != current_version,
+                        col(Worker.state) != "offline",
+                    )
+                )
+            ).all()
+            # Workers that are online but have no version stamp cannot be compared;
+            # log a warning rather than silently skipping them.
+            unversioned = (
+                await db.exec(
+                    select(col(Worker.id)).where(
+                        col(Worker.spawned_version).is_(None),
+                        col(Worker.state) != "offline",
+                    )
+                )
+            ).all()
+            if unversioned:
+                logger.warning(
+                    "worker_lifecycle: %d online worker(s) have no spawned_version and cannot "
+                    "be compared against current version %s — they will not be drained",
+                    len(unversioned),
+                    current_version,
+                )
 
     if not rows:
         logger.info(
