@@ -1,7 +1,7 @@
 """Rename guilds.guild_id to guilds.slug.
 
 Revision ID: 20260608_000000_rename_guild_slug
-Revises: 20260606_000000_index_tasks_parent_task_id
+Revises: 20260607_000000_add_worker_lifecycle_columns
 Create Date: 2026-06-08
 
 The human-readable 6-char guild identifier was stored as ``guild_id`` on the
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260608_000000_rename_guild_slug"
-down_revision: str | Sequence[str] | None = "20260606_000000_index_tasks_parent_task_id"
+down_revision: str | Sequence[str] | None = "20260607_000000_add_worker_lifecycle_columns"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
