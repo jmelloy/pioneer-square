@@ -202,7 +202,7 @@ def test_update_guild_clear_primary_repo(client):
 
 
 def test_guild_partial_unique_index(client):
-    """guild_id must be unique among active guilds but reusable after soft-delete."""
+    """slug must be unique among active guilds but reusable after soft-delete."""
     from sqlalchemy.exc import IntegrityError
 
     test_client, db_url = client  # noqa: F841 — db_url used directly
@@ -212,14 +212,14 @@ def test_guild_partial_unique_index(client):
 
     with _sync_session(db_url) as session:
         # Insert the first active guild.
-        session.add(Guild(guild_id=shared_id, created_at=now, name="First"))
+        session.add(Guild(slug=shared_id, created_at=now, name="First"))
         session.commit()
 
-    # A second guild with the same guild_id (both active) must violate the
+    # A second guild with the same slug (both active) must violate the
     # partial unique index.
     with pytest.raises(Exception) as exc_info:
         with _sync_session(db_url) as session:
-            session.add(Guild(guild_id=shared_id, created_at=now, name="Duplicate"))
+            session.add(Guild(slug=shared_id, created_at=now, name="Duplicate"))
             session.commit()
     # Verify it is an integrity/uniqueness violation
     assert exc_info.type.__name__ in ("UniqueViolation", "IntegrityError") or (
@@ -237,12 +237,12 @@ def test_guild_partial_unique_index(client):
 
     # After soft-delete the same guild_id can be inserted again.
     with _sync_session(db_url) as session:
-        session.add(Guild(guild_id=shared_id, created_at=now, name="Third"))
+        session.add(Guild(slug=shared_id, created_at=now, name="Third"))
         session.commit()
         count = session.scalar(
             select(func.count()).select_from(Guild).where(col(Guild.slug) == shared_id)
         )
-    assert count == 2, "should have one deleted and one active row for the same guild_id"
+    assert count == 2, "should have one deleted and one active row for the same slug"
 
 
 def test_primary_repo_in_foreman_prompt():

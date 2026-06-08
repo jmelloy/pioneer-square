@@ -165,7 +165,7 @@ def test_post_claude_credentials_requires_auth(client):
     insert_guild(db_url, "g-write")
     resp = test_client.post(
         "/auth/claude/credentials",
-        json={"guild_id": "g-write", "credentials_blob": "NEW"},
+        json={"slug": "g-write", "credentials_blob": "NEW"},
     )
     assert resp.status_code == 401
 
@@ -176,7 +176,7 @@ def test_post_claude_credentials_accepts_worker_token(client):
     worker = _register_worker(test_client, "g-write")
     resp = test_client.post(
         "/auth/claude/credentials",
-        json={"guild_id": "g-write", "credentials_blob": "NEW"},
+        json={"slug": "g-write", "credentials_blob": "NEW"},
         headers={"Authorization": f"Bearer {worker['auth_token']}"},
     )
     assert resp.status_code == 200
@@ -246,7 +246,7 @@ def test_get_github_token_no_owner_in_guild_members(client):
         stmt = (
             pg_insert(Guild)
             .values(
-                guild_id="g-noowner",
+                slug="g-noowner",
                 created_at=now,
                 name="No Owner",
                 github_user_id="gh-user-test",
