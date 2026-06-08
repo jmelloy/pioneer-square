@@ -110,6 +110,53 @@ async def test_drain_treats_all_workers_as_stale_when_no_version(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_drain_treats_null_version_workers_as_stale():
+    """Workers with NULL spawned_version are drained even when current version is known.
+
+    Pre-migration rows have no spawned_version stamp and cannot be confirmed to match
+    the current backend version, so they are conservatively treated as stale.
+    """
+    fake_worker = MagicMock()
+    fake_worker.id = "w-null-ver"
+    fake_worker.container_id = None
+
+    class FakeDB:
+        def __init__(self, rows):
+            self._rows = rows
+            self.exec = AsyncMock(
+                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
+            )
+            self.commit = AsyncMock()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    # Session 1: returns the NULL-version worker as stale.
+    # Session 2: write drain_requested_at.
+    sessions = [FakeDB([(fake_worker, "g-guild")]), FakeDB(None)]
+    session_iter = iter(sessions)
+    broadcast_calls = []
+
+    async def fake_broadcast(guild_slug, msg, *a, **kw):
+        broadcast_calls.append((guild_slug, msg))
+
+    with (
+        patch("worker_lifecycle.get_current_version", return_value="v-current"),
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.broadcast_msg", fake_broadcast),
+    ):
+        result = await drain_stale_workers_on_startup()
+
+    # NULL-version worker is treated as stale and receives a shutdown signal.
+    assert result == ["w-null-ver"]
+    assert len(broadcast_calls) == 1
+    assert broadcast_calls[0][0] == "g-guild"
+
+
+@pytest.mark.asyncio
 async def test_drain_skipped_when_no_stale_workers(monkeypatch):
     """When all workers match the current version, drain is a no-op."""
     mock_exec = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))

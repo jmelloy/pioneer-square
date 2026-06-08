@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from database import AsyncSessionLocal
 from events import broadcast_msg
 from models import Guild, Worker
-from sqlalchemy import update
+from sqlalchemy import or_, update
 from sqlmodel import col, select
 from ws_types import WorkerShutdownMsg
 
@@ -145,34 +145,23 @@ async def drain_stale_workers_on_startup() -> list[str]:
                 )
             ).all()
         else:
+            # Drain workers whose version differs from the current one, including workers
+            # with NULL spawned_version (pre-migration rows from before version tracking
+            # was introduced). NULL means we cannot confirm they match the current version,
+            # so we conservatively treat them as stale.
             rows = (
                 await db.exec(
                     select(Worker, col(Guild.guild_id).label("guild_slug"))
                     .join(Guild, col(Guild.id) == col(Worker.guild_id))
                     .where(
-                        col(Worker.spawned_version).isnot(None),
-                        col(Worker.spawned_version) != current_version,
+                        or_(
+                            col(Worker.spawned_version).is_(None),
+                            col(Worker.spawned_version) != current_version,
+                        ),
                         col(Worker.state) != "offline",
                     )
                 )
             ).all()
-            # Workers that are online but have no version stamp cannot be compared;
-            # log a warning rather than silently skipping them.
-            unversioned = (
-                await db.exec(
-                    select(col(Worker.id)).where(
-                        col(Worker.spawned_version).is_(None),
-                        col(Worker.state) != "offline",
-                    )
-                )
-            ).all()
-            if unversioned:
-                logger.warning(
-                    "worker_lifecycle: %d online worker(s) have no spawned_version and cannot "
-                    "be compared against current version %s — they will not be drained",
-                    len(unversioned),
-                    current_version,
-                )
 
     if not rows:
         logger.info(
