@@ -87,7 +87,7 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         _gp_db = await get_db()
         try:
             _gp_res = await _gp_db.exec(
-                select(col(Guild.id)).where(col(Guild.guild_id) == guild_id)
+                select(col(Guild.id)).where(col(Guild.slug) == guild_id)
             )
             _guild_pk = _gp_res.one_or_none()
         except Exception:

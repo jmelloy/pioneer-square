@@ -331,7 +331,7 @@ async def agent_card(
     workers: list[Worker] = []
 
     if guild_id:
-        guild = (await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))).one_or_none()
+        guild = (await db.exec(select(Guild).where(col(Guild.slug) == guild_id))).one_or_none()
         if guild:
             rows = await db.exec(select(Worker).where(col(Worker.guild_id) == guild.id))
             workers = list(rows.all())
@@ -355,7 +355,7 @@ async def guild_agent_card(
     db: AsyncSession = Depends(get_db_dep),
 ) -> JSONResponse:
     """Returns the AgentCard for a specific guild (authenticated)."""
-    guild = (await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))).one_or_none()
+    guild = (await db.exec(select(Guild).where(col(Guild.slug) == guild_id))).one_or_none()
     if not guild:
         raise HTTPException(404, detail="Guild not found")
     rows = await db.exec(select(Worker).where(col(Worker.guild_id) == guild.id))

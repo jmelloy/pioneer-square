@@ -105,7 +105,7 @@ async def _sweep_stale_workers_once() -> int:
                 select(
                     col(Worker.id),
                     col(Worker.guild_id),
-                    col(Guild.guild_id).label("guild_slug"),
+                    col(Guild.slug).label("guild_slug"),
                     col(Worker.last_seen),
                 )
                 .join(Guild, col(Guild.id) == col(Worker.guild_id))
@@ -123,7 +123,7 @@ async def _sweep_stale_workers_once() -> int:
                 select(
                     col(Agent.id),
                     col(Agent.guild_id),
-                    col(Guild.guild_id).label("guild_slug"),
+                    col(Guild.slug).label("guild_slug"),
                 )
                 .join(Guild, col(Guild.id) == col(Agent.guild_id))
                 .where(col(Agent.state) != "offline")
@@ -197,7 +197,7 @@ async def _sweep_stale_workers_once() -> int:
                     select(
                         col(Agent.id),
                         col(Agent.guild_id),
-                        col(Guild.guild_id).label("guild_slug"),
+                        col(Guild.slug).label("guild_slug"),
                     )
                     .join(Guild, col(Guild.id) == col(Agent.guild_id))
                     .where(
