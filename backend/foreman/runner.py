@@ -93,9 +93,7 @@ def _get_anthropic_client():
 async def _load_foreman_config(guild_id: str) -> dict:
     """Load per-guild foreman config from the DB. Returns {} if unset."""
     async with AsyncSessionLocal() as db:
-        result = await db.exec(
-            select(col(Guild.foreman_config)).where(col(Guild.slug) == guild_id)
-        )
+        result = await db.exec(select(col(Guild.foreman_config)).where(col(Guild.slug) == guild_id))
         raw = result.one_or_none()
         return raw if isinstance(raw, dict) else {}
 
