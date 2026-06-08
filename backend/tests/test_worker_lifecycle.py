@@ -15,10 +15,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from worker_lifecycle import (  # noqa: E402
     WORKER_DRAIN_TIMEOUT,
-    spawn_replacement_workers,
     drain_stale_workers_on_startup,
     get_current_version,
     record_worker_spawn,
+    spawn_replacement_workers,
 )
 
 # ---------------------------------------------------------------------------
@@ -335,4 +335,3 @@ async def test_spawn_replacement_workers_calls_spawn_for_each():
     assert spawn_calls[0]["guild_id"] == "g-myguild"
     assert spawn_calls[0]["guild_pk"] == 42
     assert spawn_calls[0]["inp"]["repos"] == ["owner/repo"]
-

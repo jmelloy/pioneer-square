@@ -16,7 +16,6 @@ Lifecycle steps on backend startup
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -26,7 +25,7 @@ from datetime import UTC, datetime
 from database import AsyncSessionLocal
 from events import broadcast_msg
 from models import Guild, Worker
-from sqlalchemy import or_, update
+from sqlalchemy import update
 from sqlmodel import col, select
 from ws_types import WorkerShutdownMsg
 
@@ -200,5 +199,3 @@ async def drain_stale_workers_on_startup() -> list[str]:
         await db.commit()
 
     return [worker.id for worker, _ in rows]
-
-

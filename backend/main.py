@@ -348,7 +348,9 @@ async def lifespan(app: FastAPI):
     # Phase 2: after the drain window, force-kill any surviving stale containers.
     # Runs in background so it does not block startup or the first request.
     drain_bg = (
-        spawn(spawn_replacement_workers(stale_ids), name="stale-worker-drain") if stale_ids else None
+        spawn(spawn_replacement_workers(stale_ids), name="stale-worker-drain")
+        if stale_ids
+        else None
     )
     # Pre-warm the models.dev cache so the first /api/models request is fast.
     from util.models_dev import fetch_providers as _fetch_providers  # noqa: PLC0415
