@@ -158,9 +158,7 @@ def test_webhook_accepts_ping(client):
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(col(Guild.id)).where(
-                col(Guild.slug) == "g4", col(Guild.deleted_at).is_(None)
-            )
+            select(col(Guild.id)).where(col(Guild.slug) == "g4", col(Guild.deleted_at).is_(None))
         )
         count = session.scalar(
             select(func.count())
@@ -590,9 +588,7 @@ def test_ci_notify_persists_message_and_returns_202(client, monkeypatch):
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(col(Guild.id)).where(
-                col(Guild.slug) == "gcn4", col(Guild.deleted_at).is_(None)
-            )
+            select(col(Guild.id)).where(col(Guild.slug) == "gcn4", col(Guild.deleted_at).is_(None))
         )
         row = session.execute(
             select(Message).where(col(Message.guild_id) == guild_pk)
@@ -627,9 +623,7 @@ def test_ci_notify_resolves_task_from_pr_number(client, monkeypatch):
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(col(Guild.id)).where(
-                col(Guild.slug) == "gcn5", col(Guild.deleted_at).is_(None)
-            )
+            select(col(Guild.id)).where(col(Guild.slug) == "gcn5", col(Guild.deleted_at).is_(None))
         )
         row = session.execute(
             select(Message).where(col(Message.guild_id) == guild_pk)
@@ -668,9 +662,7 @@ def test_ci_notify_uses_explicit_task_id(client, monkeypatch):
 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
-            select(col(Guild.id)).where(
-                col(Guild.slug) == "gcn6", col(Guild.deleted_at).is_(None)
-            )
+            select(col(Guild.id)).where(col(Guild.slug) == "gcn6", col(Guild.deleted_at).is_(None))
         )
         row = session.execute(
             select(Message).where(col(Message.guild_id) == guild_pk)
