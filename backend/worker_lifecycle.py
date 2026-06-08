@@ -80,7 +80,7 @@ async def spawn_replacement_workers(stale_ids: list[str]) -> None:
     async with AsyncSessionLocal() as db:
         rows = (
             await db.exec(
-                select(Worker, col(Guild.guild_id).label("guild_slug"))
+                select(Worker, col(Guild.slug).label("guild_slug"))
                 .join(Guild, col(Guild.id) == col(Worker.guild_id))
                 .where(col(Worker.id).in_(stale_ids))
             )
@@ -138,7 +138,7 @@ async def drain_stale_workers_on_startup() -> list[str]:
             )
             rows = (
                 await db.exec(
-                    select(Worker, col(Guild.guild_id).label("guild_slug"))
+                    select(Worker, col(Guild.slug).label("guild_slug"))
                     .join(Guild, col(Guild.id) == col(Worker.guild_id))
                     .where(col(Worker.state) != "offline")
                 )
@@ -150,7 +150,7 @@ async def drain_stale_workers_on_startup() -> list[str]:
             # so we conservatively treat them as stale.
             rows = (
                 await db.exec(
-                    select(Worker, col(Guild.guild_id).label("guild_slug"))
+                    select(Worker, col(Guild.slug).label("guild_slug"))
                     .join(Guild, col(Guild.id) == col(Worker.guild_id))
                     .where(
                         col(Worker.spawned_version) != current_version,
