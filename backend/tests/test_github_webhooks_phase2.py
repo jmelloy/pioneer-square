@@ -53,7 +53,7 @@ def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
 
     with _sync_session(db_url) as session:
         session.execute(
-            update(Guild).where(col(Guild.guild_id) == guild_id).values(webhook_secret=secret)
+            update(Guild).where(col(Guild.slug) == guild_id).values(webhook_secret=secret)
         )
         session.commit()
 

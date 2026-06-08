@@ -199,7 +199,7 @@ def make_foreman_jwt(guild_id: str, secret: str, ttl: int = _FOREMAN_JWT_TTL) ->
         json.dumps(
             {
                 "sub": _FOREMAN_JWT_SUB,
-                "guild_id": guild_id,
+                "slug": guild_id,
                 "iat": now,
                 "exp": now + ttl,
             }
@@ -230,7 +230,7 @@ def verify_foreman_jwt(token: str, secret: str, guild_id: str) -> bool:
         payload = json.loads(_b64url_decode(parts[1]))
         if payload.get("sub") != _FOREMAN_JWT_SUB:
             return False
-        if payload.get("guild_id") != guild_id:
+        if payload.get("slug") != guild_id:
             return False
         exp = payload.get("exp", 0)
         if time.time() > exp:

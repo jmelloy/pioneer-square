@@ -128,13 +128,13 @@ async def create_guild(
     if data is None:
         data = GuildCreate()
     created_at = datetime.now(UTC)
-    result = await db.exec(select(col(Guild.guild_id)).where(col(Guild.deleted_at).is_(None)))
+    result = await db.exec(select(col(Guild.slug)).where(col(Guild.deleted_at).is_(None)))
     existing_ids = set(result.all())
     guild_id = generate_guild_id(name=data.name or "", existing_ids=existing_ids)
     guild_name = data.name or f"Guild {guild_id}"
     try:
         new_guild = Guild(
-            guild_id=guild_id,
+            slug=guild_id,
             created_at=created_at,
             name=guild_name,
             github_user_id=github_user_id,
@@ -163,7 +163,7 @@ async def list_guilds(
 ):
     result = await db.exec(
         select(
-            col(Guild.guild_id).label("id"),
+            col(Guild.slug).label("id"),
             col(Guild.created_at),
             col(Guild.name),
             func.count(col(Agent.id)).label("agent_count"),
@@ -181,7 +181,7 @@ async def list_guilds(
             & (col(Agent.state) != "offline"),
         )
         .where(col(GuildMember.user_id) == github_user_id)
-        .group_by(col(Guild.guild_id), col(Guild.created_at), col(Guild.name))
+        .group_by(col(Guild.slug), col(Guild.created_at), col(Guild.name))
         .order_by(col(Guild.created_at).desc())
     )
     return [dict(r._mapping) for r in result.all()]
@@ -194,7 +194,7 @@ async def update_guild(
     github_user_id: str = Depends(require_member("owner")),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    result = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    result = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = result.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
@@ -236,7 +236,7 @@ async def get_guild(
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    result = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    result = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = result.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
@@ -261,7 +261,7 @@ async def get_guild(
     messages = result.all()
     return {
         **row_to_dict(guild),
-        "id": guild.guild_id,  # keep text guild_id as "id" for API compatibility
+        "id": guild.slug,  # keep slug as "id" for API compatibility
         "agents": [
             {**row_to_dict(row.Agent), "worker_name": row.worker_name} for row in agent_rows
         ],
@@ -332,7 +332,7 @@ async def add_guild_member(
     )
     await db.exec(stmt)
     await db.commit()
-    return {"guild_id": guild_id, "user_id": target_id, "role": data.role}
+    return {"slug": guild_id, "user_id": target_id, "role": data.role}
 
 
 @router.patch("/api/guilds/{guild_id}/members/{user_id}")
@@ -370,12 +370,12 @@ async def update_guild_member(
             raise HTTPException(status_code=400, detail="Cannot demote the last owner of a guild")
     member.role = data.role
     await db.commit()
-    return {"guild_id": guild_id, "user_id": user_id, "role": data.role}
+    return {"slug": guild_id, "user_id": user_id, "role": data.role}
 
 
 async def _ensure_webhook_secret(db, guild_id: str) -> str:
     """Return the guild's webhook secret, generating one on first access."""
-    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
@@ -396,13 +396,13 @@ async def rotate_webhook_secret(
     Rotating invalidates webhooks already configured against the previous
     secret — callers must update each repo's webhook config to match.
     """
-    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
     guild.webhook_secret = secrets.token_hex(32)
     await db.commit()
-    return {"guild_id": guild_id, "webhook_secret": guild.webhook_secret}
+    return {"slug": guild_id, "webhook_secret": guild.webhook_secret}
 
 
 @router.get("/guilds/{guild_id}/webhook-secret")
@@ -417,7 +417,7 @@ async def get_webhook_secret(
     need it to configure ``POST /repos/{repo}/hooks`` on the user's behalf.
     """
     secret = await _ensure_webhook_secret(db, guild_id)
-    return {"guild_id": guild_id, "webhook_secret": secret}
+    return {"slug": guild_id, "webhook_secret": secret}
 
 
 @router.get("/api/guilds/{guild_id}/foreman-config")
@@ -427,7 +427,7 @@ async def get_foreman_config(
     db: AsyncSession = Depends(get_db_dep),
 ):
     """Return the guild's foreman configuration (owner only). Env var values are masked."""
-    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
@@ -448,7 +448,7 @@ async def update_foreman_config(
     Env var values sent as empty string or a new string replace the stored value.
     Keys absent from the submitted list are deleted.
     """
-    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")

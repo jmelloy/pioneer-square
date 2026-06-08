@@ -87,7 +87,7 @@ async def get_foreman_context(
     db: AsyncSession = Depends(get_db_dep),
 ):
     """Return the stored foreman conversation turns for this guild+user (debug view)."""
-    result = await db.exec(select(col(Guild.guild_id)).where(col(Guild.guild_id) == guild_id))
+    result = await db.exec(select(col(Guild.slug)).where(col(Guild.slug) == guild_id))
     if result.one_or_none() is None:
         raise HTTPException(status_code=404, detail="Guild not found")
     history = await get_foreman_history(guild_id, github_user_id)
@@ -105,7 +105,7 @@ async def clear_foreman_context(
     db: AsyncSession = Depends(get_db_dep),
 ):
     """Delete all stored foreman turns for this guild+user. Chat history in messages table is preserved."""
-    result = await db.exec(select(col(Guild.guild_id)).where(col(Guild.guild_id) == guild_id))
+    result = await db.exec(select(col(Guild.slug)).where(col(Guild.slug) == guild_id))
     if result.one_or_none() is None:
         raise HTTPException(status_code=404, detail="Guild not found")
     removed = await clear_foreman_history(guild_id, github_user_id)
@@ -165,7 +165,7 @@ async def get_foreman_state(
 
     # Guild metadata
     guild_res = await db.exec(
-        select(col(Guild.name), col(Guild.primary_repo)).where(col(Guild.guild_id) == guild_id)
+        select(col(Guild.name), col(Guild.primary_repo)).where(col(Guild.slug) == guild_id)
     )
     guild_row = guild_res.one_or_none()
 
@@ -303,7 +303,7 @@ async def get_foreman_env_vars(
 
     Response: ``{ "env_vars": [{"key": str, "value": str}, ...] }``
     """
-    res = await db.exec(select(Guild).where(col(Guild.guild_id) == guild_id))
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")

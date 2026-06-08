@@ -48,7 +48,7 @@ class CodeExchangeRequest(BaseModel):
 
 
 class ClaudeCredentialsRequest(BaseModel):
-    guild_id: str
+    slug: str
     credentials_blob: str  # base64-encoded tar.gz of ~/.claude/
 
 
@@ -147,9 +147,9 @@ async def store_claude_credentials(
     Requires a worker auth_token or member login_token for ``data.guild_id``.
     Without this check, anyone could overwrite a guild's Claude credentials."""
     token = credentials.credentials if credentials else None
-    await authorize_worker_or_member(data.guild_id, token)
+    await authorize_worker_or_member(data.slug, token)
     now = datetime.now(UTC)
-    guild_pk = await get_guild_pk(db, data.guild_id)
+    guild_pk = await get_guild_pk(db, data.slug)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
     result = await db.exec(
@@ -240,12 +240,12 @@ async def api_me(
         raise HTTPException(status_code=404, detail="User not found")
 
     members_res = await db.exec(
-        select(col(Guild.guild_id), col(GuildMember.role), col(Guild.name))
+        select(col(Guild.slug), col(GuildMember.role), col(Guild.name))
         .join(Guild, col(Guild.id) == col(GuildMember.guild_id))
         .where(col(GuildMember.user_id) == github_user_id)
     )
     memberships = [
-        {"guild_id": row.guild_id, "guild_name": row.name, "role": row.role}
+        {"guild_id": row.slug, "guild_name": row.name, "role": row.role}
         for row in members_res.all()
     ]
     return {
@@ -314,18 +314,18 @@ async def guest_login(db: AsyncSession = Depends(get_db_dep)):
     # Find or create the persistent dev guild
     _not_deleted = or_(col(Guild.deleted_at).is_(None), col(Guild.deleted_at) == "")
     guild_res = await db.exec(
-        select(col(Guild.guild_id))
+        select(col(Guild.slug))
         .where(col(Guild.github_user_id) == guest_user_id, _not_deleted)
         .limit(1)
     )
     guild_id = guild_res.one_or_none()
 
     if not guild_id:
-        existing_res = await db.exec(select(col(Guild.guild_id)).where(_not_deleted))
+        existing_res = await db.exec(select(col(Guild.slug)).where(_not_deleted))
         existing_ids = set(existing_res.all())
         guild_id = generate_guild_id(name="dev", existing_ids=existing_ids)
         new_guild = Guild(
-            guild_id=guild_id,
+            slug=guild_id,
             created_at=now,
             name="Dev Workshop",
             github_user_id=guest_user_id,
@@ -345,7 +345,7 @@ async def guest_login(db: AsyncSession = Depends(get_db_dep)):
 
     return {
         "login_token": login_token,
-        "guild_id": guild_id,
+        "slug": guild_id,
         "gh_user_id": guest_user_id,
         "gh_login": "dev-guest",
         "gh_name": "Dev Guest",

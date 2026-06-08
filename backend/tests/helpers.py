@@ -142,9 +142,9 @@ def insert_guild(
     with _sync_session(db_url) as session:
         stmt = (
             pg_insert(Guild)
-            .values(guild_id=guild_id, created_at=now, name=name, github_user_id=owner_user_id)
+            .values(slug=guild_id, created_at=now, name=name, github_user_id=owner_user_id)
             .on_conflict_do_update(
-                index_elements=["guild_id"],
+                index_elements=["slug"],
                 index_where=col(Guild.deleted_at).is_(None),
                 set_={"name": pg_insert(Guild).excluded.name},
             )
@@ -190,7 +190,7 @@ def insert_member(db_url: str, guild_id: str, user_id: str, role: str = "member"
         )
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         if guild_pk:
@@ -219,7 +219,7 @@ def insert_worker(
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         assert guild_pk is not None, f"Guild {guild_id!r} not found"
@@ -255,7 +255,7 @@ def insert_agent(
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         assert guild_pk is not None, f"Guild {guild_id!r} not found"
@@ -300,7 +300,7 @@ def insert_task(
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         assert guild_pk is not None, f"Guild {guild_id!r} not found"

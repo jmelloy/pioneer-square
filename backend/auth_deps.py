@@ -31,8 +31,8 @@ http_bearer = HTTPBearer(auto_error=False)
 
 
 async def get_guild_pk(db, guild_id: str) -> int | None:
-    """Return the integer PK (guilds.id) for *guild_id*, or None if not found."""
-    result = await db.exec(select(col(Guild.id)).where(col(Guild.guild_id) == guild_id))
+    """Return the integer PK (guilds.id) for *guild_id* (the slug), or None if not found."""
+    result = await db.exec(select(col(Guild.id)).where(col(Guild.slug) == guild_id))
     return result.one_or_none()
 
 

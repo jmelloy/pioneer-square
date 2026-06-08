@@ -21,7 +21,7 @@ def _insert_foreman_turn(db_url: str, guild_id: str, user_id: str, role: str, co
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         session.add(

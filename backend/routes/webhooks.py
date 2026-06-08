@@ -606,7 +606,7 @@ async def github_webhook(
     )
 
     guild_res = await db.exec(
-        select(col(Guild.webhook_secret), col(Guild.id)).where(col(Guild.guild_id) == guild_id)
+        select(col(Guild.webhook_secret), col(Guild.id)).where(col(Guild.slug) == guild_id)
     )
     guild_row = guild_res.one_or_none()
     if not guild_row or not guild_row.webhook_secret:
@@ -860,7 +860,7 @@ async def ci_notify(
     workflow = body.workflow_name or "CI"
     conclusion = body.conclusion or "unknown"
 
-    guild_res = await db.exec(select(col(Guild.id)).where(col(Guild.guild_id) == guild_id))
+    guild_res = await db.exec(select(col(Guild.id)).where(col(Guild.slug) == guild_id))
     guild_pk = guild_res.one_or_none()
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")

@@ -20,15 +20,15 @@ class Guild(SQLModel, table=True):
     __tablename__ = "guilds"  # type: ignore[assignment]
     __table_args__ = (
         Index(
-            "uq_guilds_guild_id_active",
-            "guild_id",
+            "uq_guilds_slug_active",
+            "slug",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    guild_id: str
+    slug: str
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     name: str | None = None
     github_user_id: str | None = None
@@ -44,7 +44,7 @@ class Guild(SQLModel, table=True):
     # Per-guild foreman AI configuration. NULL = use process defaults.
     foreman_config: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     # UTC instant at which this guild is considered soft-deleted.
-    # NULL = active; partial unique index enforces one active row per guild_id.
+    # NULL = active; partial unique index enforces one active row per slug.
     deleted_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )

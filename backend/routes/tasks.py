@@ -159,7 +159,7 @@ async def get_guild_logs(
     """Get task_logs filtered by worker_id, agent_id, or task_id."""
     if not (worker_id or agent_id or task_id):
         raise HTTPException(status_code=400, detail="Specify worker_id, agent_id, or task_id")
-    result = await db.exec(select(col(Guild.guild_id)).where(col(Guild.guild_id) == guild_id))
+    result = await db.exec(select(col(Guild.slug)).where(col(Guild.slug) == guild_id))
     if not result.one_or_none():
         raise HTTPException(status_code=404, detail="Guild not found")
     stmt = select(
