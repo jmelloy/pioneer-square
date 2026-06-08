@@ -35,7 +35,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from util.tasks import spawn
-from worker_lifecycle import drain_stale_workers_on_startup, force_kill_stale_workers
+from worker_lifecycle import drain_stale_workers_on_startup, spawn_replacement_workers
 from ws_types import WorkerPingMsg
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -348,7 +348,7 @@ async def lifespan(app: FastAPI):
     # Phase 2: after the drain window, force-kill any surviving stale containers.
     # Runs in background so it does not block startup or the first request.
     drain_bg = (
-        spawn(force_kill_stale_workers(stale_ids), name="stale-worker-drain") if stale_ids else None
+        spawn(spawn_replacement_workers(stale_ids), name="stale-worker-drain") if stale_ids else None
     )
     # Pre-warm the models.dev cache so the first /api/models request is fast.
     from util.models_dev import fetch_providers as _fetch_providers  # noqa: PLC0415

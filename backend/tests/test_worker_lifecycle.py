@@ -15,9 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from worker_lifecycle import (  # noqa: E402
     WORKER_DRAIN_TIMEOUT,
-    _spawn_replacement_workers,
+    spawn_replacement_workers,
     drain_stale_workers_on_startup,
-    force_kill_stale_workers,
     get_current_version,
     record_worker_spawn,
 )
@@ -240,143 +239,6 @@ async def test_drain_sends_shutdown_and_records_timestamp(monkeypatch):
     assert stale_ids == ["w-stale1"]
 
 
-# ---------------------------------------------------------------------------
-# force_kill_stale_workers
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_drain_force_kills_surviving_container(monkeypatch):
-    """After the drain timeout, surviving containers are killed via Docker SDK."""
-    fake_worker = MagicMock()
-    fake_worker.id = "w-stale2"
-    fake_worker.container_id = "abc123deadbeef"
-
-    class FakeDB:
-        def __init__(self, rows):
-            self._rows = rows
-            self.exec = AsyncMock(
-                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
-            )
-            self.commit = AsyncMock()
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-    # Patch drain timeout to 0 so the polling loop is skipped; only the final
-    # container-fetch session is needed.
-    sessions = [FakeDB([fake_worker])]
-    session_iter = iter(sessions)
-
-    fake_container = MagicMock()
-    fake_docker_client = MagicMock()
-    fake_docker_client.containers.get.return_value = fake_container
-    fake_docker_module = MagicMock()
-    fake_docker_module.from_env.return_value = fake_docker_client
-
-    with (
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
-        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.0),
-        patch.dict("sys.modules", {"docker": fake_docker_module}),
-        patch("worker_lifecycle._spawn_replacement_workers", AsyncMock()),
-    ):
-        await force_kill_stale_workers(["w-stale2"])
-
-    fake_docker_client.containers.get.assert_called_once_with("abc123deadbeef")
-    fake_container.kill.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_force_kill_exits_early_when_workers_self_terminate():
-    """Polling loop exits before the full drain timeout once all workers go offline."""
-
-    class FakeDB:
-        def __init__(self, rows):
-            self._rows = rows
-            self.exec = AsyncMock(
-                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
-            )
-            self.commit = AsyncMock()
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-    # First poll: worker still alive. Second poll: worker gone → early exit.
-    sessions = [FakeDB(["w-early"]), FakeDB([])]
-    session_iter = iter(sessions)
-    sleep_calls: list[float] = []
-
-    async def fake_sleep(s):
-        sleep_calls.append(s)
-
-    with (
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle.asyncio.sleep", fake_sleep),
-        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 60.0),
-        patch("worker_lifecycle._spawn_replacement_workers", AsyncMock()),
-    ):
-        await force_kill_stale_workers(["w-early"])
-
-    # Returned after the second DB poll — only one sleep occurred (after first poll).
-    assert len(sleep_calls) == 1
-    # Docker kill was never reached because function returned early.
-
-
-@pytest.mark.asyncio
-async def test_drain_skips_kill_when_no_container_id(monkeypatch):
-    """Workers without a container_id (non-Docker) are not force-killed."""
-    fake_worker = MagicMock()
-    fake_worker.id = "w-nocontainer"
-    fake_worker.container_id = None
-
-    class FakeDB:
-        def __init__(self, rows):
-            self._rows = rows
-            self.exec = AsyncMock(
-                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
-            )
-            self.commit = AsyncMock()
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-    # Patch drain timeout to 0 so the polling loop is skipped.
-    sessions = [FakeDB([fake_worker])]
-    session_iter = iter(sessions)
-
-    fake_docker_module = MagicMock()
-
-    with (
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
-        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.0),
-        patch.dict("sys.modules", {"docker": fake_docker_module}),
-        patch("worker_lifecycle._spawn_replacement_workers", AsyncMock()),
-    ):
-        await force_kill_stale_workers(["w-nocontainer"])
-
-    # Docker was never asked to kill anything.
-    fake_docker_module.from_env.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_force_kill_no_op_when_empty_ids():
-    """force_kill_stale_workers returns immediately when given an empty list."""
-    with patch("worker_lifecycle.asyncio.sleep", AsyncMock()) as mock_sleep:
-        await force_kill_stale_workers([])
-    mock_sleep.assert_not_called()
-
-
 def test_drain_timeout_default():
     assert WORKER_DRAIN_TIMEOUT == 60.0
 
@@ -424,7 +286,7 @@ async def test_record_worker_spawn_writes_fields():
 async def test_spawn_replacement_workers_no_op_on_empty():
     """Empty stale_ids list → no DB or spawn calls."""
     with patch("worker_lifecycle.AsyncSessionLocal") as mock_session:
-        await _spawn_replacement_workers([])
+        await spawn_replacement_workers([])
     mock_session.assert_not_called()
 
 
@@ -467,43 +329,10 @@ async def test_spawn_replacement_workers_calls_spawn_for_each():
         patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
         patch.dict("sys.modules", {"foreman": MagicMock(), "foreman.tools": fake_tools}),
     ):
-        await _spawn_replacement_workers(["w-old1"])
+        await spawn_replacement_workers(["w-old1"])
 
     assert len(spawn_calls) == 1
     assert spawn_calls[0]["guild_id"] == "g-myguild"
     assert spawn_calls[0]["guild_pk"] == 42
     assert spawn_calls[0]["inp"]["repos"] == ["owner/repo"]
 
-
-@pytest.mark.asyncio
-async def test_force_kill_spawns_replacements_after_drain():
-    """force_kill_stale_workers calls _spawn_replacement_workers with the stale ids."""
-    spawn_mock = AsyncMock()
-
-    class FakeDB:
-        def __init__(self, rows):
-            self._rows = rows
-            self.exec = AsyncMock(
-                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
-            )
-            self.commit = AsyncMock()
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-    # Drain timeout = 0 → polling loop skipped → single DB session for kill fetch.
-    sessions = [FakeDB([])]
-    session_iter = iter(sessions)
-
-    with (
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
-        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.0),
-        patch("worker_lifecycle._spawn_replacement_workers", spawn_mock),
-    ):
-        await force_kill_stale_workers(["w-s1", "w-s2"])
-
-    spawn_mock.assert_awaited_once_with(["w-s1", "w-s2"])

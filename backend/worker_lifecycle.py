@@ -71,7 +71,7 @@ async def record_worker_spawn(db, worker_id: str, container_id: str) -> None:
     await db.commit()
 
 
-async def _spawn_replacement_workers(stale_ids: list[str]) -> None:
+async def spawn_replacement_workers(stale_ids: list[str]) -> None:
     """Spawn one fresh replacement worker for each drained stale worker."""
     if not stale_ids:
         return
@@ -154,10 +154,7 @@ async def drain_stale_workers_on_startup() -> list[str]:
                     select(Worker, col(Guild.guild_id).label("guild_slug"))
                     .join(Guild, col(Guild.id) == col(Worker.guild_id))
                     .where(
-                        or_(
-                            col(Worker.spawned_version).is_(None),
-                            col(Worker.spawned_version) != current_version,
-                        ),
+                        col(Worker.spawned_version) != current_version,
                         col(Worker.state) != "offline",
                     )
                 )
@@ -205,73 +202,3 @@ async def drain_stale_workers_on_startup() -> list[str]:
     return [worker.id for worker, _ in rows]
 
 
-async def force_kill_stale_workers(stale_ids: list[str]) -> None:
-    """Wait the drain window then force-kill surviving stale containers.
-
-    Must be spawned as a background task *after* reset_connection_state() has
-    run.  Because reset_connection_state() marks all workers offline in the DB,
-    we identify survivors by container_id rather than by DB state.
-    """
-    if not stale_ids:
-        return
-
-    # Poll every 5 s so we exit early if all stale workers self-terminate
-    # before the full drain window elapses.
-    poll_interval = 5.0
-    elapsed = 0.0
-    while elapsed < WORKER_DRAIN_TIMEOUT:
-        async with AsyncSessionLocal() as db:
-            remaining = (
-                await db.exec(
-                    select(col(Worker.id)).where(
-                        col(Worker.id).in_(stale_ids), col(Worker.state) != "offline"
-                    )
-                )
-            ).all()
-        if not remaining:
-            logger.info("worker_lifecycle: all stale workers exited cleanly after %.0fs", elapsed)
-            return
-        await asyncio.sleep(min(poll_interval, WORKER_DRAIN_TIMEOUT - elapsed))
-        elapsed += poll_interval
-
-    # Step 3: fetch stale workers that have a container_id to kill.
-    async with AsyncSessionLocal() as db:
-        workers = (await db.exec(select(Worker).where(col(Worker.id).in_(stale_ids)))).all()
-
-    # Create the Docker client once; avoids per-container connection overhead and
-    # ensures consistent failure behaviour across all kills in this batch.
-    docker_client = None
-    for worker in workers:
-        if worker.container_id:
-            # Step 4: force-kill the Docker container.
-            try:
-                import docker  # noqa: PLC0415
-
-                # Use asyncio.to_thread for all blocking Docker SDK calls.
-                if docker_client is None:
-                    docker_client = await asyncio.to_thread(docker.from_env)
-                container = await asyncio.to_thread(
-                    docker_client.containers.get, worker.container_id
-                )
-                await asyncio.to_thread(container.kill)
-                logger.info(
-                    "worker_lifecycle: force-killed container %s (worker %s)",
-                    worker.container_id[:12],
-                    worker.id,
-                )
-            except Exception:
-                logger.warning(
-                    "worker_lifecycle: failed to force-kill container for worker %s",
-                    worker.id,
-                    exc_info=True,
-                )
-        else:
-            # Non-Docker worker (started via compose or manual CLI): cannot force-kill.
-            logger.warning(
-                "worker_lifecycle: stale worker %s has no container_id; "
-                "relying on graceful-shutdown signal only",
-                worker.id,
-            )
-
-    # Step 5: spawn one fresh worker to replace each drained stale worker.
-    await _spawn_replacement_workers(stale_ids)
