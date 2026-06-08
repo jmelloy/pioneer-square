@@ -40,13 +40,15 @@ _anthropic_clients: dict[tuple, object] = {}
 def _get_anthropic_client(config: Config):
     provider = getattr(config, "provider", "anthropic") or "anthropic"
     region = getattr(config, "aws_region", None)
+    profile = getattr(config, "aws_profile", None)
     api_key = getattr(config, "api_key", None) or ""
-    cache_key = (provider.lower(), region, api_key)
+    cache_key = (provider.lower(), region, profile, api_key)
     if cache_key not in _anthropic_clients:
         _anthropic_clients[cache_key] = make_anthropic_client(
             provider=provider,
             api_key=api_key or None,
             region=region,
+            aws_profile=profile,
         )
     return _anthropic_clients[cache_key]
 

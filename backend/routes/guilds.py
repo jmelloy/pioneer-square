@@ -61,22 +61,13 @@ class GuildUpdate(BaseModel):
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_FOREMAN_ENV_VARS = 20
 _MAX_ENV_VALUE_LEN = 4096
-_MASK_PLACEHOLDER = "••••••"
 
 
 class EnvVarItem(BaseModel):
     key: str
-    # None → keep the currently stored value (used when the UI has a masked placeholder)
+    # None → keep the currently stored value. Kept for API compatibility; the UI
+    # now sends actual values since env vars are returned in clear text.
     value: str | None = None
-
-
-def _mask_foreman_config(config: dict) -> dict:
-    """Return a shallow copy of foreman_config with env var values replaced by the mask."""
-    if "env_vars" not in config:
-        return config
-    masked = dict(config)
-    masked["env_vars"] = [{"key": e["key"], "value": _MASK_PLACEHOLDER} for e in config["env_vars"]]
-    return masked
 
 
 class ForemanConfigUpdate(BaseModel):
@@ -426,12 +417,16 @@ async def get_foreman_config(
     github_user_id: str = Depends(require_member("owner")),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Return the guild's foreman configuration (owner only). Env var values are masked."""
+    """Return the guild's foreman configuration (owner only).
+
+    Env var values are returned in clear text (owner-only) so the settings
+    dialogue can display and copy/paste them for verification.
+    """
     res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    return _mask_foreman_config(guild.foreman_config or {})
+    return guild.foreman_config or {}
 
 
 @router.patch("/api/guilds/{guild_id}/foreman-config")
@@ -443,9 +438,8 @@ async def update_foreman_config(
 ):
     """Update (merge) the guild's foreman configuration (owner only).
 
-    Env var values sent as null preserve the existing stored secret — the UI uses
-    this for masked (unchanged) rows so secrets don't round-trip through the browser.
-    Env var values sent as empty string or a new string replace the stored value.
+    Env var values sent as null preserve the existing stored value (kept for API
+    compatibility); an empty string or a new string replaces the stored value.
     Keys absent from the submitted list are deleted.
     """
     res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
@@ -466,7 +460,7 @@ async def update_foreman_config(
                 new_env_vars: list[dict] = []
                 for item in value:
                     if item.value is None:
-                        # Masked / unchanged: keep the existing stored value if present
+                        # Unchanged: keep the existing stored value if present
                         if item.key in existing_map:
                             new_env_vars.append({"key": item.key, "value": existing_map[item.key]})
                     else:
@@ -478,7 +472,7 @@ async def update_foreman_config(
             config[field] = value
     guild.foreman_config = config
     await db.commit()
-    return _mask_foreman_config(config)
+    return config
 
 
 @router.delete("/api/guilds/{guild_id}/members/{user_id}")

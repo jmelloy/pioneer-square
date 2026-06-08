@@ -167,6 +167,27 @@
               />
             </datalist>
           </div>
+
+          <div class="foreman-field">
+            <label class="foreman-field-label">
+              {{ foremanProvider === 'bedrock' ? 'AWS Credentials' : 'Anthropic Credentials' }}
+            </label>
+            <div class="foreman-creds-grid">
+              <div v-for="f in wellKnownFields" :key="f.key" class="foreman-cred-field">
+                <label class="foreman-cred-label">{{ f.label }}</label>
+                <input
+                  class="settings-input"
+                  type="text"
+                  spellcheck="false"
+                  autocomplete="off"
+                  :placeholder="f.placeholder || ''"
+                  :value="wellKnownValue(f.key)"
+                  @input="setWellKnown(f.key, ($event.target as HTMLInputElement).value)"
+                />
+              </div>
+            </div>
+          </div>
+
           <div class="foreman-field">
             <label class="foreman-field-label">System Prompt Suffix</label>
             <textarea
@@ -211,48 +232,32 @@
           </div>
 
           <div class="foreman-field">
-            <label class="foreman-field-label">Environment Variables / API Keys</label>
+            <label class="foreman-field-label">Additional Environment Variables</label>
             <div class="env-var-list">
-              <div v-for="(row, i) in envVarRows" :key="i" class="env-var-row">
+              <div v-for="row in additionalEnvVarRows" :key="row.id" class="env-var-row">
                 <input
                   v-model="row.key"
                   class="settings-input env-var-key"
                   placeholder="KEY_NAME"
-                  list="foreman-env-key-hints"
-                  :readonly="row.masked"
-                  @input="onEnvKeyInput(i)"
+                  spellcheck="false"
+                  autocomplete="off"
                 />
-                <template v-if="row.masked">
-                  <input
-                    class="settings-input env-var-value env-var-value--masked"
-                    value="••••••"
-                    readonly
-                    title="Click Change to update value"
-                  />
-                  <button
-                    class="env-var-change-btn pixel-btn"
-                    @click="unlockEnvVar(i)"
-                    title="Change value"
-                  >
-                    ✎
-                  </button>
-                </template>
-                <template v-else>
-                  <input
-                    v-model="row.value"
-                    type="password"
-                    class="settings-input env-var-value"
-                    placeholder="value"
-                    autocomplete="new-password"
-                  />
-                </template>
-                <button class="env-var-delete-btn" @click="removeEnvVar(i)" title="Remove variable">
+                <input
+                  v-model="row.value"
+                  type="text"
+                  class="settings-input env-var-value"
+                  placeholder="value"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                <button
+                  class="env-var-delete-btn"
+                  @click="removeEnvVar(row)"
+                  title="Remove variable"
+                >
                   ✕
                 </button>
               </div>
-              <datalist id="foreman-env-key-hints">
-                <option v-for="key in foremanEnvKeyHints" :key="key" :value="key" />
-              </datalist>
               <button class="pixel-btn env-var-add-btn" @click="addEnvVar">+ Add Variable</button>
             </div>
           </div>
@@ -307,15 +312,31 @@ const modelsStore = reactive(useModels())
 const foremanProviderModels = computed(() =>
   foremanProvider.value ? modelsStore.modelsForProvider(foremanProvider.value) : [],
 )
-const FOREMAN_ENV_KEY_HINTS: Record<string, string[]> = {
-  anthropic: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_URL'],
+// Dedicated, provider-specific credential fields. These are stored as ordinary
+// env_vars under the hood (the foreman client reads them via extra_env) but get
+// first-class inputs so users don't have to remember exact var names.
+interface WellKnownField {
+  key: string
+  label: string
+  placeholder?: string
+}
+const FOREMAN_WELL_KNOWN: Record<string, WellKnownField[]> = {
+  anthropic: [
+    { key: 'ANTHROPIC_API_KEY', label: 'API Key', placeholder: 'sk-ant-…' },
+    { key: 'ANTHROPIC_AUTH_TOKEN', label: 'Auth Token (optional)' },
+    {
+      key: 'ANTHROPIC_BASE_URL',
+      label: 'Base URL (optional)',
+      placeholder: 'https://api.anthropic.com',
+    },
+  ],
   bedrock: [
-    'AWS_ACCESS_KEY_ID',
-    'AWS_SECRET_ACCESS_KEY',
-    'AWS_SESSION_TOKEN',
-    'AWS_DEFAULT_REGION',
-    'AWS_REGION',
-    'AWS_PROFILE',
+    { key: 'AWS_DEFAULT_REGION', label: 'Region', placeholder: 'us-east-1' },
+    { key: 'AWS_PROFILE', label: 'Profile (optional)' },
+    { key: 'AWS_ACCESS_KEY_ID', label: 'Access Key ID' },
+    { key: 'AWS_SECRET_ACCESS_KEY', label: 'Secret Access Key' },
+    { key: 'AWS_SESSION_TOKEN', label: 'Session Token (optional)' },
+    { key: 'AWS_BEARER_TOKEN_BEDROCK', label: 'Bedrock Bearer Token (optional)' },
   ],
 }
 
@@ -347,17 +368,37 @@ const foremanPollMax = ref<number | ''>('')
 const foremanSaving = ref(false)
 const foremanStatus = ref<'' | 'saved' | 'error'>('')
 let foremanStatusTimer: ReturnType<typeof setTimeout> | null = null
-const foremanEnvKeyHints = computed(() => {
-  const provider = foremanProvider.value || 'anthropic'
-  return FOREMAN_ENV_KEY_HINTS[provider] ?? []
-})
+const wellKnownFields = computed(
+  () => FOREMAN_WELL_KNOWN[foremanProvider.value || 'anthropic'] ?? [],
+)
+const wellKnownKeys = computed(() => new Set(wellKnownFields.value.map((f) => f.key)))
+// Free-form list excludes keys that have a dedicated field for the current provider.
+const additionalEnvVarRows = computed(() =>
+  envVarRows.value.filter((r) => !wellKnownKeys.value.has(r.key)),
+)
 
 interface EnvVarRow {
+  id: number
   key: string
   value: string
-  masked: boolean
 }
+let envRowSeq = 0
 const envVarRows = ref<EnvVarRow[]>([])
+
+function wellKnownValue(key: string): string {
+  return envVarRows.value.find((r) => r.key === key)?.value ?? ''
+}
+
+function setWellKnown(key: string, value: string) {
+  const row = envVarRows.value.find((r) => r.key === key)
+  if (value) {
+    if (row) row.value = value
+    else envVarRows.value.push({ id: ++envRowSeq, key, value })
+  } else if (row) {
+    // Empty value → drop the row so we don't persist blank vars.
+    envVarRows.value.splice(envVarRows.value.indexOf(row), 1)
+  }
+}
 
 async function loadForemanConfig() {
   if (!currentGuild.value) return
@@ -374,11 +415,11 @@ async function loadForemanConfig() {
       foremanMaxRounds.value = cfg.max_rounds ?? ''
       foremanPollMin.value = cfg.poll_min_interval ?? ''
       foremanPollMax.value = cfg.poll_max_interval ?? ''
-      // Env vars come back with masked values (••••••); track them as masked rows
-      envVarRows.value = (cfg.env_vars ?? []).map((e: { key: string }) => ({
+      // Env var values are returned in clear text so they can be verified/edited.
+      envVarRows.value = (cfg.env_vars ?? []).map((e: { key: string; value?: string }) => ({
+        id: ++envRowSeq,
         key: e.key,
-        value: '',
-        masked: true,
+        value: e.value ?? '',
       }))
     }
   } catch {
@@ -387,25 +428,12 @@ async function loadForemanConfig() {
 }
 
 function addEnvVar() {
-  envVarRows.value.push({ key: '', value: '', masked: false })
+  envVarRows.value.push({ id: ++envRowSeq, key: '', value: '' })
 }
 
-function removeEnvVar(i: number) {
-  envVarRows.value.splice(i, 1)
-}
-
-function unlockEnvVar(i: number) {
-  envVarRows.value[i].masked = false
-  envVarRows.value[i].value = ''
-}
-
-function onEnvKeyInput(i: number) {
-  // If user edits the key of a masked row, the backend can no longer match the
-  // existing stored value, so unlock it so they must enter the value explicitly.
-  if (envVarRows.value[i].masked) {
-    envVarRows.value[i].masked = false
-    envVarRows.value[i].value = ''
-  }
+function removeEnvVar(row: EnvVarRow) {
+  const i = envVarRows.value.indexOf(row)
+  if (i >= 0) envVarRows.value.splice(i, 1)
 }
 
 async function saveForemanConfig() {
@@ -426,11 +454,11 @@ async function saveForemanConfig() {
     else body.poll_min_interval = null
     if (foremanPollMax.value !== '') body.poll_max_interval = foremanPollMax.value
     else body.poll_max_interval = null
-    // Build env_vars: masked rows send null value (keep existing), unlocked rows send actual value.
-    // Skip rows with empty keys.
+    // Send actual values for every keyed row (dedicated credential fields and
+    // free-form rows alike both live in envVarRows). Skip rows with empty keys.
     body.env_vars = envVarRows.value
       .filter((r) => r.key.trim())
-      .map((r) => ({ key: r.key.trim(), value: r.masked ? null : r.value }))
+      .map((r) => ({ key: r.key.trim(), value: r.value }))
     const res = await fetch(
       `${API_BASE}/api/guilds/${encodeURIComponent(currentGuild.value.id)}/foreman-config`,
       {
@@ -441,12 +469,12 @@ async function saveForemanConfig() {
     )
     if (res.ok) {
       foremanStatus.value = 'saved'
-      // Re-load to sync masked state with what the server now has
+      // Re-sync with the server's canonical config (clear-text values).
       const saved = await res.json()
-      envVarRows.value = (saved.env_vars ?? []).map((e: { key: string }) => ({
+      envVarRows.value = (saved.env_vars ?? []).map((e: { key: string; value?: string }) => ({
+        id: ++envRowSeq,
         key: e.key,
-        value: '',
-        masked: true,
+        value: e.value ?? '',
       }))
     } else {
       foremanStatus.value = 'error'
@@ -1057,22 +1085,23 @@ function goHome() {
   font-size: 10px;
 }
 
-.env-var-value--masked {
+.foreman-creds-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.foreman-cred-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.foreman-cred-label {
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
   color: var(--color-text-dim);
-  letter-spacing: 2px;
-  cursor: default;
-}
-
-.env-var-change-btn {
-  font-size: 10px;
-  padding: 3px 6px;
-  flex-shrink: 0;
-  border-color: var(--color-teal);
-  color: var(--color-teal);
-}
-
-.env-var-change-btn:hover {
-  background: rgba(0, 187, 170, 0.12);
+  letter-spacing: 0.5px;
 }
 
 .env-var-delete-btn {

@@ -39,6 +39,9 @@ class Config:
     provider: str = "anthropic"
     # AWS region for Bedrock; ignored when provider != "bedrock"
     aws_region: str = "us-east-1"
+    # Named AWS profile for Bedrock (defaults to AWS_PROFILE env); ignored when
+    # provider != "bedrock". None falls back to boto3's default credential chain.
+    aws_profile: str | None = None
     max_rounds: int = 10
     history_limit: int = 40
     # Poll settings
@@ -176,6 +179,12 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or "us-east-1"
     )
 
+    aws_profile = (
+        overrides.get("aws_profile")
+        or claude_block.get("aws_profile")
+        or os.environ.get("AWS_PROFILE")
+    ) or None
+
     log_level = (
         overrides.get("log_level")
         or raw.get("log_level")
@@ -194,6 +203,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         api_key=api_key,
         provider=provider,
         aws_region=aws_region,
+        aws_profile=aws_profile,
         max_rounds=int(overrides.get("max_rounds", claude_block.get("max_rounds", 10))),
         history_limit=int(overrides.get("history_limit", claude_block.get("history_limit", 40))),
         poll_min_interval=int(

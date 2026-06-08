@@ -487,6 +487,16 @@ async def _run_foreman_ai(
     cfg_model: str | None = guild_cfg.get("model")
     cfg_system_prompt_suffix: str | None = guild_cfg.get("system_prompt_suffix")
     cfg_max_rounds: int = int(guild_cfg.get("max_rounds", MAX_FOREMAN_ROUNDS))
+    # Guild-configured env vars (settings dialogue) — these are otherwise only
+    # injected into spawned workers, never the foreman process. They carry the
+    # AI provider credentials configured via the dialogue (AWS_* for Bedrock,
+    # ANTHROPIC_* for the direct API), so pass them to the client factory or the
+    # foreman's own client can't authenticate.
+    cfg_env_vars: dict[str, str] = {
+        e["key"]: e["value"]
+        for e in (guild_cfg.get("env_vars") or [])
+        if e.get("key") and e.get("value") is not None
+    }
 
     # Build live context for the system prompt.  The session is kept open until
     # the end of the function so the tool_use / tool_result Message rows and the
@@ -594,12 +604,18 @@ async def _run_foreman_ai(
         # with this call only — the DB still holds just the human's literal text.
         _inject_state_preamble(messages, state_preamble)
 
-        # Use a per-guild client/model if the config overrides provider or model.
-        if cfg_provider and cfg_provider != os.environ.get("FOREMAN_PROVIDER", "anthropic").lower():
-            client = make_anthropic_client(provider=cfg_provider)
+        # Use a per-guild client when the config overrides the provider or
+        # supplies its own env vars (e.g. Bedrock AWS credentials/region from
+        # the settings dialogue, which otherwise never reach this process).
+        effective_provider = cfg_provider or os.environ.get("FOREMAN_PROVIDER", "anthropic").lower()
+        if cfg_provider or cfg_env_vars:
+            client = make_anthropic_client(
+                provider=effective_provider,
+                extra_env=cfg_env_vars or None,
+            )
         else:
             client = _get_anthropic_client()
-        foreman_model = cfg_model or get_foreman_model(provider=cfg_provider)
+        foreman_model = cfg_model or get_foreman_model(provider=effective_provider)
 
         text_parts = []
         for round_num in range(cfg_max_rounds):
