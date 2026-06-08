@@ -746,6 +746,11 @@ async def spawn_worker(
             run_kwargs["network"] = network
 
         container = await asyncio.to_thread(docker_client.containers.run, **run_kwargs)
+        # Persist container id and version so the lifecycle module can force-kill
+        # this container if the backend is redeployed with a different version.
+        from worker_lifecycle import record_worker_spawn as _record_worker_spawn  # noqa: PLC0415
+
+        await _record_worker_spawn(db, worker_id, container.id)
         result_text = json.dumps(
             {
                 "worker_id": worker_id,

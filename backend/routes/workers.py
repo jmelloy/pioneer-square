@@ -31,6 +31,7 @@ from utils import (
     row_to_dict,
     worker_display_name,
 )
+from worker_lifecycle import record_worker_spawn
 from ws_handlers import _resolve_user_identifier
 from ws_types import TaskAssignedMsg, WorkerMessageMsg
 
@@ -268,6 +269,10 @@ async def spawn_worker_container(
         )
         await db.commit()
         raise HTTPException(status_code=500, detail=f"Failed to start container: {e}")
+
+    # Persist container id and spawned version so the lifecycle module can
+    # force-kill this container if the backend is redeployed at a different version.
+    await record_worker_spawn(db, worker_id, container.id)
 
     return {"worker_id": worker_id, "container_id": container.id[:12], "image": image}
 

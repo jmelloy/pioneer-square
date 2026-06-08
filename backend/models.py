@@ -128,6 +128,23 @@ class Worker(SQLModel, table=True):
     # NULL on rows created before this column was added; the API falls back to
     # worker_id for those legacy rows.
     name: str | None = None
+    # Docker container id for this worker process (full 64-char hex or short 12-char).
+    # NULL for workers started outside of Docker (compose, manual CLI).
+    # Used by the lifecycle module to force-kill stale containers on version change.
+    container_id: str | None = None
+    # Backend version string recorded at spawn time (PIONEER_VERSION env var or git SHA).
+    # On startup, workers whose spawned_version differs from the current version are
+    # considered stale and drained/killed before fresh workers are started.
+    spawned_version: str | None = None
+    # UTC instant the container was successfully started (set after containers.run()).
+    started_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    # UTC instant a graceful-shutdown signal was sent to this worker (set during drain).
+    # NULL until the lifecycle module initiates a drain for this worker.
+    drain_requested_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
 
 
 class Task(SQLModel, table=True):

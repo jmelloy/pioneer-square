@@ -35,6 +35,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from util.tasks import spawn
+from worker_lifecycle import drain_stale_workers_on_startup, spawn_replacement_workers
 from ws_types import WorkerPingMsg
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -336,7 +337,21 @@ async def lifespan(app: FastAPI):
     _log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
     _log_format = os.environ.get("LOG_FORMAT", "colored")
     logging.config.dictConfig(_get_logging_config(_log_level, _log_format))
+
+    # Phase 1: detect stale workers and send graceful-shutdown signals.
+    # Must be awaited directly before reset_connection_state() so the DB still
+    # holds the non-offline state that identifies which workers were stale.
+    stale_ids = await drain_stale_workers_on_startup()
+
     await reset_connection_state()
+
+    # Phase 2: after the drain window, force-kill any surviving stale containers.
+    # Runs in background so it does not block startup or the first request.
+    drain_bg = (
+        spawn(spawn_replacement_workers(stale_ids), name="stale-worker-drain")
+        if stale_ids
+        else None
+    )
     # Pre-warm the models.dev cache so the first /api/models request is fast.
     from util.models_dev import fetch_providers as _fetch_providers  # noqa: PLC0415
 
@@ -346,10 +361,17 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         sweeper.cancel()
+        if drain_bg is not None:
+            drain_bg.cancel()
         try:
             await sweeper
         except (asyncio.CancelledError, Exception):
             pass
+        if drain_bg is not None:
+            try:
+                await drain_bg
+            except (asyncio.CancelledError, Exception):
+                pass
         await _shutdown_webhook_debouncer()
 
 
