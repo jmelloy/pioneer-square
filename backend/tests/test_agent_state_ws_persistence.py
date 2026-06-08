@@ -296,7 +296,7 @@ def test_guild_get_returns_current_task_id(client):
         )
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         session.execute(

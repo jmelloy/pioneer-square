@@ -21,7 +21,7 @@ def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
     with _sync_session(db_url) as session:
         session.execute(
             pg_insert(Guild)
-            .values(guild_id=guild_id, created_at=now, name="Legacy", github_user_id=user_id)
+            .values(slug=guild_id, created_at=now, name="Legacy", github_user_id=user_id)
             .on_conflict_do_nothing()
         )
         session.commit()

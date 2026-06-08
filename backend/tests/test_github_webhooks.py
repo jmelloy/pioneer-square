@@ -19,7 +19,7 @@ def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
 
     with _sync_session(db_url) as session:
         session.execute(
-            update(Guild).where(col(Guild.guild_id) == guild_id).values(webhook_secret=secret)
+            update(Guild).where(col(Guild.slug) == guild_id).values(webhook_secret=secret)
         )
         session.commit()
 
@@ -159,7 +159,7 @@ def test_webhook_accepts_ping(client):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == "g4", col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == "g4", col(Guild.deleted_at).is_(None)
             )
         )
         count = session.scalar(
@@ -325,7 +325,7 @@ def test_webhook_emits_foreman_chat_message(client):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == "gchat1", col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == "gchat1", col(Guild.deleted_at).is_(None)
             )
         )
         row = session.execute(
@@ -363,7 +363,7 @@ def test_webhook_chat_line_includes_merged_status(client):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == "gchat2", col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == "gchat2", col(Guild.deleted_at).is_(None)
             )
         )
         row = session.execute(
@@ -387,7 +387,7 @@ def test_webhook_chat_line_not_emitted_for_duplicate(client):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == "gchat3", col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == "gchat3", col(Guild.deleted_at).is_(None)
             )
         )
         count = session.scalar(
@@ -591,7 +591,7 @@ def test_ci_notify_persists_message_and_returns_202(client, monkeypatch):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == "gcn4", col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == "gcn4", col(Guild.deleted_at).is_(None)
             )
         )
         row = session.execute(
@@ -628,7 +628,7 @@ def test_ci_notify_resolves_task_from_pr_number(client, monkeypatch):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == "gcn5", col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == "gcn5", col(Guild.deleted_at).is_(None)
             )
         )
         row = session.execute(
@@ -669,7 +669,7 @@ def test_ci_notify_uses_explicit_task_id(client, monkeypatch):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == "gcn6", col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == "gcn6", col(Guild.deleted_at).is_(None)
             )
         )
         row = session.execute(

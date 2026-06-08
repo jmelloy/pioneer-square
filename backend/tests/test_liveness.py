@@ -319,7 +319,7 @@ def test_stale_sweeper_marks_silent_workers_offline(client, monkeypatch):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         session.add(
@@ -395,7 +395,7 @@ def test_sweeper_marks_zombie_worker_offline_when_agents_already_offline(client,
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         # Insert an agent that is *already* offline — simulates the state after
@@ -448,7 +448,7 @@ def test_sweeper_skips_fresh_workers(client):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         session.add(
@@ -501,7 +501,7 @@ def test_stale_task_watchdog_releases_lock_when_agent_goes_idle(client, monkeypa
     with _sync_session(db_path) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         # Task stuck in "working".

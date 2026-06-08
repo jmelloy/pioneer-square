@@ -60,7 +60,7 @@ def _insert_usage(db_url: str, guild_id: str, task_id: str) -> None:
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             sa_select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         assert guild_pk is not None

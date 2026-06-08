@@ -35,7 +35,7 @@ def _seed_claude_credentials(db_url: str, guild_id: str, blob: str = "BLOB") -> 
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(
             select(col(Guild.id)).where(
-                col(Guild.guild_id) == guild_id, col(Guild.deleted_at).is_(None)
+                col(Guild.slug) == guild_id, col(Guild.deleted_at).is_(None)
             )
         )
         stmt = (
@@ -185,7 +185,7 @@ def test_post_claude_credentials_accepts_worker_token(client):
         blob = session.scalar(
             select(col(ClaudeCredentials.credentials_blob))
             .join(Guild, col(Guild.id) == ClaudeCredentials.guild_id)
-            .where(col(Guild.guild_id) == "g-write", col(Guild.deleted_at).is_(None))
+            .where(col(Guild.slug) == "g-write", col(Guild.deleted_at).is_(None))
         )
     assert blob == "NEW"
 

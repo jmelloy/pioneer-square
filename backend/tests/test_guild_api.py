@@ -26,7 +26,7 @@ def _insert_guild_legacy_only(db_url: str, guild_id: str, user_id: str) -> None:
     with _sync_session(db_url) as session:
         session.execute(
             pg_insert(Guild)
-            .values(guild_id=guild_id, created_at=now, name="Legacy Guild", github_user_id=user_id)
+            .values(slug=guild_id, created_at=now, name="Legacy Guild", github_user_id=user_id)
             .on_conflict_do_nothing()
         )
         session.commit()
@@ -230,7 +230,7 @@ def test_guild_partial_unique_index(client):
     with _sync_session(db_url) as session:
         session.execute(
             update(Guild)
-            .where(col(Guild.guild_id) == shared_id, col(Guild.deleted_at).is_(None))
+            .where(col(Guild.slug) == shared_id, col(Guild.deleted_at).is_(None))
             .values(deleted_at=now)
         )
         session.commit()
@@ -240,7 +240,7 @@ def test_guild_partial_unique_index(client):
         session.add(Guild(guild_id=shared_id, created_at=now, name="Third"))
         session.commit()
         count = session.scalar(
-            select(func.count()).select_from(Guild).where(col(Guild.guild_id) == shared_id)
+            select(func.count()).select_from(Guild).where(col(Guild.slug) == shared_id)
         )
     assert count == 2, "should have one deleted and one active row for the same guild_id"
 
