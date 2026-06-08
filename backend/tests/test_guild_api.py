@@ -293,3 +293,42 @@ def test_get_guild_rejects_legacy_owner(client):
     _insert_guild_legacy_only(db_url, "g-leg2", "gh-user-test")
     resp = test_client.get("/guilds/g-leg2", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# foreman-config env vars — stored and returned in clear text (no masking)
+# ---------------------------------------------------------------------------
+
+
+def test_foreman_config_env_vars_round_trip_in_clear(client):
+    """PATCHed env var values (including secrets) come back verbatim on GET.
+
+    Masking was intentionally removed so owners can verify and copy/paste values.
+    """
+    test_client, db_url = client
+    token = make_auth_token(db_url)  # owner of g-fconf
+    insert_guild(db_url, "g-fconf")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    patch = test_client.patch(
+        "/api/guilds/g-fconf/foreman-config",
+        headers=headers,
+        json={
+            "provider": "bedrock",
+            "env_vars": [
+                {"key": "AWS_DEFAULT_REGION", "value": "eu-west-1"},
+                {"key": "AWS_ACCESS_KEY_ID", "value": "AKIASECRET"},
+                {"key": "AWS_SECRET_ACCESS_KEY", "value": "topsecret"},
+            ],
+        },
+    )
+    assert patch.status_code == 200
+
+    got = test_client.get("/api/guilds/g-fconf/foreman-config", headers=headers)
+    assert got.status_code == 200
+    env = {e["key"]: e["value"] for e in got.json()["env_vars"]}
+    assert env == {
+        "AWS_DEFAULT_REGION": "eu-west-1",
+        "AWS_ACCESS_KEY_ID": "AKIASECRET",
+        "AWS_SECRET_ACCESS_KEY": "topsecret",  # secret returned in clear, not masked
+    }

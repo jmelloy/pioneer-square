@@ -75,6 +75,32 @@ class TestGetForemanModel:
 # ---------------------------------------------------------------------------
 
 
+_PROVIDER_ENV_VARS = (
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_DEFAULT_REGION",
+    "AWS_REGION",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_ambient_provider_env(monkeypatch):
+    """Strip ambient provider credentials so tests assert on a clean slate.
+
+    Without this, a host/CI env that exports e.g. AWS_BEARER_TOKEN_BEDROCK or
+    ANTHROPIC_API_KEY would make make_anthropic_client() forward extra kwargs
+    (api_key / auth_token / aws_*) and break the exact-kwargs assertions below.
+    """
+    for var in _PROVIDER_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
 class TestMakeAnthropicClient:
     def test_default_creates_anthropic_client(self, monkeypatch):
         """When no provider is specified and FOREMAN_PROVIDER is unset, use AsyncAnthropic."""
@@ -149,6 +175,67 @@ class TestMakeAnthropicClient:
         llm_mod.make_anthropic_client(provider="bedrock", region="ap-southeast-1")
         mock_mod.AsyncAnthropicBedrock.assert_called_once_with(aws_region="ap-southeast-1")
 
+    def test_bedrock_aws_env_explicit_keys_forwarded(self, monkeypatch):
+        """Guild env_vars (settings dialogue) carrying AWS keys must reach the SDK.
+
+        Regression: the settings dialogue stores AWS creds in foreman_config
+        env_vars, which only ever reached spawned workers — not the foreman's
+        own Bedrock client — so boto3 raised 'could not resolve credentials'.
+        """
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(
+            provider="bedrock",
+            extra_env={
+                "AWS_ACCESS_KEY_ID": "AKIATEST",
+                "AWS_SECRET_ACCESS_KEY": "secret",
+                "AWS_SESSION_TOKEN": "token",
+                "AWS_DEFAULT_REGION": "eu-west-1",
+            },
+        )
+        mock_mod.AsyncAnthropicBedrock.assert_called_once_with(
+            aws_region="eu-west-1",
+            aws_access_key="AKIATEST",
+            aws_secret_key="secret",
+            aws_session_token="token",
+        )
+
+    def test_bedrock_aws_env_bearer_token_forwarded(self, monkeypatch):
+        """A bearer token in guild env_vars must be passed as api_key, not SigV4."""
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        monkeypatch.setattr(llm_mod, "_BEDROCK_REGION", "us-east-1")
+        llm_mod.make_anthropic_client(
+            provider="bedrock",
+            extra_env={"AWS_BEARER_TOKEN_BEDROCK": "bedrock-token-xyz"},
+        )
+        mock_mod.AsyncAnthropicBedrock.assert_called_once_with(
+            aws_region="us-east-1", api_key="bedrock-token-xyz"
+        )
+
+    def test_bedrock_aws_env_profile_forwarded(self, monkeypatch):
+        """An AWS_PROFILE in guild env_vars must be passed as aws_profile."""
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        monkeypatch.setattr(llm_mod, "_BEDROCK_REGION", "us-east-1")
+        # Patch boto3 session probe so a missing real profile doesn't error the test.
+        with patch.object(llm_mod, "_log_bedrock_credentials"):
+            llm_mod.make_anthropic_client(
+                provider="bedrock", extra_env={"AWS_PROFILE": "my-sso-profile"}
+            )
+        mock_mod.AsyncAnthropicBedrock.assert_called_once_with(
+            aws_region="us-east-1", aws_profile="my-sso-profile"
+        )
+
     def test_api_key_forwarded_to_anthropic_client(self, monkeypatch):
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
         import foreman_core.llm as llm_mod
@@ -169,6 +256,55 @@ class TestMakeAnthropicClient:
         monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
         llm_mod.make_anthropic_client()
         mock_mod.AsyncAnthropic.assert_called_once_with()
+
+    def test_anthropic_extra_env_api_key_and_base_url_forwarded(self, monkeypatch):
+        """Guild env_vars carrying ANTHROPIC_* must reach the direct API client.
+
+        Like the Bedrock case, the settings dialogue's env_vars never reach the
+        foreman process, so they must be forwarded explicitly.
+        """
+        monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(
+            provider="anthropic",
+            extra_env={
+                "ANTHROPIC_API_KEY": "sk-ant-guild",
+                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            },
+        )
+        mock_mod.AsyncAnthropic.assert_called_once_with(
+            api_key="sk-ant-guild", base_url="https://proxy.example.com"
+        )
+
+    def test_anthropic_extra_env_auth_token_forwarded(self, monkeypatch):
+        """ANTHROPIC_AUTH_TOKEN in guild env_vars must be passed as auth_token."""
+        monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(
+            provider="anthropic", extra_env={"ANTHROPIC_AUTH_TOKEN": "tok-abc"}
+        )
+        mock_mod.AsyncAnthropic.assert_called_once_with(auth_token="tok-abc")
+
+    def test_explicit_api_key_wins_over_extra_env(self, monkeypatch):
+        """An explicit api_key arg takes precedence over extra_env ANTHROPIC_API_KEY."""
+        monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(
+            api_key="sk-explicit", extra_env={"ANTHROPIC_API_KEY": "sk-from-env"}
+        )
+        mock_mod.AsyncAnthropic.assert_called_once_with(api_key="sk-explicit")
 
     def test_missing_anthropic_package_raises(self, monkeypatch):
         """If anthropic is not installed, make_anthropic_client must raise ImportError."""
