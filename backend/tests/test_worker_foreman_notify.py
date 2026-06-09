@@ -263,3 +263,141 @@ def test_task_complete_max_turns_notifies_foreman(client):
     assert "I was working on the migration" in msg, (
         f"Expected lastText snippet in message, got: {msg}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Guild-scoping tests (issue #621)
+# ---------------------------------------------------------------------------
+
+
+def test_worker_online_not_sent_to_foreign_guild(client):
+    """worker-register from a worker that belongs to guild_A must NOT trigger
+    a worker-online event in guild_B, even when the worker connects to guild_B's
+    WebSocket."""
+    test_client, db_url = client
+    guild_a = "nfy010"
+    guild_b = "nfy011"
+    worker_id = "w-nfy010"
+    agent_id = "a-nfy010"
+
+    insert_guild(db_url, guild_a, owner_user_id=None)
+    insert_guild(db_url, guild_b, owner_user_id=None)
+    # Worker belongs to guild_a only
+    insert_worker(db_url, guild_a, worker_id, state="online")
+
+    triggered, fake_trigger = _make_trigger_spy()
+
+    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+        # Worker mistakenly (or maliciously) connects to guild_b's WebSocket
+        with test_client.websocket_connect(f"/ws/{guild_b}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Foreign Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            # No agent-joined broadcast expected (join is rejected)
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong
+
+            ws.send_json(
+                {
+                    "type": "worker-register",
+                    "workerId": worker_id,
+                    "repos": ["org/repo1"],
+                    "tools": ["claude"],
+                }
+            )
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong
+
+    online = [(e, m) for e, m in triggered if e == "worker-online"]
+    assert not online, (
+        f"worker-online must not fire for guild {guild_b!r} when worker belongs to {guild_a!r}; "
+        f"got triggers: {triggered}"
+    )
+
+
+def test_worker_offline_not_sent_to_foreign_guild_on_disconnect(client):
+    """Graceful worker-disconnect from a foreign-guild worker must NOT trigger
+    a worker-offline event in the guild the worker connected to."""
+    test_client, db_url = client
+    guild_a = "nfy012"
+    guild_b = "nfy013"
+    worker_id = "w-nfy012"
+    agent_id = "a-nfy012"
+
+    insert_guild(db_url, guild_a, owner_user_id=None)
+    insert_guild(db_url, guild_b, owner_user_id=None)
+    # Worker belongs to guild_a only
+    insert_worker(db_url, guild_a, worker_id, state="online")
+
+    triggered, fake_trigger = _make_trigger_spy()
+
+    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+        # Worker connects to the wrong guild
+        with test_client.websocket_connect(f"/ws/{guild_b}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Foreign Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong
+
+            ws.send_json({"type": "worker-disconnect", "workerId": worker_id})
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong
+
+    offline = [(e, m) for e, m in triggered if e == "worker-offline"]
+    assert not offline, (
+        f"worker-offline must not fire for guild {guild_b!r} when worker belongs to {guild_a!r}; "
+        f"got triggers: {triggered}"
+    )
+
+
+def test_worker_online_fires_for_correct_guild(client):
+    """Regression: a worker connecting to its own guild still gets worker-online."""
+    test_client, db_url = client
+    guild_id = "nfy014"
+    worker_id = "w-nfy014"
+    agent_id = "a-nfy014"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+
+    triggered, fake_trigger = _make_trigger_spy()
+
+    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Correct Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # agent-joined broadcast
+
+            ws.send_json(
+                {
+                    "type": "worker-register",
+                    "workerId": worker_id,
+                    "repos": ["org/repo"],
+                    "tools": ["claude"],
+                }
+            )
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong
+
+    online = [(e, m) for e, m in triggered if e == "worker-online"]
+    assert online, f"Expected worker-online for own guild, got: {triggered}"
