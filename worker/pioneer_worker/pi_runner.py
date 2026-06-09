@@ -160,6 +160,17 @@ async def run_pi_auto(
 
         stderr_task = asyncio.create_task(_drain_stderr())
         accumulated = ""
+        # Buffer for incomplete lines from message_update streaming deltas.
+        # Pi streams token-by-token so raw deltas arrive as word-sized chunks;
+        # we buffer and emit only at newline boundaries so each terminal-output
+        # message is a complete line rather than a single word.
+        _text_buf = ""
+
+        async def _flush_text_buf() -> None:
+            nonlocal _text_buf
+            if _text_buf.strip():
+                await emit(_text_buf.strip())
+            _text_buf = ""
 
         while True:
             try:
@@ -191,6 +202,7 @@ async def run_pi_auto(
             try:
                 event = json.loads(line_str)
             except json.JSONDecodeError:
+                await _flush_text_buf()
                 await emit(line_str)
                 continue
             etype = event.get("type")
@@ -213,6 +225,7 @@ async def run_pi_auto(
                 saw_error = True
             if etype == "agent_end":
                 saw_agent_end = True
+                await _flush_text_buf()
                 if accumulated.strip():
                     last_text = accumulated
                 accumulated = ""
@@ -247,8 +260,23 @@ async def run_pi_auto(
                             }
                         )
             text, accumulated = parse_pi_event(event, accumulated)
-            if text:
-                await emit(text)
+            if etype == "message_update":
+                # Buffer streaming text; emit only at newline boundaries so
+                # each terminal-output message carries a full line, not a token.
+                if text:
+                    _text_buf += text
+                while "\n" in _text_buf:
+                    pos = _text_buf.index("\n")
+                    line = _text_buf[:pos]
+                    if line.strip():
+                        await emit(line)
+                    _text_buf = _text_buf[pos + 1 :]
+            else:
+                # Non-streaming event: flush any buffered text first so ordering
+                # is preserved, then emit the formatted summary line.
+                await _flush_text_buf()
+                if text:
+                    await emit(text)
             if etype == "message_update" and accumulated.strip():
                 last_text = accumulated
             # We only send a single prompt; pi RPC mode stays alive waiting
