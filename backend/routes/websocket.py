@@ -227,10 +227,13 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 # Batch all stale-worker notifications into a single foreman
                 # trigger so a simultaneous mass-disconnect doesn't stampede
                 # the foreman with N concurrent embedded-foreman tasks.
-                if stale_worker_ids:
+                # Skip workers that already sent reason=shutdown via a graceful
+                # worker-disconnect message to avoid double-firing.
+                abrupt_worker_ids = stale_worker_ids - ctx.gracefully_disconnected_workers
+                if abrupt_worker_ids:
                     offline_lines = "\n".join(
                         f"[worker-offline] worker_id={wid} reason=disconnect"
-                        for wid in sorted(stale_worker_ids)
+                        for wid in sorted(abrupt_worker_ids)
                     )
                     await ws_handlers._trigger_foreman(
                         guild_id,

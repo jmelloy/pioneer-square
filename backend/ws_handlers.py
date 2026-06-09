@@ -220,6 +220,7 @@ class WSContext:
     guild_id: str
     db: AsyncSession
     joined_agents: set[str] = field(default_factory=set)
+    gracefully_disconnected_workers: set[str] = field(default_factory=set)
     ws_user_id: str | None = None
     guild_pk: int | None = None
 
@@ -664,6 +665,7 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
             )
         )
         if member_res.one_or_none() is not None:
+            ctx.gracefully_disconnected_workers.add(worker_id)
             await _trigger_foreman(
                 ctx.guild_id,
                 "worker-offline",
