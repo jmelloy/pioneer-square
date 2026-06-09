@@ -26,7 +26,7 @@ from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from lock_service import LockService
-from models import GithubEvent, Guild, Message, Task, TaskEvent
+from models import GithubEvent, GithubToken, Guild, GuildMember, Message, Task, TaskEvent
 from pydantic import BaseModel
 from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -421,6 +421,18 @@ async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None)
     return res.first()
 
 
+async def _get_guild_owner_github_login(db: AsyncSession, guild_pk: int) -> str | None:
+    """Return the GitHub login of the guild owner, or None if not found."""
+    result = await db.exec(
+        select(col(GithubToken.github_username))
+        .join(GuildMember, col(GuildMember.user_id) == col(GithubToken.github_user_id))
+        .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
+        .limit(1)
+    )
+    row = result.first()
+    return row if isinstance(row, str) else None
+
+
 def _should_dispatch_to_foreman(
     event_type: str,
     action: str | None,
@@ -471,15 +483,36 @@ def _build_foreman_summary(
     coordinates first so the foreman can immediately route to send_followup
     / finalize_task without a get_task_status round-trip for trivial cases.
     """
+    task_part = f" (task {task_id})" if task_id else " (new)"
     header = (
         f"[github-event] {event_type}"
         + (f"/{action}" if action else "")
-        + f" on {repo}#{pr_number} (task {task_id})"
+        + f" on {repo}#{pr_number}{task_part}"
     )
     sender_line = f" by @{sender_login}" if sender_login else ""
 
     detail = ""
-    if event_type == "pull_request" and action in {"closed", "reopened"}:
+    if event_type == "pull_request" and action == "review_requested":
+        pr = payload.get("pull_request") or {}
+        title = (pr.get("title") or "")[:200]
+        requested_reviewer = (payload.get("requested_reviewer") or {}).get("login", "")
+        pr_url_val = pr.get("html_url") or ""
+        detail = (
+            f"Review requested from @{requested_reviewer}.\n"
+            f"PR title: {title}\n"
+            f"PR URL: {pr_url_val}\n"
+            "Create a review task and assign a worker to perform a full PR review. "
+            "The worker must check out the branch, run available tests/lint, and post "
+            f"findings via: gh pr review {pr_number} --repo {repo} "
+            '[--approve | --request-changes | --comment] --body "..."\n'
+            "The worker is explicitly permitted — and encouraged — to --approve if the "
+            "code looks good. Only use --request-changes for real blocking issues; "
+            "use --comment for minor nits that don't block merging. "
+            "Do NOT commit any files. Do NOT open a new PR.\n"
+            "If a review task already exists for this PR in the current task list, "
+            "skip task creation to avoid duplicates."
+        )
+    elif event_type == "pull_request" and action in {"closed", "reopened"}:
         pr = payload.get("pull_request") or {}
         merged = pr.get("merged")
         if action == "closed" and merged:
@@ -558,7 +591,11 @@ def _build_chat_line(
     pr_part = f" — {repo}#{pr_number}" if repo and pr_number else (f" — {repo}" if repo else "")
 
     extra = ""
-    if event_type == "pull_request" and action == "closed":
+    if event_type == "pull_request" and action == "review_requested":
+        requested_reviewer = (payload.get("requested_reviewer") or {}).get("login")
+        if requested_reviewer:
+            extra = f"reviewer={requested_reviewer}"
+    elif event_type == "pull_request" and action == "closed":
         pr = payload.get("pull_request") or {}
         merged = pr.get("merged")
         if merged is not None:
@@ -788,23 +825,58 @@ async def github_webhook(
     )
     await db.commit()
 
-    dispatch, skip_reason = _should_dispatch_to_foreman(
-        event_type, action, payload, sender_login, task_id
-    )
-    if dispatch:
-        summary = _build_foreman_summary(
-            event_type, action, payload, repo, pr_number, task_id or "", sender_login
-        )
-        key = f"{guild_id}:{task_id}"
-        await _debounce_queue.schedule(key, guild_id, summary, task_user_id)
+    # review_requested is handled on its own path: it creates a new task so it
+    # does not require an existing task_id, but it does require the requested
+    # reviewer to match the guild owner's GitHub login.
+    if event_type == "pull_request" and action == "review_requested":
+        requested_reviewer = (payload.get("requested_reviewer") or {}).get("login")
+        guild_owner_login = await _get_guild_owner_github_login(db, guild_pk)
+        if (
+            requested_reviewer
+            and guild_owner_login
+            and requested_reviewer.lower() == guild_owner_login.lower()
+        ):
+            summary = _build_foreman_summary(
+                event_type, action, payload, repo, pr_number, task_id or "", sender_login
+            )
+            # Key is PR-scoped so rapid re-requests for the same PR coalesce.
+            key = f"{guild_id}:review_requested:{repo}#{pr_number}"
+            await _debounce_queue.schedule(key, guild_id, summary, task_user_id)
+            logger.info(
+                "github webhook review_requested dispatched guild=%s delivery=%s repo=%s pr=%s reviewer=%s",
+                guild_id,
+                delivery_id,
+                repo,
+                pr_number,
+                requested_reviewer,
+            )
+        else:
+            logger.info(
+                "github webhook skip-foreman guild=%s delivery=%s event=pull_request/review_requested "
+                "reason=reviewer-mismatch requested=%s owner=%s",
+                guild_id,
+                delivery_id,
+                requested_reviewer,
+                guild_owner_login,
+            )
     else:
-        logger.info(
-            "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",
-            guild_id,
-            delivery_id,
-            event_type,
-            skip_reason,
+        dispatch, skip_reason = _should_dispatch_to_foreman(
+            event_type, action, payload, sender_login, task_id
         )
+        if dispatch:
+            summary = _build_foreman_summary(
+                event_type, action, payload, repo, pr_number, task_id or "", sender_login
+            )
+            key = f"{guild_id}:{task_id}"
+            await _debounce_queue.schedule(key, guild_id, summary, task_user_id)
+        else:
+            logger.info(
+                "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",
+                guild_id,
+                delivery_id,
+                event_type,
+                skip_reason,
+            )
 
     return Response(status_code=202)
 

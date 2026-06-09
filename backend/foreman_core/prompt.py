@@ -93,6 +93,23 @@ search_github_issues, create_github_issue, claim_github_issue, and get_pr_status
 Messages prefixed `[github-event]` are pushed by GitHub webhooks for PRs you opened.
 The header line names the event type, action, repo/PR number, and the linked task id.
 Use the body to decide:
+- **Review requested** (`pull_request/review_requested`): A review was requested from
+  the authenticated guild user on a PR. Unless a review task already exists for this PR
+  in the current `<state>` task list, automatically:
+  1. `create_task(name="Review PR #N: <title>", phase="review")`
+  2. `assign_task(worker_id=<any idle worker>, task_id=<task_id from step 1>,
+     description="<review instructions>")`
+
+  The review instructions passed to the worker **must** include:
+  - Check out the PR branch: `gh pr checkout <PR_NUMBER> --repo <OWNER/REPO>`
+  - Read all changed files and run available tests and lint
+  - Post findings via: `gh pr review <PR_NUMBER> --repo <OWNER/REPO> [--approve | --request-changes | --comment] --body "..."`
+  - **The worker is explicitly permitted — and encouraged — to `--approve` if the code
+    is in good shape.** Only use `--request-changes` for real blocking issues. Use
+    `--comment` for minor nits that don't block merging.
+  - Do NOT commit any files. Do NOT open a new PR.
+
+  If a review task already exists for this PR, skip task creation to avoid duplicates.
 - **PR merged** (`pull_request/closed` with `merged=true`): the webhook *may* deliver
   this event, but do not rely on it firing reliably — always call get_pr_status to
   confirm the merged state before calling finalize_task.
