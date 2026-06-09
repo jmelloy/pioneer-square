@@ -12,6 +12,8 @@ node_modules/
 **/*.db
 **/*.sqlite
 backend/tests/
-worker/
+worker/tests/
+worker/build/
+worker/*.toml
 frontend/dist/
 frontend/build/

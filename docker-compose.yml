@@ -17,7 +17,8 @@ services:
   backend:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: Dockerfile
+      target: backend
       secrets:
         - build_github_token
     ports:
@@ -43,7 +44,7 @@ services:
       PIONEER_FOREMAN_KEY: ${PIONEER_FOREMAN_KEY:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: sh -c "alembic upgrade head && python main.py"
+    command: sh -c "cd backend && alembic upgrade head && cd .. && pioneer serve"
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,7 +53,9 @@ services:
   foreman:
     build:
       context: .
-      dockerfile: foreman/Dockerfile
+      dockerfile: Dockerfile
+      target: foreman
+    command: pioneer foreman
     profiles: [ "foreman" ]
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD:-pioneer_password}@postgres/${POSTGRES_DB:-pioneer_square}
@@ -88,7 +91,9 @@ services:
 
   worker:
     build:
-      context: ./worker
+      context: .
+      dockerfile: Dockerfile
+      target: worker
     image: pioneer-square-worker
     profiles: [ "worker" ]
     environment:
@@ -104,7 +109,7 @@ services:
     # Re-declare the entrypoint so we can interpolate WORKER_LOG_LEVEL at compose
     # time. Run with WORKER_LOG_LEVEL=DEBUG to see verbose worker logs:
     #   WORKER_LOG_LEVEL=DEBUG docker compose --profile worker up worker
-    command: pioneer-worker --config /config/pioneer-worker.toml --log-level ${WORKER_LOG_LEVEL:-INFO}
+    command: pioneer worker --config /config/pioneer-worker.toml --log-level ${WORKER_LOG_LEVEL:-INFO}
     depends_on:
       - backend
     restart: unless-stopped

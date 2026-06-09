@@ -11,13 +11,16 @@ GitHub token.
 
 ## Install
 
+The worker installs from the repo's unified CLI package (one install serves the
+backend, foreman, and worker):
+
 ```bash
-cd worker
 uv venv && source .venv/bin/activate
-uv pip install -e .
+uv pip install -e cli
 ```
 
-This installs the `pioneer-worker` console script.
+This provides the `pioneer` command; run a worker with `pioneer worker`. The
+`pioneer-worker` console script remains available as a backward-compatible alias.
 
 ## Expected toolchain
 
@@ -53,7 +56,7 @@ pre-installed and on `PATH`:
 
 - `go` on `PATH`, with `GOPATH` writable by the worker user
 
-The `worker/Dockerfile` provisions exactly this set, so anything `docker
+The `worker` target in the root `Dockerfile` provisions exactly this set, so anything `docker
 compose --profile worker up` builds is already correct. If you run the worker
 directly on a host, install the equivalents through your package manager
 (`apt`, `brew`, etc.) before launching it.

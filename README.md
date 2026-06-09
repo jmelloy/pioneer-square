@@ -90,14 +90,21 @@ GITHUB_CLIENT_ID=your_client_id_here
 GITHUB_CLIENT_SECRET=your_client_secret_here
 ```
 
-### Backend
+### Install the CLI
+
+All three Python runtimes (HTTP server, foreman, worker) install from a single
+package and are launched through one `pioneer` command:
 
 ```bash
-cd backend
 uv venv                              # creates .venv/
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
-uv pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+uv pip install -e "cli[test]"        # one install for all modes
+```
+
+### Backend (HTTP server)
+
+```bash
+pioneer serve --port 8000            # --reload for auto-reload in dev
 ```
 
 ### Frontend
@@ -117,14 +124,11 @@ backend over WebSocket. They can run on any machine that has `claude`, `git`,
 and access to the configured repos.
 
 ```bash
-cd worker
-uv venv && source .venv/bin/activate
-uv pip install -e .
-cp pioneer-worker.toml.example pioneer-worker.toml
+cp worker/pioneer-worker.toml.example worker/pioneer-worker.toml
 # edit pioneer-worker.toml: backend_url, guild_id, repos
 # github_token is optional — if omitted, the worker fetches the OAuth token
 # stored in the backend DB (set after the user connects via GitHub OAuth)
-pioneer-worker
+pioneer worker --config worker/pioneer-worker.toml
 ```
 
 See [`worker/README.md`](worker/README.md) for details.
@@ -132,13 +136,9 @@ See [`worker/README.md`](worker/README.md) for details.
 ### Standalone Foreman (local, no Docker)
 
 ```bash
-cd foreman
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-cp pioneer-foreman.toml.example pioneer-foreman.toml
+cp foreman/pioneer-foreman.toml.example foreman/pioneer-foreman.toml
 # edit pioneer-foreman.toml: backend_url, guild_id, backend_key
-pioneer-foreman
+pioneer foreman --config foreman/pioneer-foreman.toml
 ```
 
 Or with environment variables only (no config file):
@@ -148,7 +148,7 @@ PIONEER_BACKEND_URL=ws://localhost:8000 \
 PIONEER_GUILD_ID=<your-guild-id> \
 PIONEER_FOREMAN_KEY=<your-secret> \
 ANTHROPIC_API_KEY=<key> \
-pioneer-foreman
+pioneer foreman
 ```
 
 `PIONEER_FOREMAN_KEY` must match the same variable set on the backend.  When an
