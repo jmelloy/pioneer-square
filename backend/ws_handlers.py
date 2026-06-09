@@ -220,6 +220,8 @@ class WSContext:
     guild_id: str
     db: AsyncSession
     joined_agents: set[str] = field(default_factory=set)
+    gracefully_disconnected_workers: set[str] = field(default_factory=set)
+    registered_worker_ids: set[str] = field(default_factory=set)
     ws_user_id: str | None = None
     guild_pk: int | None = None
 
@@ -250,6 +252,24 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     worker_id = data.get("workerId")
     joined_at = datetime.now(UTC)
     is_external_foreman = agent_type == "foreman" and data.get("external") is True
+    # Validate that the worker actually belongs to this guild before proceeding.
+    # A misconfigured or misbehaving worker could connect to the wrong guild's
+    # WebSocket; without this check it would create agent rows and broadcast
+    # events into a guild it doesn't belong to.
+    if agent_type == "worker" and worker_id:
+        member_res = await ctx.db.exec(
+            select(col(Worker.id)).where(
+                col(Worker.id) == worker_id,
+                col(Worker.guild_id) == ctx.guild_pk,
+            )
+        )
+        if member_res.one_or_none() is None:
+            logger.warning(
+                "join: worker %s is not a member of guild %s — ignoring",
+                worker_id,
+                ctx.guild_id,
+            )
+            return
     if not is_external_foreman:
         stmt = pg_insert(Agent).values(
             id=agent_id,
@@ -285,6 +305,8 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         await ctx.db.commit()
     if agent_id:
         ctx.joined_agents.add(agent_id)
+        if agent_type == "worker" and worker_id:
+            ctx.registered_worker_ids.add(worker_id)
         # Take the per-guild ownership lock so a concurrent disconnect-cleanup
         # for the previous socket can't read a stale ``agent_owners`` entry,
         # decide it owns the agent, and stamp the just-joined agent offline.
@@ -566,6 +588,20 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     worker_id = data.get("workerId")
     if not worker_id:
         return
+    # Guard: only process worker-register from workers that belong to this guild.
+    member_res = await ctx.db.exec(
+        select(col(Worker.id)).where(
+            col(Worker.id) == worker_id,
+            col(Worker.guild_id) == ctx.guild_pk,
+        )
+    )
+    if member_res.one_or_none() is None:
+        logger.warning(
+            "worker-register: worker %s is not a member of guild %s — ignoring",
+            worker_id,
+            ctx.guild_id,
+        )
+        return
     repos = data.get("repos") or []
     tools = data.get("tools") or []
     user_ident = data.get("user")
@@ -624,12 +660,25 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
             AgentStateMsg(agentId=agent_id, state="offline"),
         )
     if worker_id:
-        await _trigger_foreman(
-            ctx.guild_id,
-            "worker-offline",
-            f"[worker-offline] worker_id={worker_id} reason=shutdown",
-            task_name=f"foreman.worker-offline:{worker_id}",
-        )
+        # Always mark as gracefully disconnected so the finally block does not
+        # redundantly emit reason=disconnect for a worker that sent worker-disconnect.
+        ctx.gracefully_disconnected_workers.add(worker_id)
+        # Only notify the foreman if the worker was approved for this guild
+        # during handle_join (avoids a redundant DB round-trip and is immune
+        # to session state after the commit above).
+        if worker_id in ctx.registered_worker_ids:
+            await _trigger_foreman(
+                ctx.guild_id,
+                "worker-offline",
+                f"[worker-offline] worker_id={worker_id} reason=shutdown",
+                task_name=f"foreman.worker-offline:{worker_id}",
+            )
+        else:
+            logger.warning(
+                "worker-disconnect: worker %s is not a member of guild %s — skipping foreman trigger",
+                worker_id,
+                ctx.guild_id,
+            )
     reset_foreman_poll(ctx.guild_id)
 
 
