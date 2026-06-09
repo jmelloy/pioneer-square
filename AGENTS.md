@@ -17,18 +17,32 @@ SQLite/Alembic schema, WebSocket handlers, and Foreman logic under `backend/fore
 `frontend/` is a Vue 3 + Pinia + Vite app; source lives in `frontend/src/`, static files in
 `frontend/public/`, and end-to-end tests in `frontend/tests/e2e/`. `worker/` contains the
 standalone Python worker package in `worker/pioneer_worker/` and its tests in `worker/tests/`.
-The opt-in standalone foreman lives in `foreman/`. Shared operational docs are in `docs/`,
-prompt text in `prompts/`, and helper scripts in `scripts/`.
+The opt-in standalone foreman lives in `foreman/`. `cli/` holds the unified `pioneer` launcher
+(`cli/pioneer_cli/`) and the single `cli/pyproject.toml` that installs and serves all three
+runtimes — there are no longer separate per-runtime `pyproject.toml` files. Shared operational docs
+are in `docs/`, prompt text in `prompts/`, and helper scripts in `scripts/`.
 
 ## Build, Test, and Development Commands
 
-### Backend
+### Unified CLI
+
+All three Python runtimes install from one package (`cli/pyproject.toml`) and run through a single
+`pioneer` command with three modes: `pioneer serve` (HTTP backend), `pioneer foreman`, and
+`pioneer worker`. `pioneer-worker` and `pioneer-foreman` remain as backward-compatible aliases.
+
 ```bash
-cd backend
 uv venv && source .venv/bin/activate
-uv pip install -r requirements.txt
+uv pip install -e "cli[test]"      # one install serves all modes
+```
+
+The launcher keeps the existing source trees in place (`backend/`, `foreman/`, `worker/`) and puts
+the right directory on `sys.path` for the selected mode (resolving the repo root from `cli/`'s
+parent, overridable via `PIONEER_ROOT`). It does not move source or rewrite imports.
+
+### Backend (HTTP server)
+```bash
 # Requires GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET (see README) or backend/.env
-uvicorn main:app --reload --port 8000
+pioneer serve --port 8000          # --reload for dev auto-reload
 ```
 
 ### Frontend
@@ -41,13 +55,10 @@ npm run build     # production build
 
 ### Worker
 ```bash
-cd worker
-uv venv && source .venv/bin/activate
-uv pip install -e .
-cp pioneer-worker.toml.example pioneer-worker.toml
+cp worker/pioneer-worker.toml.example worker/pioneer-worker.toml
 # Edit: backend_url, guild_id, [github] repos and token
-pioneer-worker
-pioneer-worker --log-level DEBUG   # verbose
+pioneer worker --config worker/pioneer-worker.toml
+pioneer worker --config worker/pioneer-worker.toml --log-level DEBUG   # verbose
 ```
 
 ### Standalone Foreman (opt-in)
@@ -58,20 +69,17 @@ the backend.
 
 ```bash
 # Requires backend + ANTHROPIC_API_KEY
-cd foreman
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
-cp pioneer-foreman.toml.example pioneer-foreman.toml
+cp foreman/pioneer-foreman.toml.example foreman/pioneer-foreman.toml
 # Edit: backend_url, guild_id, backend_key (matches PIONEER_FOREMAN_KEY on backend)
-pioneer-foreman
-pioneer-foreman --log-level DEBUG   # verbose
+pioneer foreman --config foreman/pioneer-foreman.toml
+pioneer foreman --config foreman/pioneer-foreman.toml --log-level DEBUG   # verbose
 
 # Or via environment variables (no config file needed):
 PIONEER_BACKEND_URL=ws://localhost:8000 \
 PIONEER_GUILD_ID=<your-6-char-guild-id> \
 PIONEER_FOREMAN_KEY=<shared-secret> \
 ANTHROPIC_API_KEY=<key> \
-pioneer-foreman
+pioneer foreman
 
 # Or via docker compose (profile "foreman"):
 GUILD_ID=abc123 docker compose --profile foreman up --build foreman
@@ -196,8 +204,8 @@ foreman is triggered by:
 
 **Phase 2 — standalone foreman**: `foreman/main.py` is an opt-in external foreman process. It
 connects to the backend WS with `agentType="foreman"` and `external=true`; the backend routes
-triggers to it and the embedded loop becomes a fallback. See `foreman/Dockerfile` and the
-`foreman` service in `docker-compose.yml`.
+triggers to it and the embedded loop becomes a fallback. See the `foreman` build target in the
+root `Dockerfile` and the `foreman` service in `docker-compose.yml`.
 
 ### WebSocket message protocol
 
