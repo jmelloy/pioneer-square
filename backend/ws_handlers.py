@@ -221,6 +221,7 @@ class WSContext:
     db: AsyncSession
     joined_agents: set[str] = field(default_factory=set)
     gracefully_disconnected_workers: set[str] = field(default_factory=set)
+    registered_worker_ids: set[str] = field(default_factory=set)
     ws_user_id: str | None = None
     guild_pk: int | None = None
 
@@ -304,6 +305,8 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         await ctx.db.commit()
     if agent_id:
         ctx.joined_agents.add(agent_id)
+        if agent_type == "worker" and worker_id:
+            ctx.registered_worker_ids.add(worker_id)
         # Take the per-guild ownership lock so a concurrent disconnect-cleanup
         # for the previous socket can't read a stale ``agent_owners`` entry,
         # decide it owns the agent, and stamp the just-joined agent offline.
@@ -657,15 +660,13 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
             AgentStateMsg(agentId=agent_id, state="offline"),
         )
     if worker_id:
-        # Only notify the foreman if the worker actually belongs to this guild.
-        member_res = await ctx.db.exec(
-            select(col(Worker.id)).where(
-                col(Worker.id) == worker_id,
-                col(Worker.guild_id) == ctx.guild_pk,
-            )
-        )
-        if member_res.one_or_none() is not None:
-            ctx.gracefully_disconnected_workers.add(worker_id)
+        # Always mark as gracefully disconnected so the finally block does not
+        # redundantly emit reason=disconnect for a worker that sent worker-disconnect.
+        ctx.gracefully_disconnected_workers.add(worker_id)
+        # Only notify the foreman if the worker was approved for this guild
+        # during handle_join (avoids a redundant DB round-trip and is immune
+        # to session state after the commit above).
+        if worker_id in ctx.registered_worker_ids:
             await _trigger_foreman(
                 ctx.guild_id,
                 "worker-offline",
