@@ -83,9 +83,7 @@ def _log_bedrock_credentials(
         if (secret_key or env.get("AWS_SECRET_ACCESS_KEY"))
         else None,
         "AWS_SESSION_TOKEN": "set" if (session_token or env.get("AWS_SESSION_TOKEN")) else None,
-        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": env.get(
-            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"
-        ),
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": env.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"),
         "AWS_WEB_IDENTITY_TOKEN_FILE": env.get("AWS_WEB_IDENTITY_TOKEN_FILE"),
     }
     logger.info(
@@ -101,7 +99,7 @@ def _log_bedrock_credentials(
     except ImportError:
         logger.warning(
             "Bedrock credential probe: boto3 not importable; install "
-            'anthropic[bedrock]. Falling back to SDK credential resolution.'
+            "anthropic[bedrock]. Falling back to SDK credential resolution."
         )
         return
 
@@ -264,7 +262,9 @@ def make_anthropic_client(
         kwargs["base_url"] = env["ANTHROPIC_BASE_URL"]
     logger.info(
         "Foreman using Anthropic API (auth=%s, base_url=%s)",
-        "auth-token" if kwargs.get("auth_token") else ("api-key" if resolved_api_key else "default"),
+        "auth-token"
+        if kwargs.get("auth_token")
+        else ("api-key" if resolved_api_key else "default"),
         kwargs.get("base_url", "default"),
     )
     return _anthropic_mod.AsyncAnthropic(**kwargs)
