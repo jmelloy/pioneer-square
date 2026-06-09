@@ -32,13 +32,21 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from foreman.tools import exec_tools  # noqa: E402
-from helpers import _sync_session, create_db, insert_guild, insert_task, insert_worker  # noqa: E402
+from helpers import (  # noqa: E402
+    _sync_session,
+    create_db,
+    insert_guild,
+    insert_task,
+    insert_worker,
+    make_auth_token,
+)
 from models import (
     Guild,  # noqa: E402
     Task,  # noqa: E402
 )
 from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
+    _get_guild_owner_github_login,
     _should_dispatch_to_foreman,
 )
 from sqlalchemy import update  # noqa: E402
@@ -779,3 +787,252 @@ def test_prompt_describes_github_events():
     assert "get_pr_status" in FOREMAN_SYSTEM
     rendered = build_system_prompt("[]", "[]")
     assert "github-event" in rendered
+
+
+# ---------------------------------------------------------------------------
+# review_requested: summary builder
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSummaryReviewRequested:
+    def test_review_requested_summary_contains_key_fields(self):
+        payload = {
+            "pull_request": {
+                "title": "Add feature X",
+                "html_url": "https://github.com/o/r/pull/5",
+            },
+            "requested_reviewer": {"login": "guild-bot"},
+        }
+        s = _build_foreman_summary(
+            "pull_request", "review_requested", payload, "o/r", 5, "", "alice"
+        )
+        assert "[github-event] pull_request/review_requested on o/r#5 (new)" in s
+        assert "@guild-bot" in s
+        assert "Add feature X" in s
+        assert "--approve" in s
+        assert "Do NOT commit" in s
+        assert "duplicates" in s
+
+    def test_review_requested_with_task_id_shows_task(self):
+        payload = {
+            "pull_request": {"title": "Fix bug", "html_url": "https://github.com/o/r/pull/7"},
+            "requested_reviewer": {"login": "reviewer"},
+        }
+        s = _build_foreman_summary(
+            "pull_request", "review_requested", payload, "o/r", 7, "t-existing", "alice"
+        )
+        assert "(task t-existing)" in s
+
+    def test_review_requested_header_with_empty_task_id(self):
+        payload = {
+            "pull_request": {"title": "T", "html_url": ""},
+            "requested_reviewer": {"login": "r"},
+        }
+        s = _build_foreman_summary("pull_request", "review_requested", payload, "o/r", 1, "", None)
+        assert "(new)" in s
+        assert "(task )" not in s
+
+
+# ---------------------------------------------------------------------------
+# review_requested: end-to-end webhook → foreman dispatch
+# ---------------------------------------------------------------------------
+
+
+def _set_guild_owner_token(db_url: str, user_id: str, username: str) -> None:
+    """Ensure a GithubToken row exists for user_id with the given username."""
+    make_auth_token(db_url, user_id=user_id, username=username)
+
+
+def test_review_requested_dispatches_when_reviewer_matches_guild_owner(client):
+    """review_requested targeted at the guild owner must dispatch to the foreman."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-rr-1", owner_user_id="u-rr-owner")
+    _set_guild_owner_token(db_url, "u-rr-owner", "guild-bot")
+    _set_webhook_secret(db_url, "gd-rr-1", "secret-rr-1")
+
+    payload = {
+        "action": "review_requested",
+        "repository": {"full_name": "o/r"},
+        "pull_request": {
+            "number": 20,
+            "html_url": "https://github.com/o/r/pull/20",
+            "title": "Add feature X",
+        },
+        "requested_reviewer": {"login": "guild-bot"},
+        "sender": {"login": "alice"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-rr-1", body, event="pull_request", delivery="d-rr-1")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-rr-1", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 1
+    key_arg, guild_arg, summary_arg, _user_arg = mock_q.schedule.call_args.args
+    assert "gd-rr-1" in key_arg
+    assert "review_requested" in key_arg
+    assert guild_arg == "gd-rr-1"
+    assert "guild-bot" in summary_arg
+    assert "--approve" in summary_arg
+
+
+def test_review_requested_skipped_when_reviewer_does_not_match(client):
+    """review_requested for a different reviewer must not dispatch to the foreman."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-rr-2", owner_user_id="u-rr-owner2")
+    _set_guild_owner_token(db_url, "u-rr-owner2", "guild-bot")
+    _set_webhook_secret(db_url, "gd-rr-2", "secret-rr-2")
+
+    payload = {
+        "action": "review_requested",
+        "repository": {"full_name": "o/r"},
+        "pull_request": {
+            "number": 21,
+            "html_url": "https://github.com/o/r/pull/21",
+            "title": "Fix",
+        },
+        "requested_reviewer": {"login": "other-person"},
+        "sender": {"login": "alice"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-rr-2", body, event="pull_request", delivery="d-rr-2")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-rr-2", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 0
+
+
+def test_review_requested_skipped_when_no_owner_token(client):
+    """review_requested must not dispatch if the guild owner has no GitHub token."""
+    test_client, db_url = client
+    # insert_guild creates the owner user but no GithubToken
+    insert_guild(db_url, "gd-rr-3", owner_user_id="u-rr-notoken")
+    _set_webhook_secret(db_url, "gd-rr-3", "secret-rr-3")
+
+    payload = {
+        "action": "review_requested",
+        "repository": {"full_name": "o/r"},
+        "pull_request": {"number": 22, "html_url": "https://github.com/o/r/pull/22", "title": "T"},
+        "requested_reviewer": {"login": "u-rr-notoken"},
+        "sender": {"login": "alice"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-rr-3", body, event="pull_request", delivery="d-rr-3")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-rr-3", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 0
+
+
+def test_review_requested_reviewer_matching_is_case_insensitive(client):
+    """Reviewer login comparison must be case-insensitive."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-rr-4", owner_user_id="u-rr-case")
+    _set_guild_owner_token(db_url, "u-rr-case", "Guild-Bot")
+    _set_webhook_secret(db_url, "gd-rr-4", "secret-rr-4")
+
+    payload = {
+        "action": "review_requested",
+        "repository": {"full_name": "o/r"},
+        "pull_request": {"number": 23, "html_url": "https://github.com/o/r/pull/23", "title": "T"},
+        "requested_reviewer": {"login": "guild-bot"},  # lowercase vs stored "Guild-Bot"
+        "sender": {"login": "alice"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-rr-4", body, event="pull_request", delivery="d-rr-4")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-rr-4", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 1
+
+
+def test_review_requested_duplicate_delivery_is_idempotent(client):
+    """Re-delivery of the same webhook (same delivery_id) must not dispatch twice."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-rr-5", owner_user_id="u-rr-dup")
+    _set_guild_owner_token(db_url, "u-rr-dup", "guild-bot")
+    _set_webhook_secret(db_url, "gd-rr-5", "secret-rr-5")
+
+    payload = {
+        "action": "review_requested",
+        "repository": {"full_name": "o/r"},
+        "pull_request": {"number": 24, "html_url": "https://github.com/o/r/pull/24", "title": "T"},
+        "requested_reviewer": {"login": "guild-bot"},
+        "sender": {"login": "alice"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-rr-5", body, event="pull_request", delivery="d-rr-5-dup")
+
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp1 = test_client.post("/webhooks/github/gd-rr-5", content=body, headers=headers)
+        resp2 = test_client.post("/webhooks/github/gd-rr-5", content=body, headers=headers)
+
+    assert resp1.status_code == 202
+    assert resp2.status_code == 202
+    # Second delivery is idempotent — only one dispatch
+    assert mock_q.schedule.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _get_guild_owner_github_login
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_guild_owner_github_login_returns_username(db_session):
+    """_get_guild_owner_github_login must return the guild owner's GitHub username."""
+    insert_guild(db_session, "g-owner-login", owner_user_id="u-owner-x")
+    make_auth_token(db_session, user_id="u-owner-x", username="owner-login-x")
+
+    engine = create_async_engine(db_session, echo=False, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with session_factory() as session:
+        from models import Guild
+        from sqlmodel import col, select
+
+        guild_pk = (
+            await session.exec(select(col(Guild.id)).where(col(Guild.slug) == "g-owner-login"))
+        ).one()
+        login = await _get_guild_owner_github_login(session, guild_pk)
+
+    assert login == "owner-login-x"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_get_guild_owner_github_login_returns_none_without_token(db_session):
+    """_get_guild_owner_github_login returns None when no GithubToken exists for the owner."""
+    insert_guild(db_session, "g-owner-notoken", owner_user_id="u-notoken")
+
+    engine = create_async_engine(db_session, echo=False, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with session_factory() as session:
+        from models import Guild
+        from sqlmodel import col, select
+
+        guild_pk = (
+            await session.exec(select(col(Guild.id)).where(col(Guild.slug) == "g-owner-notoken"))
+        ).one()
+        login = await _get_guild_owner_github_login(session, guild_pk)
+
+    assert login is None
+    await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Prompt: review_requested section
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_describes_review_requested_behavior():
+    """System prompt must document the review_requested auto-dispatch behavior."""
+    from foreman.prompt import FOREMAN_SYSTEM
+
+    assert "review_requested" in FOREMAN_SYSTEM
+    assert "--approve" in FOREMAN_SYSTEM
+    assert "Do NOT commit" in FOREMAN_SYSTEM
+    assert "duplicates" in FOREMAN_SYSTEM
