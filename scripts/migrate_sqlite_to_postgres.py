@@ -363,7 +363,7 @@ def migrate_tasks(sq: sqlite3.Connection, pg: Any, guild_map: dict[str, int]) ->
                     d.get("name"),
                     d.get("parent_task_id"),
                     d.get("phase", "execute"),
-                    d.get("finalized_at"),
+                    d.get("deleted_at"),  # SQLite source uses the old column name
                     d.get("user_id"),
                     d.get("locked_at"),
                     d.get("lock_holder"),
