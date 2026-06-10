@@ -1687,6 +1687,8 @@ class TestSummarizeTask:
     """Terminal tasks are summarised/excluded; non-terminal tasks are kept in full."""
 
     _24H = 86_400
+    # Must match foreman_core/constants._DEFAULT_TASK_TTL_SECS (3 days)
+    _TTL = 3 * 24 * 60 * 60
 
     def _now_ts(self):
         return datetime.now(UTC).timestamp()
@@ -1724,7 +1726,8 @@ class TestSummarizeTask:
             "description": "Implement OAuth",
             "branch": "claude/feat",
             "pr_url": "https://github.com/x/y/pull/42",
-            "finished_at": self._iso(-3600),  # 1 hour ago
+            # finished 1 hour ago → deleted_at = now + (TTL - 3600)
+            "deleted_at": self._iso(self._TTL - 3600),
         }
         result = _summarize_task(task, self._cutoff_ts())
         assert result is not None
@@ -1738,7 +1741,8 @@ class TestSummarizeTask:
             "id": "t-5",
             "state": "failed",
             "description": "Big description text",
-            "finished_at": self._iso(-1800),  # 30 min ago
+            # finished 30 min ago → deleted_at = now + (TTL - 1800)
+            "deleted_at": self._iso(self._TTL - 1800),
         }
         result = _summarize_task(task, self._cutoff_ts())
         assert result is not None
@@ -1749,7 +1753,8 @@ class TestSummarizeTask:
             "id": "t-6",
             "state": "cancelled",
             "description": "Cancelled work",
-            "finished_at": self._iso(-7200),  # 2 hours ago
+            # finished 2 hours ago → deleted_at = now + (TTL - 7200)
+            "deleted_at": self._iso(self._TTL - 7200),
         }
         result = _summarize_task(task, self._cutoff_ts())
         assert result is not None
@@ -1760,7 +1765,8 @@ class TestSummarizeTask:
             "id": "t-7",
             "state": "done",
             "description": "Old work",
-            "finished_at": self._iso(-(self._24H + 3600)),  # 25 hours ago
+            # finished 25 hours ago → deleted_at = now + (TTL - 24H - 3600)
+            "deleted_at": self._iso(self._TTL - self._24H - 3600),
         }
         result = _summarize_task(task, self._cutoff_ts())
         assert result is None
@@ -1770,21 +1776,22 @@ class TestSummarizeTask:
             "id": "t-8",
             "state": "failed",
             "description": "Old fail",
-            "finished_at": self._iso(-(self._24H * 2)),  # 48 hours ago
+            # finished 48 hours ago → deleted_at = now + (TTL - 2*24H)
+            "deleted_at": self._iso(self._TTL - self._24H * 2),
         }
         result = _summarize_task(task, self._cutoff_ts())
         assert result is None
 
-    def test_terminal_task_no_finished_at_included(self):
-        """Terminal task with no finished_at cannot be aged out — include it."""
-        task = {"id": "t-9", "state": "done", "description": "Unknown age", "finished_at": None}
+    def test_terminal_task_no_deleted_at_included(self):
+        """Terminal task with no deleted_at cannot be aged out — include it."""
+        task = {"id": "t-9", "state": "done", "description": "Unknown age", "deleted_at": None}
         result = _summarize_task(task, self._cutoff_ts())
         assert result is not None
         assert "description" not in result
 
-    def test_terminal_task_invalid_finished_at_included(self):
-        """Malformed finished_at should not cause exclusion."""
-        task = {"id": "t-10", "state": "done", "description": "Bad ts", "finished_at": "not-a-date"}
+    def test_terminal_task_invalid_deleted_at_included(self):
+        """Malformed deleted_at should not cause exclusion."""
+        task = {"id": "t-10", "state": "done", "description": "Bad ts", "deleted_at": "not-a-date"}
         result = _summarize_task(task, self._cutoff_ts())
         assert result is not None
         assert "description" not in result
@@ -1795,7 +1802,8 @@ class TestSummarizeTask:
             "id": "t-11",
             "state": "done",
             "description": "Boundary",
-            "finished_at": self._iso(-(self._24H + 1)),  # 24h + 1s ago
+            # finished 24h+1s ago → deleted_at = now + (TTL - 24H - 1)
+            "deleted_at": self._iso(self._TTL - self._24H - 1),
         }
         result = _summarize_task(task, self._cutoff_ts())
         assert result is None

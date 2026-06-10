@@ -118,17 +118,18 @@ export const useTasksStore = defineStore('tasks', () => {
   async function cancelTask(guildId: string, taskId: string) {
     const task = tasks.value.find((t) => t.id === taskId)
     const prevState = task?.state
-    const prevFinishedAt = task?.finished_at
+    const prevDeletedAt = task?.deleted_at
     if (task) {
       task.state = 'cancelled'
-      task.finished_at = new Date().toISOString()
+      // Optimistic: set deleted_at to now + 3 days (matches backend DEFAULT_FINALIZE_TTL)
+      task.deleted_at = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString()
     }
     try {
       await api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
     } catch (err) {
       if (task) {
         task.state = prevState!
-        task.finished_at = prevFinishedAt
+        task.deleted_at = prevDeletedAt
       }
       throw err
     }
@@ -179,7 +180,6 @@ export const useTasksStore = defineStore('tasks', () => {
         if (data.state) task.state = data.state
         if (data.branch) task.branch = data.branch
         if (data.prUrl) task.pr_url = data.prUrl
-        if (data.finishedAt) task.finished_at = data.finishedAt
         if (data.worktreePath) task.worktree_path = data.worktreePath
         if (data.deletedAt !== undefined) {
           task.deleted_at = data.deletedAt

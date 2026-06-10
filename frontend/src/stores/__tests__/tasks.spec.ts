@@ -63,7 +63,7 @@ describe('useTasksStore', () => {
       expect(store.tasks[0].name).toBe('a'.repeat(60))
     })
 
-    it('updates state, branch, prUrl, finishedAt, worktreePath on task-update', () => {
+    it('updates state, branch, prUrl, deletedAt, worktreePath on task-update', () => {
       const store = useTasksStore()
       store.tasks.push({ id: 't-1', state: 'pending' })
 
@@ -73,7 +73,7 @@ describe('useTasksStore', () => {
         state: 'working',
         branch: 'claude/fix-1',
         prUrl: 'https://github.com/x/y/pull/1',
-        finishedAt: '2025-01-02T00:00:00Z',
+        deletedAt: '2025-01-05T00:00:00Z',
         worktreePath: '/tmp/wt',
       })
 
@@ -81,7 +81,7 @@ describe('useTasksStore', () => {
       expect(task.state).toBe('working')
       expect(task.branch).toBe('claude/fix-1')
       expect(task.pr_url).toBe('https://github.com/x/y/pull/1')
-      expect(task.finished_at).toBe('2025-01-02T00:00:00Z')
+      expect(task.deleted_at).toBe('2025-01-05T00:00:00Z')
       expect(task.worktree_path).toBe('/tmp/wt')
     })
 
@@ -428,7 +428,7 @@ describe('useTasksStore', () => {
       const promise = store.cancelTask('g-1', 't-1')
       // State must be updated before the API call resolves
       expect(store.tasks[0].state).toBe('cancelled')
-      expect(store.tasks[0].finished_at).toBeDefined()
+      expect(store.tasks[0].deleted_at).toBeDefined()
 
       resolveApi()
       await promise
@@ -442,7 +442,7 @@ describe('useTasksStore', () => {
 
       await expect(store.cancelTask('g-1', 't-1')).rejects.toThrow('HTTP 500')
       expect(store.tasks[0].state).toBe('working')
-      expect(store.tasks[0].finished_at).toBeUndefined()
+      expect(store.tasks[0].deleted_at).toBeUndefined()
     })
 
     it('throws when the API returns non-2xx', async () => {

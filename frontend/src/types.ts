@@ -238,7 +238,6 @@ export interface TaskUpdateWS {
   state?: TaskState
   branch?: string
   prUrl?: string
-  finishedAt?: string
   worktreePath?: string
   deletedAt?: string | null
 }

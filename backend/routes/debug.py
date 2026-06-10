@@ -387,14 +387,14 @@ async def get_task_debug_timeline(
             "detail": task_dict,
         }
     )
-    if task.finished_at:
+    if task.deleted_at:
         timeline.append(
             {
-                "timestamp": _iso(task.finished_at),
+                "timestamp": _iso(task.deleted_at),
                 "source": "db",
                 "event_type": "task_finished",
                 "summary": f"Task finished with state: {task.state}",
-                "detail": {"state": task.state, "finished_at": _iso(task.finished_at)},
+                "detail": {"state": task.state, "deleted_at": _iso(task.deleted_at)},
             }
         )
 
