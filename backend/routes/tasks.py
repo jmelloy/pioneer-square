@@ -261,9 +261,7 @@ async def finalize_task_endpoint(
         raise HTTPException(status_code=404, detail="Task not found")
     deleted_at = _resolve_finalize_deleted_at(body)
     await db.exec(
-        update(Task)
-        .where(col(Task.id) == task_id)
-        .values(state="done", deleted_at=deleted_at)
+        update(Task).where(col(Task.id) == task_id).values(state="done", deleted_at=deleted_at)
     )
     await db.commit()
     await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
@@ -303,9 +301,7 @@ async def cancel_task_endpoint(
         raise HTTPException(status_code=409, detail=f"Task is already {state}")
     deleted_at = datetime.now(UTC) + DEFAULT_FINALIZE_TTL
     await db.exec(
-        update(Task)
-        .where(col(Task.id) == task_id)
-        .values(state="cancelled", deleted_at=deleted_at)
+        update(Task).where(col(Task.id) == task_id).values(state="cancelled", deleted_at=deleted_at)
     )
     await LockService(db).release(f"task:{task_id}")
     await db.commit()
