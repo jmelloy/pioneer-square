@@ -522,7 +522,7 @@ async def _run_foreman_ai(
                 col(Task.state),
                 col(Task.branch),
                 col(Task.pr_url),
-                col(Task.finished_at),
+                col(Task.deleted_at),
             )
             .where(
                 col(Task.guild_id) == guild_pk_val,

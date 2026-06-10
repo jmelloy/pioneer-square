@@ -7,7 +7,7 @@ import json
 from datetime import date, datetime
 from typing import Any
 
-from .constants import _TERMINAL_STATES, MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS
+from .constants import _DEFAULT_TASK_TTL_SECS, _TERMINAL_STATES, MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS
 
 
 def _json_default(obj: Any) -> Any:
@@ -176,17 +176,23 @@ def _summarize_task(task: dict, cutoff_ts: float) -> dict | None:
     Terminal tasks older than 24 h are dropped; terminal tasks within 24 h lose
     their ``description`` field to keep context lean.  Non-terminal tasks are
     returned unchanged.
+
+    Completion time is approximated as ``deleted_at - DEFAULT_TTL`` since
+    ``finished_at`` was removed in favour of the single ``deleted_at`` column.
     """
     state = task.get("state", "")
     if state not in _TERMINAL_STATES:
         return task
-    finished_at = task.get("finished_at")
-    if finished_at:
+    deleted_at = task.get("deleted_at")
+    if deleted_at:
         try:
-            finished_ts = datetime.fromisoformat(finished_at.replace("Z", "+00:00")).timestamp()
+            deleted_ts = datetime.fromisoformat(
+                deleted_at.replace("Z", "+00:00") if isinstance(deleted_at, str) else deleted_at
+            ).timestamp()
+            finished_ts = deleted_ts - _DEFAULT_TASK_TTL_SECS
             if finished_ts < cutoff_ts:
                 return None  # older than 24 h — drop entirely
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
             pass
     # Within 24 h or undatable: compact summary without description
     return {k: v for k, v in task.items() if k != "description"}

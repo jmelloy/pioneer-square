@@ -176,9 +176,6 @@ class Task(SQLModel, table=True):
     pr_number: int | None = None
     pr_repo: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    finished_at: datetime | None = Field(
-        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
-    )
     name: str | None = None
     parent_task_id: str | None = None
     phase: str | None = Field(default="execute", sa_column_kwargs={"server_default": "'execute'"})
