@@ -7,7 +7,12 @@ import json
 from datetime import date, datetime
 from typing import Any
 
-from .constants import _DEFAULT_TASK_TTL_SECS, _TERMINAL_STATES, MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS
+from .constants import (
+    _DEFAULT_TASK_TTL_SECS,
+    _TERMINAL_STATES,
+    MAX_HISTORY_MESSAGES,
+    MAX_TOOL_RESULT_CHARS,
+)
 
 
 def _json_default(obj: Any) -> Any:

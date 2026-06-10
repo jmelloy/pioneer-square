@@ -73,7 +73,7 @@ describe('useTasksStore', () => {
         state: 'working',
         branch: 'claude/fix-1',
         prUrl: 'https://github.com/x/y/pull/1',
-        deletedAt: '2025-01-05T00:00:00Z',
+        deletedAt: '2030-01-05T00:00:00Z',
         worktreePath: '/tmp/wt',
       })
 
@@ -81,7 +81,7 @@ describe('useTasksStore', () => {
       expect(task.state).toBe('working')
       expect(task.branch).toBe('claude/fix-1')
       expect(task.pr_url).toBe('https://github.com/x/y/pull/1')
-      expect(task.deleted_at).toBe('2025-01-05T00:00:00Z')
+      expect(task.deleted_at).toBe('2030-01-05T00:00:00Z')
       expect(task.worktree_path).toBe('/tmp/wt')
     })
 
