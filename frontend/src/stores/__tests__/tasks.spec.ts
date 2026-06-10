@@ -236,7 +236,7 @@ describe('useTasksStore', () => {
       store.handleWebSocketMessage({
         type: 'task-update',
         taskId: 't-1',
-        deletedAt: new Date(Date.now() + 30_000).toISOString(),
+        finalizedAt: new Date(Date.now() + 30_000).toISOString(),
       })
 
       store.clearTasks()
@@ -247,20 +247,20 @@ describe('useTasksStore', () => {
       expect(store.tasks).toEqual([])
     })
 
-    it('reschedules when deletedAt changes on a subsequent task-update', () => {
+    it('reschedules when finalizedAt changes on a subsequent task-update', () => {
       const store = useTasksStore()
       store.tasks.push({ id: 't-1', state: 'done' })
 
       store.handleWebSocketMessage({
         type: 'task-update',
         taskId: 't-1',
-        deletedAt: new Date(Date.now() + 1_000).toISOString(),
+        finalizedAt: new Date(Date.now() + 1_000).toISOString(),
       })
       // Replace with a much later expiry before the first one fires.
       store.handleWebSocketMessage({
         type: 'task-update',
         taskId: 't-1',
-        deletedAt: new Date(Date.now() + 60_000).toISOString(),
+        finalizedAt: new Date(Date.now() + 60_000).toISOString(),
       })
 
       vi.advanceTimersByTime(2_000)
