@@ -470,7 +470,7 @@ class TaskPatch(BaseModel):
     branch: str | None = None
     pr_url: str | None = None
     finished_at: str | None = None
-    deleted_at: str | None = None
+    finalized_at: str | None = None
     phase: str | None = None
 
 
@@ -495,7 +495,7 @@ async def patch_task(
     - ``branch``: git branch name
     - ``pr_url``: GitHub PR URL
     - ``finished_at``: ISO-8601 completion timestamp
-    - ``deleted_at``: ISO-8601 soft-delete timestamp
+    - ``finalized_at``: ISO-8601 soft-delete timestamp
     - ``phase``: task phase (plan / execute / review / followup)
 
     Broadcasts a ``task-update`` WS event with the changed fields so the
@@ -510,7 +510,7 @@ async def patch_task(
         ("branch", "branch"),
         ("pr_url", "pr_url"),
         ("finished_at", "finished_at"),
-        ("deleted_at", "deleted_at"),
+        ("finalized_at", "finalized_at"),
         ("phase", "phase"),
     ):
         val = getattr(body, field)
@@ -541,7 +541,7 @@ async def patch_task(
         "branch": "branch",
         "pr_url": "prUrl",
         "finished_at": "finishedAt",
-        "deleted_at": "deletedAt",
+        "finalized_at": "finalizedAt",
         "phase": "phase",
     }
     ws_data: dict = {"taskId": task_id}

@@ -165,7 +165,7 @@ FOREMAN_TOOLS = [
             "  - Code tasks (execute / review / followup phases): omit the field "
             "to use the default 3 days, or pass expires_in_seconds = 259200\n"
             "  - Error / failed tasks: expires_in_seconds = 86400 (1 day)\n"
-            "Pass deleted_at instead if you need an exact ISO-8601 timestamp.\n"
+            "Pass finalized_at instead if you need an exact ISO-8601 timestamp.\n"
             "NOTE: For tasks that have an open PR, the GitHub webhook *may* deliver a "
             "'PR merged' event — but do not rely on it firing reliably. Always call "
             "get_pr_status to confirm the merged state before calling finalize_task."
@@ -190,7 +190,7 @@ FOREMAN_TOOLS = [
                         "Defaults to 259200 (3 days) when omitted."
                     ),
                 },
-                "deleted_at": {
+                "finalized_at": {
                     "type": "string",
                     "description": (
                         "ISO-8601 UTC timestamp at which the task is soft-deleted. "

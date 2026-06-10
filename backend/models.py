@@ -7,13 +7,13 @@ from sqlmodel import Field, SQLModel, col
 def live_tasks_filter(now: datetime | None = None):
     """SQL clause matching tasks that have not been soft-deleted.
 
-    A task is "live" when ``deleted_at`` is NULL or set to a future timestamp.
+    A task is "live" when ``finalized_at`` is NULL or set to a future timestamp.
     *now* defaults to the current UTC time; pass an explicit value to make a
     query reproducible in tests.
     """
     if now is None:
         now = datetime.now(UTC)
-    return or_(col(Task.deleted_at).is_(None), col(Task.deleted_at) > now)
+    return or_(col(Task.finalized_at).is_(None), col(Task.finalized_at) > now)
 
 
 class Guild(SQLModel, table=True):
@@ -150,7 +150,7 @@ class Worker(SQLModel, table=True):
 class Task(SQLModel, table=True):
     __tablename__ = "tasks"  # type: ignore[assignment]
     __table_args__ = (
-        Index("ix_tasks_guild_id_deleted_at_created_at", "guild_id", "deleted_at", "created_at"),
+        Index("ix_tasks_guild_id_finalized_at_created_at", "guild_id", "finalized_at", "created_at"),
         Index("ix_tasks_state", "state"),
     )
 
@@ -183,8 +183,8 @@ class Task(SQLModel, table=True):
     parent_task_id: str | None = None
     phase: str | None = Field(default="execute", sa_column_kwargs={"server_default": "'execute'"})
     # UTC instant at which this task is considered soft-deleted.
-    # NULL = live; once `now() > deleted_at`, list/get queries hide the row.
-    deleted_at: datetime | None = Field(
+    # NULL = live; once `now() > finalized_at`, list/get queries hide the row.
+    finalized_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     # github_user_id of the human who initiated this task. Used to route

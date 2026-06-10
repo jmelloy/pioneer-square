@@ -453,7 +453,7 @@ app.include_router(_models_routes.router)
 from routes.tasks import (  # noqa: E402,F401
     DEFAULT_FINALIZE_TTL,
     FinalizeBody,
-    _resolve_finalize_deleted_at,
+    _resolve_finalize_finalized_at,
 )
 from utils import build_spawn_worker_env as _build_spawn_worker_env  # noqa: E402,F401
 from utils import decode_claude_oauth_token as _decode_claude_oauth_token  # noqa: E402,F401

@@ -1,7 +1,7 @@
 """Task lifecycle routes: list, logs, follow-up, finalize, cancel, redirect.
 
 Soft-delete TTL handling lives here too — ``DEFAULT_FINALIZE_TTL``,
-``FinalizeBody``, and ``_resolve_finalize_deleted_at`` are exported for
+``FinalizeBody``, and ``_resolve_finalize_finalized_at`` are exported for
 direct unit testing in ``tests/test_soft_delete_tasks.py``.
 """
 
@@ -40,9 +40,9 @@ class FollowupCreate(BaseModel):
 
 class FinalizeBody(BaseModel):
     # Optional ISO-8601 timestamp at which to soft-delete this task.
-    deleted_at: str | None = None
+    finalized_at: str | None = None
     # Optional convenience: seconds from now until soft-delete. If both fields
-    # are set, deleted_at wins.
+    # are set, finalized_at wins.
     expires_in_seconds: int | None = None
 
 
@@ -50,13 +50,13 @@ class RedirectCreate(BaseModel):
     instructions: str
 
 
-def _resolve_finalize_deleted_at(body: FinalizeBody | None) -> datetime:
+def _resolve_finalize_finalized_at(body: FinalizeBody | None) -> datetime:
     """Return a UTC datetime for the task's soft-delete instant."""
-    if body and body.deleted_at:
+    if body and body.finalized_at:
         try:
-            parsed = datetime.fromisoformat(body.deleted_at.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(body.finalized_at.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid deleted_at: {exc}") from exc
+            raise HTTPException(status_code=400, detail=f"Invalid finalized_at: {exc}") from exc
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
@@ -93,7 +93,7 @@ async def list_guild_tasks(
             col(Task.issue_repo),
             col(Task.created_at),
             col(Task.finished_at),
-            col(Task.deleted_at),
+            col(Task.finalized_at),
         )
         .where(col(Task.guild_id) == guild_pk, live_tasks_filter())
         .order_by(col(Task.created_at).desc())
@@ -247,7 +247,7 @@ async def finalize_task_endpoint(
 ):
     """Signal a worker to finalize a task — no more follow-ups.
 
-    The optional body may carry ``deleted_at`` (ISO-8601) or
+    The optional body may carry ``finalized_at`` (ISO-8601) or
     ``expires_in_seconds`` to set the task's soft-delete window. If neither is
     set, the task is soft-deleted ``DEFAULT_FINALIZE_TTL`` from now.
     """
@@ -261,11 +261,11 @@ async def finalize_task_endpoint(
     if not worker_id:
         raise HTTPException(status_code=404, detail="Task not found")
     finished_at = datetime.now(UTC)
-    deleted_at = _resolve_finalize_deleted_at(body)
+    finalized_at = _resolve_finalize_finalized_at(body)
     await db.exec(
         update(Task)
         .where(col(Task.id) == task_id)
-        .values(state="done", finished_at=finished_at, deleted_at=deleted_at)
+        .values(state="done", finished_at=finished_at, finalized_at=finalized_at)
     )
     await db.commit()
     await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
@@ -275,11 +275,11 @@ async def finalize_task_endpoint(
             taskId=task_id,
             state="done",
             finishedAt=finished_at.isoformat(),
-            deletedAt=deleted_at.isoformat(),
+            finalizedAt=finalized_at.isoformat(),
         ),
     )
     # Return raw datetime — FastAPI's jsonable_encoder handles ISO-8601 serialisation.
-    return {"status": "finalized", "taskId": task_id, "deletedAt": deleted_at}
+    return {"status": "finalized", "taskId": task_id, "finalizedAt": finalized_at}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/cancel")

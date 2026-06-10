@@ -82,7 +82,7 @@ task table doesn't accumulate cruft. Pick the window by task type:
 - **Code tasks** (execute / review / followup phases): omit the field to use
   the default 3 days, or pass expires_in_seconds = 259200
 - **Error / failed tasks**: expires_in_seconds = 86400 (1 day)
-Pass deleted_at instead if you need an exact ISO-8601 timestamp.
+Pass finalized_at instead if you need an exact ISO-8601 timestamp.
 
 ## GitHub access
 You have direct GitHub access via list_github_issues, get_github_issue, list_github_prs,

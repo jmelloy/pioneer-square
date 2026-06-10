@@ -131,19 +131,19 @@ async def _to_thread(fn, /, *args, **kwargs):
     )
 
 
-def _resolve_finalize_deleted_at(inp: dict) -> tuple[datetime | None, str | None]:
+def _resolve_finalize_finalized_at(inp: dict) -> tuple[datetime | None, str | None]:
     """Compute the soft-delete instant for a finalize_task tool call.
 
-    Returns ``(deleted_at, error)`` — error is non-None when the inputs
-    were malformed. Honours an explicit ``deleted_at`` first, then
+    Returns ``(finalized_at, error)`` — error is non-None when the inputs
+    were malformed. Honours an explicit ``finalized_at`` first, then
     ``expires_in_seconds``, otherwise falls back to the default 3-day window.
     """
-    raw = inp.get("deleted_at")
+    raw = inp.get("finalized_at")
     if raw:
         try:
             parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         except ValueError as exc:
-            return None, f"Invalid deleted_at: {exc}"
+            return None, f"Invalid finalized_at: {exc}"
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC), None
@@ -1148,7 +1148,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             if prior_state in ("done", "failed", "cancelled"):
                                 # Re-opening a terminal task: clear soft-delete fields so it
                                 # reappears in the live task list and isn't auto-purged.
-                                update_vals["deleted_at"] = None
+                                update_vals["finalized_at"] = None
                                 update_vals["finished_at"] = None
                             await db.exec(
                                 update(Task).where(col(Task.id) == task_id).values(**update_vals)
@@ -1160,7 +1160,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     taskId=task_id,
                                     state="working",
                                     workerId=target_worker_id,
-                                    deletedAt=None,
+                                    finalizedAt=None,
                                     finishedAt=None,
                                 ).model_dump(by_alias=True, exclude_none=True),
                             )
@@ -1214,7 +1214,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     logger.warning(
                         "finalize_task: unknown outcome %r, defaulting to 'done'", raw_outcome
                     )
-                deleted_at, err = _resolve_finalize_deleted_at(inp)
+                finalized_at, err = _resolve_finalize_finalized_at(inp)
                 if err:
                     result_text = err
                     is_error = True
@@ -1235,7 +1235,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             .values(
                                 state=outcome,
                                 finished_at=finished_at,
-                                deleted_at=deleted_at,
+                                finalized_at=finalized_at,
                             )
                         )
                         # Discard any queued follow-up events — the task is closed.
@@ -1252,14 +1252,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 taskId=task_id,
                                 state=outcome,
                                 finishedAt=finished_at.isoformat(),
-                                deletedAt=deleted_at.isoformat()
-                                if deleted_at is not None
+                                finalizedAt=finalized_at.isoformat()
+                                if finalized_at is not None
                                 else None,
                             ),
                         )
                         result_text = (
                             f"Task {task_id} finalized as {outcome}; soft-delete at "
-                            f"{deleted_at.isoformat() if deleted_at is not None else 'unknown'}."
+                            f"{finalized_at.isoformat() if finalized_at is not None else 'unknown'}."
                         )
 
             elif tu.name == "message_worker":

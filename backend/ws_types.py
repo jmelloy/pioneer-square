@@ -144,7 +144,7 @@ class TaskUpdateMsg(_WS):
     worktreePath: str | None = None
     prUrl: str | None = None
     finishedAt: str | None = None
-    deletedAt: str | None = None
+    finalizedAt: str | None = None
     phase: str | None = None
 
 

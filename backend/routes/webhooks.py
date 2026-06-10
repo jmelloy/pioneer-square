@@ -259,7 +259,7 @@ async def _auto_finalize_task_on_pr_merge(
     worker_id = task_row[1]
 
     now = datetime.now(UTC)
-    deleted_at = now + timedelta(seconds=_DEFAULT_FINALIZE_TTL_SECS)
+    finalized_at = now + timedelta(seconds=_DEFAULT_FINALIZE_TTL_SECS)
 
     # Single conditional UPDATE — only fires if task is not already in a terminal
     # state, eliminating the race between two concurrent state transitions.
@@ -270,7 +270,7 @@ async def _auto_finalize_task_on_pr_merge(
             col(Task.guild_id) == guild_pk,
             col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
         )
-        .values(state="done", finished_at=now, deleted_at=deleted_at)
+        .values(state="done", finished_at=now, finalized_at=finalized_at)
     )
     if (getattr(upd, "rowcount", 0) or 0) == 0:
         return False
@@ -286,7 +286,7 @@ async def _auto_finalize_task_on_pr_merge(
             taskId=task_id,
             state="done",
             finishedAt=now.isoformat(),
-            deletedAt=deleted_at.isoformat(),
+            finalizedAt=finalized_at.isoformat(),
         ),
     )
     return True
@@ -318,7 +318,7 @@ async def _auto_fail_task_on_pr_close(
     worker_id = task_row[1]
 
     now = datetime.now(UTC)
-    deleted_at = now + timedelta(seconds=_DEFAULT_FAIL_TTL_SECS)
+    finalized_at = now + timedelta(seconds=_DEFAULT_FAIL_TTL_SECS)
 
     # Single conditional UPDATE — only fires if task is not already in a terminal
     # state, eliminating the race between two concurrent state transitions.
@@ -329,7 +329,7 @@ async def _auto_fail_task_on_pr_close(
             col(Task.guild_id) == guild_pk,
             col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
         )
-        .values(state="failed", finished_at=now, deleted_at=deleted_at)
+        .values(state="failed", finished_at=now, finalized_at=finalized_at)
     )
     if (getattr(upd, "rowcount", 0) or 0) == 0:
         return False
@@ -345,7 +345,7 @@ async def _auto_fail_task_on_pr_close(
             taskId=task_id,
             state="failed",
             finishedAt=now.isoformat(),
-            deletedAt=deleted_at.isoformat(),
+            finalizedAt=finalized_at.isoformat(),
         ),
     )
     return True
