@@ -78,7 +78,7 @@ export const useTasksStore = defineStore('tasks', () => {
     try {
       tasks.value = await api<Task[]>(`/guilds/${guildId}/tasks`)
       for (const t of tasks.value) {
-        if (t.deleted_at) _scheduleExpiry(t.id, t.deleted_at)
+        if (t.finalized_at) _scheduleExpiry(t.id, t.finalized_at)
       }
     } catch (e) {
       console.error('Failed to fetch tasks', e)
@@ -181,9 +181,9 @@ export const useTasksStore = defineStore('tasks', () => {
         if (data.prUrl) task.pr_url = data.prUrl
         if (data.finishedAt) task.finished_at = data.finishedAt
         if (data.worktreePath) task.worktree_path = data.worktreePath
-        if (data.deletedAt !== undefined) {
-          task.deleted_at = data.deletedAt
-          _scheduleExpiry(task.id, data.deletedAt)
+        if (data.finalizedAt !== undefined) {
+          task.finalized_at = data.finalizedAt
+          _scheduleExpiry(task.id, data.finalizedAt)
         }
       }
     } else if (data.type === 'task-complete') {
@@ -234,12 +234,12 @@ export const useTasksStore = defineStore('tasks', () => {
 
   // Tasks whose soft-delete window has not yet elapsed. Components that filter
   // for display should prefer this over `tasks` so a row disappears the moment
-  // its `deleted_at` passes, even before the per-task timer fires.
+  // its `finalized_at` passes, even before the per-task timer fires.
   const liveTasks = computed(() => {
     const now = Date.now()
     return tasks.value.filter((t) => {
-      if (!t.deleted_at) return true
-      const ts = new Date(t.deleted_at).getTime()
+      if (!t.finalized_at) return true
+      const ts = new Date(t.finalized_at).getTime()
       return Number.isNaN(ts) || ts > now
     })
   })

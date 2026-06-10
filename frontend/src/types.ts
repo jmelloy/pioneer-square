@@ -83,7 +83,7 @@ export interface Task {
   worktree_path?: string
   created_at?: string
   finished_at?: string
-  deleted_at?: string | null
+  finalized_at?: string | null
 }
 
 export interface Guild {
@@ -241,7 +241,7 @@ export interface TaskUpdateWS {
   prUrl?: string
   finishedAt?: string
   worktreePath?: string
-  deletedAt?: string | null
+  finalizedAt?: string | null
 }
 
 export interface TaskCompleteWS {

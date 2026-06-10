@@ -185,7 +185,7 @@ describe('useTasksStore', () => {
       vi.useRealTimers()
     })
 
-    it('stores deletedAt from task-update and drops the row when the timer fires', () => {
+    it('stores finalizedAt from task-update and drops the row when the timer fires', () => {
       const store = useTasksStore()
       store.tasks.push({ id: 't-1', state: 'working' })
 
@@ -194,35 +194,35 @@ describe('useTasksStore', () => {
         type: 'task-update',
         taskId: 't-1',
         state: 'done',
-        deletedAt: future,
+        finalizedAt: future,
       })
-      expect(store.tasks[0].deleted_at).toBe(future)
+      expect(store.tasks[0].finalized_at).toBe(future)
       expect(store.tasks).toHaveLength(1)
 
       vi.advanceTimersByTime(60_001)
       expect(store.tasks).toHaveLength(0)
     })
 
-    it('drops a task immediately when deletedAt is already in the past', () => {
+    it('drops a task immediately when finalizedAt is already in the past', () => {
       const store = useTasksStore()
       store.tasks.push({ id: 't-1', state: 'done' })
 
       store.handleWebSocketMessage({
         type: 'task-update',
         taskId: 't-1',
-        deletedAt: new Date(Date.now() - 1000).toISOString(),
+        finalizedAt: new Date(Date.now() - 1000).toISOString(),
       })
       expect(store.tasks).toHaveLength(0)
     })
 
-    it('liveTasks excludes rows whose deleted_at has passed even before the timer fires', () => {
+    it('liveTasks excludes rows whose finalized_at has passed even before the timer fires', () => {
       const store = useTasksStore()
       const past = new Date(Date.now() - 5_000).toISOString()
       const future = new Date(Date.now() + 5_000).toISOString()
       // Push directly (bypass the WS handler that would also schedule removal).
       store.tasks.push({ id: 't-live', state: 'done' })
-      store.tasks.push({ id: 't-future', state: 'done', deleted_at: future })
-      store.tasks.push({ id: 't-past', state: 'done', deleted_at: past })
+      store.tasks.push({ id: 't-future', state: 'done', finalized_at: future })
+      store.tasks.push({ id: 't-past', state: 'done', finalized_at: past })
 
       const ids = store.liveTasks.map((t) => t.id)
       expect(ids).toContain('t-live')
@@ -269,14 +269,14 @@ describe('useTasksStore', () => {
       expect(store.tasks).toHaveLength(0)
     })
 
-    it('fetchTasks schedules expiry for rows whose deleted_at is in the future', async () => {
+    it('fetchTasks schedules expiry for rows whose finalized_at is in the future', async () => {
       const store = useTasksStore()
       const future = new Date(Date.now() + 1_000).toISOString()
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
           ok: true,
-          json: () => Promise.resolve([{ id: 't-1', state: 'done', deleted_at: future }]),
+          json: () => Promise.resolve([{ id: 't-1', state: 'done', finalized_at: future }]),
         }),
       )
       await store.fetchTasks('g-1')
