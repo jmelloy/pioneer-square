@@ -45,7 +45,9 @@ def _create_task(test_client, guild_id: str, worker_id: str, desc: str, db_url: 
 def _set_finalized_at(db_url: str, task_id: str, finalized_at: datetime | None) -> None:
 
     with _sync_session(db_url) as session:
-        session.execute(update(Task).where(col(Task.id) == task_id).values(finalized_at=finalized_at))
+        session.execute(
+            update(Task).where(col(Task.id) == task_id).values(finalized_at=finalized_at)
+        )
         session.commit()
 
 

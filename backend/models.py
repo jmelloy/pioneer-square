@@ -150,7 +150,9 @@ class Worker(SQLModel, table=True):
 class Task(SQLModel, table=True):
     __tablename__ = "tasks"  # type: ignore[assignment]
     __table_args__ = (
-        Index("ix_tasks_guild_id_finalized_at_created_at", "guild_id", "finalized_at", "created_at"),
+        Index(
+            "ix_tasks_guild_id_finalized_at_created_at", "guild_id", "finalized_at", "created_at"
+        ),
         Index("ix_tasks_state", "state"),
     )
 
