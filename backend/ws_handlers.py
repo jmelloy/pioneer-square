@@ -62,7 +62,13 @@ from ws_types import (
     parse_inbound_message,
 )
 
-from foreman import maybe_post_plan_comment, reset_foreman_poll, run_foreman_ai
+from foreman import (
+    maybe_post_plan_comment,
+    reset_foreman_poll,
+    resume_foreman_poll,
+    run_foreman_ai,
+    suppress_foreman_poll,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +202,7 @@ async def _trigger_foreman(
                 event,
             )
             foreman_connections.pop(guild_id, None)
+            resume_foreman_poll(guild_id)
     # Embedded fallback — identical to the pre-Phase-2 behaviour.
     spawn(
         run_foreman_ai(guild_id, human_message, user_id=user_id),
@@ -338,6 +345,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
             except Exception:
                 pass
         foreman_connections[ctx.guild_id] = ctx.websocket
+        suppress_foreman_poll(ctx.guild_id)
         logger.info("guild=%s external foreman registered: agentId=%s", ctx.guild_id, agent_id)
         # Acknowledge registration so the foreman knows it is the active one.
         await send_ws_message(
@@ -991,6 +999,7 @@ async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:
     """
     if foreman_connections.get(ctx.guild_id) is ctx.websocket:
         foreman_connections.pop(ctx.guild_id, None)
+        resume_foreman_poll(ctx.guild_id)
         logger.info(
             "guild=%s external foreman disconnected gracefully",
             ctx.guild_id,

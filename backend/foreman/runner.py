@@ -53,6 +53,8 @@ POLL_MAX_SECS = 14400  # maximum poll interval: 4 hours
 
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
+# Guilds whose embedded poll loop is suppressed while an external foreman owns polling.
+_suppressed_poll_guilds: set[str] = set()
 
 # Per-guild locks to serialise foreman runs.  If a run is already in progress
 # for a (guild, user) pair, new invocations are dropped rather than queued —
@@ -376,6 +378,10 @@ def reset_foreman_poll(guild_id: str) -> None:
         logger.debug("guild=%s reset_foreman_poll: run in-flight, skipping timer reset", guild_id)
         return
 
+    if guild_id in _suppressed_poll_guilds:
+        logger.debug("guild=%s reset_foreman_poll: suppressed (external foreman active)", guild_id)
+        return
+
     if _guild_active_recently(guild_id):
         # Foreman was active recently — cancel and restart at the minimum interval
         # so the next check happens in POLL_MIN_SECS.
@@ -391,6 +397,20 @@ def reset_foreman_poll(guild_id: str) -> None:
         if existing is None or existing.done():
             task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
             _poll_tasks[guild_id] = task
+
+
+def suppress_foreman_poll(guild_id: str) -> None:
+    """Pause the embedded poll loop for *guild_id* while an external foreman is active."""
+    _suppressed_poll_guilds.add(guild_id)
+    old = _poll_tasks.pop(guild_id, None)
+    if old and not old.done():
+        old.cancel()
+
+
+def resume_foreman_poll(guild_id: str) -> None:
+    """Resume the embedded poll loop for *guild_id* after external foreman disconnect."""
+    _suppressed_poll_guilds.discard(guild_id)
+    reset_foreman_poll(guild_id)
 
 
 async def _fetch_online_workers(db, guild_id: str) -> list[dict]:

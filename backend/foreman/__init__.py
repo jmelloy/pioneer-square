@@ -4,13 +4,17 @@ from foreman.runner import (
     clear_foreman_history,
     get_foreman_history,
     reset_foreman_poll,
+    resume_foreman_poll,
     run_foreman_ai,
+    suppress_foreman_poll,
 )
 from foreman.tools import maybe_post_plan_comment
 
 __all__ = [
     "run_foreman_ai",
     "reset_foreman_poll",
+    "suppress_foreman_poll",
+    "resume_foreman_poll",
     "clear_foreman_history",
     "get_foreman_history",
     "maybe_post_plan_comment",
