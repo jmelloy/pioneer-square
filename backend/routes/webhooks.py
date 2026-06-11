@@ -270,7 +270,7 @@ async def _auto_finalize_task_on_pr_merge(
             col(Task.guild_id) == guild_pk,
             col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
         )
-        .values(state="done", finished_at=now, deleted_at=deleted_at)
+        .values(state="done", deleted_at=deleted_at)
     )
     if (getattr(upd, "rowcount", 0) or 0) == 0:
         return False
@@ -285,7 +285,6 @@ async def _auto_finalize_task_on_pr_merge(
         TaskUpdateMsg(
             taskId=task_id,
             state="done",
-            finishedAt=now.isoformat(),
             deletedAt=deleted_at.isoformat(),
         ),
     )
@@ -329,7 +328,7 @@ async def _auto_fail_task_on_pr_close(
             col(Task.guild_id) == guild_pk,
             col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
         )
-        .values(state="failed", finished_at=now, deleted_at=deleted_at)
+        .values(state="failed", deleted_at=deleted_at)
     )
     if (getattr(upd, "rowcount", 0) or 0) == 0:
         return False
@@ -344,7 +343,6 @@ async def _auto_fail_task_on_pr_close(
         TaskUpdateMsg(
             taskId=task_id,
             state="failed",
-            finishedAt=now.isoformat(),
             deletedAt=deleted_at.isoformat(),
         ),
     )

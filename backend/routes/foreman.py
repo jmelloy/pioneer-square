@@ -149,7 +149,7 @@ async def get_foreman_state(
             {
               "id": str, "worker_id": str, "name": str, "description": str,
               "state": str, "phase": str, "branch": str | null,
-              "pr_url": str | null, "finished_at": str | null
+              "pr_url": str | null, "deleted_at": str | null
             }
           ]
         }
@@ -210,7 +210,7 @@ async def get_foreman_state(
             col(Task.phase),
             col(Task.branch),
             col(Task.pr_url),
-            col(Task.finished_at),
+            col(Task.deleted_at),
             col(Task.created_at),
             col(Task.user_id),
         )
@@ -469,7 +469,6 @@ class TaskPatch(BaseModel):
     worker_id: str | None = None
     branch: str | None = None
     pr_url: str | None = None
-    finished_at: str | None = None
     deleted_at: str | None = None
     phase: str | None = None
 
@@ -494,8 +493,7 @@ async def patch_task(
     - ``worker_id``: reassign to a different worker
     - ``branch``: git branch name
     - ``pr_url``: GitHub PR URL
-    - ``finished_at``: ISO-8601 completion timestamp
-    - ``deleted_at``: ISO-8601 soft-delete timestamp
+    - ``deleted_at``: ISO-8601 soft-delete / expiry timestamp
     - ``phase``: task phase (plan / execute / review / followup)
 
     Broadcasts a ``task-update`` WS event with the changed fields so the
@@ -509,7 +507,6 @@ async def patch_task(
         ("worker_id", "worker_id"),
         ("branch", "branch"),
         ("pr_url", "pr_url"),
-        ("finished_at", "finished_at"),
         ("deleted_at", "deleted_at"),
         ("phase", "phase"),
     ):
@@ -540,7 +537,6 @@ async def patch_task(
         "worker_id": "workerId",
         "branch": "branch",
         "pr_url": "prUrl",
-        "finished_at": "finishedAt",
         "deleted_at": "deletedAt",
         "phase": "phase",
     }

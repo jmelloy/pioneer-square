@@ -82,7 +82,6 @@ export interface Task {
   pr_url?: string
   worktree_path?: string
   created_at?: string
-  finished_at?: string
   deleted_at?: string | null
 }
 
@@ -239,7 +238,6 @@ export interface TaskUpdateWS {
   state?: TaskState
   branch?: string
   prUrl?: string
-  finishedAt?: string
   worktreePath?: string
   deletedAt?: string | null
 }

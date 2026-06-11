@@ -92,7 +92,6 @@ async def list_guild_tasks(
             col(Task.issue_number),
             col(Task.issue_repo),
             col(Task.created_at),
-            col(Task.finished_at),
             col(Task.deleted_at),
         )
         .where(col(Task.guild_id) == guild_pk, live_tasks_filter())
@@ -260,12 +259,9 @@ async def finalize_task_endpoint(
     worker_id = result.one_or_none()
     if not worker_id:
         raise HTTPException(status_code=404, detail="Task not found")
-    finished_at = datetime.now(UTC)
     deleted_at = _resolve_finalize_deleted_at(body)
     await db.exec(
-        update(Task)
-        .where(col(Task.id) == task_id)
-        .values(state="done", finished_at=finished_at, deleted_at=deleted_at)
+        update(Task).where(col(Task.id) == task_id).values(state="done", deleted_at=deleted_at)
     )
     await db.commit()
     await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
@@ -274,7 +270,6 @@ async def finalize_task_endpoint(
         TaskUpdateMsg(
             taskId=task_id,
             state="done",
-            finishedAt=finished_at.isoformat(),
             deletedAt=deleted_at.isoformat(),
         ),
     )
@@ -304,18 +299,16 @@ async def cancel_task_endpoint(
     worker_id, state = row
     if state in ("done", "failed", "cancelled"):
         raise HTTPException(status_code=409, detail=f"Task is already {state}")
-    finished_at = datetime.now(UTC)
+    deleted_at = datetime.now(UTC) + DEFAULT_FINALIZE_TTL
     await db.exec(
-        update(Task)
-        .where(col(Task.id) == task_id)
-        .values(state="cancelled", finished_at=finished_at)
+        update(Task).where(col(Task.id) == task_id).values(state="cancelled", deleted_at=deleted_at)
     )
     await LockService(db).release(f"task:{task_id}")
     await db.commit()
     await broadcast_msg(guild_id, TaskCancelMsg(workerId=worker_id, taskId=task_id))
     await broadcast_msg(
         guild_id,
-        TaskUpdateMsg(taskId=task_id, state="cancelled", finishedAt=finished_at.isoformat()),
+        TaskUpdateMsg(taskId=task_id, state="cancelled", deletedAt=deleted_at.isoformat()),
     )
     return {"status": "cancelled", "taskId": task_id}
 

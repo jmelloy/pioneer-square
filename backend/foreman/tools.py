@@ -1146,10 +1146,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 "worker_id": target_worker_id,
                             }
                             if prior_state in ("done", "failed", "cancelled"):
-                                # Re-opening a terminal task: clear soft-delete fields so it
+                                # Re-opening a terminal task: clear soft-delete so it
                                 # reappears in the live task list and isn't auto-purged.
                                 update_vals["deleted_at"] = None
-                                update_vals["finished_at"] = None
                             await db.exec(
                                 update(Task).where(col(Task.id) == task_id).values(**update_vals)
                             )
@@ -1161,7 +1160,6 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     state="working",
                                     workerId=target_worker_id,
                                     deletedAt=None,
-                                    finishedAt=None,
                                 ).model_dump(by_alias=True, exclude_none=True),
                             )
                             followup_worker_result = await db.exec(
@@ -1228,13 +1226,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     if not task:
                         result_text = f"Task {task_id} not found."
                     else:
-                        finished_at = datetime.now(UTC)
                         await db.exec(
                             update(Task)
                             .where(col(Task.id) == task_id)
                             .values(
                                 state=outcome,
-                                finished_at=finished_at,
                                 deleted_at=deleted_at,
                             )
                         )
@@ -1251,7 +1247,6 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             TaskUpdateMsg(
                                 taskId=task_id,
                                 state=outcome,
-                                finishedAt=finished_at.isoformat(),
                                 deletedAt=deleted_at.isoformat()
                                 if deleted_at is not None
                                 else None,
@@ -1316,13 +1311,15 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     if state in ("done", "failed", "cancelled"):
                         result_text = f"Task {task_id} is already {state}."
                     else:
-                        finished_at = datetime.now(UTC)
+                        deleted_at = datetime.now(UTC) + timedelta(
+                            seconds=DEFAULT_FINALIZE_TTL_SECONDS
+                        )
                         await db.exec(
                             update(Task)
                             .where(col(Task.id) == task_id)
                             .values(
                                 state="cancelled",
-                                finished_at=finished_at,
+                                deleted_at=deleted_at,
                             )
                         )
                         await LockService(db).release(f"task:{task_id}")
@@ -1336,7 +1333,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             TaskUpdateMsg(
                                 taskId=task_id,
                                 state="cancelled",
-                                finishedAt=finished_at.isoformat(),
+                                deletedAt=deleted_at.isoformat(),
                             ),
                         )
                         result_text = f"Task {task_id} cancelled." + (
@@ -1405,7 +1402,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "branch": task.branch,
                             "pr_url": task.pr_url,
                             "created_at": task.created_at,
-                            "finished_at": task.finished_at,
+                            "deleted_at": task.deleted_at,
                             "recent_logs": [{"time": r[0], "line": r[1]} for r in log_rows],
                         },
                         default=_json_default,

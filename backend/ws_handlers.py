@@ -695,18 +695,6 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
     ):
         if src in data:
             update_values[col_name] = data[src]
-    if "finishedAt" in data:
-        raw = data.get("finishedAt")
-        if raw is not None:
-            try:
-                parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=UTC)
-                update_values["finished_at"] = parsed
-            except (ValueError, TypeError):
-                pass
-        else:
-            update_values["finished_at"] = None
     # When the worker reports a PR URL, derive pr_number + pr_repo so github
     # webhook deliveries can be linked back to this task without fragile URL
     # substring matching at receive time.
