@@ -991,16 +991,19 @@ async def clear_foreman_history(guild_id: str, user_id: str) -> int:
 async def get_foreman_history(guild_id: str, user_id: str) -> dict:
     """Return stored turns structured for the debug view.
 
+    Applies the same windowing pipeline used before each real API call so the
+    debug pane shows exactly the messages that would be submitted next:
+      1. ``_HUMAN_TURN_WINDOW`` sliding-window cutoff (same as ``_load_history``)
+      2. ``prune_history`` cap (``MAX_HISTORY_MESSAGES``)
+      3. ``strip_orphaned_tool_results`` cleanup
+
     Returns::
 
         {
             "system": <str | None>,   # most-recent audit system prompt text
-            "messages": [...],        # non-system turns only, in DB order
+            "messages": [...],        # windowed messages (what would be sent next)
+            "total": <int>,           # total non-system turns stored (before windowing)
         }
-
-    System turns are persisted for auditing but are never part of the
-    ``messages[]`` array sent to the Anthropic API — they appear here once
-    at the top so the debug pane accurately mirrors what would be sent.
     """
     db = await get_db()
     try:
@@ -1023,7 +1026,25 @@ async def get_foreman_history(guild_id: str, user_id: str) -> dict:
             system_content = raw if isinstance(raw, str) else json.dumps(raw)
             break
 
-    messages = [
+    # Count total non-system turns before any windowing for the summary line.
+    total = sum(1 for t in turns if t.role != "system")
+
+    if not turns:
+        return {"system": system_content, "messages": [], "total": 0}
+
+    # Apply the same human-turn-window cutoff as _load_history().
+    cutoff = 0
+    human_count = 0
+    for i in range(len(turns) - 1, -1, -1):
+        t = turns[i]
+        if t.role == "user" and not t.is_tool_response:
+            human_count += 1
+            if human_count >= _HUMAN_TURN_WINDOW:
+                cutoff = i
+                break
+
+    # Build metadata-rich messages from the windowed slice (system turns excluded).
+    messages: list[dict] = [
         {
             "id": t.id,
             "role": t.role,
@@ -1035,8 +1056,16 @@ async def get_foreman_history(guild_id: str, user_id: str) -> dict:
             "output_tokens": t.output_tokens,
             "api_calls": json.loads(t.api_calls_json) if t.api_calls_json else None,
         }
-        for t in turns
+        for t in turns[cutoff:]
         if t.role != "system"
     ]
 
-    return {"system": system_content, "messages": messages}
+    # Ensure the list starts with a user turn (mirrors _load_history).
+    while messages and messages[0]["role"] != "user":
+        messages.pop(0)
+
+    # Apply the same post-load trimming used before every real API call.
+    messages = prune_history(messages)
+    messages = strip_orphaned_tool_results(messages)
+
+    return {"system": system_content, "messages": messages, "total": total}

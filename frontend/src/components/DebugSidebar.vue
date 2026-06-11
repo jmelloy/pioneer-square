@@ -4,10 +4,14 @@
       <div class="debug-sidebar-header">
         <span class="debug-sidebar-title">⚙ FOREMAN DEBUG</span>
         <div class="debug-sidebar-actions">
-          <span class="debug-count"
-            >{{ debugContext.length }} msg{{ debugContext.length !== 1 ? 's' : '' }} in
-            context</span
-          >
+          <span class="debug-count">
+            <template v-if="totalMessages > debugContext.length">
+              Showing {{ debugContext.length }} of {{ totalMessages.toLocaleString() }} messages
+            </template>
+            <template v-else>
+              {{ debugContext.length }} msg{{ debugContext.length !== 1 ? 's' : '' }} in context
+            </template>
+          </span>
           <button class="pixel-btn refresh-btn" @click="refreshDebug" :disabled="debugLoading">
             {{ debugLoading ? '...' : '↻' }}
           </button>
@@ -119,6 +123,7 @@ interface DebugMessage {
 
 const debugContext = ref<DebugMessage[]>([])
 const systemPrompt = ref<string | null>(null)
+const totalMessages = ref(0)
 const debugLoading = ref(false)
 const debugClearing = ref(false)
 const debugEl = ref<HTMLElement | null>(null)
@@ -136,11 +141,12 @@ async function refreshDebug() {
   if (!guildId) return
   debugLoading.value = true
   try {
-    const data = await api<{ messages?: DebugMessage[]; system?: string | null }>(
+    const data = await api<{ messages?: DebugMessage[]; system?: string | null; total?: number }>(
       `/guilds/${guildId}/foreman/context`,
     )
     debugContext.value = data?.messages ?? []
     systemPrompt.value = data?.system ?? null
+    totalMessages.value = data?.total ?? (data?.messages?.length ?? 0)
   } catch (e) {
     console.error('Failed to load foreman context', e)
   } finally {
@@ -158,6 +164,7 @@ async function clearContext() {
     await api(`/guilds/${guildId}/foreman/clear-context`, { method: 'POST' })
     debugContext.value = []
     systemPrompt.value = null
+    totalMessages.value = 0
   } catch (e) {
     console.error('Failed to clear foreman context', e)
   } finally {
