@@ -61,6 +61,12 @@ _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 # Entries are popped in the finally block after each run so the dict stays small.
 _guild_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
 
+# Per-guild trigger coalescing for spawned foreman runs:
+# - at most one active spawned run per guild
+# - while active, keep only the latest pending trigger payload for one follow-up run
+_trigger_inflight_guilds: set[str] = set()
+_trigger_pending_by_guild: dict[str, tuple[str, str, str | None, str]] = {}
+
 # Monotonic timestamp (time.monotonic()) of the last foreman run that made at
 # least one tool call, keyed by guild_id.  Used by reset_foreman_poll to decide
 # whether to reset the backoff: only reset when the foreman was recently active.
@@ -88,6 +94,68 @@ def _get_anthropic_client():
     if _anthropic_client is None:
         _anthropic_client = make_anthropic_client()
     return _anthropic_client
+
+
+def schedule_foreman_run(
+    guild_id: str,
+    human_message: str,
+    *,
+    task_name: str,
+    extra_context: str = "",
+    user_id: str | None = None,
+) -> None:
+    """Schedule a guild-scoped foreman run with one-slot pending coalescing.
+
+    At most one spawned run is active per guild. If another trigger arrives
+    while active, only the latest trigger payload is retained as pending.
+    """
+    payload = (human_message, extra_context, user_id, task_name)
+    if guild_id in _trigger_inflight_guilds:
+        _trigger_pending_by_guild[guild_id] = payload
+        logger.debug("guild=%s foreman trigger queued while run in-flight", guild_id)
+        return
+    _trigger_inflight_guilds.add(guild_id)
+    spawn(
+        _drain_scheduled_foreman_runs(guild_id, payload),
+        name=task_name,
+    )
+
+
+async def _drain_scheduled_foreman_runs(
+    guild_id: str, payload: tuple[str, str, str | None, str]
+) -> None:
+    """Run scheduled foreman triggers sequentially for one guild."""
+    next_payload = payload
+    try:
+        while True:
+            human_message, extra_context, user_id, _task_name = next_payload
+            try:
+                await run_foreman_ai(
+                    guild_id,
+                    human_message,
+                    extra_context=extra_context,
+                    user_id=user_id,
+                )
+            except Exception:
+                logger.exception("guild=%s scheduled foreman run failed", guild_id)
+
+            pending = _trigger_pending_by_guild.pop(guild_id, None)
+            if pending is None:
+                break
+            logger.debug("guild=%s draining queued foreman re-trigger", guild_id)
+            next_payload = pending
+    finally:
+        _trigger_inflight_guilds.discard(guild_id)
+        # Handle a late-arriving trigger that raced with teardown.
+        pending = _trigger_pending_by_guild.pop(guild_id, None)
+        if pending is not None:
+            schedule_foreman_run(
+                guild_id,
+                pending[0],
+                task_name=pending[3],
+                extra_context=pending[1],
+                user_id=pending[2],
+            )
 
 
 async def _load_foreman_config(guild_id: str) -> dict:
@@ -344,7 +412,11 @@ async def _poll_loop(guild_id: str) -> None:
                     "Use get_task_status to inspect a task if it looks stuck. "
                     "If everything looks healthy, no action is needed."
                 )
-                spawn(run_foreman_ai(guild_id, msg), name=f"foreman.poll:{guild_id}")
+                schedule_foreman_run(
+                    guild_id,
+                    msg,
+                    task_name=f"foreman.poll:{guild_id}",
+                )
 
             # Announce next check interval so the UI can display a countdown.
             interval = next_interval

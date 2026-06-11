@@ -20,10 +20,9 @@ from pydantic import BaseModel
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from util.tasks import spawn
 from ws_types import TaskCancelMsg, TaskFinalizeMsg, TaskRedirectMsg, TaskUpdateMsg
 
-from foreman import run_foreman_ai
+from foreman import schedule_foreman_run
 
 router = APIRouter()
 
@@ -221,17 +220,15 @@ async def create_task_followup(
     _worker_id, state, branch = row
 
     branch_ctx = f" on branch `{branch}`" if branch else ""
-    spawn(
-        run_foreman_ai(
-            guild_id,
-            f"[user-followup] User requested follow-up on task {task_id}{branch_ctx} "
-            f'(currently {state}): "{data.instructions}". '
-            "Call send_followup to dispatch this work — it will pick the "
-            "original worker if idle, otherwise any idle worker pulls the "
-            "branch from GitHub.",
-            user_id=github_user_id,
-        ),
-        name=f"foreman.user-followup:{task_id}",
+    schedule_foreman_run(
+        guild_id,
+        f"[user-followup] User requested follow-up on task {task_id}{branch_ctx} "
+        f'(currently {state}): "{data.instructions}". '
+        "Call send_followup to dispatch this work — it will pick the "
+        "original worker if idle, otherwise any idle worker pulls the "
+        "branch from GitHub.",
+        user_id=github_user_id,
+        task_name=f"foreman.user-followup:{task_id}",
     )
     return {"status": "queued_for_foreman", "taskId": task_id}
 

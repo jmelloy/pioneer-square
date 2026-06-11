@@ -62,7 +62,7 @@ from ws_types import (
     parse_inbound_message,
 )
 
-from foreman import maybe_post_plan_comment, reset_foreman_poll, run_foreman_ai
+from foreman import maybe_post_plan_comment, reset_foreman_poll, schedule_foreman_run
 
 logger = logging.getLogger(__name__)
 
@@ -196,10 +196,12 @@ async def _trigger_foreman(
                 event,
             )
             foreman_connections.pop(guild_id, None)
-    # Embedded fallback — identical to the pre-Phase-2 behaviour.
-    spawn(
-        run_foreman_ai(guild_id, human_message, user_id=user_id),
-        name=task_name,
+    # Embedded fallback — coalesced to at most one active + one queued run per guild.
+    schedule_foreman_run(
+        guild_id,
+        human_message,
+        user_id=user_id,
+        task_name=task_name,
     )
 
 
