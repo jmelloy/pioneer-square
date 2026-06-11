@@ -256,8 +256,8 @@ async def test_ws_trigger_malformed_ignored():
     assert calls == [], "Malformed trigger should not spawn a run"
 
 
-async def test_ws_second_trigger_dropped_when_in_flight():
-    """If a run is already in-flight, a second trigger is silently dropped."""
+async def test_ws_second_trigger_queued_when_in_flight():
+    """If a run is already in-flight, a second trigger is queued and processed after the first."""
     triggers = [
         {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "first"},
         {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "second"},
@@ -281,39 +281,43 @@ async def test_ws_second_trigger_dropped_when_in_flight():
         foreman = Foreman(_make_config())
         foreman._http = AsyncMock()
         run_task = asyncio.create_task(foreman._run_connection())
-        # Let the first trigger start and the second arrive
+        # Let the first trigger start and the second arrive while first is blocking
         await asyncio.sleep(0.05)
         gate.set()
         await run_task
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.05)  # let drain complete
 
-    assert call_count == 1, f"Expected only 1 run_foreman_ai call, got {call_count}"
+    assert call_count == 2, (
+        f"Expected 2 run_foreman_ai calls (first + queued second), got {call_count}"
+    )
 
 
 # ── in-flight flag reset ──────────────────────────────────────────────────
 
 
-async def test_in_flight_cleared_after_run():
-    """_in_flight is reset to False after a foreman run completes."""
-    foreman = Foreman(_make_config())
-    foreman._http = AsyncMock()
+async def test_processing_cleared_after_run():
+    """_processing is reset to False after a foreman run (and its queue drain) completes."""
+    ws = MockWebSocket(
+        [
+            {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "do stuff"},
+            {"type": "foreman-evicted", "reason": "done"},
+        ]
+    )
 
     async def fake_run(*args, **kwargs):
         return False
 
-    with patch("pioneer_foreman.foreman.run_foreman_ai", fake_run):
-        # Simulate what _run_foreman does
-        foreman._in_flight = True
-        ws_messages: list[dict] = []
+    foreman = Foreman(_make_config())
+    foreman._http = AsyncMock()
 
-        async def fake_ws_send(msg):
-            ws_messages.append(msg)
+    with (
+        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
+        patch("pioneer_foreman.foreman.run_foreman_ai", fake_run),
+    ):
+        await foreman._run_connection()
+        await asyncio.sleep(0.05)  # let the trigger task finish
 
-        # Access the inner _run_foreman by constructing it manually via run()
-        # Instead, test the flag directly via a trigger + small sleep
-        foreman._in_flight = False
-
-    assert foreman._in_flight is False
+    assert foreman._processing is False
 
 
 # ── graceful exit ─────────────────────────────────────────────────────────
@@ -344,3 +348,128 @@ async def test_run_cancels_poll_task_on_eviction():
     # The poll task should be done (cancelled or finished)
     assert created_poll_task, "Expected a poll-loop task to be created"
     assert created_poll_task[0].done(), "poll task should be done after _run_connection exits"
+
+
+# ── message queue ─────────────────────────────────────────────────────────
+
+
+async def test_ws_queued_messages_processed_in_order():
+    """Messages received while busy are processed in FIFO order after the turn completes."""
+    triggers = [
+        {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "first", "event": "e1"},
+        {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "second", "event": "e2"},
+        {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "third", "event": "e3"},
+        {"type": "foreman-evicted", "reason": "done"},
+    ]
+    ws = MockWebSocket(triggers)
+
+    processed: list[str] = []
+    gate = asyncio.Event()
+
+    async def ordered_run(guild_id, human_message, *, http, ws_send, config, **kwargs):
+        if human_message == "first":
+            await gate.wait()  # block until gate opens; second and third will queue
+        processed.append(human_message)
+        return False
+
+    with (
+        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
+        patch("pioneer_foreman.foreman.run_foreman_ai", ordered_run),
+    ):
+        foreman = Foreman(_make_config())
+        foreman._http = AsyncMock()
+        run_task = asyncio.create_task(foreman._run_connection())
+        await asyncio.sleep(0.05)  # let first trigger start; second and third queue up
+        gate.set()
+        await run_task
+        await asyncio.sleep(0.05)  # let drain complete
+
+    assert processed == ["first", "second", "third"], (
+        f"Expected FIFO order ['first', 'second', 'third'], got {processed}"
+    )
+
+
+async def test_ws_periodic_check_discarded_when_busy():
+    """Periodic-check triggers are silently discarded (not queued) while a run is in-flight."""
+    periodic_msg = (
+        "[periodic-check] Automated status poll — 1 non-terminal task(s): t-abc (working). "
+        "Check whether any are stalled."
+    )
+    triggers = [
+        {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "real task"},
+        {"type": "foreman-trigger", "guildId": "test123", "humanMessage": periodic_msg},
+        {"type": "foreman-evicted", "reason": "done"},
+    ]
+    ws = MockWebSocket(triggers)
+
+    processed: list[str] = []
+    gate = asyncio.Event()
+
+    async def tracking_run(guild_id, human_message, *, http, ws_send, config, **kwargs):
+        if human_message == "real task":
+            await gate.wait()
+        processed.append(human_message)
+        return False
+
+    with (
+        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
+        patch("pioneer_foreman.foreman.run_foreman_ai", tracking_run),
+    ):
+        foreman = Foreman(_make_config())
+        foreman._http = AsyncMock()
+        run_task = asyncio.create_task(foreman._run_connection())
+        await asyncio.sleep(0.05)
+        gate.set()
+        await run_task
+        await asyncio.sleep(0.05)
+
+    assert processed == ["real task"], f"Periodic-check should be discarded; got {processed}"
+    assert foreman._message_queue.empty(), "Queue should be empty — periodic-check was not queued"
+
+
+async def test_ws_queue_full_drops_message():
+    """When the message queue is full, the overflow trigger is dropped with a warning."""
+    # 1 blocking trigger + 100 that fill the queue + 1 overflow + evicted
+    triggers = (
+        [{"type": "foreman-trigger", "guildId": "test123", "humanMessage": "first", "event": "e0"}]
+        + [
+            {
+                "type": "foreman-trigger",
+                "guildId": "test123",
+                "humanMessage": f"msg{i}",
+                "event": f"e{i + 1}",
+            }
+            for i in range(101)  # 100 fill the queue; the 101st is dropped
+        ]
+        + [{"type": "foreman-evicted", "reason": "done"}]
+    )
+    ws = MockWebSocket(triggers)
+
+    gate = asyncio.Event()
+    processed: list[str] = []
+
+    async def counting_run(guild_id, human_message, *, http, ws_send, config, **kwargs):
+        if human_message == "first":
+            await gate.wait()
+        processed.append(human_message)
+        return False
+
+    import logging
+
+    with (
+        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
+        patch("pioneer_foreman.foreman.run_foreman_ai", counting_run),
+    ):
+        foreman = Foreman(_make_config())
+        foreman._http = AsyncMock()
+        run_task = asyncio.create_task(foreman._run_connection())
+        await asyncio.sleep(0.1)  # let all triggers arrive while first is blocking
+        gate.set()
+        await run_task
+        await asyncio.sleep(0.1)  # let drain complete
+
+    # "first" + 100 queued = 101 processed; the 101st buffered message was dropped
+    assert processed[0] == "first"
+    assert len(processed) == 101, (
+        f"Expected 101 processed (first + 100 queued), got {len(processed)}"
+    )
