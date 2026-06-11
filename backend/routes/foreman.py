@@ -95,6 +95,7 @@ async def get_foreman_context(
         "system": history["system"],
         "messages": history["messages"],
         "count": len(history["messages"]),
+        "total": history["total"],
     }
 
 
