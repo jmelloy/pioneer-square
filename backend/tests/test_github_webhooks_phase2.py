@@ -3,7 +3,7 @@
 Covers:
 - Foreman dispatch + filtering rules (``_should_dispatch_to_foreman``,
   ``_build_foreman_summary``)
-- The end-to-end receiver-to-foreman path (verifying ``run_foreman_ai``
+- The end-to-end receiver-to-foreman path (verifying scheduler dispatch
   is invoked when a webhook arrives that matches a known task)
 - The new ``get_pr_status`` foreman tool
 - The system prompt section that teaches the foreman how to react
@@ -462,13 +462,15 @@ class TestDebounce:
         """
         self._foreman_calls: list[tuple[str, str, str | None]] = []
 
-        async def fake_run_foreman(guild_id, summary, *, user_id=None):
-            self._foreman_calls.append((guild_id, summary, user_id))
+        def fake_schedule_foreman(
+            guild_id, human_message, *, task_name, extra_context="", user_id=None
+        ):
+            self._foreman_calls.append((guild_id, human_message, user_id))
 
         queue = wh.DebounceQueue(window_seconds=0.05)
         with (
             patch.object(wh, "_debounce_queue", queue),
-            patch.object(wh, "run_foreman_ai", new=fake_run_foreman),
+            patch.object(wh, "schedule_foreman_run", new=fake_schedule_foreman),
             patch.object(wh, "reset_foreman_poll"),
         ):
             try:

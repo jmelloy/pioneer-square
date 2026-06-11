@@ -8,7 +8,7 @@ broadcasts a ``github-event`` WS message to the guild.
 
 When the event is linked to a known task and clears the noise filters
 (see ``_should_dispatch_to_foreman``), the receiver also schedules a
-``run_foreman_ai`` invocation with a structured summary so the foreman
+coalesced foreman invocation with a structured summary so the foreman
 can decide whether to send_followup, finalize, or no-op.
 """
 
@@ -35,7 +35,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from ws_types import ChatMsg, GithubEventMsg, TaskFinalizeMsg, TaskUpdateMsg
 
-from foreman import reset_foreman_poll, run_foreman_ai
+from foreman import reset_foreman_poll, schedule_foreman_run
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,12 @@ class DebounceQueue:
             (uid for _, uid in items if uid and not uid.endswith("[bot]")),
             next((uid for _, uid in items if uid), None),
         )
-        await run_foreman_ai(guild_id, combined, user_id=user_id)
+        schedule_foreman_run(
+            guild_id,
+            combined,
+            task_name=f"foreman.webhook.{guild_id}",
+            user_id=user_id,
+        )
         reset_foreman_poll(guild_id)
         logger.info(
             "github webhook debounce fired key=%s events=%d guild=%s",

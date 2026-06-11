@@ -61,11 +61,11 @@ _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 # Entries are popped in the finally block after each run so the dict stays small.
 _guild_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
 
-# Per-guild trigger coalescing for spawned foreman runs:
-# - at most one active spawned run per guild
+# Per-(guild, user) trigger coalescing for spawned foreman runs:
+# - at most one active spawned run per (guild, user)
 # - while active, keep only the latest pending trigger payload for one follow-up run
-_trigger_inflight_guilds: set[str] = set()
-_trigger_pending_by_guild: dict[str, tuple[str, str, str | None, str]] = {}
+_trigger_inflight_keys: set[tuple[str, str | None]] = set()
+_trigger_pending_by_key: dict[tuple[str, str | None], tuple[str, str, str | None, str]] = {}
 
 # Monotonic timestamp (time.monotonic()) of the last foreman run that made at
 # least one tool call, keyed by guild_id.  Used by reset_foreman_poll to decide
@@ -104,50 +104,58 @@ def schedule_foreman_run(
     extra_context: str = "",
     user_id: str | None = None,
 ) -> None:
-    """Schedule a guild-scoped foreman run with one-slot pending coalescing.
+    """Schedule a per-(guild, user) foreman run with one-slot pending coalescing.
 
-    At most one spawned run is active per guild. If another trigger arrives
+    At most one spawned run is active per (guild, user). If another trigger arrives
     while active, only the latest trigger payload is retained as pending.
     """
     payload = (human_message, extra_context, user_id, task_name)
-    if guild_id in _trigger_inflight_guilds:
-        _trigger_pending_by_guild[guild_id] = payload
-        logger.debug("guild=%s foreman trigger queued while run in-flight", guild_id)
+    trigger_key = (guild_id, user_id)
+    if trigger_key in _trigger_inflight_keys:
+        _trigger_pending_by_key[trigger_key] = payload
+        logger.debug(
+            "guild=%s user=%s foreman trigger queued while run in-flight", guild_id, user_id
+        )
         return
-    _trigger_inflight_guilds.add(guild_id)
+    _trigger_inflight_keys.add(trigger_key)
     spawn(
-        _drain_scheduled_foreman_runs(guild_id, payload),
+        _drain_scheduled_foreman_runs(trigger_key, payload),
         name=task_name,
     )
 
 
 async def _drain_scheduled_foreman_runs(
-    guild_id: str, payload: tuple[str, str, str | None, str]
+    trigger_key: tuple[str, str | None], payload: tuple[str, str, str | None, str]
 ) -> None:
-    """Run scheduled foreman triggers sequentially for one guild."""
+    """Run scheduled foreman triggers sequentially for one (guild, user)."""
+    guild_id, user_id = trigger_key
     next_payload = payload
     try:
         while True:
-            human_message, extra_context, user_id, _task_name = next_payload
+            human_message, extra_context, payload_user_id, _task_name = next_payload
             try:
                 await run_foreman_ai(
                     guild_id,
                     human_message,
                     extra_context=extra_context,
-                    user_id=user_id,
+                    user_id=payload_user_id,
                 )
             except Exception:
-                logger.exception("guild=%s scheduled foreman run failed", guild_id)
+                logger.exception(
+                    "guild=%s user=%s scheduled foreman run failed", guild_id, payload_user_id
+                )
 
-            pending = _trigger_pending_by_guild.pop(guild_id, None)
+            pending = _trigger_pending_by_key.pop(trigger_key, None)
             if pending is None:
                 break
-            logger.debug("guild=%s draining queued foreman re-trigger", guild_id)
+            logger.debug(
+                "guild=%s user=%s draining queued foreman re-trigger", guild_id, pending[2]
+            )
             next_payload = pending
     finally:
-        _trigger_inflight_guilds.discard(guild_id)
+        _trigger_inflight_keys.discard(trigger_key)
         # Handle a late-arriving trigger that raced with teardown.
-        pending = _trigger_pending_by_guild.pop(guild_id, None)
+        pending = _trigger_pending_by_key.pop(trigger_key, None)
         if pending is not None:
             schedule_foreman_run(
                 guild_id,
