@@ -37,6 +37,9 @@ test = [
     "anyio[trio]>=4.0",
     "ruff",
 ]
+s3 = [
+    "boto3>=1.26",
+]
 
 [project.scripts]
 pioneer = "pioneer_cli.main:main"

@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import anyio
 import httpx
 
-from . import claude_runner, codex_runner, git_ops, github_pr, pi_runner
+from . import claude_runner, codex_runner, git_ops, github_pr, pi_runner, s3_log_sync
 from . import config as config_mod
 from .control_api import ControlServer
 from .ws_client import WSClient
@@ -1837,7 +1837,21 @@ class Worker:
         )
         os.makedirs(work_dir, exist_ok=True)
 
-        emit = self._task_emit(task_id, agent)
+        log_path = os.path.join(work_dir, "agent.log")
+        _log_fh = open(log_path, "a", encoding="utf-8")  # noqa: WPS515
+
+        _base_emit = self._task_emit(task_id, agent)
+
+        async def emit(line: str, detail: dict | None = None, level: str = LEVEL_INFO) -> None:
+            await _base_emit(line, detail, level)
+            try:
+                _log_fh.write(line + "\n")
+                _log_fh.flush()
+            except Exception:
+                pass
+
+        _s3_syncer: s3_log_sync.S3LogSync | None = None
+
         if is_followup:
             await emit(f"Follow-up: {followup_instructions[:120]}", level=LEVEL_WORKER)
             await emit(f"Branch: {branch}", level=LEVEL_WORKER)
@@ -1920,12 +1934,22 @@ class Worker:
             await emit("✗ No worktrees — aborting.", level=LEVEL_WORKER)
             await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
             await self._set_state("error", agent)
+            _log_fh.close()
             return
 
         await self._task_update(task_id, agent=agent, branch=branch, worktreePath=primary_wt)
         # Register worktrees for the deferred sweeper — touched again below in
         # finally so the timestamp reflects the most recent activity.
         self._register_worktrees(task_id, worktree_entries)
+
+        _s3_syncer = s3_log_sync.S3LogSync.from_env()
+        if _s3_syncer:
+            _s3_syncer.start(
+                log_path,
+                guild_id=self.cfg.guild_id,
+                worker_id=self.cfg.worker_id or "",
+                task_id=task_id,
+            )
 
         tool = (task.get("tool") or "claude").lower()
 
@@ -2196,3 +2220,9 @@ class Worker:
             # Refresh the worktree-registry timestamp so the sweeper holds
             # off on this task for another full TTL window.
             self._touch_task_worktrees(task_id)
+            if _s3_syncer:
+                _s3_syncer.finish()
+            try:
+                _log_fh.close()
+            except Exception:
+                pass
