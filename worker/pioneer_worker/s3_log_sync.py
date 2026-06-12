@@ -4,8 +4,14 @@ Controlled by environment variables:
   LOG_S3_BUCKET                — bucket name; feature disabled if unset
   LOG_S3_PREFIX                — key prefix (default: "worker-logs")
   LOG_S3_SYNC_INTERVAL_SECONDS — periodic sync interval in seconds (default: 60)
+  LOG_S3_STORAGE_CLASS         — S3 storage class (default: "STANDARD_IA")
 
-S3 key layout: {prefix}/{guild_id}/{worker_id}/{task_id}/agent.log
+S3 key layout:
+  Final:   {prefix}/{guild_id}/{worker_id}/{task_id}/agent.log
+  Interim: {prefix}/{guild_id}/{worker_id}/{task_id}/snapshots/{iso_timestamp}.log
+
+Each upload carries object metadata for auditability:
+  x-amz-meta-task-id, worker-id, guild-id, upload-time, upload-type
 
 Credentials use the standard AWS credential chain (env vars → ~/.aws → IMDS).
 If boto3 is not installed and LOG_S3_BUCKET is set, a warning is logged and
@@ -17,9 +23,13 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 logger = logging.getLogger(__name__)
+
+UploadType = Literal["interim", "final"]
 
 
 def _try_import_boto3():
@@ -43,15 +53,30 @@ class S3LogSync:
             syncer.start(log_path, guild_id="g-abc", worker_id="w-xyz", task_id="t-123")
             # ... task runs ...
             syncer.finish()   # stop background thread then do final upload
+
+    Interim uploads go to timestamped snapshot keys so every upload is preserved.
+    The final upload goes to the canonical agent.log key.
     """
 
-    def __init__(self, *, bucket: str, prefix: str, interval: int, s3_client) -> None:
+    def __init__(
+        self,
+        *,
+        bucket: str,
+        prefix: str,
+        interval: int,
+        storage_class: str,
+        s3_client,
+    ) -> None:
         self._bucket = bucket
         self._prefix = prefix
         self._interval = interval
+        self._storage_class = storage_class
         self._client = s3_client
         self._log_path: Path | None = None
-        self._s3_key: str | None = None
+        self._s3_key_base: str | None = None
+        self._guild_id: str | None = None
+        self._worker_id: str | None = None
+        self._task_id: str | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -75,6 +100,7 @@ class S3LogSync:
             return None
 
         prefix = os.environ.get("LOG_S3_PREFIX", "worker-logs")
+        storage_class = os.environ.get("LOG_S3_STORAGE_CLASS", "STANDARD_IA")
         try:
             interval = int(os.environ.get("LOG_S3_SYNC_INTERVAL_SECONDS", "60"))
         except ValueError:
@@ -87,22 +113,32 @@ class S3LogSync:
             logger.warning("Failed to create S3 client — S3 log sync disabled: %s", exc)
             return None
 
-        return cls(bucket=bucket, prefix=prefix, interval=interval, s3_client=client)
+        return cls(
+            bucket=bucket,
+            prefix=prefix,
+            interval=interval,
+            storage_class=storage_class,
+            s3_client=client,
+        )
 
     def start(self, log_path: str | Path, *, guild_id: str, worker_id: str, task_id: str) -> None:
         """Start the periodic sync background thread for *log_path*."""
         self._log_path = Path(log_path)
-        self._s3_key = f"{self._prefix}/{guild_id}/{worker_id}/{task_id}/agent.log"
+        self._guild_id = guild_id
+        self._worker_id = worker_id
+        self._task_id = task_id
+        self._s3_key_base = f"{self._prefix}/{guild_id}/{worker_id}/{task_id}"
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._sync_loop, daemon=True, name=f"s3-sync-{task_id}"
         )
         self._thread.start()
         logger.info(
-            "S3 log sync started: s3://%s/%s (interval=%ds)",
+            "S3 log sync started: s3://%s/%s/ (interval=%ds, storage_class=%s)",
             self._bucket,
-            self._s3_key,
+            self._s3_key_base,
             self._interval,
+            self._storage_class,
         )
 
     def finish(self) -> None:
@@ -112,20 +148,43 @@ class S3LogSync:
         self._stop.set()
         self._thread.join(timeout=15.0)
         self._thread = None
-        self._upload()
-        logger.info("S3 log sync finished: s3://%s/%s", self._bucket, self._s3_key)
+        self._upload("final")
+        logger.info("S3 log sync finished: s3://%s/%s/agent.log", self._bucket, self._s3_key_base)
 
-    def _upload(self) -> None:
-        if self._log_path is None or self._s3_key is None:
+    def _upload(self, upload_type: UploadType) -> None:
+        if self._log_path is None or self._s3_key_base is None:
             return
         if not self._log_path.exists():
             return
+
+        now = datetime.now(timezone.utc)
+        iso_ts = now.strftime("%Y%m%dT%H%M%S.%fZ")
+
+        if upload_type == "final":
+            key = f"{self._s3_key_base}/agent.log"
+        else:
+            key = f"{self._s3_key_base}/snapshots/{iso_ts}.log"
+
+        extra_args = {
+            "Metadata": {
+                "task-id": self._task_id or "",
+                "worker-id": self._worker_id or "",
+                "guild-id": self._guild_id or "",
+                "upload-time": now.isoformat(),
+                "upload-type": upload_type,
+            },
+            "StorageClass": self._storage_class,
+            "ContentType": "text/plain",
+        }
+
         try:
-            self._client.upload_file(str(self._log_path), self._bucket, self._s3_key)
-            logger.debug("Uploaded log to s3://%s/%s", self._bucket, self._s3_key)
+            self._client.upload_file(
+                str(self._log_path), self._bucket, key, ExtraArgs=extra_args
+            )
+            logger.debug("Uploaded log to s3://%s/%s (%s)", self._bucket, key, upload_type)
         except Exception as exc:
-            logger.warning("S3 log upload failed for %s: %s", self._s3_key, exc)
+            logger.warning("S3 log upload failed for %s: %s", key, exc)
 
     def _sync_loop(self) -> None:
         while not self._stop.wait(timeout=self._interval):
-            self._upload()
+            self._upload("interim")
