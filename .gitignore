@@ -23,3 +23,5 @@ factory-layout-preview.png
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+ps-worker/
