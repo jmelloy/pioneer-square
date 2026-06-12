@@ -50,8 +50,6 @@ def _skip(label: str, reason: str) -> dict:
     return {"label": label, "passed": True, "skipped": True, "detail": reason}
 
 
-
-
 # ---------------------------------------------------------------------------
 # Test suites
 # ---------------------------------------------------------------------------
@@ -106,7 +104,9 @@ def test_dnsid_py() -> list[dict]:
     # 2. sign — requires DNSID_PRIVATE_KEY_PEM env var; skip if not set
     pem = os.environ.get("DNSID_PRIVATE_KEY_PEM", "")
     if not pem:
-        results.append(_skip("sign (no DNSID_PRIVATE_KEY_PEM)", "set DNSID_PRIVATE_KEY_PEM to test"))
+        results.append(
+            _skip("sign (no DNSID_PRIVATE_KEY_PEM)", "set DNSID_PRIVATE_KEY_PEM to test")
+        )
     else:
         try:
             import time
@@ -127,7 +127,9 @@ def test_dnsid_py() -> list[dict]:
 
     # 3. verify — skip if no PEM key (nothing to sign with)
     if not pem:
-        results.append(_skip("verify (no DNSID_PRIVATE_KEY_PEM)", "set DNSID_PRIVATE_KEY_PEM to test"))
+        results.append(
+            _skip("verify (no DNSID_PRIVATE_KEY_PEM)", "set DNSID_PRIVATE_KEY_PEM to test")
+        )
     else:
         try:
             import time

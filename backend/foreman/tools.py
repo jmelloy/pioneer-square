@@ -594,9 +594,7 @@ def _dnsid_resolve(fqdn: str) -> dict:
     return {"ok": True, "fqdn": fqdn, "record": record, "keys": jwks.get("keys", [])}
 
 
-def _dnsid_verify(
-    jwt_token: str, expected_aud: str, expected_nonce: str | None = None
-) -> dict:
+def _dnsid_verify(jwt_token: str, expected_aud: str, expected_nonce: str | None = None) -> dict:
     """Verify a JWT against its DNSid record using the dnsid-py library."""
     import time as _time
 
@@ -674,9 +672,7 @@ async def _run_dnsid(command: str, inp: dict, private_key_pem: str | None = None
             raise ValueError("dnsid verify requires jwt")
         if not expected_aud:
             raise ValueError("dnsid verify requires expected_aud")
-        return await _to_thread(
-            _dnsid_verify, jwt_token, expected_aud, inp.get("expected_nonce")
-        )
+        return await _to_thread(_dnsid_verify, jwt_token, expected_aud, inp.get("expected_nonce"))
     else:
         raise ValueError(f"Unknown dnsid command: {command!r}")
 
