@@ -22,8 +22,9 @@ psycopg2-binary
 # — only the core package, no uvicorn or extras required
 fastapi>=0.110.0
 
-# Ed25519 signing for dnsid tool (foreman/oidc.py)
+# Ed25519 signing and DNS operations for dnsid (foreman/auth.py, foreman/tools.py)
 cryptography>=42.0
+dnspython>=2.4
 
 # .env file loading (optional; convenient for local dev)
 python-dotenv>=1.0

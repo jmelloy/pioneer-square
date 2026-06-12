@@ -20,6 +20,8 @@ dependencies = [
     "python-multipart",
     "python-dotenv",
     "docker",
+    # DNSid operations (resolve TXT records, sign/verify JWTs)
+    "dnspython>=2.4",
     # Shared across all three runtimes
     "websockets>=12.0",
     "httpx>=0.27",

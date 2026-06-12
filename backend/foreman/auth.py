@@ -3,7 +3,7 @@
 When an A2A agent declares a dnsid-cr security scheme the caller must:
   1. POST dnsid.challenge {caller_domain, client_nonce} to receive
      {server_nonce, challenge_id, server_assertion, exp}.
-  2. Sign a JWT (EdDSA/Ed25519) via the dnsid-sdk CLI with claims:
+  2. Sign a JWT (EdDSA/Ed25519) via the dnsid-py library with claims:
      iss/sub=caller_domain, aud=service_domain, nonce=server_nonce,
      challenge_id, purpose, iat, exp (≤60s), jti.
   3. Include Authorization: DNSid <jwt> on the message/stream call.
@@ -16,47 +16,32 @@ verify ownership by fetching {caller_domain}/.well-known/jwks.json.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
-import os
-import subprocess
 import time
 import urllib.request
 import uuid
 from abc import ABC, abstractmethod
 
 # ---------------------------------------------------------------------------
-# dnsid-sdk subprocess helpers
+# dnsid-py signing helper
 # ---------------------------------------------------------------------------
 
 
-def _dnsid_bin() -> str:
-    return os.path.expanduser(os.environ.get("DNSID_SDK_BIN", "~/dnsid-go/bin/dnsid-sdk"))
-
-
 def _dnsid_sign_sync(claims: dict, private_key_pem: str) -> str:
-    """Sign a JWT via `dnsid sign` using an Ed25519 PEM key. Returns the compact JWT string."""
-    import tempfile
+    """Sign a JWT with an Ed25519 PEM private key. Returns the compact JWT string."""
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        key_path = os.path.join(tmpdir, "key.pem")
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(key_path, "w") as f:
-            f.write(private_key_pem)
-        with open(config_path, "w") as f:
-            json.dump({"key_path": key_path}, f)
-        result = subprocess.run(
-            [_dnsid_bin(), "sign", "--config", config_path],
-            input=json.dumps(claims).encode(),
-            capture_output=True,
-            timeout=10,
-        )
-    out = json.loads(result.stdout)
-    if not out.get("ok"):
-        raise RuntimeError(
-            f"dnsid sign [{out.get('error', '?')}]: "
-            f"{out.get('message', result.stderr.decode(errors='replace')[:200])}"
-        )
-    return out["jwt"]
+    def _b64url_encode(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    private_key = load_pem_private_key(private_key_pem.encode(), password=None)
+    header = {"alg": "EdDSA", "typ": "JWT"}
+    header_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    payload_b64 = _b64url_encode(json.dumps(claims, separators=(",", ":")).encode())
+    signing_input = f"{header_b64}.{payload_b64}".encode()
+    signature = private_key.sign(signing_input)
+    return f"{header_b64}.{payload_b64}.{_b64url_encode(signature)}"
 
 
 # ---------------------------------------------------------------------------

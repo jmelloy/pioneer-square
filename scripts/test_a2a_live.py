@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Live integration test for A2A agent calls and the dnsid-sdk CLI.
+"""Live integration test for A2A agent calls and the dnsid-py library.
 
 Tests:
   - code-review-agent at https://agent.meyers.life (always attempted)
-  - dnsid-sdk CLI at DNSID_SDK_BIN (default ~/dnsid-go/bin/dnsid-sdk, skipped if not found)
+  - dnsid-py library (resolve, sign, verify operations)
 
 Exit codes:
   0  All reachable agents/tools passed
@@ -11,20 +11,17 @@ Exit codes:
 
 Usage:
     python scripts/test_a2a_live.py
-    DNSID_SDK_BIN=/custom/path/dnsid-sdk python scripts/test_a2a_live.py
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 
 REVIEW_AGENT_URL = "https://agent.meyers.life"
-DNSID_BIN = os.path.expanduser(os.environ.get("DNSID_SDK_BIN", "~/dnsid-go/bin/dnsid-sdk"))
 TIMEOUT = 15
 
 
@@ -51,15 +48,6 @@ def _result(label: str, passed: bool, detail: str = "") -> dict:
 def _skip(label: str, reason: str) -> dict:
     print(f"[SKIP] {label} — {reason}")
     return {"label": label, "passed": True, "skipped": True, "detail": reason}
-
-
-def _run_dnsid(*args, stdin_data: bytes | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [DNSID_BIN, *args],
-        input=stdin_data,
-        capture_output=True,
-        timeout=10,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -98,33 +86,32 @@ def test_review_agent(agent_url: str) -> list[dict]:
     return results
 
 
-def test_dnsid_cli() -> list[dict]:
+def test_dnsid_py() -> list[dict]:
     results: list[dict] = []
-    print(f"\n=== dnsid-sdk CLI @ {DNSID_BIN} ===")
-
-    # 0. Check binary exists
-    if not os.path.isfile(DNSID_BIN):
-        results.append(_skip("dnsid-sdk suite", f"binary not found at {DNSID_BIN}"))
-        return results
+    print("\n=== dnsid-py library ===")
 
     # 1. resolve — look up a well-known domain
     try:
-        proc = _run_dnsid("resolve", "dnsid.pioneer-square.melloy.life")
-        out = json.loads(proc.stdout)
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+        from foreman.tools import _dnsid_resolve
+
+        out = _dnsid_resolve("dnsid.pioneer-square.melloy.life")
         ok = out.get("ok") is True and "fqdn" in out
         results.append(_result("resolve dnsid.pioneer-square.melloy.life", ok, str(out)[:120]))
-    except subprocess.TimeoutExpired:
-        results.append(_result("resolve dnsid.pioneer-square.melloy.life", False, "timed out"))
     except Exception as exc:
         results.append(_result("resolve dnsid.pioneer-square.melloy.life", False, str(exc)))
 
-    # 2. sign — requires DNSID_AGENT_CONFIG; skip if not set
-    config_path = os.environ.get("DNSID_AGENT_CONFIG", "")
-    if not config_path:
-        results.append(_skip("sign (no DNSID_AGENT_CONFIG)", "set DNSID_AGENT_CONFIG to test"))
+    # 2. sign — requires DNSID_PRIVATE_KEY_PEM env var; skip if not set
+    pem = os.environ.get("DNSID_PRIVATE_KEY_PEM", "")
+    if not pem:
+        results.append(
+            _skip("sign (no DNSID_PRIVATE_KEY_PEM)", "set DNSID_PRIVATE_KEY_PEM to test")
+        )
     else:
         try:
             import time
+
+            from foreman.auth import _dnsid_sign_sync
 
             claims = {
                 "iss": "dnsid.pioneer-square.melloy.life",
@@ -132,21 +119,23 @@ def test_dnsid_cli() -> list[dict]:
                 "aud": "test-aud",
                 "exp": int(time.time()) + 300,
             }
-            proc = _run_dnsid(
-                "sign", "--config", config_path, stdin_data=json.dumps(claims).encode()
-            )
-            out = json.loads(proc.stdout)
-            ok = out.get("ok") is True and isinstance(out.get("jwt"), str)
-            results.append(_result("sign with config", ok, str(out)[:120]))
+            jwt_token = _dnsid_sign_sync(claims, pem)
+            ok = isinstance(jwt_token, str) and jwt_token.count(".") == 2
+            results.append(_result("sign with PEM key", ok, jwt_token[:80]))
         except Exception as exc:
-            results.append(_result("sign with config", False, str(exc)))
+            results.append(_result("sign with PEM key", False, str(exc)))
 
-    # 3. verify — skip if no config (nothing to sign with)
-    if not config_path:
-        results.append(_skip("verify (no DNSID_AGENT_CONFIG)", "set DNSID_AGENT_CONFIG to test"))
+    # 3. verify — skip if no PEM key (nothing to sign with)
+    if not pem:
+        results.append(
+            _skip("verify (no DNSID_PRIVATE_KEY_PEM)", "set DNSID_PRIVATE_KEY_PEM to test")
+        )
     else:
         try:
             import time
+
+            from foreman.auth import _dnsid_sign_sync
+            from foreman.tools import _dnsid_verify
 
             claims = {
                 "iss": "dnsid.pioneer-square.melloy.life",
@@ -154,18 +143,10 @@ def test_dnsid_cli() -> list[dict]:
                 "aud": "test-aud",
                 "exp": int(time.time()) + 300,
             }
-            sign_proc = _run_dnsid(
-                "sign", "--config", config_path, stdin_data=json.dumps(claims).encode()
-            )
-            sign_out = json.loads(sign_proc.stdout)
-            if not sign_out.get("ok"):
-                results.append(_result("verify (sign step)", False, str(sign_out)[:120]))
-            else:
-                jwt_token = sign_out["jwt"]
-                verify_proc = _run_dnsid("verify", "--jwt", jwt_token, "--expected-aud", "test-aud")
-                out = json.loads(verify_proc.stdout)
-                ok = out.get("ok") is True and out.get("iss") == "dnsid.pioneer-square.melloy.life"
-                results.append(_result("verify signed token", ok, str(out)[:120]))
+            jwt_token = _dnsid_sign_sync(claims, pem)
+            out = _dnsid_verify(jwt_token, "test-aud")
+            ok = out.get("ok") is True and out.get("iss") == "dnsid.pioneer-square.melloy.life"
+            results.append(_result("verify signed token", ok, str(out)[:120]))
         except Exception as exc:
             results.append(_result("verify signed token", False, str(exc)))
 
@@ -181,7 +162,7 @@ def main() -> int:
     all_results: list[dict] = []
 
     all_results.extend(test_review_agent(REVIEW_AGENT_URL))
-    all_results.extend(test_dnsid_cli())
+    all_results.extend(test_dnsid_py())
 
     non_skip = [r for r in all_results if not r.get("skipped")]
     passed = sum(1 for r in non_skip if r["passed"])

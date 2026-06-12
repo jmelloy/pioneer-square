@@ -482,12 +482,12 @@ FOREMAN_TOOLS = [
     {
         "name": "dnsid",
         "description": (
-            "Run a DNSid operation via the local dnsid-sdk CLI. "
+            "Run a DNSid operation via the dnsid-py library. "
             "Three commands: "
             "'resolve' — look up an FQDN's _dnsid TXT record and JWKS (param: fqdn); "
             "'sign' — sign a JWT with the agent's configured Ed25519 identity (param: claims object); "
             "'verify' — verify a JWT against its DNSid record (params: jwt, expected_aud, optional expected_nonce). "
-            "Returns the CLI's JSON output on success; raises on failure."
+            "Returns a JSON result on success; raises on failure."
         ),
         "input_schema": {
             "type": "object",
