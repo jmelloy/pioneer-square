@@ -20,7 +20,9 @@ def _make_mock_boto3(client=None):
     return mock_boto3
 
 
-def _make_syncer(*, bucket="b", prefix="worker-logs", interval=60, storage_class="STANDARD_IA", s3_client=None):
+def _make_syncer(
+    *, bucket="b", prefix="worker-logs", interval=60, storage_class="STANDARD_IA", s3_client=None
+):
     return S3LogSync(
         bucket=bucket,
         prefix=prefix,

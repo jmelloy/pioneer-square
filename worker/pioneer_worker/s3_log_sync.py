@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -157,7 +157,7 @@ class S3LogSync:
         if not self._log_path.exists():
             return
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         iso_ts = now.strftime("%Y%m%dT%H%M%S.%fZ")
 
         if upload_type == "final":
@@ -178,9 +178,7 @@ class S3LogSync:
         }
 
         try:
-            self._client.upload_file(
-                str(self._log_path), self._bucket, key, ExtraArgs=extra_args
-            )
+            self._client.upload_file(str(self._log_path), self._bucket, key, ExtraArgs=extra_args)
             logger.debug("Uploaded log to s3://%s/%s (%s)", self._bucket, key, upload_type)
         except Exception as exc:
             logger.warning("S3 log upload failed for %s: %s", key, exc)
