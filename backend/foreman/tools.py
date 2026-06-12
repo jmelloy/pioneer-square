@@ -562,18 +562,99 @@ async def _supersede_prior_bot_reviews(
 # ---------------------------------------------------------------------------
 
 
-def _dnsid_bin() -> str:
-    return os.path.expanduser(os.environ.get("DNSID_SDK_BIN", "~/dnsid-go/bin/dnsid-sdk"))
+def _dnsid_resolve(fqdn: str) -> dict:
+    """Look up the _dnsid TXT record and JWKS for fqdn using the dnsid-py library."""
+    import dns.resolver
+
+    name = f"_dnsid.{fqdn}"
+    try:
+        answers = dns.resolver.resolve(name, "TXT")
+        parts: list[str] = []
+        for rdata in answers:
+            for string in rdata.strings:
+                parts.append(string.decode() if isinstance(string, bytes) else string)
+        txt_data = "".join(parts)
+    except Exception as exc:
+        raise RuntimeError(f"dnsid resolve [{fqdn}]: DNS lookup failed: {exc}") from exc
+
+    record: dict = {}
+    for token in txt_data.split():
+        if "=" in token:
+            k, _, v = token.partition("=")
+            record[k] = v
+
+    jwks_url = f"https://{fqdn}/.well-known/jwks.json"
+    req = urllib.request.Request(jwks_url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            jwks = json.loads(resp.read())
+    except Exception as exc:
+        raise RuntimeError(f"dnsid resolve: JWKS fetch failed for {fqdn}: {exc}") from exc
+
+    return {"ok": True, "fqdn": fqdn, "record": record, "keys": jwks.get("keys", [])}
+
+
+def _dnsid_verify(
+    jwt_token: str, expected_aud: str, expected_nonce: str | None = None
+) -> dict:
+    """Verify a JWT against its DNSid record using the dnsid-py library."""
+    import time as _time
+
+    from foreman.oidc import _decode_jwt_parts, _fetch_jwks, _find_jwk, _verify_ed25519
+
+    header, payload, signing_input, signature = _decode_jwt_parts(jwt_token)
+
+    exp = payload.get("exp")
+    if exp is not None and _time.time() > int(exp):
+        raise RuntimeError("dnsid verify: token has expired")
+
+    aud = payload.get("aud")
+    if aud is not None:
+        aud_list: list = [aud] if isinstance(aud, str) else list(aud)
+        if expected_aud not in aud_list:
+            raise RuntimeError(
+                f"dnsid verify: expected_aud {expected_aud!r} not in token aud {aud_list!r}"
+            )
+
+    if expected_nonce:
+        token_nonce = payload.get("nonce") or payload.get("jti")
+        if token_nonce != expected_nonce:
+            raise RuntimeError("dnsid verify: nonce mismatch")
+
+    iss = payload.get("iss")
+    if not iss:
+        raise RuntimeError("dnsid verify: token missing 'iss' claim")
+
+    jwks_url = f"https://{iss}/.well-known/jwks.json"
+    try:
+        keys = _fetch_jwks(jwks_url)
+    except Exception as exc:
+        raise RuntimeError(f"dnsid verify: JWKS fetch failed: {exc}") from exc
+
+    kid = header.get("kid")
+    jwk = _find_jwk(keys, kid)
+    if not jwk:
+        raise RuntimeError(f"dnsid verify: no suitable key found in JWKS (kid={kid!r})")
+
+    alg = header.get("alg", "")
+    if alg in ("EdDSA", "Ed25519"):
+        try:
+            _verify_ed25519(jwk, signing_input, signature)
+        except ValueError as exc:
+            raise RuntimeError(f"dnsid verify: {exc}") from exc
+    else:
+        raise RuntimeError(f"dnsid verify: unsupported algorithm {alg!r}")
+
+    return {"ok": True, "iss": iss, **payload}
 
 
 async def _run_dnsid(command: str, inp: dict, private_key_pem: str | None = None) -> dict:
-    """Run a dnsid-sdk subcommand and return the parsed JSON result."""
+    """Run a dnsid operation using the dnsid-py library."""
     if command == "resolve":
         fqdn = inp.get("fqdn", "")
         if not fqdn:
             raise ValueError("dnsid resolve requires fqdn")
-        cmd = [_dnsid_bin(), "resolve", fqdn]
-        stdin_data = None
+        return await _to_thread(_dnsid_resolve, fqdn)
     elif command == "sign":
         claims = inp.get("claims")
         if not isinstance(claims, dict):
@@ -593,27 +674,11 @@ async def _run_dnsid(command: str, inp: dict, private_key_pem: str | None = None
             raise ValueError("dnsid verify requires jwt")
         if not expected_aud:
             raise ValueError("dnsid verify requires expected_aud")
-        cmd = [_dnsid_bin(), "verify", "--jwt", jwt_token, "--expected-aud", expected_aud]
-        if nonce := inp.get("expected_nonce"):
-            cmd += ["--expected-nonce", nonce]
-        stdin_data = None
+        return await _to_thread(
+            _dnsid_verify, jwt_token, expected_aud, inp.get("expected_nonce")
+        )
     else:
         raise ValueError(f"Unknown dnsid command: {command!r}")
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(stdin_data), timeout=15)
-    result = json.loads(stdout)
-    if not result.get("ok"):
-        raise RuntimeError(
-            f"dnsid {command} [{result.get('error', '?')}]: "
-            f"{result.get('message', stderr.decode(errors='replace')[:200])}"
-        )
-    return result
 
 
 def _fetch_agent_card(card_url: str) -> dict:

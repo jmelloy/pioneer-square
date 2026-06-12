@@ -22,30 +22,6 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# ---- dnsid-sdk build stage (for the backend target) ----
-FROM golang:latest AS dnsid-build
-
-ARG DNSID_GO_VERSION=v0.5.1
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN --mount=type=secret,id=build_github_token \
-    --mount=type=cache,target=/root/.cache/go-build \
-    --mount=type=cache,target=/go/pkg/mod \
-    set -eu; \
-    token="$(cat /run/secrets/build_github_token)"; \
-    mkdir -p /src/dnsid-go; \
-    curl -fsSL \
-        -H "Authorization: Bearer ${token}" \
-        -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/Identity-Digital/dnsid-go/tarball/${DNSID_GO_VERSION}" \
-        -o /tmp/dnsid-go.tgz; \
-    tar -xzf /tmp/dnsid-go.tgz -C /src/dnsid-go --strip-components=1; \
-    cd /src/dnsid-go; \
-    go build -o /usr/local/bin/dnsid-sdk ./cmd/dnsid
-
 # ---- shared base: unified pioneer CLI ----
 FROM python:3.11-slim AS base
 
@@ -68,17 +44,12 @@ RUN pip install -e ./cli
 # ---- backend (HTTP server: `pioneer serve`) ----
 FROM base AS backend
 
-ENV DNSID_SDK_BIN=/usr/local/bin/dnsid-sdk
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # SPA assets served by FastAPI's StaticFiles mount (backend/main.py -> backend/static).
 COPY --from=frontend-build /frontend/dist ./backend/static
-
-# dnsid CLI for A2A / DNSid auth signing.
-COPY --from=dnsid-build /usr/local/bin/dnsid-sdk /usr/local/bin/dnsid-sdk
 
 EXPOSE 8000
 

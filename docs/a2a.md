@@ -12,7 +12,7 @@ Browser
   ▼
 Backend ─── Foreman AI (Claude) ─── call_agent tool ──► HTTP A2A agents
                                 │                        (e.g. agent.meyers.life)
-                                └── dnsid tool ──────► dnsid-sdk CLI
+                                └── dnsid tool ──────► dnsid-py library
                                                          (resolve / sign / verify)
 ```
 
@@ -48,10 +48,9 @@ The `call_agent` tool calls any HTTP-based A2A agent.
 How it works: fetches `{agent_url}/.well-known/agent.json`, verifies the skill
 exists, then POSTs a JSON-RPC `tasks/send` to `{agent_url}/a2a`.
 
-### `dnsid` — DNSid CLI operations
+### `dnsid` — DNSid operations
 
-The `dnsid` tool shells out to the `dnsid-sdk` binary
-(configured via `DNSID_SDK_BIN`, default `~/dnsid-go/bin/dnsid-sdk`).
+The `dnsid` tool calls the `dnsid-py` Python library directly.
 
 | Command   | Required params          | Optional params   | Description |
 |-----------|--------------------------|-------------------|-------------|
@@ -81,19 +80,17 @@ Automated GitHub PR code review via the `review_pr` Foreman tool (MCP transport)
 The Foreman also exposes the `review_pr` tool which is purpose-built for this
 agent; `call_agent` is an alternative generic path.
 
-### dnsid-sdk (`Identity-Digital/dnsid-go`)
+### dnsid-py
 
-A CLI binary for DNS identity operations — **not** an HTTP server.
+A Python library for DNS identity operations.
 The Foreman calls it via the `dnsid` tool rather than `call_agent`.
 
-```
-dnsid resolve <fqdn>                          # look up _dnsid record + JWKS
-dnsid sign [--config path]                    # sign JWT (reads claims JSON on stdin)
-dnsid verify --jwt <tok> --expected-aud <aud> # verify JWT via DNS trust chain
-```
+Operations exposed:
+- `resolve(fqdn)` — look up `_dnsid` TXT record + JWKS
+- `sign(claims, private_key_pem)` — sign JWT with Ed25519 key
+- `verify(jwt, expected_aud, expected_nonce?)` — verify JWT via DNS trust chain
 
-Binary path: `~/dnsid-go/bin/dnsid-sdk` (override with `DNSID_SDK_BIN`).
-Signing identity: JSON config file at `DNSID_AGENT_CONFIG` pointing to an Ed25519 PKCS#8 PEM key.
+Install: `pip install dnspython cryptography` (both are listed in `cli/pyproject.toml`).
 
 ## Adding a new agent
 
@@ -104,18 +101,15 @@ Signing identity: JSON config file at `DNSID_AGENT_CONFIG` pointing to an Ed2551
 ## Running the live integration test
 
 ```bash
-# Test code-review-agent + dnsid-sdk CLI:
+# Test code-review-agent + dnsid-py library:
 python scripts/test_a2a_live.py
 
-# Override the binary path:
-DNSID_SDK_BIN=/custom/path/dnsid-sdk python scripts/test_a2a_live.py
-
-# Enable sign/verify checks (requires a configured agent identity):
-DNSID_AGENT_CONFIG=/path/to/config.json python scripts/test_a2a_live.py
+# Enable sign/verify checks (requires an Ed25519 private key PEM):
+DNSID_PRIVATE_KEY_PEM="$(cat path/to/key.pem)" python scripts/test_a2a_live.py
 ```
 
 The script prints `[PASS]`, `[FAIL]`, or `[SKIP]` per check and exits 0 only
-if all reachable checks pass. sign/verify are skipped when `DNSID_AGENT_CONFIG`
+if all reachable checks pass. sign/verify are skipped when `DNSID_PRIVATE_KEY_PEM`
 is not set.
 
 ## AgentCard format
