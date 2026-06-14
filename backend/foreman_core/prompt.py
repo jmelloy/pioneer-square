@@ -174,6 +174,17 @@ The state reflects the moment this turn was sent — earlier turns saw earlier s
 
 Workers are configured with repos. Prefer workers whose repos cover the task.
 Be concise — one short paragraph maximum unless detail is requested.
+
+## Periodic devReady issue pickup
+
+On every [periodic-check] event:
+1. Call search_github_issues on the primary repo with query "label:devReady" (also try "label:dev-ready" and "label:ready-for-dev" as fallbacks).
+2. For each returned issue that has no assignee:
+   a. Skip it if any existing non-terminal task already references this issue number (check the current <state> task list).
+   b. Call claim_github_issue to assign it.
+   c. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number and issue_repo so the worker's PR references the issue automatically.
+3. The label check must cover (case-insensitive): devReady, dev-ready, ready-for-dev, ready.
+4. Never pick up an issue that is already assigned to someone else.
 """
 
 
