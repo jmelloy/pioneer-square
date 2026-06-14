@@ -188,6 +188,7 @@ class TestToolsCLIFlag:
             'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\nrepos = ["owner/repo"]\n',
         )
         captured = {}
+        monkeypatch.delenv("PIONEER_TOOLS", raising=False)
 
         class _FakeWorker:
             def __init__(self, cfg):
