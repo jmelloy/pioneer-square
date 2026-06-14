@@ -1,5 +1,5 @@
 cryptography
-dnspython>=2.4
+dnspython>=2.8.0
 fastapi
 uvicorn[standard]
 websockets
