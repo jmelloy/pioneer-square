@@ -41,7 +41,7 @@ from foreman_core.message_utils import (
     truncate_tool_result,
 )
 from helpers import _sync_session, create_db, insert_agent, insert_guild, insert_task, insert_worker
-from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog  # noqa: E402
+from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog, Worker  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
@@ -846,6 +846,23 @@ class TestExecToolsDispatching:
         ]
         assert len(shutdown_calls) == 1
         assert shutdown_calls[0].args[1].reason is None
+
+    async def test_shutdown_worker_marks_worker_disabled(self, db_session):
+        """shutdown_worker must set disabled=True so the worker is not re-spawned on restart."""
+        insert_guild(db_session, "g-sd-disabled")
+        _insert_worker(db_session, "g-sd-disabled", "w-sd-dis")
+        with patch("foreman.tools.broadcast_msg", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-sd-disabled",
+                [_fake_tool_use("shutdown_worker", {"worker_id": "w-sd-dis"})],
+            )
+        assert "shutdown signal sent" in results[0]["content"].lower()
+        # Verify the DB row was marked disabled.
+        with _sync_session(db_session) as session:
+            disabled = session.scalar(
+                select(col(Worker.disabled)).where(col(Worker.id) == "w-sd-dis")
+            )
+        assert disabled is True
 
     async def test_get_task_status_not_found(self, db_session):
         insert_guild(db_session, "g-status-missing")

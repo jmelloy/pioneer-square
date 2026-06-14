@@ -335,3 +335,95 @@ async def test_spawn_replacement_workers_calls_spawn_for_each():
     assert spawn_calls[0]["guild_id"] == "g-myguild"
     assert spawn_calls[0]["guild_pk"] == 42
     assert spawn_calls[0]["inp"]["repos"] == ["owner/repo"]
+
+
+# ---------------------------------------------------------------------------
+# disabled worker — drain and re-spawn exclusion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_drain_skips_disabled_workers():
+    """Disabled workers are excluded from the stale drain query and not re-spawned."""
+    fake_worker = MagicMock()
+    fake_worker.id = "w-disabled"
+    fake_worker.container_id = None
+    fake_worker.disabled = True
+
+    class FakeDB:
+        def __init__(self, rows):
+            self._rows = rows
+            self.exec = AsyncMock(
+                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
+            )
+            self.commit = AsyncMock()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    # The query returns no rows because the disabled worker is filtered out at the DB level.
+    sessions = [FakeDB([])]
+    session_iter = iter(sessions)
+    broadcast_calls = []
+
+    async def fake_broadcast(guild_slug, msg, *a, **kw):
+        broadcast_calls.append((guild_slug, msg))
+
+    with (
+        patch("worker_lifecycle.get_current_version", return_value="v-new"),
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.broadcast_msg", fake_broadcast),
+    ):
+        result = await drain_stale_workers_on_startup()
+
+    # Disabled worker is not drained — empty result, no broadcast.
+    assert result == []
+    assert broadcast_calls == []
+
+
+@pytest.mark.asyncio
+async def test_spawn_replacement_workers_skips_disabled():
+    """spawn_replacement_workers skips workers that have disabled=True in the DB."""
+    fake_worker = MagicMock()
+    fake_worker.id = "w-disabled-spawn"
+    fake_worker.guild_id = 7
+    fake_worker.repos = '["owner/repo"]'
+    fake_worker.name = "disabled-worker"
+    fake_worker.disabled = True
+
+    class FakeDB:
+        def __init__(self, rows):
+            self._rows = rows
+            self.exec = AsyncMock(
+                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
+            )
+            self.commit = AsyncMock()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    # The DB query returns no rows because the disabled filter excludes the worker.
+    sessions = [FakeDB([])]
+    session_iter = iter(sessions)
+    spawn_calls: list[dict] = []
+
+    async def fake_spawn(inp, guild_id, guild_pk, db):
+        spawn_calls.append({"inp": inp, "guild_id": guild_id})
+        return ("ok", False)
+
+    fake_tools = MagicMock()
+    fake_tools.spawn_worker = fake_spawn
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch.dict("sys.modules", {"foreman": MagicMock(), "foreman.tools": fake_tools}),
+    ):
+        await spawn_replacement_workers(["w-disabled-spawn"])
+
+    # No spawn calls because the disabled worker was excluded by the DB query.
+    assert spawn_calls == []

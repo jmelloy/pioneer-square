@@ -82,7 +82,7 @@ async def spawn_replacement_workers(stale_ids: list[str]) -> None:
             await db.exec(
                 select(Worker, col(Guild.slug).label("guild_slug"))
                 .join(Guild, col(Guild.id) == col(Worker.guild_id))
-                .where(col(Worker.id).in_(stale_ids))
+                .where(col(Worker.id).in_(stale_ids), col(Worker.disabled).is_(False))
             )
         ).all()
 
@@ -140,7 +140,7 @@ async def drain_stale_workers_on_startup() -> list[str]:
                 await db.exec(
                     select(Worker, col(Guild.slug).label("guild_slug"))
                     .join(Guild, col(Guild.id) == col(Worker.guild_id))
-                    .where(col(Worker.state) != "offline")
+                    .where(col(Worker.state) != "offline", col(Worker.disabled).is_(False))
                 )
             ).all()
         else:
@@ -155,6 +155,7 @@ async def drain_stale_workers_on_startup() -> list[str]:
                     .where(
                         col(Worker.spawned_version) != current_version,
                         col(Worker.state) != "offline",
+                        col(Worker.disabled).is_(False),
                     )
                 )
             ).all()

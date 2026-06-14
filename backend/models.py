@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Column, DateTime, Index, Text, or_, text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, or_, text
 from sqlmodel import Field, SQLModel, col
 
 
@@ -144,6 +144,13 @@ class Worker(SQLModel, table=True):
     # NULL until the lifecycle module initiates a drain for this worker.
     drain_requested_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    # Set to True when the foreman explicitly shuts down this worker via shutdown_worker.
+    # Disabled workers are skipped during startup re-spawn so they are not brought back
+    # automatically on the next backend restart.
+    disabled: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
 
 
