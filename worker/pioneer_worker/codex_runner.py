@@ -110,7 +110,11 @@ async def run_codex_auto(
                     await emit(f"[stderr] {line}")
                 if _raw_fh is not None:
                     try:
-                        _raw_fh.write(b"[stderr] " + raw if raw.endswith(b"\n") else b"[stderr] " + raw + b"\n")
+                        _raw_fh.write(
+                            b"[stderr] " + raw
+                            if raw.endswith(b"\n")
+                            else b"[stderr] " + raw + b"\n"
+                        )
                         _raw_fh.flush()
                     except OSError:
                         pass

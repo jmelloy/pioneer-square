@@ -426,9 +426,7 @@ def test_raw_log_not_uploaded_when_file_missing(tmp_path):
     log_file.write_text("data\n")
     missing_raw = tmp_path / "raw.log"  # not created
 
-    syncer.start(
-        log_file, guild_id="g-1", worker_id="w-1", task_id="t-1", raw_log_path=missing_raw
-    )
+    syncer.start(log_file, guild_id="g-1", worker_id="w-1", task_id="t-1", raw_log_path=missing_raw)
     syncer.finish()
 
     keys = [c.args[2] for c in mock_client.upload_file.call_args_list]
