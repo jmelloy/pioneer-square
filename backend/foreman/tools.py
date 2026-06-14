@@ -1415,6 +1415,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     await broadcast_msg(
                         guild_id, WorkerShutdownMsg(workerId=wid, reason=reason or None)
                     )
+                    await db.exec(update(Worker).where(col(Worker.id) == wid).values(disabled=True))
+                    await db.commit()
                     result_text = f"Shutdown signal sent to {wid}." + (
                         f" Reason: {reason}" if reason else ""
                     )
