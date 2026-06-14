@@ -98,6 +98,7 @@ async def run_pi_auto(
     pi_path: str = "pi",
     model: str | None = None,
     provider: str | None = None,
+    raw_log_path: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run pi on *description* in *cwd*.
 
@@ -132,6 +133,12 @@ async def run_pi_auto(
     session_id: str | None = None
     proc: asyncio.subprocess.Process | None = None
     stderr_task: asyncio.Task[None] | None = None
+    _raw_fh = None
+    if raw_log_path:
+        try:
+            _raw_fh = open(raw_log_path, "ab")  # noqa: WPS515
+        except OSError as exc:
+            logger.warning("Could not open raw log %s: %s", raw_log_path, exc)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -155,6 +162,12 @@ async def run_pi_auto(
                     line = raw.decode(errors="replace").strip()
                     if line:
                         await emit(f"[stderr] {line}")
+                    if _raw_fh is not None:
+                        try:
+                            _raw_fh.write(b"[stderr] " + raw if raw.endswith(b"\n") else b"[stderr] " + raw + b"\n")
+                            _raw_fh.flush()
+                        except OSError:
+                            pass
             except Exception:
                 logger.debug("pi[%d] stderr drain exited early", pid, exc_info=True)
 
@@ -194,6 +207,12 @@ async def run_pi_auto(
                 continue
             if not raw:  # EOF
                 break
+            if _raw_fh is not None:
+                try:
+                    _raw_fh.write(raw)
+                    _raw_fh.flush()
+                except OSError:
+                    pass
             line_str = raw.decode(errors="replace").strip()
             if not line_str:
                 continue
@@ -352,4 +371,9 @@ async def run_pi_auto(
             try:
                 await stderr_task
             except BaseException:
+                pass
+        if _raw_fh is not None:
+            try:
+                _raw_fh.close()
+            except OSError:
                 pass

@@ -73,6 +73,7 @@ class S3LogSync:
         self._storage_class = storage_class
         self._client = s3_client
         self._log_path: Path | None = None
+        self._raw_log_path: Path | None = None
         self._s3_key_base: str | None = None
         self._guild_id: str | None = None
         self._worker_id: str | None = None
@@ -121,9 +122,22 @@ class S3LogSync:
             s3_client=client,
         )
 
-    def start(self, log_path: str | Path, *, guild_id: str, worker_id: str, task_id: str) -> None:
-        """Start the periodic sync background thread for *log_path*."""
+    def start(
+        self,
+        log_path: str | Path,
+        *,
+        guild_id: str,
+        worker_id: str,
+        task_id: str,
+        raw_log_path: str | Path | None = None,
+    ) -> None:
+        """Start the periodic sync background thread for *log_path*.
+
+        If *raw_log_path* is given, the raw subprocess output file is also
+        synced alongside the structured log under the ``raw.log`` key.
+        """
         self._log_path = Path(log_path)
+        self._raw_log_path = Path(raw_log_path) if raw_log_path is not None else None
         self._guild_id = guild_id
         self._worker_id = worker_id
         self._task_id = task_id
@@ -154,16 +168,9 @@ class S3LogSync:
     def _upload(self, upload_type: UploadType) -> None:
         if self._log_path is None or self._s3_key_base is None:
             return
-        if not self._log_path.exists():
-            return
 
         now = datetime.now(UTC)
         iso_ts = now.strftime("%Y%m%dT%H%M%S.%fZ")
-
-        if upload_type == "final":
-            key = f"{self._s3_key_base}/agent.log"
-        else:
-            key = f"{self._s3_key_base}/snapshots/{iso_ts}.log"
 
         extra_args = {
             "Metadata": {
@@ -177,11 +184,33 @@ class S3LogSync:
             "ContentType": "text/plain",
         }
 
-        try:
-            self._client.upload_file(str(self._log_path), self._bucket, key, ExtraArgs=extra_args)
-            logger.debug("Uploaded log to s3://%s/%s (%s)", self._bucket, key, upload_type)
-        except Exception as exc:
-            logger.warning("S3 log upload failed for %s: %s", key, exc)
+        if self._log_path.exists():
+            if upload_type == "final":
+                key = f"{self._s3_key_base}/agent.log"
+            else:
+                key = f"{self._s3_key_base}/snapshots/{iso_ts}.log"
+            try:
+                self._client.upload_file(
+                    str(self._log_path), self._bucket, key, ExtraArgs=extra_args
+                )
+                logger.debug("Uploaded log to s3://%s/%s (%s)", self._bucket, key, upload_type)
+            except Exception as exc:
+                logger.warning("S3 log upload failed for %s: %s", key, exc)
+
+        if self._raw_log_path is not None and self._raw_log_path.exists():
+            if upload_type == "final":
+                raw_key = f"{self._s3_key_base}/raw.log"
+            else:
+                raw_key = f"{self._s3_key_base}/snapshots/{iso_ts}.raw.log"
+            try:
+                self._client.upload_file(
+                    str(self._raw_log_path), self._bucket, raw_key, ExtraArgs=extra_args
+                )
+                logger.debug(
+                    "Uploaded raw log to s3://%s/%s (%s)", self._bucket, raw_key, upload_type
+                )
+            except Exception as exc:
+                logger.warning("S3 raw log upload failed for %s: %s", raw_key, exc)
 
     def _sync_loop(self) -> None:
         while not self._stop.wait(timeout=self._interval):

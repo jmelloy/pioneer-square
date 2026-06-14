@@ -43,6 +43,7 @@ async def run_codex_auto(
     codex_path: str = "codex",
     codex_args: list[str] | None = None,
     openai_api_key: str | None = None,
+    raw_log_path: str | None = None,
 ) -> tuple[bool, str, str]:
     """Run codex on *description* in *cwd*. Returns (success, stop_reason, last_text).
 
@@ -75,6 +76,12 @@ async def run_codex_auto(
     event_count = 0
     master_fd: int | None = None
     slave_fd: int | None = None
+    _raw_fh = None
+    if raw_log_path:
+        try:
+            _raw_fh = open(raw_log_path, "ab")  # noqa: WPS515
+        except OSError as exc:
+            logger.warning("Could not open raw log %s: %s", raw_log_path, exc)
     try:
         # `codex exec` treats any non-TTY stdin, including /dev/null, as piped
         # prompt content and tries to drain it. Give it an idle TTY so the
@@ -101,10 +108,22 @@ async def run_codex_auto(
                 line = raw.decode(errors="replace").strip()
                 if line:
                     await emit(f"[stderr] {line}")
+                if _raw_fh is not None:
+                    try:
+                        _raw_fh.write(b"[stderr] " + raw if raw.endswith(b"\n") else b"[stderr] " + raw + b"\n")
+                        _raw_fh.flush()
+                    except OSError:
+                        pass
 
         stderr_task = asyncio.create_task(_drain_stderr())
 
         async for raw in proc.stdout:  # type: ignore[union-attr]
+            if _raw_fh is not None:
+                try:
+                    _raw_fh.write(raw)
+                    _raw_fh.flush()
+                except OSError:
+                    pass
             line_str = raw.decode(errors="replace").strip()
             if not line_str:
                 continue
@@ -150,3 +169,6 @@ async def run_codex_auto(
                     os.close(fd)
         with contextlib.suppress(OSError):
             os.unlink(last_message_path)
+        if _raw_fh is not None:
+            with contextlib.suppress(OSError):
+                _raw_fh.close()

@@ -288,6 +288,7 @@ async def run_claude_auto(
     on_usage: UsageFn | None = None,
     claude_path: str = "claude",
     resume_session_id: str | None = None,
+    raw_log_path: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text, session_id).
 
@@ -318,6 +319,12 @@ async def run_claude_auto(
     stop_reason = "no_events"
     event_count = 0
     session_id = None
+    _raw_fh = None
+    if raw_log_path:
+        try:
+            _raw_fh = open(raw_log_path, "ab")  # noqa: WPS515
+        except OSError as exc:
+            logger.warning("Could not open raw log %s: %s", raw_log_path, exc)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -337,10 +344,22 @@ async def run_claude_auto(
                 line = raw.decode(errors="replace").strip()
                 if line:
                     await emit(f"[stderr] {line}")
+                if _raw_fh is not None:
+                    try:
+                        _raw_fh.write(b"[stderr] " + raw if raw.endswith(b"\n") else b"[stderr] " + raw + b"\n")
+                        _raw_fh.flush()
+                    except OSError:
+                        pass
 
         stderr_task = asyncio.create_task(_drain_stderr())
 
         async for raw in proc.stdout:  # type: ignore[union-attr]
+            if _raw_fh is not None:
+                try:
+                    _raw_fh.write(raw)
+                    _raw_fh.flush()
+                except OSError:
+                    pass
             line_str = raw.decode(errors="replace").strip()
             if not line_str:
                 continue
@@ -423,3 +442,9 @@ async def run_claude_auto(
         logger.exception("claude subprocess crashed: %s", exc)
         await emit(f"[claude] ✗ {exc}")
         return False, "error_during_execution", last_text, session_id
+    finally:
+        if _raw_fh is not None:
+            try:
+                _raw_fh.close()
+            except OSError:
+                pass

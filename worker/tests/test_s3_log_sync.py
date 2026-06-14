@@ -373,3 +373,120 @@ def test_finish_stops_background_thread(tmp_path):
 
     assert syncer._thread is None
     assert not thread.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# Raw log upload
+# ---------------------------------------------------------------------------
+
+
+def test_raw_log_final_key_follows_convention(tmp_path):
+    mock_client = MagicMock()
+    syncer = _make_syncer(s3_client=mock_client)
+    log_file = tmp_path / "agent.log"
+    log_file.write_text("structured\n")
+    raw_file = tmp_path / "raw.log"
+    raw_file.write_bytes(b'{"type":"result"}\n')
+
+    syncer.start(
+        log_file,
+        guild_id="g-abc123",
+        worker_id="w-xyz789",
+        task_id="t-def456",
+        raw_log_path=raw_file,
+    )
+    syncer.finish()
+
+    keys = [c.args[2] for c in mock_client.upload_file.call_args_list]
+    assert "worker-logs/g-abc123/w-xyz789/t-def456/agent.log" in keys
+    assert "worker-logs/g-abc123/w-xyz789/t-def456/raw.log" in keys
+
+
+def test_raw_log_uploaded_with_correct_local_path(tmp_path):
+    mock_client = MagicMock()
+    syncer = _make_syncer(s3_client=mock_client)
+    log_file = tmp_path / "agent.log"
+    log_file.write_text("data\n")
+    raw_file = tmp_path / "raw.log"
+    raw_file.write_bytes(b"raw output\n")
+
+    syncer.start(log_file, guild_id="g-1", worker_id="w-1", task_id="t-1", raw_log_path=raw_file)
+    syncer.finish()
+
+    raw_calls = [c for c in mock_client.upload_file.call_args_list if "raw.log" in c.args[2]]
+    assert len(raw_calls) == 1
+    assert raw_calls[0].args[0] == str(raw_file)
+    assert raw_calls[0].args[1] == "b"  # bucket from _make_syncer default
+
+
+def test_raw_log_not_uploaded_when_file_missing(tmp_path):
+    mock_client = MagicMock()
+    syncer = _make_syncer(s3_client=mock_client)
+    log_file = tmp_path / "agent.log"
+    log_file.write_text("data\n")
+    missing_raw = tmp_path / "raw.log"  # not created
+
+    syncer.start(
+        log_file, guild_id="g-1", worker_id="w-1", task_id="t-1", raw_log_path=missing_raw
+    )
+    syncer.finish()
+
+    keys = [c.args[2] for c in mock_client.upload_file.call_args_list]
+    assert not any("raw" in k for k in keys)
+
+
+def test_raw_log_not_uploaded_when_path_not_given(tmp_path):
+    mock_client = MagicMock()
+    syncer = _make_syncer(s3_client=mock_client)
+    log_file = tmp_path / "agent.log"
+    log_file.write_text("data\n")
+
+    syncer.start(log_file, guild_id="g-1", worker_id="w-1", task_id="t-1")
+    syncer.finish()
+
+    keys = [c.args[2] for c in mock_client.upload_file.call_args_list]
+    assert not any("raw" in k for k in keys)
+
+
+def test_raw_log_interim_key_uses_raw_suffix(tmp_path):
+    mock_client = MagicMock()
+    syncer = _make_syncer(interval=0.05, s3_client=mock_client)
+    log_file = tmp_path / "agent.log"
+    log_file.write_text("data\n")
+    raw_file = tmp_path / "raw.log"
+    raw_file.write_bytes(b"raw\n")
+
+    syncer.start(log_file, guild_id="g-1", worker_id="w-1", task_id="t-1", raw_log_path=raw_file)
+    time.sleep(0.2)
+    syncer.finish()
+
+    interim_raw_keys = [
+        c.args[2]
+        for c in mock_client.upload_file.call_args_list
+        if "snapshots/" in c.args[2] and ".raw.log" in c.args[2]
+    ]
+    assert len(interim_raw_keys) >= 1
+    for k in interim_raw_keys:
+        assert k.startswith("worker-logs/g-1/w-1/t-1/snapshots/")
+        assert k.endswith(".raw.log")
+
+
+def test_raw_log_upload_failure_is_swallowed(tmp_path, caplog):
+    mock_client = MagicMock()
+    mock_client.upload_file.side_effect = RuntimeError("network error")
+
+    syncer = _make_syncer(s3_client=mock_client)
+    log_file = tmp_path / "agent.log"
+    log_file.write_text("data\n")
+    raw_file = tmp_path / "raw.log"
+    raw_file.write_bytes(b"raw\n")
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        syncer.start(
+            log_file, guild_id="g-1", worker_id="w-1", task_id="t-1", raw_log_path=raw_file
+        )
+        syncer.finish()
+
+    assert any("upload failed" in r.message for r in caplog.records)

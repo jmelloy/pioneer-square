@@ -1838,6 +1838,7 @@ class Worker:
         os.makedirs(work_dir, exist_ok=True)
 
         log_path = os.path.join(work_dir, "agent.log")
+        raw_log_path = os.path.join(work_dir, "raw.log")
         _log_fh = open(log_path, "a", encoding="utf-8")  # noqa: WPS515
 
         _base_emit = self._task_emit(task_id, agent)
@@ -1949,6 +1950,7 @@ class Worker:
                 guild_id=self.cfg.guild_id,
                 worker_id=self.cfg.worker_id or "",
                 task_id=task_id,
+                raw_log_path=raw_log_path,
             )
 
         tool = (task.get("tool") or "claude").lower()
@@ -2055,6 +2057,7 @@ class Worker:
                         codex_path=self.cfg.codex_path,
                         codex_args=self.cfg.codex_args,
                         openai_api_key=self.cfg.openai_api_key,
+                        raw_log_path=raw_log_path,
                     )
                 elif tool == "pi":
                     _pi_model = task.get("model") or self.cfg.pi_model
@@ -2074,6 +2077,7 @@ class Worker:
                         model=_pi_model,
                         provider=_pi_provider,
                         on_usage=_collect_usage,
+                        raw_log_path=raw_log_path,
                     )
                     resume_session_id = _pi_session_id
                 else:
@@ -2098,6 +2102,7 @@ class Worker:
                         on_usage=_collect_usage,
                         claude_path=self.cfg.claude_path,
                         resume_session_id=resume_session_id,
+                        raw_log_path=raw_log_path,
                     )
 
                     _capture_session_and_clear()
