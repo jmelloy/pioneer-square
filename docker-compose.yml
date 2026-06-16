@@ -5,8 +5,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-pioneer_square}
       POSTGRES_USER: ${POSTGRES_USER:-pioneer}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pioneer_password}
+      # Passed into the init script so it can create the metabase role.
+      METABASE_DB_PASSWORD: ${METABASE_DB_PASSWORD:-}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init-metabase-db.sh:/docker-entrypoint-initdb.d/init-metabase-db.sh:ro
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pioneer} -d ${POSTGRES_DB:-pioneer_square}" ]
       interval: 5s
@@ -123,11 +126,12 @@ services:
       MB_DB_TYPE: postgres
       MB_DB_HOST: postgres
       MB_DB_PORT: "5432"
-      MB_DB_USER: ${POSTGRES_USER:-pioneer}
-      # POSTGRES_PASSWORD must be explicitly set in the environment before starting the tools profile.
-      # If unset, Metabase will fail to authenticate — no default password is injected.
-      MB_DB_PASS: ${POSTGRES_PASSWORD}
-      MB_DB_DBNAME: ${POSTGRES_DB:-pioneer_square}
+      MB_DB_USER: metabase
+      # METABASE_DB_PASSWORD must be explicitly set before starting the tools profile.
+      # It is also used by the postgres init script to create the dedicated metabase role.
+      # If unset, Metabase will fail to connect to its backing database.
+      MB_DB_PASS: ${METABASE_DB_PASSWORD}
+      MB_DB_DBNAME: metabase
     depends_on:
       postgres:
         condition: service_healthy
