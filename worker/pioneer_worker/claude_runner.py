@@ -288,6 +288,7 @@ async def run_claude_auto(
     on_usage: UsageFn | None = None,
     claude_path: str = "claude",
     resume_session_id: str | None = None,
+    log_file_path: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text, session_id).
 
@@ -318,6 +319,7 @@ async def run_claude_auto(
     stop_reason = "no_events"
     event_count = 0
     session_id = None
+    _log_fh = open(log_file_path, "a", encoding="utf-8") if log_file_path else None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -345,6 +347,13 @@ async def run_claude_auto(
             if not line_str:
                 continue
             event_count += 1
+            if _log_fh is not None:
+                try:
+                    _log_fh.write(line_str + "\n")
+                    _log_fh.flush()
+                except OSError as _log_err:
+                    logger.warning("session log write failed: %s", _log_err)
+                    _log_fh = None
             # Always log the full raw line at DEBUG so the wire format is recoverable.
             logger.debug(
                 "claude[%d] stdout#%d (%d bytes): %s",
@@ -423,3 +432,9 @@ async def run_claude_auto(
         logger.exception("claude subprocess crashed: %s", exc)
         await emit(f"[claude] ✗ {exc}")
         return False, "error_during_execution", last_text, session_id
+    finally:
+        if _log_fh is not None:
+            try:
+                _log_fh.close()
+            except OSError:
+                pass

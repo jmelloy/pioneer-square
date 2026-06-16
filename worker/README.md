@@ -116,6 +116,31 @@ The worker stays running, reconnecting if the backend restarts.
 6. Reports state changes (`working`, `done`, `failed`, branch, PR url) back
    to the backend via `task-update` WebSocket messages.
 
+## Optional S3 log sync
+
+The worker can periodically upload its raw session log files (the
+`stream-json` output captured from each `claude` subprocess) to an S3
+bucket.  This is opt-in and requires `boto3`:
+
+```bash
+pip install boto3   # or include it in your worker environment
+```
+
+Set the following environment variables before starting the worker:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `LOG_S3_BUCKET` | yes | — | S3 bucket to upload logs to.  Leaving this unset disables the feature entirely. |
+| `LOG_S3_PREFIX` | no | `""` | Key prefix (e.g. `pioneer/logs`).  The final key is `{prefix}/{guild_id}/{worker_id}/{task_id}.jsonl`. |
+| `LOG_S3_SYNC_INTERVAL_SECONDS` | no | `60` | How often the background sync thread uploads in-progress log files.  A final upload also runs immediately when each task completes. |
+
+AWS credentials are resolved through the standard chain — environment
+variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`), `~/.aws/credentials`,
+EC2/ECS instance metadata, etc.  No credentials are hard-coded.
+
+If `boto3` is not installed, a warning is logged at startup and the feature
+is silently disabled — the worker continues normally.
+
 ## Control API (drive a live worker without a frontend)
 
 A real worker only acts on tasks the backend/foreman assigns over WebSocket,

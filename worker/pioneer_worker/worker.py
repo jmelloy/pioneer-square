@@ -18,6 +18,7 @@ import httpx
 from . import claude_runner, codex_runner, git_ops, github_pr, pi_runner
 from . import config as config_mod
 from .control_api import ControlServer
+from .s3_log_sync import S3LogSyncer, create_syncer
 from .ws_client import WSClient
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,10 @@ class Worker:
         # so follow-ups can reuse the existing checkout without a re-clone.
         # Keyed by task_id; each entry is a list of (repo_path, wt_path, last_used_monotonic).
         self._task_worktrees: dict[str, list[tuple[str, str, float]]] = {}
+
+        # ── Optional S3 log sync ─────────────────────────────────────────────
+        # None when LOG_S3_BUCKET is not set or boto3 is unavailable.
+        self._s3_syncer: S3LogSyncer | None = create_syncer()
 
         # ── Auth / repo state ────────────────────────────────────────────────
         # Queue for auth codes received from the UI during claude auth login.
@@ -1176,6 +1181,8 @@ class Worker:
         self._loop = asyncio.get_running_loop()
         self._install_signal_handlers()
         self._start_control_api()
+        if self._s3_syncer is not None:
+            self._s3_syncer.start()
 
         await self._register()
         assert self.cfg.worker_id, "worker_id must be set after registration"
@@ -1277,6 +1284,8 @@ class Worker:
             logger.info("Worker shutting down; closing WebSocket")
             await self.ws.close()
             self._stop_control_api()
+            if self._s3_syncer is not None:
+                self._s3_syncer.stop()
 
     # ------------------------------------------------------------------ Listener
     async def _listen(self) -> None:
@@ -1837,6 +1846,15 @@ class Worker:
         )
         os.makedirs(work_dir, exist_ok=True)
 
+        # Session log: raw stream-json captured from the claude subprocess.
+        # Written whether or not S3 sync is enabled so operators can inspect locally.
+        _log_dir = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id)
+        os.makedirs(_log_dir, exist_ok=True)
+        session_log_path = os.path.join(_log_dir, f"{task_id}.jsonl")
+        _s3_key = f"{self.cfg.guild_id}/{self.cfg.worker_id}/{task_id}.jsonl"
+        if self._s3_syncer is not None:
+            self._s3_syncer.register(session_log_path, _s3_key)
+
         emit = self._task_emit(task_id, agent)
         if is_followup:
             await emit(f"Follow-up: {followup_instructions[:120]}", level=LEVEL_WORKER)
@@ -2074,6 +2092,7 @@ class Worker:
                         on_usage=_collect_usage,
                         claude_path=self.cfg.claude_path,
                         resume_session_id=resume_session_id,
+                        log_file_path=session_log_path,
                     )
 
                     _capture_session_and_clear()
@@ -2122,6 +2141,10 @@ class Worker:
                 success,
                 stop_reason,
             )
+
+            # Sync the session log to S3 immediately now that the run finished.
+            if self._s3_syncer is not None:
+                self._s3_syncer.sync_file(session_log_path, _s3_key)
 
             # Report captured per-API-call usage (claude tasks only). Best-effort.
             if usage_records:
@@ -2193,6 +2216,8 @@ class Worker:
 
         finally:
             self._redirect_queues.pop(task_id, None)
+            if self._s3_syncer is not None:
+                self._s3_syncer.unregister(session_log_path)
             # Refresh the worktree-registry timestamp so the sweeper holds
             # off on this task for another full TTL window.
             self._touch_task_worktrees(task_id)
