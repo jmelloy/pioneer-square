@@ -319,7 +319,11 @@ async def run_claude_auto(
     stop_reason = "no_events"
     event_count = 0
     session_id = None
-    _log_fh = open(log_file_path, "a", encoding="utf-8") if log_file_path else None
+    try:
+        _log_fh = open(log_file_path, "a", encoding="utf-8") if log_file_path else None
+    except OSError as _log_err:
+        logger.warning("session log open failed: %s", _log_err)
+        _log_fh = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,

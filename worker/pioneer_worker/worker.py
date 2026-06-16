@@ -1852,8 +1852,6 @@ class Worker:
         os.makedirs(_log_dir, exist_ok=True)
         session_log_path = os.path.join(_log_dir, f"{task_id}.jsonl")
         _s3_key = f"{self.cfg.guild_id}/{self.cfg.worker_id}/{task_id}.jsonl"
-        if self._s3_syncer is not None:
-            self._s3_syncer.register(session_log_path, _s3_key)
 
         emit = self._task_emit(task_id, agent)
         if is_followup:
@@ -1980,6 +1978,9 @@ class Worker:
             usage_records.append(rec)
 
         try:
+            # Only register for claude tasks — codex/pi don't write to session_log_path.
+            if self._s3_syncer is not None and tool == "claude":
+                self._s3_syncer.register(session_log_path, _s3_key)
             # ── Main execution with redirect loop ──────────────────────────
             if is_followup:
                 current_desc = (
@@ -2216,7 +2217,7 @@ class Worker:
 
         finally:
             self._redirect_queues.pop(task_id, None)
-            if self._s3_syncer is not None:
+            if self._s3_syncer is not None and tool == "claude":
                 self._s3_syncer.unregister(session_log_path)
             # Refresh the worktree-registry timestamp so the sweeper holds
             # off on this task for another full TTL window.
