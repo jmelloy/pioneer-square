@@ -115,19 +115,19 @@ services:
     restart: unless-stopped
 
   pgweb:
-    image: sosedoff/pgweb:0.17.0
+    image: metabase/metabase:latest
     profiles: [ "tools" ]
     ports:
-      - "${PGWEB_PORT:-8081}:8081"
+      - "${PGWEB_PORT:-8081}:3000"
     environment:
-      PGHOST: postgres
-      PGUSER: ${POSTGRES_USER:-pioneer}
-      # dev-only: PGPASSWORD is intentionally passed as a plain env var for local development convenience.
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: postgres
+      MB_DB_PORT: "5432"
+      MB_DB_USER: ${POSTGRES_USER:-pioneer}
+      # dev-only: MB_DB_PASS is intentionally passed as a plain env var for local development convenience.
       # Do not use this service configuration in shared/staging/production environments.
-      PGPASSWORD: ${POSTGRES_PASSWORD:-pioneer_password}
-      PGDATABASE: ${POSTGRES_DB:-pioneer_square}
-      PGPORT: "5432"
-      PGSSLMODE: disable
+      MB_DB_PASS: ${POSTGRES_PASSWORD:-pioneer_password}
+      MB_DB_DBNAME: ${POSTGRES_DB:-pioneer_square}
     depends_on:
       postgres:
         condition: service_healthy
