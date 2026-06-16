@@ -124,9 +124,9 @@ services:
       MB_DB_HOST: postgres
       MB_DB_PORT: "5432"
       MB_DB_USER: ${POSTGRES_USER:-pioneer}
-      # dev-only: MB_DB_PASS is intentionally passed as a plain env var for local development convenience.
-      # Do not use this service configuration in shared/staging/production environments.
-      MB_DB_PASS: ${POSTGRES_PASSWORD:-pioneer_password}
+      # POSTGRES_PASSWORD must be explicitly set in the environment before starting the tools profile.
+      # If unset, Metabase will fail to authenticate — no default password is injected.
+      MB_DB_PASS: ${POSTGRES_PASSWORD}
       MB_DB_DBNAME: ${POSTGRES_DB:-pioneer_square}
     depends_on:
       postgres:
