@@ -313,4 +313,18 @@ def build_spawn_worker_env(
         env["PIONEER_MAX_AGENTS"] = str(agent_count)
     if tools:
         env["PIONEER_TOOLS"] = ",".join(tools)
+    # S3 session-log sync — forward bucket, prefix, interval, and AWS creds so
+    # spawned workers can upload without needing their own config file entries.
+    for _key in (
+        "PIONEER_S3_BUCKET",
+        "PIONEER_S3_PREFIX",
+        "PIONEER_S3_SYNC_INTERVAL",
+        "AWS_DEFAULT_REGION",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ):
+        _val = source_env.get(_key, "")
+        if _val:
+            env[_key] = _val
     return env
