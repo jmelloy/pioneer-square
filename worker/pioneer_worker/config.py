@@ -75,6 +75,13 @@ class Config:
     # only checks the listed names and warns about any that are absent from PATH.
     tools: list[str] | None = None
 
+    # Optional S3 session-log sync. Disabled unless s3_bucket is set.
+    # Periodically runs `aws s3 sync` for each path in s3_paths.
+    s3_bucket: str | None = None
+    s3_prefix: str = ""
+    s3_sync_interval: float = 600.0
+    s3_paths: list[str] = field(default_factory=lambda: ["~/.codex", "~/.claude", "~/.pi"])
+
     config_path: Path = field(default_factory=Path)
 
     @property
@@ -150,6 +157,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     codex_block = raw.get("codex") or {}
     api_block = raw.get("api") or {}
     pi_block = raw.get("pi") or {}
+    s3_block = raw.get("s3") or {}
 
     _api_port = (
         overrides.get("api_port")
@@ -320,5 +328,21 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         api_port=_api_port,
         api_host=_api_host,
         tools=_tools_val,
+        s3_bucket=overrides.get("s3_bucket")
+        or s3_block.get("bucket")
+        or os.environ.get("PIONEER_S3_BUCKET")
+        or None,
+        s3_prefix=overrides.get("s3_prefix")
+        or s3_block.get("prefix")
+        or os.environ.get("PIONEER_S3_PREFIX")
+        or "",
+        s3_sync_interval=float(
+            overrides.get("s3_sync_interval")
+            if overrides.get("s3_sync_interval") is not None
+            else s3_block.get("interval", 600.0)
+        ),
+        s3_paths=list(
+            overrides.get("s3_paths") or s3_block.get("paths") or ["~/.codex", "~/.claude", "~/.pi"]
+        ),
         config_path=cfg_path,
     )
