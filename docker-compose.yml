@@ -1,17 +1,16 @@
 services:
   postgres:
-    image: postgres:17
+    image: postgres:18
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-pioneer_square}
       POSTGRES_USER: ${POSTGRES_USER:-pioneer}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pioneer_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       # Passed into the init script so it can create the metabase role.
       METABASE_DB_PASSWORD: ${METABASE_DB_PASSWORD:-}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
       - ./docker/postgres/init-metabase-db.sh:/docker-entrypoint-initdb.d/init-metabase-db.sh:ro
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pioneer} -d ${POSTGRES_DB:-pioneer_square}" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pioneer} -d ${POSTGRES_USER:-pioneer}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -27,7 +26,7 @@ services:
     ports:
       - "8056:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD:-pioneer_password}@postgres/${POSTGRES_DB:-pioneer_square}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_USER:-pioneer}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-https://pioneer-square.melloy.life/auth/github/callback}
@@ -61,7 +60,7 @@ services:
     command: pioneer foreman
     profiles: [ "foreman" ]
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD:-pioneer_password}@postgres/${POSTGRES_DB:-pioneer_square}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_USER:-pioneer}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # WebSocket base URL of the backend service (no trailing slash)
       BACKEND_WS_URL: ${BACKEND_WS_URL:-ws://backend:8000}
@@ -138,7 +137,7 @@ services:
     restart: unless-stopped
 
   postgres-test:
-    image: postgres:17
+    image: postgres:18
     profiles: [ "test" ]
     environment:
       POSTGRES_DB: pioneer_test
