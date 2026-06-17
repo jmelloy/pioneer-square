@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import socket
@@ -20,6 +21,33 @@ def _walk(root: Path) -> list[Path]:
         for name in filenames:
             files.append(Path(dirpath) / name)
     return files
+
+
+def _md5_hex(path: Path) -> str:
+    """Return the hex MD5 of a local file — matches S3 ETag for single-part uploads."""
+    h = hashlib.md5()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _already_uploaded(s3, bucket: str, key: str, local_file: Path) -> bool:
+    """Return True if S3 already has this file with the same content (ETag == MD5)."""
+    from botocore.exceptions import ClientError
+
+    try:
+        head = s3.head_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return False
+        raise
+    remote_etag = head["ETag"].strip('"')
+    # Multi-part ETags contain a dash (e.g. "abc123-4") and can't be compared
+    # to a plain MD5. Upload unconditionally in that case.
+    if "-" in remote_etag:
+        return False
+    return remote_etag == _md5_hex(local_file)
 
 
 def _sync_paths_sync(*, bucket: str, prefix: str, paths: list[str]) -> None:
@@ -40,18 +68,28 @@ def _sync_paths_sync(*, bucket: str, prefix: str, paths: list[str]) -> None:
         # hostname disambiguates uploads from different worker machines.
         parts = [p for p in [prefix.rstrip("/"), hostname, src.name] if p]
         key_prefix = "/".join(parts)
-        uploaded = 0
+        uploaded = skipped = 0
 
         for local_file in _walk(src):
             rel = local_file.relative_to(src)
             s3_key = f"{key_prefix}/{rel.as_posix()}"
             try:
+                if _already_uploaded(s3, bucket, s3_key, local_file):
+                    skipped += 1
+                    continue
                 s3.upload_file(str(local_file), bucket, s3_key)
                 uploaded += 1
             except (BotoCoreError, ClientError) as exc:
                 logger.warning("S3 upload failed for %s → %s: %s", local_file, s3_key, exc)
 
-        logger.info("S3 sync: %s → s3://%s/%s (%d file(s))", src, bucket, key_prefix, uploaded)
+        logger.info(
+            "S3 sync: %s → s3://%s/%s (uploaded=%d skipped=%d)",
+            src,
+            bucket,
+            key_prefix,
+            uploaded,
+            skipped,
+        )
 
 
 async def sync_paths(*, bucket: str, prefix: str, paths: list[str]) -> None:
