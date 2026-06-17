@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ def _sync_paths_sync(*, bucket: str, prefix: str, paths: list[str]) -> None:
     from botocore.exceptions import BotoCoreError, ClientError
 
     s3 = boto3.client("s3")
+    hostname = socket.gethostname()
 
     for raw_path in paths:
         src = Path(os.path.expanduser(raw_path))
@@ -34,7 +36,10 @@ def _sync_paths_sync(*, bucket: str, prefix: str, paths: list[str]) -> None:
             logger.debug("S3 sync: %s does not exist, skipping", src)
             continue
 
-        key_prefix = f"{prefix.rstrip('/')}/{src.name}" if prefix else src.name
+        # Path layout: <prefix>/<hostname>/<basename>/…
+        # hostname disambiguates uploads from different worker machines.
+        parts = [p for p in [prefix.rstrip("/"), hostname, src.name] if p]
+        key_prefix = "/".join(parts)
         uploaded = 0
 
         for local_file in _walk(src):
