@@ -256,3 +256,44 @@ def test_backend_url_trailing_slash_stripped(tmp_path):
     toml_path.write_text('backend_url = "ws://x:1/"\nguild_id = "g"\n')
     cfg = load(str(toml_path))
     assert not cfg.backend_url.endswith("/")
+
+
+# ── Anthropic auth_token ──────────────────────────────────────────────────
+
+
+def test_load_toml_claude_auth_token(tmp_path):
+    """[claude] auth_token in TOML is loaded as anthropic_auth_token."""
+    toml_path = tmp_path / "pioneer-foreman.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[claude]\nauth_token = "tok-toml"\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.anthropic_auth_token == "tok-toml"
+
+
+def test_load_env_anthropic_auth_token(tmp_path, monkeypatch):
+    """ANTHROPIC_AUTH_TOKEN env var is loaded as anthropic_auth_token."""
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-env")
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.anthropic_auth_token == "tok-env"
+
+
+def test_load_toml_auth_token_beats_env(tmp_path, monkeypatch):
+    """TOML [claude] auth_token takes precedence over ANTHROPIC_AUTH_TOKEN env var."""
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-env")
+    toml_path = tmp_path / "pioneer-foreman.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[claude]\nauth_token = "tok-toml"\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.anthropic_auth_token == "tok-toml"
+
+
+def test_load_anthropic_auth_token_defaults_to_none(tmp_path):
+    """anthropic_auth_token is None when not configured anywhere."""
+    toml_path = tmp_path / "pioneer-foreman.toml"
+    toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\n')
+    cfg = load(str(toml_path))
+    assert cfg.anthropic_auth_token is None

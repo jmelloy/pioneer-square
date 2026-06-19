@@ -306,6 +306,40 @@ class TestMakeAnthropicClient:
         )
         mock_mod.AsyncAnthropic.assert_called_once_with(api_key="sk-explicit")
 
+    def test_auth_token_wins_over_process_api_key(self, monkeypatch):
+        """Regression for #660: ANTHROPIC_AUTH_TOKEN in guild env_vars must win over a
+        process-level ANTHROPIC_API_KEY so the SDK never receives both (it raises ValueError
+        when api_key and auth_token are both supplied)."""
+        monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        # Simulate a server environment where ANTHROPIC_API_KEY is set in the process env
+        # while the guild config supplies ANTHROPIC_AUTH_TOKEN via extra_env.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-process-level")
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(
+            provider="anthropic", extra_env={"ANTHROPIC_AUTH_TOKEN": "tok-guild-configured"}
+        )
+        # Must pass ONLY auth_token — not api_key — to avoid the SDK ValueError.
+        mock_mod.AsyncAnthropic.assert_called_once_with(auth_token="tok-guild-configured")
+
+    def test_auth_token_wins_over_explicit_api_key_arg(self, monkeypatch):
+        """ANTHROPIC_AUTH_TOKEN in extra_env wins even when api_key is passed explicitly."""
+        monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(
+            provider="anthropic",
+            api_key="sk-explicit",
+            extra_env={"ANTHROPIC_AUTH_TOKEN": "tok-guild-configured"},
+        )
+        mock_mod.AsyncAnthropic.assert_called_once_with(auth_token="tok-guild-configured")
+
     def test_missing_anthropic_package_raises(self, monkeypatch):
         """If anthropic is not installed, make_anthropic_client must raise ImportError."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
