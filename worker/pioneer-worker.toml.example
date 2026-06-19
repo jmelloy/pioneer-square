@@ -63,3 +63,13 @@ max_turns = 50
 
 # Run `codex doctor` at worker startup and log the result (non-fatal).
 doctor = true
+
+# [s3]
+# Periodically sync session-log dot-directories to S3 using `aws s3 sync`.
+# Requires the awscli to be installed and AWS credentials to be configured
+# (IAM role, ~/.aws/credentials, or AWS_* env vars).
+# Disabled unless bucket is set. Also reads PIONEER_S3_BUCKET env var.
+# bucket = "my-bucket"
+# prefix = "pioneer-logs"          # optional key prefix (default: no prefix)
+# interval = 600                   # seconds between syncs (default: 600)
+# paths = ["~/.codex", "~/.claude", "~/.pi"]   # directories to sync

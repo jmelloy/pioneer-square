@@ -44,6 +44,14 @@ services:
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-}
       TEST_MODE: ${TEST_MODE:-}
       PIONEER_FOREMAN_KEY: ${PIONEER_FOREMAN_KEY:-}
+      # S3 session-log sync — forwarded to spawned worker containers.
+      PIONEER_S3_BUCKET: ${PIONEER_S3_BUCKET:-}
+      PIONEER_S3_PREFIX: ${PIONEER_S3_PREFIX:-}
+      PIONEER_S3_SYNC_INTERVAL: ${PIONEER_S3_SYNC_INTERVAL:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: sh -c "cd backend && alembic upgrade head && cd .. && pioneer serve"
@@ -103,6 +111,13 @@ services:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-INFO}
+      PIONEER_S3_BUCKET: ${PIONEER_S3_BUCKET:-}
+      PIONEER_S3_PREFIX: ${PIONEER_S3_PREFIX:-}
+      PIONEER_S3_SYNC_INTERVAL: ${PIONEER_S3_SYNC_INTERVAL:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     volumes:
       # Provide pioneer-worker.toml at ./worker/pioneer-worker.toml
       - ./worker/pioneer-worker.toml:/config/pioneer-worker.toml:ro

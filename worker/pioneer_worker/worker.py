@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import anyio
 import httpx
 
-from . import claude_runner, codex_runner, git_ops, github_pr, pi_runner
+from . import claude_runner, codex_runner, git_ops, github_pr, pi_runner, s3_uploader
 from . import config as config_mod
 from .control_api import ControlServer
 from .ws_client import WSClient
@@ -1240,11 +1240,13 @@ class Worker:
         runners = [asyncio.create_task(self._agent_loop(slot)) for slot in self.agents]
         puller = asyncio.create_task(self._idle_puller())
         sweeper = asyncio.create_task(self._worktree_sweeper())
+        s3_syncer = asyncio.create_task(self._s3_syncer()) if self.cfg.s3_bucket else None
+        aux_tasks = [listener, puller, sweeper, *([] if s3_syncer is None else [s3_syncer])]
         try:
             # Wait for either: all runners exit (graceful shutdown), or one of
             # the auxiliary tasks crashes (unexpected).
             done, _pending = await asyncio.wait(
-                [listener, puller, sweeper, *runners],
+                [*aux_tasks, *runners],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             # Surface any non-cancellation exception that fired first.
@@ -1263,11 +1265,10 @@ class Worker:
                 await self._initiate_shutdown(reason)
 
             # Stop the auxiliary tasks; the agent loops drain themselves.
-            listener.cancel()
-            puller.cancel()
-            sweeper.cancel()
+            for t in aux_tasks:
+                t.cancel()
 
-            await asyncio.gather(listener, puller, sweeper, *runners, return_exceptions=True)
+            await asyncio.gather(*aux_tasks, *runners, return_exceptions=True)
 
             if first_exc is not None:
                 raise first_exc
@@ -1713,6 +1714,37 @@ class Worker:
             for tid in stale:
                 logger.info("Sweeper: retiring worktrees for task %s", tid)
                 await self._release_task_worktrees(tid)
+
+    # ------------------------------------------------------------------ S3 syncer
+    async def _s3_syncer(self) -> None:
+        """Periodically sync session-log directories to S3."""
+        logger.info(
+            "S3 syncer started (bucket=%s prefix=%r paths=%s interval=%.0fs)",
+            self.cfg.s3_bucket,
+            self.cfg.s3_prefix,
+            self.cfg.s3_paths,
+            self.cfg.s3_sync_interval,
+        )
+        # Sync immediately at startup so the most recent session state is captured.
+        await s3_uploader.sync_paths(
+            bucket=self.cfg.s3_bucket,
+            prefix=self.cfg.s3_prefix,
+            paths=self.cfg.s3_paths,
+        )
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=self.cfg.s3_sync_interval,
+                )
+                break  # shutdown
+            except TimeoutError:
+                pass
+            await s3_uploader.sync_paths(
+                bucket=self.cfg.s3_bucket,
+                prefix=self.cfg.s3_prefix,
+                paths=self.cfg.s3_paths,
+            )
 
     # ------------------------------------------------------------------ Idle puller
     async def _idle_puller(self) -> None:
