@@ -251,20 +251,24 @@ def make_anthropic_client(
 
     # Direct Anthropic API. The SDK reads ANTHROPIC_* from os.environ on its own,
     # but guild-configured env_vars never reach this process, so resolve them
-    # from the merged `env` and pass explicitly. Explicit api_key arg wins.
+    # from the merged `env` and pass explicitly.
+    # api_key and auth_token are mutually exclusive; auth_token takes precedence
+    # so a guild-configured ANTHROPIC_AUTH_TOKEN overrides a process-level
+    # ANTHROPIC_API_KEY rather than causing an SDK ValueError.
     kwargs: dict = {}
-    resolved_api_key = api_key or env.get("ANTHROPIC_API_KEY")
-    if resolved_api_key:
-        kwargs["api_key"] = resolved_api_key
     if env.get("ANTHROPIC_AUTH_TOKEN"):
         kwargs["auth_token"] = env["ANTHROPIC_AUTH_TOKEN"]
+    else:
+        resolved_api_key = api_key or env.get("ANTHROPIC_API_KEY")
+        if resolved_api_key:
+            kwargs["api_key"] = resolved_api_key
     if env.get("ANTHROPIC_BASE_URL"):
         kwargs["base_url"] = env["ANTHROPIC_BASE_URL"]
     logger.info(
         "Foreman using Anthropic API (auth=%s, base_url=%s)",
         "auth-token"
         if kwargs.get("auth_token")
-        else ("api-key" if resolved_api_key else "default"),
+        else ("api-key" if kwargs.get("api_key") else "default"),
         kwargs.get("base_url", "default"),
     )
     return _anthropic_mod.AsyncAnthropic(**kwargs)

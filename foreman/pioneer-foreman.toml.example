@@ -14,6 +14,9 @@ backend_key = ""
 [claude]
 model         = "claude-sonnet-4-6"    # used when provider = "anthropic"
 api_key       = ""                     # falls back to ANTHROPIC_API_KEY env var
+# auth_token  = ""                     # OAuth/claude.ai token; falls back to
+                                       # ANTHROPIC_AUTH_TOKEN env var.  Mutually
+                                       # exclusive with api_key — auth_token wins.
 max_rounds    = 10
 history_limit = 40
 

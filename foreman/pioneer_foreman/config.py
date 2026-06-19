@@ -35,6 +35,11 @@ class Config:
     # Ignored when provider != "bedrock".
     bedrock_model: str = _DEFAULT_BEDROCK_MODEL
     api_key: str | None = None
+    # Anthropic auth token (OAuth/claude.ai accounts).  Mutually exclusive with
+    # api_key; when set it is forwarded as `auth_token` to AsyncAnthropic and
+    # ANTHROPIC_API_KEY is ignored.  Reads ANTHROPIC_AUTH_TOKEN env var or
+    # [claude] auth_token in the TOML.
+    anthropic_auth_token: str | None = None
     # "anthropic" (default) or "bedrock" (Amazon Bedrock via AsyncAnthropicBedrock)
     provider: str = "anthropic"
     # AWS region for Bedrock; ignored when provider != "bedrock"
@@ -151,6 +156,12 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or os.environ.get("ANTHROPIC_API_KEY")
     ) or None
 
+    anthropic_auth_token = (
+        overrides.get("anthropic_auth_token")
+        or claude_block.get("auth_token")
+        or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    ) or None
+
     model = (
         overrides.get("model")
         or claude_block.get("model")
@@ -201,6 +212,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         model=model,
         bedrock_model=bedrock_model,
         api_key=api_key,
+        anthropic_auth_token=anthropic_auth_token,
         provider=provider,
         aws_region=aws_region,
         aws_profile=aws_profile,

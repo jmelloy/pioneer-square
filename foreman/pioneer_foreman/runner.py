@@ -42,13 +42,18 @@ def _get_anthropic_client(config: Config):
     region = getattr(config, "aws_region", None)
     profile = getattr(config, "aws_profile", None)
     api_key = getattr(config, "api_key", None) or ""
-    cache_key = (provider.lower(), region, profile, api_key)
+    anthropic_auth_token = getattr(config, "anthropic_auth_token", None) or ""
+    cache_key = (provider.lower(), region, profile, api_key, anthropic_auth_token)
     if cache_key not in _anthropic_clients:
+        extra_env: dict[str, str] = {}
+        if anthropic_auth_token:
+            extra_env["ANTHROPIC_AUTH_TOKEN"] = anthropic_auth_token
         _anthropic_clients[cache_key] = make_anthropic_client(
             provider=provider,
             api_key=api_key or None,
             region=region,
             aws_profile=profile,
+            extra_env=extra_env or None,
         )
     return _anthropic_clients[cache_key]
 
