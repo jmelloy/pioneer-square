@@ -307,7 +307,7 @@ class GithubEventMsg(_WS):
 
 
 class ClaudeUsageMsg(_WS):
-    """Claude session usage stats. Extra fields from _summarize() are allowed."""
+    """LLM session usage stats. Extra fields from _summarize() are allowed."""
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
@@ -315,6 +315,8 @@ class ClaudeUsageMsg(_WS):
     taskId: str | None = None
     workerId: str | None = None
     sessionId: str | None = None
+    # Tool runner that produced this usage (e.g. "claude", "pi", "codex").
+    tool: str | None = None
     model: str | None = None
     repo: str | None = None
     reporter: str | None = None

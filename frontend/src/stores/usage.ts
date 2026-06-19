@@ -7,11 +7,12 @@ import type { ClaudeUsageWS, WSInbound } from '../types'
 // REST rows into so the UI has a single type to render.
 export type UsageSummary = Omit<ClaudeUsageWS, 'type'>
 
-// One raw row as stored in claude_usage (per API call or the run's result).
+// One raw row as stored in llm_usage (per API call or the run's result).
 interface UsageRow {
   task_id: string | null
   worker_id: string | null
   session_id: string | null
+  tool: string | null
   kind: string
   call_index: number | null
   model: string | null
@@ -29,6 +30,7 @@ interface UsageRow {
 function _emptySummary(taskId: string | null): UsageSummary {
   return {
     taskId,
+    tool: null,
     apiCalls: 0,
     summedInputTokens: 0,
     summedOutputTokens: 0,
@@ -49,6 +51,7 @@ function _aggregate(rows: UsageRow[]): Record<string, UsageSummary> {
   for (const r of rows) {
     if (!r.task_id) continue
     const s = (out[r.task_id] ??= _emptySummary(r.task_id))
+    s.tool ??= r.tool
     s.model ??= r.model
     s.repo ??= r.repo
     s.reporter ??= r.reporter

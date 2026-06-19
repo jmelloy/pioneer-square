@@ -223,6 +223,7 @@ class Worker:
         self,
         *,
         task_id: str,
+        tool: str,
         session_id: str | None,
         repo: str | None,
         records: list[dict],
@@ -237,6 +238,7 @@ class Worker:
             "task_id": task_id,
             "worker_id": self.cfg.worker_id,
             "session_id": session_id,
+            "tool": tool,
             "repo": repo,
             "reporter": self._worker_name or self.cfg.worker_id,
             "records": records,
@@ -2155,10 +2157,11 @@ class Worker:
                 stop_reason,
             )
 
-            # Report captured per-API-call usage (claude tasks only). Best-effort.
+            # Report captured per-API-call usage. Best-effort.
             if usage_records:
                 await self._report_usage(
                     task_id=task_id,
+                    tool=tool,
                     session_id=resume_session_id,
                     repo=repos[0] if repos else None,
                     records=usage_records,

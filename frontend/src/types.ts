@@ -289,6 +289,8 @@ export interface ClaudeUsageWS {
   taskId: string | null
   workerId?: string | null
   sessionId?: string | null
+  /** Tool runner that produced this usage (e.g. "claude", "pi", "codex"). */
+  tool?: string | null
   model?: string | null
   repo?: string | null
   reporter?: string | null

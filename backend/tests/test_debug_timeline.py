@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import _sync_session, insert_guild, insert_task, insert_worker, make_auth_token
-from models import ClaudeUsage, TaskLog
+from models import LlmUsage, TaskLog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col
 
@@ -65,7 +65,7 @@ def _insert_usage(db_url: str, guild_id: str, task_id: str) -> None:
         )
         assert guild_pk is not None
         session.execute(
-            pg_insert(ClaudeUsage).values(
+            pg_insert(LlmUsage).values(
                 guild_id=guild_pk,
                 task_id=task_id,
                 kind="result",
