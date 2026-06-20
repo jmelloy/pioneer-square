@@ -19,7 +19,7 @@ import httpx
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeUsage, GithubEvent, GithubToken, Task, TaskLog
+from models import GithubEvent, GithubToken, LlmUsage, Task, TaskLog
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from utils import row_to_dict
@@ -462,17 +462,16 @@ async def get_task_debug_timeline(
             }
         )
 
-    # ── 4. Claude usage / cost records ────────────────────────────────────────
+    # ── 4. LLM usage / cost records ───────────────────────────────────────────
     usage_result = await db.exec(
-        select(ClaudeUsage)
-        .where(col(ClaudeUsage.task_id) == task_id)
-        .order_by(col(ClaudeUsage.id).asc())
+        select(LlmUsage).where(col(LlmUsage.task_id) == task_id).order_by(col(LlmUsage.id).asc())
     )
     for usage in usage_result.all():
+        tool_label = usage.tool or "claude"
         if usage.kind == "result":
             cost_str = f", cost ${usage.cost_usd:.4f}" if usage.cost_usd else ""
             summary = (
-                f"Claude run complete: {usage.stop_reason or '?'}, "
+                f"{tool_label} run complete: {usage.stop_reason or '?'}, "
                 f"{usage.num_turns or 0} turns{cost_str}"
             )
         else:

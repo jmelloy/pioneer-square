@@ -1,9 +1,9 @@
-"""Claude usage reporting from workers' headless runs.
+"""LLM usage reporting from workers' headless runs.
 
-Workers parse ``claude --output-format stream-json`` and POST per-API-call
-usage (one record per assistant message) plus a single ``result`` record per
-run. Rows are stored in ``claude_usage`` and a summary is broadcast so the
-frontend can surface live token/cost figures per task.
+Workers parse tool output (e.g. ``claude --output-format stream-json``) and
+POST per-API-call usage (one record per assistant message) plus a single
+``result`` record per run. Rows are stored in ``llm_usage`` and a summary is
+broadcast so the frontend can surface live token/cost figures per task.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from auth_deps import get_guild_pk, require_member, require_worker_or_member_pat
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeUsage
+from models import LlmUsage
 from pydantic import BaseModel, ValidationError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -43,6 +43,8 @@ class UsageReport(BaseModel):
     task_id: str | None = None
     worker_id: str | None = None
     session_id: str | None = None
+    # Tool runner that produced this usage (e.g. "claude", "pi", "codex").
+    tool: str = "claude"
     repo: str | None = None
     reporter: str | None = None
     records: list[UsageRecord]
@@ -90,11 +92,12 @@ async def report_usage(
     created_at = datetime.now(UTC)
     for rec in data.records:
         db.add(
-            ClaudeUsage(
+            LlmUsage(
                 guild_id=guild_pk,
                 task_id=data.task_id,
                 worker_id=data.worker_id,
                 session_id=data.session_id,
+                tool=data.tool,
                 kind=rec.kind,
                 call_index=rec.call_index,
                 model=rec.model,
@@ -117,6 +120,7 @@ async def report_usage(
             taskId=data.task_id,
             workerId=data.worker_id,
             sessionId=data.session_id,
+            tool=data.tool,
             model=next((r.model for r in data.records if r.model), None),
             repo=data.repo,
             reporter=data.reporter,
@@ -141,9 +145,9 @@ async def list_usage(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    query = select(ClaudeUsage).where(col(ClaudeUsage.guild_id) == guild_pk)
+    query = select(LlmUsage).where(col(LlmUsage.guild_id) == guild_pk)
     if task_id is not None:
-        query = query.where(col(ClaudeUsage.task_id) == task_id)
-    query = query.order_by(col(ClaudeUsage.id).desc()).limit(min(limit, 2000))
+        query = query.where(col(LlmUsage.task_id) == task_id)
+    query = query.order_by(col(LlmUsage.id).desc()).limit(min(limit, 2000))
     result = await db.exec(query)
     return [row_to_dict(r) for r in result.all()]

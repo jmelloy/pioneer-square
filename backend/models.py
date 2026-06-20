@@ -406,18 +406,18 @@ class TaskEvent(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
-class ClaudeUsage(SQLModel, table=True):
-    """Per-API-call usage captured from a worker's headless Claude run.
+class LlmUsage(SQLModel, table=True):
+    """Per-API-call usage captured from a worker's headless tool run.
 
-    The worker parses ``claude --output-format stream-json`` and reports one
-    row per assistant message (``kind="api_call"``) carrying that message's
-    ``message.usage``, plus one ``kind="result"`` row per run holding the
-    ``result`` event's self-reported aggregate ``usage`` and
+    The worker parses tool output (e.g. ``claude --output-format stream-json``)
+    and reports one row per assistant message (``kind="api_call"``) carrying
+    that message's ``message.usage``, plus one ``kind="result"`` row per run
+    holding the ``result`` event's self-reported aggregate ``usage`` and
     ``total_cost_usd``. Storing both lets the UI compare the per-call sum
-    against Claude's self-reported total (the two disagree in practice).
+    against the tool's self-reported total (the two disagree in practice).
     """
 
-    __tablename__ = "claude_usage"  # type: ignore[assignment]
+    __tablename__ = "llm_usage"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id.
@@ -425,7 +425,9 @@ class ClaudeUsage(SQLModel, table=True):
     # Worker task this usage belongs to (NULL only for ad-hoc reports).
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
     worker_id: str | None = Field(default=None, foreign_key="workers.id")
-    # Claude session_id (system:init) for the run this row came from.
+    # Tool runner that produced this usage (e.g. "claude", "pi", "codex").
+    tool: str = Field(default="claude", sa_column_kwargs={"server_default": "'claude'"})
+    # Session id for the run this row came from (e.g. Claude session_id from system:init).
     session_id: str | None = None
     # "api_call" (one assistant message) | "result" (the run's result event).
     kind: str
