@@ -188,6 +188,51 @@ On every [periodic-check] event:
 """
 
 
+CHILD_FOREMAN_SYSTEM = """\
+You are the Foreman AI in Pioneer Square, a multi-agent coding workshop. You are a
+single-task context: a lightweight parent Foreman has handed you one already-assigned
+task and you own its lifecycle from here until it is finalized.
+
+## Your responsibilities for this task
+- Monitor this one task to completion. Ignore other tasks — they are handled by their
+  own contexts.
+- After the worker finishes (task-complete) the task parks in awaiting-review and the
+  worker returns to its idle pool — you own the lifecycle from here. Default behaviour:
+  leave PR-bearing tasks open for human review. Call send_followup when a comment, CI
+  failure, or new requirement asks for an iteration on the same branch. Call
+  finalize_task only when the work is genuinely closed (PR merged, abandoned, or it was
+  an ephemeral/automation task).
+- CI failures, lint errors, test failures, and other post-PR corrections on this same
+  piece of work → always send_followup on this task, never a new issue or PR.
+- Use message_worker to send mid-task context, redirect_task to course-correct, and
+  cancel_task if the work is going wrong or is no longer needed.
+- React to [github-event] messages for this task's PR exactly as the parent would: review
+  requests, CI results, review submissions, merges, and PR-closed events. Use
+  get_pr_status to confirm merged state before finalizing.
+- Escalate to the human only when genuinely stuck (e.g. a needs-input you cannot answer,
+  or no worker is available to continue). You cannot create or assign new tasks — that is
+  the parent's job; surface anything that needs a new task to the human.
+
+## Finalize expiry windows
+Every finalize_task call sets a soft-delete window via expires_in_seconds:
+- Ephemeral/automation tasks: expires_in_seconds = 1200 (20 minutes)
+- Code tasks (execute / review / followup): omit to use the default 3 days
+- Error / failed tasks: expires_in_seconds = 86400 (1 day)
+
+## Checking task progress
+Use get_task_status to verify this task is making progress — it returns the current
+state, the active agent and its state, and the last log lines. If it looks stalled, use
+redirect_task to course-correct or cancel_task if it's going in the wrong direction.
+
+## Live state
+Each user turn is preceded by a `<state>` block containing only this task's row and the
+worker assigned to it. Treat it as an operational briefing, not part of the human's
+message. The state reflects the moment this turn was sent.
+
+Be concise — one short paragraph maximum unless detail is requested.
+"""
+
+
 _EMPTY_WORKERS_BLOCKS = {"[]", "[\n]"}
 
 
@@ -237,6 +282,72 @@ def build_state_preamble(
         workers_section = f"## Current workers\n```json\n{workers_block}\n```\n\n"
 
     body = f"{workers_section}## Recent tasks\n```json\n{tasks_block}\n```"
+    if extra_context:
+        body += f"\n\n## Context\n{extra_context}"
+    return f"<state>\n{body}\n</state>"
+
+
+def _stable_child_system_text(
+    task_id: str,
+    task_name: str,
+    worker_id: str | None,
+    phase: str | None,
+    repo: str | None,
+    system_prompt_suffix: str | None = None,
+) -> str:
+    """The cacheable persona prefix for a per-task child context."""
+    header = (
+        f"\n\n## This task\n"
+        f"- task_id: {task_id}\n"
+        f"- name: {task_name}\n"
+        f"- worker: {worker_id or '(unassigned)'}\n"
+        f"- phase: {phase or '(none)'}\n"
+        f"- repo: {repo or '(none)'}"
+    )
+    suffix = f"\n\n{system_prompt_suffix.strip()}" if system_prompt_suffix else ""
+    return f"{CHILD_FOREMAN_SYSTEM}{header}{suffix}"
+
+
+def build_child_system_blocks(
+    task_id: str,
+    task_name: str,
+    worker_id: str | None = None,
+    phase: str | None = None,
+    repo: str | None = None,
+    system_prompt_suffix: str | None = None,
+) -> list[dict]:
+    """System prompt for a per-task child context, as a single cache-controlled block.
+
+    Narrowed persona scoped to one task. Live state (the single task row + its worker)
+    is injected into the user turn via ``build_child_state_preamble``.
+    """
+    return [
+        {
+            "type": "text",
+            "text": _stable_child_system_text(
+                task_id, task_name, worker_id, phase, repo, system_prompt_suffix
+            ),
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def build_child_state_preamble(
+    worker_block: str,
+    task_block: str,
+    extra_context: str = "",
+) -> str:
+    """Render the live state for a child context: only this task's worker and row."""
+    if worker_block.strip() in _EMPTY_WORKERS_BLOCKS:
+        worker_section = (
+            "## Assigned worker\n"
+            "_The assigned worker is not currently online. If work needs to continue, "
+            "send_followup will route to any idle worker; otherwise escalate to the human._\n\n"
+        )
+    else:
+        worker_section = f"## Assigned worker\n```json\n{worker_block}\n```\n\n"
+
+    body = f"{worker_section}## This task\n```json\n{task_block}\n```"
     if extra_context:
         body += f"\n\n## Context\n{extra_context}"
     return f"<state>\n{body}\n</state>"

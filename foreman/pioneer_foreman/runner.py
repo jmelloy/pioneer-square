@@ -24,11 +24,21 @@ from backend.foreman_core.message_utils import (
     truncate_tool_result,
 )
 
-from .prompt import build_state_preamble, build_system_blocks, build_system_prompt
+from .prompt import (
+    build_child_state_preamble,
+    build_child_system_blocks,
+    build_state_preamble,
+    build_system_blocks,
+    build_system_prompt,
+)
 
 if TYPE_CHECKING:
     from .config import Config
     from .http_client import ForemanHTTPClient
+
+# Callback invoked once per executed tool result: (tool_name, tool_input, result_dict).
+# The parent foreman uses it to spawn/teardown child contexts on assign/finalize.
+ToolObserver = Callable[[str, dict, dict], None]
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +68,15 @@ def _get_anthropic_client(config: Config):
     return _anthropic_clients[cache_key]
 
 
-async def _load_history(guild_id: str, user_id: str, *, http: ForemanHTTPClient) -> list[dict]:
-    """Load history via REST and apply the same sliding-window as the embedded runner."""
-    turns = await http.get_history(user_id)
+async def _load_history(
+    guild_id: str, user_id: str, *, http: ForemanHTTPClient, task_id: str | None = None
+) -> list[dict]:
+    """Load history via REST and apply the same sliding-window as the embedded runner.
+
+    When ``task_id`` is set, only that task's turns are loaded — the isolated
+    conversation thread for a per-task child context.
+    """
+    turns = await http.get_history(user_id, task_id=task_id)
 
     if not turns:
         return []
@@ -123,6 +139,8 @@ async def run_foreman_ai(
     http: ForemanHTTPClient,
     ws_send: Callable[[dict], Awaitable[None]],
     config: Config,
+    child: bool = False,
+    tool_observer: ToolObserver | None = None,
 ) -> bool:
     """Process a human message (or system escalation) through the Claude foreman AI.
 
@@ -130,10 +148,23 @@ async def run_foreman_ai(
     ``task_id`` must be passed explicitly by the caller; it is not inferred from
     guild state so there is no ambiguity when multiple tasks are active.
 
+    When ``child`` is True the run is scoped to a single task (``task_id`` is
+    required): history, system prompt, state preamble, and tool set are all
+    narrowed to that one task (see docs/foreman-per-task-context.md). When False
+    this is the parent/legacy whole-guild run.
+
+    ``tool_observer``, if given, is called once per executed tool result with
+    ``(tool_name, tool_input, result_dict)`` — the parent uses it to spawn or
+    tear down child contexts in reaction to assign_task / finalize_task.
+
     Returns True if the foreman made at least one tool call, False otherwise.
     Callers use this to decide whether to reset the poll backoff.
     """
-    from .tools import FOREMAN_TOOLS, exec_tools
+    from .tools import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS, exec_tools
+
+    if child and not task_id:
+        raise ValueError("run_foreman_ai(child=True) requires a task_id")
+    tools = CHILD_FOREMAN_TOOLS if child else FOREMAN_TOOLS
 
     if not HAS_ANTHROPIC:
         now = datetime.now(UTC).isoformat()
@@ -159,6 +190,14 @@ async def run_foreman_ai(
     if not user_id:
         user_id = guild_data.get("owner_user_id") or guild_id
 
+    # In child mode, narrow worker/task rows to just this task and its worker.
+    task_row: dict | None = None
+    if child:
+        task_row = next((t for t in task_rows if t.get("id") == task_id), None)
+        child_worker_id = task_row.get("worker_id") if task_row else None
+        worker_rows = [r for r in worker_rows if r.get("id") == child_worker_id]
+        task_rows = [task_row] if task_row else []
+
     made_tool_calls = False
     try:
         workers_block = json.dumps(
@@ -180,8 +219,20 @@ async def run_foreman_ai(
             s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
         ]
         tasks_block = json.dumps(summarized_tasks, indent=2)
-        system_blocks = build_system_blocks(primary_repo=primary_repo)
-        state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
+
+        if child:
+            _t = task_row or {}
+            system_blocks = build_child_system_blocks(
+                task_id=task_id,
+                task_name=_t.get("name") or task_id,
+                worker_id=_t.get("worker_id"),
+                phase=_t.get("phase"),
+                repo=_t.get("issue_repo") or primary_repo,
+            )
+            state_preamble = build_child_state_preamble(workers_block, tasks_block, extra_context)
+        else:
+            system_blocks = build_system_blocks(primary_repo=primary_repo)
+            state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
         audit_system = build_system_prompt(
             workers_block, tasks_block, extra_context, primary_repo=primary_repo
         )
@@ -200,7 +251,9 @@ async def run_foreman_ai(
 
         await _save_turn(guild_id, user_id, "system", audit_system, http=http, task_id=task_id)
         await _save_turn(guild_id, user_id, "user", human_message, http=http, task_id=task_id)
-        messages = await _load_history(guild_id, user_id, http=http)
+        messages = await _load_history(
+            guild_id, user_id, http=http, task_id=task_id if child else None
+        )
 
         _inject_state_preamble(messages, state_preamble)
 
@@ -222,7 +275,7 @@ async def run_foreman_ai(
                 max_tokens=1024,
                 system=system_blocks,
                 messages=messages,
-                tools=FOREMAN_TOOLS,
+                tools=tools,
             )
             resp = _raw.parse()
             usage = resp.usage
@@ -317,6 +370,17 @@ async def run_foreman_ai(
                     entry = {**entry, "content": truncate_tool_result(entry["content"])}
                 trimmed.append(entry)
 
+            if tool_observer is not None:
+                _tool_by_id = {tu.id: tu for tu in tool_uses}
+                for r in trimmed:
+                    tu = _tool_by_id.get(r.get("tool_use_id"))
+                    if tu is None:
+                        continue
+                    try:
+                        tool_observer(tu.name, dict(tu.input) if tu.input else {}, r)
+                    except Exception:
+                        logger.exception("tool_observer raised for %s", tu.name)
+
             _now = datetime.now(UTC).isoformat()
             for result in trimmed:
                 await ws_send(
@@ -365,7 +429,7 @@ async def run_foreman_ai(
                 max_tokens=1024,
                 system=system_blocks,
                 messages=messages,
-                tools=FOREMAN_TOOLS,
+                tools=tools,
                 tool_choice={"type": "none"},
             )
             wrap_resp = _wrap_raw.parse()

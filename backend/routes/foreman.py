@@ -232,6 +232,10 @@ async def get_foreman_history_for_user(
     guild_id: str,
     user_id: str = Query(..., description="GitHub user_id whose thread to fetch"),
     limit: int | None = Query(default=None, description="Max rows to return (newest first)"),
+    task_id: str | None = Query(
+        default=None,
+        description="When set, return only turns tagged with this task_id (per-task child context).",
+    ),
     _caller: str = Depends(require_worker_or_member_path),
     db: AsyncSession = Depends(get_db_dep),
 ):
@@ -271,6 +275,8 @@ async def get_foreman_history_for_user(
         .where(col(ForemanTurn.guild_id) == guild_pk, col(ForemanTurn.user_id) == user_id)
         .order_by(col(ForemanTurn.id))
     )
+    if task_id is not None:
+        stmt = stmt.where(col(ForemanTurn.task_id) == task_id)
     if limit is not None and limit > 0:
         stmt = stmt.limit(limit)
     result = await db.exec(stmt)
