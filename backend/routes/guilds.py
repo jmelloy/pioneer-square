@@ -16,7 +16,7 @@ from auth_deps import get_guild_pk, require_member, require_user, require_worker
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
-from models import Agent, Guild, GuildMember, Message, User, Worker
+from models import Agent, Guild, GuildInvite, GuildMember, Message, User, Worker
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -108,6 +108,12 @@ class MemberCreate(BaseModel):
 
 class MemberUpdate(BaseModel):
     role: str  # owner | member | viewer
+
+
+class InviteCreate(BaseModel):
+    # GitHub username or numeric GitHub ID of the person to invite.
+    user: str
+    role: str = "member"  # owner | member | viewer
 
 
 @router.post("/guilds")
@@ -473,6 +479,148 @@ async def update_foreman_config(
     guild.foreman_config = config
     await db.commit()
     return config
+
+
+@router.post("/api/guilds/{guild_id}/invites")
+async def create_guild_invite(
+    guild_id: str,
+    data: InviteCreate,
+    github_user_id: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Create a pending invite for a GitHub user by username or numeric ID (owner only).
+
+    The invite is stored and automatically applied when the target user first logs in.
+    If a pending invite already exists for the same identifier, the role is updated.
+    """
+    if data.role not in _VALID_ROLES:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid role; must be one of {sorted(_VALID_ROLES)}"
+        )
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+
+    identifier = data.user.strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="GitHub username or ID is required")
+
+    # Numeric strings are treated as GitHub user IDs; everything else is a username.
+    is_numeric = identifier.isdigit()
+    github_login = None if is_numeric else identifier.lower()
+    github_id_val = identifier if is_numeric else None
+
+    now = datetime.now(UTC)
+
+    # Upsert: update role on an existing pending invite for the same identifier.
+    if github_login is not None:
+        existing_res = await db.exec(
+            select(GuildInvite).where(
+                col(GuildInvite.guild_id) == guild_pk,
+                col(GuildInvite.github_login) == github_login,
+                col(GuildInvite.status) == "pending",
+            )
+        )
+    else:
+        existing_res = await db.exec(
+            select(GuildInvite).where(
+                col(GuildInvite.guild_id) == guild_pk,
+                col(GuildInvite.github_id) == github_id_val,
+                col(GuildInvite.status) == "pending",
+            )
+        )
+    existing = existing_res.one_or_none()
+    if existing:
+        existing.role = data.role
+        await db.commit()
+        await db.refresh(existing)
+        return {
+            "id": existing.id,
+            "guild_id": guild_id,
+            "github_login": existing.github_login,
+            "github_id": existing.github_id,
+            "role": existing.role,
+            "created_at": existing.created_at,
+            "status": existing.status,
+        }
+
+    invite = GuildInvite(
+        guild_id=guild_pk,
+        github_login=github_login,
+        github_id=github_id_val,
+        role=data.role,
+        invited_by=github_user_id,
+        created_at=now,
+        status="pending",
+    )
+    db.add(invite)
+    await db.commit()
+    await db.refresh(invite)
+    return {
+        "id": invite.id,
+        "guild_id": guild_id,
+        "github_login": invite.github_login,
+        "github_id": invite.github_id,
+        "role": invite.role,
+        "created_at": invite.created_at,
+        "status": invite.status,
+    }
+
+
+@router.get("/api/guilds/{guild_id}/invites")
+async def list_guild_invites(
+    guild_id: str,
+    github_user_id: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """List pending invites for a guild (owner only)."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    result = await db.exec(
+        select(GuildInvite)
+        .where(
+            col(GuildInvite.guild_id) == guild_pk,
+            col(GuildInvite.status) == "pending",
+        )
+        .order_by(col(GuildInvite.created_at).asc())
+    )
+    return [
+        {
+            "id": inv.id,
+            "github_login": inv.github_login,
+            "github_id": inv.github_id,
+            "role": inv.role,
+            "created_at": inv.created_at,
+            "status": inv.status,
+        }
+        for inv in result.all()
+    ]
+
+
+@router.delete("/api/guilds/{guild_id}/invites/{invite_id}")
+async def cancel_guild_invite(
+    guild_id: str,
+    invite_id: int,
+    github_user_id: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Cancel a pending invite (owner only)."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    res = await db.exec(
+        select(GuildInvite).where(
+            col(GuildInvite.id) == invite_id,
+            col(GuildInvite.guild_id) == guild_pk,
+        )
+    )
+    invite = res.one_or_none()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    invite.status = "cancelled"
+    await db.commit()
+    return {"status": "cancelled", "id": invite_id}
 
 
 @router.delete("/api/guilds/{guild_id}/members/{user_id}")

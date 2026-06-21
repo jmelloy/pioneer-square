@@ -246,6 +246,24 @@ class GuildMember(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class GuildInvite(SQLModel, table=True):
+    __tablename__ = "guild_invites"  # type: ignore[assignment]
+    __table_args__ = (Index("ix_guild_invites_guild_id_status", "guild_id", "status"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: int = Field(foreign_key="guilds.id")
+    # Exactly one of github_login / github_id is non-null, depending on what the inviter typed.
+    github_login: str | None = None  # GitHub username (stored lowercase)
+    github_id: str | None = None  # GitHub numeric user ID
+    role: str = Field(
+        default="member", sa_column_kwargs={"server_default": "'member'"}
+    )  # owner | member | viewer
+    invited_by: str = Field(foreign_key="users.id")
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    # pending | accepted | cancelled
+    status: str = Field(default="pending", sa_column_kwargs={"server_default": "'pending'"})
+
+
 class TaskLog(SQLModel, table=True):
     __tablename__ = "task_logs"  # type: ignore[assignment]
 

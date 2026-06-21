@@ -29,12 +29,13 @@ function jsonResponse(body: unknown, status = 200) {
   } as Response
 }
 
-function mountAs(userId: string | null, members: unknown[]) {
+function mountAs(userId: string | null, members: unknown[], invites: unknown[] = []) {
   const auth = useAuthStore()
   auth.user = userId ? { id: userId, login: 'me' } : null
   auth.loginToken = 'tok'
   const fetchMock = vi.spyOn(globalThis, 'fetch')
-  fetchMock.mockResolvedValueOnce(jsonResponse(members)) // initial load
+  fetchMock.mockResolvedValueOnce(jsonResponse(members)) // initial load members
+  fetchMock.mockResolvedValueOnce(jsonResponse(invites)) // initial load invites
   const wrapper = mount(GuildMembers, { props: { guildId: 'g1' } })
   return { wrapper, fetchMock }
 }
@@ -71,12 +72,13 @@ describe('GuildMembers', () => {
   it('posts an invite and reloads the list', async () => {
     const { wrapper, fetchMock } = mountAs('u-owner', [OWNER])
     await flushPromises()
-    fetchMock.mockResolvedValueOnce(jsonResponse({ user_id: 'u-member', role: 'member' })) // POST
-    fetchMock.mockResolvedValueOnce(jsonResponse([OWNER, MEMBER])) // reload
+    fetchMock.mockResolvedValueOnce(jsonResponse({ user_id: 'u-member', role: 'member' })) // POST members
+    fetchMock.mockResolvedValueOnce(jsonResponse([OWNER, MEMBER])) // reload members
+    fetchMock.mockResolvedValueOnce(jsonResponse([])) // reload invites
     await wrapper.find('.invite-input').setValue('bob')
     await wrapper.find('.invite-btn').trigger('click')
     await flushPromises()
-    const postCall = fetchMock.mock.calls[1]
+    const postCall = fetchMock.mock.calls[2] // calls[0]=members, calls[1]=invites, calls[2]=POST
     expect(postCall[0]).toContain('/api/guilds/g1/members')
     expect(JSON.parse((postCall[1] as RequestInit).body as string)).toEqual({
       user: 'bob',
@@ -85,14 +87,37 @@ describe('GuildMembers', () => {
     expect(wrapper.findAll('.member-name')).toHaveLength(2)
   })
 
-  it('surfaces the API error when inviting an unknown user', async () => {
+  it('falls back to a pending invite when the user has not logged in (404)', async () => {
     const { wrapper, fetchMock } = mountAs('u-owner', [OWNER])
     await flushPromises()
+    // POST /members → 404 (user not found)
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'User not found.' }, 404))
+    // POST /invites → success
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ id: 1, github_login: 'ghost', github_id: null, role: 'member', status: 'pending' }),
+    )
+    // reload members
+    fetchMock.mockResolvedValueOnce(jsonResponse([OWNER]))
+    // reload invites
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ id: 1, github_login: 'ghost', github_id: null, role: 'member', status: 'pending' }]),
+    )
     await wrapper.find('.invite-input').setValue('ghost')
     await wrapper.find('.invite-btn').trigger('click')
     await flushPromises()
-    expect(wrapper.find('.members-error').text()).toContain('User not found.')
+    expect(wrapper.find('.members-hint').text()).toContain("they'll be added when they first log in")
+    expect(wrapper.find('.members-error').exists()).toBe(false)
+  })
+
+  it('shows an error when both direct add and pending invite fail', async () => {
+    const { wrapper, fetchMock } = mountAs('u-owner', [OWNER])
+    await flushPromises()
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'User not found.' }, 404))
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Guild not found.' }, 404))
+    await wrapper.find('.invite-input').setValue('ghost')
+    await wrapper.find('.invite-btn').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.members-error').exists()).toBe(true)
   })
 
   it('does not allow removing the last owner', async () => {

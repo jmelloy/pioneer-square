@@ -31,12 +31,31 @@
         </li>
       </ul>
 
+      <div v-if="canManage && pendingInvites.length" class="pending-invites">
+        <div class="pending-invites-label">Pending invites</div>
+        <ul class="member-list">
+          <li v-for="inv in pendingInvites" :key="inv.id" class="member-row">
+            <span class="member-avatar member-avatar--placeholder">?</span>
+            <span class="member-name">{{ inv.github_login || inv.github_id }}</span>
+            <span class="member-role-badge">{{ inv.role }}</span>
+            <button
+              class="member-remove-btn"
+              :disabled="busyInvite === inv.id"
+              title="Cancel invite"
+              @click="cancelInvite(inv)"
+            >
+              ✕
+            </button>
+          </li>
+        </ul>
+      </div>
+
       <div v-if="canManage" class="invite-form">
         <div class="invite-row">
           <input
             v-model="inviteValue"
             class="settings-input invite-input"
-            placeholder="GitHub username"
+            placeholder="GitHub username or ID"
             spellcheck="false"
             autocomplete="off"
             :disabled="inviting"
@@ -79,6 +98,15 @@ interface GuildMemberRow {
   avatar_url: string | null
 }
 
+interface GuildInviteRow {
+  id: number
+  github_login: string | null
+  github_id: string | null
+  role: string
+  created_at: string
+  status: string
+}
+
 const props = defineProps<{ guildId: string }>()
 
 const authStore = useAuthStore()
@@ -86,6 +114,9 @@ const authStore = useAuthStore()
 const members = ref<GuildMemberRow[]>([])
 const loading = ref(false)
 const loadError = ref('')
+
+const pendingInvites = ref<GuildInviteRow[]>([])
+const busyInvite = ref<number | null>(null)
 
 const inviteValue = ref('')
 const inviteRole = ref<string>('member')
@@ -134,6 +165,18 @@ async function load() {
   } finally {
     loading.value = false
   }
+  await loadInvites()
+}
+
+async function loadInvites() {
+  if (!canManage.value) return
+  try {
+    pendingInvites.value = await api<GuildInviteRow[]>(
+      `/api/guilds/${encodeURIComponent(props.guildId)}/invites`,
+    )
+  } catch {
+    pendingInvites.value = []
+  }
 }
 
 async function invite() {
@@ -143,6 +186,7 @@ async function invite() {
   inviteError.value = ''
   inviteHint.value = ''
   try {
+    // Try direct add first (user has already logged in).
     await api(`/api/guilds/${encodeURIComponent(props.guildId)}/members`, {
       method: 'POST',
       json: { user, role: inviteRole.value },
@@ -151,9 +195,40 @@ async function invite() {
     inviteHint.value = `Added ${user} as ${inviteRole.value}.`
     await load()
   } catch (e) {
-    inviteError.value = e instanceof ApiError ? e.message : 'Failed to invite member'
+    if (e instanceof ApiError && e.status === 404) {
+      // User hasn't logged in yet — create a pending invite instead.
+      try {
+        await api(`/api/guilds/${encodeURIComponent(props.guildId)}/invites`, {
+          method: 'POST',
+          json: { user, role: inviteRole.value },
+        })
+        inviteValue.value = ''
+        inviteHint.value = `Invite sent to ${user} — they'll be added when they first log in.`
+        await load()
+      } catch (e2) {
+        inviteError.value = e2 instanceof ApiError ? e2.message : 'Failed to invite member'
+      }
+    } else {
+      inviteError.value = e instanceof ApiError ? e.message : 'Failed to invite member'
+    }
   } finally {
     inviting.value = false
+  }
+}
+
+async function cancelInvite(inv: GuildInviteRow) {
+  busyInvite.value = inv.id
+  inviteError.value = ''
+  try {
+    await api(
+      `/api/guilds/${encodeURIComponent(props.guildId)}/invites/${inv.id}`,
+      { method: 'DELETE' },
+    )
+    await loadInvites()
+  } catch (e) {
+    inviteError.value = e instanceof ApiError ? e.message : 'Failed to cancel invite'
+  } finally {
+    busyInvite.value = null
   }
 }
 
@@ -310,6 +385,24 @@ watch(() => props.guildId, load, { immediate: true })
 .member-remove-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.pending-invites {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--color-brass-dark);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+
+.pending-invites-label {
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--color-text-dim);
+  margin-bottom: 2px;
 }
 
 .invite-form {
