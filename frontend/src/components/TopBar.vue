@@ -277,6 +277,14 @@
         </div>
       </div>
 
+      <div class="settings-field">
+        <label class="settings-label">Members</label>
+        <button class="pixel-btn foreman-toggle-btn" @click="showMembers = !showMembers">
+          {{ showMembers ? 'Hide' : 'Manage' }}
+        </button>
+        <GuildMembers v-if="showMembers" :guild-id="currentGuild.id" />
+      </div>
+
       <div class="settings-field settings-meta">
         <span class="settings-meta-label">Session ID</span>
         <code class="settings-meta-value">{{ currentGuild.id }}</code>
@@ -295,6 +303,7 @@ import { useGitHubStore } from '../stores/github'
 import { useAuthStore } from '../stores/auth'
 import { useModels } from '../composables/useModels'
 import GitHubConfigModal from './GitHubConfigModal.vue'
+import GuildMembers from './GuildMembers.vue'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
@@ -359,6 +368,7 @@ const claudeCredsError = ref<string | null>(null)
 const claudeCredsConfirmDelete = ref(false)
 
 const showForemanConfig = ref(false)
+const showMembers = ref(false)
 const foremanModel = ref('')
 const foremanProvider = ref('')
 const foremanSystemSuffix = ref('')
@@ -551,6 +561,7 @@ watch(
     claudeCredsError.value = null
     claudeCredsConfirmDelete.value = false
     showForemanConfig.value = false
+    showMembers.value = false
     foremanModel.value = ''
     foremanProvider.value = ''
     foremanSystemSuffix.value = ''
