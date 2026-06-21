@@ -26,15 +26,14 @@ def upgrade() -> None:
     op.create_table(
         "guild_invites",
         sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("guild_id", sa.Integer(), nullable=False),
+        sa.Column("guild_id", sa.Integer(), sa.ForeignKey("guilds.id"), nullable=False),
         sa.Column("github_login", sa.Text(), nullable=True),
         sa.Column("github_id", sa.Text(), nullable=True),
         sa.Column("role", sa.Text(), nullable=False, server_default="'member'"),
-        sa.Column("invited_by", sa.Text(), nullable=False),
+        # users.id is sa.Text() — GitHub numeric user ID stored as text.
+        sa.Column("invited_by", sa.Text(), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("status", sa.Text(), nullable=False, server_default="'pending'"),
-        sa.ForeignKeyConstraint(["guild_id"], ["guilds.id"]),
-        sa.ForeignKeyConstraint(["invited_by"], ["users.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_guild_invites_guild_id_status", "guild_invites", ["guild_id", "status"])
