@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import UserNotifications
+internal import Combine
 
 /// Owns APNs registration and notification delegation. Holds the latest
 /// device token as a hex string and forwards token + tap events to the
