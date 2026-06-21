@@ -21,8 +21,10 @@ from datetime import UTC, datetime
 
 from database import get_db
 from fastapi import HTTPException
-from models import GithubToken, User, UserSession
+from models import GithubToken, GuildInvite, GuildMember, User, UserSession
+from sqlalchemy import or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlmodel import col, select
 
 # ---------------------------------------------------------------------------
 # Config (read at import time from environment)
@@ -203,6 +205,35 @@ async def create_session(code: str, state: str) -> dict:
         )
         await db.exec(user_stmt)
         db.add(UserSession(token=login_token, github_user_id=github_user_id, created_at=now))
+
+        # Auto-accept any pending invites addressed to this user's login or numeric ID.
+        # with_for_update() locks matching rows so two concurrent logins for the same
+        # user can't both read status='pending' and double-process the same invite.
+        pending_res = await db.exec(
+            select(GuildInvite)
+            .where(
+                col(GuildInvite.status) == "pending",
+                or_(
+                    col(GuildInvite.github_login) == github_username.lower(),
+                    col(GuildInvite.github_id) == github_user_id,
+                ),
+            )
+            .with_for_update()
+        )
+        for invite in pending_res.all():
+            member_stmt = pg_insert(GuildMember).values(
+                guild_id=invite.guild_id,
+                user_id=github_user_id,
+                role=invite.role,
+                created_at=now,
+            )
+            member_stmt = member_stmt.on_conflict_do_update(
+                index_elements=["guild_id", "user_id"],
+                set_={"role": member_stmt.excluded.role},
+            )
+            await db.exec(member_stmt)
+            invite.status = "accepted"
+
         await db.commit()
     finally:
         await db.close()
