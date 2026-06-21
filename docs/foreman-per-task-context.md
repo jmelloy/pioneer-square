@@ -1,6 +1,8 @@
 # Design: Per-Task Context Splitting for the Foreman
 
-**Status:** Design only — not yet implemented.
+**Status:** Phases 0–2 implemented in the standalone foreman (`foreman/`); Phase 3
+(escalation queue, stall watchdog) and Phase 4 (observability) not yet done. The
+embedded foreman (`backend/foreman/`) is unchanged — see open question 7.
 **Issue:** [#649](https://github.com/jmelloy/pioneer-square/issues/649)
 **Date:** 2026-06-21
 
@@ -309,7 +311,16 @@ different worker or escalate. If no other worker is available, it escalates thro
 
 ## 7. Implementation Path
 
-### Phase 0 — Plumbing (no behavior change)
+> **Implementation note (2026-06-21):** Phases 0–2 below are implemented in the
+> standalone foreman. `child_contexts` (config / `FOREMAN_CHILD_CONTEXTS`, default on)
+> gates the behaviour. New code: `foreman/pioneer_foreman/task_context.py`,
+> `build_child_system_blocks` / `build_child_state_preamble` and `CHILD_FOREMAN_TOOLS`
+> in `backend/foreman_core/`, a `task_id` filter on the history read path
+> (`/foreman/history`, `get_history`, `_load_history`), and routing / spawn-on-assign /
+> teardown-on-finalize / reconnect-respawn / orphan-recovery on the `Foreman` class.
+> Phase 3 (escalation queue, stall watchdog) and Phase 4 (observability) remain.
+
+### Phase 0 — Plumbing (no behavior change) ✅
 
 1. **Verify `task_id` population.** Confirm the `task_id` column on history rows is
    populated for all trigger types (it is written by `_save_turn` today; audit that callers
@@ -322,7 +333,7 @@ different worker or escalate. If no other worker is available, it escalates thro
    parent's run/drain loop.
 4. **Routing map + escalation queue** on `Foreman` (`foreman.py`).
 
-### Phase 1 — Spawn children on assign_task
+### Phase 1 — Spawn children on assign_task ✅
 
 5. **Intercept successful `assign_task` results** in the parent's run loop; spawn a
    `TaskContext` for the returned `task_id`.
@@ -331,7 +342,7 @@ different worker or escalate. If no other worker is available, it escalates thro
 7. **`CHILD_FOREMAN_TOOLS`** in `backend/foreman_core/tools_schema.py` = `FOREMAN_TOOLS`
    minus `create_task` / `assign_task`.
 
-### Phase 2 — Route events to children
+### Phase 2 — Route events to children ✅
 
 8. **Apply the routing map** in `_handle_trigger` using the existing `taskId`.
 9. **`_pending_for_task` buffer** + flush-on-spawn.

@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 import websockets
 
 from .http_client import ForemanHTTPClient
 from .runner import run_foreman_ai
+from .task_context import _TERMINAL_TASK_STATES, TaskContext
 
 if TYPE_CHECKING:
     from .config import Config
@@ -19,6 +22,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _QUEUE_MAX = 100
+
+# Matches a task id (e.g. "t-abc123") in an assign_task tool result like
+# "Task t-abc123 assigned to w-1." / "Task t-abc123 queued for w-1."
+_TASK_ID_RE = re.compile(r"\bt-[a-z0-9]+\b")
 
 
 class Foreman:
@@ -37,6 +44,141 @@ class Foreman:
         # Current poll interval in seconds.  Reset to poll_min_interval when
         # the foreman makes tool calls; otherwise advanced exponentially each tick.
         self._poll_interval: int = config.poll_min_interval
+        # Per-task child contexts (task_id → TaskContext), populated on assign_task
+        # when config.child_contexts is enabled.  See docs/foreman-per-task-context.md.
+        self._child_contexts: dict[str, TaskContext] = {}
+        # Triggers that arrived for a task between assign_task and the child being
+        # registered; flushed into the child's queue on spawn.
+        self._pending_for_task: dict[str, list[dict]] = {}
+        # Per-connection broadcast closure; set in _run_connection, cleared on exit.
+        self._ws_send: Callable[[dict], Awaitable[None]] | None = None
+
+    # ── per-task child contexts ────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_trigger(data: dict) -> dict:
+        """Convert a foreman-trigger WS payload into the internal trigger dict
+        shared by the parent queue and child queues."""
+        return {
+            "guild_id": data.get("guildId", ""),
+            "human_message": data.get("humanMessage", ""),
+            "extra_context": data.get("extraContext", ""),
+            "user_id": data.get("userId"),
+            "task_id": data.get("taskId"),
+            "event": data.get("event", "?"),
+        }
+
+    def _route_to_child(self, trigger: dict) -> bool:
+        """Route a task-specific trigger to its child context if one exists or is
+        pending. Returns True if the trigger was consumed by a child, False if the
+        parent should handle it."""
+        if not self._config.child_contexts:
+            return False
+        task_id = trigger.get("task_id")
+        if not task_id:
+            return False
+        child = self._child_contexts.get(task_id)
+        if child is not None and child.is_alive():
+            child.enqueue(trigger)
+            return True
+        # Assignment in flight — buffer until the child is registered.
+        if task_id in self._pending_for_task:
+            self._pending_for_task[task_id].append(trigger)
+            return True
+        return False
+
+    def _spawn_child(self, task_id: str) -> None:
+        """Create and start a child context for an assigned task, then flush any
+        buffered pre-spawn triggers into it. Idempotent."""
+        if not self._config.child_contexts or self._ws_send is None or self._http is None:
+            return
+        if task_id in self._child_contexts and self._child_contexts[task_id].is_alive():
+            return
+        child = TaskContext(
+            task_id,
+            guild_id=self._config.guild_id,
+            user_id=None,
+            http=self._http,
+            ws_send=self._ws_send,
+            config=self._config,
+            on_finalize=self._deregister_child,
+        )
+        self._child_contexts[task_id] = child
+        child.start()
+        logger.info("spawned child context for task %s", task_id)
+        for buffered in self._pending_for_task.pop(task_id, []):
+            child.enqueue(buffered)
+
+    def _deregister_child(self, task_id: str) -> None:
+        """Remove a finalized/dead child from the routing map (called by the child)."""
+        self._child_contexts.pop(task_id, None)
+        self._pending_for_task.pop(task_id, None)
+        logger.debug("deregistered child context for task %s", task_id)
+
+    def _parent_tool_observer(self, tool_name: str, tool_input: dict, result: dict) -> None:
+        """React to the parent's task lifecycle tool calls: spawn a child on
+        assign_task, tear one down if the parent finalizes/cancels a task itself."""
+        if result.get("is_error"):
+            return
+        if tool_name == "assign_task":
+            content = result.get("content") or ""
+            match = _TASK_ID_RE.search(content)
+            task_id = match.group(0) if match else tool_input.get("task_id")
+            if not task_id:
+                logger.warning("assign_task succeeded but no task_id found in result: %r", content)
+                return
+            # Open the pre-spawn buffer before starting the child so events arriving
+            # during spawn are captured, then create and flush the child.
+            self._pending_for_task.setdefault(task_id, [])
+            self._spawn_child(task_id)
+        elif tool_name in ("finalize_task", "cancel_task"):
+            task_id = tool_input.get("task_id")
+            child = self._child_contexts.get(task_id) if task_id else None
+            if child is not None:
+                logger.info("parent %s task %s — tearing down its child", tool_name, task_id)
+                asyncio.create_task(child.stop(), name=f"foreman.child-stop:{task_id}")
+
+    async def _respawn_children_from_state(self) -> None:
+        """On (re)connect, spawn a child for every non-terminal task with a worker.
+
+        History is DB-backed, so each child reconstructs its own context on first
+        turn. A synthetic [reconnect] trigger nudges it to re-check the task."""
+        if not self._config.child_contexts or self._http is None:
+            return
+        try:
+            state = await self._http.get_state()
+            for t in state.get("tasks") or []:
+                task_id = t.get("id")
+                if not task_id or t.get("state") in _TERMINAL_TASK_STATES or not t.get("worker_id"):
+                    continue
+                if task_id in self._child_contexts and self._child_contexts[task_id].is_alive():
+                    continue
+                self._spawn_child(task_id)
+                child = self._child_contexts.get(task_id)
+                if child is not None:
+                    child.enqueue(
+                        {
+                            "guild_id": self._config.guild_id,
+                            "human_message": (
+                                f"[reconnect] Foreman reconnected; task {task_id} is in state "
+                                f"'{t.get('state')}'. Check whether it still needs action."
+                            ),
+                            "extra_context": "",
+                            "user_id": None,
+                            "task_id": task_id,
+                            "event": "reconnect",
+                        }
+                    )
+        except Exception:
+            logger.exception("respawn: failed to re-establish child contexts")
+
+    async def _cancel_all_children(self) -> None:
+        """Cancel every child context (on disconnect/eviction)."""
+        children = list(self._child_contexts.values())
+        self._child_contexts.clear()
+        self._pending_for_task.clear()
+        for child in children:
+            await child.stop()
 
     async def run(self) -> None:
         """Connect to the backend and handle triggers until stopped."""
@@ -93,6 +235,9 @@ class Foreman:
                 except Exception as exc:
                     logger.warning("_ws_send failed: %s", exc)
 
+            # Expose the broadcast closure to child contexts spawned this connection.
+            self._ws_send = _ws_send
+
             async def _run_foreman(
                 guild_id: str,
                 human_message: str,
@@ -126,6 +271,7 @@ class Foreman:
                             http=self._http,
                             ws_send=_ws_send,
                             config=self._config,
+                            tool_observer=self._parent_tool_observer,
                         )
                         if made_calls:
                             self._last_action_at = time.monotonic()
@@ -152,6 +298,7 @@ class Foreman:
                                 http=self._http,
                                 ws_send=_ws_send,
                                 config=self._config,
+                                tool_observer=self._parent_tool_observer,
                             )
                             if made_calls:
                                 self._last_action_at = time.monotonic()
@@ -171,6 +318,15 @@ class Foreman:
                 trigger_task_id = data.get("taskId")
                 if not guild_id or not human_message:
                     logger.warning("Ignoring malformed foreman-trigger: %s", data)
+                    return
+
+                # Route task-specific events to their isolated child context.
+                if self._route_to_child(self._normalize_trigger(data)):
+                    logger.debug(
+                        "Routed trigger to child context: task=%s event=%s",
+                        trigger_task_id,
+                        data.get("event", "?"),
+                    )
                     return
 
                 if self._processing:
@@ -237,6 +393,32 @@ class Foreman:
                             for t in (state.get("tasks") or [])
                             if t.get("state") not in ("done", "failed", "cancelled")
                         ]
+
+                        # Orphan recovery + ownership split: when child contexts are
+                        # enabled, each assigned task is monitored by its own child, so
+                        # the parent's periodic check only covers tasks WITHOUT a live
+                        # child (unassigned/pending or orphaned). Spawn a child for any
+                        # assigned task missing one.
+                        if self._config.child_contexts:
+                            for t in active:
+                                tid = t.get("id")
+                                if (
+                                    tid
+                                    and t.get("worker_id")
+                                    and not (
+                                        tid in self._child_contexts
+                                        and self._child_contexts[tid].is_alive()
+                                    )
+                                ):
+                                    self._spawn_child(tid)
+                            active = [
+                                t
+                                for t in active
+                                if not (
+                                    t.get("id") in self._child_contexts
+                                    and self._child_contexts[t["id"]].is_alive()
+                                )
+                            ]
                         n = len(active)
 
                         # Advance the interval for the next tick.  If a triggered run
@@ -298,6 +480,9 @@ class Foreman:
                             msg.get("agentId"),
                             self._config.guild_id,
                         )
+                        # Re-establish per-task child contexts for any tasks that
+                        # were already in flight (e.g. after a reconnect).
+                        await self._respawn_children_from_state()
                     elif msg_type == "foreman-trigger":
                         logger.debug(
                             "Received foreman-trigger: event=%s",
@@ -315,5 +500,9 @@ class Foreman:
                         await poll_task
                     except asyncio.CancelledError:
                         pass
+                # Child contexts hold this connection's ws_send; tear them down so
+                # the next connection respawns them cleanly from state.
+                await self._cancel_all_children()
+                self._ws_send = None
 
         return evicted

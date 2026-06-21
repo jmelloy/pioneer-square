@@ -49,6 +49,11 @@ class Config:
     aws_profile: str | None = None
     max_rounds: int = 10
     history_limit: int = 40
+    # When True, the foreman spawns an isolated per-task child context on each
+    # assign_task and routes task-specific events to it. See
+    # docs/foreman-per-task-context.md. Set false to fall back to the legacy
+    # single-context behaviour.
+    child_contexts: bool = True
     # Poll settings
     poll_min_interval: int = 60
     poll_max_interval: int = 14400
@@ -82,6 +87,18 @@ class Config:
         scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme or "ws")
         base = urlunparse((scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
         return f"{base}/ws/{self.guild_id}"
+
+
+def _as_bool(*values, default: bool) -> bool:
+    """Return the first non-None value coerced to bool (TOML bools pass through,
+    strings like '0'/'false'/'no'/'off' are falsy)."""
+    for v in values:
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() not in ("0", "false", "no", "off", "")
+    return default
 
 
 def _resolve_config_path(explicit: str | None) -> Path:
@@ -218,6 +235,12 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         aws_profile=aws_profile,
         max_rounds=int(overrides.get("max_rounds", claude_block.get("max_rounds", 10))),
         history_limit=int(overrides.get("history_limit", claude_block.get("history_limit", 40))),
+        child_contexts=_as_bool(
+            overrides.get("child_contexts"),
+            raw.get("child_contexts"),
+            os.environ.get("FOREMAN_CHILD_CONTEXTS"),
+            default=True,
+        ),
         poll_min_interval=int(
             overrides.get("poll_min_interval", poll_block.get("min_interval", 60))
         ),

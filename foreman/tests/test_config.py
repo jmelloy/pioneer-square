@@ -124,6 +124,24 @@ def test_load_overrides_defaults_preserved(tmp_path):
     assert cfg.history_limit == 40
     assert cfg.model == "claude-sonnet-4-6"
     assert cfg.provider == "anthropic"
+    # Per-task child contexts default on.
+    assert cfg.child_contexts is True
+
+
+def test_child_contexts_disabled_via_toml(tmp_path):
+    toml_path = tmp_path / "pioneer-foreman.toml"
+    toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\nchild_contexts = false\n')
+    cfg = load(str(toml_path))
+    assert cfg.child_contexts is False
+
+
+def test_child_contexts_disabled_via_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("FOREMAN_CHILD_CONTEXTS", "0")
+    cfg = load(
+        str(tmp_path / "missing.toml"),
+        overrides={"backend_url": "ws://x:1", "guild_id": "g"},
+    )
+    assert cfg.child_contexts is False
 
 
 # ── load() — from TOML file ──────────────────────────────────────────────

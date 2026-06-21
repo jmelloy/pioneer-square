@@ -109,6 +109,7 @@ async def test_ws_join_sent_before_first_message_processed():
     with patch("pioneer_foreman.foreman.websockets.connect", return_value=ws):
         foreman = Foreman(_make_config())
         foreman._http = AsyncMock()
+        foreman._http.get_state.return_value = {"tasks": [], "workers": [], "guild": {}}
         await foreman._run_connection()
 
     assert joined_before_registered[0] is True, "join should be sent before first message"
@@ -126,6 +127,7 @@ async def test_ws_foreman_registered_accepted():
     with patch("pioneer_foreman.foreman.websockets.connect", return_value=ws):
         foreman = Foreman(_make_config())
         foreman._http = AsyncMock()
+        foreman._http.get_state.return_value = {"tasks": [], "workers": [], "guild": {}}
         evicted = await foreman._run_connection()
 
     # Reaching here without exception means foreman-registered was handled
@@ -142,6 +144,7 @@ async def test_ws_evicted_returns_true():
     with patch("pioneer_foreman.foreman.websockets.connect", return_value=ws):
         foreman = Foreman(_make_config())
         foreman._http = AsyncMock()
+        foreman._http.get_state.return_value = {"tasks": [], "workers": [], "guild": {}}
         evicted = await foreman._run_connection()
 
     assert evicted is True
@@ -159,6 +162,7 @@ async def test_ws_clean_disconnect_returns_false():
     with patch("pioneer_foreman.foreman.websockets.connect", return_value=ws):
         foreman = Foreman(_make_config())
         foreman._http = AsyncMock()
+        foreman._http.get_state.return_value = {"tasks": [], "workers": [], "guild": {}}
         evicted = await foreman._run_connection()
 
     assert evicted is False
