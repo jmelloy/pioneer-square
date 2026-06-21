@@ -90,8 +90,16 @@ describe('GuildMembers', () => {
   it('falls back to a pending invite when the user has not logged in (404)', async () => {
     const { wrapper, fetchMock } = mountAs('u-owner', [OWNER])
     await flushPromises()
-    // POST /members → 404 (user not found)
-    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'User not found.' }, 404))
+    // POST /members → 404 with the exact backend "user not found" message format
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail:
+            "User 'ghost' not found. They must log in to Pioneer Square once before they can be added.",
+        },
+        404,
+      ),
+    )
     // POST /invites → success
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ id: 1, github_login: 'ghost', github_id: null, role: 'member', status: 'pending' }),
@@ -112,12 +120,35 @@ describe('GuildMembers', () => {
   it('shows an error when both direct add and pending invite fail', async () => {
     const { wrapper, fetchMock } = mountAs('u-owner', [OWNER])
     await flushPromises()
-    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'User not found.' }, 404))
+    // POST /members → 404 with user-not-found message, triggering the invite fallback
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          detail:
+            "User 'ghost' not found. They must log in to Pioneer Square once before they can be added.",
+        },
+        404,
+      ),
+    )
+    // POST /invites → also fails
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Guild not found.' }, 404))
     await wrapper.find('.invite-input').setValue('ghost')
     await wrapper.find('.invite-btn').trigger('click')
     await flushPromises()
     expect(wrapper.find('.members-error').exists()).toBe(true)
+  })
+
+  it('surfaces a non-user-not-found 404 as an error without attempting an invite', async () => {
+    const { wrapper, fetchMock } = mountAs('u-owner', [OWNER])
+    await flushPromises()
+    // POST /members → 404 with a guild-level error (should NOT fall back to invite)
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'Guild not found.' }, 404))
+    await wrapper.find('.invite-input').setValue('ghost')
+    await wrapper.find('.invite-btn').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.members-error').text()).toContain('Guild not found.')
+    // Only 3 fetch calls total: load members, load invites, POST members (no POST invites)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('does not allow removing the last owner', async () => {

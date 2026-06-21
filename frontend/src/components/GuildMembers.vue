@@ -195,8 +195,12 @@ async function invite() {
     inviteHint.value = `Added ${user} as ${inviteRole.value}.`
     await load()
   } catch (e) {
-    if (e instanceof ApiError && e.status === 404) {
-      // User hasn't logged in yet — create a pending invite instead.
+    // Only fall back to a pending invite when the server says the user hasn't
+    // logged in yet. Any other 404 (guild not found, gateway misconfiguration,
+    // etc.) should surface as a real error so the problem isn't silently eaten.
+    const isUserNotFound =
+      e instanceof ApiError && e.status === 404 && e.message.startsWith("User '")
+    if (isUserNotFound) {
       try {
         await api(`/api/guilds/${encodeURIComponent(props.guildId)}/invites`, {
           method: 'POST',

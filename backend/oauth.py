@@ -207,14 +207,18 @@ async def create_session(code: str, state: str) -> dict:
         db.add(UserSession(token=login_token, github_user_id=github_user_id, created_at=now))
 
         # Auto-accept any pending invites addressed to this user's login or numeric ID.
+        # with_for_update() locks matching rows so two concurrent logins for the same
+        # user can't both read status='pending' and double-process the same invite.
         pending_res = await db.exec(
-            select(GuildInvite).where(
+            select(GuildInvite)
+            .where(
                 col(GuildInvite.status) == "pending",
                 or_(
                     col(GuildInvite.github_login) == github_username.lower(),
                     col(GuildInvite.github_id) == github_user_id,
                 ),
             )
+            .with_for_update()
         )
         for invite in pending_res.all():
             member_stmt = pg_insert(GuildMember).values(

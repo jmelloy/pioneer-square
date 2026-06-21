@@ -5,10 +5,12 @@ from __future__ import annotations
 import os
 import sys
 from datetime import UTC, datetime
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
+import oauth as oauth_module
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
 from models import Guild, GuildInvite, GuildMember, User
 from sqlalchemy import select
@@ -464,3 +466,59 @@ def test_pending_invite_accepted_on_login(client):
     )
     assert invite_resp.status_code == 200
     assert all(i["github_login"] != "newbie" for i in invite_resp.json())
+
+
+def test_pending_invite_accepted_via_oauth_exchange(client):
+    """Pending invite is auto-accepted when the invited user goes through the real OAuth exchange.
+
+    This exercises ``oauth.create_session`` end-to-end (including the invite-acceptance
+    block) via the ``/auth/github/exchange`` endpoint rather than duplicating the logic
+    inline, so a regression in ``create_session`` will cause this test to fail.
+    """
+    test_client, db_url = client
+    insert_guild(db_url, "gi-oauth")
+    _insert_pending_invite(db_url, "gi-oauth", "oauthuser")
+
+    fake_state = "test-state-oauth-invite"
+    oauth_module.oauth_states[fake_state] = None
+
+    fake_token_resp = {"access_token": "ghs_fake", "token_type": "bearer", "scope": "repo"}
+    fake_user_resp = {
+        "id": 9999,  # numeric GitHub user ID
+        "login": "oauthuser",
+        "name": "OAuth User",
+        "avatar_url": "https://example.com/avatar.png",
+        "email": None,
+    }
+    # Patch GitHub HTTP helpers so no real network call is made.
+    with (
+        mock.patch.object(oauth_module, "_gh_exchange_code", return_value=fake_token_resp),
+        mock.patch.object(oauth_module, "_gh_get_user", return_value=fake_user_resp),
+    ):
+        exchange_resp = test_client.post(
+            "/auth/github/exchange",
+            json={"code": "fake-code", "state": fake_state},
+        )
+
+    assert exchange_resp.status_code == 200, exchange_resp.text
+    payload = exchange_resp.json()
+    assert payload["gh_login"] == "oauthuser"
+    assert "login_token" in payload
+
+    # The invited user should now be a member.
+    owner_token = make_auth_token(db_url)
+    members_resp = test_client.get(
+        "/api/guilds/gi-oauth/members",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert members_resp.status_code == 200
+    user_ids = [m["user_id"] for m in members_resp.json()]
+    assert str(fake_user_resp["id"]) in user_ids
+
+    # The invite should no longer appear in the pending list.
+    invites_resp = test_client.get(
+        "/api/guilds/gi-oauth/invites",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert invites_resp.status_code == 200
+    assert all(i["github_login"] != "oauthuser" for i in invites_resp.json())
