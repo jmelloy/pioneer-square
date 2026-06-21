@@ -1,8 +1,8 @@
 # Design: Per-Task Context Splitting for the Foreman
 
-**Status:** Phases 0–2 implemented in the standalone foreman (`foreman/`); Phase 3
-(escalation queue, stall watchdog) and Phase 4 (observability) not yet done. The
-embedded foreman (`backend/foreman/`) is unchanged — see open question 7.
+**Status:** Phases 0–2 implemented in **both** the standalone foreman (`foreman/`) and
+the embedded foreman (`backend/foreman/`). Phase 3 (escalation queue, stall watchdog)
+and Phase 4 (observability) not yet done.
 **Issue:** [#649](https://github.com/jmelloy/pioneer-square/issues/649)
 **Date:** 2026-06-21
 
@@ -311,13 +311,31 @@ different worker or escalate. If no other worker is available, it escalates thro
 
 ## 7. Implementation Path
 
-> **Implementation note (2026-06-21):** Phases 0–2 below are implemented in the
-> standalone foreman. `child_contexts` (config / `FOREMAN_CHILD_CONTEXTS`, default on)
-> gates the behaviour. New code: `foreman/pioneer_foreman/task_context.py`,
-> `build_child_system_blocks` / `build_child_state_preamble` and `CHILD_FOREMAN_TOOLS`
-> in `backend/foreman_core/`, a `task_id` filter on the history read path
-> (`/foreman/history`, `get_history`, `_load_history`), and routing / spawn-on-assign /
-> teardown-on-finalize / reconnect-respawn / orphan-recovery on the `Foreman` class.
+> **Implementation note (2026-06-21):** Phases 0–2 are implemented in **both** foremen.
+> `FOREMAN_CHILD_CONTEXTS` (env) / `child_contexts` (standalone config), default on, gate
+> the behaviour. Shared: `build_child_system_blocks` / `build_child_state_preamble` and
+> `CHILD_FOREMAN_TOOLS` in `backend/foreman_core/`, plus a `task_id` filter on the history
+> read path.
+>
+> **Standalone** (`foreman/`) uses a persistent `TaskContext` per task
+> (`task_context.py`) because it has a single WebSocket connection and needs concurrent
+> asyncio loops; the `Foreman` class does routing, spawn-on-assign, teardown-on-finalize,
+> reconnect-respawn, and orphan-recovery.
+>
+> **Embedded** (`backend/foreman/`) does **not** need a persistent `TaskContext`: it is
+> in-process with direct DB access and already gets concurrency from independent
+> `run_foreman_ai` asyncio tasks. Per-task isolation is achieved with three primitives
+> instead: (1) `task_id`-filtered history in `_load_history`, (2) child-mode
+> prompt/state/tools in `_run_foreman_ai(child=True, task_id=...)`, and (3) a per-task
+> lock key `(guild_id, "task:<id>")` in `run_foreman_ai` so different tasks run
+> concurrently while one task's review loop serialises against itself. "Spawn on assign"
+> and "teardown on finalize" are implicit — each task-specific event runs an ephemeral
+> child-mode turn, with continuity provided by DB-backed history. Routing lives at the
+> trigger sites: `ws_handlers._trigger_foreman` (task-complete / followup-done /
+> needs-input / task-error), the webhook debounce path (github events for a known task),
+> and the user-followup task route. Cross-cutting events (human chat, worker lifecycle,
+> periodic-check, claude-auth) stay on the whole-guild parent context.
+>
 > Phase 3 (escalation queue, stall watchdog) and Phase 4 (observability) remain.
 
 ### Phase 0 — Plumbing (no behavior change) ✅
