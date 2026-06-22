@@ -12,7 +12,6 @@ import asyncio
 import logging
 
 from backend.foreman_core.tools_schema import (
-    CHILD_FOREMAN_TOOLS,  # noqa: F401  – re-exported for runner.py (child contexts)
     FOREMAN_TOOLS,  # noqa: F401  – re-exported for runner.py
 )
 

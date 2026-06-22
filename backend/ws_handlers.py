@@ -144,13 +144,6 @@ async def _task_user_id(db, task_id: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-# Trigger events that concern a single task's review loop. When the embedded
-# foreman handles these (and a task_id is present), it runs in an isolated
-# per-task child context. All other events stay on the whole-guild parent
-# context. See docs/foreman-per-task-context.md.
-_CHILD_FOREMAN_EVENTS = frozenset({"task-complete", "followup-done", "needs-input", "task-error"})
-
-
 async def _trigger_foreman(
     guild_id: str,
     event: str,
@@ -210,13 +203,9 @@ async def _trigger_foreman(
             )
             foreman_connections.pop(guild_id, None)
             resume_foreman_poll(guild_id)
-    # Embedded fallback. Task-specific review events run in an isolated per-task
-    # child context (see docs/foreman-per-task-context.md); cross-cutting events
-    # (chat, worker lifecycle, periodic-check, claude-auth) stay on the parent
-    # whole-guild context.
-    child = bool(task_id) and event in _CHILD_FOREMAN_EVENTS
+    # Embedded fallback — identical to the pre-Phase-2 behaviour.
     spawn(
-        run_foreman_ai(guild_id, human_message, user_id=user_id, task_id=task_id, child=child),
+        run_foreman_ai(guild_id, human_message, user_id=user_id),
         name=task_name,
     )
 
