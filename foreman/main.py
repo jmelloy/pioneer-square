@@ -181,12 +181,23 @@ async def main() -> None:
             else:
                 # Unexpected clean exit — reset backoff and retry immediately.
                 retry_delay = 5
-        except Exception as exc:
+        except (ConnectionRefusedError, OSError) as exc:
             logger.error(
-                "Connection error for guild %s: %s — retrying in %ds",
-                guild_id,
-                exc,
+                "Cannot reach backend at %s — is it running? Retrying in %ds. (%s: %s)",
+                backend_ws_url,
                 retry_delay,
+                type(exc).__name__,
+                exc,
+            )
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+        except Exception as exc:
+            logger.exception(
+                "Connection error for guild %s (%s) — retrying in %ds: %s",
+                guild_id,
+                backend_ws_url,
+                retry_delay,
+                type(exc).__name__,
             )
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)

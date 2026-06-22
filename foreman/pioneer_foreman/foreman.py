@@ -56,13 +56,43 @@ class Foreman:
                         await asyncio.sleep(retry_delay)
                         retry_delay = min(retry_delay * 2, 60)
                     else:
+                        logger.info(
+                            "guild=%s WS disconnected cleanly — reconnecting in %ds",
+                            self._config.guild_id,
+                            retry_delay,
+                        )
+                        await asyncio.sleep(retry_delay)
                         retry_delay = 5
-                except Exception as exc:
+                except (ConnectionRefusedError, OSError) as exc:
                     logger.error(
-                        "Connection error for guild %s: %s — retrying in %ds",
+                        "guild=%s cannot reach backend at %s — is it running? "
+                        "Retrying in %ds. (%s: %s)",
                         self._config.guild_id,
-                        exc,
+                        self._config.ws_url,
                         retry_delay,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60)
+                except websockets.exceptions.InvalidHandshake as exc:
+                    logger.error(
+                        "guild=%s backend rejected WS handshake at %s — "
+                        "check guild_id and backend_key. Retrying in %ds. (%s)",
+                        self._config.guild_id,
+                        self._config.ws_url,
+                        retry_delay,
+                        exc,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60)
+                except Exception as exc:
+                    logger.exception(
+                        "guild=%s unexpected connection error at %s — retrying in %ds: %s",
+                        self._config.guild_id,
+                        self._config.ws_url,
+                        retry_delay,
+                        type(exc).__name__,
                     )
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, 60)
@@ -78,6 +108,7 @@ class Foreman:
         poll_task: asyncio.Task | None = None
 
         async with websockets.connect(ws_url) as ws:
+            logger.info("WebSocket connected to %s", ws_url)
 
             async def _ws_send(message: dict) -> None:
                 try:
@@ -273,6 +304,7 @@ class Foreman:
                         logger.exception("poll_loop iteration failed")
 
             # Register as external foreman
+            logger.debug("guild=%s sending join message", self._config.guild_id)
             await ws.send(
                 json.dumps(
                     {
@@ -289,6 +321,7 @@ class Foreman:
                     try:
                         msg = json.loads(raw)
                     except json.JSONDecodeError:
+                        logger.warning("Received non-JSON WS frame (ignoring): %.120r", raw)
                         continue
 
                     msg_type = msg.get("type")
@@ -303,11 +336,25 @@ class Foreman:
                             "Received foreman-trigger: event=%s",
                             msg.get("event"),
                         )
-                        await _handle_trigger(msg)
+                        try:
+                            await _handle_trigger(msg)
+                        except Exception:
+                            logger.exception(
+                                "guild=%s _handle_trigger raised — event=%s",
+                                self._config.guild_id,
+                                msg.get("event"),
+                            )
                     elif msg_type == "foreman-evicted":
                         logger.warning("Evicted: %s", msg.get("reason"))
                         evicted = True
                         break
+                    else:
+                        logger.debug("Ignoring WS message type=%r", msg_type)
+                logger.info(
+                    "guild=%s WS message loop ended (evicted=%s)",
+                    self._config.guild_id,
+                    evicted,
+                )
             finally:
                 if poll_task and not poll_task.done():
                     poll_task.cancel()
