@@ -11,12 +11,6 @@ backend_key = ""
 # auth_token. Ignored when backend_key is provided.
 # auth_token = ""
 
-# Per-task child contexts: spawn an isolated conversation thread per assigned
-# task and route task-specific events to it (see docs/foreman-per-task-context.md).
-# Defaults to true; set false (or FOREMAN_CHILD_CONTEXTS=0) for the legacy
-# single-context behaviour.
-# child_contexts = true
-
 [claude]
 model         = "claude-sonnet-4-6"    # used when provider = "anthropic"
 api_key       = ""                     # falls back to ANTHROPIC_API_KEY env var

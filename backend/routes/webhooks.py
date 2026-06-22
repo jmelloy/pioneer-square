@@ -126,25 +126,18 @@ class DebounceQueue:
                 exc_info=exc,
             )
 
-    async def _deliver(
-        self, key: str, guild_id: str, items: list[tuple[str, str | None, str | None]]
-    ) -> None:
-        summaries = [s for s, _, _ in items]
+    async def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None]]) -> None:
+        summaries = [s for s, _ in items]
         combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
         # Use the first non-bot user_id in the batch. All items share the same
         # task owner, but a bot user_id (ending in "[bot]") is less useful for
         # attribution than a real human.  Fall back to any non-None user_id if
         # every entry is a bot, and to None if the batch is entirely anonymous.
         user_id = next(
-            (uid for _, uid, _ in items if uid and not uid.endswith("[bot]")),
-            next((uid for _, uid, _ in items if uid), None),
+            (uid for _, uid in items if uid and not uid.endswith("[bot]")),
+            next((uid for _, uid in items if uid), None),
         )
-        # All events buffered under one key share a task (key is "{guild}:{task_id}");
-        # github events for a known task run in that task's isolated child context.
-        task_id = next((tid for _, _, tid in items if tid), None)
-        await run_foreman_ai(
-            guild_id, combined, user_id=user_id, task_id=task_id, child=bool(task_id)
-        )
+        await run_foreman_ai(guild_id, combined, user_id=user_id)
         reset_foreman_poll(guild_id)
         logger.info(
             "github webhook debounce fired key=%s events=%d guild=%s",
@@ -188,7 +181,6 @@ class DebounceQueue:
         guild_id: str,
         summary: str,
         user_id: str | None,
-        task_id: str | None = None,
     ) -> None:
         """Buffer *summary* and (re)start the per-PR debounce timer.
 
@@ -217,7 +209,7 @@ class DebounceQueue:
         # above ensures the old task cannot also deliver the same events, so
         # there is no risk of double delivery.
         self._buffers[key] = snapshot
-        self._buffers[key].append((summary, user_id, task_id))
+        self._buffers[key].append((summary, user_id))
         # Use asyncio.create_task directly: the task is kept alive by
         # self._tasks[key] (a strong reference), so GC is not a concern.
         # _log_fire_error handles unexpected exceptions via the done callback.
@@ -874,7 +866,7 @@ async def github_webhook(
                 event_type, action, payload, repo, pr_number, task_id or "", sender_login
             )
             key = f"{guild_id}:{task_id}"
-            await _debounce_queue.schedule(key, guild_id, summary, task_user_id, task_id=task_id)
+            await _debounce_queue.schedule(key, guild_id, summary, task_user_id)
         else:
             logger.info(
                 "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",

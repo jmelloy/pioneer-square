@@ -18,7 +18,7 @@ async def _run_foreman_ai_patched(guild_id: str, impl_event: asyncio.Event | Non
     """
     import foreman.runner as runner
 
-    async def _slow_impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+    async def _slow_impl(gid, msg, extra="", uid=None):
         if impl_event is not None:
             await impl_event.wait()
 
@@ -47,7 +47,7 @@ def test_concurrent_same_guild_drops_second():
         call_count = 0
         hold = asyncio.Event()
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(gid, msg, extra="", uid=None):
             nonlocal call_count
             call_count += 1
             await hold.wait()
@@ -81,7 +81,7 @@ def test_concurrent_different_guilds_both_run():
         call_log: list[str] = []
         hold = asyncio.Event()
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(gid, msg, extra="", uid=None):
             call_log.append(gid)
             await hold.wait()
 
@@ -107,7 +107,7 @@ def test_lock_released_after_completion():
 
         call_count = 0
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(gid, msg, extra="", uid=None):
             nonlocal call_count
             call_count += 1
 
@@ -130,7 +130,7 @@ def test_lock_released_after_impl_exception():
 
         call_count = 0
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(gid, msg, extra="", uid=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
