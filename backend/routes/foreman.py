@@ -558,6 +558,7 @@ class MessageCreate(BaseModel):
     content: str
     message_type: str = "chat"
     user_id: str | None = None
+    task_id: str | None = None
 
 
 @router.post("/guilds/{guild_id}/messages")
@@ -582,6 +583,8 @@ async def create_message(
         raise HTTPException(status_code=404, detail="Guild not found")
 
     created_at = datetime.now(UTC)
+    if body.task_id is not None:
+        await _require_task_in_guild(db, body.task_id, guild_pk)
     msg = Message(
         guild_id=guild_pk,
         from_agent=body.from_agent,
@@ -590,6 +593,7 @@ async def create_message(
         message_type=body.message_type,
         created_at=created_at,
         user_id=body.user_id,
+        task_id=body.task_id,
     )
     db.add(msg)
     await db.commit()

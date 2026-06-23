@@ -230,6 +230,7 @@ async def create_task_followup(
             "original worker if idle, otherwise any idle worker pulls the "
             "branch from GitHub.",
             user_id=github_user_id,
+            task_id=task_id,
         ),
         name=f"foreman.user-followup:{task_id}",
     )

@@ -80,7 +80,7 @@ class DebounceQueue:
 
     def __init__(self, window_seconds: float = DEBOUNCE_WINDOW_SECONDS) -> None:
         self._window = window_seconds
-        self._buffers: dict[str, list[tuple[str, str | None]]] = {}
+        self._buffers: dict[str, list[tuple[str, str | None, str | None]]] = {}
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._generation: dict[str, int] = {}
 
@@ -126,18 +126,21 @@ class DebounceQueue:
                 exc_info=exc,
             )
 
-    async def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None]]) -> None:
-        summaries = [s for s, _ in items]
+    async def _deliver(
+        self, key: str, guild_id: str, items: list[tuple[str, str | None, str | None]]
+    ) -> None:
+        summaries = [s for s, _, _ in items]
         combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
         # Use the first non-bot user_id in the batch. All items share the same
         # task owner, but a bot user_id (ending in "[bot]") is less useful for
         # attribution than a real human.  Fall back to any non-None user_id if
         # every entry is a bot, and to None if the batch is entirely anonymous.
         user_id = next(
-            (uid for _, uid in items if uid and not uid.endswith("[bot]")),
-            next((uid for _, uid in items if uid), None),
+            (uid for _, uid, _ in items if uid and not uid.endswith("[bot]")),
+            next((uid for _, uid, _ in items if uid), None),
         )
-        await run_foreman_ai(guild_id, combined, user_id=user_id)
+        task_id = next((tid for _, _, tid in items if tid), None)
+        await run_foreman_ai(guild_id, combined, user_id=user_id, task_id=task_id)
         reset_foreman_poll(guild_id)
         logger.info(
             "github webhook debounce fired key=%s events=%d guild=%s",
@@ -181,6 +184,7 @@ class DebounceQueue:
         guild_id: str,
         summary: str,
         user_id: str | None,
+        task_id: str | None = None,
     ) -> None:
         """Buffer *summary* and (re)start the per-PR debounce timer.
 
@@ -209,7 +213,7 @@ class DebounceQueue:
         # above ensures the old task cannot also deliver the same events, so
         # there is no risk of double delivery.
         self._buffers[key] = snapshot
-        self._buffers[key].append((summary, user_id))
+        self._buffers[key].append((summary, user_id, task_id))
         # Use asyncio.create_task directly: the task is kept alive by
         # self._tasks[key] (a strong reference), so GC is not a concern.
         # _log_fire_error handles unexpected exceptions via the done callback.
@@ -819,6 +823,7 @@ async def github_webhook(
             content=chat_line,
             message_type="chat",
             created_at=chat_now,
+            task_id=task_id,
         )
     )
     await db.commit()
@@ -839,7 +844,7 @@ async def github_webhook(
             )
             # Key is PR-scoped so rapid re-requests for the same PR coalesce.
             key = f"{guild_id}:review_requested:{repo}#{pr_number}"
-            await _debounce_queue.schedule(key, guild_id, summary, task_user_id)
+            await _debounce_queue.schedule(key, guild_id, summary, task_user_id, task_id=task_id)
             logger.info(
                 "github webhook review_requested dispatched guild=%s delivery=%s repo=%s pr=%s reviewer=%s",
                 guild_id,
@@ -866,7 +871,7 @@ async def github_webhook(
                 event_type, action, payload, repo, pr_number, task_id or "", sender_login
             )
             key = f"{guild_id}:{task_id}"
-            await _debounce_queue.schedule(key, guild_id, summary, task_user_id)
+            await _debounce_queue.schedule(key, guild_id, summary, task_user_id, task_id=task_id)
         else:
             logger.info(
                 "github webhook skip-foreman guild=%s delivery=%s event=%s reason=%s",
@@ -936,9 +941,18 @@ async def ci_notify(
         raise HTTPException(status_code=404, detail="Guild not found")
 
     task_id = body.task_id
-    if not task_id and body.pr_number is not None:
+    message_task_id: str | None = None  # FK field — only set when task is confirmed to exist
+    if task_id:
+        # Validate the caller-provided task_id belongs to this guild before using it as FK
+        task_exists = await db.scalar(
+            select(col(Task.id)).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+        )
+        message_task_id = task_id if task_exists else None
+    elif body.pr_number is not None:
         task_row = await _find_task(db, guild_pk, repo, body.pr_number)
-        task_id = task_row.id if task_row else None
+        if task_row:
+            task_id = task_row.id
+            message_task_id = task_id
 
     task_part = f" (task {task_id})" if task_id else ""
     run_part = (
@@ -955,6 +969,7 @@ async def ci_notify(
             content=content,
             message_type="chat",
             created_at=created_at,
+            task_id=message_task_id,
         )
     )
     await db.commit()

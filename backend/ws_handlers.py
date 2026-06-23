@@ -205,7 +205,7 @@ async def _trigger_foreman(
             resume_foreman_poll(guild_id)
     # Embedded fallback — identical to the pre-Phase-2 behaviour.
     spawn(
-        run_foreman_ai(guild_id, human_message, user_id=user_id),
+        run_foreman_ai(guild_id, human_message, user_id=user_id, task_id=task_id),
         name=task_name,
     )
 

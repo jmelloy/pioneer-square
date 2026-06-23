@@ -90,6 +90,9 @@ class Message(SQLModel, table=True):
     user_id: str | None = None  # github_user_id of the sender; NULL for system/worker messages
     role: str | None = None  # "tool_use" | "tool_result" | NULL for plain chat
     meta: str | None = None  # JSON blob with extra WS fields (toolId, toolName, …)
+    # Task this message is associated with. NULL for general chat and system messages
+    # that are not scoped to a specific task (e.g. worker-online, periodic-check).
+    task_id: str | None = Field(default=None, foreign_key="tasks.id", index=True)
 
 
 class Worker(SQLModel, table=True):
