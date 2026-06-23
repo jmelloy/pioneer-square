@@ -460,10 +460,10 @@ class TestDebounce:
         into or out of the module-level singleton.  The queue is shut down on
         exit so any in-flight timers are cancelled and awaited cleanly.
         """
-        self._foreman_calls: list[tuple[str, str, str | None]] = []
+        self._foreman_calls: list[tuple[str, str, str | None, str | None]] = []
 
-        async def fake_run_foreman(guild_id, summary, *, user_id=None):
-            self._foreman_calls.append((guild_id, summary, user_id))
+        async def fake_run_foreman(guild_id, summary, *, user_id=None, task_id=None):
+            self._foreman_calls.append((guild_id, summary, user_id, task_id))
 
         queue = wh.DebounceQueue(window_seconds=0.05)
         with (
@@ -487,7 +487,7 @@ class TestDebounce:
             await asyncio.sleep(0.2)
 
         assert len(self._foreman_calls) == 1, f"expected 1 call, got {self._foreman_calls}"
-        _, summary, _ = self._foreman_calls[0]
+        _, summary, _, _ = self._foreman_calls[0]
         assert "event A" in summary
         assert "event B" in summary
         assert "event C" in summary
@@ -518,7 +518,7 @@ class TestDebounce:
 
         # Only one delivery; the first timer was cancelled before it could fire
         assert len(self._foreman_calls) == 1
-        _, summary, _ = self._foreman_calls[0]
+        _, summary, _, _ = self._foreman_calls[0]
         assert "first" in summary
         assert "second" in summary
 
@@ -566,14 +566,14 @@ class TestDebounce:
             key = "g-stalegen:t-sg1"
 
             # State as if a newer timer (gen=2) has taken over
-            q._buffers[key] = [("stale event", "u8")]
+            q._buffers[key] = [("stale event", "u8", None)]
             q._generation[key] = 2
 
             # Run _fire with the old gen (1) — stale coroutine waking up
             await q._fire(key, "g-stalegen", 1)
 
             assert len(self._foreman_calls) == 0
-            assert q._buffers.get(key) == [("stale event", "u8")]
+            assert q._buffers.get(key) == [("stale event", "u8", None)]
 
     async def test_cancelled_events_not_lost(self):
         """Events buffered before an external cancellation are preserved for re-delivery."""
@@ -597,7 +597,7 @@ class TestDebounce:
             await asyncio.sleep(0.2)
 
         assert len(self._foreman_calls) == 1
-        _, summary, _ = self._foreman_calls[0]
+        _, summary, _, _ = self._foreman_calls[0]
         assert "first event" in summary
         assert "second event" in summary
         assert "third event" in summary
@@ -651,7 +651,7 @@ class TestDebounce:
             await asyncio.sleep(0.2)
 
         assert len(self._foreman_calls) == 1
-        _, summary, _ = self._foreman_calls[0]
+        _, summary, _, _ = self._foreman_calls[0]
         assert "event A" in summary
         assert "event B" in summary
 
@@ -674,7 +674,7 @@ class TestDebounce:
         assert len(self._foreman_calls) == 1, (
             f"expected exactly one delivery, got {len(self._foreman_calls)}"
         )
-        _, summary, _ = self._foreman_calls[0]
+        _, summary, _, _ = self._foreman_calls[0]
         assert "event A" in summary
         assert "event B" in summary
 
