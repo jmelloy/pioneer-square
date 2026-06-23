@@ -10,7 +10,13 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk
 from database import AsyncSessionLocal, get_db
 from events import broadcast_msg
-from foreman.prompt import build_state_preamble, build_system_blocks, build_system_prompt
+from foreman.prompt import (
+    build_child_state_preamble,
+    build_child_system_blocks,
+    build_state_preamble,
+    build_system_blocks,
+    build_system_prompt,
+)
 from foreman.tools import exec_tools
 from foreman_core.constants import (
     _24H_SECS,
@@ -29,7 +35,7 @@ from foreman_core.message_utils import (
     strip_orphaned_tool_results,
     truncate_tool_result,
 )
-from foreman_core.tools_schema import FOREMAN_TOOLS
+from foreman_core.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
 from models import (
     Agent,
     ApiRequestLog,
@@ -116,22 +122,42 @@ async def _get_guild_user_id(guild_id: str) -> str | None:
         await db.close()
 
 
-async def _load_history(guild_id: str, user_id: str) -> list[dict]:
+def _child_contexts_enabled() -> bool:
+    """Whether per-task child contexts are enabled for the embedded foreman.
+
+    Mirrors the standalone foreman's ``child_contexts`` config flag. Defaults on;
+    set ``FOREMAN_CHILD_CONTEXTS`` to a falsy value (0/false/no/off) to fall back
+    to the legacy single whole-guild context. See docs/foreman-per-task-context.md.
+    """
+    return os.environ.get("FOREMAN_CHILD_CONTEXTS", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+        "",
+    )
+
+
+async def _load_history(guild_id: str, user_id: str, task_id: str | None = None) -> list[dict]:
     """Load the last _HUMAN_TURN_WINDOW non-tool-response turns (plus all tool exchange
     turns between them) as a list of Anthropic-API-compatible message dicts.
 
     Because the cutoff always lands on a human-initiated user turn, every
     assistant-turn / tool_result-user-turn pair that follows it is guaranteed to
     be included intact — no orphaned tool_use blocks, no synthetic repairs needed.
+
+    When ``task_id`` is set, only turns tagged with that task are loaded — the
+    isolated conversation thread for a per-task child context.
     """
     db = await get_db()
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
-        result = await db.exec(
-            select(ForemanTurn)
-            .where(col(ForemanTurn.guild_id) == guild_pk_val, col(ForemanTurn.user_id) == user_id)
-            .order_by(col(ForemanTurn.id))
+        stmt = select(ForemanTurn).where(
+            col(ForemanTurn.guild_id) == guild_pk_val, col(ForemanTurn.user_id) == user_id
         )
+        if task_id is not None:
+            stmt = stmt.where(col(ForemanTurn.task_id) == task_id)
+        result = await db.exec(stmt.order_by(col(ForemanTurn.id)))
         turns = result.all()
     finally:
         await db.close()
@@ -446,34 +472,44 @@ async def run_foreman_ai(
     extra_context: str = "",
     user_id: str | None = None,
     task_id: str | None = None,
+    *,
+    child: bool = False,
 ) -> None:
-    """Serialise per-(guild, user) and delegate to ``_run_foreman_ai``.
+    """Serialise per-context and delegate to ``_run_foreman_ai``.
 
-    Uses a per-(guild, user) ``asyncio.Lock`` stored in ``_guild_locks``.  If
-    the lock is already held the invocation is dropped; the poll loop
-    re-triggers on the next tick.  Dropping is preferred over queuing to avoid
-    unbounded build-up.
+    Uses an ``asyncio.Lock`` stored in ``_guild_locks``.  If the lock is already
+    held the invocation is dropped; the poll loop re-triggers on the next tick.
+    Dropping is preferred over queuing to avoid unbounded build-up.
+
+    Whole-guild (parent) runs key the lock on ``(guild_id, user_id)``.  Per-task
+    child runs (``child=True`` with a ``task_id``, gated by FOREMAN_CHILD_CONTEXTS)
+    key on ``(guild_id, task_id)`` so different tasks run concurrently while a
+    single task's review loop still serialises against itself.  See
+    docs/foreman-per-task-context.md.
 
     lock.locked() + lock.acquire() is atomic here: asyncio is single-threaded
     and cooperative, so no other coroutine can run between the check and the
     acquire (there is no ``await`` between them).
     """
+    use_child = child and bool(task_id) and _child_contexts_enabled()
     # When user_id is None (system-triggered/poll runs), all such invocations
     # within the same guild share key (guild_id, None) and serialize against
     # each other.  This is intentional — system runs are per-guild work and
     # should not overlap with themselves.
-    lock_key = (guild_id, user_id)
+    lock_key = (guild_id, f"task:{task_id}") if use_child else (guild_id, user_id)
     lock = _guild_locks.setdefault(lock_key, asyncio.Lock())
     if lock.locked():
         logger.info(
-            "guild=%s user=%s run_foreman_ai: dropping concurrent invocation (foreman already running)",
+            "guild=%s key=%s run_foreman_ai: dropping concurrent invocation (already running)",
             guild_id,
-            user_id,
+            lock_key[1],
         )
         return
     await lock.acquire()
     try:
-        await _run_foreman_ai(guild_id, human_message, extra_context, user_id, task_id=task_id)
+        await _run_foreman_ai(
+            guild_id, human_message, extra_context, user_id, task_id=task_id, child=use_child
+        )
     finally:
         lock.release()
         _guild_locks.pop(lock_key, None)
@@ -485,8 +521,15 @@ async def _run_foreman_ai(
     extra_context: str = "",
     user_id: str | None = None,
     task_id: str | None = None,
+    *,
+    child: bool = False,
 ):
-    """Process a human message (or system escalation) through the Claude foreman AI."""
+    """Process a human message (or system escalation) through the Claude foreman AI.
+
+    When ``child`` is True (with a ``task_id``) the run is scoped to a single task:
+    worker/task rows, system prompt, state preamble, tool set, and loaded history
+    are all narrowed to that one task. See docs/foreman-per-task-context.md.
+    """
     if not HAS_ANTHROPIC:
         now = datetime.now(UTC).isoformat()
         await broadcast_msg(
@@ -542,6 +585,8 @@ async def _run_foreman_ai(
                 col(Task.name),
                 col(Task.description),
                 col(Task.state),
+                col(Task.phase),
+                col(Task.issue_repo),
                 col(Task.branch),
                 col(Task.pr_url),
                 col(Task.deleted_at),
@@ -556,7 +601,18 @@ async def _run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.all()
         ]
-        _task_id: str | None = task_id
+        # Per-task child context: narrow worker/task rows to just this task and
+        # its assigned worker. Falls back to a minimal stub if the task is no
+        # longer in the active set (e.g. just finalized).
+        child_task_row: dict | None = None
+        if child and task_id:
+            child_task_row = next((t for t in task_rows if t.get("id") == task_id), None)
+            child_worker_id = child_task_row.get("worker_id") if child_task_row else None
+            worker_rows = [r for r in worker_rows if r["id"] == child_worker_id]
+            task_rows = [child_task_row] if child_task_row else []
+            _task_id: str | None = task_id
+        else:
+            _task_id = task_rows[0]["id"] if len(task_rows) == 1 else None
     except Exception:
         await db.close()
         raise
@@ -582,10 +638,24 @@ async def _run_foreman_ai(
             s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
         ]
         tasks_block = json.dumps(summarized_tasks, indent=2, default=_json_default)
-        system_blocks = build_system_blocks(
-            primary_repo=primary_repo, system_prompt_suffix=cfg_system_prompt_suffix
-        )
-        state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
+        if child and task_id:
+            _t = child_task_row or {}
+            tools = CHILD_FOREMAN_TOOLS
+            system_blocks = build_child_system_blocks(
+                task_id=task_id,
+                task_name=_t.get("name") or task_id,
+                worker_id=_t.get("worker_id"),
+                phase=_t.get("phase"),
+                repo=_t.get("issue_repo") or primary_repo,
+                system_prompt_suffix=cfg_system_prompt_suffix,
+            )
+            state_preamble = build_child_state_preamble(workers_block, tasks_block, extra_context)
+        else:
+            tools = FOREMAN_TOOLS
+            system_blocks = build_system_blocks(
+                primary_repo=primary_repo, system_prompt_suffix=cfg_system_prompt_suffix
+            )
+            state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
         # Legacy single-string render — persisted for audit only, not sent to the API.
         audit_system = build_system_prompt(
             workers_block,
@@ -612,7 +682,7 @@ async def _run_foreman_ai(
         # `system_blocks` (cacheable) and the state preamble injected at send time.
         await _save_turn(guild_id, user_id, "system", audit_system, task_id=_task_id)
         await _save_turn(guild_id, user_id, "user", human_message, task_id=_task_id)
-        messages = await _load_history(guild_id, user_id)
+        messages = await _load_history(guild_id, user_id, task_id=_task_id if child else None)
 
         logger.info(
             "guild=%s run_foreman_ai: %d messages loaded from history; human_message_chars=%d",
@@ -653,7 +723,7 @@ async def _run_foreman_ai(
                 model=foreman_model,
                 system_blocks=system_blocks,
                 messages=messages,
-                extra={"max_tokens": 1024, "tools": FOREMAN_TOOLS},
+                extra={"max_tokens": 1024, "tools": tools},
                 task_id=_task_id,
             )
             _raw = await client.messages.with_raw_response.create(
@@ -661,7 +731,7 @@ async def _run_foreman_ai(
                 max_tokens=1024,
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]
-                tools=FOREMAN_TOOLS,  # type: ignore[arg-type]
+                tools=tools,  # type: ignore[arg-type]
             )
             resp = _raw.parse()
             usage = resp.usage
@@ -876,7 +946,7 @@ async def _run_foreman_ai(
                 messages=messages,
                 extra={
                     "max_tokens": 1024,
-                    "tools": FOREMAN_TOOLS,
+                    "tools": tools,
                     "tool_choice": {"type": "none"},
                 },
                 task_id=_task_id,
@@ -886,7 +956,7 @@ async def _run_foreman_ai(
                 max_tokens=1024,
                 system=system_blocks,  # type: ignore[arg-type]
                 messages=messages,  # type: ignore[arg-type]
-                tools=FOREMAN_TOOLS,  # type: ignore[arg-type]
+                tools=tools,  # type: ignore[arg-type]
                 tool_choice={"type": "none"},  # type: ignore[arg-type]
             )
             wrap_resp = _wrap_raw.parse()
