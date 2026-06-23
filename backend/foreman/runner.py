@@ -445,6 +445,7 @@ async def run_foreman_ai(
     human_message: str,
     extra_context: str = "",
     user_id: str | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Serialise per-(guild, user) and delegate to ``_run_foreman_ai``.
 
@@ -472,7 +473,7 @@ async def run_foreman_ai(
         return
     await lock.acquire()
     try:
-        await _run_foreman_ai(guild_id, human_message, extra_context, user_id)
+        await _run_foreman_ai(guild_id, human_message, extra_context, user_id, task_id=task_id)
     finally:
         lock.release()
         _guild_locks.pop(lock_key, None)
@@ -483,6 +484,7 @@ async def _run_foreman_ai(
     human_message: str,
     extra_context: str = "",
     user_id: str | None = None,
+    task_id: str | None = None,
 ):
     """Process a human message (or system escalation) through the Claude foreman AI."""
     if not HAS_ANTHROPIC:
@@ -555,7 +557,7 @@ async def _run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.all()
         ]
-        _task_id: str | None = task_rows[0]["id"] if len(task_rows) == 1 else None
+        _task_id: str | None = task_id or (task_rows[0]["id"] if len(task_rows) == 1 else None)
     except Exception:
         await db.close()
         raise
