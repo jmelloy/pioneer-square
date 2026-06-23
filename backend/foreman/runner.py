@@ -807,6 +807,7 @@ async def _run_foreman_ai(
                                 }
                             ),
                             created_at=_tool_use_ts,
+                            task_id=_task_id,
                         )
                     )
                 for result in trimmed:
@@ -825,6 +826,7 @@ async def _run_foreman_ai(
                                 }
                             ),
                             created_at=_now,
+                            task_id=_task_id,
                         )
                     )
                 await db.commit()
@@ -958,6 +960,7 @@ async def _run_foreman_ai(
                     content=response_text,
                     message_type="chat",
                     created_at=now,
+                    task_id=_task_id,
                 )
             )
             await db.commit()

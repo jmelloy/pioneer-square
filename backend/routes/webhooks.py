@@ -819,6 +819,7 @@ async def github_webhook(
             content=chat_line,
             message_type="chat",
             created_at=chat_now,
+            task_id=task_id,
         )
     )
     await db.commit()
@@ -955,6 +956,7 @@ async def ci_notify(
             content=content,
             message_type="chat",
             created_at=created_at,
+            task_id=task_id,
         )
     )
     await db.commit()
