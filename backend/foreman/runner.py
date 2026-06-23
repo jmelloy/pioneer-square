@@ -557,7 +557,7 @@ async def _run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.all()
         ]
-        _task_id: str | None = task_id or (task_rows[0]["id"] if len(task_rows) == 1 else None)
+        _task_id: str | None = task_id
     except Exception:
         await db.close()
         raise
