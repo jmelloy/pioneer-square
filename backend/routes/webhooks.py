@@ -126,7 +126,9 @@ class DebounceQueue:
                 exc_info=exc,
             )
 
-    async def _deliver(self, key: str, guild_id: str, items: list[tuple[str, str | None, str | None]]) -> None:
+    async def _deliver(
+        self, key: str, guild_id: str, items: list[tuple[str, str | None, str | None]]
+    ) -> None:
         summaries = [s for s, _, _ in items]
         combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
         # Use the first non-bot user_id in the batch. All items share the same
