@@ -142,7 +142,7 @@
         <div v-if="showForemanConfig" class="foreman-config-section">
           <div class="foreman-field">
             <label class="foreman-field-label">Provider</label>
-            <select v-model="foremanProvider" class="settings-input" @change="foremanModel = ''">
+            <select v-model="foremanProvider" class="settings-input" @change="onProviderChange">
               <option value="">default (anthropic)</option>
               <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
                 {{ p.name }}
@@ -371,6 +371,20 @@ const showForemanConfig = ref(false)
 const showMembers = ref(false)
 const foremanModel = ref('')
 const foremanProvider = ref('')
+// Remember the model entered for each provider. Models are provider-specific
+// (a Bedrock inference-profile ARN is invalid for the direct Anthropic API and
+// vice versa), so switching providers swaps the model out — but toggling off a
+// provider and back restores its model instead of wiping it.
+const modelByProvider = ref<Record<string, string>>({})
+let prevProvider = ''
+
+function onProviderChange() {
+  // v-model has already updated foremanProvider to the new value; foremanModel
+  // still holds the previous provider's model, so stash it under prevProvider.
+  modelByProvider.value[prevProvider] = foremanModel.value
+  foremanModel.value = modelByProvider.value[foremanProvider.value] ?? ''
+  prevProvider = foremanProvider.value
+}
 const foremanSystemSuffix = ref('')
 const foremanMaxRounds = ref<number | ''>('')
 const foremanPollMin = ref<number | ''>('')
@@ -421,6 +435,10 @@ async function loadForemanConfig() {
       const cfg = await res.json()
       foremanModel.value = cfg.model ?? ''
       foremanProvider.value = cfg.provider ?? ''
+      // Seed the per-provider model memory with the persisted pairing so a later
+      // provider toggle can restore this model.
+      prevProvider = foremanProvider.value
+      modelByProvider.value = { [foremanProvider.value]: foremanModel.value }
       foremanSystemSuffix.value = cfg.system_prompt_suffix ?? ''
       foremanMaxRounds.value = cfg.max_rounds ?? ''
       foremanPollMin.value = cfg.poll_min_interval ?? ''
@@ -564,6 +582,8 @@ watch(
     showMembers.value = false
     foremanModel.value = ''
     foremanProvider.value = ''
+    modelByProvider.value = {}
+    prevProvider = ''
     foremanSystemSuffix.value = ''
     foremanMaxRounds.value = ''
     foremanPollMin.value = ''
