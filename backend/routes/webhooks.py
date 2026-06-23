@@ -937,9 +937,18 @@ async def ci_notify(
         raise HTTPException(status_code=404, detail="Guild not found")
 
     task_id = body.task_id
-    if not task_id and body.pr_number is not None:
+    message_task_id: str | None = None  # FK field — only set when task is confirmed to exist
+    if task_id:
+        # Validate the caller-provided task_id belongs to this guild before using it as FK
+        task_exists = await db.scalar(
+            select(col(Task.id)).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+        )
+        message_task_id = task_id if task_exists else None
+    elif body.pr_number is not None:
         task_row = await _find_task(db, guild_pk, repo, body.pr_number)
-        task_id = task_row.id if task_row else None
+        if task_row:
+            task_id = task_row.id
+            message_task_id = task_id
 
     task_part = f" (task {task_id})" if task_id else ""
     run_part = (
@@ -956,7 +965,7 @@ async def ci_notify(
             content=content,
             message_type="chat",
             created_at=created_at,
-            task_id=task_id,
+            task_id=message_task_id,
         )
     )
     await db.commit()
