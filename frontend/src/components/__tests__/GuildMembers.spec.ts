@@ -102,18 +102,28 @@ describe('GuildMembers', () => {
     )
     // POST /invites → success
     fetchMock.mockResolvedValueOnce(
-      jsonResponse({ id: 1, github_login: 'ghost', github_id: null, role: 'member', status: 'pending' }),
+      jsonResponse({
+        id: 1,
+        github_login: 'ghost',
+        github_id: null,
+        role: 'member',
+        status: 'pending',
+      }),
     )
     // reload members
     fetchMock.mockResolvedValueOnce(jsonResponse([OWNER]))
     // reload invites
     fetchMock.mockResolvedValueOnce(
-      jsonResponse([{ id: 1, github_login: 'ghost', github_id: null, role: 'member', status: 'pending' }]),
+      jsonResponse([
+        { id: 1, github_login: 'ghost', github_id: null, role: 'member', status: 'pending' },
+      ]),
     )
     await wrapper.find('.invite-input').setValue('ghost')
     await wrapper.find('.invite-btn').trigger('click')
     await flushPromises()
-    expect(wrapper.find('.members-hint').text()).toContain("they'll be added when they first log in")
+    expect(wrapper.find('.members-hint').text()).toContain(
+      "they'll be added when they first log in",
+    )
     expect(wrapper.find('.members-error').exists()).toBe(false)
   })
 

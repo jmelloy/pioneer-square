@@ -420,6 +420,7 @@ from routes import auth as _auth_routes  # noqa: E402
 from routes import debug as _debug_routes  # noqa: E402
 from routes import foreman as _foreman_routes  # noqa: E402
 from routes import guilds as _guilds_routes  # noqa: E402
+from routes import issues as _issues_routes  # noqa: E402
 from routes import models as _models_routes  # noqa: E402
 from routes import push as _push_routes  # noqa: E402
 from routes import tasks as _tasks_routes  # noqa: E402
@@ -443,6 +444,7 @@ app.include_router(_push_routes.router)
 app.include_router(_ws_routes.router)
 app.include_router(_debug_routes.router)
 app.include_router(_models_routes.router)
+app.include_router(_issues_routes.router)
 
 
 # ---------------------------------------------------------------------------

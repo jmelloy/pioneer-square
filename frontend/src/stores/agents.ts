@@ -50,6 +50,10 @@ interface AssignTaskOpts {
   issueRepo?: string | null
 }
 
+export function issueTabId(owner: string, repo: string, number: number): string {
+  return `issue-${owner}/${repo}/${number}`
+}
+
 export const useAgentsStore = defineStore('agents', () => {
   const agents = ref<Agent[]>([])
   const workerLogs = ref<Record<string, LogEntry[]>>({})
@@ -57,6 +61,7 @@ export const useAgentsStore = defineStore('agents', () => {
   const openedWorkerIds = ref<string[]>([])
   const selectedAgentId = ref<string | null>(null)
   const openedAgentIds = ref<string[]>([])
+  const openedIssueKeys = ref<string[]>([])
   const activeTab = ref<string>('factory')
 
   // Unique workers derived from agent slots
@@ -198,6 +203,18 @@ export const useAgentsStore = defineStore('agents', () => {
 
   function openTaskTab(taskId: string) {
     activeTab.value = taskTabId(taskId)
+  }
+
+  function openIssueTab(owner: string, repo: string, number: number) {
+    const key = issueTabId(owner, repo, number)
+    if (!openedIssueKeys.value.includes(key)) openedIssueKeys.value.push(key)
+    activeTab.value = key
+  }
+
+  function closeIssueTab(key: string) {
+    const idx = openedIssueKeys.value.indexOf(key)
+    if (idx !== -1) openedIssueKeys.value.splice(idx, 1)
+    if (activeTab.value === key) activeTab.value = 'factory'
   }
 
   function sendMessage(agentId: string, content: string) {
@@ -347,6 +364,7 @@ export const useAgentsStore = defineStore('agents', () => {
     openedWorkerIds,
     selectedAgentId,
     openedAgentIds,
+    openedIssueKeys,
     activeTab,
     registerAgent,
     updateAgentState,
@@ -359,6 +377,8 @@ export const useAgentsStore = defineStore('agents', () => {
     selectAgent,
     closeAgent,
     openTaskTab,
+    openIssueTab,
+    closeIssueTab,
     sendMessage,
     runAgent,
     stopAgent,

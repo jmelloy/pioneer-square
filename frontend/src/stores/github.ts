@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { api } from '../utils/api'
 import type { GitHubIssue, GitHubRepo } from '../types'
 
 const GH_API = 'https://api.github.com'
@@ -9,6 +10,29 @@ function ghHeaders(token: string): Record<string, string> {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github.v3+json',
   }
+}
+
+export interface GitHubComment {
+  id: number
+  body: string
+  user: { login: string; avatar_url: string }
+  created_at: string
+  updated_at: string
+  html_url: string
+}
+
+export interface GitHubIssueDetail {
+  id: number
+  number: number
+  title: string
+  body: string | null
+  state: string
+  user: { login: string; avatar_url: string }
+  labels: Array<{ id: number; name: string; color: string }>
+  created_at: string
+  updated_at: string
+  html_url: string
+  comments: number
 }
 
 function _readStoredRepos(): string[] {
@@ -114,6 +138,41 @@ export const useGitHubStore = defineStore('github', () => {
     }
   }
 
+  async function fetchIssueDetail(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+  ): Promise<{ issue: GitHubIssueDetail; comments: GitHubComment[] }> {
+    const data = await api<{ issue: GitHubIssueDetail; comments: GitHubComment[] }>(
+      `/api/issues/${owner}/${repo}/${issueNumber}`,
+    )
+    return data
+  }
+
+  async function postComment(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    body: string,
+  ): Promise<GitHubComment> {
+    return api<GitHubComment>(`/api/issues/${owner}/${repo}/${issueNumber}/comments`, {
+      method: 'POST',
+      json: { body },
+    })
+  }
+
+  async function updateIssue(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    patch: { title?: string; body?: string },
+  ): Promise<GitHubIssueDetail> {
+    return api<GitHubIssueDetail>(`/api/issues/${owner}/${repo}/${issueNumber}`, {
+      method: 'PATCH',
+      json: patch,
+    })
+  }
+
   function logout() {
     token.value = ''
     selectedRepos.value = []
@@ -136,6 +195,9 @@ export const useGitHubStore = defineStore('github', () => {
     fetchRepos,
     setSelectedRepos,
     fetchIssues,
+    fetchIssueDetail,
+    postComment,
+    updateIssue,
     logout,
   }
 })
