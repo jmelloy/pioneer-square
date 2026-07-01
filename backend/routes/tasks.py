@@ -332,6 +332,9 @@ _gh_issue_cache: dict[str, tuple[dict, float]] = {}
 _gh_pr_body_cache: dict[str, tuple[str | None, float]] = {}
 
 
+_CACHE_MAX_SIZE = 1000
+
+
 def _gh_fetch_issue(repo: str, number: int, token: str) -> dict | None:
     """Fetch GitHub issue title/state. Cached for _TREE_CACHE_TTL seconds."""
     key = f"{repo}#{number}"
@@ -353,6 +356,8 @@ def _gh_fetch_issue(repo: str, number: int, token: str) -> dict | None:
             "title": data.get("title") or f"#{number}",
             "state": data.get("state") or "open",
         }
+        if len(_gh_issue_cache) >= _CACHE_MAX_SIZE:
+            _gh_issue_cache.clear()
         _gh_issue_cache[key] = (result, _monotime() + _TREE_CACHE_TTL)
         return result
     except Exception:
@@ -377,9 +382,13 @@ def _gh_fetch_pr_body(repo: str, pr_number: int, token: str) -> str | None:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
         body: str | None = data.get("body") or ""
+        if len(_gh_pr_body_cache) >= _CACHE_MAX_SIZE:
+            _gh_pr_body_cache.clear()
         _gh_pr_body_cache[key] = (body, _monotime() + _TREE_CACHE_TTL)
         return body
     except Exception:
+        if len(_gh_pr_body_cache) >= _CACHE_MAX_SIZE:
+            _gh_pr_body_cache.clear()
         _gh_pr_body_cache[key] = (None, _monotime() + _TREE_CACHE_TTL)
         return None
 
@@ -445,7 +454,7 @@ async def get_guild_tasks_tree(
         .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
         .limit(1)
     )
-    gh_token: str | None = token_row.one_or_none()
+    gh_token: str | None = row[0] if (row := token_row.one_or_none()) else None
 
     # --- Build task_id → (issue_repo, issue_number) mapping ---
 
@@ -481,8 +490,11 @@ async def get_guild_tasks_tree(
 
     # Pass 3: propagate issue assignment through parent_task_id chains
     changed = True
-    while changed:
+    max_iters = len(raw_tasks)
+    iters = 0
+    while changed and iters < max_iters:
         changed = False
+        iters += 1
         for task in raw_tasks:
             if task["id"] in task_issue:
                 continue

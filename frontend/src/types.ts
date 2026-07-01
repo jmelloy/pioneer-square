@@ -96,7 +96,7 @@ export interface IssueTreeNode {
   issue_number: number
   issue_repo: string
   title: string
-  state: 'open' | 'closed'
+  state: 'open' | 'closed' | 'merged'
   tasks: TaskTreeNode[]
 }
 

@@ -149,23 +149,14 @@ watch(
   { immediate: true },
 )
 
-// Refetch (debounced) when the flat tasks list changes — covers WS task events
-watch(
-  () => tasksStore.tasks.length,
-  () => {
-    const guildId = guildStore.currentGuild?.id
-    if (guildId) debouncedFetch(guildId)
-  },
+// Single watcher covers both task count changes and individual state changes
+const taskWatchKey = computed(
+  () => `${tasksStore.tasks.length}:${tasksStore.tasks.map((t) => t.state).join(',')}`,
 )
-
-// Also watch for state changes on individual tasks
-watch(
-  () => tasksStore.tasks.map((t) => t.state).join(','),
-  () => {
-    const guildId = guildStore.currentGuild?.id
-    if (guildId) debouncedFetch(guildId)
-  },
-)
+watch(taskWatchKey, () => {
+  const guildId = guildStore.currentGuild?.id
+  if (guildId) debouncedFetch(guildId)
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
