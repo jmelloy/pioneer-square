@@ -136,9 +136,8 @@ async def _upsert_catalog(db: AsyncSession, raw_data: dict[str, Any]) -> int:
     Returns the number of rows upserted. Does NOT commit — callers decide when
     to commit so they can batch with other writes.
     """
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-
     from models import ModelCatalog
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     now = datetime.now(UTC)
     rows = []
@@ -188,9 +187,8 @@ async def get_providers_from_db(db: AsyncSession) -> list[dict[str, Any]]:
     Returns an empty list if the catalog table is empty (caller should fall back
     to ``fetch_providers()``).
     """
-    from sqlmodel import col, select
-
     from models import ModelCatalog
+    from sqlmodel import col, select
 
     rows = (await db.exec(select(ModelCatalog).order_by(col(ModelCatalog.provider)))).all()
     if not rows:
@@ -224,9 +222,8 @@ async def refresh_model_catalog_if_stale(
     Returns ``True`` if a refresh was performed, ``False`` if the catalog was
     already fresh.
     """
-    from sqlmodel import col, select
-
     from models import ModelCatalog
+    from sqlmodel import col, select
 
     cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
 

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from database import get_db_dep
 from fastapi import APIRouter, Depends
 from sqlmodel.ext.asyncio.session import AsyncSession
-
-from database import get_db_dep
 from util.models_dev import fetch_providers, get_providers_from_db
 
 router = APIRouter()
