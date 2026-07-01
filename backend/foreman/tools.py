@@ -940,7 +940,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 repos: list[str] = inp.get("repos") or ([primary_repo] if primary_repo else [])
                 worker_result = await db.exec(
                     select(
-                        col(Worker.id), col(Worker.repos), col(Worker.org), col(Worker.tools)
+                        col(Worker.id),
+                        col(Worker.repos),
+                        col(Worker.org),
+                        col(Worker.tools),
+                        col(Worker.provider),
                     ).where(col(Worker.id) == wid, col(Worker.guild_id) == guild_pk)
                 )
                 worker_row = worker_result.one_or_none()
@@ -949,6 +953,34 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     is_error = True
                 else:
                     worker_tools: list[str] = json.loads(worker_row.tools or "[]")
+                    worker_provider: str | None = worker_row.provider
+                    # Filter model selection to only provider-compatible models.
+                    if worker_provider and not is_error:
+                        from models import ModelCatalog  # noqa: PLC0415
+
+                        if model:
+                            catalog_check = await db.exec(
+                                select(col(ModelCatalog.model_id)).where(
+                                    col(ModelCatalog.provider) == worker_provider,
+                                    col(ModelCatalog.model_id) == model,
+                                )
+                            )
+                            if catalog_check.one_or_none() is None:
+                                result_text = (
+                                    f"Model {model!r} is not available for provider "
+                                    f"{worker_provider!r}. Use GET /api/models to see "
+                                    "available models for each provider."
+                                )
+                                is_error = True
+                        else:
+                            catalog_default = await db.exec(
+                                select(col(ModelCatalog.model_id))
+                                .where(col(ModelCatalog.provider) == worker_provider)
+                                .limit(1)
+                            )
+                            default_model = catalog_default.one_or_none()
+                            if default_model:
+                                model = default_model
                     if requested_tool is None:
                         tool = worker_tools[0] if worker_tools else "claude"
                     elif worker_tools and requested_tool not in worker_tools:

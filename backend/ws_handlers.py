@@ -613,11 +613,17 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     repos = data.get("repos") or []
     tools = data.get("tools") or []
     user_ident = data.get("user")
+    provider = data.get("provider") or None
+    tool = data.get("tool") or None
     update_vals: dict = {"repos": json.dumps(repos), "tools": json.dumps(tools)}
     if user_ident:
         resolved = await _resolve_user_identifier(ctx.db, user_ident)
         if resolved:
             update_vals["user_id"] = resolved
+    if provider:
+        update_vals["provider"] = provider
+    if tool:
+        update_vals["tool"] = tool
     await ctx.db.exec(
         update(Worker)
         .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)
@@ -638,10 +644,11 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     )
     agent_count = count_res.one()
     tools_suffix = f" tools={tools_str}" if tools_str else ""
+    provider_suffix = f" provider={provider}" if provider else ""
     await _trigger_foreman(
         ctx.guild_id,
         "worker-online",
-        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}{tools_suffix}",
+        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}{tools_suffix}{provider_suffix}",
         task_name=f"foreman.worker-online:{worker_id}",
     )
 
