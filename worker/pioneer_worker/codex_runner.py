@@ -43,6 +43,7 @@ async def run_codex_auto(
     codex_path: str = "codex",
     codex_args: list[str] | None = None,
     openai_api_key: str | None = None,
+    model: str | None = None,
 ) -> tuple[bool, str, str]:
     """Run codex on *description* in *cwd*. Returns (success, stop_reason, last_text).
 
@@ -50,6 +51,8 @@ async def run_codex_auto(
     when provided, overriding whatever is in the current process env. This lets
     the worker forward the key without requiring it to be set globally before
     import time.
+
+    If *model* is given, passes ``--model <model>`` to select a specific model.
     """
     last_message_file = tempfile.NamedTemporaryFile(
         prefix="pioneer-codex-last-", suffix=".txt", delete=False
@@ -64,6 +67,7 @@ async def run_codex_auto(
         cwd,
         "--output-last-message",
         last_message_path,
+        *(["--model", model] if model and "--model" not in (codex_args or []) else []),
         *(codex_args or []),
         description,
     ]

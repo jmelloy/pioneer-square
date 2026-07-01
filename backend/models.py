@@ -155,6 +155,12 @@ class Worker(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
+    # AI provider this worker communicates with (e.g. 'anthropic', 'bedrock', 'openai').
+    # NULL on legacy rows that predate this column; set during worker-register.
+    provider: str | None = None
+    # Primary tool runner this worker is configured for (e.g. 'claude', 'pi', 'codex').
+    # NULL on legacy rows; set during worker-register.
+    tool: str | None = None
 
 
 class Task(SQLModel, table=True):

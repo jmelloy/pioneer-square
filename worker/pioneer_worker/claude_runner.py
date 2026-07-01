@@ -288,6 +288,7 @@ async def run_claude_auto(
     on_usage: UsageFn | None = None,
     claude_path: str = "claude",
     resume_session_id: str | None = None,
+    model: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text, session_id).
 
@@ -297,6 +298,8 @@ async def run_claude_auto(
 
     If *resume_session_id* is given, passes ``--resume <id>`` so Claude continues
     the previous session with full context (used after a redirect/SIGTERM).
+
+    If *model* is given, passes ``--model <model>`` to select a specific model.
     """
     cmd = [
         claude_path,
@@ -307,6 +310,8 @@ async def run_claude_auto(
         str(max_turns),
         "--dangerously-skip-permissions",
     ]
+    if model:
+        cmd += ["--model", model]
     if resume_session_id:
         cmd += ["--resume", resume_session_id, "-p", description]
     else:

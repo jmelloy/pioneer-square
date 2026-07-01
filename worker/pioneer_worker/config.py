@@ -51,6 +51,14 @@ class Config:
     # startup; set here to avoid exposing the secret in the process environment
     # before the worker has a chance to forward it.
     openai_api_key: str | None = None
+    # AI provider this worker communicates with. Used to advertise to the backend
+    # so the foreman can filter the model catalog to only provider-compatible models.
+    # e.g. 'anthropic', 'bedrock', 'openai'. NULL = not configured (falls back to
+    # per-runner defaults: pi_provider for pi, 'anthropic' for claude, 'openai' for codex).
+    provider: str | None = None
+    # Primary tool runner this worker is intended for. Auto-derived from the first
+    # detected tool if not explicitly set. e.g. 'claude', 'pi', 'codex'.
+    tool: str | None = None
     pi_path: str = "pi"
     pi_model: str | None = None
     pi_provider: str | None = None
@@ -267,6 +275,11 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
+        provider=overrides.get("provider")
+        or raw.get("provider")
+        or os.environ.get("PIONEER_PROVIDER")
+        or None,
+        tool=overrides.get("tool") or raw.get("tool") or os.environ.get("PIONEER_TOOL") or None,
         repos=list(
             overrides.get("repos")
             or github_block.get("repos")

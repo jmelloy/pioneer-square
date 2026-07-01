@@ -1010,15 +1010,23 @@ class Worker:
                     "workerId": self.cfg.worker_id,
                 }
             )
-        await self._send(
-            {
-                "type": "worker-register",
-                "workerId": self.cfg.worker_id,
-                "repos": self._broadcast_repos,
-                "tools": self._available_tools,
-                **({"user": self.cfg.user} if self.cfg.user else {}),
-            }
+        # Derive primary tool from config or first detected tool.
+        primary_tool = self.cfg.tool or (
+            self._available_tools[0] if self._available_tools else None
         )
+        msg: dict = {
+            "type": "worker-register",
+            "workerId": self.cfg.worker_id,
+            "repos": self._broadcast_repos,
+            "tools": self._available_tools,
+        }
+        if self.cfg.user:
+            msg["user"] = self.cfg.user
+        if self.cfg.provider:
+            msg["provider"] = self.cfg.provider
+        if primary_tool:
+            msg["tool"] = primary_tool
+        await self._send(msg)
 
     async def _on_ws_reconnect(self) -> None:
         """Re-announce ourselves after the WebSocket reconnects.
@@ -1601,15 +1609,22 @@ class Worker:
         self._broadcast_repos = merged
         logger.info("GitHub repos refreshed: %d total (was %d)", len(merged), prev_count)
         if self.cfg.worker_id:
-            await self._send(
-                {
-                    "type": "worker-register",
-                    "workerId": self.cfg.worker_id,
-                    "repos": self._broadcast_repos,
-                    "tools": self._available_tools,
-                    **({"user": self.cfg.user} if self.cfg.user else {}),
-                }
+            primary_tool = self.cfg.tool or (
+                self._available_tools[0] if self._available_tools else None
             )
+            refresh_msg: dict = {
+                "type": "worker-register",
+                "workerId": self.cfg.worker_id,
+                "repos": self._broadcast_repos,
+                "tools": self._available_tools,
+            }
+            if self.cfg.user:
+                refresh_msg["user"] = self.cfg.user
+            if self.cfg.provider:
+                refresh_msg["provider"] = self.cfg.provider
+            if primary_tool:
+                refresh_msg["tool"] = primary_tool
+            await self._send(refresh_msg)
 
     def _known_repos(self) -> list[str]:
         """All repos this worker may have cloned: static list + org repos already on disk."""
@@ -2070,7 +2085,13 @@ class Worker:
 
             while True:
                 if tool == "codex":
-                    logger.info("Task %s: launching codex in %s", task_id, primary_wt)
+                    _codex_model = task.get("model") or None
+                    logger.info(
+                        "Task %s: launching codex in %s (model=%s)",
+                        task_id,
+                        primary_wt,
+                        _codex_model,
+                    )
                     success, stop_reason, last_msg = await codex_runner.run_codex_auto(
                         current_desc,
                         primary_wt,
@@ -2078,6 +2099,7 @@ class Worker:
                         codex_path=self.cfg.codex_path,
                         codex_args=self.cfg.codex_args,
                         openai_api_key=self.cfg.openai_api_key,
+                        model=_codex_model,
                     )
                 elif tool == "pi":
                     _pi_model = task.get("model") or self.cfg.pi_model
@@ -2100,12 +2122,14 @@ class Worker:
                     )
                     resume_session_id = _pi_session_id
                 else:
+                    _claude_model = task.get("model") or None
                     logger.info(
-                        "Task %s: launching claude in %s (max_turns=%d, resume=%s)",
+                        "Task %s: launching claude in %s (max_turns=%d, resume=%s, model=%s)",
                         task_id,
                         primary_wt,
                         self.cfg.claude_max_turns,
                         resume_session_id,
+                        _claude_model,
                     )
                     (
                         success,
@@ -2121,6 +2145,7 @@ class Worker:
                         on_usage=_collect_usage,
                         claude_path=self.cfg.claude_path,
                         resume_session_id=resume_session_id,
+                        model=_claude_model,
                     )
 
                     _capture_session_and_clear()
