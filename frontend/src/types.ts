@@ -81,8 +81,28 @@ export interface Task {
   branch?: string
   pr_url?: string
   worktree_path?: string
+  issue_number?: number | null
+  issue_repo?: string | null
   created_at?: string
   deleted_at?: string | null
+}
+
+export interface TaskTreeNode extends Task {
+  children: TaskTreeNode[]
+}
+
+export interface IssueTreeNode {
+  type: 'issue'
+  issue_number: number
+  issue_repo: string
+  title: string
+  state: 'open' | 'closed' | 'merged'
+  tasks: TaskTreeNode[]
+}
+
+export interface TaskTreeData {
+  nodes: IssueTreeNode[]
+  ungrouped: TaskTreeNode[]
 }
 
 export interface Guild {

@@ -28,7 +28,7 @@
     </div>
 
     <div class="tab-content">
-      <TaskList v-if="activeTab === 'tasks'" @open-task="onOpenTask" />
+      <TaskTree v-if="activeTab === 'tasks'" @open-task="onOpenTask" />
       <WorkerList v-if="activeTab === 'workers'" />
       <IssuesTab
         v-if="activeTab === 'issues' && ghStore.isConfigured"
@@ -51,7 +51,7 @@ import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useTasksStore } from '../stores/tasks'
 import { useAgentsStore } from '../stores/agents'
-import TaskList from './sidebar/TaskList.vue'
+import TaskTree from './sidebar/TaskTree.vue'
 import WorkerList from './sidebar/WorkerList.vue'
 import IssuesTab from './chat-pane/IssuesTab.vue'
 import type { GitHubIssue } from '../types'
