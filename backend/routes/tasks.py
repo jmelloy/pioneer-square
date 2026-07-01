@@ -558,16 +558,16 @@ async def get_guild_tasks_tree(
         if updates_by_state:
             for state, task_ids in updates_by_state.items():
                 await db.exec(
-                    update(Task)
-                    .where(col(Task.id).in_(task_ids))
-                    .values(issue_state=state)
+                    update(Task).where(col(Task.id).in_(task_ids)).values(issue_state=state)
                 )
             await db.commit()
 
     # --- Build response ---
     nodes = []
     for (repo, num), group_tasks in issue_groups.items():
-        info = issue_info.get((repo, num), {"title": f"#{num}", "state": db_issue_states.get((repo, num), "open")})
+        info = issue_info.get(
+            (repo, num), {"title": f"#{num}", "state": db_issue_states.get((repo, num), "open")}
+        )
         nodes.append(
             {
                 "type": "issue",

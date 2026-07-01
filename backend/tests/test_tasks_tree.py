@@ -153,12 +153,24 @@ def test_tree_open_and_closed_issues_sorted_correctly(client):
 
     insert_worker(db_url, guild_id, "w-sort1", state="online")
     insert_task(
-        db_url, guild_id, "task-sort-open", worker_id="w-sort1",
-        state="pending", issue_number=10, issue_repo="org/repo", issue_state="open",
+        db_url,
+        guild_id,
+        "task-sort-open",
+        worker_id="w-sort1",
+        state="pending",
+        issue_number=10,
+        issue_repo="org/repo",
+        issue_state="open",
     )
     insert_task(
-        db_url, guild_id, "task-sort-closed", worker_id="w-sort1",
-        state="done", issue_number=5, issue_repo="org/repo", issue_state="closed",
+        db_url,
+        guild_id,
+        "task-sort-closed",
+        worker_id="w-sort1",
+        state="done",
+        issue_number=5,
+        issue_repo="org/repo",
+        issue_state="closed",
     )
 
     headers = _auth(db_url)
@@ -185,9 +197,13 @@ def test_tree_writes_back_api_state_to_db(client, monkeypatch):
 
     insert_worker(db_url, guild_id, "w-wb1", state="online")
     insert_task(
-        db_url, guild_id, "task-wb1",
-        worker_id="w-wb1", state="awaiting-review",
-        issue_number=7, issue_repo="org/repo",
+        db_url,
+        guild_id,
+        "task-wb1",
+        worker_id="w-wb1",
+        state="awaiting-review",
+        issue_number=7,
+        issue_repo="org/repo",
         issue_state=None,  # not yet cached
     )
 
@@ -216,9 +232,13 @@ def test_tree_api_failure_falls_back_to_db_state(client, monkeypatch):
 
     insert_worker(db_url, guild_id, "w-apifail1", state="online")
     insert_task(
-        db_url, guild_id, "task-apifail1",
-        worker_id="w-apifail1", state="done",
-        issue_number=55, issue_repo="org/repo",
+        db_url,
+        guild_id,
+        "task-apifail1",
+        worker_id="w-apifail1",
+        state="done",
+        issue_number=55,
+        issue_repo="org/repo",
         issue_state="closed",
     )
 
@@ -240,7 +260,11 @@ def test_tree_api_failure_falls_back_to_db_state(client, monkeypatch):
 def _make_issue_event(repo: str, number: int, action: str) -> bytes:
     payload = {
         "action": action,
-        "issue": {"number": number, "title": "Test issue", "state": action if action != "reopened" else "open"},
+        "issue": {
+            "number": number,
+            "title": "Test issue",
+            "state": action if action != "reopened" else "open",
+        },
         "repository": {"full_name": repo},
     }
     return json.dumps(payload).encode()
@@ -255,9 +279,13 @@ def test_webhook_issues_closed_updates_issue_state(client):
 
     insert_worker(db_url, guild_id, "w-wh-iss1", state="online")
     insert_task(
-        db_url, guild_id, "task-wh-iss1",
-        worker_id="w-wh-iss1", state="done",
-        issue_number=100, issue_repo="org/repo",
+        db_url,
+        guild_id,
+        "task-wh-iss1",
+        worker_id="w-wh-iss1",
+        state="done",
+        issue_number=100,
+        issue_repo="org/repo",
         issue_state="open",
     )
 
@@ -278,9 +306,13 @@ def test_webhook_issues_reopened_updates_issue_state(client):
 
     insert_worker(db_url, guild_id, "w-wh-iss2", state="online")
     insert_task(
-        db_url, guild_id, "task-wh-iss2",
-        worker_id="w-wh-iss2", state="done",
-        issue_number=101, issue_repo="org/repo",
+        db_url,
+        guild_id,
+        "task-wh-iss2",
+        worker_id="w-wh-iss2",
+        state="done",
+        issue_number=101,
+        issue_repo="org/repo",
         issue_state="closed",
     )
 
@@ -302,23 +334,35 @@ def test_webhook_issues_only_updates_matching_repo_and_number(client):
     insert_worker(db_url, guild_id, "w-wh-iss3", state="online")
     # Matching task
     insert_task(
-        db_url, guild_id, "task-wh-iss3-match",
-        worker_id="w-wh-iss3", state="done",
-        issue_number=200, issue_repo="org/repo",
+        db_url,
+        guild_id,
+        "task-wh-iss3-match",
+        worker_id="w-wh-iss3",
+        state="done",
+        issue_number=200,
+        issue_repo="org/repo",
         issue_state="open",
     )
     # Different issue number — must not be updated
     insert_task(
-        db_url, guild_id, "task-wh-iss3-other-num",
-        worker_id="w-wh-iss3", state="done",
-        issue_number=201, issue_repo="org/repo",
+        db_url,
+        guild_id,
+        "task-wh-iss3-other-num",
+        worker_id="w-wh-iss3",
+        state="done",
+        issue_number=201,
+        issue_repo="org/repo",
         issue_state="open",
     )
     # Different repo — must not be updated
     insert_task(
-        db_url, guild_id, "task-wh-iss3-other-repo",
-        worker_id="w-wh-iss3", state="done",
-        issue_number=200, issue_repo="org/other-repo",
+        db_url,
+        guild_id,
+        "task-wh-iss3-other-repo",
+        worker_id="w-wh-iss3",
+        state="done",
+        issue_number=200,
+        issue_repo="org/other-repo",
         issue_state="open",
     )
 
