@@ -1922,9 +1922,7 @@ class Worker:
                     # Pull latest so we don't clobber commits pushed since the
                     # last follow-up or by other workers.
                     await git_ops.run_git(["fetch", "origin", branch], cwd=wt_path)
-                    await git_ops.run_git(
-                        ["reset", "--hard", f"origin/{branch}"], cwd=wt_path
-                    )
+                    await git_ops.run_git(["reset", "--hard", f"origin/{branch}"], cwd=wt_path)
                 worktree_entries.append((repo_full, repo_path, wt_path))
                 if primary_wt is None:
                     primary_wt = wt_path
