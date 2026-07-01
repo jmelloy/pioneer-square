@@ -1915,19 +1915,26 @@ class Worker:
                 and os.path.isdir(os.path.join(wt_path, ".git"))
                 or (os.path.isdir(wt_path) and os.path.isfile(os.path.join(wt_path, ".git")))
             ):
-                # Worktree from a prior run on the same task — reuse it. Pull
-                # the latest origin state for the branch so a different worker
-                # that pushed changes is reflected here.
+                # Worktree from a prior run on the same task — reuse it.
                 logger.info("Task %s: reusing worktree at %s", task_id, wt_path)
                 await emit(f"Reusing worktree {repo_name}", level=LEVEL_WORKER)
                 if is_followup:
+                    # Pull latest so we don't clobber commits pushed since the
+                    # last follow-up or by other workers.
                     await git_ops.run_git(["fetch", "origin", branch], cwd=wt_path)
+                    await git_ops.run_git(
+                        ["reset", "--hard", f"origin/{branch}"], cwd=wt_path
+                    )
                 worktree_entries.append((repo_full, repo_path, wt_path))
                 if primary_wt is None:
                     primary_wt = wt_path
                 continue
             if is_followup:
                 logger.info("Task %s: attaching worktree %s to branch %s", task_id, wt_path, branch)
+                # attach_worktree fetches origin/<branch> before checking it out, so the
+                # new worktree starts at the latest remote commit — no separate pull needed.
+                # Pull latest so we don't clobber commits pushed since the last follow-up
+                # or by other workers.
                 ok = await git_ops.attach_worktree(repo_path, wt_path, branch)
                 if not ok:
                     # Branch never reached origin (e.g. original task failed before push).
