@@ -5,18 +5,11 @@
 
     <template v-else>
       <!-- Issue / PR nodes -->
-      <div
-        v-for="node in activeNodes"
-        :key="`${node.issue_repo}#${node.issue_number}`"
-        class="tree-group"
-      >
-        <div
-          class="group-header"
-          @click="toggle(`${node.issue_repo}#${node.issue_number}`)"
-        >
+      <div v-for="node in activeNodes" :key="`${node.issue_repo}#${node.issue_number}`" class="tree-group">
+        <div class="group-header" @click="toggle(`${node.issue_repo}#${node.issue_number}`)">
           <span class="collapse-icon">{{
             isExpanded(`${node.issue_repo}#${node.issue_number}`) ? '▾' : '▸'
-          }}</span>
+            }}</span>
           <span class="issue-ref">#{{ node.issue_number }}</span>
           <span class="issue-title">{{ resolveIssueTitle(node) }}</span>
           <span class="state-badge" :class="'badge-' + resolveIssueState(node)">{{ resolveIssueState(node) }}</span>
@@ -24,14 +17,8 @@
         </div>
 
         <div v-if="isExpanded(`${node.issue_repo}#${node.issue_number}`)" class="group-tasks">
-          <TaskTreeRow
-            v-for="task in node.tasks"
-            :key="task.id"
-            :task="task"
-            :depth="0"
-            :selected-task-id="tasksStore.selectedTaskId"
-            @open-task="$emit('open-task', $event)"
-          />
+          <TaskTreeRow v-for="task in node.tasks" :key="task.id" :task="task" :depth="0"
+            :selected-task-id="tasksStore.selectedTaskId" @open-task="$emit('open-task', $event)" />
         </div>
       </div>
 
@@ -43,14 +30,8 @@
           <span class="group-count">{{ countTasks(treeData!.ungrouped) }}</span>
         </div>
         <div v-if="isExpanded('__ungrouped__')" class="group-tasks">
-          <TaskTreeRow
-            v-for="task in treeData!.ungrouped"
-            :key="task.id"
-            :task="task"
-            :depth="0"
-            :selected-task-id="tasksStore.selectedTaskId"
-            @open-task="$emit('open-task', $event)"
-          />
+          <TaskTreeRow v-for="task in treeData!.ungrouped" :key="task.id" :task="task" :depth="0"
+            :selected-task-id="tasksStore.selectedTaskId" @open-task="$emit('open-task', $event)" />
         </div>
       </div>
     </template>
@@ -191,7 +172,7 @@ function countTasks(tasks: TaskTreeNode[]): number {
 }
 
 const activeNodes = computed(
-  () => treeData.value?.nodes.filter((n) => n.state == 'open' || hasActiveTasks(n.tasks)) ?? [],
+  () => treeData.value?.nodes.filter((n) => { console.log(n); return n.state === 'open' || hasActiveTasks(n.tasks) }) ?? [],
 )
 
 const isEmpty = computed(
