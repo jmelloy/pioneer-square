@@ -360,5 +360,7 @@ function onIssueTabClick(event: MouseEvent, key: string) {
   flex: 1;
   overflow: hidden;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 </style>

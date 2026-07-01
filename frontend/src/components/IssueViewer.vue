@@ -50,89 +50,112 @@
         </div>
       </div>
 
-      <!-- Body -->
-      <div class="issue-body-section">
-        <div class="section-header">
-          <span class="section-title">Description</span>
-          <button
-            v-if="!editingBody"
-            class="pixel-btn edit-btn"
-            @click="startEditBody"
-            title="Edit body"
-          >
-            ✎
-          </button>
-        </div>
-        <template v-if="!editingBody">
-          <div
-            v-if="issue.body"
-            class="issue-body markdown-body"
-            v-html="renderMarkdown(issue.body)"
-          ></div>
-          <div v-else class="issue-body-empty">No description provided.</div>
-        </template>
-        <div v-else class="body-edit">
-          <textarea
-            v-model="editBody"
-            class="body-textarea"
-            rows="10"
-            ref="bodyTextareaRef"
-          ></textarea>
-          <div class="edit-actions">
-            <button class="pixel-btn save-btn" @click="saveBody" :disabled="saving">
-              {{ saving ? '…' : 'Save' }}
+      <!-- Tab bar -->
+      <div class="issue-tab-bar">
+        <button
+          class="issue-tab-btn"
+          :class="{ active: activeTab === 'details' }"
+          @click="activeTab = 'details'"
+        >
+          Details
+        </button>
+        <button
+          class="issue-tab-btn"
+          :class="{ active: activeTab === 'comments' }"
+          @click="activeTab = 'comments'"
+        >
+          Comments ({{ comments.length }})
+        </button>
+      </div>
+
+      <!-- Scrollable tab content -->
+      <div class="issue-tab-content">
+        <!-- Details tab -->
+        <div v-if="activeTab === 'details'" class="issue-body-section">
+          <div class="section-header">
+            <span class="section-title">Description</span>
+            <button
+              v-if="!editingBody"
+              class="pixel-btn edit-btn"
+              @click="startEditBody"
+              title="Edit body"
+            >
+              ✎
             </button>
-            <button class="pixel-btn cancel-btn" @click="cancelEditBody">Cancel</button>
           </div>
-        </div>
-      </div>
-
-      <!-- Comments -->
-      <div class="comments-section">
-        <div class="section-header">
-          <span class="section-title">Comments ({{ comments.length }})</span>
-        </div>
-        <div class="comments-list">
-          <div v-for="comment in comments" :key="comment.id" class="comment">
-            <div class="comment-header">
-              <img :src="comment.user.avatar_url" class="avatar" :alt="comment.user.login" />
-              <span class="comment-author">{{ comment.user.login }}</span>
-              <span class="comment-date">{{ formatRelative(comment.created_at) }}</span>
-              <a
-                :href="comment.html_url"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="gh-link-sm"
-                >↗</a
-              >
+          <template v-if="!editingBody">
+            <div
+              v-if="issue.body"
+              class="issue-body markdown-body"
+              v-html="renderMarkdown(issue.body)"
+            ></div>
+            <div v-else class="issue-body-empty">No description provided.</div>
+          </template>
+          <div v-else class="body-edit">
+            <textarea
+              v-model="editBody"
+              class="body-textarea"
+              rows="10"
+              ref="bodyTextareaRef"
+            ></textarea>
+            <div class="edit-actions">
+              <button class="pixel-btn save-btn" @click="saveBody" :disabled="saving">
+                {{ saving ? '…' : 'Save' }}
+              </button>
+              <button class="pixel-btn cancel-btn" @click="cancelEditBody">Cancel</button>
             </div>
-            <div class="comment-body markdown-body" v-html="renderMarkdown(comment.body)"></div>
           </div>
-          <div v-if="comments.length === 0" class="no-comments">No comments yet.</div>
         </div>
-      </div>
 
-      <!-- Post comment -->
-      <div class="post-comment-section">
-        <div class="section-header">
-          <span class="section-title">Add a comment</span>
-        </div>
-        <textarea
-          v-model="newComment"
-          class="comment-textarea"
-          rows="4"
-          placeholder="Leave a comment..."
-        ></textarea>
-        <div class="post-actions">
-          <button
-            class="pixel-btn submit-btn"
-            @click="submitComment"
-            :disabled="!newComment.trim() || submitting"
-          >
-            {{ submitting ? 'Posting…' : 'Comment' }}
-          </button>
-          <span v-if="postError" class="post-error">{{ postError }}</span>
-        </div>
+        <!-- Comments tab -->
+        <template v-if="activeTab === 'comments'">
+          <div class="comments-section">
+            <div class="section-header">
+              <span class="section-title">Comments ({{ comments.length }})</span>
+            </div>
+            <div class="comments-list">
+              <div v-for="comment in comments" :key="comment.id" class="comment">
+                <div class="comment-header">
+                  <img :src="comment.user.avatar_url" class="avatar" :alt="comment.user.login" />
+                  <span class="comment-author">{{ comment.user.login }}</span>
+                  <span class="comment-date">{{ formatRelative(comment.created_at) }}</span>
+                  <a
+                    :href="comment.html_url"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="gh-link-sm"
+                    >↗</a
+                  >
+                </div>
+                <div class="comment-body markdown-body" v-html="renderMarkdown(comment.body)"></div>
+              </div>
+              <div v-if="comments.length === 0" class="no-comments">No comments yet.</div>
+            </div>
+          </div>
+
+          <!-- Post comment -->
+          <div class="post-comment-section">
+            <div class="section-header">
+              <span class="section-title">Add a comment</span>
+            </div>
+            <textarea
+              v-model="newComment"
+              class="comment-textarea"
+              rows="4"
+              placeholder="Leave a comment..."
+            ></textarea>
+            <div class="post-actions">
+              <button
+                class="pixel-btn submit-btn"
+                @click="submitComment"
+                :disabled="!newComment.trim() || submitting"
+              >
+                {{ submitting ? 'Posting…' : 'Comment' }}
+              </button>
+              <span v-if="postError" class="post-error">{{ postError }}</span>
+            </div>
+          </div>
+        </template>
       </div>
     </template>
   </div>
@@ -157,6 +180,8 @@ const issue = ref<GitHubIssueDetail | null>(null)
 const comments = ref<GitHubComment[]>([])
 const loading = ref(false)
 const loadError = ref('')
+
+const activeTab = ref<'details' | 'comments'>('details')
 
 const editingTitle = ref(false)
 const editTitle = ref('')
@@ -258,12 +283,11 @@ onMounted(loadIssue)
 
 <style scoped>
 .issue-viewer {
-  flex: 1;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  padding: 16px 20px;
-  gap: 20px;
+  overflow: hidden;
   font-size: 13px;
   color: var(--color-text);
 }
@@ -286,7 +310,8 @@ onMounted(loadIssue)
   flex-direction: column;
   gap: 8px;
   border-bottom: 1px solid var(--color-brass-dark);
-  padding-bottom: 14px;
+  padding: 16px 20px 14px;
+  flex-shrink: 0;
 }
 
 .issue-meta-row {
@@ -411,6 +436,48 @@ onMounted(loadIssue)
   border: 1px solid;
   padding: 1px 6px;
   border-radius: 3px;
+}
+
+/* Tab bar */
+.issue-tab-bar {
+  display: flex;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-brass-dark);
+  flex-shrink: 0;
+}
+
+.issue-tab-btn {
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--color-text-dim);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  transition: all 0.15s;
+  margin-bottom: -1px;
+}
+
+.issue-tab-btn:hover {
+  color: var(--color-text);
+  background: rgba(232, 170, 0, 0.05);
+}
+
+.issue-tab-btn.active {
+  color: var(--color-brass-light);
+  border-bottom-color: var(--color-brass);
+}
+
+/* Scrollable tab content */
+.issue-tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 0;
 }
 
 /* Section layout */
