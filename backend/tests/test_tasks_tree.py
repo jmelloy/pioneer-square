@@ -35,7 +35,6 @@ from models import Guild, Task
 from sqlalchemy import select, update
 from sqlmodel import col
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
