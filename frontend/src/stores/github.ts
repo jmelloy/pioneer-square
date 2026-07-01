@@ -90,19 +90,35 @@ export const useGitHubStore = defineStore('github', () => {
     localStorage.setItem('gh_repos', JSON.stringify(repoFullNames))
   }
 
-  async function fetchIssues(repos?: string[], silent = false) {
+  async function fetchAllPages(url: string): Promise<Array<Record<string, unknown>>> {
+    const results: Array<Record<string, unknown>> = []
+    let nextUrl: string | null = url
+    while (nextUrl) {
+      const res = await fetch(nextUrl, { headers: ghHeaders(token.value) })
+      if (!res.ok) break
+      const data: Array<Record<string, unknown>> = await res.json()
+      results.push(...data)
+      const link = res.headers.get('Link') || ''
+      const m = link.match(/<([^>]+)>;\s*rel="next"/)
+      nextUrl = m ? m[1] : null
+    }
+    return results
+  }
+
+  async function fetchIssues(
+    repos?: string[],
+    silent = false,
+    state: 'open' | 'closed' | 'all' = 'all',
+  ) {
     const reposToFetch = repos ?? selectedRepos.value
     if (!token.value || reposToFetch.length === 0) return []
     if (!silent) loading.value = true
     try {
       const allIssues = await Promise.all(
         reposToFetch.map(async (repoName) => {
-          const res = await fetch(
-            `${GH_API}/repos/${repoName}/issues?state=all&per_page=100&sort=created&direction=desc`,
-            { headers: ghHeaders(token.value) },
+          const data = await fetchAllPages(
+            `${GH_API}/repos/${repoName}/issues?state=${state}&per_page=100&sort=created&direction=desc`,
           )
-          if (!res.ok) return [] as GitHubIssue[]
-          const data: Array<Record<string, unknown>> = await res.json()
           return data
             .filter((i) => !i.pull_request)
             .map((i) => ({ ...i, repo: repoName })) as GitHubIssue[]

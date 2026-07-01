@@ -7,7 +7,7 @@
     >
       {{ ghStore.loading ? '...' : '↻' }}
     </button>
-    <span class="issues-count">{{ ghStore.issues.length }} issue{{ ghStore.issues.length !== 1 ? 's' : '' }}</span>
+    <span class="issues-count">{{ openIssues.length }} issue{{ openIssues.length !== 1 ? 's' : '' }}</span>
     <span class="issues-repos">{{
       guildStore.currentGuild?.primary_repo ??
       ghStore.selectedRepos.length + ' repo' + (ghStore.selectedRepos.length !== 1 ? 's' : '')
@@ -15,13 +15,13 @@
   </div>
 
   <div class="issues-list" ref="issuesEl">
-    <div v-if="ghStore.issues.length === 0 && !ghStore.loading" class="chat-empty">
+    <div v-if="openIssues.length === 0 && !ghStore.loading" class="chat-empty">
       No issues found.
     </div>
     <div v-if="ghStore.loading" class="chat-empty">Loading issues...</div>
 
     <div
-      v-for="issue in ghStore.issues"
+      v-for="issue in openIssues"
       :key="issue.id"
       class="issue-row"
       @click="$emit('select-issue', issue)"
@@ -51,7 +51,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useGitHubStore } from '../../stores/github'
 import { formatAge } from '../../utils/format'
@@ -61,6 +61,8 @@ defineEmits<{ (e: 'select-issue', issue: GitHubIssue): void }>()
 
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
+
+const openIssues = computed(() => ghStore.issues.filter((i) => i.state === 'open'))
 
 const ISSUE_REFRESH_MS = 3 * 60 * 1000
 let issueRefreshInterval: ReturnType<typeof setInterval> | null = null

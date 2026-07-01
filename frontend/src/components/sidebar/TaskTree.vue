@@ -6,7 +6,7 @@
     <template v-else>
       <!-- Issue / PR nodes -->
       <div
-        v-for="node in treeData!.nodes"
+        v-for="node in activeNodes"
         :key="`${node.issue_repo}#${node.issue_number}`"
         class="tree-group"
       >
@@ -18,8 +18,8 @@
             isExpanded(`${node.issue_repo}#${node.issue_number}`) ? '▾' : '▸'
           }}</span>
           <span class="issue-ref">#{{ node.issue_number }}</span>
-          <span class="issue-title">{{ node.title }}</span>
-          <span class="state-badge" :class="'badge-' + node.state">{{ node.state }}</span>
+          <span class="issue-title">{{ resolveIssueTitle(node) }}</span>
+          <span class="state-badge" :class="'badge-' + resolveIssueState(node)">{{ resolveIssueState(node) }}</span>
           <span class="group-count">{{ countTasks(node.tasks) }}</span>
         </div>
 
@@ -61,14 +61,16 @@
 import { computed, ref, watch } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useTasksStore } from '../../stores/tasks'
+import { useGitHubStore } from '../../stores/github'
 import { api } from '../../utils/api'
-import type { TaskTreeData, TaskTreeNode } from '../../types'
+import type { IssueTreeNode, TaskTreeData, TaskTreeNode } from '../../types'
 import TaskTreeRow from './TaskTreeRow.vue'
 
 defineEmits<{ (e: 'open-task', id: string): void }>()
 
 const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
+const ghStore = useGitHubStore()
 
 const treeData = ref<TaskTreeData | null>(null)
 const loading = ref(false)
@@ -161,14 +163,45 @@ watch(taskWatchKey, () => {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled', 'error'])
+
+function hasActiveTasks(tasks: TaskTreeNode[]): boolean {
+  return tasks.some((t) => !TERMINAL_STATES.has(t.state) || hasActiveTasks(t.children))
+}
+
+function resolveIssueTitle(node: IssueTreeNode): string {
+  const gh = ghStore.issues.find(
+    (i) => i.repo === node.issue_repo && i.number === node.issue_number,
+  )
+  return gh?.title || node.title
+}
+
+function resolveIssueState(node: IssueTreeNode): string {
+  const gh = ghStore.issues.find(
+    (i) => i.repo === node.issue_repo && i.number === node.issue_number,
+  )
+  if (gh) return gh.state
+  // Infer closed when the backend didn't fetch state and all tasks are terminal
+  if (node.state === 'open' && !hasActiveTasks(node.tasks)) return 'closed'
+  return node.state
+}
+
 function countTasks(tasks: TaskTreeNode[]): number {
   let n = tasks.length
   for (const t of tasks) n += countTasks(t.children)
   return n
 }
 
+const activeNodes = computed(
+  () => treeData.value?.nodes.filter((n) => hasActiveTasks(n.tasks)) ?? [],
+)
+
 const isEmpty = computed(
-  () => !loading.value && treeData.value && treeData.value.nodes.length === 0 && treeData.value.ungrouped.length === 0,
+  () =>
+    !loading.value &&
+    treeData.value &&
+    activeNodes.value.length === 0 &&
+    treeData.value.ungrouped.length === 0,
 )
 </script>
 
