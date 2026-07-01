@@ -981,6 +981,30 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             default_model = catalog_default.one_or_none()
                             if default_model:
                                 model = default_model
+                    # For Bedrock workers, resolve the short model ID to the
+                    # canonical inference-profile ARN stored in the catalog.
+                    # The Claude CLI on Bedrock requires the full ARN; short IDs
+                    # from models.dev are rejected by the InvokeModel API.
+                    if worker_provider == "bedrock" and model and not is_error:
+                        from models import ModelCatalog  # noqa: PLC0415
+
+                        bedrock_id_result = await db.exec(
+                            select(col(ModelCatalog.bedrock_model_id)).where(
+                                col(ModelCatalog.provider) == "bedrock",
+                                col(ModelCatalog.model_id) == model,
+                            )
+                        )
+                        resolved = bedrock_id_result.one_or_none()
+                        if resolved:
+                            model = resolved
+                        else:
+                            logger.warning(
+                                "assign_task: no Bedrock ARN for model %r "
+                                "(catalog may need a refresh with AWS credentials configured) "
+                                "— using short ID as fallback; worker may fail at inference time",
+                                model,
+                            )
+
                     if requested_tool is None:
                         tool = worker_tools[0] if worker_tools else "claude"
                     elif worker_tools and requested_tool not in worker_tools:
