@@ -146,7 +146,7 @@ async function refreshDebug() {
     )
     debugContext.value = data?.messages ?? []
     systemPrompt.value = data?.system ?? null
-    totalMessages.value = data?.total ?? (data?.messages?.length ?? 0)
+    totalMessages.value = data?.total ?? data?.messages?.length ?? 0
   } catch (e) {
     console.error('Failed to load foreman context', e)
   } finally {

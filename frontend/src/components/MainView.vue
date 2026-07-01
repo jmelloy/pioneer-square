@@ -45,6 +45,18 @@
         <span class="tab-label">{{ task.name || task.id }}</span>
         <span class="tab-close">×</span>
       </button>
+      <!-- Issue tabs -->
+      <button
+        v-for="key in agentsStore.openedIssueKeys"
+        :key="key"
+        class="tab issue-tab"
+        :class="{ active: agentsStore.activeTab === key }"
+        @click="onIssueTabClick($event, key)"
+      >
+        <span class="issue-dot">⊙</span>
+        <span class="tab-label">{{ issueTabLabel(key) }}</span>
+        <span class="tab-close">×</span>
+      </button>
     </div>
     <div class="tab-content">
       <FactoryFloor v-if="agentsStore.activeTab === 'factory'" />
@@ -63,6 +75,10 @@
         kind="task"
         :id="agentsStore.activeTab.slice(5)"
       />
+      <IssueViewer
+        v-else-if="agentsStore.activeTab.startsWith('issue-')"
+        v-bind="parseIssueKey(agentsStore.activeTab)"
+      />
     </div>
   </div>
 </template>
@@ -73,9 +89,27 @@ import { useAgentsStore } from '../stores/agents'
 import { useTasksStore, taskTabId } from '../stores/tasks'
 import FactoryFloor from './FactoryFloor.vue'
 import LogPane from './LogPane.vue'
+import IssueViewer from './IssueViewer.vue'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
+
+// Parse "issue-owner/repo/123" → { owner, repo, issueNumber }
+function parseIssueKey(key: string): { owner: string; repo: string; issueNumber: number } {
+  const rest = key.slice('issue-'.length) // "owner/repo/123"
+  const lastSlash = rest.lastIndexOf('/')
+  const issueNumber = parseInt(rest.slice(lastSlash + 1), 10)
+  const repoPath = rest.slice(0, lastSlash) // "owner/repo"
+  const firstSlash = repoPath.indexOf('/')
+  const owner = repoPath.slice(0, firstSlash)
+  const repo = repoPath.slice(firstSlash + 1)
+  return { owner, repo, issueNumber }
+}
+
+function issueTabLabel(key: string): string {
+  const { repo, issueNumber } = parseIssueKey(key)
+  return `${repo}#${issueNumber}`
+}
 
 const visibleAgentTabs = computed(() =>
   agentsStore.openedAgentIds
@@ -122,6 +156,14 @@ function onTabClick(event: MouseEvent, taskId: string) {
     if (agentsStore.activeTab === taskTabId(taskId)) agentsStore.activeTab = 'factory'
   } else {
     agentsStore.openTaskTab(taskId)
+  }
+}
+
+function onIssueTabClick(event: MouseEvent, key: string) {
+  if ((event.target as HTMLElement).closest('.tab-close')) {
+    agentsStore.closeIssueTab(key)
+  } else {
+    agentsStore.activeTab = key
   }
 }
 </script>
@@ -215,6 +257,20 @@ function onTabClick(event: MouseEvent, taskId: string) {
 
 .task-tab {
   border-left: 1px solid rgba(255, 204, 0, 0.2);
+}
+
+.issue-tab {
+  border-left: 1px solid rgba(0, 187, 170, 0.2);
+}
+
+.issue-tab.active {
+  border-bottom-color: var(--color-teal);
+  color: var(--color-teal);
+}
+
+.issue-dot {
+  font-size: 11px;
+  color: currentColor;
 }
 
 .tab-close {

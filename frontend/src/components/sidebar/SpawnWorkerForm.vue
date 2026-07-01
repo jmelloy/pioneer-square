@@ -73,7 +73,9 @@
         placeholder="4"
       />
       <label class="spawn-label">Env Vars <span class="spawn-hint">(optional)</span></label>
-      <p class="spawn-env-hint">Key-value pairs are saved to the server and restored each session.</p>
+      <p class="spawn-env-hint">
+        Key-value pairs are saved to the server and restored each session.
+      </p>
       <div class="spawn-env-list">
         <div v-for="(pair, idx) in envVars" :key="idx" class="spawn-env-row">
           <input

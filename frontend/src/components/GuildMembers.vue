@@ -224,10 +224,9 @@ async function cancelInvite(inv: GuildInviteRow) {
   busyInvite.value = inv.id
   inviteError.value = ''
   try {
-    await api(
-      `/api/guilds/${encodeURIComponent(props.guildId)}/invites/${inv.id}`,
-      { method: 'DELETE' },
-    )
+    await api(`/api/guilds/${encodeURIComponent(props.guildId)}/invites/${inv.id}`, {
+      method: 'DELETE',
+    })
     await loadInvites()
   } catch (e) {
     inviteError.value = e instanceof ApiError ? e.message : 'Failed to cancel invite'

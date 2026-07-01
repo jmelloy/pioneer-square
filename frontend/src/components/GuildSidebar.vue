@@ -62,7 +62,6 @@ const tasksStore = useTasksStore()
 const agentsStore = useAgentsStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
-const selectIssue = inject<(issue: GitHubIssue) => void>('selectIssue', () => {})
 
 const isConnected = computed(() => guildStore.isConnected)
 const workerCount = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline').length)
@@ -80,8 +79,13 @@ function onOpenTask(taskId: string) {
 }
 
 function onSelectIssue(issue: GitHubIssue) {
-  switchMobileTab('chat')
-  selectIssue(issue)
+  // Parse owner/repo from issue.repo ("owner/repo" format)
+  const slashIdx = issue.repo.indexOf('/')
+  if (slashIdx === -1) return
+  const owner = issue.repo.slice(0, slashIdx)
+  const repo = issue.repo.slice(slashIdx + 1)
+  agentsStore.openIssueTab(owner, repo, issue.number)
+  switchMobileTab('work')
 }
 </script>
 
