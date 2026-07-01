@@ -548,7 +548,6 @@ async def _run_foreman_ai(
             )
             .where(
                 col(Task.guild_id) == guild_pk_val,
-                ~col(Task.state).in_(list(_TERMINAL_STATES)),
                 live_tasks_filter(),
             )
             .order_by(col(Task.created_at).desc())
