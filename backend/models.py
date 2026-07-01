@@ -511,3 +511,20 @@ class PushToken(SQLModel, table=True):
     )  # ios | (future: android)
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     last_seen_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class ModelCatalog(SQLModel, table=True):
+    """Persisted snapshot of models.dev provider/model entries.
+
+    Upserted from the models.dev API on startup and periodically refreshed.
+    Primary key is (provider, model_id) so upserts are idempotent.
+    """
+
+    __tablename__ = "model_catalog"  # type: ignore[assignment]
+
+    provider: str = Field(primary_key=True)
+    model_id: str = Field(primary_key=True)
+    display_name: str
+    capabilities: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    raw: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    fetched_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))

@@ -352,10 +352,17 @@ async def lifespan(app: FastAPI):
         if stale_ids
         else None
     )
-    # Pre-warm the models.dev cache so the first /api/models request is fast.
-    from util.models_dev import fetch_providers as _fetch_providers  # noqa: PLC0415
+    # Refresh the models.dev catalog on startup: persist to DB and warm the
+    # in-memory cache so the first /api/models request is fast.
+    from util.models_dev import refresh_model_catalog_if_stale as _refresh_catalog  # noqa: PLC0415
 
-    asyncio.ensure_future(_fetch_providers())
+    async def _startup_refresh_catalog() -> None:
+        async with AsyncSessionLocal() as db:
+            refreshed = await _refresh_catalog(db)
+            if refreshed:
+                await db.commit()
+
+    asyncio.ensure_future(_startup_refresh_catalog())
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
     try:
         yield

@@ -2,15 +2,23 @@
 
 Fetched once at startup (or on first request) and refreshed every TTL seconds.
 Falls back to a minimal static list if the fetch fails.
+
+DB persistence: ``refresh_model_catalog_if_stale`` upserts all supported-provider
+rows into ``model_catalog`` so the catalog survives restarts.  ``get_providers_from_db``
+reads those rows back and reconstructs the provider list used by ``GET /api/models``.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from sqlmodel.ext.asyncio.session import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +31,12 @@ _PROVIDER_ALIASES = {
     "anthropic": "anthropic",
     "amazon-bedrock": "bedrock",
     "bedrock": "bedrock",
+}
+
+# Human-readable display names for the normalized provider IDs.
+_PROVIDER_DISPLAY_NAMES = {
+    "anthropic": "Anthropic",
+    "bedrock": "Amazon Bedrock",
 }
 
 # Minimal fallback so the UI always has something to show.
@@ -109,3 +123,130 @@ async def fetch_providers(*, force: bool = False) -> list[dict[str, Any]]:
         _cached_providers = _FALLBACK_PROVIDERS
 
     return _cached_providers
+
+
+# ---------------------------------------------------------------------------
+# DB persistence helpers
+# ---------------------------------------------------------------------------
+
+
+async def _upsert_catalog(db: AsyncSession, raw_data: dict[str, Any]) -> int:
+    """Upsert supported-provider model rows from a raw models.dev API response.
+
+    Returns the number of rows upserted. Does NOT commit — callers decide when
+    to commit so they can batch with other writes.
+    """
+    from models import ModelCatalog
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    now = datetime.now(UTC)
+    rows = []
+    for provider_id, entry in raw_data.items():
+        normalized = _PROVIDER_ALIASES.get(provider_id)
+        if normalized is None:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        raw_models = entry.get("models", {})
+        if not isinstance(raw_models, dict):
+            continue
+        for mid, m in raw_models.items():
+            if not isinstance(m, dict):
+                continue
+            capabilities = {k: v for k, v in m.items() if k not in ("id", "name")} or None
+            rows.append(
+                {
+                    "provider": normalized,
+                    "model_id": m.get("id", mid),
+                    "display_name": m.get("name", mid),
+                    "capabilities": capabilities,
+                    "raw": m,
+                    "fetched_at": now,
+                }
+            )
+    if not rows:
+        return 0
+
+    stmt = pg_insert(ModelCatalog).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["provider", "model_id"],
+        set_={
+            "display_name": stmt.excluded.display_name,
+            "capabilities": stmt.excluded.capabilities,
+            "raw": stmt.excluded.raw,
+            "fetched_at": stmt.excluded.fetched_at,
+        },
+    )
+    await db.execute(stmt)
+    return len(rows)
+
+
+async def get_providers_from_db(db: AsyncSession) -> list[dict[str, Any]]:
+    """Read the model catalog from DB and return in the same shape as fetch_providers().
+
+    Returns an empty list if the catalog table is empty (caller should fall back
+    to ``fetch_providers()``).
+    """
+    from models import ModelCatalog
+    from sqlmodel import col, select
+
+    rows = (await db.exec(select(ModelCatalog).order_by(col(ModelCatalog.provider)))).all()
+    if not rows:
+        return []
+
+    providers: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row.provider not in providers:
+            providers[row.provider] = {
+                "id": row.provider,
+                "name": _PROVIDER_DISPLAY_NAMES.get(row.provider, row.provider),
+                "models": [],
+            }
+        providers[row.provider]["models"].append({"id": row.model_id, "name": row.display_name})
+
+    return sorted(providers.values(), key=lambda p: p["name"].lower())
+
+
+async def refresh_model_catalog_if_stale(db: AsyncSession, *, max_age_hours: int = 24) -> bool:
+    """Re-fetch models.dev and upsert into DB if the catalog is empty or stale.
+
+    Staleness is determined by the oldest ``fetched_at`` in the table: if it is
+    older than ``max_age_hours`` (or if the table is empty) a fresh fetch is
+    performed and all rows are upserted.  The in-memory cache is also updated.
+
+    Does NOT commit on its own — callers are responsible for committing after
+    this returns ``True`` so they can batch with other writes.
+
+    Returns ``True`` if a refresh was performed, ``False`` if the catalog was
+    already fresh.
+    """
+    from models import ModelCatalog
+    from sqlmodel import col, select
+
+    cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
+
+    oldest_fetched_at = (
+        await db.exec(
+            select(ModelCatalog.fetched_at).order_by(col(ModelCatalog.fetched_at).asc()).limit(1)
+        )
+    ).first()
+
+    if oldest_fetched_at is not None and oldest_fetched_at > cutoff:
+        return False
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(MODELS_DEV_URL)
+            resp.raise_for_status()
+            data = resp.json()
+        count = await _upsert_catalog(db, data)
+        providers = _parse_response(data)
+        if providers:
+            global _cached_providers, _cache_fetched_at
+            _cached_providers = providers
+            _cache_fetched_at = time.monotonic()
+        logger.info("models.dev: refreshed catalog (%d rows upserted)", count)
+        return True
+    except Exception as exc:
+        logger.warning("models.dev: catalog refresh failed (%s) — catalog unchanged", exc)
+        return False
