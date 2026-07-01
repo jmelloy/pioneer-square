@@ -295,6 +295,7 @@ def insert_task(
     pr_repo: str | None = None,
     issue_number: int | None = None,
     issue_repo: str | None = None,
+    issue_state: str | None = None,
     user_id: str | None = None,
 ) -> None:
     """Insert a task row for a guild."""
@@ -322,6 +323,7 @@ def insert_task(
                 pr_repo=pr_repo,
                 issue_number=issue_number,
                 issue_repo=issue_repo,
+                issue_state=issue_state,
                 user_id=user_id,
                 created_at=now,
             )

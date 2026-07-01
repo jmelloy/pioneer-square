@@ -438,6 +438,7 @@ async def get_guild_tasks_tree(
             col(Task.pr_repo),
             col(Task.issue_number),
             col(Task.issue_repo),
+            col(Task.issue_state),
             col(Task.created_at),
             col(Task.deleted_at),
         )
@@ -514,23 +515,59 @@ async def get_guild_tasks_tree(
         else:
             ungrouped.append(task)
 
+    # --- Build DB-cached issue state fallback ---
+    # Each task in an issue group stores the last-known GitHub issue state so we
+    # can return the real state even when the GitHub API is unreachable or the
+    # guild owner has no token.  Any non-null value in the group is authoritative.
+    db_issue_states: dict[tuple[str, int], str] = {}
+    for key, group_tasks in issue_groups.items():
+        for task in group_tasks:
+            if task.get("issue_state"):
+                db_issue_states[key] = task["issue_state"]
+                break
+
     # --- Fetch issue metadata in parallel ---
     issue_info: dict[tuple[str, int], dict] = {}
+    # Track which keys were resolved via the GitHub API so we can write them back.
+    api_resolved: dict[tuple[str, int], str] = {}
     if issue_groups and gh_token:
         keys = list(issue_groups.keys())
         infos = await asyncio.gather(
             *[asyncio.to_thread(_gh_fetch_issue, repo, num, gh_token) for repo, num in keys]
         )
         for key, info in zip(keys, infos, strict=False):
-            issue_info[key] = info or {"title": f"#{key[1]}", "state": "open"}
+            if info:
+                issue_info[key] = info
+                api_resolved[key] = info["state"]
+            else:
+                db_state = db_issue_states.get(key, "open")
+                issue_info[key] = {"title": f"#{key[1]}", "state": db_state}
     else:
         for key in issue_groups:
-            issue_info[key] = {"title": f"#{key[1]}", "state": "open"}
+            db_state = db_issue_states.get(key, "open")
+            issue_info[key] = {"title": f"#{key[1]}", "state": db_state}
+
+    # Write back states fetched from GitHub API to the tasks table so future
+    # requests can fall back to the DB when the API is unavailable.
+    if api_resolved:
+        updates_by_state: dict[str, list[str]] = {}
+        for key, state in api_resolved.items():
+            for task in issue_groups[key]:
+                if task.get("issue_state") != state:
+                    updates_by_state.setdefault(state, []).append(task["id"])
+        if updates_by_state:
+            for state, task_ids in updates_by_state.items():
+                await db.exec(
+                    update(Task)
+                    .where(col(Task.id).in_(task_ids))
+                    .values(issue_state=state)
+                )
+            await db.commit()
 
     # --- Build response ---
     nodes = []
     for (repo, num), group_tasks in issue_groups.items():
-        info = issue_info.get((repo, num), {"title": f"#{num}", "state": "open"})
+        info = issue_info.get((repo, num), {"title": f"#{num}", "state": db_issue_states.get((repo, num), "open")})
         nodes.append(
             {
                 "type": "issue",
