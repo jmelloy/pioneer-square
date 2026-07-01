@@ -615,15 +615,16 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     user_ident = data.get("user")
     provider = data.get("provider") or None
     tool = data.get("tool") or None
-    update_vals: dict = {"repos": json.dumps(repos), "tools": json.dumps(tools)}
+    update_vals: dict = {
+        "repos": json.dumps(repos),
+        "tools": json.dumps(tools),
+        "provider": provider,
+        "tool": tool,
+    }
     if user_ident:
         resolved = await _resolve_user_identifier(ctx.db, user_ident)
         if resolved:
             update_vals["user_id"] = resolved
-    if provider:
-        update_vals["provider"] = provider
-    if tool:
-        update_vals["tool"] = tool
     await ctx.db.exec(
         update(Worker)
         .where(col(Worker.id) == worker_id, col(Worker.guild_id) == ctx.guild_pk)

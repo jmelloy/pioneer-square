@@ -67,7 +67,7 @@ async def run_codex_auto(
         cwd,
         "--output-last-message",
         last_message_path,
-        *(["--model", model] if model else []),
+        *(["--model", model] if model and "--model" not in (codex_args or []) else []),
         *(codex_args or []),
         description,
     ]
