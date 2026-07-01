@@ -447,7 +447,9 @@ async def get_guild_tasks_tree(
     )
     raw_tasks = [dict(r._mapping) for r in result.all()]
 
-    # Fetch the guild owner's GitHub token (may be None)
+    # Fetch GitHub token: guild owner preferred, fall back to the requesting user's own token.
+    # This ensures any authenticated member can see correct issue states even if the owner
+    # has not connected their GitHub account.
     token_row = await db.exec(
         select(col(GithubToken.access_token))
         .join(GuildMember, col(GuildMember.user_id) == col(GithubToken.github_user_id))
@@ -455,6 +457,14 @@ async def get_guild_tasks_tree(
         .limit(1)
     )
     gh_token: str | None = row[0] if (row := token_row.one_or_none()) else None
+    if not gh_token:
+        user_token_row = await db.exec(
+            select(col(GithubToken.access_token)).where(
+                col(GithubToken.github_user_id) == github_user_id
+            )
+        )
+        if user_row := user_token_row.one_or_none():
+            gh_token = user_row[0]
 
     # --- Build task_id → (issue_repo, issue_number) mapping ---
 
