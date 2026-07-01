@@ -214,6 +214,7 @@ def insert_worker(
     org: str | None = None,
     tools: str = "[]",
     disabled: bool = False,
+    provider: str | None = None,
 ) -> None:
     """Insert a worker row for a guild."""
     now = datetime.now(UTC)
@@ -234,6 +235,7 @@ def insert_worker(
                 state=state,
                 org=org,
                 disabled=disabled,
+                provider=provider,
                 created_at=now,
             )
             .on_conflict_do_nothing(index_elements=["id"])

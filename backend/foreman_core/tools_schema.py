@@ -76,7 +76,12 @@ FOREMAN_TOOLS = [
                 },
                 "model": {
                     "type": "string",
-                    "description": "Model override for the chosen tool (e.g. 'claude-opus-4-8', 'o4-mini', 'gpt-4o'). Omit to use the worker's configured default.",
+                    "description": (
+                        "Model override for the chosen tool (e.g. 'claude-opus-4-8', 'o4-mini', 'gpt-4o'). "
+                        "Omit to auto-select: the foreman maps the task phase and tool to a tier "
+                        "(cheap/standard/powerful) and picks the best available model from the "
+                        "worker's provider catalog. Explicit values are validated against the catalog."
+                    ),
                 },
                 "provider": {
                     "type": "string",
