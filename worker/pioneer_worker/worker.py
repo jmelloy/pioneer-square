@@ -1848,8 +1848,16 @@ class Worker:
                 repos.insert(0, issue_repo)
         logger.info("Task %s: repos=%s", task_id, repos)
         followup_instructions = task.get("followup_instructions") or ""
-        followup_branch = task.get("followup_branch") or ""
-        is_followup = bool(followup_instructions)
+        # When the idle puller picks up a follow-up task via REST, the task dict
+        # contains `branch` (the DB column) but not `followup_branch` (a
+        # WS-path key set only by the task-followup message handler).  Fall back
+        # to `task.get("branch")` so we never generate a fresh branch name for a
+        # task that already has an open PR.
+        followup_branch = task.get("followup_branch") or task.get("branch") or ""
+        # phase="followup" is the DB marker for tasks dispatched by send_followup.
+        # The idle puller path has no followup_instructions (those lived only in
+        # the WS message), so we must check phase as well.
+        is_followup = bool(followup_instructions) or task.get("phase") == "followup"
 
         logger.info(
             "Executing task %s (agent=%s, followup=%s): %s",
