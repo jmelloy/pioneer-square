@@ -13,7 +13,7 @@
 
       <span class="task-dot" :class="'dot-' + dotClass(task.state)"></span>
 
-      <span class="task-name">{{ task.name || task.id }}</span>
+      <span class="task-name">{{ task.name || task.description || task.id }}</span>
 
       <span v-if="task.phase" class="phase-pill" :class="'phase-' + task.phase">
         {{ task.phase }}

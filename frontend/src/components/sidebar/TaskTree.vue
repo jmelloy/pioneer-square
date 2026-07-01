@@ -6,7 +6,7 @@
     <template v-else>
       <!-- Issue / PR nodes -->
       <div
-        v-for="node in treeData!.nodes"
+        v-for="node in visibleNodes"
         :key="`${node.issue_repo}#${node.issue_number}`"
         class="tree-group"
       >
@@ -167,8 +167,27 @@ function countTasks(tasks: TaskTreeNode[]): number {
   return n
 }
 
+const TASK_TERMINAL_STATES = new Set(['done', 'failed', 'cancelled'])
+
+function hasActiveTask(tasks: TaskTreeNode[]): boolean {
+  for (const task of tasks) {
+    if (!TASK_TERMINAL_STATES.has(task.state)) return true
+    if (task.children.length > 0 && hasActiveTask(task.children)) return true
+  }
+  return false
+}
+
+const visibleNodes = computed(() => {
+  if (!treeData.value) return []
+  return treeData.value.nodes.filter((node) => hasActiveTask(node.tasks))
+})
+
 const isEmpty = computed(
-  () => !loading.value && treeData.value && treeData.value.nodes.length === 0 && treeData.value.ungrouped.length === 0,
+  () =>
+    !loading.value &&
+    treeData.value &&
+    visibleNodes.value.length === 0 &&
+    treeData.value.ungrouped.length === 0,
 )
 </script>
 
