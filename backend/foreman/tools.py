@@ -1657,6 +1657,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     "state": i["state"],
                                     "url": i["html_url"],
                                     "labels": [l["name"] for l in i.get("labels", [])],
+                                    "assignees": [a["login"] for a in i.get("assignees", [])],
                                 }
                                 for i in items
                             ]
