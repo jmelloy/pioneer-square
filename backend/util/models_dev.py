@@ -207,9 +207,7 @@ async def get_providers_from_db(db: AsyncSession) -> list[dict[str, Any]]:
     return sorted(providers.values(), key=lambda p: p["name"].lower())
 
 
-async def refresh_model_catalog_if_stale(
-    db: AsyncSession, *, max_age_hours: int = 24
-) -> bool:
+async def refresh_model_catalog_if_stale(db: AsyncSession, *, max_age_hours: int = 24) -> bool:
     """Re-fetch models.dev and upsert into DB if the catalog is empty or stale.
 
     Staleness is determined by the oldest ``fetched_at`` in the table: if it is
