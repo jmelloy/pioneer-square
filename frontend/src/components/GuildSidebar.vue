@@ -23,7 +23,7 @@
         @click="activeTab = 'issues'"
       >
         <span class="tab-label">Issues</span>
-        <span v-if="ghStore.issues.length" class="tab-count">{{ ghStore.issues.length }}</span>
+        <span v-if="openIssueCount" class="tab-count">{{ openIssueCount }}</span>
       </button>
     </div>
 
@@ -65,6 +65,7 @@ const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {
 
 const isConnected = computed(() => guildStore.isConnected)
 const workerCount = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline').length)
+const openIssueCount = computed(() => ghStore.issues.filter((i) => i.state === 'open').length)
 const activeTab = ref<'tasks' | 'workers' | 'issues'>('tasks')
 
 onMounted(async () => {

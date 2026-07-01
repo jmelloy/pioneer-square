@@ -7,7 +7,6 @@
     >
       {{ ghStore.loading ? '...' : '↻' }}
     </button>
-    <span class="issues-count">{{ openIssues.length }} issue{{ openIssues.length !== 1 ? 's' : '' }}</span>
     <span class="issues-repos">{{
       guildStore.currentGuild?.primary_repo ??
       ghStore.selectedRepos.length + ' repo' + (ghStore.selectedRepos.length !== 1 ? 's' : '')
@@ -113,11 +112,6 @@ onUnmounted(() => {
 .refresh-btn:disabled {
   opacity: 0.4;
   pointer-events: none;
-}
-
-.issues-count {
-  font-size: 11px;
-  color: var(--color-text-dim);
 }
 
 .issues-repos {
