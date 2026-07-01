@@ -7,15 +7,20 @@ direct unit testing in ``tests/test_soft_delete_tasks.py``.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
+import urllib.request
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from time import time as _monotime
 
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
 from lock_service import LockService
-from models import Guild, Task, TaskLog, live_tasks_filter
+from models import GithubToken, Guild, GuildMember, Task, TaskLog, live_tasks_filter
 from pydantic import BaseModel
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -312,6 +317,222 @@ async def cancel_task_endpoint(
         TaskUpdateMsg(taskId=task_id, state="cancelled", deletedAt=deleted_at.isoformat()),
     )
     return {"status": "cancelled", "taskId": task_id}
+
+
+# ---------------------------------------------------------------------------
+# Task tree endpoint helpers
+# ---------------------------------------------------------------------------
+
+_CLOSES_RE = re.compile(r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE)
+_GH_PR_URL_RE = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)")
+
+# Simple in-process TTL caches (key → (value, expires_at))
+_TREE_CACHE_TTL = 600.0  # 10 minutes
+_gh_issue_cache: dict[str, tuple[dict, float]] = {}
+_gh_pr_body_cache: dict[str, tuple[str | None, float]] = {}
+
+
+def _gh_fetch_issue(repo: str, number: int, token: str) -> dict | None:
+    """Fetch GitHub issue title/state. Cached for _TREE_CACHE_TTL seconds."""
+    key = f"{repo}#{number}"
+    cached = _gh_issue_cache.get(key)
+    if cached and cached[1] > _monotime():
+        return cached[0]
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/issues/{number}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "pioneer-square",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        result: dict = {
+            "title": data.get("title") or f"#{number}",
+            "state": data.get("state") or "open",
+        }
+        _gh_issue_cache[key] = (result, _monotime() + _TREE_CACHE_TTL)
+        return result
+    except Exception:
+        return None
+
+
+def _gh_fetch_pr_body(repo: str, pr_number: int, token: str) -> str | None:
+    """Fetch a GitHub PR body for closes-reference extraction. Cached."""
+    key = f"{repo}#pr{pr_number}"
+    cached = _gh_pr_body_cache.get(key)
+    if cached and cached[1] > _monotime():
+        return cached[0]
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "pioneer-square",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        body: str | None = data.get("body") or ""
+        _gh_pr_body_cache[key] = (body, _monotime() + _TREE_CACHE_TTL)
+        return body
+    except Exception:
+        _gh_pr_body_cache[key] = (None, _monotime() + _TREE_CACHE_TTL)
+        return None
+
+
+def _nest_tasks(tasks: list[dict]) -> list[dict]:
+    """Build a parent/child tree from a flat task list using parent_task_id."""
+    by_id = {t["id"]: dict(t, children=[]) for t in tasks}
+    roots: list[dict] = []
+    for t in by_id.values():
+        parent_id = t.get("parent_task_id")
+        if parent_id and parent_id in by_id:
+            by_id[parent_id]["children"].append(t)
+        else:
+            roots.append(t)
+    return roots
+
+
+@router.get("/guilds/{guild_id}/tasks/tree")
+async def get_guild_tasks_tree(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return tasks grouped hierarchically under their GitHub issues/PRs.
+
+    Top-level nodes are GitHub issues (identified by issue_number+issue_repo on
+    the task).  Review tasks whose PR body contains a ``closes #N`` reference are
+    also parented to that issue.  Tasks with parent_task_id are nested under their
+    parent task within the group.  Remaining tasks go in ``ungrouped``.
+    """
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+
+    result = await db.exec(
+        select(
+            col(Task.id),
+            col(Task.worker_id),
+            col(Task.name),
+            col(Task.description),
+            col(Task.phase),
+            col(Task.state),
+            col(Task.parent_task_id),
+            col(Task.branch),
+            col(Task.pr_url),
+            col(Task.pr_number),
+            col(Task.pr_repo),
+            col(Task.issue_number),
+            col(Task.issue_repo),
+            col(Task.created_at),
+            col(Task.deleted_at),
+        )
+        .where(col(Task.guild_id) == guild_pk, live_tasks_filter())
+        .order_by(col(Task.created_at).asc())
+        .limit(200)
+    )
+    raw_tasks = [dict(r._mapping) for r in result.all()]
+
+    # Fetch the guild owner's GitHub token (may be None)
+    token_row = await db.exec(
+        select(col(GithubToken.access_token))
+        .join(GuildMember, col(GuildMember.user_id) == col(GithubToken.github_user_id))
+        .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
+        .limit(1)
+    )
+    gh_token: str | None = token_row.one_or_none()
+
+    # --- Build task_id → (issue_repo, issue_number) mapping ---
+
+    task_issue: dict[str, tuple[str, int]] = {}
+
+    # Pass 1: tasks with explicit issue linkage
+    pr_tasks: list[tuple[str, str, int]] = []
+    for task in raw_tasks:
+        if task["issue_number"] and task["issue_repo"]:
+            task_issue[task["id"]] = (task["issue_repo"], task["issue_number"])
+        elif task["pr_url"] and gh_token:
+            # Use stored pr_repo/pr_number when available; fall back to URL parse
+            if task["pr_repo"] and task["pr_number"]:
+                pr_tasks.append((task["id"], task["pr_repo"], task["pr_number"]))
+            else:
+                m = _GH_PR_URL_RE.match(task["pr_url"])
+                if m:
+                    pr_tasks.append((task["id"], m.group(1), int(m.group(2))))
+
+    # Pass 2: resolve PR bodies to find closing issue references
+    if pr_tasks and gh_token:
+        bodies = await asyncio.gather(
+            *[
+                asyncio.to_thread(_gh_fetch_pr_body, repo, pr_num, gh_token)
+                for _, repo, pr_num in pr_tasks
+            ]
+        )
+        for (task_id, repo, _), body in zip(pr_tasks, bodies, strict=False):
+            if body:
+                m = _CLOSES_RE.search(body)
+                if m:
+                    task_issue[task_id] = (repo, int(m.group(1)))
+
+    # Pass 3: propagate issue assignment through parent_task_id chains
+    changed = True
+    while changed:
+        changed = False
+        for task in raw_tasks:
+            if task["id"] in task_issue:
+                continue
+            pid = task.get("parent_task_id")
+            if pid and pid in task_issue:
+                task_issue[task["id"]] = task_issue[pid]
+                changed = True
+
+    # --- Group tasks ---
+    issue_groups: dict[tuple[str, int], list[dict]] = defaultdict(list)
+    ungrouped: list[dict] = []
+    for task in raw_tasks:
+        key = task_issue.get(task["id"])
+        if key:
+            issue_groups[key].append(task)
+        else:
+            ungrouped.append(task)
+
+    # --- Fetch issue metadata in parallel ---
+    issue_info: dict[tuple[str, int], dict] = {}
+    if issue_groups and gh_token:
+        keys = list(issue_groups.keys())
+        infos = await asyncio.gather(
+            *[asyncio.to_thread(_gh_fetch_issue, repo, num, gh_token) for repo, num in keys]
+        )
+        for key, info in zip(keys, infos, strict=False):
+            issue_info[key] = info or {"title": f"#{key[1]}", "state": "open"}
+    else:
+        for key in issue_groups:
+            issue_info[key] = {"title": f"#{key[1]}", "state": "open"}
+
+    # --- Build response ---
+    nodes = []
+    for (repo, num), group_tasks in issue_groups.items():
+        info = issue_info.get((repo, num), {"title": f"#{num}", "state": "open"})
+        nodes.append(
+            {
+                "type": "issue",
+                "issue_number": num,
+                "issue_repo": repo,
+                "title": info["title"],
+                "state": info["state"],
+                "tasks": _nest_tasks(group_tasks),
+            }
+        )
+
+    # Sort: open issues first, then by issue number descending (newest first)
+    nodes.sort(key=lambda n: (0 if n["state"] == "open" else 1, -n["issue_number"]))
+
+    return {"nodes": nodes, "ungrouped": _nest_tasks(ungrouped)}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/redirect")
