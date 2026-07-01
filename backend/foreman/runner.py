@@ -326,6 +326,14 @@ async def _poll_loop(guild_id: str) -> None:
                     )
                 )
                 active_tasks = [dict(r._mapping) for r in result.all()]
+
+                # Opportunistically refresh the model catalog while we have a DB
+                # session open. The function is a no-op when the catalog is fresh.
+                from util.models_dev import refresh_model_catalog_if_stale as _refresh_catalog
+
+                refreshed = await _refresh_catalog(db)
+                if refreshed:
+                    await db.commit()
             finally:
                 await db.close()
 
