@@ -46,7 +46,11 @@ export const useTasksStore = defineStore('tasks', () => {
 
   function _removeTask(taskId: string) {
     const idx = tasks.value.findIndex((t) => t.id === taskId)
-    if (idx >= 0) tasks.value.splice(idx, 1)
+    if (idx >= 0) {
+      // Keep tasks with an open PR visible even after their soft-delete window elapses.
+      if (tasks.value[idx].pr_url) return
+      tasks.value.splice(idx, 1)
+    }
     delete taskLogs.value[taskId]
     closeTask(taskId)
     const timer = _expiryTimers.get(taskId)
@@ -63,6 +67,9 @@ export const useTasksStore = defineStore('tasks', () => {
       _expiryTimers.delete(taskId)
     }
     if (!deletedAt) return
+    // Tasks with an open PR stay visible regardless of their soft-delete window.
+    const task = tasks.value.find((t) => t.id === taskId)
+    if (task?.pr_url) return
     const delay = new Date(deletedAt).getTime() - Date.now()
     if (Number.isNaN(delay)) return
     if (delay <= 0) {
@@ -179,7 +186,15 @@ export const useTasksStore = defineStore('tasks', () => {
       if (task) {
         if (data.state) task.state = data.state
         if (data.branch) task.branch = data.branch
-        if (data.prUrl) task.pr_url = data.prUrl
+        if (data.prUrl) {
+          task.pr_url = data.prUrl
+          // Cancel any pending expiry — this task now has an open PR and must stay visible.
+          const existing = _expiryTimers.get(task.id)
+          if (existing) {
+            clearTimeout(existing)
+            _expiryTimers.delete(task.id)
+          }
+        }
         if (data.worktreePath) task.worktree_path = data.worktreePath
         if (data.deletedAt !== undefined) {
           task.deleted_at = data.deletedAt
@@ -238,6 +253,7 @@ export const useTasksStore = defineStore('tasks', () => {
   const liveTasks = computed(() => {
     const now = Date.now()
     return tasks.value.filter((t) => {
+      if (t.pr_url) return true
       if (!t.deleted_at) return true
       const ts = new Date(t.deleted_at).getTime()
       return Number.isNaN(ts) || ts > now

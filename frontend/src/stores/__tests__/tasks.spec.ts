@@ -230,6 +230,82 @@ describe('useTasksStore', () => {
       expect(ids).not.toContain('t-past')
     })
 
+    it('done task with no pr_url is removed when timer fires', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'done' })
+
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        deletedAt: new Date(Date.now() + 1_000).toISOString(),
+      })
+
+      vi.advanceTimersByTime(2_000)
+      expect(store.tasks).toHaveLength(0)
+    })
+
+    it('done task with pr_url is NOT removed when timer would fire', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'done', pr_url: 'https://github.com/x/y/pull/1' })
+
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        deletedAt: new Date(Date.now() + 1_000).toISOString(),
+      })
+
+      vi.advanceTimersByTime(2_000)
+      expect(store.tasks).toHaveLength(1)
+    })
+
+    it('cancelled task with pr_url is NOT removed when timer would fire', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'cancelled', pr_url: 'https://github.com/x/y/pull/2' })
+
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        deletedAt: new Date(Date.now() + 1_000).toISOString(),
+      })
+
+      vi.advanceTimersByTime(2_000)
+      expect(store.tasks).toHaveLength(1)
+    })
+
+    it('liveTasks keeps tasks with pr_url even when deleted_at has passed', () => {
+      const store = useTasksStore()
+      const past = new Date(Date.now() - 5_000).toISOString()
+      store.tasks.push({ id: 't-with-pr', state: 'done', deleted_at: past, pr_url: 'https://github.com/x/y/pull/3' })
+      store.tasks.push({ id: 't-no-pr', state: 'done', deleted_at: past })
+
+      const ids = store.liveTasks.map((t) => t.id)
+      expect(ids).toContain('t-with-pr')
+      expect(ids).not.toContain('t-no-pr')
+    })
+
+    it('receiving prUrl on task-update cancels any pending expiry timer', () => {
+      const store = useTasksStore()
+      store.tasks.push({ id: 't-1', state: 'done' })
+
+      // First, schedule expiry
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        deletedAt: new Date(Date.now() + 5_000).toISOString(),
+      })
+      expect(store.tasks).toHaveLength(1)
+
+      // Then, PR is opened — should cancel the expiry timer
+      store.handleWebSocketMessage({
+        type: 'task-update',
+        taskId: 't-1',
+        prUrl: 'https://github.com/x/y/pull/4',
+      })
+
+      vi.advanceTimersByTime(10_000)
+      expect(store.tasks).toHaveLength(1)
+    })
+
     it('clearTasks cancels pending expiry timers', () => {
       const store = useTasksStore()
       store.tasks.push({ id: 't-1', state: 'done' })
