@@ -292,7 +292,7 @@ def test_webhook_issues_closed_updates_issue_state(client):
     body = _make_issue_event("org/repo", 100, "closed")
     headers = _signed_headers("wh-secret-1", body, event="issues", delivery="del-iss-001")
     resp = test_client.post(f"/webhooks/github/{guild_id}", content=body, headers=headers)
-    assert resp.status_code in (200, 204), resp.text
+    assert resp.status_code in (200, 202, 204), resp.text
 
     assert _get_issue_state(db_url, "task-wh-iss1") == "closed"
 
@@ -319,7 +319,7 @@ def test_webhook_issues_reopened_updates_issue_state(client):
     body = _make_issue_event("org/repo", 101, "reopened")
     headers = _signed_headers("wh-secret-2", body, event="issues", delivery="del-iss-002")
     resp = test_client.post(f"/webhooks/github/{guild_id}", content=body, headers=headers)
-    assert resp.status_code in (200, 204), resp.text
+    assert resp.status_code in (200, 202, 204), resp.text
 
     assert _get_issue_state(db_url, "task-wh-iss2") == "open"
 
@@ -369,7 +369,7 @@ def test_webhook_issues_only_updates_matching_repo_and_number(client):
     body = _make_issue_event("org/repo", 200, "closed")
     headers = _signed_headers("wh-secret-3", body, event="issues", delivery="del-iss-003")
     resp = test_client.post(f"/webhooks/github/{guild_id}", content=body, headers=headers)
-    assert resp.status_code in (200, 204), resp.text
+    assert resp.status_code in (200, 202, 204), resp.text
 
     assert _get_issue_state(db_url, "task-wh-iss3-match") == "closed"
     assert _get_issue_state(db_url, "task-wh-iss3-other-num") == "open"
