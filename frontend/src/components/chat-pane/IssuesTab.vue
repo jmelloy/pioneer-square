@@ -32,8 +32,8 @@
         <span class="issue-number">#{{ issue.number }}</span>
         <span
           class="issue-state-badge"
-          :class="'badge-' + (issue.state || 'open')"
-        >{{ issue.state || 'open' }}</span>
+          :class="'badge-' + issue.state"
+        >{{ issue.state }}</span>
       </div>
       <div class="issue-title">{{ issue.title }}</div>
       <div class="issue-meta">

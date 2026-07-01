@@ -98,7 +98,7 @@ export const useGitHubStore = defineStore('github', () => {
       const allIssues = await Promise.all(
         reposToFetch.map(async (repoName) => {
           const res = await fetch(
-            `${GH_API}/repos/${repoName}/issues?state=all&per_page=30&sort=created&direction=desc`,
+            `${GH_API}/repos/${repoName}/issues?state=all&per_page=100&sort=created&direction=desc`,
             { headers: ghHeaders(token.value) },
           )
           if (!res.ok) return [] as GitHubIssue[]
