@@ -1848,8 +1848,16 @@ class Worker:
                 repos.insert(0, issue_repo)
         logger.info("Task %s: repos=%s", task_id, repos)
         followup_instructions = task.get("followup_instructions") or ""
-        followup_branch = task.get("followup_branch") or ""
-        is_followup = bool(followup_instructions)
+        # When the idle puller picks up a follow-up task via REST, the task dict
+        # contains `branch` (the DB column) but not `followup_branch` (a
+        # WS-path key set only by the task-followup message handler).  Fall back
+        # to `task.get("branch")` so we never generate a fresh branch name for a
+        # task that already has an open PR.
+        followup_branch = task.get("followup_branch") or task.get("branch") or ""
+        # phase="followup" is the DB marker for tasks dispatched by send_followup.
+        # The idle puller path has no followup_instructions (those lived only in
+        # the WS message), so we must check phase as well.
+        is_followup = bool(followup_instructions) or task.get("phase") == "followup"
 
         logger.info(
             "Executing task %s (agent=%s, followup=%s): %s",
@@ -1907,19 +1915,24 @@ class Worker:
                 and os.path.isdir(os.path.join(wt_path, ".git"))
                 or (os.path.isdir(wt_path) and os.path.isfile(os.path.join(wt_path, ".git")))
             ):
-                # Worktree from a prior run on the same task — reuse it. Pull
-                # the latest origin state for the branch so a different worker
-                # that pushed changes is reflected here.
+                # Worktree from a prior run on the same task — reuse it.
                 logger.info("Task %s: reusing worktree at %s", task_id, wt_path)
                 await emit(f"Reusing worktree {repo_name}", level=LEVEL_WORKER)
                 if is_followup:
+                    # Pull latest so we don't clobber commits pushed since the
+                    # last follow-up or by other workers.
                     await git_ops.run_git(["fetch", "origin", branch], cwd=wt_path)
+                    await git_ops.run_git(["reset", "--hard", f"origin/{branch}"], cwd=wt_path)
                 worktree_entries.append((repo_full, repo_path, wt_path))
                 if primary_wt is None:
                     primary_wt = wt_path
                 continue
             if is_followup:
                 logger.info("Task %s: attaching worktree %s to branch %s", task_id, wt_path, branch)
+                # attach_worktree fetches origin/<branch> before checking it out, so the
+                # new worktree starts at the latest remote commit — no separate pull needed.
+                # Pull latest so we don't clobber commits pushed since the last follow-up
+                # or by other workers.
                 ok = await git_ops.attach_worktree(repo_path, wt_path, branch)
                 if not ok:
                     # Branch never reached origin (e.g. original task failed before push).
