@@ -191,7 +191,7 @@ function countTasks(tasks: TaskTreeNode[]): number {
 }
 
 const activeNodes = computed(
-  () => treeData.value?.nodes.filter((n) => hasActiveTasks(n.tasks)) ?? [],
+  () => treeData.value?.nodes.filter((n) => n.state == 'open' || hasActiveTasks(n.tasks)) ?? [],
 )
 
 const isEmpty = computed(
