@@ -158,6 +158,7 @@ export interface GitHubIssue {
   id: number
   number: number
   title: string
+  state: string
   labels: GitHubLabel[]
   created_at: string
   pull_request?: unknown

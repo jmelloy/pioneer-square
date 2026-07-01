@@ -7,7 +7,7 @@
     >
       {{ ghStore.loading ? '...' : '↻' }}
     </button>
-    <span class="issues-count">{{ ghStore.issues.length }} open</span>
+    <span class="issues-count">{{ ghStore.issues.length }} issue{{ ghStore.issues.length !== 1 ? 's' : '' }}</span>
     <span class="issues-repos">{{
       guildStore.currentGuild?.primary_repo ??
       ghStore.selectedRepos.length + ' repo' + (ghStore.selectedRepos.length !== 1 ? 's' : '')
@@ -16,7 +16,7 @@
 
   <div class="issues-list" ref="issuesEl">
     <div v-if="ghStore.issues.length === 0 && !ghStore.loading" class="chat-empty">
-      No open issues found.
+      No issues found.
     </div>
     <div v-if="ghStore.loading" class="chat-empty">Loading issues...</div>
 
@@ -30,6 +30,10 @@
       <div class="issue-top">
         <span class="issue-repo">{{ issue.repo }}</span>
         <span class="issue-number">#{{ issue.number }}</span>
+        <span
+          class="issue-state-badge"
+          :class="'badge-' + issue.state"
+        >{{ issue.state }}</span>
       </div>
       <div class="issue-title">{{ issue.title }}</div>
       <div class="issue-meta">
@@ -170,6 +174,25 @@ onUnmounted(() => {
   font-family: var(--font-pixel);
   font-size: 7px;
   color: var(--color-brass-dark);
+}
+
+.issue-state-badge {
+  font-family: var(--font-pixel);
+  font-size: 5px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.badge-open {
+  background: rgba(80, 200, 120, 0.2);
+  color: var(--color-green);
+}
+
+.badge-closed {
+  background: rgba(200, 80, 80, 0.2);
+  color: var(--color-red);
 }
 
 .issue-title {

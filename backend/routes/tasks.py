@@ -447,7 +447,8 @@ async def get_guild_tasks_tree(
     )
     raw_tasks = [dict(r._mapping) for r in result.all()]
 
-    # Fetch the guild owner's GitHub token (may be None)
+    # Fetch GitHub token from the guild owner only to avoid privilege escalation —
+    # a regular member's personal token must not be used to access guild resources.
     token_row = await db.exec(
         select(col(GithubToken.access_token))
         .join(GuildMember, col(GuildMember.user_id) == col(GithubToken.github_user_id))
