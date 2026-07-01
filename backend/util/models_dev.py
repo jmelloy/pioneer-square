@@ -10,6 +10,7 @@ reads those rows back and reconstructs the provider list used by ``GET /api/mode
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import UTC, datetime, timedelta
@@ -130,8 +131,16 @@ async def fetch_providers(*, force: bool = False) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-async def _upsert_catalog(db: AsyncSession, raw_data: dict[str, Any]) -> int:
+async def _upsert_catalog(
+    db: AsyncSession,
+    raw_data: dict[str, Any],
+    bedrock_model_map: dict[str, str] | None = None,
+) -> int:
     """Upsert supported-provider model rows from a raw models.dev API response.
+
+    *bedrock_model_map* is an optional ``{short_id: bedrock_arn}`` mapping
+    produced by the Bedrock enricher.  When provided, Bedrock rows are
+    enriched with the canonical AWS model ID or inference-profile ARN.
 
     Returns the number of rows upserted. Does NOT commit — callers decide when
     to commit so they can batch with other writes.
@@ -154,14 +163,19 @@ async def _upsert_catalog(db: AsyncSession, raw_data: dict[str, Any]) -> int:
             if not isinstance(m, dict):
                 continue
             capabilities = {k: v for k, v in m.items() if k not in ("id", "name")} or None
+            short_id = m.get("id", mid)
+            bedrock_model_id: str | None = None
+            if normalized == "bedrock" and bedrock_model_map:
+                bedrock_model_id = bedrock_model_map.get(short_id)
             rows.append(
                 {
                     "provider": normalized,
-                    "model_id": m.get("id", mid),
+                    "model_id": short_id,
                     "display_name": m.get("name", mid),
                     "capabilities": capabilities,
                     "raw": m,
                     "fetched_at": now,
+                    "bedrock_model_id": bedrock_model_id,
                 }
             )
     if not rows:
@@ -175,6 +189,7 @@ async def _upsert_catalog(db: AsyncSession, raw_data: dict[str, Any]) -> int:
             "capabilities": stmt.excluded.capabilities,
             "raw": stmt.excluded.raw,
             "fetched_at": stmt.excluded.fetched_at,
+            "bedrock_model_id": stmt.excluded.bedrock_model_id,
         },
     )
     await db.execute(stmt)
@@ -239,7 +254,24 @@ async def refresh_model_catalog_if_stale(db: AsyncSession, *, max_age_hours: int
             resp = await client.get(MODELS_DEV_URL)
             resp.raise_for_status()
             data = resp.json()
-        count = await _upsert_catalog(db, data)
+
+        # Enrich Bedrock rows with canonical model IDs / inference-profile ARNs
+        # when AWS credentials are available.  Failures are non-fatal.
+        bedrock_map: dict[str, str] = {}
+        has_bedrock = any(
+            _PROVIDER_ALIASES.get(pid) == "bedrock"
+            for pid, entry in data.items()
+            if isinstance(entry, dict) and entry.get("models")
+        )
+        if has_bedrock:
+            from util.bedrock_enricher import build_bedrock_model_map
+
+            try:
+                bedrock_map = await asyncio.to_thread(build_bedrock_model_map)
+            except Exception as exc:
+                logger.warning("models.dev: Bedrock enrichment failed (%s) — skipping", exc)
+
+        count = await _upsert_catalog(db, data, bedrock_model_map=bedrock_map or None)
         providers = _parse_response(data)
         if providers:
             global _cached_providers, _cache_fetched_at

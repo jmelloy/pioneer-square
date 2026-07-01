@@ -534,3 +534,7 @@ class ModelCatalog(SQLModel, table=True):
     capabilities: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     raw: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     fetched_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    # Canonical AWS Bedrock model ID or cross-region inference profile ARN
+    # (e.g. "us.anthropic.claude-sonnet-4-6-20251001-v1:0"). NULL until the
+    # Bedrock enricher resolves it (requires AWS credentials at catalog refresh).
+    bedrock_model_id: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
