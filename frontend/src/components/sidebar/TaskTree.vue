@@ -181,8 +181,6 @@ function resolveIssueState(node: IssueTreeNode): string {
     (i) => i.repo === node.issue_repo && i.number === node.issue_number,
   )
   if (gh) return gh.state
-  // Infer closed when the backend didn't fetch state and all tasks are terminal
-  if (node.state === 'open' && !hasActiveTasks(node.tasks)) return 'closed'
   return node.state
 }
 
