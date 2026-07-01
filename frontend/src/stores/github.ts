@@ -103,6 +103,11 @@ export const useGitHubStore = defineStore('github', () => {
           )
           if (!res.ok) return [] as GitHubIssue[]
           const data: Array<Record<string, unknown>> = await res.json()
+          if (data.length === 100) {
+            console.warn(
+              `[github] fetchIssues: received exactly 100 results for ${repoName} — results may be truncated (pagination not implemented)`,
+            )
+          }
           return data
             .filter((i) => !i.pull_request)
             .map((i) => ({ ...i, repo: repoName })) as GitHubIssue[]

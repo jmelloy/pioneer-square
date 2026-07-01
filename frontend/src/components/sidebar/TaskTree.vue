@@ -36,15 +36,15 @@
       </div>
 
       <!-- Ungrouped tasks -->
-      <div v-if="treeData!.ungrouped.length" class="tree-group">
+      <div v-if="activeUngrouped.length" class="tree-group">
         <div class="group-header" @click="toggle('__ungrouped__')">
           <span class="collapse-icon">{{ isExpanded('__ungrouped__') ? '▾' : '▸' }}</span>
           <span class="issue-title ungrouped-label">Ungrouped</span>
-          <span class="group-count">{{ countTasks(treeData!.ungrouped) }}</span>
+          <span class="group-count">{{ countTasks(activeUngrouped) }}</span>
         </div>
         <div v-if="isExpanded('__ungrouped__')" class="group-tasks">
           <TaskTreeRow
-            v-for="task in treeData!.ungrouped"
+            v-for="task in activeUngrouped"
             :key="task.id"
             :task="task"
             :depth="0"
@@ -182,12 +182,17 @@ const visibleNodes = computed(() => {
   return treeData.value.nodes.filter((node) => hasActiveTask(node.tasks))
 })
 
+const activeUngrouped = computed(() => {
+  if (!treeData.value) return []
+  return treeData.value.ungrouped.filter((task) => !TASK_TERMINAL_STATES.has(task.state))
+})
+
 const isEmpty = computed(
   () =>
     !loading.value &&
     treeData.value &&
     visibleNodes.value.length === 0 &&
-    treeData.value.ungrouped.length === 0,
+    activeUngrouped.value.length === 0,
 )
 </script>
 
