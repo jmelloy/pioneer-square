@@ -439,6 +439,7 @@ async def get_guild_tasks_tree(
             col(Task.issue_number),
             col(Task.issue_repo),
             col(Task.issue_state),
+            col(Task.issue_title),
             col(Task.created_at),
             col(Task.deleted_at),
         )
@@ -515,21 +516,25 @@ async def get_guild_tasks_tree(
         else:
             ungrouped.append(task)
 
-    # --- Build DB-cached issue state fallback ---
-    # Each task in an issue group stores the last-known GitHub issue state so we
-    # can return the real state even when the GitHub API is unreachable or the
-    # guild owner has no token.  Any non-null value in the group is authoritative.
+    # --- Build DB-cached issue state/title fallback ---
+    # Each task in an issue group stores the last-known GitHub issue state and
+    # title so we can return real values even when the GitHub API is unreachable
+    # or the guild owner has no token.  Any non-null value in the group is authoritative.
     db_issue_states: dict[tuple[str, int], str] = {}
+    db_issue_titles: dict[tuple[str, int], str] = {}
     for key, group_tasks in issue_groups.items():
         for task in group_tasks:
-            if task.get("issue_state"):
+            if task.get("issue_state") and key not in db_issue_states:
                 db_issue_states[key] = task["issue_state"]
+            if task.get("issue_title") and key not in db_issue_titles:
+                db_issue_titles[key] = task["issue_title"]
+            if key in db_issue_states and key in db_issue_titles:
                 break
 
     # --- Fetch issue metadata in parallel ---
     issue_info: dict[tuple[str, int], dict] = {}
     # Track which keys were resolved via the GitHub API so we can write them back.
-    api_resolved: dict[tuple[str, int], str] = {}
+    api_resolved: dict[tuple[str, int], dict] = {}
     if issue_groups and gh_token:
         keys = list(issue_groups.keys())
         infos = await asyncio.gather(
@@ -538,27 +543,37 @@ async def get_guild_tasks_tree(
         for key, info in zip(keys, infos, strict=False):
             if info:
                 issue_info[key] = info
-                api_resolved[key] = info["state"]
+                api_resolved[key] = info
             else:
                 db_state = db_issue_states.get(key, "open")
-                issue_info[key] = {"title": f"#{key[1]}", "state": db_state}
+                db_title = db_issue_titles.get(key, f"#{key[1]}")
+                issue_info[key] = {"title": db_title, "state": db_state}
     else:
         for key in issue_groups:
             db_state = db_issue_states.get(key, "open")
-            issue_info[key] = {"title": f"#{key[1]}", "state": db_state}
+            db_title = db_issue_titles.get(key, f"#{key[1]}")
+            issue_info[key] = {"title": db_title, "state": db_state}
 
-    # Write back states fetched from GitHub API to the tasks table so future
+    # Write back state+title fetched from GitHub API to the tasks table so future
     # requests can fall back to the DB when the API is unavailable.
     if api_resolved:
-        updates_by_state: dict[str, list[str]] = {}
-        for key, state in api_resolved.items():
+        tasks_to_update: list[tuple[str, str, str]] = []  # (task_id, state, title)
+        for key, info in api_resolved.items():
+            state = info["state"]
+            title = info["title"]
             for task in issue_groups[key]:
-                if task.get("issue_state") != state:
-                    updates_by_state.setdefault(state, []).append(task["id"])
-        if updates_by_state:
-            for state, task_ids in updates_by_state.items():
+                if task.get("issue_state") != state or task.get("issue_title") != title:
+                    tasks_to_update.append((task["id"], state, title))
+        if tasks_to_update:
+            # Group by (state, title) to minimize UPDATE statements
+            updates_by_values: dict[tuple[str, str], list[str]] = {}
+            for task_id, state, title in tasks_to_update:
+                updates_by_values.setdefault((state, title), []).append(task_id)
+            for (state, title), task_ids in updates_by_values.items():
                 await db.exec(
-                    update(Task).where(col(Task.id).in_(task_ids)).values(issue_state=state)
+                    update(Task)
+                    .where(col(Task.id).in_(task_ids))
+                    .values(issue_state=state, issue_title=title)
                 )
             await db.commit()
 
@@ -566,7 +581,11 @@ async def get_guild_tasks_tree(
     nodes = []
     for (repo, num), group_tasks in issue_groups.items():
         info = issue_info.get(
-            (repo, num), {"title": f"#{num}", "state": db_issue_states.get((repo, num), "open")}
+            (repo, num),
+            {
+                "title": db_issue_titles.get((repo, num), f"#{num}"),
+                "state": db_issue_states.get((repo, num), "open"),
+            },
         )
         nodes.append(
             {

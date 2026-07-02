@@ -183,6 +183,7 @@ class Task(SQLModel, table=True):
     issue_number: int | None = None
     issue_repo: str | None = None
     issue_state: str | None = None
+    issue_title: str | None = None
     state: str = Field(default="pending", sa_column_kwargs={"server_default": "'pending'"})
     branch: str | None = None
     worktree_path: str | None = None
