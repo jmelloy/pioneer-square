@@ -757,6 +757,36 @@ async def github_webhook(
         )
         await db.commit()
 
+    # Keep issue_state and issue_title current on all tasks linked to this issue
+    # when GitHub sends an issues event (opened / closed / reopened / edited).
+    if event_type == "issues" and action in ("opened", "closed", "reopened", "edited") and repo:
+        issue_obj = payload.get("issue") or {}
+        issue_num = issue_obj.get("number")
+        if issue_num:
+            new_issue_state = "closed" if action == "closed" else "open"
+            new_issue_title: str | None = issue_obj.get("title") or None
+            update_values: dict = {"issue_state": new_issue_state}
+            if new_issue_title:
+                update_values["issue_title"] = new_issue_title
+            await db.exec(
+                update(Task)
+                .where(
+                    col(Task.guild_id) == guild_pk,
+                    col(Task.issue_repo) == repo,
+                    col(Task.issue_number) == issue_num,
+                )
+                .values(**update_values)
+            )
+            await db.commit()
+            logger.info(
+                "github webhook updated issue_state=%s issue_title=%r for issue %s#%s guild=%s",
+                new_issue_state,
+                new_issue_title,
+                repo,
+                issue_num,
+                guild_id,
+            )
+
     # Deterministic lifecycle transitions: finalize on merge, fail on close-without-merge.
     # These happen directly — no AI decision needed for these clear-cut outcomes.
     if task_id and event_type == "pull_request" and action == "closed":
