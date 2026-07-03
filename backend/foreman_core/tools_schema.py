@@ -36,8 +36,9 @@ FOREMAN_TOOLS = [
     {
         "name": "assign_task",
         "description": (
-            "Queue a coding task for a worker agent. The worker creates a git worktree, "
-            "runs the chosen coding agent on the description, and pushes its work. "
+            "Queue a coding task — the worker host process (w-xxx) spawns an agent subprocess to execute it. "
+            "The worker creates a git worktree, runs the chosen coding agent on the description, "
+            "and pushes its work. "
             "For execute-phase tasks the worker opens a PR; for plan-phase tasks, the "
             "Foreman should post findings as a comment on the linked GitHub issue instead "
             "— do NOT open a PR for a document, spec, or outline. "
@@ -54,7 +55,7 @@ FOREMAN_TOOLS = [
             "properties": {
                 "worker_id": {
                     "type": "string",
-                    "description": "Worker agent ID (e.g. w-abc123). Must be idle.",
+                    "description": "Worker host-process ID (e.g. w-abc123). Must be idle.",
                 },
                 "description": {
                     "type": "string",
@@ -208,7 +209,7 @@ FOREMAN_TOOLS = [
     },
     {
         "name": "message_worker",
-        "description": "Send a message to a worker's terminal — for mid-task context injection.",
+        "description": "Send a message to a worker's terminal — reaches the active agent subprocess mid-task; has no effect if the worker is idle.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -258,8 +259,8 @@ FOREMAN_TOOLS = [
     {
         "name": "shutdown_worker",
         "description": (
-            "Send a shutdown signal to a worker agent, causing it to gracefully stop. "
-            "Idle agents exit immediately; busy agents finish their current task and skip "
+            "Send a shutdown signal to a worker host process (w-xxx), causing it to gracefully stop. "
+            "The worker exits immediately if idle; if busy, it finishes the current agent task and skips "
             "the follow-up window. The worker process disconnects and transitions to offline. "
             "Use when a worker is misbehaving, the operator is winding down, or a host needs "
             "to be freed up — prefer cancel_task for stopping a single bad task."
@@ -269,7 +270,7 @@ FOREMAN_TOOLS = [
             "properties": {
                 "worker_id": {
                     "type": "string",
-                    "description": "Worker agent ID (e.g. w-abc123).",
+                    "description": "Worker host-process ID (e.g. w-abc123).",
                 },
                 "reason": {
                     "type": "string",
