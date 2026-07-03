@@ -37,6 +37,7 @@
     </div>
 
     <div class="sidebar-footer">
+      <CostSummary />
       <div class="connection-status" :class="{ connected: isConnected }">
         <span class="status-dot"></span>
         {{ isConnected ? 'Connected' : 'Disconnected' }}
@@ -54,6 +55,7 @@ import { useAgentsStore } from '../stores/agents'
 import TaskTree from './sidebar/TaskTree.vue'
 import WorkerList from './sidebar/WorkerList.vue'
 import IssuesTab from './chat-pane/IssuesTab.vue'
+import CostSummary from './sidebar/CostSummary.vue'
 import type { GitHubIssue } from '../types'
 
 const guildStore = useGuildStore()

@@ -206,6 +206,10 @@ class Task(SQLModel, table=True):
     # worker-driven foreman events (task-complete, etc.) back to the originator's
     # foreman thread in multi-user guilds. NULL on legacy/system tasks.
     user_id: str | None = None
+    # Model capability tier this task was dispatched at: "cheap", "standard", or
+    # "powerful". Derived from phase+tool at assign_task time. NULL on legacy
+    # tasks created before this column existed.
+    model_tier: str | None = None
 
 
 class GithubToken(SQLModel, table=True):

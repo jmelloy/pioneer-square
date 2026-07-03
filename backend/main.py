@@ -424,6 +424,7 @@ app.add_middleware(
 
 from routes import agents as _agents_routes  # noqa: E402
 from routes import auth as _auth_routes  # noqa: E402
+from routes import cost as _cost_routes  # noqa: E402
 from routes import debug as _debug_routes  # noqa: E402
 from routes import foreman as _foreman_routes  # noqa: E402
 from routes import guilds as _guilds_routes  # noqa: E402
@@ -452,6 +453,7 @@ app.include_router(_ws_routes.router)
 app.include_router(_debug_routes.router)
 app.include_router(_models_routes.router)
 app.include_router(_issues_routes.router)
+app.include_router(_cost_routes.router)
 
 
 # ---------------------------------------------------------------------------

@@ -932,6 +932,12 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 tool = requested_tool or "claude"  # may be replaced below during tool validation
                 model = inp.get("model") or None
                 provider = inp.get("provider") or None
+                # Always compute the tier from phase+tool upfront so it can be
+                # persisted on the task row regardless of whether model is
+                # auto-selected or caller-specified.
+                from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
+
+                model_tier = _select_tier(phase, tool)
                 existing_task_id = inp.get("task_id")
                 guild_result = await db.exec(
                     select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
@@ -973,16 +979,12 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 )
                                 is_error = True
                         else:
-                            # Auto-select: phase+tool → tier → best model from catalog.
-                            from util.model_tiers import (  # noqa: PLC0415
-                                get_model_for_tier,
-                                select_model_tier,
-                            )
+                            # Auto-select: use pre-computed model_tier → best model from catalog.
+                            from util.model_tiers import get_model_for_tier  # noqa: PLC0415
                             from util.models_dev import get_providers_from_db  # noqa: PLC0415
 
-                            tier = select_model_tier(phase, tool)
                             catalog = await get_providers_from_db(db)
-                            model = get_model_for_tier(tier, worker_provider, catalog)
+                            model = get_model_for_tier(model_tier, worker_provider, catalog)
                     # For Bedrock workers, resolve the short model ID to the
                     # canonical inference-profile ARN stored in the catalog.
                     # The Claude CLI on Bedrock requires the full ARN; short IDs
@@ -1083,6 +1085,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     "description": desc,
                                     "tool": tool,
                                     "model": model,
+                                    "model_tier": model_tier,
                                     "provider": provider,
                                     "phase": phase,
                                     "state": "pending",
@@ -1140,6 +1143,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         description=desc,
                                         tool=tool,
                                         model=model,
+                                        model_tier=model_tier,
                                         provider=provider,
                                         issue_number=inp.get("issue_number"),
                                         issue_repo=inp.get("issue_repo"),
