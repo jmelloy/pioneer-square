@@ -10,6 +10,8 @@ import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import json
+
 import httpx
 import pytest
 
@@ -43,7 +45,7 @@ def _make_mock_client(status_code: int = 204, side_effect=None, json_response: d
     """Return a mock httpx.AsyncClient with stubbed HTTP methods."""
     mock_response = MagicMock(spec=httpx.Response)
     mock_response.status_code = status_code
-    mock_response.content = b'{"id": "555666777888"}' if json_response else b""
+    mock_response.content = json.dumps(json_response).encode() if json_response else b""
     mock_response.json = MagicMock(return_value=json_response or {})
     if status_code >= 400:
         mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
@@ -189,14 +191,33 @@ async def test_network_error_does_not_raise(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ensure_thread_creates_new_thread(monkeypatch):
-    """_ensure_thread creates a Discord thread when none exists in DB."""
+    """_ensure_thread creates a Discord thread when none exists in DB.
+
+    Thread creation for a standard text channel is a two-step process:
+    1. POST a starter message to get a message_id.
+    2. POST to /messages/{message_id}/threads to create the thread.
+    """
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
-    mock_client = _make_mock_client(
-        status_code=200,
-        json_response={"id": THREAD_ID, "name": "#42: Fix"},
-    )
+    MSG_ID = "msg_starter_123"
+
+    msg_response = MagicMock(spec=httpx.Response)
+    msg_response.status_code = 200
+    msg_response.content = json.dumps({"id": MSG_ID}).encode()
+    msg_response.json = MagicMock(return_value={"id": MSG_ID})
+    msg_response.raise_for_status.return_value = None
+
+    thread_response = MagicMock(spec=httpx.Response)
+    thread_response.status_code = 200
+    thread_response.content = json.dumps({"id": THREAD_ID, "name": "#42: Fix"}).encode()
+    thread_response.json = MagicMock(return_value={"id": THREAD_ID, "name": "#42: Fix"})
+    thread_response.raise_for_status.return_value = None
+
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    mock_client.post = AsyncMock(side_effect=[msg_response, thread_response])
+    mock_client.patch = AsyncMock()
+    mock_client.get = AsyncMock()
 
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
@@ -206,12 +227,17 @@ async def test_ensure_thread_creates_new_thread(monkeypatch):
         result = await discord_notifier._ensure_thread("org/repo", 42, "#42: Fix")
 
     assert result == THREAD_ID
-    mock_client.post.assert_called_once()
-    call_args = mock_client.post.call_args
-    assert f"/channels/{CHANNEL_ID}/threads" in call_args[0][0]
-    body = call_args[1]["json"]
+    assert mock_client.post.call_count == 2
+
+    # First call: starter message posted in the channel
+    first_call = mock_client.post.call_args_list[0]
+    assert f"/channels/{CHANNEL_ID}/messages" in first_call[0][0]
+
+    # Second call: thread created from the starter message
+    second_call = mock_client.post.call_args_list[1]
+    assert f"/channels/{CHANNEL_ID}/messages/{MSG_ID}/threads" in second_call[0][0]
+    body = second_call[1]["json"]
     assert body["name"] == "#42: Fix"
-    assert body["type"] == 11  # GUILD_PUBLIC_THREAD
 
 
 @pytest.mark.asyncio
@@ -280,7 +306,24 @@ async def test_thread_name_truncated_to_100_chars(monkeypatch):
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
     long_name = "x" * 200
-    mock_client = _make_mock_client(status_code=200, json_response={"id": THREAD_ID})
+    MSG_ID = "msg_starter_456"
+
+    msg_response = MagicMock(spec=httpx.Response)
+    msg_response.status_code = 200
+    msg_response.content = json.dumps({"id": MSG_ID}).encode()
+    msg_response.json = MagicMock(return_value={"id": MSG_ID})
+    msg_response.raise_for_status.return_value = None
+
+    thread_response = MagicMock(spec=httpx.Response)
+    thread_response.status_code = 200
+    thread_response.content = json.dumps({"id": THREAD_ID}).encode()
+    thread_response.json = MagicMock(return_value={"id": THREAD_ID})
+    thread_response.raise_for_status.return_value = None
+
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    mock_client.post = AsyncMock(side_effect=[msg_response, thread_response])
+    mock_client.patch = AsyncMock()
+    mock_client.get = AsyncMock()
 
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
@@ -289,8 +332,9 @@ async def test_thread_name_truncated_to_100_chars(monkeypatch):
     ):
         await discord_notifier._ensure_thread("org/repo", 1, long_name)
 
-    _, kwargs = mock_client.post.call_args
-    assert len(kwargs["json"]["name"]) <= 100
+    # Thread creation is the second POST call — name must be capped
+    second_call = mock_client.post.call_args_list[1]
+    assert len(second_call[1]["json"]["name"]) <= 100
 
 
 # ---------------------------------------------------------------------------

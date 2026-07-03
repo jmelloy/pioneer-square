@@ -172,8 +172,7 @@ async def _lookup_thread(issue_repo: str, issue_number: int) -> str | None:
         from models import DiscordThread  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
-        db = AsyncSessionLocal()
-        try:
+        async with AsyncSessionLocal() as db:
             result = await db.exec(
                 select(DiscordThread).where(
                     col(DiscordThread.issue_repo) == issue_repo,
@@ -182,8 +181,6 @@ async def _lookup_thread(issue_repo: str, issue_number: int) -> str | None:
             )
             row = result.one_or_none()
             return row.thread_id if row else None
-        finally:
-            await db.close()
     except Exception:
         logger.warning(
             "discord: thread DB lookup failed repo=%s number=%s",
@@ -195,27 +192,25 @@ async def _lookup_thread(issue_repo: str, issue_number: int) -> str | None:
 
 
 async def _save_thread(issue_repo: str, issue_number: int, thread_id: str) -> None:
-    """Persist a new Discord thread mapping. Silently ignores duplicate-key errors."""
+    """Persist a new Discord thread mapping using an atomic upsert (ignore duplicates)."""
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
         from models import DiscordThread  # noqa: PLC0415
-        from sqlalchemy.exc import IntegrityError  # noqa: PLC0415
+        from sqlalchemy.dialects.postgresql import insert  # noqa: PLC0415
 
-        db = AsyncSessionLocal()
-        try:
-            db.add(
-                DiscordThread(
+        async with AsyncSessionLocal() as db:
+            stmt = (
+                insert(DiscordThread)
+                .values(
                     issue_repo=issue_repo,
                     issue_number=issue_number,
                     thread_id=thread_id,
                     created_at=datetime.now(UTC),
                 )
+                .on_conflict_do_nothing()
             )
+            await db.execute(stmt)
             await db.commit()
-        except IntegrityError:
-            await db.rollback()
-        finally:
-            await db.close()
     except Exception:
         logger.warning(
             "discord: thread DB save failed repo=%s number=%s thread=%s",
@@ -229,6 +224,10 @@ async def _save_thread(issue_repo: str, issue_number: int, thread_id: str) -> No
 async def _ensure_thread(issue_repo: str, issue_number: int, thread_name: str) -> str | None:
     """Return the Discord thread_id for a PR/issue, creating it if necessary.
 
+    For standard text channels, thread creation requires a starter message first:
+    POST /channels/{channel}/messages → get message_id
+    POST /channels/{channel}/messages/{message_id}/threads → get thread_id
+
     Returns None when bot token or channel ID are not configured, or on API error.
     """
     existing = await _lookup_thread(issue_repo, issue_number)
@@ -239,10 +238,26 @@ async def _ensure_thread(issue_repo: str, issue_number: int, thread_name: str) -
     if not channel:
         return None
 
+    # Step 1: post a starter message to anchor the thread
+    starter = await _bot_request(
+        "post",
+        f"/channels/{channel}/messages",
+        {"content": thread_name[:100]},
+    )
+    if not starter:
+        return None
+    message_id = starter.get("id")
+    if not message_id:
+        logger.warning(
+            "discord: starter message returned no id for repo=%s #%s", issue_repo, issue_number
+        )
+        return None
+
+    # Step 2: create the thread from that starter message
     data = await _bot_request(
         "post",
-        f"/channels/{channel}/threads",
-        {"name": thread_name[:100], "type": 11},  # 11 = GUILD_PUBLIC_THREAD
+        f"/channels/{channel}/messages/{message_id}/threads",
+        {"name": thread_name[:100]},
     )
     if not data:
         return None
