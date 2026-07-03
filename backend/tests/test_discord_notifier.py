@@ -1,17 +1,16 @@
 """Unit tests for discord_notifier.
 
-No real HTTP requests are made — the httpx call is mocked throughout.
+No real HTTP requests are made — the httpx client is mocked throughout.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import sys
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-import respx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -34,6 +33,25 @@ def reset_client():
     discord_notifier._client = None
 
 
+def _make_mock_client(status_code: int = 204, side_effect=None):
+    """Return a mock httpx.AsyncClient with a stubbed post() coroutine."""
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = status_code
+    if status_code >= 400:
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "error", request=MagicMock(), response=mock_response
+        )
+    else:
+        mock_response.raise_for_status.return_value = None
+
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    if side_effect is not None:
+        mock_client.post = AsyncMock(side_effect=side_effect)
+    else:
+        mock_client.post = AsyncMock(return_value=mock_response)
+    return mock_client
+
+
 # ---------------------------------------------------------------------------
 # No-op when env var unset
 # ---------------------------------------------------------------------------
@@ -42,10 +60,10 @@ def reset_client():
 @pytest.mark.asyncio
 async def test_notify_no_op_when_env_unset():
     """notify() must not make any HTTP call when DISCORD_WEBHOOK_URL is unset."""
-    with respx.mock(assert_all_called=False) as mock:
-        route = mock.post(WEBHOOK_URL).mock(return_value=httpx.Response(204))
+    mock_client = _make_mock_client()
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.notify("task-complete", "Done", "All good")
-        assert not route.called
+    mock_client.post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -57,16 +75,16 @@ async def test_notify_no_op_when_env_unset():
 async def test_notify_posts_correct_embed(monkeypatch):
     """notify() builds the right embed payload and POSTs it to the webhook."""
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    mock_client = _make_mock_client()
 
-    with respx.mock() as mock:
-        route = mock.post(WEBHOOK_URL).mock(return_value=httpx.Response(204))
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.notify(
             "pr-opened", "PR #42 opened", "New pull request", url="https://example.com/pr/42"
         )
 
-    assert route.called
-    sent = route.calls.last.request
-    body = json.loads(sent.content)
+    mock_client.post.assert_called_once()
+    _, kwargs = mock_client.post.call_args
+    body = kwargs["json"]
     assert body["embeds"][0]["title"] == "PR #42 opened"
     assert body["embeds"][0]["description"] == "New pull request"
     assert body["embeds"][0]["url"] == "https://example.com/pr/42"
@@ -77,13 +95,13 @@ async def test_notify_posts_correct_embed(monkeypatch):
 async def test_notify_no_url_field_when_omitted(monkeypatch):
     """url field must be absent from the embed when url=None."""
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    mock_client = _make_mock_client()
 
-    with respx.mock() as mock:
-        route = mock.post(WEBHOOK_URL).mock(return_value=httpx.Response(204))
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.notify("worker-online", "Worker connected", "w-abc is online")
 
-    body = json.loads(route.calls.last.request.content)
-    assert "url" not in body["embeds"][0]
+    _, kwargs = mock_client.post.call_args
+    assert "url" not in kwargs["json"]["embeds"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -110,26 +128,26 @@ async def test_notify_no_url_field_when_omitted(monkeypatch):
 )
 async def test_colour_by_event_type(monkeypatch, event_type, expected_color):
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    mock_client = _make_mock_client()
 
-    with respx.mock() as mock:
-        route = mock.post(WEBHOOK_URL).mock(return_value=httpx.Response(204))
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.notify(event_type, "title", "desc")
 
-    body = json.loads(route.calls.last.request.content)
-    assert body["embeds"][0]["color"] == expected_color
+    _, kwargs = mock_client.post.call_args
+    assert kwargs["json"]["embeds"][0]["color"] == expected_color
 
 
 @pytest.mark.asyncio
 async def test_custom_color_overrides_event_type(monkeypatch):
     """Explicit color= kwarg takes precedence over the event-type colour map."""
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    mock_client = _make_mock_client()
 
-    with respx.mock() as mock:
-        route = mock.post(WEBHOOK_URL).mock(return_value=httpx.Response(204))
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.notify("task-complete", "t", "d", color=0xABCDEF)
 
-    body = json.loads(route.calls.last.request.content)
-    assert body["embeds"][0]["color"] == 0xABCDEF
+    _, kwargs = mock_client.post.call_args
+    assert kwargs["json"]["embeds"][0]["color"] == 0xABCDEF
 
 
 # ---------------------------------------------------------------------------
@@ -141,9 +159,9 @@ async def test_custom_color_overrides_event_type(monkeypatch):
 async def test_http_error_does_not_raise(monkeypatch):
     """An HTTP error must be swallowed and logged, never propagated."""
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    mock_client = _make_mock_client(status_code=500)
 
-    with respx.mock() as mock:
-        mock.post(WEBHOOK_URL).mock(return_value=httpx.Response(500))
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         # Should not raise despite 500 response
         await discord_notifier.notify("task-failed", "Failed", "oh no")
 
@@ -152,7 +170,7 @@ async def test_http_error_does_not_raise(monkeypatch):
 async def test_network_error_does_not_raise(monkeypatch):
     """A network-level exception (connection refused etc.) must be swallowed."""
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    mock_client = _make_mock_client(side_effect=httpx.ConnectError("refused"))
 
-    with respx.mock() as mock:
-        mock.post(WEBHOOK_URL).mock(side_effect=httpx.ConnectError("refused"))
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.notify("task-failed", "Failed", "network down")
