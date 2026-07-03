@@ -973,14 +973,16 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 )
                                 is_error = True
                         else:
-                            catalog_default = await db.exec(
-                                select(col(ModelCatalog.model_id))
-                                .where(col(ModelCatalog.provider) == worker_provider)
-                                .limit(1)
+                            # Auto-select: phase+tool → tier → best model from catalog.
+                            from util.model_tiers import (  # noqa: PLC0415
+                                get_model_for_tier,
+                                select_model_tier,
                             )
-                            default_model = catalog_default.one_or_none()
-                            if default_model:
-                                model = default_model
+                            from util.models_dev import get_providers_from_db  # noqa: PLC0415
+
+                            tier = select_model_tier(phase, tool)
+                            catalog = await get_providers_from_db(db)
+                            model = get_model_for_tier(tier, worker_provider, catalog)
                     # For Bedrock workers, resolve the short model ID to the
                     # canonical inference-profile ARN stored in the catalog.
                     # The Claude CLI on Bedrock requires the full ARN; short IDs
