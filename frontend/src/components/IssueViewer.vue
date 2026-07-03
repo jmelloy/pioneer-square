@@ -287,9 +287,9 @@ async function toggleTask(taskId: string) {
   if (!guildId) return
   taskLogsFetching.value = new Set(taskLogsFetching.value).add(taskId)
   try {
-    const raw = await api<Array<{ line: string; timestamp: string; detail?: unknown; level?: unknown }>>(
-      `/guilds/${guildId}/tasks/${taskId}/logs`,
-    )
+    const raw = await api<
+      Array<{ line: string; timestamp: string; detail?: unknown; level?: unknown }>
+    >(`/guilds/${guildId}/tasks/${taskId}/logs`)
     taskLogsMap.value[taskId] = raw.map((r) => ({
       line: r.line,
       timestamp: r.timestamp,
