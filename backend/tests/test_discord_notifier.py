@@ -6,11 +6,10 @@ No real DB sessions are made — _lookup_thread and _save_thread are patched.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import json
 
 import httpx
 import pytest
