@@ -48,7 +48,8 @@ _DEFAULT_COLOUR = 0x7289DA  # blurple
 
 
 def _webhook_url() -> str | None:
-    return os.environ.get("DISCORD_WEBHOOK_URL") or None  # treat empty string as unset
+    url = os.environ.get("DISCORD_WEBHOOK_URL")
+    return url if url else None  # empty string treated as unset
 
 
 async def notify(
