@@ -521,6 +521,31 @@ class PushToken(SQLModel, table=True):
     last_seen_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class DiscordThread(SQLModel, table=True):
+    """Persisted mapping from a GitHub issue/PR to a Discord thread channel ID.
+
+    Created the first time a Discord thread-aware notification fires for a PR
+    or issue.  The unique index on (issue_repo, issue_number) prevents duplicate
+    threads across restarts.
+    """
+
+    __tablename__ = "discord_threads"  # type: ignore[assignment]
+    __table_args__ = (
+        Index(
+            "uq_discord_threads_repo_number",
+            "issue_repo",
+            "issue_number",
+            unique=True,
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    issue_repo: str  # "owner/repo"
+    issue_number: int
+    thread_id: str  # Discord channel ID of the thread
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class ModelCatalog(SQLModel, table=True):
     """Persisted snapshot of models.dev provider/model entries.
 

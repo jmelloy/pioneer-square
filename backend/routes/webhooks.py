@@ -831,12 +831,26 @@ async def github_webhook(
     if event_type == "pull_request" and action == "opened":
         pr_obj = payload.get("pull_request") or {}
         pr_title = (pr_obj.get("title") or "")[:120]
+        assignees = pr_obj.get("assignees") or []
+        labels = pr_obj.get("labels") or []
+        assignee_str = (
+            ", ".join(f"@{a['login']}" for a in assignees if isinstance(a, dict) and a.get("login"))
+            or "None"
+        )
+        labels_str = (
+            ", ".join(lb["name"] for lb in labels if isinstance(lb, dict) and lb.get("name"))
+            or "None"
+        )
         spawn(
-            discord_notifier.notify(
+            discord_notifier.notify_event(
                 "pr-opened",
-                f"PR opened: {_pr_label}",
-                pr_title or f"New pull request on {_pr_label}",
+                title=f"PR opened: {_pr_label}",
+                description=pr_title or f"New pull request on {_pr_label}",
                 url=pr_url or None,
+                issue_repo=repo,
+                issue_number=pr_number,
+                thread_name=f"#{pr_number}: {pr_title}" if pr_title else f"#{pr_number}",
+                header_fields={"Assignee": assignee_str, "Labels": labels_str},
             ),
             name=f"discord.pr-opened:{_pr_label}",
         )
@@ -844,23 +858,29 @@ async def github_webhook(
         pr_obj = payload.get("pull_request") or {}
         if pr_obj.get("merged"):
             spawn(
-                discord_notifier.notify(
+                discord_notifier.notify_event(
                     "pr-merged",
-                    f"PR merged: {_pr_label}",
-                    f"Pull request `{_pr_label}` was merged."
+                    title=f"PR merged: {_pr_label}",
+                    description=f"Pull request `{_pr_label}` was merged."
                     + (f" Task: `{task_id}`." if task_id else ""),
                     url=pr_url or None,
+                    issue_repo=repo,
+                    issue_number=pr_number,
+                    close=True,
                 ),
                 name=f"discord.pr-merged:{_pr_label}",
             )
         else:
             spawn(
-                discord_notifier.notify(
+                discord_notifier.notify_event(
                     "pr-closed",
-                    f"PR closed: {_pr_label}",
-                    f"Pull request `{_pr_label}` was closed without merging."
+                    title=f"PR closed: {_pr_label}",
+                    description=f"Pull request `{_pr_label}` was closed without merging."
                     + (f" Task: `{task_id}`." if task_id else ""),
                     url=pr_url or None,
+                    issue_repo=repo,
+                    issue_number=pr_number,
+                    close=True,
                 ),
                 name=f"discord.pr-closed:{_pr_label}",
             )
@@ -874,23 +894,27 @@ async def github_webhook(
         )
         if conclusion == "success":
             spawn(
-                discord_notifier.notify(
+                discord_notifier.notify_event(
                     "ci-pass",
-                    f"CI passed: {_pr_label}",
-                    f"`{check_name}` passed on `{_pr_label}`."
+                    title=f"CI passed: {_pr_label}",
+                    description=f"`{check_name}` passed on `{_pr_label}`."
                     + (f" Task: `{task_id}`." if task_id else ""),
                     url=pr_url or None,
+                    issue_repo=repo,
+                    issue_number=pr_number,
                 ),
                 name=f"discord.ci-pass:{_pr_label}",
             )
         elif conclusion in {"failure", "cancelled", "timed_out", "action_required"}:
             spawn(
-                discord_notifier.notify(
+                discord_notifier.notify_event(
                     "ci-fail",
-                    f"CI failed: {_pr_label}",
-                    f"`{check_name}` {conclusion} on `{_pr_label}`."
+                    title=f"CI failed: {_pr_label}",
+                    description=f"`{check_name}` {conclusion} on `{_pr_label}`."
                     + (f" Task: `{task_id}`." if task_id else ""),
                     url=pr_url or None,
+                    issue_repo=repo,
+                    issue_number=pr_number,
                 ),
                 name=f"discord.ci-fail:{_pr_label}",
             )
