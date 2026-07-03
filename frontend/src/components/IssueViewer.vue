@@ -66,6 +66,13 @@
         >
           Comments ({{ comments.length }})
         </button>
+        <button
+          class="issue-tab-btn"
+          :class="{ active: activeTab === 'tasklog' }"
+          @click="onTaskLogTab"
+        >
+          Task Log{{ issueTasks.length > 0 ? ` (${issueTasks.length})` : '' }}
+        </button>
       </div>
 
       <!-- Scrollable tab content -->
@@ -106,6 +113,50 @@
             </div>
           </div>
         </div>
+
+        <!-- Task Log tab -->
+        <template v-if="activeTab === 'tasklog'">
+          <div class="section-header">
+            <span class="section-title">Task Log</span>
+            <button class="pixel-btn edit-btn" @click="loadIssueTasks" title="Refresh">↻</button>
+          </div>
+          <div v-if="tasklogLoading" class="tl-empty">Loading tasks…</div>
+          <div v-else-if="issueTasks.length === 0" class="tl-empty">
+            No tasks found for this issue.
+          </div>
+          <div v-else class="tl-list">
+            <div v-for="task in issueTasks" :key="task.id" class="tl-row">
+              <div class="tl-row-header" @click="toggleTask(task.id)">
+                <span class="tl-expand">{{ expandedTaskIds.has(task.id) ? '▾' : '▸' }}</span>
+                <span class="tl-name">{{ task.name || task.id }}</span>
+                <span v-if="task.phase" class="tl-phase">{{ task.phase }}</span>
+                <span class="tl-state" :class="'tl-state-' + task.state.replace(/[^a-z]/g, '-')">{{
+                  tasksStore.stateLabel(task.state)
+                }}</span>
+                <span v-if="task.worker_id" class="tl-worker">{{ task.worker_id }}</span>
+                <a
+                  v-if="task.pr_url"
+                  :href="task.pr_url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="tl-pr"
+                  @click.stop
+                  >PR ↗</a
+                >
+                <span class="tl-date">{{ formatRelative(task.created_at ?? '') }}</span>
+              </div>
+              <div v-if="expandedTaskIds.has(task.id)" class="tl-logs">
+                <div v-if="taskLogsFetching.has(task.id)" class="tl-logs-loading">
+                  Fetching logs…
+                </div>
+                <pre v-else-if="taskLogsMap[task.id]?.length" class="tl-logs-pre"><code>{{
+                  taskLogsMap[task.id].slice(-50).map((l) => l.line).join('\n')
+                }}</code></pre>
+                <div v-else class="tl-logs-empty">No log lines stored for this task.</div>
+              </div>
+            </div>
+          </div>
+        </template>
 
         <!-- Comments tab -->
         <template v-if="activeTab === 'comments'">
@@ -165,6 +216,10 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { useGitHubStore } from '../stores/github'
 import type { GitHubIssueDetail, GitHubComment } from '../stores/github'
+import { useGuildStore } from '../stores/guild'
+import { useTasksStore } from '../stores/tasks'
+import type { Task, LogEntry } from '../types'
+import { api } from '../utils/api'
 import { renderMarkdown } from '../utils/markdown'
 import { formatRelative } from '../utils/format'
 
@@ -175,13 +230,79 @@ const props = defineProps<{
 }>()
 
 const ghStore = useGitHubStore()
+const guildStore = useGuildStore()
+const tasksStore = useTasksStore()
 
 const issue = ref<GitHubIssueDetail | null>(null)
 const comments = ref<GitHubComment[]>([])
 const loading = ref(false)
 const loadError = ref('')
 
-const activeTab = ref<'details' | 'comments'>('details')
+const activeTab = ref<'details' | 'comments' | 'tasklog'>('details')
+
+// Task Log tab state
+const issueTasks = ref<Task[]>([])
+const tasklogLoading = ref(false)
+const expandedTaskIds = ref<Set<string>>(new Set())
+const taskLogsMap = ref<Record<string, LogEntry[]>>({})
+const taskLogsFetching = ref<Set<string>>(new Set())
+
+async function loadIssueTasks() {
+  const guildId = guildStore.currentGuild?.id
+  if (!guildId) return
+  tasklogLoading.value = true
+  try {
+    const issueRepo = `${props.owner}/${props.repo}`
+    const raw = await api<Task[]>(
+      `/guilds/${guildId}/tasks?issue_number=${props.issueNumber}&issue_repo=${encodeURIComponent(issueRepo)}`,
+    )
+    // Sort oldest first for chronological display
+    issueTasks.value = [...raw].sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0
+      return ta - tb
+    })
+  } catch (e) {
+    console.error('Failed to fetch issue tasks', e)
+  } finally {
+    tasklogLoading.value = false
+  }
+}
+
+function onTaskLogTab() {
+  activeTab.value = 'tasklog'
+  if (issueTasks.value.length === 0 && !tasklogLoading.value) {
+    loadIssueTasks()
+  }
+}
+
+async function toggleTask(taskId: string) {
+  if (expandedTaskIds.value.has(taskId)) {
+    expandedTaskIds.value = new Set([...expandedTaskIds.value].filter((x) => x !== taskId))
+    return
+  }
+  expandedTaskIds.value = new Set(expandedTaskIds.value).add(taskId)
+  if (taskLogsMap.value[taskId] !== undefined) return
+  const guildId = guildStore.currentGuild?.id
+  if (!guildId) return
+  taskLogsFetching.value = new Set(taskLogsFetching.value).add(taskId)
+  try {
+    const raw = await api<Array<{ line: string; timestamp: string; detail?: unknown; level?: unknown }>>(
+      `/guilds/${guildId}/tasks/${taskId}/logs`,
+    )
+    taskLogsMap.value[taskId] = raw.map((r) => ({
+      line: r.line,
+      timestamp: r.timestamp,
+      detail: (r.detail as LogEntry['detail']) || null,
+      level: (r.level as LogEntry['level']) || null,
+    }))
+  } catch (e) {
+    console.error('Failed to fetch task logs', e)
+    taskLogsMap.value[taskId] = []
+  } finally {
+    taskLogsFetching.value = new Set([...taskLogsFetching.value].filter((x) => x !== taskId))
+  }
+}
 
 const editingTitle = ref(false)
 const editTitle = ref('')
@@ -727,5 +848,160 @@ onMounted(loadIssue)
 
 .markdown-body :deep(th) {
   background: var(--color-bg-secondary);
+}
+
+/* Task Log tab */
+.tl-empty {
+  color: var(--color-text-dim);
+  font-style: italic;
+  font-size: 12px;
+  text-align: center;
+  padding: 20px 0;
+}
+
+.tl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tl-row {
+  border: 1px solid var(--color-bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.tl-row-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: var(--color-bg-secondary);
+  cursor: pointer;
+  flex-wrap: wrap;
+}
+
+.tl-row-header:hover {
+  background: rgba(232, 170, 0, 0.05);
+}
+
+.tl-expand {
+  font-size: 10px;
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+  width: 10px;
+}
+
+.tl-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-phase {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  padding: 1px 5px;
+  background: var(--color-bg-tertiary);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.tl-state {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  border: 1px solid;
+  flex-shrink: 0;
+}
+
+.tl-state-pending {
+  color: var(--color-text-dim);
+  border-color: var(--color-text-dim);
+}
+.tl-state-planning {
+  color: #4da6ff;
+  border-color: #4da6ff;
+}
+.tl-state-working {
+  color: var(--color-green);
+  border-color: var(--color-green);
+}
+.tl-state-awaiting-review {
+  color: #e8aa00;
+  border-color: #e8aa00;
+}
+.tl-state-done {
+  color: var(--color-teal);
+  border-color: var(--color-teal);
+}
+.tl-state-failed,
+.tl-state-cancelled {
+  color: var(--color-red);
+  border-color: var(--color-red);
+}
+.tl-state-followup {
+  color: #ff9944;
+  border-color: #ff9944;
+}
+
+.tl-worker {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.tl-pr {
+  font-size: 9px;
+  color: var(--color-teal);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.tl-pr:hover {
+  text-decoration: underline;
+}
+
+.tl-date {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.tl-logs {
+  border-top: 1px solid var(--color-bg-tertiary);
+}
+
+.tl-logs-loading,
+.tl-logs-empty {
+  font-size: 11px;
+  color: var(--color-text-dim);
+  font-style: italic;
+  padding: 8px 12px;
+}
+
+.tl-logs-pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--color-bg);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-x: auto;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.tl-logs-pre code {
+  background: none;
+  padding: 0;
 }
 </style>
