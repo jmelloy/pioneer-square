@@ -236,6 +236,7 @@ async def create_task_followup(
             "branch from GitHub.",
             user_id=github_user_id,
             task_id=task_id,
+            child=True,
         ),
         name=f"foreman.user-followup:{task_id}",
     )

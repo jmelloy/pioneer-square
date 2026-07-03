@@ -111,11 +111,19 @@ class ForemanHTTPClient:
         """Fetch guild state: workers, tasks, guild metadata (including owner_user_id)."""
         return await self._get(self._guild_url("/foreman/state"))
 
-    async def get_history(self, user_id: str, limit: int | None = None) -> list[dict]:
-        """Fetch raw ForemanTurn rows for a user, ordered oldest→newest."""
+    async def get_history(
+        self, user_id: str, limit: int | None = None, *, task_id: str | None = None
+    ) -> list[dict]:
+        """Fetch raw ForemanTurn rows for a user, ordered oldest→newest.
+
+        When ``task_id`` is set, only turns tagged with that task are returned —
+        used by per-task child contexts to load their own isolated history.
+        """
         params: dict = {"user_id": user_id}
         if limit is not None:
             params["limit"] = limit
+        if task_id is not None:
+            params["task_id"] = task_id
         return await self._get(self._guild_url("/foreman/history"), **params)
 
     async def get_guild_key(self) -> dict:

@@ -139,8 +139,12 @@ class DebounceQueue:
             (uid for _, uid, _ in items if uid and not uid.endswith("[bot]")),
             next((uid for _, uid, _ in items if uid), None),
         )
+        # All events buffered under one key share a task (key is "{guild}:{task_id}");
+        # github events for a known task run in that task's isolated child context.
         task_id = next((tid for _, _, tid in items if tid), None)
-        await run_foreman_ai(guild_id, combined, user_id=user_id, task_id=task_id)
+        await run_foreman_ai(
+            guild_id, combined, user_id=user_id, task_id=task_id, child=bool(task_id)
+        )
         reset_foreman_poll(guild_id)
         logger.info(
             "github webhook debounce fired key=%s events=%d guild=%s",
