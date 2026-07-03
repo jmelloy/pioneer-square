@@ -75,14 +75,20 @@ def _resolve_finalize_deleted_at(body: FinalizeBody | None) -> datetime:
 @router.get("/guilds/{guild_id}/tasks")
 async def list_guild_tasks(
     guild_id: str,
+    issue_number: int | None = None,
+    issue_repo: str | None = None,
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """List all tasks for a guild, most recent first."""
+    """List all tasks for a guild, most recent first.
+
+    Optionally filter by ``issue_number`` and/or ``issue_repo`` to return only
+    tasks linked to a specific GitHub issue.
+    """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    result = await db.exec(
+    stmt = (
         select(
             col(Task.id),
             col(Task.worker_id),
@@ -103,6 +109,11 @@ async def list_guild_tasks(
         .order_by(col(Task.created_at).desc())
         .limit(100)
     )
+    if issue_number is not None:
+        stmt = stmt.where(col(Task.issue_number) == issue_number)
+    if issue_repo is not None:
+        stmt = stmt.where(col(Task.issue_repo) == issue_repo)
+    result = await db.exec(stmt)
     return [dict(r._mapping) for r in result.all()]
 
 
