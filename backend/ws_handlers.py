@@ -833,14 +833,17 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
             maybe_post_plan_comment(ctx.guild_id, task_id, last_text),
             name=f"foreman.plan-comment:{task_id}",
         )
+        _pr_repo_disc, _pr_num_disc = _parse_pr_url(pr_url) if pr_url else (None, None)
         spawn(
-            discord_notifier.notify(
+            discord_notifier.notify_event(
                 "task-complete",
-                f"Task complete: {desc[:80] or task_id}",
-                f"Worker `{worker_id_msg}` finished task `{task_id}`."
+                title=f"Task complete: {desc[:80] or task_id}",
+                description=f"Worker `{worker_id_msg}` finished task `{task_id}`."
                 + (f" Branch: {branch}." if branch else "")
                 + (f" PR: {pr_url}" if pr_url else ""),
                 url=pr_url or None,
+                issue_repo=_pr_repo_disc,
+                issue_number=_pr_num_disc,
             ),
             name=f"discord.task-complete:{task_id}",
         )
