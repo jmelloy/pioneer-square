@@ -15,7 +15,6 @@ import anyio
 import discord_notifier
 import ws_handlers
 from database import get_db
-from util.tasks import spawn
 from events import (
     agent_owner_lock,
     agent_owners,
@@ -29,6 +28,7 @@ from models import Agent, Guild, UserSession, Worker
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from util.tasks import spawn
 from ws_types import AgentStateMsg
 
 from foreman import resume_foreman_poll

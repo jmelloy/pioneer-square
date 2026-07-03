@@ -24,7 +24,6 @@ from datetime import UTC, datetime, timedelta
 
 import discord_notifier
 from database import get_db_dep
-from util.tasks import spawn
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from lock_service import LockService
@@ -35,6 +34,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from util.tasks import spawn
 from ws_types import ChatMsg, GithubEventMsg, TaskFinalizeMsg, TaskUpdateMsg
 
 from foreman import reset_foreman_poll, run_foreman_ai
