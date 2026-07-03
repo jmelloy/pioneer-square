@@ -5,6 +5,7 @@ No real HTTP requests are made — the httpx call is mocked throughout.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -23,6 +24,14 @@ WEBHOOK_URL = "https://discord.com/api/webhooks/test/token"
 def reset_env(monkeypatch):
     """Start each test with no webhook URL set."""
     monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def reset_client():
+    """Reset the module-level httpx singleton so each test gets a fresh client."""
+    discord_notifier._client = None
+    yield
+    discord_notifier._client = None
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +66,6 @@ async def test_notify_posts_correct_embed(monkeypatch):
 
     assert route.called
     sent = route.calls.last.request
-    import json
-
     body = json.loads(sent.content)
     assert body["embeds"][0]["title"] == "PR #42 opened"
     assert body["embeds"][0]["description"] == "New pull request"
@@ -74,8 +81,6 @@ async def test_notify_no_url_field_when_omitted(monkeypatch):
     with respx.mock() as mock:
         route = mock.post(WEBHOOK_URL).mock(return_value=httpx.Response(204))
         await discord_notifier.notify("worker-online", "Worker connected", "w-abc is online")
-
-    import json
 
     body = json.loads(route.calls.last.request.content)
     assert "url" not in body["embeds"][0]
@@ -106,8 +111,6 @@ async def test_notify_no_url_field_when_omitted(monkeypatch):
 async def test_colour_by_event_type(monkeypatch, event_type, expected_color):
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
 
-    import json
-
     with respx.mock() as mock:
         route = mock.post(WEBHOOK_URL).mock(return_value=httpx.Response(204))
         await discord_notifier.notify(event_type, "title", "desc")
@@ -120,8 +123,6 @@ async def test_colour_by_event_type(monkeypatch, event_type, expected_color):
 async def test_custom_color_overrides_event_type(monkeypatch):
     """Explicit color= kwarg takes precedence over the event-type colour map."""
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
-
-    import json
 
     with respx.mock() as mock:
         route = mock.post(WEBHOOK_URL).mock(return_value=httpx.Response(204))

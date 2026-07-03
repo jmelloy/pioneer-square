@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 
 import discord_notifier
 from database import get_db_dep
+from util.tasks import spawn
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from lock_service import LockService
@@ -830,35 +831,38 @@ async def github_webhook(
     if event_type == "pull_request" and action == "opened":
         pr_obj = payload.get("pull_request") or {}
         pr_title = (pr_obj.get("title") or "")[:120]
-        asyncio.ensure_future(
+        spawn(
             discord_notifier.notify(
                 "pr-opened",
                 f"PR opened: {_pr_label}",
                 pr_title or f"New pull request on {_pr_label}",
                 url=pr_url or None,
-            )
+            ),
+            name=f"discord.pr-opened:{_pr_label}",
         )
     elif event_type == "pull_request" and action == "closed":
         pr_obj = payload.get("pull_request") or {}
         if pr_obj.get("merged"):
-            asyncio.ensure_future(
+            spawn(
                 discord_notifier.notify(
                     "pr-merged",
                     f"PR merged: {_pr_label}",
                     f"Pull request `{_pr_label}` was merged."
                     + (f" Task: `{task_id}`." if task_id else ""),
                     url=pr_url or None,
-                )
+                ),
+                name=f"discord.pr-merged:{_pr_label}",
             )
         else:
-            asyncio.ensure_future(
+            spawn(
                 discord_notifier.notify(
                     "pr-closed",
                     f"PR closed: {_pr_label}",
                     f"Pull request `{_pr_label}` was closed without merging."
                     + (f" Task: `{task_id}`." if task_id else ""),
                     url=pr_url or None,
-                )
+                ),
+                name=f"discord.pr-closed:{_pr_label}",
             )
     elif event_type in {"check_run", "check_suite"}:
         node = payload.get(event_type) or {}
@@ -869,24 +873,26 @@ async def github_webhook(
             else "CI"
         )
         if conclusion == "success":
-            asyncio.ensure_future(
+            spawn(
                 discord_notifier.notify(
                     "ci-pass",
                     f"CI passed: {_pr_label}",
                     f"`{check_name}` passed on `{_pr_label}`."
                     + (f" Task: `{task_id}`." if task_id else ""),
                     url=pr_url or None,
-                )
+                ),
+                name=f"discord.ci-pass:{_pr_label}",
             )
         elif conclusion in {"failure", "cancelled", "timed_out", "action_required"}:
-            asyncio.ensure_future(
+            spawn(
                 discord_notifier.notify(
                     "ci-fail",
                     f"CI failed: {_pr_label}",
                     f"`{check_name}` {conclusion} on `{_pr_label}`."
                     + (f" Task: `{task_id}`." if task_id else ""),
                     url=pr_url or None,
-                )
+                ),
+                name=f"discord.ci-fail:{_pr_label}",
             )
 
     await broadcast_msg(

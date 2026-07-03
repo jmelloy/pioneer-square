@@ -19,6 +19,18 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Module-level singleton; reused across all notify() calls to avoid per-request
+# connection-setup overhead. Closed on application exit (or left to GC).
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=10)
+    return _client
+
+
 # Colour palette for Discord embed sidebar
 _COLOURS: dict[str, int] = {
     "task-complete": 0x2ECC71,  # green
@@ -36,7 +48,7 @@ _DEFAULT_COLOUR = 0x7289DA  # blurple
 
 
 def _webhook_url() -> str | None:
-    return os.environ.get("DISCORD_WEBHOOK_URL") or None
+    return os.environ.get("DISCORD_WEBHOOK_URL") or None  # treat empty string as unset
 
 
 async def notify(
@@ -68,8 +80,8 @@ async def notify(
     payload = {"embeds": [embed]}
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(webhook_url, json=payload)
-            resp.raise_for_status()
+        client = _get_client()
+        resp = await client.post(webhook_url, json=payload)
+        resp.raise_for_status()
     except Exception:
         logger.warning("Discord webhook notify failed (event=%s)", event_type, exc_info=True)

@@ -12,8 +12,10 @@ import logging
 from datetime import UTC, datetime
 
 import anyio
+import discord_notifier
 import ws_handlers
 from database import get_db
+from util.tasks import spawn
 from events import (
     agent_owner_lock,
     agent_owners,
@@ -244,6 +246,15 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         offline_lines,
                         task_name="foreman.worker-offline:disconnect-batch",
                     )
+                    for wid in sorted(abrupt_worker_ids):
+                        spawn(
+                            discord_notifier.notify(
+                                "worker-offline",
+                                f"Worker offline: {wid}",
+                                f"Worker `{wid}` disconnected from guild `{guild_id}` (reason: disconnect).",
+                            ),
+                            name=f"discord.worker-offline:{wid}",
+                        )
             finally:
                 # If a cancellation was delivered inside a handler (e.g.
                 # handle_worker_disconnect) the underlying asyncpg connection
