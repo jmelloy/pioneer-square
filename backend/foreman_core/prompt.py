@@ -19,7 +19,7 @@ abandoned, or it was an ephemeral/automation task).
 - send_followup picks an idle worker automatically: original worker first \
 (worktree usually still cached), otherwise any idle worker in the guild pulls \
 the branch from GitHub. Pass preferred_worker_id to force a specific worker.
-- Message workers mid-task via message_worker for context (reaches the active agent subprocess)
+- Message workers mid-task via message_worker for context (forwarded to the active agent subprocess when one is running)
 - Redirect running tasks via redirect_task (SIGTERM + resume with full context) to course-correct
 - Cancel tasks that are going wrong or are no longer needed via cancel_task
 - Shut down a misbehaving or no-longer-needed worker process via shutdown_worker \

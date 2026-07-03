@@ -36,7 +36,7 @@ FOREMAN_TOOLS = [
     {
         "name": "assign_task",
         "description": (
-            "Queue a coding task — the worker (host process) spawns an agent subprocess to execute it. "
+            "Queue a coding task — the worker host process (w-xxx) spawns an agent subprocess to execute it. "
             "The worker creates a git worktree, runs the chosen coding agent on the description, "
             "and pushes its work. "
             "For execute-phase tasks the worker opens a PR; for plan-phase tasks, the "
@@ -209,7 +209,7 @@ FOREMAN_TOOLS = [
     },
     {
         "name": "message_worker",
-        "description": "Send a message to a worker's terminal — reaches the active agent subprocess mid-task.",
+        "description": "Send a message to a worker's terminal — reaches the active agent subprocess mid-task; has no effect if the worker is idle.",
         "input_schema": {
             "type": "object",
             "properties": {
