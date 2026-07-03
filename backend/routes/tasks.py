@@ -107,12 +107,12 @@ async def list_guild_tasks(
         )
         .where(col(Task.guild_id) == guild_pk, live_tasks_filter())
         .order_by(col(Task.created_at).desc())
-        .limit(100)
     )
     if issue_number is not None:
         stmt = stmt.where(col(Task.issue_number) == issue_number)
     if issue_repo is not None:
         stmt = stmt.where(col(Task.issue_repo) == issue_repo)
+    stmt = stmt.limit(100)
     result = await db.exec(stmt)
     return [dict(r._mapping) for r in result.all()]
 

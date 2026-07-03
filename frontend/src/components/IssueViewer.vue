@@ -278,14 +278,14 @@ function onTaskLogTab() {
 
 async function toggleTask(taskId: string) {
   if (expandedTaskIds.value.has(taskId)) {
-    expandedTaskIds.value.delete(taskId)
+    expandedTaskIds.value = new Set([...expandedTaskIds.value].filter((x) => x !== taskId))
     return
   }
-  expandedTaskIds.value.add(taskId)
+  expandedTaskIds.value = new Set(expandedTaskIds.value).add(taskId)
   if (taskLogsMap.value[taskId] !== undefined) return
   const guildId = guildStore.currentGuild?.id
   if (!guildId) return
-  taskLogsFetching.value.add(taskId)
+  taskLogsFetching.value = new Set(taskLogsFetching.value).add(taskId)
   try {
     const raw = await api<Array<{ line: string; timestamp: string; detail?: unknown; level?: unknown }>>(
       `/guilds/${guildId}/tasks/${taskId}/logs`,
@@ -300,7 +300,7 @@ async function toggleTask(taskId: string) {
     console.error('Failed to fetch task logs', e)
     taskLogsMap.value[taskId] = []
   } finally {
-    taskLogsFetching.value.delete(taskId)
+    taskLogsFetching.value = new Set([...taskLogsFetching.value].filter((x) => x !== taskId))
   }
 }
 
