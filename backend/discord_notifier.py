@@ -13,7 +13,7 @@ Phase 2 — per-PR/issue threads
     Both tokens absent → silent no-op.  HTTP and DB failures are always logged
     at WARNING level and never propagate.
 
-Required bot permissions for Phase 2: ``SEND_MESSAGES``, ``MANAGE_THREADS``.
+Required bot permissions for Phase 2: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
 
 Usage::
 
@@ -270,7 +270,9 @@ async def _ensure_thread(issue_repo: str, issue_number: int, thread_name: str) -
         return None
 
     await _save_thread(issue_repo, issue_number, new_thread_id)
-    return new_thread_id
+    # Re-fetch after save: on_conflict_do_nothing means a concurrent creator wins;
+    # re-fetching ensures both callers use the same persisted thread_id.
+    return await _lookup_thread(issue_repo, issue_number) or new_thread_id
 
 
 async def _post_to_thread(

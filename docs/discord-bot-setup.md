@@ -9,10 +9,11 @@ When creating the application in the [Discord Developer Portal](https://discord.
 
 | Permission | Why |
 |---|---|
-| `SEND_MESSAGES` | Post messages into threads and the parent channel |
+| `SEND_MESSAGES` | Post messages into the parent channel and into threads |
+| `CREATE_PUBLIC_THREADS` | Create a public thread from a starter message |
 | `MANAGE_THREADS` | Archive threads on PR close/merge |
 
-In the OAuth2 URL generator, select **Bot** scope and tick both permissions above.
+In the OAuth2 URL generator, select **Bot** scope and tick all three permissions above.
 Invite the bot to your server before setting the env vars.
 
 ## Environment variables
