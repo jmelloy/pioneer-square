@@ -22,6 +22,7 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 
+import discord_notifier
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -33,6 +34,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from util.tasks import spawn
 from ws_types import ChatMsg, GithubEventMsg, TaskFinalizeMsg, TaskUpdateMsg
 
 from foreman import reset_foreman_poll, run_foreman_ai
@@ -823,6 +825,75 @@ async def github_webhook(
         pr_number,
         task_id,
     )
+
+    # Discord notifications for key GitHub events.
+    _pr_label = f"{repo}#{pr_number}" if repo and pr_number else (repo or "")
+    if event_type == "pull_request" and action == "opened":
+        pr_obj = payload.get("pull_request") or {}
+        pr_title = (pr_obj.get("title") or "")[:120]
+        spawn(
+            discord_notifier.notify(
+                "pr-opened",
+                f"PR opened: {_pr_label}",
+                pr_title or f"New pull request on {_pr_label}",
+                url=pr_url or None,
+            ),
+            name=f"discord.pr-opened:{_pr_label}",
+        )
+    elif event_type == "pull_request" and action == "closed":
+        pr_obj = payload.get("pull_request") or {}
+        if pr_obj.get("merged"):
+            spawn(
+                discord_notifier.notify(
+                    "pr-merged",
+                    f"PR merged: {_pr_label}",
+                    f"Pull request `{_pr_label}` was merged."
+                    + (f" Task: `{task_id}`." if task_id else ""),
+                    url=pr_url or None,
+                ),
+                name=f"discord.pr-merged:{_pr_label}",
+            )
+        else:
+            spawn(
+                discord_notifier.notify(
+                    "pr-closed",
+                    f"PR closed: {_pr_label}",
+                    f"Pull request `{_pr_label}` was closed without merging."
+                    + (f" Task: `{task_id}`." if task_id else ""),
+                    url=pr_url or None,
+                ),
+                name=f"discord.pr-closed:{_pr_label}",
+            )
+    elif event_type in {"check_run", "check_suite"}:
+        node = payload.get(event_type) or {}
+        conclusion = node.get("conclusion") if isinstance(node, dict) else None
+        check_name = (
+            (node.get("name") or node.get("app", {}).get("slug") or "CI")
+            if isinstance(node, dict)
+            else "CI"
+        )
+        if conclusion == "success":
+            spawn(
+                discord_notifier.notify(
+                    "ci-pass",
+                    f"CI passed: {_pr_label}",
+                    f"`{check_name}` passed on `{_pr_label}`."
+                    + (f" Task: `{task_id}`." if task_id else ""),
+                    url=pr_url or None,
+                ),
+                name=f"discord.ci-pass:{_pr_label}",
+            )
+        elif conclusion in {"failure", "cancelled", "timed_out", "action_required"}:
+            spawn(
+                discord_notifier.notify(
+                    "ci-fail",
+                    f"CI failed: {_pr_label}",
+                    f"`{check_name}` {conclusion} on `{_pr_label}`."
+                    + (f" Task: `{task_id}`." if task_id else ""),
+                    url=pr_url or None,
+                ),
+                name=f"discord.ci-fail:{_pr_label}",
+            )
 
     await broadcast_msg(
         guild_id,
