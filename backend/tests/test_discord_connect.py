@@ -174,9 +174,7 @@ def test_connect_valid_token_links_account(client):
     headers = {"Authorization": f"Bearer {login_token}"}
     connect_token = _insert_connect_token(db_url, discord_user_id="dc-2", discord_username="dUser2")
 
-    resp = test_client.post(
-        "/api/discord/connect", json={"token": connect_token}, headers=headers
-    )
+    resp = test_client.post("/api/discord/connect", json={"token": connect_token}, headers=headers)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "linked"
@@ -198,9 +196,7 @@ def test_connect_already_used_token_returns_400(client):
     headers = {"Authorization": f"Bearer {login_token}"}
     connect_token = _insert_connect_token(db_url, discord_user_id="dc-3", used=True)
 
-    resp = test_client.post(
-        "/api/discord/connect", json={"token": connect_token}, headers=headers
-    )
+    resp = test_client.post("/api/discord/connect", json={"token": connect_token}, headers=headers)
     assert resp.status_code == 400
     assert "already been used" in resp.json()["detail"]
 
@@ -213,9 +209,7 @@ def test_connect_expired_token_returns_400(client):
         db_url, discord_user_id="dc-4", expires_in=timedelta(minutes=-1)
     )
 
-    resp = test_client.post(
-        "/api/discord/connect", json={"token": connect_token}, headers=headers
-    )
+    resp = test_client.post("/api/discord/connect", json={"token": connect_token}, headers=headers)
     assert resp.status_code == 400
     assert "expired" in resp.json()["detail"]
 
@@ -243,8 +237,6 @@ def test_connect_relinking_discord_user_updates_owner(client):
     assert resp2.status_code == 200
 
     with _sync_session(db_url) as session:
-        link = (
-            session.query(DiscordAccountLink).filter_by(discord_user_id="dc-5").one_or_none()
-        )
+        link = session.query(DiscordAccountLink).filter_by(discord_user_id="dc-5").one_or_none()
         assert link is not None
         assert link.ps_user_id == "gh-conn-5b"

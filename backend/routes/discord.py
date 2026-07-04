@@ -658,9 +658,7 @@ async def _cmd_connect_account(interaction: dict) -> None:
             )
             await db.commit()
     except Exception:
-        logger.exception(
-            "discord: /connect-account failed to mint token for %s", discord_user_id
-        )
+        logger.exception("discord: /connect-account failed to mint token for %s", discord_user_id)
         await _send_followup(
             interaction_token, content="Failed to generate a connect link. Try again later."
         )
