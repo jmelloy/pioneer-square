@@ -182,6 +182,36 @@ async def _bot_request(
         return None
 
 
+async def _resolve_channel_for_guild(ps_guild_slug: str | None) -> str | None:
+    """Return the Discord channel wired to *ps_guild_slug* via ``/join-channel``.
+
+    Falls back to the flat ``DISCORD_CHANNEL_ID`` env var when no binding
+    exists in the ``discord_channel_guilds`` table (or *ps_guild_slug* is
+    None). Never raises.
+    """
+    if ps_guild_slug:
+        try:
+            from database import AsyncSessionLocal  # noqa: PLC0415
+            from models import DiscordChannelGuild  # noqa: PLC0415
+            from sqlmodel import col, select  # noqa: PLC0415
+
+            async with AsyncSessionLocal() as db:
+                rows = (
+                    await db.exec(
+                        select(DiscordChannelGuild.discord_channel_id).where(
+                            col(DiscordChannelGuild.ps_guild_id) == ps_guild_slug
+                        )
+                    )
+                ).all()
+                if rows:
+                    return rows[0]
+        except Exception:
+            logger.warning(
+                "discord: channel binding lookup failed guild=%s", ps_guild_slug, exc_info=True
+            )
+    return _channel_id()
+
+
 async def _lookup_thread(issue_repo: str, issue_number: int) -> str | None:
     """Return the persisted Discord thread_id for a PR/issue, or None."""
     try:
@@ -274,8 +304,13 @@ async def _create_thread_in_channel(channel: str, thread_name: str) -> str | Non
     return new_thread_id
 
 
-async def _ensure_thread(issue_repo: str, issue_number: int, thread_name: str) -> str | None:
+async def _ensure_thread(
+    issue_repo: str, issue_number: int, thread_name: str, channel: str | None = None
+) -> str | None:
     """Return the Discord thread_id for a PR/issue, creating it if necessary.
+
+    *channel* overrides the flat ``DISCORD_CHANNEL_ID`` env var when provided
+    (used to route to a per-guild channel bound via ``/join-channel``).
 
     Returns None when bot token or channel ID are not configured, or on API error.
     """
@@ -283,7 +318,7 @@ async def _ensure_thread(issue_repo: str, issue_number: int, thread_name: str) -
     if existing:
         return existing
 
-    channel = _channel_id()
+    channel = channel or _channel_id()
     if not channel:
         return None
 
@@ -409,8 +444,13 @@ async def _save_foreman_thread(guild_id: str, session_key: str, thread_id: str) 
         return None
 
 
-async def _ensure_foreman_thread(guild_id: str, session_key: str, thread_name: str) -> str | None:
+async def _ensure_foreman_thread(
+    guild_id: str, session_key: str, thread_name: str, channel: str | None = None
+) -> str | None:
     """Return the Discord thread_id for a Foreman chat session, creating it if necessary.
+
+    *channel* overrides the flat ``DISCORD_CHANNEL_ID`` env var when provided
+    (used to route to a per-guild channel bound via ``/join-channel``).
 
     Returns None when bot token or channel ID are not configured, or on API error.
     """
@@ -418,7 +458,7 @@ async def _ensure_foreman_thread(guild_id: str, session_key: str, thread_name: s
     if existing:
         return existing
 
-    channel = _channel_id()
+    channel = channel or _channel_id()
     if not channel:
         return None
 
@@ -439,12 +479,15 @@ async def notify_foreman_chat(guild_id: str, content: str, session_key: str | No
     """
     if not content or not content.strip():
         return
-    if not (_bot_token() and _channel_id()):
+    if not _bot_token():
+        return
+    channel = await _resolve_channel_for_guild(guild_id)
+    if not channel:
         return
 
     key = session_key or datetime.now(UTC).strftime("%Y-%m-%d")
     thread_name = f"Foreman session {key} ({guild_id})"[:100]
-    thread_id = await _ensure_foreman_thread(guild_id, key, thread_name)
+    thread_id = await _ensure_foreman_thread(guild_id, key, thread_name, channel=channel)
     if not thread_id:
         return
     await _bot_request("post", f"/channels/{thread_id}/messages", {"content": content[:2000]})
@@ -503,12 +546,18 @@ async def notify_event(
     thread_name: str | None = None,
     header_fields: dict[str, str] | None = None,
     close: bool = False,
+    ps_guild_slug: str | None = None,
 ) -> None:
     """Post a Discord notification, routing to a per-PR/issue thread when possible.
 
     Thread routing is attempted when ``DISCORD_BOT_TOKEN`` is set **and** both
     ``issue_repo`` and ``issue_number`` are provided.  The thread is lazily
     created on first use and its ID cached in the ``discord_threads`` table.
+
+    When *ps_guild_slug* is provided, the destination channel is resolved via
+    the ``discord_channel_guilds`` binding table (populated by
+    ``/join-channel``) before falling back to the flat ``DISCORD_CHANNEL_ID``
+    env var.
 
     When ``close=True`` the thread is archived after the message is posted
     (used for PR merge/close events).
@@ -519,7 +568,8 @@ async def notify_event(
     """
     if _bot_token() and issue_repo and issue_number is not None:
         tn = thread_name or f"#{issue_number}: {title}"
-        thread_id = await _ensure_thread(issue_repo, issue_number, tn)
+        channel = await _resolve_channel_for_guild(ps_guild_slug)
+        thread_id = await _ensure_thread(issue_repo, issue_number, tn, channel=channel)
         if thread_id:
             await _post_to_thread(
                 thread_id,

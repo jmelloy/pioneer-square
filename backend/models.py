@@ -592,6 +592,32 @@ class DiscordUser(SQLModel, table=True):
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class DiscordChannelGuild(SQLModel, table=True):
+    """Binds a Discord channel to a Pioneer Square guild for event routing.
+
+    Populated by the ``/join-channel`` slash command (and removed by
+    ``/leave-channel``); the event notifier consults this table to decide
+    which Discord channel should receive events for a given PS guild,
+    instead of relying solely on the flat ``DISCORD_CHANNEL_ID`` env var.
+    """
+
+    __tablename__ = "discord_channel_guilds"  # type: ignore[assignment]
+    __table_args__ = (
+        Index(
+            "uq_discord_channel_guilds_guild_channel",
+            "discord_guild_id",
+            "discord_channel_id",
+            unique=True,
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    discord_guild_id: str  # Discord server (guild) snowflake ID
+    discord_channel_id: str  # Discord channel snowflake ID
+    ps_guild_id: str  # Pioneer Square guild slug
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class ModelCatalog(SQLModel, table=True):
     """Persisted snapshot of models.dev provider/model entries.
 
