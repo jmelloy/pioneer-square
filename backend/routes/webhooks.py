@@ -852,6 +852,7 @@ async def github_webhook(
                 issue_number=pr_number,
                 thread_name=f"#{pr_number}: {pr_title}" if pr_title else f"#{pr_number}",
                 header_fields={"Assignee": assignee_str, "Labels": labels_str},
+                ps_guild_slug=guild_id,
             ),
             name=f"discord.pr-opened:{_pr_label}",
         )
@@ -868,6 +869,7 @@ async def github_webhook(
                     issue_repo=repo,
                     issue_number=pr_number,
                     close=True,
+                    ps_guild_slug=guild_id,
                 ),
                 name=f"discord.pr-merged:{_pr_label}",
             )
@@ -882,6 +884,7 @@ async def github_webhook(
                     issue_repo=repo,
                     issue_number=pr_number,
                     close=True,
+                    ps_guild_slug=guild_id,
                 ),
                 name=f"discord.pr-closed:{_pr_label}",
             )
@@ -903,6 +906,7 @@ async def github_webhook(
                     url=pr_url or None,
                     issue_repo=repo,
                     issue_number=pr_number,
+                    ps_guild_slug=guild_id,
                 ),
                 name=f"discord.ci-pass:{_pr_label}",
             )
@@ -916,6 +920,7 @@ async def github_webhook(
                     url=pr_url or None,
                     issue_repo=repo,
                     issue_number=pr_number,
+                    ps_guild_slug=guild_id,
                 ),
                 name=f"discord.ci-fail:{_pr_label}",
             )

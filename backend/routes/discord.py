@@ -6,17 +6,22 @@ Required env vars:
     DISCORD_PUBLIC_KEY          Ed25519 public key (hex) from Discord developer portal
     DISCORD_APPLICATION_ID      Discord application/bot ID (used for followup URLs)
     DISCORD_BOT_TOKEN           Discord bot token (reuses Phase 2 var)
-    DISCORD_PIONEER_GUILD_SLUG  Pioneer Square guild slug to target for all commands
+    DISCORD_PIONEER_GUILD_SLUG  Pioneer Square guild slug to target for /ps commands
 
 Optional env vars:
     DISCORD_ALLOWED_ROLE_IDS    Comma-separated Discord role IDs; empty = allow all
+    DISCORD_OPERATOR_ROLE_NAME  Discord role name allowed to run /join-channel and
+                                /leave-channel (in addition to Manage Channels
+                                permission); default "Pioneer Square Operator"
 
 Registered slash commands (see scripts/register_discord_commands.py):
-    /ps status              — formatted embed with worker states and active task counts
-    /ps workers             — list all workers with state, repos, and agent count
-    /ps pickup <issue-url>  — claim an issue and assign to an idle worker
-    /ps review <pr-url>     — trigger a PR review task
-    /ps cancel <task-id>    — cancel a running task
+    /ps status                          — formatted embed with worker states and active task counts
+    /ps workers                         — list all workers with state, repos, and agent count
+    /ps pickup <issue-url>              — claim an issue and assign to an idle worker
+    /ps review <pr-url>                 — trigger a PR review task
+    /ps cancel <task-id>                — cancel a running task
+    /join-channel <channel> [guild]     — wire a Discord channel to a Pioneer Square guild
+    /leave-channel [channel]            — remove a channel's Pioneer Square guild binding
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ import httpx
 from database import AsyncSessionLocal
 from events import broadcast_msg
 from fastapi import APIRouter, BackgroundTasks, Request, Response
-from models import Agent, Guild, Task, Worker, live_tasks_filter
+from models import Agent, DiscordChannelGuild, Guild, Task, Worker, live_tasks_filter
 from sqlalchemy import func, update
 from sqlmodel import col, select
 from ws_types import TaskCancelMsg, TaskCreatedMsg, TaskUpdateMsg
@@ -58,6 +63,11 @@ _EPHEMERAL = 64
 
 # Default soft-delete window for cancelled tasks
 _CANCEL_TTL = timedelta(days=3)
+
+# Discord permission bit for MANAGE_CHANNELS (see Discord's permissions bitfield docs)
+_MANAGE_CHANNELS_BIT = 0x10
+
+_DEFAULT_OPERATOR_ROLE_NAME = "Pioneer Square Operator"
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +94,10 @@ def _pioneer_guild_slug() -> str | None:
 def _allowed_role_ids() -> set[str]:
     raw = os.environ.get("DISCORD_ALLOWED_ROLE_IDS", "")
     return {r.strip() for r in raw.split(",") if r.strip()}
+
+
+def _operator_role_name() -> str:
+    return os.environ.get("DISCORD_OPERATOR_ROLE_NAME") or _DEFAULT_OPERATOR_ROLE_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -123,9 +137,69 @@ def _is_authorized(interaction: dict) -> bool:
     return bool(set(user_roles) & allowed)
 
 
+def _has_manage_channels(member: dict) -> bool:
+    """Return True if the member's computed permission bitfield includes MANAGE_CHANNELS."""
+    perms = member.get("permissions")
+    if not perms:
+        return False
+    try:
+        return (int(perms) & _MANAGE_CHANNELS_BIT) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+async def _has_operator_role(interaction: dict) -> bool:
+    """Return True if the invoking member holds the configured Operator role.
+
+    Resolves the role name to Discord role IDs via a live API call (interaction
+    payloads only carry role IDs, not names) and checks against the member's roles.
+    """
+    member = interaction.get("member") or {}
+    discord_guild_id = interaction.get("guild_id")
+    user_role_ids: set[str] = set(member.get("roles", []))
+    if not discord_guild_id or not user_role_ids:
+        return False
+
+    roles = await _discord_get(f"/guilds/{discord_guild_id}/roles")
+    if not roles:
+        return False
+    role_name = _operator_role_name()
+    operator_role_ids = {
+        r["id"] for r in roles if isinstance(r, dict) and r.get("name") == role_name
+    }
+    return bool(user_role_ids & operator_role_ids)
+
+
+async def _can_manage_channel_bindings(interaction: dict) -> bool:
+    """Return True if the invoking user may run /join-channel or /leave-channel.
+
+    Requires Discord's Manage Channels permission or the configured Operator role.
+    """
+    member = interaction.get("member") or {}
+    if _has_manage_channels(member):
+        return True
+    return await _has_operator_role(interaction)
+
+
 # ---------------------------------------------------------------------------
 # Discord API helper
 # ---------------------------------------------------------------------------
+
+
+async def _discord_get(path: str) -> list | dict | None:
+    """GET a Discord REST endpoint. Returns parsed JSON, or None on error/no token."""
+    token = _bot_token()
+    if not token:
+        return None
+    headers = {"Authorization": f"Bot {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{_DISCORD_API_BASE}{path}", headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        logger.warning("discord: GET %s failed", path, exc_info=True)
+        return None
 
 
 async def _discord_patch(path: str, payload: dict) -> None:
@@ -525,6 +599,156 @@ async def _cmd_cancel(interaction_token: str, guild_slug: str, task_id: str) -> 
         await _send_followup(interaction_token, content="Failed to cancel task.")
 
 
+async def _permission_denied_message() -> str:
+    return (
+        "You need the `Manage Channels` permission or the "
+        f"`{_operator_role_name()}` role to run this command."
+    )
+
+
+async def _cmd_join_channel(interaction: dict) -> None:
+    """Wire a Discord channel to a Pioneer Square guild (creating or updating the binding)."""
+    token = interaction.get("token", "")
+    data = interaction.get("data", {})
+    discord_guild_id = interaction.get("guild_id")
+
+    if not discord_guild_id:
+        await _send_followup(token, content="This command can only be used in a server.")
+        return
+
+    if not await _can_manage_channel_bindings(interaction):
+        await _send_followup(token, content=await _permission_denied_message())
+        return
+
+    options = {o["name"]: o for o in data.get("options", [])}
+    channel_opt = options.get("channel")
+    if not channel_opt:
+        await _send_followup(token, content="A channel must be specified.")
+        return
+    discord_channel_id = str(channel_opt["value"])
+
+    guild_opt = options.get("guild")
+    guild_slug = str(guild_opt["value"]).strip() if guild_opt else None
+
+    try:
+        async with AsyncSessionLocal() as db:
+            if guild_slug:
+                result = await db.exec(select(Guild).where(col(Guild.slug) == guild_slug))
+                if result.one_or_none() is None:
+                    await _send_followup(token, content=f"Pioneer guild `{guild_slug}` not found.")
+                    return
+            else:
+                all_guilds = (
+                    await db.exec(select(Guild).where(col(Guild.deleted_at).is_(None)))
+                ).all()
+                if len(all_guilds) != 1:
+                    await _send_followup(
+                        token,
+                        content=(
+                            "Multiple Pioneer guilds are configured — specify `guild:<slug>`."
+                            if len(all_guilds) > 1
+                            else "No Pioneer guilds are configured."
+                        ),
+                    )
+                    return
+                guild_slug = all_guilds[0].slug
+
+            existing_result = await db.exec(
+                select(DiscordChannelGuild).where(
+                    col(DiscordChannelGuild.discord_guild_id) == discord_guild_id,
+                    col(DiscordChannelGuild.discord_channel_id) == discord_channel_id,
+                )
+            )
+            existing = existing_result.one_or_none()
+            if existing:
+                existing.ps_guild_id = guild_slug
+                db.add(existing)
+                await db.commit()
+                await _send_followup(
+                    token,
+                    content=(
+                        f"Updated binding: <#{discord_channel_id}> is now wired to "
+                        f"Pioneer Square guild `{guild_slug}`."
+                    ),
+                )
+                return
+
+            db.add(
+                DiscordChannelGuild(
+                    discord_guild_id=discord_guild_id,
+                    discord_channel_id=discord_channel_id,
+                    ps_guild_id=guild_slug,
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await db.commit()
+    except Exception:
+        logger.exception(
+            "discord: /join-channel failed channel=%s guild=%s", discord_channel_id, guild_slug
+        )
+        await _send_followup(token, content="Failed to wire channel to guild.")
+        return
+
+    await _send_followup(
+        token,
+        content=(
+            f"✅ <#{discord_channel_id}> is now wired to Pioneer Square guild `{guild_slug}`.\n"
+            "Task events, PR notifications, and CI alerts will be posted here."
+        ),
+    )
+
+
+async def _cmd_leave_channel(interaction: dict) -> None:
+    """Remove a Discord channel's Pioneer Square guild binding."""
+    token = interaction.get("token", "")
+    data = interaction.get("data", {})
+    discord_guild_id = interaction.get("guild_id")
+
+    if not discord_guild_id:
+        await _send_followup(token, content="This command can only be used in a server.")
+        return
+
+    if not await _can_manage_channel_bindings(interaction):
+        await _send_followup(token, content=await _permission_denied_message())
+        return
+
+    options = {o["name"]: o for o in data.get("options", [])}
+    channel_opt = options.get("channel")
+    if channel_opt:
+        discord_channel_id = str(channel_opt["value"])
+    else:
+        current_channel_id = interaction.get("channel_id") or (
+            interaction.get("channel") or {}
+        ).get("id")
+        if not current_channel_id:
+            await _send_followup(token, content="Could not determine the current channel.")
+            return
+        discord_channel_id = str(current_channel_id)
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(DiscordChannelGuild).where(
+                    col(DiscordChannelGuild.discord_guild_id) == discord_guild_id,
+                    col(DiscordChannelGuild.discord_channel_id) == discord_channel_id,
+                )
+            )
+            existing = result.one_or_none()
+            if not existing:
+                await _send_followup(token, content="No binding found for this channel.")
+                return
+            await db.delete(existing)
+            await db.commit()
+    except Exception:
+        logger.exception("discord: /leave-channel failed channel=%s", discord_channel_id)
+        await _send_followup(token, content="Failed to remove channel binding.")
+        return
+
+    await _send_followup(
+        token, content=f"✅ <#{discord_channel_id}> has been unwired from Pioneer Square."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Command dispatcher
 # ---------------------------------------------------------------------------
@@ -534,6 +758,15 @@ async def _dispatch_command(interaction: dict) -> None:
     """Parse the interaction data and dispatch to the appropriate command handler."""
     token = interaction.get("token", "")
     data = interaction.get("data", {})
+    command_name = data.get("name", "")
+
+    if command_name == "join-channel":
+        await _cmd_join_channel(interaction)
+        return
+    if command_name == "leave-channel":
+        await _cmd_leave_channel(interaction)
+        return
+
     guild_slug = _pioneer_guild_slug() or ""
 
     options: list[dict] = data.get("options", [])

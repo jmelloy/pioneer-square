@@ -64,6 +64,7 @@ bot must already be a member of the guild that owns `DISCORD_CHANNEL_ID`.
 | `DISCORD_PUBLIC_KEY` | 3 | For slash commands | Ed25519 public key (hex) used to verify `POST /discord/interactions` requests. Without it, the endpoint refuses all requests with 401. |
 | `DISCORD_ALLOWED_ROLE_IDS` | 3 | No | Comma-separated Discord role IDs allowed to run `/ps` commands. Empty/unset = everyone allowed. DM interactions are always denied when this is set (no role info is available outside a guild). |
 | `DISCORD_PIONEER_GUILD_SLUG` | 3 | For slash commands | The Pioneer Square guild (workspace) slug that `/ps` commands operate against. Not a Discord ID — see [Terminology note](#terminology-note-guild-vs-guild) below. |
+| `DISCORD_OPERATOR_ROLE_NAME` | 3 | No | Discord role name (in addition to the Manage Channels permission) allowed to run `/join-channel` and `/leave-channel`. Default `Pioneer Square Operator`. |
 | `DISCORD_DEV_GUILD_ID` | 3 (registration only) | No | Discord server ID. When set, `scripts/register_discord_commands.py` registers commands to that one server (near-instant) instead of globally (up to 1 hour to propagate). |
 
 `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` must be set **together** — the bot needs both
@@ -210,9 +211,8 @@ sends to a user (not tool-call traces) is mirrored into Discord via
 
 ## Slash command reference
 
-All commands are subcommands of `/ps` and are scoped to the guild in
-`DISCORD_PIONEER_GUILD_SLUG`. Every reply is ephemeral. Requires a role in
-`DISCORD_ALLOWED_ROLE_IDS` (or no restriction configured).
+The `/ps` subcommands are scoped to the guild in `DISCORD_PIONEER_GUILD_SLUG`. Every reply is
+ephemeral. Requires a role in `DISCORD_ALLOWED_ROLE_IDS` (or no restriction configured).
 
 | Command | Description | Notes |
 |---|---|---|
@@ -221,9 +221,24 @@ All commands are subcommands of `/ps` and are scoped to the guild in
 | `/ps pickup <issue-url>` | Creates a `pending` task (`phase=execute`) for a GitHub issue URL and queues it for an idle worker | URL must match `https://github.com/<owner>/<repo>/issues/<number>` |
 | `/ps review <pr-url>` | Creates a `pending` review task (`phase=review`) for a GitHub PR URL | URL must match `https://github.com/<owner>/<repo>/pull/<number>` |
 | `/ps cancel <task-id>` | Cancels a running task and soft-deletes it after a 3-day TTL | No-op reply if the task is already `done`/`failed`/`cancelled` |
+| `/join-channel <channel> [guild]` | Wires a Discord channel to a Pioneer Square guild so its events post there | Requires **Manage Channels** or the `DISCORD_OPERATOR_ROLE_NAME` role. `guild` is optional if exactly one Pioneer Square guild is configured. Re-running on an already-wired channel updates the binding. |
+| `/leave-channel [channel]` | Removes a channel's Pioneer Square guild binding (defaults to the current channel) | Same permission check as `/join-channel`. Replies "No binding found" if the channel isn't wired. |
 
 Commands are defined in `scripts/register_discord_commands.py` and must be re-registered
 (see [Setup guide](#4-register-slash-commands-phase-3-only)) whenever that file changes.
+
+### Per-channel guild routing (`/join-channel` / `/leave-channel`)
+
+By default, all Discord notifications go to the single channel in `DISCORD_CHANNEL_ID`. The
+`discord_channel_guilds` table lets you fan events for a specific Pioneer Square guild out to
+additional channels — e.g. one channel per team, each wired to its own guild:
+
+- `/join-channel channel:#my-team-updates guild:my-guild-slug` upserts a
+  `(discord_guild_id, discord_channel_id) → ps_guild_id` row.
+- `notify_event(...)` and `notify_foreman_chat(...)` resolve the destination channel by looking
+  up the event's Pioneer Square guild in `discord_channel_guilds` first, falling back to
+  `DISCORD_CHANNEL_ID` when no binding exists.
+- `/leave-channel` deletes the row; events for that guild then fall back to `DISCORD_CHANNEL_ID`.
 
 ## User identity linking
 
