@@ -633,6 +633,106 @@ async def test_notify_foreman_chat_reuses_thread_for_same_session(monkeypatch):
     assert mock_client.post.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_notify_foreman_chat_task_scoped_routes_to_task_thread(monkeypatch):
+    """A task-scoped message with an existing per-task thread posts there, not the daily thread."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client()
+    task_thread_id = "999888777666"
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(
+            discord_notifier,
+            "_lookup_task_issue_coords",
+            AsyncMock(return_value=("org/repo", 42)),
+        ),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=task_thread_id)),
+        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_daily_mock,
+    ):
+        await discord_notifier.notify_foreman_chat("guild-1", "Working on it.", task_id="t-abc")
+
+    ensure_daily_mock.assert_not_called()
+    mock_client.post.assert_called_once()
+    call = mock_client.post.call_args
+    assert f"/channels/{task_thread_id}/messages" in call[0][0]
+    assert call[1]["json"]["content"] == "Working on it."
+
+
+@pytest.mark.asyncio
+async def test_notify_foreman_chat_no_task_id_uses_daily_thread(monkeypatch):
+    """A non-scoped message (no task_id) goes straight to the daily guild thread."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_task_issue_coords", AsyncMock()) as coords_mock,
+        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_foreman_chat("guild-1", "General update.")
+
+    coords_mock.assert_not_called()
+    mock_client.post.assert_called_once()
+    call = mock_client.post.call_args
+    assert f"/channels/{THREAD_ID}/messages" in call[0][0]
+    assert call[1]["json"]["content"] == "General update."
+
+
+@pytest.mark.asyncio
+async def test_notify_foreman_chat_task_scoped_no_thread_falls_back_to_daily(monkeypatch):
+    """Task-scoped message with no per-task thread yet falls back to the daily thread."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(
+            discord_notifier,
+            "_lookup_task_issue_coords",
+            AsyncMock(return_value=("org/repo", 42)),
+        ),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=None)),
+        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_foreman_chat("guild-1", "No thread yet.", task_id="t-abc")
+
+    mock_client.post.assert_called_once()
+    call = mock_client.post.call_args
+    assert f"/channels/{THREAD_ID}/messages" in call[0][0]
+    assert call[1]["json"]["content"] == "No thread yet."
+
+
+@pytest.mark.asyncio
+async def test_notify_foreman_chat_task_with_no_linked_issue_falls_back_to_daily(monkeypatch):
+    """Task-scoped message where the task has no linked issue/PR falls back to the daily thread."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_task_issue_coords", AsyncMock(return_value=None)),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock()) as lookup_thread_mock,
+        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_foreman_chat(
+            "guild-1", "No linked issue.", task_id="t-standalone"
+        )
+
+    lookup_thread_mock.assert_not_called()
+    mock_client.post.assert_called_once()
+    call = mock_client.post.call_args
+    assert f"/channels/{THREAD_ID}/messages" in call[0][0]
+
+
 # ---------------------------------------------------------------------------
 # Phase 3: GitHub login -> Discord user mentions
 # ---------------------------------------------------------------------------
@@ -671,5 +771,14 @@ async def test_lookup_discord_user_db_error_returns_none():
     """_lookup_discord_user swallows DB errors and returns None (never raises)."""
     with patch("database.AsyncSessionLocal", side_effect=RuntimeError("db down")):
         result = await discord_notifier._lookup_discord_user("carol")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_lookup_task_issue_coords_db_error_returns_none():
+    """_lookup_task_issue_coords swallows DB errors and returns None (never raises)."""
+    with patch("database.AsyncSessionLocal", side_effect=RuntimeError("db down")):
+        result = await discord_notifier._lookup_task_issue_coords("t-abc")
 
     assert result is None

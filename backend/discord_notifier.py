@@ -19,6 +19,12 @@ Phase 3 — Foreman chat threads + user mentions
     Discord thread per guild per UTC day (mapping persisted in
     ``discord_foreman_threads``), reusing the same bot token/channel as Phase 2.
 
+    When a chat line is scoped to a task (``task_id`` passed through) and that
+    task's linked GitHub issue/PR already has a thread in ``discord_threads``,
+    the line is posted there instead — so task-scoped narration stays with
+    that task's Discord history rather than the daily catch-all thread.
+    Falls back to the per-day thread whenever no per-task thread applies.
+
     ``mention_or_login`` resolves a GitHub login to a real ``<@id>`` Discord
     mention via the ``discord_users`` table (populated through the
     ``/api/discord-users`` REST endpoints). Falls back to a plain ``@login``
@@ -43,8 +49,11 @@ Usage::
         header_fields={"Assignee": "@alice", "Labels": "bug"},
     )
 
-    # Foreman chat mirrored into a per-day thread:
-    await discord_notifier.notify_foreman_chat(guild_id, "Spun up worker w-abc for t-123.")
+    # Foreman chat mirrored into a per-day thread (or a per-task thread when
+    # task_id resolves to one):
+    await discord_notifier.notify_foreman_chat(
+        guild_id, "Spun up worker w-abc for t-123.", task_id="t-123"
+    )
 
     # Resolve a GitHub login to a Discord mention (or a plain @login fallback):
     mention = await discord_notifier.mention_or_login("alice")
@@ -364,6 +373,43 @@ async def archive_thread(thread_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _lookup_task_issue_coords(task_id: str) -> tuple[str, int] | None:
+    """Return the ``(issue_repo, issue_number)`` linked to *task_id*, or None.
+
+    Used to route task-scoped Foreman chat into the same thread as that
+    task's PR/issue notifications (see ``_lookup_thread``), instead of the
+    daily guild thread. None when the task has no linked issue/PR, doesn't
+    exist, or the lookup fails.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Task  # noqa: PLC0415
+        from sqlalchemy.exc import NoResultFound  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.exec(
+                    select(Task.issue_repo, Task.issue_number).where(col(Task.id) == task_id)
+                )
+                row = result.one_or_none()
+                if row and row[0] and row[1] is not None:
+                    return row[0], row[1]
+                return None
+        except NoResultFound:
+            # Expected when the task has no linked issue/PR (or no thread) yet.
+            logger.debug("discord: no issue coords for task=%s", task_id)
+            return None
+    except Exception as exc:
+        logger.warning(
+            "discord: task issue-coords lookup failed task=%s error_type=%s: %s",
+            task_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
 async def _lookup_foreman_thread(guild_id: str, session_key: str) -> str | None:
     """Return the persisted Discord thread_id for a Foreman chat session, or None."""
     try:
@@ -472,18 +518,55 @@ async def _ensure_foreman_thread(
     return await _save_foreman_thread(guild_id, session_key, new_thread_id) or new_thread_id
 
 
-async def notify_foreman_chat(guild_id: str, content: str, session_key: str | None = None) -> None:
-    """Mirror a Foreman → user chat line into a per-guild, per-day Discord thread.
+# Discord's hard cap on a single message's content length.
+_MAX_MESSAGE_LENGTH = 2000
 
-    One thread is created per ``(guild_id, session_key)`` pair — *session_key*
-    defaults to the current UTC date, so a whole day's conversation lands in
-    the same thread. Silent no-op when the bot token or channel are not
-    configured, or when *content* is blank. Never raises.
+
+async def _post_foreman_chat_line(thread_id: str, content: str) -> None:
+    """POST *content* to *thread_id*, applying the shared length guardrail.
+
+    Both the per-task and daily-thread paths in ``notify_foreman_chat`` route
+    through this helper so neither can skip the truncation applied to the
+    other.
+    """
+    await _bot_request(
+        "post",
+        f"/channels/{thread_id}/messages",
+        {"content": content[:_MAX_MESSAGE_LENGTH]},
+    )
+
+
+async def notify_foreman_chat(
+    guild_id: str,
+    content: str,
+    session_key: str | None = None,
+    task_id: str | None = None,
+) -> None:
+    """Mirror a Foreman → user chat line into Discord.
+
+    When *task_id* is given and resolves (via ``discord_threads``) to a
+    per-task thread already created for that task's linked PR/issue, the
+    line is posted there. Otherwise it falls back to the per-guild, per-day
+    thread — one thread per ``(guild_id, session_key)`` pair, *session_key*
+    defaulting to the current UTC date, so a whole day's un-scoped
+    conversation lands together. The message is only ever posted to one
+    thread. Silent no-op when the bot token or channel are not configured,
+    or when *content* is blank. Never raises.
     """
     if not content or not content.strip():
         return
     if not _bot_token():
         return
+
+    if task_id:
+        coords = await _lookup_task_issue_coords(task_id)
+        if coords:
+            issue_repo, issue_number = coords
+            task_thread_id = await _lookup_thread(issue_repo, issue_number)
+            if task_thread_id:
+                await _post_foreman_chat_line(task_thread_id, content)
+                return
+
     channel = await _resolve_channel_for_guild(guild_id)
     if not channel:
         return
@@ -493,7 +576,7 @@ async def notify_foreman_chat(guild_id: str, content: str, session_key: str | No
     thread_id = await _ensure_foreman_thread(guild_id, key, thread_name, channel=channel)
     if not thread_id:
         return
-    await _bot_request("post", f"/channels/{thread_id}/messages", {"content": content[:2000]})
+    await _post_foreman_chat_line(thread_id, content)
 
 
 # ---------------------------------------------------------------------------

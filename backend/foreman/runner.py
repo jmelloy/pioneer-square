@@ -487,19 +487,23 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
     return [dict(r._mapping) for r in result.all()]
 
 
-async def _emit_foreman_chat(guild_id: str, content: str, created_at: str) -> None:
+async def _emit_foreman_chat(
+    guild_id: str, content: str, created_at: str, task_id: str | None = None
+) -> None:
     """Broadcast a Foreman -> user narration line and mirror it into Discord.
 
     Every plain-text line the Foreman sends to the user (not tool_use/tool_result
     traces) goes through here so the Discord thread mirror in discord_notifier
-    stays in sync with the WS chat stream.
+    stays in sync with the WS chat stream. *task_id*, when known, lets
+    discord_notifier route the line to that task's per-task thread instead of
+    the daily guild thread.
     """
     await broadcast_msg(
         guild_id,
         ChatMsg(from_="foreman", to="user", content=content, createdAt=created_at),
     )
     spawn(
-        discord_notifier.notify_foreman_chat(guild_id, content),
+        discord_notifier.notify_foreman_chat(guild_id, content, task_id=task_id),
         name=f"discord.foreman-chat:{guild_id}",
     )
 
@@ -568,6 +572,11 @@ async def _run_foreman_ai(
     worker/task rows, system prompt, state preamble, tool set, and loaded history
     are all narrowed to that one task. See docs/foreman-per-task-context.md.
     """
+    # Initialized up front (rather than only inside the child/parent branches
+    # below) so it's always bound — including on any early return before task
+    # scoping runs — for every ``task_id=_task_id`` use further down.
+    _task_id: str | None = None
+
     if not HAS_ANTHROPIC:
         now = datetime.now(UTC).isoformat()
         await broadcast_msg(
@@ -648,7 +657,7 @@ async def _run_foreman_ai(
             child_worker_id = child_task_row.get("worker_id") if child_task_row else None
             worker_rows = [r for r in worker_rows if r["id"] == child_worker_id]
             task_rows = [child_task_row] if child_task_row else []
-            _task_id: str | None = task_id
+            _task_id = task_id
         elif child:
             _task_id = task_rows[0]["id"] if len(task_rows) == 1 else None
         else:
@@ -839,7 +848,9 @@ async def _run_foreman_ai(
             for b in resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await _emit_foreman_chat(guild_id, b.text.strip(), _now.isoformat())
+                    await _emit_foreman_chat(
+                        guild_id, b.text.strip(), _now.isoformat(), task_id=_task_id
+                    )
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
@@ -1046,10 +1057,10 @@ async def _run_foreman_ai(
             for b in wrap_resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await _emit_foreman_chat(guild_id, b.text.strip(), _now)
+                    await _emit_foreman_chat(guild_id, b.text.strip(), _now, task_id=_task_id)
             cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
-            await _emit_foreman_chat(guild_id, cap_note, _now)
+            await _emit_foreman_chat(guild_id, cap_note, _now, task_id=_task_id)
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
