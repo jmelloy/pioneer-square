@@ -28,9 +28,12 @@ In the [Discord Developer Portal](https://discord.com/developers/applications):
 3. Under **General Information**, copy the **Application ID** (`DISCORD_APPLICATION_ID`) and
    **Public Key** (`DISCORD_PUBLIC_KEY`).
 4. If you plan to use slash commands (Phase 3), set **Interactions Endpoint URL** on the same
-   page to `https://<your-backend-host>/discord/interactions`. Discord will send a PING to
-   this URL and expects a signed PONG back — it won't save the URL until the backend is
-   reachable and `DISCORD_PUBLIC_KEY` is configured, so deploy the backend first.
+   page to `${FRONTEND_URL}/discord/interactions` (e.g.
+   `https://pioneer-square.melloy.life/discord/interactions`) — the backend serves both the
+   SPA and the API from a single public origin, so this is the same host users open in a
+   browser, not a separate backend-only address. Discord will send a PING to this URL and
+   expects a signed PONG back — it won't save the URL until the backend is reachable and
+   `DISCORD_PUBLIC_KEY` is configured, so deploy the backend first.
 
    > **Ordering matters:** `DISCORD_PUBLIC_KEY` (see [step 3](#3-environment-variables)) must
    > already be set on the *running* backend before you try to save the Interactions Endpoint
