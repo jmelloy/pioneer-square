@@ -107,6 +107,17 @@ def make_auth_token(db_url: str, user_id: str = "gh-user-test", username: str = 
     token = "test-session-" + secrets.token_hex(8)
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
+        session.execute(
+            pg_insert(User)
+            .values(
+                id=user_id,
+                github_id=user_id,
+                github_login=username,
+                created_at=now,
+                updated_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
         stmt = (
             pg_insert(GithubToken)
             .values(

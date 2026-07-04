@@ -114,6 +114,11 @@ COMMANDS = [
             },
         ],
     },
+    {
+        "name": "connect-account",
+        "description": "Link your Discord account to your Pioneer Square account",
+        "options": [],
+    },
 ]
 
 DISCORD_API = "https://discord.com/api/v10"

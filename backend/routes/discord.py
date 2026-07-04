@@ -22,6 +22,7 @@ Registered slash commands (see scripts/register_discord_commands.py):
     /ps cancel <task-id>                — cancel a running task
     /join-channel <channel> [guild]     — wire a Discord channel to a Pioneer Square guild
     /leave-channel [channel]            — remove a channel's Pioneer Square guild binding
+    /connect-account                    — link your Discord account to Pioneer Square
 """
 
 from __future__ import annotations
@@ -32,13 +33,23 @@ import os
 import random
 import re
 import string
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
 from database import AsyncSessionLocal
 from events import broadcast_msg
 from fastapi import APIRouter, BackgroundTasks, Request, Response
-from models import Agent, DiscordChannelGuild, Guild, Task, Worker, live_tasks_filter
+from models import (
+    Agent,
+    DiscordChannelGuild,
+    DiscordConnectToken,
+    Guild,
+    Task,
+    Worker,
+    live_tasks_filter,
+)
+from oauth import FRONTEND_URL
 from sqlalchemy import func, update
 from sqlmodel import col, select
 from ws_types import TaskCancelMsg, TaskCreatedMsg, TaskUpdateMsg
@@ -63,6 +74,9 @@ _EPHEMERAL = 64
 
 # Default soft-delete window for cancelled tasks
 _CANCEL_TTL = timedelta(days=3)
+
+# Lifetime of a /connect-account one-time token
+_CONNECT_TOKEN_TTL = timedelta(minutes=15)
 
 # Discord permission bit for MANAGE_CHANNELS (see Discord's permissions bitfield docs)
 _MANAGE_CHANNELS_BIT = 0x10
@@ -599,6 +613,67 @@ async def _cmd_cancel(interaction_token: str, guild_slug: str, task_id: str) -> 
         await _send_followup(interaction_token, content="Failed to cancel task.")
 
 
+def _interaction_user(interaction: dict) -> tuple[str, str] | None:
+    """Return (discord_user_id, display_name) for the invoking user, or None.
+
+    Guild interactions carry the user under ``member.user``; DM interactions
+    carry it directly under ``user``.
+    """
+    member = interaction.get("member") or {}
+    user = member.get("user") or interaction.get("user") or {}
+    user_id = user.get("id")
+    if not user_id:
+        return None
+    username = user.get("global_name") or user.get("username") or str(user_id)
+    return str(user_id), str(username)
+
+
+async def _cmd_connect_account(interaction: dict) -> None:
+    """Mint a one-time token and reply with a link to connect this Discord account.
+
+    The link points the user at ``/auth/discord/connect?token=<token>``, which
+    (once they're logged in to Pioneer Square) redeems the token via
+    ``POST /api/discord/connect`` and creates the account link.
+    """
+    interaction_token = interaction.get("token", "")
+    identity = _interaction_user(interaction)
+    if not identity:
+        await _send_followup(interaction_token, content="Could not determine your Discord account.")
+        return
+    discord_user_id, discord_username = identity
+
+    connect_token = str(uuid.uuid4())
+    now = datetime.now(UTC)
+
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add(
+                DiscordConnectToken(
+                    token=connect_token,
+                    discord_user_id=discord_user_id,
+                    discord_username=discord_username,
+                    expires_at=now + _CONNECT_TOKEN_TTL,
+                    created_at=now,
+                )
+            )
+            await db.commit()
+    except Exception:
+        logger.exception("discord: /connect-account failed to mint token for %s", discord_user_id)
+        await _send_followup(
+            interaction_token, content="Failed to generate a connect link. Try again later."
+        )
+        return
+
+    link = f"{FRONTEND_URL.rstrip('/')}/auth/discord/connect?token={connect_token}"
+    await _send_followup(
+        interaction_token,
+        content=(
+            f"Connect your Pioneer Square account: {link}\n"
+            "This link expires in 15 minutes and can only be used once."
+        ),
+    )
+
+
 async def _permission_denied_message() -> str:
     return (
         "You need the `Manage Channels` permission or the "
@@ -765,6 +840,9 @@ async def _dispatch_command(interaction: dict) -> None:
         return
     if command_name == "leave-channel":
         await _cmd_leave_channel(interaction)
+        return
+    if command_name == "connect-account":
+        await _cmd_connect_account(interaction)
         return
 
     guild_slug = _pioneer_guild_slug() or ""

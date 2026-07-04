@@ -618,6 +618,42 @@ class DiscordChannelGuild(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class DiscordConnectToken(SQLModel, table=True):
+    """One-time token minted by the ``/connect-account`` slash command.
+
+    Redeemed by ``POST /api/discord/connect`` once the user is logged in to
+    Pioneer Square. Tokens expire 15 minutes after creation and can only be
+    redeemed once (``used_at`` is set on redemption).
+    """
+
+    __tablename__ = "discord_connect_tokens"  # type: ignore[assignment]
+
+    token: str = Field(primary_key=True)  # UUID4 string
+    discord_user_id: str  # Discord snowflake ID of the invoking user
+    discord_username: str
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    used_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class DiscordAccountLink(SQLModel, table=True):
+    """Links a Discord user to a Pioneer Square user account.
+
+    Created by redeeming a ``/connect-account`` token via
+    ``POST /api/discord/connect``. Unique on ``discord_user_id`` so a Discord
+    account is linked to at most one Pioneer Square user at a time;
+    re-linking updates the existing row.
+    """
+
+    __tablename__ = "discord_account_links"  # type: ignore[assignment]
+
+    id: int | None = Field(default=None, primary_key=True)
+    ps_user_id: str = Field(foreign_key="users.id")
+    discord_user_id: str = Field(unique=True)
+    discord_username: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class ModelCatalog(SQLModel, table=True):
     """Persisted snapshot of models.dev provider/model entries.
 

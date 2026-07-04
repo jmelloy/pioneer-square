@@ -97,6 +97,10 @@ const creating = ref(false)
 const loggingIn = ref(false)
 const loginError = ref('')
 
+// Set by DiscordConnectView before kicking off GitHub login, so the
+// /connect-account flow can resume once the user is signed in.
+const PENDING_DISCORD_TOKEN_KEY = 'discord_connect_pending_token'
+
 onMounted(async () => {
   const params = new URLSearchParams(window.location.search)
   if (params.has('code') && params.has('state')) {
@@ -140,6 +144,12 @@ onMounted(async () => {
   }
 
   if (authStore.isLoggedIn) {
+    const pendingDiscordToken = localStorage.getItem(PENDING_DISCORD_TOKEN_KEY)
+    if (pendingDiscordToken) {
+      localStorage.removeItem(PENDING_DISCORD_TOKEN_KEY)
+      router.push({ path: '/auth/discord/connect', query: { token: pendingDiscordToken } })
+      return
+    }
     await guildStore.loadGuilds()
     guilds.value = guildStore.guilds
   }
