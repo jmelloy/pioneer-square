@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import LandingView from '../views/LandingView.vue'
 import AppView from '../views/AppView.vue'
+import DiscordConnectView from '../views/DiscordConnectView.vue'
 
 export function getRootOrigin(): string | null {
   const hostname = window.location.hostname
@@ -42,6 +43,10 @@ const router = createRouter({
         {
           path: '/',
           component: LandingView,
+        },
+        {
+          path: '/auth/discord/connect',
+          component: DiscordConnectView,
         },
         {
           path: '/:guildId',
