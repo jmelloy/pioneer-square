@@ -352,26 +352,52 @@ async def _lookup_foreman_thread(guild_id: str, session_key: str) -> str | None:
         return None
 
 
-async def _save_foreman_thread(guild_id: str, session_key: str, thread_id: str) -> None:
-    """Persist a new Foreman thread mapping using an atomic upsert (ignore duplicates)."""
+async def _save_foreman_thread(guild_id: str, session_key: str, thread_id: str) -> str | None:
+    """Persist a new Foreman thread mapping if one doesn't already exist.
+
+    Dialect-agnostic SELECT-then-INSERT (works on SQLite and Postgres alike).
+    Returns the thread_id that should be used going forward: *thread_id* on a
+    fresh insert, or the winning row's thread_id if a concurrent caller raced
+    us and inserted first. Returns None on error.
+    """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
         from models import DiscordForemanThread  # noqa: PLC0415
-        from sqlalchemy.dialects.postgresql import insert  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
-            stmt = (
-                insert(DiscordForemanThread)
-                .values(
+            result = await db.exec(
+                select(DiscordForemanThread).where(
+                    col(DiscordForemanThread.guild_id) == guild_id,
+                    col(DiscordForemanThread.session_key) == session_key,
+                )
+            )
+            existing = result.one_or_none()
+            if existing:
+                return existing.thread_id
+
+            db.add(
+                DiscordForemanThread(
                     guild_id=guild_id,
                     session_key=session_key,
                     thread_id=thread_id,
                     created_at=datetime.now(UTC),
                 )
-                .on_conflict_do_nothing()
             )
-            await db.execute(stmt)
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception:
+                # Unique-index race: a concurrent caller inserted first. Use its row.
+                await db.rollback()
+                result = await db.exec(
+                    select(DiscordForemanThread).where(
+                        col(DiscordForemanThread.guild_id) == guild_id,
+                        col(DiscordForemanThread.session_key) == session_key,
+                    )
+                )
+                existing = result.one_or_none()
+                return existing.thread_id if existing else thread_id
+            return thread_id
     except Exception:
         logger.warning(
             "discord: foreman thread DB save failed guild=%s session=%s thread=%s",
@@ -380,6 +406,7 @@ async def _save_foreman_thread(guild_id: str, session_key: str, thread_id: str) 
             thread_id,
             exc_info=True,
         )
+        return None
 
 
 async def _ensure_foreman_thread(guild_id: str, session_key: str, thread_name: str) -> str | None:
@@ -399,8 +426,7 @@ async def _ensure_foreman_thread(guild_id: str, session_key: str, thread_name: s
     if not new_thread_id:
         return None
 
-    await _save_foreman_thread(guild_id, session_key, new_thread_id)
-    return await _lookup_foreman_thread(guild_id, session_key) or new_thread_id
+    return await _save_foreman_thread(guild_id, session_key, new_thread_id) or new_thread_id
 
 
 async def notify_foreman_chat(guild_id: str, content: str, session_key: str | None = None) -> None:

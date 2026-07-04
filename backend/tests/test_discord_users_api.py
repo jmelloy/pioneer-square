@@ -28,7 +28,7 @@ def test_list_requires_auth(client):
 
 def test_upsert_creates_mapping(client):
     test_client, db_url = client
-    token = _login(db_url)
+    token = _login(db_url, user_id="gh-alice", username="alice")
     headers = {"Authorization": f"Bearer {token}"}
 
     resp = test_client.put(
@@ -49,7 +49,7 @@ def test_upsert_creates_mapping(client):
 
 def test_upsert_is_idempotent_and_updates_existing(client):
     test_client, db_url = client
-    token = _login(db_url)
+    token = _login(db_url, user_id="gh-bob", username="bob")
     headers = {"Authorization": f"Bearer {token}"}
 
     test_client.put("/api/discord-users/bob", json={"discord_user_id": "111"}, headers=headers)
@@ -65,7 +65,7 @@ def test_upsert_is_idempotent_and_updates_existing(client):
 
 def test_upsert_lowercases_login(client):
     test_client, db_url = client
-    token = _login(db_url)
+    token = _login(db_url, user_id="gh-carol", username="CarolCase")
     headers = {"Authorization": f"Bearer {token}"}
 
     test_client.put(
@@ -87,7 +87,7 @@ def test_get_unknown_login_returns_404(client):
 
 def test_delete_removes_mapping(client):
     test_client, db_url = client
-    token = _login(db_url)
+    token = _login(db_url, user_id="gh-dave", username="dave")
     headers = {"Authorization": f"Bearer {token}"}
 
     test_client.put("/api/discord-users/dave", json={"discord_user_id": "444"}, headers=headers)
@@ -98,9 +98,18 @@ def test_delete_removes_mapping(client):
     assert resp.status_code == 404
 
 
+def test_delete_unknown_login_returns_404(client):
+    test_client, db_url = client
+    token = _login(db_url, user_id="gh-frank", username="frank")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = test_client.delete("/api/discord-users/frank", headers=headers)
+    assert resp.status_code == 404
+
+
 def test_list_includes_created_mappings(client):
     test_client, db_url = client
-    token = _login(db_url)
+    token = _login(db_url, user_id="gh-erin", username="erin")
     headers = {"Authorization": f"Bearer {token}"}
 
     test_client.put("/api/discord-users/erin", json={"discord_user_id": "555"}, headers=headers)
@@ -108,3 +117,30 @@ def test_list_includes_created_mappings(client):
     assert resp.status_code == 200
     logins = {row["github_login"] for row in resp.json()}
     assert "erin" in logins
+
+
+def test_upsert_other_login_returns_403(client):
+    test_client, db_url = client
+    token = _login(db_url, user_id="gh-mallory", username="mallory")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = test_client.put(
+        "/api/discord-users/victim",
+        json={"discord_user_id": "999"},
+        headers=headers,
+    )
+    assert resp.status_code == 403
+
+
+def test_delete_other_login_returns_403(client):
+    test_client, db_url = client
+    owner_token = _login(db_url, user_id="gh-owner", username="owner")
+    owner_headers = {"Authorization": f"Bearer {owner_token}"}
+    test_client.put(
+        "/api/discord-users/owner", json={"discord_user_id": "777"}, headers=owner_headers
+    )
+
+    attacker_token = _login(db_url, user_id="gh-mallory2", username="mallory2")
+    attacker_headers = {"Authorization": f"Bearer {attacker_token}"}
+    resp = test_client.delete("/api/discord-users/owner", headers=attacker_headers)
+    assert resp.status_code == 403
