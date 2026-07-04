@@ -74,7 +74,10 @@ describe('useAgentsStore', () => {
       expect(store.agents[0].state).toBe('idle')
     })
 
-    it('clears taskId when the agent goes offline', () => {
+    it('removes the agent entirely when it goes offline', () => {
+      // Regression for #731: offline slots must be pruned rather than kept
+      // around with a cleared taskId, or a worker that restarts repeatedly
+      // accumulates one dead row per restart.
       const store = useAgentsStore()
       store.registerAgent({ agentId: 'a-1', workerId: 'w-x', state: 'working', taskId: 't-1' })
 
@@ -84,7 +87,7 @@ describe('useAgentsStore', () => {
         state: 'offline',
       })
 
-      expect(store.agents[0].taskId).toBeNull()
+      expect(store.agents).toHaveLength(0)
     })
 
     it('preserves taskId when going to error (the failure is tied to that task)', () => {

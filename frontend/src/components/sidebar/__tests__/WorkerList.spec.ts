@@ -32,4 +32,18 @@ describe('WorkerList', () => {
     expect(wrapper.findAll('.worker-row')).toHaveLength(1)
     expect(wrapper.findAll('.agent-row')).toHaveLength(1)
   })
+
+  it('hides an offline agent slot while keeping the online one for the same worker', () => {
+    const agentsStore = useAgentsStore()
+    agentsStore.registerAgent({ agentId: 'a-online', workerId: 'w-x', state: 'idle' })
+    agentsStore.registerAgent({ agentId: 'a-offline', workerId: 'w-x', state: 'idle' })
+    agentsStore.handleWebSocketMessage({
+      type: 'agent-state',
+      agentId: 'a-offline',
+      state: 'offline',
+    })
+
+    const wrapper = mount(WorkerList)
+    expect(wrapper.findAll('.agent-row')).toHaveLength(1)
+  })
 })

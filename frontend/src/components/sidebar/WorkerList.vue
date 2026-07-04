@@ -62,10 +62,9 @@ const showSpawnForm = ref(false)
 const onlineWorkers = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline'))
 
 function agentsForWorker(workerId: string) {
-  // Exclude offline slots: a reconnecting worker registers fresh agent ids
-  // under the same workerId, and the store never prunes the old (now
-  // offline) rows — without this filter they'd pile up as ghost duplicates
-  // alongside the live slot every time the worker process restarts.
+  // Defensive filter: the store prunes agents on the offline transition, but
+  // keep this so a stale offline row can never surface here if that
+  // invariant is ever violated (e.g. a race during deregistration).
   return agentsStore.agents.filter((a) => a.workerId === workerId && a.state !== 'offline')
 }
 

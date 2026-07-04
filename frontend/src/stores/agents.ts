@@ -117,14 +117,22 @@ export const useAgentsStore = defineStore('agents', () => {
     activity?: AgentActivity | null,
     taskId?: string | null,
   ): boolean {
-    const agent = agents.value.find((a) => a.id === agentId)
-    if (!agent) return false
+    const idx = agents.value.findIndex((a) => a.id === agentId)
+    if (idx === -1) return false
+    // Offline agents are pruned entirely rather than kept as a dead row —
+    // otherwise a worker that restarts repeatedly accumulates one stale
+    // offline slot per restart and the store grows unbounded.
+    if (state === 'offline') {
+      agents.value.splice(idx, 1)
+      return true
+    }
+    const agent = agents.value[idx]
     agent.state = state
     if (activity !== undefined) agent.activity = activity
     if (taskId !== undefined) agent.taskId = taskId
-    // Idle/offline agents are by definition not working a task; clear the
-    // link so a stale taskId from a prior run can't latch the agent to a row.
-    if (state === 'idle' || state === 'offline') agent.taskId = null
+    // Idle agents are by definition not working a task; clear the link so a
+    // stale taskId from a prior run can't latch the agent to a row.
+    if (state === 'idle') agent.taskId = null
     return true
   }
 
