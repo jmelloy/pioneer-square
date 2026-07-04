@@ -5,13 +5,16 @@ Verifies that:
 - handle_worker_disconnect triggers [worker-offline] reason=shutdown
 - abrupt WebSocket disconnect triggers [worker-offline] reason=disconnect
 - task-complete with stopReason=max_turns triggers a max-turns foreman message
+- worker-online/worker-offline events never post to the Discord webhook
+  (they still notify the foreman, but Discord notifications are internal-only
+  noise — see #740)
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -23,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
+import discord_notifier  # noqa: E402
 import main as main_module  # noqa: E402
 import ws_handlers  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
@@ -193,6 +197,118 @@ def test_abrupt_disconnect_notifies_foreman(client):
     _event, msg = offline[0]
     assert f"worker_id={worker_id}" in msg, msg
     assert "reason=disconnect" in msg, msg
+
+
+def test_worker_online_does_not_notify_discord(client):
+    """worker-register must not post a Discord webhook notification."""
+    test_client, db_url = client
+    guild_id = "nfy005"
+    worker_id = "w-nfy005"
+    agent_id = "a-nfy005"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+
+    _triggered, fake_trigger = _make_trigger_spy()
+
+    with (
+        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(discord_notifier, "notify", new=AsyncMock()) as mock_notify,
+    ):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # agent-joined broadcast
+
+            ws.send_json(
+                {
+                    "type": "worker-register",
+                    "workerId": worker_id,
+                    "repos": ["org/repo1"],
+                    "tools": ["claude"],
+                }
+            )
+            # handle_worker_register no longer spawns any background tasks (the
+            # discord_notifier spawn call was removed), so once the ping is
+            # processed we know notify() would already have been called if it
+            # were going to be.
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong
+
+        mock_notify.assert_not_called()
+
+
+def test_worker_graceful_offline_does_not_notify_discord(client):
+    """worker-disconnect must not post a Discord webhook notification."""
+    test_client, db_url = client
+    guild_id = "nfy006"
+    worker_id = "w-nfy006"
+    agent_id = "a-nfy006"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+
+    _triggered, fake_trigger = _make_trigger_spy()
+
+    with (
+        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(discord_notifier, "notify", new=AsyncMock()) as mock_notify,
+    ):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # agent-joined broadcast
+
+            ws.send_json({"type": "worker-disconnect", "workerId": worker_id})
+            ws.receive_json()  # agent-state offline broadcast
+
+        mock_notify.assert_not_called()
+
+
+def test_abrupt_disconnect_does_not_notify_discord(client):
+    """Abrupt WebSocket close must not post a Discord webhook notification."""
+    test_client, db_url = client
+    guild_id = "nfy007"
+    worker_id = "w-nfy007"
+    agent_id = "a-nfy007"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+
+    _triggered, fake_trigger = _make_trigger_spy()
+
+    with (
+        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(discord_notifier, "notify", new=AsyncMock()) as mock_notify,
+    ):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # agent-joined broadcast
+            # Close without sending worker-disconnect — simulates container crash.
+
+        mock_notify.assert_not_called()
 
 
 def test_task_complete_max_turns_notifies_foreman(client):

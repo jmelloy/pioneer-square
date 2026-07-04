@@ -664,15 +664,6 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
         f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}{tools_suffix}{provider_suffix}",
         task_name=f"foreman.worker-online:{worker_id}",
     )
-    spawn(
-        discord_notifier.notify(
-            "worker-online",
-            f"Worker online: {worker_id}",
-            f"Worker `{worker_id}` connected to guild `{ctx.guild_id}`."
-            + (f" Repos: {repos_str}." if repos_str else ""),
-        ),
-        name=f"discord.worker-online:{worker_id}",
-    )
 
 
 async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
@@ -716,14 +707,6 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
                 worker_id,
                 ctx.guild_id,
             )
-        spawn(
-            discord_notifier.notify(
-                "worker-offline",
-                f"Worker offline: {worker_id}",
-                f"Worker `{worker_id}` disconnected from guild `{ctx.guild_id}` (reason: shutdown).",
-            ),
-            name=f"discord.worker-offline:{worker_id}",
-        )
     reset_foreman_poll(ctx.guild_id)
 
 
