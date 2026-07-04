@@ -179,16 +179,19 @@ def _is_authorized(message: dict) -> bool:
     return is_member_authorized(message.get("member"))
 
 
-async def route_inbound_message(message: dict) -> None:
+async def route_inbound_message(message: dict) -> bool:
     """Route one inbound Discord ``MESSAGE_CREATE`` payload to the Foreman AI.
 
     Never raises — this runs in a background consumer loop with no caller to
-    propagate errors to.
+    propagate errors to. Returns True on success, False if routing failed
+    (already logged), so the consumer loop can back off.
     """
     try:
         await _route_inbound_message(message)
+        return True
     except Exception:
         logger.warning("discord router: failed to route inbound message", exc_info=True)
+        return False
 
 
 async def _route_inbound_message(message: dict) -> None:
@@ -231,10 +234,16 @@ async def _route_inbound_message(message: dict) -> None:
 
 
 async def _consume_forever(queue: asyncio.Queue) -> None:
-    """Pull inbound messages off *queue* and route them, forever."""
+    """Pull inbound messages off *queue* and route them, forever.
+
+    Yields to the event loop after every message, and backs off briefly on a
+    routing failure so a fast-failing broken message can't spin in a tight
+    loop and starve other tasks.
+    """
     while True:
         message = await queue.get()
-        await route_inbound_message(message)
+        ok = await route_inbound_message(message)
+        await asyncio.sleep(0 if ok else 1)
 
 
 _router_task: asyncio.Task | None = None
