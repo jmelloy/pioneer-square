@@ -140,6 +140,7 @@ req = urllib.request.Request(
     headers={
         "Authorization": f"Bot {BOT_TOKEN}",
         "Content-Type": "application/json",
+        "User-Agent": "DiscordBot (pioneer-square, 1.0)",
     },
 )
 
