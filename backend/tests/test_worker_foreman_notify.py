@@ -235,6 +235,10 @@ def test_worker_online_does_not_notify_discord(client):
                     "tools": ["claude"],
                 }
             )
+            # handle_worker_register no longer spawns any background tasks (the
+            # discord_notifier spawn call was removed), so once the ping is
+            # processed we know notify() would already have been called if it
+            # were going to be.
             ws.send_json({"type": "ping"})
             ws.receive_json()  # pong
 
