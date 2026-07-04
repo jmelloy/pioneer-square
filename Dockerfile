@@ -25,10 +25,18 @@ RUN npm run build
 # ---- shared base: unified pioneer CLI ----
 FROM python:3.11-slim AS base
 
+# Stamped at build time (e.g. `--build-arg PIONEER_VERSION=$(git rev-parse --short HEAD)`).
+# backend/worker_lifecycle.py compares this across restarts to detect stale
+# worker containers spawned by a previous deploy; without it every restart
+# cannot tell old workers from current ones and conservatively drains all of
+# them. There is no git binary or .git directory in this image, so the
+# build-arg is the only source of truth — it does not fall back to git at runtime.
+ARG PIONEER_VERSION=
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIONEER_ROOT=/app
+    PIONEER_ROOT=/app \
+    PIONEER_VERSION=${PIONEER_VERSION}
 
 WORKDIR /app
 

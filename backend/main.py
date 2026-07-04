@@ -35,7 +35,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from util.tasks import spawn
-from worker_lifecycle import drain_stale_workers_on_startup, spawn_replacement_workers
+from worker_lifecycle import (
+    drain_stale_workers_on_startup,
+    force_kill_stale_workers,
+    spawn_replacement_workers,
+)
 from ws_types import WorkerPingMsg
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -345,10 +349,16 @@ async def lifespan(app: FastAPI):
 
     await reset_connection_state()
 
-    # Phase 2: after the drain window, force-kill any surviving stale containers.
-    # Runs in background so it does not block startup or the first request.
+    # Phase 2: spawn fresh replacements immediately, and separately force-kill
+    # any surviving stale containers once the drain window elapses. Both run
+    # in the background so neither blocks startup or the first request.
     drain_bg = (
-        spawn(spawn_replacement_workers(stale_ids), name="stale-worker-drain")
+        spawn(spawn_replacement_workers(stale_ids), name="stale-worker-respawn")
+        if stale_ids
+        else None
+    )
+    reap_bg = (
+        spawn(force_kill_stale_workers(stale_ids), name="stale-worker-reap")
         if stale_ids
         else None
     )
@@ -376,6 +386,8 @@ async def lifespan(app: FastAPI):
         sweeper.cancel()
         if drain_bg is not None:
             drain_bg.cancel()
+        if reap_bg is not None:
+            reap_bg.cancel()
         if discord_gw_task is not None:
             discord_gw_task.cancel()
         try:
@@ -385,6 +397,11 @@ async def lifespan(app: FastAPI):
         if drain_bg is not None:
             try:
                 await drain_bg
+            except (asyncio.CancelledError, Exception):
+                pass
+        if reap_bg is not None:
+            try:
+                await reap_bg
             except (asyncio.CancelledError, Exception):
                 pass
         if discord_gw_task is not None:
