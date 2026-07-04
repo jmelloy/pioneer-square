@@ -572,6 +572,11 @@ async def _run_foreman_ai(
     worker/task rows, system prompt, state preamble, tool set, and loaded history
     are all narrowed to that one task. See docs/foreman-per-task-context.md.
     """
+    # Initialized up front (rather than only inside the child/parent branches
+    # below) so it's always bound — including on any early return before task
+    # scoping runs — for every ``task_id=_task_id`` use further down.
+    _task_id: str | None = None
+
     if not HAS_ANTHROPIC:
         now = datetime.now(UTC).isoformat()
         await broadcast_msg(
@@ -652,7 +657,7 @@ async def _run_foreman_ai(
             child_worker_id = child_task_row.get("worker_id") if child_task_row else None
             worker_rows = [r for r in worker_rows if r["id"] == child_worker_id]
             task_rows = [child_task_row] if child_task_row else []
-            _task_id: str | None = task_id
+            _task_id = task_id
         elif child:
             _task_id = task_rows[0]["id"] if len(task_rows) == 1 else None
         else:

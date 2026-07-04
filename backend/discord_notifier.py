@@ -384,18 +384,29 @@ async def _lookup_task_issue_coords(task_id: str) -> tuple[str, int] | None:
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
         from models import Task  # noqa: PLC0415
+        from sqlalchemy.exc import NoResultFound  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
-        async with AsyncSessionLocal() as db:
-            result = await db.exec(
-                select(Task.issue_repo, Task.issue_number).where(col(Task.id) == task_id)
-            )
-            row = result.one_or_none()
-            if row and row[0] and row[1] is not None:
-                return row[0], row[1]
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.exec(
+                    select(Task.issue_repo, Task.issue_number).where(col(Task.id) == task_id)
+                )
+                row = result.one_or_none()
+                if row and row[0] and row[1] is not None:
+                    return row[0], row[1]
+                return None
+        except NoResultFound:
+            # Expected when the task has no linked issue/PR (or no thread) yet.
+            logger.debug("discord: no issue coords for task=%s", task_id)
             return None
-    except Exception:
-        logger.warning("discord: task issue-coords lookup failed task=%s", task_id, exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "discord: task issue-coords lookup failed task=%s error_type=%s: %s",
+            task_id,
+            type(exc).__name__,
+            exc,
+        )
         return None
 
 
@@ -507,6 +518,24 @@ async def _ensure_foreman_thread(
     return await _save_foreman_thread(guild_id, session_key, new_thread_id) or new_thread_id
 
 
+# Discord's hard cap on a single message's content length.
+_MAX_MESSAGE_LENGTH = 2000
+
+
+async def _post_foreman_chat_line(thread_id: str, content: str) -> None:
+    """POST *content* to *thread_id*, applying the shared length guardrail.
+
+    Both the per-task and daily-thread paths in ``notify_foreman_chat`` route
+    through this helper so neither can skip the truncation applied to the
+    other.
+    """
+    await _bot_request(
+        "post",
+        f"/channels/{thread_id}/messages",
+        {"content": content[:_MAX_MESSAGE_LENGTH]},
+    )
+
+
 async def notify_foreman_chat(
     guild_id: str,
     content: str,
@@ -535,11 +564,7 @@ async def notify_foreman_chat(
             issue_repo, issue_number = coords
             task_thread_id = await _lookup_thread(issue_repo, issue_number)
             if task_thread_id:
-                await _bot_request(
-                    "post",
-                    f"/channels/{task_thread_id}/messages",
-                    {"content": content[:2000]},
-                )
+                await _post_foreman_chat_line(task_thread_id, content)
                 return
 
     channel = await _resolve_channel_for_guild(guild_id)
@@ -551,7 +576,7 @@ async def notify_foreman_chat(
     thread_id = await _ensure_foreman_thread(guild_id, key, thread_name, channel=channel)
     if not thread_id:
         return
-    await _bot_request("post", f"/channels/{thread_id}/messages", {"content": content[:2000]})
+    await _post_foreman_chat_line(thread_id, content)
 
 
 # ---------------------------------------------------------------------------
