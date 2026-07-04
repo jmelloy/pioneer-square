@@ -27,7 +27,16 @@ Protocol handled, per https://discord.com/developers/docs/topics/gateway:
 Filtering applied to ``MESSAGE_CREATE`` before anything is queued:
     - ``author.bot is True``      -> discarded (avoids echoing discord_notifier)
     - no ``guild_id`` (a DM)      -> discarded
-    - channel not in ``discord_channel_guilds`` -> discarded (not wired)
+    - channel/thread not "wired"  -> discarded (see ``_is_channel_wired``)
+
+A channel or thread counts as "wired" if it is either a channel bound via
+``/join-channel`` (``discord_channel_guilds``), or a thread Pioneer Square
+itself created — a per-PR/issue thread (``discord_threads``) or a per-guild
+daily Foreman chat thread (``discord_foreman_threads``). The latter two are
+child threads of a wired channel but carry their own ``channel_id`` in
+Discord's model, so they need their own lookup; the routing/reply layer
+(#744) does its own, more specific, reverse-lookup against those same two
+tables to decide *which* Foreman session a message belongs to.
 """
 
 from __future__ import annotations
@@ -82,11 +91,13 @@ _channel_wired_cache: dict[str, tuple[bool, float]] = {}
 
 
 async def _is_channel_wired(channel_id: str) -> bool:
-    """Return True if *channel_id* (a channel or thread) has a guild binding.
+    """Return True if *channel_id* (a channel or thread) has somewhere to route to.
 
-    Backed by the ``discord_channel_guilds`` table populated by
-    ``/join-channel``, through a short TTL cache so repeated messages in the
-    same channel don't each pay for a DB round-trip.
+    Backed by ``discord_channel_guilds`` (bound via ``/join-channel``),
+    ``discord_threads`` (per-PR/issue threads), and ``discord_foreman_threads``
+    (per-guild daily Foreman chat threads) — through a short TTL cache so
+    repeated messages in the same channel/thread don't each pay for a DB
+    round-trip.
     """
     now = time.monotonic()
     cached = _channel_wired_cache.get(channel_id)
@@ -99,19 +110,37 @@ async def _is_channel_wired(channel_id: str) -> bool:
 
 
 async def _query_channel_wired(channel_id: str) -> bool:
-    """Query the ``discord_channel_guilds`` table directly, bypassing the cache.
+    """Query for a routable binding, bypassing the cache.
 
-    Never raises — DB errors are treated as "not wired".
+    Checks the plain channel binding table first (cheapest/most common case),
+    then falls back to the two thread-mapping tables — a message posted
+    inside a per-task or per-guild-daily thread carries that thread's own ID
+    as ``channel_id``, not its parent channel's. Never raises — DB errors are
+    treated as "not wired".
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordChannelGuild  # noqa: PLC0415
+        from models import DiscordChannelGuild, DiscordForemanThread, DiscordThread  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
                 select(DiscordChannelGuild.id).where(
                     col(DiscordChannelGuild.discord_channel_id) == channel_id
+                )
+            )
+            if result.first() is not None:
+                return True
+
+            result = await db.exec(
+                select(DiscordThread.id).where(col(DiscordThread.thread_id) == channel_id)
+            )
+            if result.first() is not None:
+                return True
+
+            result = await db.exec(
+                select(DiscordForemanThread.id).where(
+                    col(DiscordForemanThread.thread_id) == channel_id
                 )
             )
             return result.first() is not None

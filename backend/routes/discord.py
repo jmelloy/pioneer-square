@@ -38,6 +38,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 from database import AsyncSessionLocal
+from discord.auth import is_member_authorized
 from events import broadcast_msg
 from fastapi import APIRouter, BackgroundTasks, Request, Response
 from models import (
@@ -105,11 +106,6 @@ def _pioneer_guild_slug() -> str | None:
     return os.environ.get("DISCORD_PIONEER_GUILD_SLUG") or None
 
 
-def _allowed_role_ids() -> set[str]:
-    raw = os.environ.get("DISCORD_ALLOWED_ROLE_IDS", "")
-    return {r.strip() for r in raw.split(",") if r.strip()}
-
-
 def _operator_role_name() -> str:
     return os.environ.get("DISCORD_OPERATOR_ROLE_NAME") or _DEFAULT_OPERATOR_ROLE_NAME
 
@@ -140,15 +136,7 @@ def _verify_signature(public_key_hex: str, signature_hex: str, timestamp: str, b
 
 def _is_authorized(interaction: dict) -> bool:
     """Return True if the interaction's author has an allowed role (or all roles allowed)."""
-    allowed = _allowed_role_ids()
-    if not allowed:
-        return True  # no restriction configured — allow everyone
-    member = interaction.get("member")
-    if not member:
-        # DM interaction — no role info available; deny by default
-        return False
-    user_roles: list[str] = member.get("roles", [])
-    return bool(set(user_roles) & allowed)
+    return is_member_authorized(interaction.get("member"))
 
 
 def _has_manage_channels(member: dict) -> bool:
