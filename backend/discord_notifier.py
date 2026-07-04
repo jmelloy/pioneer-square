@@ -196,11 +196,14 @@ async def _resolve_channel_for_guild(ps_guild_slug: str | None) -> str | None:
             from sqlmodel import col, select  # noqa: PLC0415
 
             async with AsyncSessionLocal() as db:
+                # Multiple channels can be bound to the same PS guild; order by
+                # created_at so the first-registered channel always wins rather
+                # than an arbitrary, backend-dependent row order.
                 rows = (
                     await db.exec(
-                        select(DiscordChannelGuild.discord_channel_id).where(
-                            col(DiscordChannelGuild.ps_guild_id) == ps_guild_slug
-                        )
+                        select(DiscordChannelGuild.discord_channel_id)
+                        .where(col(DiscordChannelGuild.ps_guild_id) == ps_guild_slug)
+                        .order_by(col(DiscordChannelGuild.created_at).asc())
                     )
                 ).all()
                 if rows:
