@@ -487,19 +487,23 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
     return [dict(r._mapping) for r in result.all()]
 
 
-async def _emit_foreman_chat(guild_id: str, content: str, created_at: str) -> None:
+async def _emit_foreman_chat(
+    guild_id: str, content: str, created_at: str, task_id: str | None = None
+) -> None:
     """Broadcast a Foreman -> user narration line and mirror it into Discord.
 
     Every plain-text line the Foreman sends to the user (not tool_use/tool_result
     traces) goes through here so the Discord thread mirror in discord_notifier
-    stays in sync with the WS chat stream.
+    stays in sync with the WS chat stream. *task_id*, when known, lets
+    discord_notifier route the line to that task's per-task thread instead of
+    the daily guild thread.
     """
     await broadcast_msg(
         guild_id,
         ChatMsg(from_="foreman", to="user", content=content, createdAt=created_at),
     )
     spawn(
-        discord_notifier.notify_foreman_chat(guild_id, content),
+        discord_notifier.notify_foreman_chat(guild_id, content, task_id=task_id),
         name=f"discord.foreman-chat:{guild_id}",
     )
 
