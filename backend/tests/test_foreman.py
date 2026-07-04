@@ -1238,6 +1238,37 @@ class TestExecToolsDispatching:
         assert ev is None, "No pending-followup event should be queued — follow-up was dispatched"
 
 
+class TestSpawnWorker:
+    """spawn_worker() is not in FOREMAN_TOOLS (see #567) but is still invoked
+    directly by worker_lifecycle.spawn_replacement_workers() on backend startup.
+    Regression test for a missing ``await`` on ``_get_docker_client()`` that
+    made every real invocation of this path fail (see #725).
+    """
+
+    async def test_spawn_worker_starts_container(self, db_session):
+        insert_guild(db_session, "g-spawn")
+
+        fake_container = SimpleNamespace(id="abcdef0123456789")
+        fake_docker_client = MagicMock()
+        fake_docker_client.containers.get.side_effect = Exception("not found")
+        fake_docker_client.containers.run.return_value = fake_container
+
+        with (
+            patch("foreman.tools._get_docker_client", AsyncMock(return_value=fake_docker_client)),
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+        ):
+            results = await exec_tools(
+                "g-spawn",
+                [_fake_tool_use("spawn_worker", {"repos": ["acme/widgets"]})],
+            )
+
+        assert len(results) == 1
+        r = results[0]
+        assert r.get("is_error") is not True, f"spawn_worker failed: {r['content']}"
+        assert "abcdef012345" in r["content"]
+        fake_docker_client.containers.run.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # 4. Tool result handling — serialisation, error capture, edge cases
 # ---------------------------------------------------------------------------

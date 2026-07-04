@@ -550,6 +550,48 @@ class DiscordThread(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class DiscordForemanThread(SQLModel, table=True):
+    """Persisted mapping from a Foreman chat session to a Discord thread channel ID.
+
+    One thread per guild per calendar day (UTC) keeps a whole day's Foreman
+    conversation together in the notification channel without spawning a new
+    thread on every turn.
+    """
+
+    __tablename__ = "discord_foreman_threads"  # type: ignore[assignment]
+    __table_args__ = (
+        Index(
+            "uq_discord_foreman_threads_guild_session",
+            "guild_id",
+            "session_key",
+            unique=True,
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: str  # guild slug
+    session_key: str  # e.g. "2026-07-04"
+    thread_id: str  # Discord channel ID of the thread
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class DiscordUser(SQLModel, table=True):
+    """Maps a GitHub login to a Discord user ID for @-mentions in notifications.
+
+    Populated via the ``/api/discord-users`` REST endpoints (no automated
+    discovery — a human links the two accounts). Lookups are graceful: a
+    missing mapping just means notifications fall back to a plain ``@login``
+    string instead of a real Discord mention.
+    """
+
+    __tablename__ = "discord_users"  # type: ignore[assignment]
+
+    github_login: str = Field(primary_key=True)  # stored lowercase
+    discord_user_id: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class ModelCatalog(SQLModel, table=True):
     """Persisted snapshot of models.dev provider/model entries.
 
