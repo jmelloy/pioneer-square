@@ -1,5 +1,7 @@
 """Foreman system prompt and system-prompt builder."""
 
+from datetime import datetime, timezone
+
 FOREMAN_SYSTEM = """\
 You are the Foreman AI in Pioneer Square, a multi-agent coding workshop.
 You coordinate workers — each worker is a host process (w-xxx) that spawns agent subprocesses
@@ -169,9 +171,11 @@ redirect_task to course-correct or cancel_task if it's going in the wrong direct
 If an entire worker is wedged or no longer needed, use shutdown_worker to stop the process.
 
 ## Live state
-Each user turn is preceded by a `<state>` block containing the current online workers
-and recent tasks. Treat it as an operational briefing, not part of the human's message.
-The state reflects the moment this turn was sent — earlier turns saw earlier state.
+Each user turn is preceded by a `<state>` block containing the current UTC time, the
+current online workers, and recent tasks. Treat it as an operational briefing, not part
+of the human's message. The state reflects the moment this turn was sent — earlier turns
+saw earlier state. Use the "Current UTC time" line as your anchor for judging how old a
+task's `created_at` or a log line's `time` is — do not assume those timestamps are recent.
 
 Workers are configured with repos. Prefer workers whose repos cover the task.
 Be concise — one short paragraph maximum unless detail is requested.
@@ -226,15 +230,27 @@ state, the active agent and its state, and the last log lines. If it looks stall
 redirect_task to course-correct or cancel_task if it's going in the wrong direction.
 
 ## Live state
-Each user turn is preceded by a `<state>` block containing only this task's row and the
-worker assigned to it. Treat it as an operational briefing, not part of the human's
-message. The state reflects the moment this turn was sent.
+Each user turn is preceded by a `<state>` block containing the current UTC time, this
+task's row, and the worker assigned to it. Treat it as an operational briefing, not part
+of the human's message. The state reflects the moment this turn was sent. Use the
+"Current UTC time" line as your anchor for judging how old `created_at` or a log line's
+`time` is — do not assume those timestamps are recent.
 
 Be concise — one short paragraph maximum unless detail is requested.
 """
 
 
 _EMPTY_WORKERS_BLOCKS = {"[]", "[\n]"}
+
+
+def _current_time_line() -> str:
+    """Fresh per-turn UTC timestamp so the Foreman has a reliable "now" anchor.
+
+    Must never be memoized or hoisted into the cacheable stable system text —
+    it changes every turn and would otherwise poison the prompt cache.
+    """
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return f"Current UTC time: {now}\n\n"
 
 
 def _stable_system_text(primary_repo: str | None, system_prompt_suffix: str | None = None) -> str:
@@ -285,7 +301,7 @@ def build_state_preamble(
     body = f"{workers_section}## Recent tasks\n```json\n{tasks_block}\n```"
     if extra_context:
         body += f"\n\n## Context\n{extra_context}"
-    return f"<state>\n{body}\n</state>"
+    return f"<state>\n{_current_time_line()}{body}\n</state>"
 
 
 def _stable_child_system_text(
@@ -351,7 +367,7 @@ def build_child_state_preamble(
     body = f"{worker_section}## This task\n```json\n{task_block}\n```"
     if extra_context:
         body += f"\n\n## Context\n{extra_context}"
-    return f"<state>\n{body}\n</state>"
+    return f"<state>\n{_current_time_line()}{body}\n</state>"
 
 
 def build_system_prompt(

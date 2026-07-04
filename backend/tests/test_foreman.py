@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from foreman.prompt import FOREMAN_SYSTEM, build_system_prompt
+from foreman.prompt import FOREMAN_SYSTEM, build_state_preamble, build_system_prompt
 from foreman.runner import (
     _fetch_online_workers,  # noqa: E402
     _load_history,
@@ -216,6 +216,20 @@ class TestBuildSystemPrompt:
         from foreman.prompt import FOREMAN_SYSTEM
 
         assert "shallow" in FOREMAN_SYSTEM or "fallback" in FOREMAN_SYSTEM
+
+    def test_state_preamble_includes_fresh_current_time(self):
+        """The dynamic <state> block must carry a per-turn UTC timestamp so the
+        Foreman has a reliable "now" anchor for judging task staleness (#748)."""
+        out = build_state_preamble("[]", "[]")
+        assert "Current UTC time: " in out
+        assert out.index("Current UTC time: ") < out.index("## Current workers")
+
+    def test_current_time_not_in_cacheable_stable_system_text(self):
+        """The dynamic timestamp line must never leak into the cached system
+        prefix, or it would poison the prompt cache on every turn. (The prose
+        that merely refers to the "Current UTC time" label is fine — it's
+        static and doesn't change per turn.)"""
+        assert "Current UTC time: " not in FOREMAN_SYSTEM
 
     def test_review_task_assign_requires_parent_task_id(self):
         """Prompt must instruct Foreman to pass parent_task_id when dispatching review sub-tasks."""
