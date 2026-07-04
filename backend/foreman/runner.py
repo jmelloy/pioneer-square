@@ -168,7 +168,9 @@ async def _load_history(guild_id: str, user_id: str, task_id: str | None = None)
         # Fetch only the most recent rows at the SQL level so query cost doesn't
         # scale with the table's total lifetime turn count; the Python-side
         # windowing below then trims this small set down further.
-        result = await db.exec(stmt.order_by(col(ForemanTurn.id).desc()).limit(_HISTORY_FETCH_LIMIT))
+        result = await db.exec(
+            stmt.order_by(col(ForemanTurn.id).desc()).limit(_HISTORY_FETCH_LIMIT)
+        )
         turns = list(reversed(result.all()))
     finally:
         await db.close()
