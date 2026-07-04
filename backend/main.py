@@ -367,15 +367,17 @@ async def lifespan(app: FastAPI):
 
     # Discord Gateway (Phase 4): persistent websocket for inbound messages.
     # No-op unless DISCORD_GATEWAY_ENABLED=true and DISCORD_BOT_TOKEN are set.
-    from discord.gateway import start_gateway, stop_gateway  # noqa: PLC0415
+    from discord.gateway import start_gateway  # noqa: PLC0415
 
-    start_gateway()
+    discord_gw_task = start_gateway()
     try:
         yield
     finally:
         sweeper.cancel()
         if drain_bg is not None:
             drain_bg.cancel()
+        if discord_gw_task is not None:
+            discord_gw_task.cancel()
         try:
             await sweeper
         except (asyncio.CancelledError, Exception):
@@ -385,7 +387,11 @@ async def lifespan(app: FastAPI):
                 await drain_bg
             except (asyncio.CancelledError, Exception):
                 pass
-        await stop_gateway()
+        if discord_gw_task is not None:
+            try:
+                await discord_gw_task
+            except (asyncio.CancelledError, Exception):
+                pass
         await _shutdown_webhook_debouncer()
 
 

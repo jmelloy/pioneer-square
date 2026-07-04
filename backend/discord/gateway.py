@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import random
+import time
 
 import websockets
 
@@ -74,11 +75,33 @@ def _backoff_delay(attempt: int, base: float = 2.0, cap: float = 60.0) -> float:
     return min(cap, base * (2**attempt)) + random.uniform(0, base)
 
 
+# Short-lived cache so a busy wired channel doesn't open a DB session on
+# every single message. Keyed on channel_id -> (wired, expires_at_monotonic).
+_CHANNEL_WIRED_CACHE_TTL = 30.0
+_channel_wired_cache: dict[str, tuple[bool, float]] = {}
+
+
 async def _is_channel_wired(channel_id: str) -> bool:
     """Return True if *channel_id* (a channel or thread) has a guild binding.
 
     Backed by the ``discord_channel_guilds`` table populated by
-    ``/join-channel``. Never raises — DB errors are treated as "not wired".
+    ``/join-channel``, through a short TTL cache so repeated messages in the
+    same channel don't each pay for a DB round-trip.
+    """
+    now = time.monotonic()
+    cached = _channel_wired_cache.get(channel_id)
+    if cached is not None and cached[1] > now:
+        return cached[0]
+
+    wired = await _query_channel_wired(channel_id)
+    _channel_wired_cache[channel_id] = (wired, now + _CHANNEL_WIRED_CACHE_TTL)
+    return wired
+
+
+async def _query_channel_wired(channel_id: str) -> bool:
+    """Query the ``discord_channel_guilds`` table directly, bypassing the cache.
+
+    Never raises — DB errors are treated as "not wired".
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
@@ -164,6 +187,12 @@ class GatewayClient:
         while True:
             if not self._heartbeat_acked:
                 logger.warning("discord gateway: heartbeat not acked — forcing reconnect")
+                # A local close() with a non-1000/1001 code makes `websockets`
+                # raise ConnectionClosedError out of the concurrent
+                # `async for raw in ws` read loop in _handle_connection
+                # immediately (verified against websockets 16.0) — so this
+                # unblocks the reader promptly rather than leaving it hung,
+                # and run()'s except Exception handles the reconnect/backoff.
                 await ws.close(code=4000)
                 return
             self._heartbeat_acked = False
@@ -229,6 +258,10 @@ class GatewayClient:
             self._heartbeat_acked = True
         elif op == _OP_RECONNECT:
             logger.info("discord gateway: server requested reconnect")
+            # Stop the heartbeat first so it can't send/close against a socket
+            # we're already tearing down here (that raced "warning" was the
+            # heartbeat loop hitting ConnectionClosed on its own).
+            await self._stop_heartbeat()
             await ws.close()
         elif op == _OP_INVALID_SESSION:
             resumable = data.get("d") is True

@@ -239,6 +239,32 @@ async def test_message_create_dispatch_reaches_queue_end_to_end():
 
 
 # ---------------------------------------------------------------------------
+# _is_channel_wired TTL cache
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_is_channel_wired_caches_positive_result():
+    with patch(
+        "discord.gateway._query_channel_wired", new=AsyncMock(return_value=True)
+    ) as query:
+        assert await gateway._is_channel_wired("c-wired") is True
+        assert await gateway._is_channel_wired("c-wired") is True
+    query.assert_awaited_once_with("c-wired")
+
+
+@pytest.mark.asyncio
+async def test_is_channel_wired_requeries_after_ttl_expires():
+    with patch(
+        "discord.gateway._query_channel_wired", new=AsyncMock(return_value=False)
+    ) as query:
+        assert await gateway._is_channel_wired("c-unwired") is False
+        gateway._channel_wired_cache["c-unwired"] = (False, 0.0)  # force expiry
+        assert await gateway._is_channel_wired("c-unwired") is False
+    assert query.await_count == 2
+
+
+# ---------------------------------------------------------------------------
 # start_gateway / stop_gateway env gating
 # ---------------------------------------------------------------------------
 
@@ -246,8 +272,10 @@ async def test_message_create_dispatch_reaches_queue_end_to_end():
 @pytest.fixture(autouse=True)
 def _reset_gateway_task():
     gateway._gateway_task = None
+    gateway._channel_wired_cache.clear()
     yield
     gateway._gateway_task = None
+    gateway._channel_wired_cache.clear()
 
 
 def test_start_gateway_noop_when_disabled(monkeypatch):
