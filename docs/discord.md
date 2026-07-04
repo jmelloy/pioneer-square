@@ -32,6 +32,12 @@ In the [Discord Developer Portal](https://discord.com/developers/applications):
    this URL and expects a signed PONG back — it won't save the URL until the backend is
    reachable and `DISCORD_PUBLIC_KEY` is configured, so deploy the backend first.
 
+   > **Ordering matters:** `DISCORD_PUBLIC_KEY` (see [step 3](#3-environment-variables)) must
+   > already be set on the *running* backend before you try to save the Interactions Endpoint
+   > URL here — Discord's verification PING is signature-checked against that key, and the
+   > save fails if the backend doesn't have it yet. Set the env var, (re)deploy, confirm the
+   > backend is reachable, then come back and save the URL.
+
 ### 2. Bot permissions and invite
 
 | Permission | Needed for |
