@@ -64,6 +64,10 @@ services:
       DISCORD_PUBLIC_KEY: ${DISCORD_PUBLIC_KEY:-}
       DISCORD_ALLOWED_ROLE_IDS: ${DISCORD_ALLOWED_ROLE_IDS:-}
       DISCORD_PIONEER_GUILD_SLUG: ${DISCORD_PIONEER_GUILD_SLUG:-}
+      # Phase 4: persistent Gateway websocket for inbound messages. Requires
+      # DISCORD_BOT_TOKEN and the "Message Content Intent" enabled on the
+      # bot's Bot page in the Discord Developer Portal.
+      DISCORD_GATEWAY_ENABLED: ${DISCORD_GATEWAY_ENABLED:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: sh -c "cd backend && alembic upgrade head && cd .. && pioneer serve"
