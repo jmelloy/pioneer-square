@@ -164,7 +164,9 @@ async def _has_operator_role(interaction: dict) -> bool:
     if not roles:
         return False
     role_name = _operator_role_name()
-    operator_role_ids = {r["id"] for r in roles if isinstance(r, dict) and r.get("name") == role_name}
+    operator_role_ids = {
+        r["id"] for r in roles if isinstance(r, dict) and r.get("name") == role_name
+    }
     return bool(user_role_ids & operator_role_ids)
 
 
@@ -633,9 +635,7 @@ async def _cmd_join_channel(interaction: dict) -> None:
             if guild_slug:
                 result = await db.exec(select(Guild).where(col(Guild.slug) == guild_slug))
                 if result.one_or_none() is None:
-                    await _send_followup(
-                        token, content=f"Pioneer guild `{guild_slug}` not found."
-                    )
+                    await _send_followup(token, content=f"Pioneer guild `{guild_slug}` not found.")
                     return
             else:
                 all_guilds = (
@@ -717,9 +717,9 @@ async def _cmd_leave_channel(interaction: dict) -> None:
     if channel_opt:
         discord_channel_id = str(channel_opt["value"])
     else:
-        current_channel_id = interaction.get("channel_id") or (interaction.get("channel") or {}).get(
-            "id"
-        )
+        current_channel_id = interaction.get("channel_id") or (
+            interaction.get("channel") or {}
+        ).get("id")
         if not current_channel_id:
             await _send_followup(token, content="Could not determine the current channel.")
             return
