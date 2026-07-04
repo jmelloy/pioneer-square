@@ -34,7 +34,10 @@ async def _resolve_task_session(thread_id: str) -> tuple[str, str] | None:
 
     Picks the most recently created task for that (issue_repo, issue_number)
     pair when more than one exists (e.g. an execute task and a follow-up
-    review task both linked to the same PR). Never raises.
+    review task both linked to the same PR). A single joined query — rather
+    than three sequential round-trips — since ``DiscordThread`` and ``Task``
+    share the (issue_repo, issue_number) pair and ``Task.guild_id`` is a real
+    FK into ``Guild``. Never raises.
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
@@ -43,31 +46,21 @@ async def _resolve_task_session(thread_id: str) -> tuple[str, str] | None:
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
-                select(DiscordThread.issue_repo, DiscordThread.issue_number).where(
-                    col(DiscordThread.thread_id) == thread_id
+                select(Task.id, Guild.slug)
+                .join(
+                    DiscordThread,
+                    (col(DiscordThread.issue_repo) == col(Task.issue_repo))
+                    & (col(DiscordThread.issue_number) == col(Task.issue_number)),
                 )
-            )
-            coords = result.first()
-            if not coords:
-                return None
-            issue_repo, issue_number = coords
-
-            result = await db.exec(
-                select(Task.id, Task.guild_id)
-                .where(
-                    col(Task.issue_repo) == issue_repo,
-                    col(Task.issue_number) == issue_number,
-                )
+                .join(Guild, col(Guild.id) == col(Task.guild_id))
+                .where(col(DiscordThread.thread_id) == thread_id)
                 .order_by(col(Task.created_at).desc())
                 .limit(1)
             )
-            task_row = result.first()
-            if not task_row:
+            row = result.first()
+            if not row:
                 return None
-            task_id, guild_pk = task_row
-
-            result = await db.exec(select(Guild.slug).where(col(Guild.id) == guild_pk))
-            slug = result.first()
+            task_id, slug = row
             return (slug, task_id) if slug else None
     except Exception:
         logger.warning(
