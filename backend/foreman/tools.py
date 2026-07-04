@@ -777,7 +777,7 @@ async def spawn_worker(
     )
 
     try:
-        docker_client = _get_docker_client()
+        docker_client = await _get_docker_client()
         image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
 
         network = None
