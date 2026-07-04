@@ -57,6 +57,10 @@ logger = logging.getLogger(__name__)
 POLL_MIN_SECS = 60  # initial poll interval: 1 minute
 POLL_MAX_SECS = 14400  # maximum poll interval: 4 hours
 
+# Upper bound on rows fetched by _load_history before Python-side windowing,
+# so query cost stays flat regardless of the table's total lifetime turn count.
+_HISTORY_FETCH_LIMIT = 100
+
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 # Guilds whose embedded poll loop is suppressed while an external foreman owns polling.
@@ -157,8 +161,14 @@ async def _load_history(guild_id: str, user_id: str, task_id: str | None = None)
         )
         if task_id is not None:
             stmt = stmt.where(col(ForemanTurn.task_id) == task_id)
-        result = await db.exec(stmt.order_by(col(ForemanTurn.id)))
-        turns = result.all()
+        else:
+            # Parent-mode reads must never re-absorb per-task child conversations.
+            stmt = stmt.where(col(ForemanTurn.task_id).is_(None))
+        # Fetch only the most recent rows at the SQL level so query cost doesn't
+        # scale with the table's total lifetime turn count; the Python-side
+        # windowing below then trims this small set down further.
+        result = await db.exec(stmt.order_by(col(ForemanTurn.id).desc()).limit(_HISTORY_FETCH_LIMIT))
+        turns = list(reversed(result.all()))
     finally:
         await db.close()
 
@@ -619,8 +629,15 @@ async def _run_foreman_ai(
             worker_rows = [r for r in worker_rows if r["id"] == child_worker_id]
             task_rows = [child_task_row] if child_task_row else []
             _task_id: str | None = task_id
-        else:
+        elif child:
             _task_id = task_rows[0]["id"] if len(task_rows) == 1 else None
+        else:
+            # Parent runs (periodic-check, worker lifecycle, human chat) must
+            # never tag turns with a child task_id, even when exactly one
+            # non-terminal task happens to exist — those turns must stay
+            # untagged (task_id IS NULL) so they don't pollute that task's
+            # isolated child context on its next run.
+            _task_id = None
     except Exception:
         await db.close()
         raise
