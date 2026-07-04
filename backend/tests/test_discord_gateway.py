@@ -245,9 +245,7 @@ async def test_message_create_dispatch_reaches_queue_end_to_end():
 
 @pytest.mark.asyncio
 async def test_is_channel_wired_caches_positive_result():
-    with patch(
-        "discord.gateway._query_channel_wired", new=AsyncMock(return_value=True)
-    ) as query:
+    with patch("discord.gateway._query_channel_wired", new=AsyncMock(return_value=True)) as query:
         assert await gateway._is_channel_wired("c-wired") is True
         assert await gateway._is_channel_wired("c-wired") is True
     query.assert_awaited_once_with("c-wired")
@@ -255,9 +253,7 @@ async def test_is_channel_wired_caches_positive_result():
 
 @pytest.mark.asyncio
 async def test_is_channel_wired_requeries_after_ttl_expires():
-    with patch(
-        "discord.gateway._query_channel_wired", new=AsyncMock(return_value=False)
-    ) as query:
+    with patch("discord.gateway._query_channel_wired", new=AsyncMock(return_value=False)) as query:
         assert await gateway._is_channel_wired("c-unwired") is False
         gateway._channel_wired_cache["c-unwired"] = (False, 0.0)  # force expiry
         assert await gateway._is_channel_wired("c-unwired") is False
