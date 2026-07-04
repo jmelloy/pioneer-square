@@ -444,9 +444,7 @@ async def _lookup_discord_user(github_login: str) -> str | None:
             )
             return result.one_or_none()
     except Exception:
-        logger.warning(
-            "discord: user mapping lookup failed login=%s", github_login, exc_info=True
-        )
+        logger.warning("discord: user mapping lookup failed login=%s", github_login, exc_info=True)
         return None
 
 

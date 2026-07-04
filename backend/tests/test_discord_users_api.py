@@ -52,9 +52,7 @@ def test_upsert_is_idempotent_and_updates_existing(client):
     token = _login(db_url)
     headers = {"Authorization": f"Bearer {token}"}
 
-    test_client.put(
-        "/api/discord-users/bob", json={"discord_user_id": "111"}, headers=headers
-    )
+    test_client.put("/api/discord-users/bob", json={"discord_user_id": "111"}, headers=headers)
     resp = test_client.put(
         "/api/discord-users/bob", json={"discord_user_id": "222"}, headers=headers
     )
@@ -92,9 +90,7 @@ def test_delete_removes_mapping(client):
     token = _login(db_url)
     headers = {"Authorization": f"Bearer {token}"}
 
-    test_client.put(
-        "/api/discord-users/dave", json={"discord_user_id": "444"}, headers=headers
-    )
+    test_client.put("/api/discord-users/dave", json={"discord_user_id": "444"}, headers=headers)
     resp = test_client.delete("/api/discord-users/dave", headers=headers)
     assert resp.status_code == 200
 
@@ -107,9 +103,7 @@ def test_list_includes_created_mappings(client):
     token = _login(db_url)
     headers = {"Authorization": f"Bearer {token}"}
 
-    test_client.put(
-        "/api/discord-users/erin", json={"discord_user_id": "555"}, headers=headers
-    )
+    test_client.put("/api/discord-users/erin", json={"discord_user_id": "555"}, headers=headers)
     resp = test_client.get("/api/discord-users", headers=headers)
     assert resp.status_code == 200
     logins = {row["github_login"] for row in resp.json()}
