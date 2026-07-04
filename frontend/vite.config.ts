@@ -26,12 +26,17 @@ export default defineConfig({
       ? { hmr: { protocol: 'ws', host: 'localhost', clientPort: hmrClientPort } }
       : {}),
     // Forward backend routes when running `npm run dev` so the SPA can
-    // call /auth, /guilds, /ws against the dev server. In production
-    // these are handled by nginx-in-container (see frontend/nginx.conf).
+    // call /auth, /guilds, /ws, /discord against the dev server. In
+    // production these are all served from the same FastAPI origin as
+    // the built SPA (see backend/main.py) — there is no separate reverse
+    // proxy in front of the backend.
     proxy: {
-      '/auth':   { target: backendUrl,   changeOrigin: true },
-      '/guilds': { target: backendUrl,   changeOrigin: true },
-      '/ws':     { target: backendWsUrl, ws: true, changeOrigin: true },
+      '/auth':    { target: backendUrl,   changeOrigin: true },
+      '/guilds':  { target: backendUrl,   changeOrigin: true },
+      // Intentionally proxies all /discord/* paths (not just /discord/interactions)
+      // so any future Discord routes are covered automatically in dev.
+      '/discord': { target: backendUrl,   changeOrigin: true },
+      '/ws':      { target: backendWsUrl, ws: true, changeOrigin: true },
     },
   },
   preview: {
