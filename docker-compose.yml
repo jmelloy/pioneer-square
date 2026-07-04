@@ -21,6 +21,12 @@ services:
       context: .
       dockerfile: Dockerfile
       target: backend
+      args:
+        # Stamps backend/worker_lifecycle.py's version check so restarts can
+        # tell current-deploy workers from stale ones instead of draining
+        # everything. Set PIONEER_VERSION before building, e.g.:
+        #   PIONEER_VERSION=$(git rev-parse --short HEAD) docker compose build backend
+        PIONEER_VERSION: ${PIONEER_VERSION:-}
       secrets:
         - build_github_token
     ports:

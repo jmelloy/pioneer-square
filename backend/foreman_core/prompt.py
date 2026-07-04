@@ -1,6 +1,6 @@
 """Foreman system prompt and system-prompt builder."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 FOREMAN_SYSTEM = """\
 You are the Foreman AI in Pioneer Square, a multi-agent coding workshop.
@@ -249,7 +249,7 @@ def _current_time_line() -> str:
     Must never be memoized or hoisted into the cacheable stable system text —
     it changes every turn and would otherwise poison the prompt cache.
     """
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     return f"Current UTC time: {now}\n\n"
 
 
