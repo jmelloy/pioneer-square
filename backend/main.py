@@ -364,6 +364,12 @@ async def lifespan(app: FastAPI):
 
     asyncio.ensure_future(_startup_refresh_catalog())
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
+
+    # Discord Gateway (Phase 4): persistent websocket for inbound messages.
+    # No-op unless DISCORD_GATEWAY_ENABLED=true and DISCORD_BOT_TOKEN are set.
+    from discord.gateway import start_gateway, stop_gateway  # noqa: PLC0415
+
+    start_gateway()
     try:
         yield
     finally:
@@ -379,6 +385,7 @@ async def lifespan(app: FastAPI):
                 await drain_bg
             except (asyncio.CancelledError, Exception):
                 pass
+        await stop_gateway()
         await _shutdown_webhook_debouncer()
 
 
