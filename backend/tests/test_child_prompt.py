@@ -58,6 +58,13 @@ def test_child_state_preamble_includes_worker_and_task():
     assert "t-abc" in out
 
 
+def test_child_state_preamble_includes_fresh_current_time():
+    out = build_child_state_preamble('{"id": "w-1"}', '{"id": "t-abc"}')
+    assert "Current UTC time: " in out
+    # Timestamp must precede the rest of the state, and land ahead of any state data.
+    assert out.index("Current UTC time: ") < out.index("Assigned worker")
+
+
 def test_child_state_preamble_handles_offline_worker():
     out = build_child_state_preamble("[]", '{"id": "t-abc"}')
     assert "not currently online" in out
