@@ -1,4 +1,5 @@
-"""Discord notification helpers: flat webhook (Phase 1) and per-PR/issue threads (Phase 2).
+"""Discord notification helpers: flat webhook (Phase 1), per-PR/issue threads (Phase 2),
+and Foreman chat threads + user mentions (Phase 3).
 
 Phase 1 — flat webhook
     Set ``DISCORD_WEBHOOK_URL`` in the environment to post embeds to a single channel.
@@ -13,7 +14,17 @@ Phase 2 — per-PR/issue threads
     Both tokens absent → silent no-op.  HTTP and DB failures are always logged
     at WARNING level and never propagate.
 
-Required bot permissions for Phase 2: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
+Phase 3 — Foreman chat threads + user mentions
+    ``notify_foreman_chat`` mirrors Foreman → user chat narration into one
+    Discord thread per guild per UTC day (mapping persisted in
+    ``discord_foreman_threads``), reusing the same bot token/channel as Phase 2.
+
+    ``mention_or_login`` resolves a GitHub login to a real ``<@id>`` Discord
+    mention via the ``discord_users`` table (populated through the
+    ``/api/discord-users`` REST endpoints). Falls back to a plain ``@login``
+    string when no mapping exists — never raises, never blocks a notification.
+
+Required bot permissions for Phase 2/3: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
 
 Usage::
 
@@ -31,6 +42,12 @@ Usage::
         thread_name="#42: Fix the bug",
         header_fields={"Assignee": "@alice", "Labels": "bug"},
     )
+
+    # Foreman chat mirrored into a per-day thread:
+    await discord_notifier.notify_foreman_chat(guild_id, "Spun up worker w-abc for t-123.")
+
+    # Resolve a GitHub login to a Discord mention (or a plain @login fallback):
+    mention = await discord_notifier.mention_or_login("alice")
 """
 
 from __future__ import annotations
@@ -221,12 +238,44 @@ async def _save_thread(issue_repo: str, issue_number: int, thread_id: str) -> No
         )
 
 
-async def _ensure_thread(issue_repo: str, issue_number: int, thread_name: str) -> str | None:
-    """Return the Discord thread_id for a PR/issue, creating it if necessary.
+async def _create_thread_in_channel(channel: str, thread_name: str) -> str | None:
+    """Create a new thread in *channel*, anchored by a starter message.
 
     For standard text channels, thread creation requires a starter message first:
     POST /channels/{channel}/messages → get message_id
     POST /channels/{channel}/messages/{message_id}/threads → get thread_id
+
+    Returns the new thread_id, or None on API error.
+    """
+    starter = await _bot_request(
+        "post",
+        f"/channels/{channel}/messages",
+        {"content": thread_name[:100]},
+    )
+    if not starter:
+        return None
+    message_id = starter.get("id")
+    if not message_id:
+        logger.warning("discord: starter message returned no id for channel=%s", channel)
+        return None
+
+    data = await _bot_request(
+        "post",
+        f"/channels/{channel}/messages/{message_id}/threads",
+        {"name": thread_name[:100]},
+    )
+    if not data:
+        return None
+
+    new_thread_id = data.get("id")
+    if not new_thread_id:
+        logger.warning("discord: thread creation returned no id for channel=%s", channel)
+        return None
+    return new_thread_id
+
+
+async def _ensure_thread(issue_repo: str, issue_number: int, thread_name: str) -> str | None:
+    """Return the Discord thread_id for a PR/issue, creating it if necessary.
 
     Returns None when bot token or channel ID are not configured, or on API error.
     """
@@ -238,35 +287,8 @@ async def _ensure_thread(issue_repo: str, issue_number: int, thread_name: str) -
     if not channel:
         return None
 
-    # Step 1: post a starter message to anchor the thread
-    starter = await _bot_request(
-        "post",
-        f"/channels/{channel}/messages",
-        {"content": thread_name[:100]},
-    )
-    if not starter:
-        return None
-    message_id = starter.get("id")
-    if not message_id:
-        logger.warning(
-            "discord: starter message returned no id for repo=%s #%s", issue_repo, issue_number
-        )
-        return None
-
-    # Step 2: create the thread from that starter message
-    data = await _bot_request(
-        "post",
-        f"/channels/{channel}/messages/{message_id}/threads",
-        {"name": thread_name[:100]},
-    )
-    if not data:
-        return None
-
-    new_thread_id = data.get("id")
+    new_thread_id = await _create_thread_in_channel(channel, thread_name)
     if not new_thread_id:
-        logger.warning(
-            "discord: thread creation returned no id for repo=%s #%s", issue_repo, issue_number
-        )
         return None
 
     await _save_thread(issue_repo, issue_number, new_thread_id)
@@ -297,6 +319,148 @@ async def _post_to_thread(
 async def archive_thread(thread_id: str) -> None:
     """Archive a Discord thread. Never raises."""
     await _bot_request("patch", f"/channels/{thread_id}", {"archived": True})
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Foreman chat threads
+# ---------------------------------------------------------------------------
+
+
+async def _lookup_foreman_thread(guild_id: str, session_key: str) -> str | None:
+    """Return the persisted Discord thread_id for a Foreman chat session, or None."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import DiscordForemanThread  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(DiscordForemanThread).where(
+                    col(DiscordForemanThread.guild_id) == guild_id,
+                    col(DiscordForemanThread.session_key) == session_key,
+                )
+            )
+            row = result.one_or_none()
+            return row.thread_id if row else None
+    except Exception:
+        logger.warning(
+            "discord: foreman thread DB lookup failed guild=%s session=%s",
+            guild_id,
+            session_key,
+            exc_info=True,
+        )
+        return None
+
+
+async def _save_foreman_thread(guild_id: str, session_key: str, thread_id: str) -> None:
+    """Persist a new Foreman thread mapping using an atomic upsert (ignore duplicates)."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import DiscordForemanThread  # noqa: PLC0415
+        from sqlalchemy.dialects.postgresql import insert  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            stmt = (
+                insert(DiscordForemanThread)
+                .values(
+                    guild_id=guild_id,
+                    session_key=session_key,
+                    thread_id=thread_id,
+                    created_at=datetime.now(UTC),
+                )
+                .on_conflict_do_nothing()
+            )
+            await db.execute(stmt)
+            await db.commit()
+    except Exception:
+        logger.warning(
+            "discord: foreman thread DB save failed guild=%s session=%s thread=%s",
+            guild_id,
+            session_key,
+            thread_id,
+            exc_info=True,
+        )
+
+
+async def _ensure_foreman_thread(guild_id: str, session_key: str, thread_name: str) -> str | None:
+    """Return the Discord thread_id for a Foreman chat session, creating it if necessary.
+
+    Returns None when bot token or channel ID are not configured, or on API error.
+    """
+    existing = await _lookup_foreman_thread(guild_id, session_key)
+    if existing:
+        return existing
+
+    channel = _channel_id()
+    if not channel:
+        return None
+
+    new_thread_id = await _create_thread_in_channel(channel, thread_name)
+    if not new_thread_id:
+        return None
+
+    await _save_foreman_thread(guild_id, session_key, new_thread_id)
+    return await _lookup_foreman_thread(guild_id, session_key) or new_thread_id
+
+
+async def notify_foreman_chat(guild_id: str, content: str, session_key: str | None = None) -> None:
+    """Mirror a Foreman → user chat line into a per-guild, per-day Discord thread.
+
+    One thread is created per ``(guild_id, session_key)`` pair — *session_key*
+    defaults to the current UTC date, so a whole day's conversation lands in
+    the same thread. Silent no-op when the bot token or channel are not
+    configured, or when *content* is blank. Never raises.
+    """
+    if not content or not content.strip():
+        return
+    if not (_bot_token() and _channel_id()):
+        return
+
+    key = session_key or datetime.now(UTC).strftime("%Y-%m-%d")
+    thread_name = f"Foreman session {key} ({guild_id})"[:100]
+    thread_id = await _ensure_foreman_thread(guild_id, key, thread_name)
+    if not thread_id:
+        return
+    await _bot_request("post", f"/channels/{thread_id}/messages", {"content": content[:2000]})
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: GitHub login -> Discord user mentions
+# ---------------------------------------------------------------------------
+
+
+async def _lookup_discord_user(github_login: str) -> str | None:
+    """Return the Discord user ID mapped to *github_login*, or None."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import DiscordUser  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(DiscordUser.discord_user_id).where(
+                    col(DiscordUser.github_login) == github_login.lower()
+                )
+            )
+            return result.one_or_none()
+    except Exception:
+        logger.warning(
+            "discord: user mapping lookup failed login=%s", github_login, exc_info=True
+        )
+        return None
+
+
+async def mention_or_login(github_login: str | None) -> str:
+    """Return a Discord @-mention for *github_login* when a mapping exists.
+
+    Falls back to a plain ``@login`` string when no mapping is found, and to
+    ``""`` when *github_login* is empty — callers never need to special-case
+    a missing mapping. Never raises.
+    """
+    if not github_login:
+        return ""
+    discord_id = await _lookup_discord_user(github_login)
+    return f"<@{discord_id}>" if discord_id else f"@{github_login}"
 
 
 # ---------------------------------------------------------------------------
