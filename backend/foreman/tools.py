@@ -704,8 +704,7 @@ def _post_agent_task(task_url: str, body: bytes) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# spawn_worker implementation (intentionally excluded from FOREMAN_TOOLS until
-# async/lock fixes in #551, #564, #566 are merged and tested — see #567)
+# spawn_worker implementation — re-enabled in FOREMAN_TOOLS after #551, #564, #566, #728
 # ---------------------------------------------------------------------------
 
 

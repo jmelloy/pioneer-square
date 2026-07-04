@@ -1239,10 +1239,10 @@ class TestExecToolsDispatching:
 
 
 class TestSpawnWorker:
-    """spawn_worker() is not in FOREMAN_TOOLS (see #567) but is still invoked
-    directly by worker_lifecycle.spawn_replacement_workers() on backend startup.
-    Regression test for a missing ``await`` on ``_get_docker_client()`` that
-    made every real invocation of this path fail (see #725).
+    """spawn_worker() is exposed in FOREMAN_TOOLS (re-enabled after #551/#564/#566/#728)
+    and is also invoked directly by worker_lifecycle.spawn_replacement_workers() on
+    backend startup. Regression test for a missing ``await`` on ``_get_docker_client()``
+    that made every real invocation of this path fail (see #725).
     """
 
     async def test_spawn_worker_starts_container(self, db_session):
