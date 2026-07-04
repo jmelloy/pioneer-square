@@ -83,7 +83,37 @@ COMMANDS = [
                 ],
             },
         ],
-    }
+    },
+    {
+        "name": "join-channel",
+        "description": "Wire this (or a chosen) Discord channel to a Pioneer Square guild",
+        "options": [
+            {
+                "name": "channel",
+                "description": "Discord channel to wire up",
+                "type": 7,  # CHANNEL
+                "required": True,
+            },
+            {
+                "name": "guild",
+                "description": "Pioneer Square guild slug (optional if only one guild is configured)",
+                "type": 3,  # STRING
+                "required": False,
+            },
+        ],
+    },
+    {
+        "name": "leave-channel",
+        "description": "Remove a Discord channel's Pioneer Square guild binding",
+        "options": [
+            {
+                "name": "channel",
+                "description": "Discord channel to unwire (defaults to the current channel)",
+                "type": 7,  # CHANNEL
+                "required": False,
+            },
+        ],
+    },
 ]
 
 DISCORD_API = "https://discord.com/api/v10"

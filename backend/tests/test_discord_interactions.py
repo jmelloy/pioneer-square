@@ -555,3 +555,452 @@ async def test_cmd_cancel_already_done(monkeypatch):
 
     assert sent
     assert "already" in sent[0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Permission helpers for /join-channel and /leave-channel (pure unit)
+# ---------------------------------------------------------------------------
+
+
+def test_has_manage_channels_true():
+    from routes.discord import _has_manage_channels
+
+    # 0x10 (MANAGE_CHANNELS) is set among other bits
+    assert _has_manage_channels({"permissions": str(0x10 | 0x8)}) is True
+
+
+def test_has_manage_channels_false():
+    from routes.discord import _has_manage_channels
+
+    assert _has_manage_channels({"permissions": str(0x8)}) is False
+    assert _has_manage_channels({}) is False
+    assert _has_manage_channels({"permissions": "not-a-number"}) is False
+
+
+@pytest.mark.asyncio
+async def test_has_operator_role_matches(monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    from routes.discord import _has_operator_role
+
+    interaction = {
+        "guild_id": "g1",
+        "member": {"roles": ["role-1", "role-2"]},
+    }
+    roles = [
+        {"id": "role-1", "name": "Someone Else"},
+        {"id": "role-2", "name": "Pioneer Square Operator"},
+    ]
+    with patch("routes.discord._discord_get", new=AsyncMock(return_value=roles)):
+        assert await _has_operator_role(interaction) is True
+
+
+@pytest.mark.asyncio
+async def test_has_operator_role_no_match(monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    from routes.discord import _has_operator_role
+
+    interaction = {"guild_id": "g1", "member": {"roles": ["role-1"]}}
+    roles = [{"id": "role-1", "name": "Someone Else"}]
+    with patch("routes.discord._discord_get", new=AsyncMock(return_value=roles)):
+        assert await _has_operator_role(interaction) is False
+
+
+@pytest.mark.asyncio
+async def test_has_operator_role_no_roles_short_circuits():
+    """No member roles at all → deny without calling the Discord API."""
+    from routes.discord import _has_operator_role
+
+    with patch("routes.discord._discord_get", new=AsyncMock()) as mock_get:
+        assert await _has_operator_role({"guild_id": "g1", "member": {"roles": []}}) is False
+        mock_get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_can_manage_channel_bindings_via_permission():
+    from routes.discord import _can_manage_channel_bindings
+
+    interaction = {"member": {"permissions": str(0x10)}}
+    with patch("routes.discord._has_operator_role", new=AsyncMock()) as mock_role:
+        assert await _can_manage_channel_bindings(interaction) is True
+        mock_role.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_can_manage_channel_bindings_via_role():
+    from routes.discord import _can_manage_channel_bindings
+
+    interaction = {"member": {"permissions": "0"}}
+    with patch("routes.discord._has_operator_role", new=AsyncMock(return_value=True)):
+        assert await _can_manage_channel_bindings(interaction) is True
+
+
+@pytest.mark.asyncio
+async def test_can_manage_channel_bindings_denied():
+    from routes.discord import _can_manage_channel_bindings
+
+    interaction = {"member": {"permissions": "0"}}
+    with patch("routes.discord._has_operator_role", new=AsyncMock(return_value=False)):
+        assert await _can_manage_channel_bindings(interaction) is False
+
+
+# ---------------------------------------------------------------------------
+# _cmd_join_channel / _cmd_leave_channel — all DB calls mocked
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cmd_join_channel_creates_new_binding(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    guild = MagicMock()
+    guild.slug = "my-guild"
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value=guild)),  # Guild lookup
+            MagicMock(one_or_none=MagicMock(return_value=None)),  # existing binding lookup
+        ]
+    )
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    interaction = {
+        "token": "tok-join",
+        "guild_id": "dg-1",
+        "data": {
+            "name": "join-channel",
+            "options": [
+                {"name": "channel", "value": "12345"},
+                {"name": "guild", "value": "my-guild"},
+            ],
+        },
+        "member": {"permissions": str(0x10)},
+    }
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+    ):
+        from routes.discord import _cmd_join_channel
+
+        await _cmd_join_channel(interaction)
+
+    assert mock_db.add.called
+    added = mock_db.add.call_args[0][0]
+    assert added.discord_guild_id == "dg-1"
+    assert added.discord_channel_id == "12345"
+    assert added.ps_guild_id == "my-guild"
+    assert mock_db.commit.called
+    assert sent
+    assert "✅" in sent[0]["content"]
+    assert "my-guild" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_join_channel_updates_existing_binding(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    guild = MagicMock()
+    guild.slug = "new-guild"
+
+    existing = MagicMock()
+    existing.ps_guild_id = "old-guild"
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value=guild)),
+            MagicMock(one_or_none=MagicMock(return_value=existing)),
+        ]
+    )
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    interaction = {
+        "token": "tok-join2",
+        "guild_id": "dg-1",
+        "data": {
+            "name": "join-channel",
+            "options": [
+                {"name": "channel", "value": "12345"},
+                {"name": "guild", "value": "new-guild"},
+            ],
+        },
+        "member": {"permissions": str(0x10)},
+    }
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+    ):
+        from routes.discord import _cmd_join_channel
+
+        await _cmd_join_channel(interaction)
+
+    assert existing.ps_guild_id == "new-guild"
+    assert mock_db.commit.called
+    assert sent
+    assert "Updated binding" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_join_channel_unknown_guild_slug(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=None)))
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    interaction = {
+        "token": "tok-join3",
+        "guild_id": "dg-1",
+        "data": {
+            "name": "join-channel",
+            "options": [
+                {"name": "channel", "value": "12345"},
+                {"name": "guild", "value": "nonexistent"},
+            ],
+        },
+        "member": {"permissions": str(0x10)},
+    }
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+    ):
+        from routes.discord import _cmd_join_channel
+
+        await _cmd_join_channel(interaction)
+
+    assert sent
+    assert "not found" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_join_channel_denies_without_permission(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    interaction = {
+        "token": "tok-join4",
+        "guild_id": "dg-1",
+        "data": {
+            "name": "join-channel",
+            "options": [{"name": "channel", "value": "12345"}],
+        },
+        "member": {"permissions": "0", "roles": []},
+    }
+
+    with (
+        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("routes.discord._has_operator_role", new=AsyncMock(return_value=False)),
+    ):
+        from routes.discord import _cmd_join_channel
+
+        await _cmd_join_channel(interaction)
+
+    assert sent
+    assert "Manage Channels" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_join_channel_requires_guild_context(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    interaction = {
+        "token": "tok-join5",
+        "data": {"name": "join-channel", "options": [{"name": "channel", "value": "12345"}]},
+        "member": {"permissions": str(0x10)},
+    }
+
+    with patch("routes.discord._discord_patch", new=fake_patch):
+        from routes.discord import _cmd_join_channel
+
+        await _cmd_join_channel(interaction)
+
+    assert sent
+    assert "only be used in a server" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_leave_channel_deletes_binding(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    existing = MagicMock()
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=existing)))
+    mock_db.delete = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    interaction = {
+        "token": "tok-leave",
+        "guild_id": "dg-1",
+        "channel_id": "12345",
+        "data": {"name": "leave-channel", "options": []},
+        "member": {"permissions": str(0x10)},
+    }
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+    ):
+        from routes.discord import _cmd_leave_channel
+
+        await _cmd_leave_channel(interaction)
+
+    mock_db.delete.assert_called_once_with(existing)
+    assert mock_db.commit.called
+    assert sent
+    assert "✅" in sent[0]["content"]
+    assert "unwired" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_leave_channel_explicit_channel_option(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    existing = MagicMock()
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=existing)))
+    mock_db.delete = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    interaction = {
+        "token": "tok-leave2",
+        "guild_id": "dg-1",
+        "channel_id": "current-chan",
+        "data": {
+            "name": "leave-channel",
+            "options": [{"name": "channel", "value": "other-chan"}],
+        },
+        "member": {"permissions": str(0x10)},
+    }
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+    ):
+        from routes.discord import _cmd_leave_channel
+
+        await _cmd_leave_channel(interaction)
+
+    assert sent
+    assert "other-chan" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_leave_channel_no_binding_found(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=None)))
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    interaction = {
+        "token": "tok-leave3",
+        "guild_id": "dg-1",
+        "channel_id": "12345",
+        "data": {"name": "leave-channel", "options": []},
+        "member": {"permissions": str(0x10)},
+    }
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+    ):
+        from routes.discord import _cmd_leave_channel
+
+        await _cmd_leave_channel(interaction)
+
+    assert sent
+    assert "No binding found" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_leave_channel_denies_without_permission(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    interaction = {
+        "token": "tok-leave4",
+        "guild_id": "dg-1",
+        "channel_id": "12345",
+        "data": {"name": "leave-channel", "options": []},
+        "member": {"permissions": "0", "roles": []},
+    }
+
+    with (
+        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("routes.discord._has_operator_role", new=AsyncMock(return_value=False)),
+    ):
+        from routes.discord import _cmd_leave_channel
+
+        await _cmd_leave_channel(interaction)
+
+    assert sent
+    assert "Manage Channels" in sent[0]["content"]
