@@ -820,15 +820,7 @@ async def _run_foreman_ai(
             for b in resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await broadcast_msg(
-                        guild_id,
-                        ChatMsg(
-                            from_="foreman",
-                            to="user",
-                            content=b.text.strip(),
-                            createdAt=_now.isoformat(),
-                        ),
-                    )
+                    await _emit_foreman_chat(guild_id, b.text.strip(), _now.isoformat())
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
@@ -1035,16 +1027,10 @@ async def _run_foreman_ai(
             for b in wrap_resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await broadcast_msg(
-                        guild_id,
-                        ChatMsg(from_="foreman", to="user", content=b.text.strip(), createdAt=_now),
-                    )
+                    await _emit_foreman_chat(guild_id, b.text.strip(), _now)
             cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
-            await broadcast_msg(
-                guild_id,
-                ChatMsg(from_="foreman", to="user", content=cap_note, createdAt=_now),
-            )
+            await _emit_foreman_chat(guild_id, cap_note, _now)
 
         response_text = "\n".join(text_parts).strip()
         if response_text:

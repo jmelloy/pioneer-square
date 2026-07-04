@@ -833,10 +833,11 @@ async def github_webhook(
         pr_title = (pr_obj.get("title") or "")[:120]
         assignees = pr_obj.get("assignees") or []
         labels = pr_obj.get("labels") or []
-        assignee_str = (
-            ", ".join(f"@{a['login']}" for a in assignees if isinstance(a, dict) and a.get("login"))
-            or "None"
-        )
+        assignee_logins = [a["login"] for a in assignees if isinstance(a, dict) and a.get("login")]
+        assignee_mentions = [
+            await discord_notifier.mention_or_login(login) for login in assignee_logins
+        ]
+        assignee_str = ", ".join(assignee_mentions) or "None"
         labels_str = (
             ", ".join(lb["name"] for lb in labels if isinstance(lb, dict) and lb.get("name"))
             or "None"
