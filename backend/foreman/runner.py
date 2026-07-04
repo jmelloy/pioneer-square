@@ -7,6 +7,7 @@ import os
 import time
 from datetime import UTC, datetime
 
+import discord_notifier
 from auth_deps import get_guild_pk
 from database import AsyncSessionLocal, get_db
 from events import broadcast_msg
