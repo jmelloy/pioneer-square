@@ -155,6 +155,12 @@ pioneer foreman
 external foreman is connected the backend routes all `foreman-trigger` events to
 it; if it disconnects the backend's embedded foreman takes over automatically.
 
+### Discord integration (optional)
+
+Pioneer Square can post event notifications, per-PR/issue discussion threads, a live Foreman
+chat mirror, and `/ps` slash commands into a Discord server. It's entirely opt-in — with no
+`DISCORD_*` env vars set, nothing changes. See [`docs/discord.md`](docs/discord.md) for setup.
+
 ## Migrating from SQLite
 
 If you have an existing Pioneer Square SQLite database (`pioneer_square.db`)

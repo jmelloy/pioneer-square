@@ -52,7 +52,7 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
-      # --- Discord notifications (optional, see docs/discord-bot-setup.md) ---
+      # --- Discord notifications (optional, see docs/discord.md) ---
       # Phase 1: flat-channel webhook notifications.
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
       # Phase 2: bot-based per-PR/issue thread notifications. Both required
