@@ -67,20 +67,32 @@ async def test_run_sends_disconnect_before_ws_close():
         await asyncio.sleep(3600)
         yield {}  # Never reached; makes this an async generator
 
+    reached_main_loop = asyncio.Event()
+
+    async def fetch_pending_tasks():
+        # Last mocked call before run() enters the asyncio.wait() main loop —
+        # signal readiness instead of guessing with a fixed sleep, which was
+        # flaky under CI load (run() could still be in earlier startup steps).
+        reached_main_loop.set()
+        return []
+
     worker._send = capture_send
     worker._register = AsyncMock()
     worker._fetch_github_token_if_needed = AsyncMock()
     worker._check_gh_auth = AsyncMock()
     worker._check_codex_doctor = AsyncMock()
     worker._check_claude_auth = AsyncMock()
-    worker._fetch_pending_tasks = AsyncMock(return_value=[])
+    worker._fetch_pending_tasks = fetch_pending_tasks
     worker.ws.connect = AsyncMock()
     worker.ws.close = capture_close
     worker.ws.messages = hanging_messages
 
     task = asyncio.create_task(worker.run())
     # Allow run() to reach the asyncio.gather() await
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(reached_main_loop.wait(), timeout=5)
+    # fetch_pending_tasks() returning doesn't guarantee run() has entered the
+    # try/finally around asyncio.wait() yet — yield control once more.
+    await asyncio.sleep(0)
     task.cancel()
     try:
         await task
