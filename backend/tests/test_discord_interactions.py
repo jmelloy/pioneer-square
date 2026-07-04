@@ -202,16 +202,15 @@ def test_valid_ping_returns_pong(client, keypair, monkeypatch):
     assert resp.json() == {"type": 1}
 
 
-def test_no_public_key_skips_verification(client, monkeypatch):
-    """When DISCORD_PUBLIC_KEY is absent, PING passes without verification."""
+def test_no_public_key_returns_401(client, monkeypatch):
+    """When DISCORD_PUBLIC_KEY is absent, all requests are rejected with 401."""
     c, _ = client
     monkeypatch.delenv("DISCORD_PUBLIC_KEY", raising=False)
     body = json.dumps({"type": 1}).encode()
     resp = c.post(
         "/discord/interactions", content=body, headers={"Content-Type": "application/json"}
     )
-    assert resp.status_code == 200
-    assert resp.json() == {"type": 1}
+    assert resp.status_code == 401
 
 
 def test_unauthorized_user_gets_ephemeral_denied(client, keypair, monkeypatch):

@@ -578,8 +578,8 @@ async def discord_interactions(request: Request, background_tasks: BackgroundTas
     """
     pub_key = _public_key()
     if not pub_key:
-        logger.error("discord: DISCORD_PUBLIC_KEY is not configured; refusing request")
-        return Response(content="Server misconfiguration: DISCORD_PUBLIC_KEY not set", status_code=500)
+        logger.error("discord: DISCORD_PUBLIC_KEY is not configured; refusing all requests")
+        return Response(content="Invalid signature", status_code=401)
 
     body = await request.body()
     sig = request.headers.get("x-signature-ed25519", "")
