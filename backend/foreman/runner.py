@@ -7,6 +7,7 @@ import os
 import time
 from datetime import UTC, datetime
 
+import discord_notifier
 from auth_deps import get_guild_pk
 from database import AsyncSessionLocal, get_db
 from events import broadcast_msg
@@ -474,6 +475,23 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
     return [dict(r._mapping) for r in result.all()]
 
 
+async def _emit_foreman_chat(guild_id: str, content: str, created_at: str) -> None:
+    """Broadcast a Foreman -> user narration line and mirror it into Discord.
+
+    Every plain-text line the Foreman sends to the user (not tool_use/tool_result
+    traces) goes through here so the Discord thread mirror in discord_notifier
+    stays in sync with the WS chat stream.
+    """
+    await broadcast_msg(
+        guild_id,
+        ChatMsg(from_="foreman", to="user", content=content, createdAt=created_at),
+    )
+    spawn(
+        discord_notifier.notify_foreman_chat(guild_id, content),
+        name=f"discord.foreman-chat:{guild_id}",
+    )
+
+
 async def run_foreman_ai(
     guild_id: str,
     human_message: str,
@@ -802,15 +820,7 @@ async def _run_foreman_ai(
             for b in resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await broadcast_msg(
-                        guild_id,
-                        ChatMsg(
-                            from_="foreman",
-                            to="user",
-                            content=b.text.strip(),
-                            createdAt=_now.isoformat(),
-                        ),
-                    )
+                    await _emit_foreman_chat(guild_id, b.text.strip(), _now.isoformat())
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
@@ -1017,16 +1027,10 @@ async def _run_foreman_ai(
             for b in wrap_resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await broadcast_msg(
-                        guild_id,
-                        ChatMsg(from_="foreman", to="user", content=b.text.strip(), createdAt=_now),
-                    )
+                    await _emit_foreman_chat(guild_id, b.text.strip(), _now)
             cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
-            await broadcast_msg(
-                guild_id,
-                ChatMsg(from_="foreman", to="user", content=cap_note, createdAt=_now),
-            )
+            await _emit_foreman_chat(guild_id, cap_note, _now)
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
