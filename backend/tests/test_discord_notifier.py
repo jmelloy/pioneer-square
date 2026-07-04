@@ -565,3 +565,111 @@ async def test_archive_thread_http_error_does_not_raise(monkeypatch):
 
     with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.archive_thread(THREAD_ID)
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Foreman chat threads
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_notify_foreman_chat_creates_thread_and_posts(monkeypatch):
+    """notify_foreman_chat ensures a per-day thread exists and posts the message."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_foreman_chat("guild-1", "Spun up worker w-abc.")
+
+    mock_client.post.assert_called_once()
+    call = mock_client.post.call_args
+    assert f"/channels/{THREAD_ID}/messages" in call[0][0]
+    assert call[1]["json"]["content"] == "Spun up worker w-abc."
+
+
+@pytest.mark.asyncio
+async def test_notify_foreman_chat_no_op_when_blank(monkeypatch):
+    """notify_foreman_chat is a no-op for empty/whitespace-only content."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    with patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_mock:
+        await discord_notifier.notify_foreman_chat("guild-1", "   ")
+
+    ensure_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_foreman_chat_no_op_when_not_configured(monkeypatch):
+    """notify_foreman_chat is a no-op when the bot token/channel are unset."""
+    with patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_mock:
+        await discord_notifier.notify_foreman_chat("guild-1", "hello")
+
+    ensure_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_foreman_chat_reuses_thread_for_same_session(monkeypatch):
+    """Two calls with the same session_key reuse the same thread (one lookup each, no dupes)."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_foreman_thread", AsyncMock(return_value=THREAD_ID)),
+        patch.object(discord_notifier, "_save_foreman_thread", AsyncMock()) as save_mock,
+    ):
+        await discord_notifier.notify_foreman_chat("guild-1", "first", session_key="2026-07-04")
+        await discord_notifier.notify_foreman_chat("guild-1", "second", session_key="2026-07-04")
+
+    save_mock.assert_not_called()
+    assert mock_client.post.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: GitHub login -> Discord user mentions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mention_or_login_returns_mention_when_mapped():
+    """mention_or_login resolves a mapped GitHub login to a <@id> mention."""
+    with patch.object(discord_notifier, "_lookup_discord_user", AsyncMock(return_value="999")):
+        result = await discord_notifier.mention_or_login("alice")
+
+    assert result == "<@999>"
+
+
+@pytest.mark.asyncio
+async def test_mention_or_login_falls_back_to_plain_login():
+    """mention_or_login falls back to a plain @login string when no mapping exists."""
+    with patch.object(discord_notifier, "_lookup_discord_user", AsyncMock(return_value=None)):
+        result = await discord_notifier.mention_or_login("bob")
+
+    assert result == "@bob"
+
+
+@pytest.mark.asyncio
+async def test_mention_or_login_empty_for_blank_login():
+    """mention_or_login returns an empty string for a missing login without querying the DB."""
+    with patch.object(discord_notifier, "_lookup_discord_user", AsyncMock()) as lookup_mock:
+        result = await discord_notifier.mention_or_login(None)
+
+    assert result == ""
+    lookup_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lookup_discord_user_db_error_returns_none():
+    """_lookup_discord_user swallows DB errors and returns None (never raises)."""
+    with patch("database.AsyncSessionLocal", side_effect=RuntimeError("db down")):
+        result = await discord_notifier._lookup_discord_user("carol")
+
+    assert result is None

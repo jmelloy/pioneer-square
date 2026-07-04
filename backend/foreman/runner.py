@@ -7,6 +7,7 @@ import os
 import time
 from datetime import UTC, datetime
 
+import discord_notifier
 from auth_deps import get_guild_pk
 from database import AsyncSessionLocal, get_db
 from events import broadcast_msg
@@ -56,6 +57,10 @@ logger = logging.getLogger(__name__)
 
 POLL_MIN_SECS = 60  # initial poll interval: 1 minute
 POLL_MAX_SECS = 14400  # maximum poll interval: 4 hours
+
+# Upper bound on rows fetched by _load_history before Python-side windowing,
+# so query cost stays flat regardless of the table's total lifetime turn count.
+_HISTORY_FETCH_LIMIT = 100
 
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
@@ -157,8 +162,14 @@ async def _load_history(guild_id: str, user_id: str, task_id: str | None = None)
         )
         if task_id is not None:
             stmt = stmt.where(col(ForemanTurn.task_id) == task_id)
-        result = await db.exec(stmt.order_by(col(ForemanTurn.id)))
-        turns = result.all()
+        else:
+            # Parent-mode reads must never re-absorb per-task child conversations.
+            stmt = stmt.where(col(ForemanTurn.task_id).is_(None))
+        # Fetch only the most recent rows at the SQL level so query cost doesn't
+        # scale with the table's total lifetime turn count; the Python-side
+        # windowing below then trims this small set down further.
+        result = await db.exec(stmt.order_by(col(ForemanTurn.id).desc()).limit(_HISTORY_FETCH_LIMIT))
+        turns = list(reversed(result.all()))
     finally:
         await db.close()
 
@@ -474,6 +485,23 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
     return [dict(r._mapping) for r in result.all()]
 
 
+async def _emit_foreman_chat(guild_id: str, content: str, created_at: str) -> None:
+    """Broadcast a Foreman -> user narration line and mirror it into Discord.
+
+    Every plain-text line the Foreman sends to the user (not tool_use/tool_result
+    traces) goes through here so the Discord thread mirror in discord_notifier
+    stays in sync with the WS chat stream.
+    """
+    await broadcast_msg(
+        guild_id,
+        ChatMsg(from_="foreman", to="user", content=content, createdAt=created_at),
+    )
+    spawn(
+        discord_notifier.notify_foreman_chat(guild_id, content),
+        name=f"discord.foreman-chat:{guild_id}",
+    )
+
+
 async def run_foreman_ai(
     guild_id: str,
     human_message: str,
@@ -619,8 +647,15 @@ async def _run_foreman_ai(
             worker_rows = [r for r in worker_rows if r["id"] == child_worker_id]
             task_rows = [child_task_row] if child_task_row else []
             _task_id: str | None = task_id
-        else:
+        elif child:
             _task_id = task_rows[0]["id"] if len(task_rows) == 1 else None
+        else:
+            # Parent runs (periodic-check, worker lifecycle, human chat) must
+            # never tag turns with a child task_id, even when exactly one
+            # non-terminal task happens to exist — those turns must stay
+            # untagged (task_id IS NULL) so they don't pollute that task's
+            # isolated child context on its next run.
+            _task_id = None
     except Exception:
         await db.close()
         raise
@@ -802,15 +837,7 @@ async def _run_foreman_ai(
             for b in resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await broadcast_msg(
-                        guild_id,
-                        ChatMsg(
-                            from_="foreman",
-                            to="user",
-                            content=b.text.strip(),
-                            createdAt=_now.isoformat(),
-                        ),
-                    )
+                    await _emit_foreman_chat(guild_id, b.text.strip(), _now.isoformat())
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
             if not tool_uses:
@@ -1017,16 +1044,10 @@ async def _run_foreman_ai(
             for b in wrap_resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await broadcast_msg(
-                        guild_id,
-                        ChatMsg(from_="foreman", to="user", content=b.text.strip(), createdAt=_now),
-                    )
+                    await _emit_foreman_chat(guild_id, b.text.strip(), _now)
             cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
-            await broadcast_msg(
-                guild_id,
-                ChatMsg(from_="foreman", to="user", content=cap_note, createdAt=_now),
-            )
+            await _emit_foreman_chat(guild_id, cap_note, _now)
 
         response_text = "\n".join(text_parts).strip()
         if response_text:
