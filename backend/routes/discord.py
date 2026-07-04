@@ -21,7 +21,6 @@ Registered slash commands (see scripts/register_discord_commands.py):
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -33,7 +32,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 from database import AsyncSessionLocal
 from events import broadcast_msg
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Request, Response
 from models import Agent, Guild, Task, Worker, live_tasks_filter
 from sqlalchemy import func, update
 from sqlmodel import col, select
@@ -418,12 +417,14 @@ async def _cmd_review(interaction_token: str, guild_slug: str, pr_url: str) -> N
             guild_pk = guild.id
 
             task_id = _new_task_id()
+            task_name = f"Review PR {pr_url}"
             desc = f"Review pull request {pr_repo}#{pr_number}: {pr_url}"
             created_at = datetime.now(UTC)
             task = Task(
                 id=task_id,
                 worker_id=None,
                 guild_id=guild_pk,
+                name=task_name,
                 description=desc,
                 tool="claude",
                 state="pending",
@@ -503,7 +504,8 @@ async def _cmd_cancel(interaction_token: str, guild_slug: str, task_id: str) -> 
             )
             await db.commit()
 
-        await broadcast_msg(guild_slug, TaskCancelMsg(workerId=worker_id, taskId=task_id))
+        if worker_id:
+            await broadcast_msg(guild_slug, TaskCancelMsg(workerId=worker_id, taskId=task_id))
         await broadcast_msg(
             guild_slug,
             TaskUpdateMsg(taskId=task_id, state="cancelled", deletedAt=deleted_at.isoformat()),
@@ -566,7 +568,7 @@ async def _dispatch_command(interaction: dict) -> None:
 
 
 @router.post("/discord/interactions")
-async def discord_interactions(request: Request) -> Response:
+async def discord_interactions(request: Request, background_tasks: BackgroundTasks) -> Response:
     """Receive and handle Discord interaction payloads.
 
     Signature verification is always performed first. PING responses are
@@ -575,14 +577,15 @@ async def discord_interactions(request: Request) -> Response:
     background task.
     """
     pub_key = _public_key()
-    body = await request.body()
+    if not pub_key:
+        logger.error("discord: DISCORD_PUBLIC_KEY is not configured; refusing request")
+        return Response(content="Server misconfiguration: DISCORD_PUBLIC_KEY not set", status_code=500)
 
-    # Always verify signature if a public key is configured
-    if pub_key:
-        sig = request.headers.get("x-signature-ed25519", "")
-        ts = request.headers.get("x-signature-timestamp", "")
-        if not sig or not ts or not _verify_signature(pub_key, sig, ts, body):
-            return Response(content="Invalid signature", status_code=401)
+    body = await request.body()
+    sig = request.headers.get("x-signature-ed25519", "")
+    ts = request.headers.get("x-signature-timestamp", "")
+    if not sig or not ts or not _verify_signature(pub_key, sig, ts, body):
+        return Response(content="Invalid signature", status_code=401)
 
     try:
         interaction = json.loads(body)
@@ -617,7 +620,7 @@ async def discord_interactions(request: Request) -> Response:
         }
 
         # Schedule command execution in the background
-        asyncio.ensure_future(_dispatch_command(interaction))
+        background_tasks.add_task(_dispatch_command, interaction)
 
         return Response(content=json.dumps(ack), media_type="application/json")
 
