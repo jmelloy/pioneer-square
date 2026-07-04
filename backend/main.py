@@ -368,8 +368,12 @@ async def lifespan(app: FastAPI):
     # Discord Gateway (Phase 4): persistent websocket for inbound messages.
     # No-op unless DISCORD_GATEWAY_ENABLED=true and DISCORD_BOT_TOKEN are set.
     from discord.gateway import start_gateway  # noqa: PLC0415
+    from discord.router import start_router  # noqa: PLC0415
 
     discord_gw_task = start_gateway()
+    # Discord router (Phase 5): consumes the Gateway's queue and routes chat
+    # to Foreman. Same no-op gating as the Gateway itself.
+    discord_router_task = start_router()
     try:
         yield
     finally:
@@ -378,6 +382,8 @@ async def lifespan(app: FastAPI):
             drain_bg.cancel()
         if discord_gw_task is not None:
             discord_gw_task.cancel()
+        if discord_router_task is not None:
+            discord_router_task.cancel()
         try:
             await sweeper
         except (asyncio.CancelledError, Exception):
@@ -390,6 +396,11 @@ async def lifespan(app: FastAPI):
         if discord_gw_task is not None:
             try:
                 await discord_gw_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if discord_router_task is not None:
+            try:
+                await discord_router_task
             except (asyncio.CancelledError, Exception):
                 pass
         await _shutdown_webhook_debouncer()
