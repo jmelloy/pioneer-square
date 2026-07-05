@@ -20,6 +20,7 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import discord_notifier
 from database import get_db
 from events import broadcast, broadcast_msg, emit_terminal_line
 from foreman_core.llm import get_foreman_model, make_anthropic_client
@@ -42,6 +43,7 @@ from models import (
 )
 from sqlalchemy import delete, update
 from sqlmodel import col, select
+from util.tasks import spawn
 from utils import build_spawn_worker_env, decode_claude_oauth_token, worker_display_name
 from ws_types import (
     TaskAssignedMsg,
@@ -402,6 +404,132 @@ async def maybe_post_plan_comment(guild_id: str, task_id: str, last_text: str) -
         logger.info("plan comment posted to %s#%s for task %s", issue_repo, issue_number, task_id)
     except Exception as exc:
         logger.warning("plan comment failed for task %s: %s", task_id, exc)
+
+
+async def _resolve_issue_title(
+    guild_id: str, issue_repo: str, issue_number: int, fallback: str
+) -> str:
+    """Best-effort live GitHub title lookup for Discord thread naming.
+
+    Falls back to *fallback* (the task's own name/description) on a missing
+    token or any API failure, so a slow or failing GitHub call never blocks
+    thread creation.
+    """
+    try:
+        creds = await _guild_github_token(guild_id)
+        if not creds:
+            return fallback
+        token, _ = creds
+        issue = await _to_thread(_gh_api, f"/repos/{issue_repo}/issues/{issue_number}", token)
+        return issue.get("title") or fallback
+    except Exception:
+        logger.warning(
+            "issue title lookup failed repo=%s number=%s",
+            issue_repo,
+            issue_number,
+            exc_info=True,
+        )
+        return fallback
+
+
+async def notify_discord_task_assigned(
+    guild_id: str,
+    issue_repo: str,
+    issue_number: int,
+    task_id: str,
+    fallback_title: str,
+) -> None:
+    """Create (or reuse) the issue's Discord thread as soon as a task is assigned.
+
+    This is what moves thread creation earlier in the lifecycle — previously
+    the first per-issue Discord thread only appeared when a PR was opened.
+    This whole coroutine (including the GitHub title lookup) only ever runs
+    via ``spawn``, which schedules it with ``asyncio.create_task`` and never
+    awaits it in the caller's context — so a slow GitHub API call delays this
+    background task, not the tool call that triggered it. Skips the live
+    GitHub title lookup entirely when Discord notifications aren't configured.
+    """
+    if not discord_notifier.is_configured():
+        return
+    title = await _resolve_issue_title(guild_id, issue_repo, issue_number, fallback_title)
+    prefix = f"#{issue_number}: "
+    thread_name = prefix + title[: 100 - len(prefix)]
+    await discord_notifier.notify_event(
+        "task-assigned",
+        title=f"Task assigned: #{issue_number}",
+        description=f"Foreman assigned task `{task_id}` on {issue_repo}#{issue_number}: {title}",
+        issue_repo=issue_repo,
+        issue_number=issue_number,
+        thread_name=thread_name,
+        ps_guild_slug=guild_id,
+    )
+
+
+def _spawn_discord_task_assigned(
+    guild_id: str,
+    inp: dict,
+    task_id: str,
+    fallback_title: str,
+) -> None:
+    """Fire off ``notify_discord_task_assigned`` when the tool call carries issue context.
+
+    Shared by both branches of ``assign_task`` (re-assign vs. newly created task).
+    """
+    if inp.get("issue_number") is not None and inp.get("issue_repo"):
+        spawn(
+            notify_discord_task_assigned(
+                guild_id,
+                inp["issue_repo"],
+                int(inp["issue_number"]),
+                task_id,
+                fallback_title,
+            ),
+            name=f"discord.task-assigned:{task_id}",
+        )
+
+
+async def notify_discord_followup(
+    issue_repo: str | None,
+    issue_number: int | None,
+    task_id: str,
+    instructions: str,
+) -> None:
+    """Post a follow-up notification into the task's existing Discord thread.
+
+    Uses ``notify_existing_thread`` rather than ``notify_event``: the thread
+    should already exist from ``assign_task``, so a missing thread here
+    falls back to the flat channel instead of spawning a new one.
+    """
+    if not discord_notifier.is_configured():
+        return
+    await discord_notifier.notify_existing_thread(
+        "task-followup",
+        title=f"Follow-up sent: {task_id}",
+        description=f"Follow-up dispatched for task `{task_id}`: {instructions[:500]}",
+        issue_repo=issue_repo,
+        issue_number=issue_number,
+    )
+
+
+async def notify_discord_redirect(
+    issue_repo: str | None,
+    issue_number: int | None,
+    task_id: str,
+    instructions: str,
+) -> None:
+    """Post a redirect notification into the task's existing Discord thread.
+
+    See ``notify_discord_followup`` — same existing-thread-only routing.
+    """
+    if not discord_notifier.is_configured():
+        return
+    await discord_notifier.notify_existing_thread(
+        "task-redirect",
+        title=f"Task redirected: {task_id}",
+        description=f"Redirect sent for task `{task_id}`: {instructions[:500]}",
+        issue_repo=issue_repo,
+        issue_number=issue_number,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1126,6 +1254,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
+                                _spawn_discord_task_assigned(guild_id, inp, task_id, task_name)
                                 result_text = f"Task {task_id} assigned to {wid}."
                             else:
                                 name = inp.get("name") or desc[:60]
@@ -1172,6 +1301,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
+                                _spawn_discord_task_assigned(guild_id, inp, task_id, name)
                                 result_text = f"Task {task_id} queued for {wid}."
                         finally:
                             await LockService(db).release(assign_lock_key, owner=assign_lock_id)
@@ -1316,6 +1446,16 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     issueRepo=task_issue_repo,
                                 ).model_dump(by_alias=True, exclude_none=True),
                             )
+                            if task_issue_number is not None and task_issue_repo:
+                                spawn(
+                                    notify_discord_followup(
+                                        task_issue_repo,
+                                        task_issue_number,
+                                        task_id,
+                                        instructions,
+                                    ),
+                                    name=f"discord.followup:{task_id}",
+                                )
                             if target_worker_id != original_worker_id and original_worker_id:
                                 result_text = (
                                     f"Follow-up reassigned from {original_worker_id} "
@@ -1391,15 +1531,18 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 task_id = inp["task_id"]
                 instructions = inp["instructions"]
                 result = await db.exec(
-                    select(col(Task.worker_id), col(Task.state)).where(
-                        col(Task.id) == task_id, col(Task.guild_id) == guild_pk
-                    )
+                    select(
+                        col(Task.worker_id),
+                        col(Task.state),
+                        col(Task.issue_number),
+                        col(Task.issue_repo),
+                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
                 )
                 row = result.one_or_none()
                 if not row:
                     result_text = f"Task {task_id} not found."
                 else:
-                    worker_id_val, state = row
+                    worker_id_val, state, redirect_issue_number, redirect_issue_repo = row
                     if state in ("done", "failed", "cancelled"):
                         result_text = f"Task {task_id} is {state} — cannot redirect."
                     else:
@@ -1416,6 +1559,16 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         await broadcast_msg(
                             guild_id, TaskUpdateMsg(taskId=task_id, state="working")
                         )
+                        if redirect_issue_number is not None and redirect_issue_repo:
+                            spawn(
+                                notify_discord_redirect(
+                                    redirect_issue_repo,
+                                    redirect_issue_number,
+                                    task_id,
+                                    instructions,
+                                ),
+                                name=f"discord.redirect:{task_id}",
+                            )
                         result_text = f"Redirect sent to {worker_id_val} for task {task_id}."
 
             elif tu.name == "cancel_task":

@@ -81,6 +81,9 @@ _COLOURS: dict[str, int] = {
     "task-complete": 0x2ECC71,  # green
     "task-failed": 0xE74C3C,  # red
     "task-cancelled": 0xE74C3C,  # red
+    "task-assigned": 0x1ABC9C,  # teal
+    "task-followup": 0xF1C40F,  # yellow
+    "task-redirect": 0xE67E22,  # orange
     "pr-opened": 0x3498DB,  # blue
     "pr-merged": 0x9B59B6,  # purple
     "pr-closed": 0x95A5A6,  # grey
@@ -110,6 +113,16 @@ def _bot_token() -> str | None:
 
 def _channel_id() -> str | None:
     return os.environ.get("DISCORD_CHANNEL_ID") or None
+
+
+def is_configured() -> bool:
+    """Return True if either the flat webhook or the bot-thread path is set up.
+
+    Cheap, side-effect-free check callers can use to skip expensive prep work
+    (e.g. a live GitHub API call to resolve a thread title) when Discord
+    notifications are disabled entirely.
+    """
+    return bool(_bot_token() or _webhook_url())
 
 
 # ---------------------------------------------------------------------------
@@ -682,4 +695,50 @@ async def notify_event(
             return
 
     # Fallback: flat webhook
+    await notify(event_type, title, description, url=url, color=color)
+
+
+async def notify_existing_thread(
+    event_type: str,
+    title: str,
+    description: str,
+    issue_repo: str | None = None,
+    issue_number: int | None = None,
+    url: str | None = None,
+    color: int | None = None,
+) -> None:
+    """Post to an issue/PR's Discord thread only if one already exists.
+
+    This is deliberately **not** a thin wrapper around ``notify_event``:
+    ``notify_event`` always creates a thread when none exists yet, naming it
+    from the *current* call's ``title`` (or an explicit ``thread_name``). For
+    mid-lifecycle notifications like follow-up/redirect, that title is a
+    transient string such as ``"Follow-up sent: t-123"`` — not the issue's
+    title. If the thread ``assign_task`` was supposed to create is missing
+    (e.g. Discord was unconfigured at task start, or that call failed), using
+    ``notify_event`` here would silently spawn a new thread mistitled after
+    the follow-up itself rather than the issue, and every later notification
+    would then be scattered across that wrong thread.
+
+    ``notify_existing_thread`` avoids that by only ever looking up the thread
+    persisted in ``discord_threads``; when there isn't one, it falls back to
+    the flat webhook channel instead of creating anything. Silent no-op /
+    never raises, same guarantees as ``notify_event``.
+    """
+    if _bot_token() and issue_repo and issue_number is not None:
+        thread_id = await _lookup_thread(issue_repo, issue_number)
+        if thread_id:
+            await _post_to_thread(thread_id, event_type, title, description, url=url, color=color)
+            return
+        logger.debug(
+            "notify_existing_thread: no thread on record for %s#%s, falling back to flat webhook",
+            issue_repo,
+            issue_number,
+        )
+    elif not is_configured():
+        logger.debug(
+            "notify_existing_thread: Discord not configured, skipping event=%s",
+            event_type,
+        )
+
     await notify(event_type, title, description, url=url, color=color)
