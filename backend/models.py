@@ -579,6 +579,31 @@ class DiscordForemanThread(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class DiscordTaskThread(SQLModel, table=True):
+    """Persisted mapping from a task to a Discord thread carrying its live stream.
+
+    A worker task's streaming terminal output (Claude's assistant/thinking
+    text) is mirrored into a dedicated per-task Discord thread while the task
+    is working — before any PR/issue thread exists. Keyed on ``task_id`` (unique)
+    so the thread is created once and reused across the task's whole lifetime
+    and across backend restarts.
+    """
+
+    __tablename__ = "discord_task_threads"  # type: ignore[assignment]
+    __table_args__ = (
+        Index(
+            "uq_discord_task_threads_task_id",
+            "task_id",
+            unique=True,
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: str  # tasks.id (e.g. "t-abc")
+    thread_id: str  # Discord channel ID of the thread
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class DiscordUser(SQLModel, table=True):
     """Maps a GitHub login to a Discord user ID for @-mentions in notifications.
 

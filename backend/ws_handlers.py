@@ -75,6 +75,12 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_STATES = ("done", "failed", "cancelled", "error")
 
+# Terminal-output "levels" (see worker.py LEVEL_* constants) whose lines are
+# actual agent/Claude output worth mirroring into a task's Discord stream
+# thread. ``None`` is the default for task-scoped emits (LEVEL_INFO); worker /
+# auth / claude-framing lines are deliberately excluded as low-value noise.
+_DISCORD_STREAM_LEVELS = frozenset({None, "info", "thinking"})
+
 
 # ---------------------------------------------------------------------------
 # Helpers (pure DB lookups; live here because main.py + ws_handlers both use
@@ -602,6 +608,11 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
             level=level if level else None,
         ),
     )
+    # Mirror agent/Claude output into the task's own Discord stream thread as a
+    # low-priority feed (opt-in via DISCORD_STREAM_TASKS). Buffered internally,
+    # so this call stays off the network path and is a no-op when disabled.
+    if task_id and line and level in _DISCORD_STREAM_LEVELS:
+        await discord_notifier.notify_task_stream(ctx.guild_id, task_id, line)
 
 
 async def handle_worker_register(ctx: WSContext, data: dict) -> None:
@@ -738,6 +749,13 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
     await broadcast_msg(ctx.guild_id, TaskUpdateMsg.model_validate(data), exclude=ctx.websocket)
     if "state" in update_values:
         reset_foreman_poll(ctx.guild_id)
+    # Free the task's Discord stream buffer once it reaches a terminal state
+    # (failed/cancelled/error), draining any tail output first.
+    if update_values.get("state") in _TERMINAL_STATES:
+        spawn(
+            discord_notifier.flush_task_stream(task_id),
+            name=f"discord.stream-flush:{task_id}",
+        )
     # Drain any pending-followup events queued while the task was locked, and
     # notify the foreman so it can decide how to handle them.
     if update_values.get("state") == "error" and task_id:
@@ -815,6 +833,12 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         spawn(
             maybe_post_plan_comment(ctx.guild_id, task_id, last_text),
             name=f"foreman.plan-comment:{task_id}",
+        )
+        # Drain the task's Discord stream buffer so any tail output lands
+        # promptly and the in-memory buffer is freed.
+        spawn(
+            discord_notifier.flush_task_stream(task_id),
+            name=f"discord.stream-flush:{task_id}",
         )
         _pr_repo_disc, _pr_num_disc = _parse_pr_url(pr_url) if pr_url else (None, None)
         spawn(
@@ -916,6 +940,13 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     )
     if not task_id:
         return
+
+    # Drain the task's Discord stream buffer so this follow-up's tail output
+    # lands promptly; a later follow-up re-creates the buffer on demand.
+    spawn(
+        discord_notifier.flush_task_stream(task_id),
+        name=f"discord.stream-flush:{task_id}",
+    )
 
     # Collect and drain any follow-up requests that were queued while the task
     # was locked, then re-trigger the foreman with their instructions so it can
