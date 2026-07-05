@@ -709,12 +709,21 @@ async def notify_existing_thread(
 ) -> None:
     """Post to an issue/PR's Discord thread only if one already exists.
 
-    Unlike ``notify_event``, this never creates a thread — it's for
-    mid-lifecycle notifications (follow-up, redirect) that should land in
-    the thread ``assign_task`` already created when the task started. If no
-    thread has been persisted yet (e.g. Discord was unconfigured at task
-    start), falls back to the flat webhook channel. Silent no-op / never
-    raises, same guarantees as ``notify_event``.
+    This is deliberately **not** a thin wrapper around ``notify_event``:
+    ``notify_event`` always creates a thread when none exists yet, naming it
+    from the *current* call's ``title`` (or an explicit ``thread_name``). For
+    mid-lifecycle notifications like follow-up/redirect, that title is a
+    transient string such as ``"Follow-up sent: t-123"`` — not the issue's
+    title. If the thread ``assign_task`` was supposed to create is missing
+    (e.g. Discord was unconfigured at task start, or that call failed), using
+    ``notify_event`` here would silently spawn a new thread mistitled after
+    the follow-up itself rather than the issue, and every later notification
+    would then be scattered across that wrong thread.
+
+    ``notify_existing_thread`` avoids that by only ever looking up the thread
+    persisted in ``discord_threads``; when there isn't one, it falls back to
+    the flat webhook channel instead of creating anything. Silent no-op /
+    never raises, same guarantees as ``notify_event``.
     """
     if _bot_token() and issue_repo and issue_number is not None:
         thread_id = await _lookup_thread(issue_repo, issue_number)
