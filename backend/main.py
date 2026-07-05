@@ -35,11 +35,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from util.tasks import spawn
-from worker_lifecycle import (
-    drain_stale_workers_on_startup,
-    force_kill_stale_workers,
-    spawn_replacement_workers,
-)
+from worker_lifecycle import drain_stale_workers_on_startup, reconcile_stale_workers
 from ws_types import WorkerPingMsg
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -349,16 +345,13 @@ async def lifespan(app: FastAPI):
 
     await reset_connection_state()
 
-    # Phase 2: spawn fresh replacements immediately, and separately force-kill
-    # any surviving stale containers once the drain window elapses. Both run
-    # in the background so neither blocks startup or the first request.
-    drain_bg = (
-        spawn(spawn_replacement_workers(stale_ids), name="stale-worker-respawn")
+    # Phase 2: give stale workers the drain window to reconnect on their own
+    # before force-killing and replacing whichever ones don't come back. Runs
+    # in the background so it doesn't block startup or the first request.
+    reconcile_bg = (
+        spawn(reconcile_stale_workers(stale_ids), name="stale-worker-reconcile")
         if stale_ids
         else None
-    )
-    reap_bg = (
-        spawn(force_kill_stale_workers(stale_ids), name="stale-worker-reap") if stale_ids else None
     )
     # Refresh the models.dev catalog on startup: persist to DB and warm the
     # in-memory cache so the first /api/models request is fast.
@@ -386,24 +379,17 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         sweeper.cancel()
-        if drain_bg is not None:
-            drain_bg.cancel()
-        if reap_bg is not None:
-            reap_bg.cancel()
+        if reconcile_bg is not None:
+            reconcile_bg.cancel()
         if discord_gw_task is not None:
             discord_gw_task.cancel()
         try:
             await sweeper
         except (asyncio.CancelledError, Exception):
             pass
-        if drain_bg is not None:
+        if reconcile_bg is not None:
             try:
-                await drain_bg
-            except (asyncio.CancelledError, Exception):
-                pass
-        if reap_bg is not None:
-            try:
-                await reap_bg
+                await reconcile_bg
             except (asyncio.CancelledError, Exception):
                 pass
         if discord_gw_task is not None:
