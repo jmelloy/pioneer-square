@@ -81,6 +81,9 @@ _COLOURS: dict[str, int] = {
     "task-complete": 0x2ECC71,  # green
     "task-failed": 0xE74C3C,  # red
     "task-cancelled": 0xE74C3C,  # red
+    "task-assigned": 0x1ABC9C,  # teal
+    "task-followup": 0xF1C40F,  # yellow
+    "task-redirect": 0xE67E22,  # orange
     "pr-opened": 0x3498DB,  # blue
     "pr-merged": 0x9B59B6,  # purple
     "pr-closed": 0x95A5A6,  # grey
@@ -110,6 +113,16 @@ def _bot_token() -> str | None:
 
 def _channel_id() -> str | None:
     return os.environ.get("DISCORD_CHANNEL_ID") or None
+
+
+def is_configured() -> bool:
+    """Return True if either the flat webhook or the bot-thread path is set up.
+
+    Cheap, side-effect-free check callers can use to skip expensive prep work
+    (e.g. a live GitHub API call to resolve a thread title) when Discord
+    notifications are disabled entirely.
+    """
+    return bool(_bot_token() or _webhook_url())
 
 
 # ---------------------------------------------------------------------------
