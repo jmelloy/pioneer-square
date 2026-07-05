@@ -19,13 +19,10 @@ Phase 3 — Foreman chat threads + user mentions
 
     When a chat line is scoped to a task (``task_id`` passed through) and that
     task's linked GitHub issue/PR already has a thread in ``discord_threads``,
-    the line is posted there. Otherwise, for task-scoped lines, it falls back
-    to a per-guild, per-UTC-day thread (mapping persisted in
-    ``discord_foreman_threads``), reusing the same bot token/channel as Phase 2.
-
-    When there is no task context at all (``task_id`` is None), the dated
-    session thread is skipped entirely and the line is posted directly to the
-    guild's main configured Discord channel.
+    the line is posted there. In every other case — no task context, or a
+    task with no linked thread yet — the line is posted directly to the
+    guild's main configured Discord channel. There is no dated/daily
+    fallback thread.
 
     ``mention_or_login`` resolves a GitHub login to a real ``<@id>`` Discord
     mention via the ``discord_users`` table (populated through the
@@ -51,7 +48,7 @@ Usage::
         header_fields={"Assignee": "@alice", "Labels": "bug"},
     )
 
-    # Foreman chat mirrored into a per-day thread (or a per-task thread when
+    # Foreman chat mirrored into the main channel (or a per-task thread when
     # task_id resolves to one):
     await discord_notifier.notify_foreman_chat(
         guild_id, "Spun up worker w-abc for t-123.", task_id="t-123"
@@ -425,114 +422,6 @@ async def _lookup_task_issue_coords(task_id: str) -> tuple[str, int] | None:
         return None
 
 
-async def _lookup_foreman_thread(guild_id: str, session_key: str) -> str | None:
-    """Return the persisted Discord thread_id for a Foreman chat session, or None."""
-    try:
-        from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordForemanThread  # noqa: PLC0415
-        from sqlmodel import col, select  # noqa: PLC0415
-
-        async with AsyncSessionLocal() as db:
-            result = await db.exec(
-                select(DiscordForemanThread).where(
-                    col(DiscordForemanThread.guild_id) == guild_id,
-                    col(DiscordForemanThread.session_key) == session_key,
-                )
-            )
-            row = result.one_or_none()
-            return row.thread_id if row else None
-    except Exception:
-        logger.warning(
-            "discord: foreman thread DB lookup failed guild=%s session=%s",
-            guild_id,
-            session_key,
-            exc_info=True,
-        )
-        return None
-
-
-async def _save_foreman_thread(guild_id: str, session_key: str, thread_id: str) -> str | None:
-    """Persist a new Foreman thread mapping if one doesn't already exist.
-
-    Dialect-agnostic SELECT-then-INSERT (works on SQLite and Postgres alike).
-    Returns the thread_id that should be used going forward: *thread_id* on a
-    fresh insert, or the winning row's thread_id if a concurrent caller raced
-    us and inserted first. Returns None on error.
-    """
-    try:
-        from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordForemanThread  # noqa: PLC0415
-        from sqlmodel import col, select  # noqa: PLC0415
-
-        async with AsyncSessionLocal() as db:
-            result = await db.exec(
-                select(DiscordForemanThread).where(
-                    col(DiscordForemanThread.guild_id) == guild_id,
-                    col(DiscordForemanThread.session_key) == session_key,
-                )
-            )
-            existing = result.one_or_none()
-            if existing:
-                return existing.thread_id
-
-            db.add(
-                DiscordForemanThread(
-                    guild_id=guild_id,
-                    session_key=session_key,
-                    thread_id=thread_id,
-                    created_at=datetime.now(UTC),
-                )
-            )
-            try:
-                await db.commit()
-            except Exception:
-                # Unique-index race: a concurrent caller inserted first. Use its row.
-                await db.rollback()
-                result = await db.exec(
-                    select(DiscordForemanThread).where(
-                        col(DiscordForemanThread.guild_id) == guild_id,
-                        col(DiscordForemanThread.session_key) == session_key,
-                    )
-                )
-                existing = result.one_or_none()
-                return existing.thread_id if existing else thread_id
-            return thread_id
-    except Exception:
-        logger.warning(
-            "discord: foreman thread DB save failed guild=%s session=%s thread=%s",
-            guild_id,
-            session_key,
-            thread_id,
-            exc_info=True,
-        )
-        return None
-
-
-async def _ensure_foreman_thread(
-    guild_id: str, session_key: str, thread_name: str, channel: str | None = None
-) -> str | None:
-    """Return the Discord thread_id for a Foreman chat session, creating it if necessary.
-
-    *channel* overrides the flat ``DISCORD_CHANNEL_ID`` env var when provided
-    (used to route to a per-guild channel bound via ``/join-channel``).
-
-    Returns None when bot token or channel ID are not configured, or on API error.
-    """
-    existing = await _lookup_foreman_thread(guild_id, session_key)
-    if existing:
-        return existing
-
-    channel = channel or _channel_id()
-    if not channel:
-        return None
-
-    new_thread_id = await _create_thread_in_channel(channel, thread_name)
-    if not new_thread_id:
-        return None
-
-    return await _save_foreman_thread(guild_id, session_key, new_thread_id) or new_thread_id
-
-
 # Discord's hard cap on a single message's content length.
 _MAX_MESSAGE_LENGTH = 2000
 
@@ -554,21 +443,16 @@ async def _post_foreman_chat_line(thread_id: str, content: str) -> None:
 async def notify_foreman_chat(
     guild_id: str,
     content: str,
-    session_key: str | None = None,
     task_id: str | None = None,
 ) -> None:
     """Mirror a Foreman → user chat line into Discord.
 
-    When *task_id* is given, the line is task-scoped: if it resolves (via
-    ``discord_threads``) to a per-task thread already created for that
-    task's linked PR/issue, it's posted there; otherwise it falls back to
-    the per-guild, per-day thread — one thread per ``(guild_id,
-    session_key)`` pair, *session_key* defaulting to the current UTC date,
-    so a whole day's task-scoped-but-unthreaded conversation lands together.
-
-    When *task_id* is None (no task context), the dated session thread is
-    skipped entirely and the line is posted directly to the guild's main
-    configured Discord channel.
+    When *task_id* is given and it resolves (via ``discord_threads``) to a
+    per-task thread already created for that task's linked PR/issue, the
+    line is posted there. In every other case — no *task_id*, or a *task_id*
+    with no linked thread yet — the line is posted directly to the guild's
+    main configured Discord channel; there is no dated/daily fallback
+    thread.
 
     The message is only ever posted to one destination. Silent no-op when
     the bot token or channel are not configured, or when *content* is
@@ -591,14 +475,6 @@ async def notify_foreman_chat(
             if task_thread_id:
                 await _post_foreman_chat_line(task_thread_id, content)
                 return
-
-        key = session_key or datetime.now(UTC).strftime("%Y-%m-%d")
-        thread_name = f"Foreman session {key} ({guild_id})"[:100]
-        thread_id = await _ensure_foreman_thread(guild_id, key, thread_name, channel=channel)
-        if not thread_id:
-            return
-        await _post_foreman_chat_line(thread_id, content)
-        return
 
     await _post_foreman_chat_line(channel, content)
 

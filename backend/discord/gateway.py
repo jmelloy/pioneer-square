@@ -31,12 +31,13 @@ Filtering applied to ``MESSAGE_CREATE`` before anything is queued:
 
 A channel or thread counts as "wired" if it is either a channel bound via
 ``/join-channel`` (``discord_channel_guilds``), or a thread Pioneer Square
-itself created — a per-PR/issue thread (``discord_threads``) or a per-guild
-daily Foreman chat thread (``discord_foreman_threads``). The latter two are
-child threads of a wired channel but carry their own ``channel_id`` in
-Discord's model, so they need their own lookup; the routing/reply layer
-(#744) does its own, more specific, reverse-lookup against those same two
-tables to decide *which* Foreman session a message belongs to.
+itself created — a per-PR/issue thread (``discord_threads``) or a legacy,
+no-longer-created dated Foreman thread (``discord_foreman_threads``, kept
+only so previously existing threads keep routing). The latter two are child
+threads of a wired channel but carry their own ``channel_id`` in Discord's
+model, so they need their own lookup; the routing/reply layer (#744) does
+its own, more specific, reverse-lookup against those same two tables to
+decide *which* Foreman session a message belongs to.
 """
 
 from __future__ import annotations
@@ -95,9 +96,9 @@ async def _is_channel_wired(channel_id: str) -> bool:
 
     Backed by ``discord_channel_guilds`` (bound via ``/join-channel``),
     ``discord_threads`` (per-PR/issue threads), and ``discord_foreman_threads``
-    (per-guild daily Foreman chat threads) — through a short TTL cache so
-    repeated messages in the same channel/thread don't each pay for a DB
-    round-trip.
+    (legacy, no-longer-created dated Foreman threads) — through a short TTL
+    cache so repeated messages in the same channel/thread don't each pay for
+    a DB round-trip.
     """
     now = time.monotonic()
     cached = _channel_wired_cache.get(channel_id)

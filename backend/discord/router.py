@@ -4,15 +4,17 @@ message belongs to, forwards it, and lets the existing Foreman chat mirror
 (``discord_notifier.notify_foreman_chat``) post the reply back into the same
 thread.
 
-Thread routing model (reuses the two thread types that already exist):
+Thread routing model:
     - a message in a thread mapped in ``discord_threads`` is chat about that
       task — routed with ``task_id`` set, so the reply lands in that task's
       thread (see ``discord_notifier.notify_foreman_chat``).
-    - a message in a thread mapped in ``discord_foreman_threads``, or in any
-      other wired channel with no task binding, is general/ad-hoc chat for
-      that Pioneer Square guild — routed with ``task_id=None``, so the reply
-      is posted directly to the guild's main configured channel (the dated
-      session thread is skipped entirely when there's no task context).
+    - a message in a thread mapped in ``discord_foreman_threads`` (a legacy,
+      no-longer-created dated Foreman thread — kept only so previously
+      existing threads keep routing), or in any other wired channel with no
+      task binding, is general/ad-hoc chat for that Pioneer Square guild —
+      routed with ``task_id=None``, so the reply is posted directly to the
+      guild's main configured channel. ``notify_foreman_chat`` never creates
+      a new dated thread; that fallback has been removed.
     - anything else has nowhere to route to and is silently ignored.
 
 Consumes ``discord.gateway.gateway_message_queue``. Enable with the same

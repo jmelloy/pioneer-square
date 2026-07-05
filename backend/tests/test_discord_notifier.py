@@ -673,20 +673,15 @@ async def test_archive_thread_http_error_does_not_raise(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_notify_foreman_chat_no_task_id_posts_directly_to_channel(monkeypatch):
-    """With no task_id, notify_foreman_chat posts straight to the main channel,
-    skipping the dated session thread entirely."""
+    """With no task_id, notify_foreman_chat posts straight to the main channel."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
     mock_client = _make_mock_client()
 
-    with (
-        patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_mock,
-    ):
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.notify_foreman_chat("guild-1", "Spun up worker w-abc.")
 
-    ensure_mock.assert_not_called()
     mock_client.post.assert_called_once()
     call = mock_client.post.call_args
     assert f"/channels/{CHANNEL_ID}/messages" in call[0][0]
@@ -699,48 +694,28 @@ async def test_notify_foreman_chat_no_op_when_blank(monkeypatch):
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
-    with patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_mock:
+    mock_client = _make_mock_client()
+
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.notify_foreman_chat("guild-1", "   ")
 
-    ensure_mock.assert_not_called()
+    mock_client.post.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_notify_foreman_chat_no_op_when_not_configured(monkeypatch):
     """notify_foreman_chat is a no-op when the bot token/channel are unset."""
-    with patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_mock:
-        await discord_notifier.notify_foreman_chat("guild-1", "hello")
-
-    ensure_mock.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_foreman_chat_no_task_id_never_touches_session_thread(monkeypatch):
-    """Repeated no-task_id calls each post directly to the channel; no session
-    thread is ever looked up or created."""
-    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
-    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
-
     mock_client = _make_mock_client()
 
-    with (
-        patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_lookup_foreman_thread", AsyncMock()) as lookup_mock,
-        patch.object(discord_notifier, "_save_foreman_thread", AsyncMock()) as save_mock,
-    ):
-        await discord_notifier.notify_foreman_chat("guild-1", "first", session_key="2026-07-04")
-        await discord_notifier.notify_foreman_chat("guild-1", "second", session_key="2026-07-04")
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
+        await discord_notifier.notify_foreman_chat("guild-1", "hello")
 
-    lookup_mock.assert_not_called()
-    save_mock.assert_not_called()
-    assert mock_client.post.call_count == 2
-    for call in mock_client.post.call_args_list:
-        assert f"/channels/{CHANNEL_ID}/messages" in call[0][0]
+    mock_client.post.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_notify_foreman_chat_task_scoped_routes_to_task_thread(monkeypatch):
-    """A task-scoped message with an existing per-task thread posts there, not the daily thread."""
+    """A task-scoped message with an existing per-task thread posts there, not the main channel."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
@@ -755,11 +730,9 @@ async def test_notify_foreman_chat_task_scoped_routes_to_task_thread(monkeypatch
             AsyncMock(return_value=("org/repo", 42)),
         ),
         patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=task_thread_id)),
-        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_daily_mock,
     ):
         await discord_notifier.notify_foreman_chat("guild-1", "Working on it.", task_id="t-abc")
 
-    ensure_daily_mock.assert_not_called()
     mock_client.post.assert_called_once()
     call = mock_client.post.call_args
     assert f"/channels/{task_thread_id}/messages" in call[0][0]
@@ -767,9 +740,9 @@ async def test_notify_foreman_chat_task_scoped_routes_to_task_thread(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_notify_foreman_chat_no_task_id_skips_daily_thread(monkeypatch):
-    """A non-scoped message (no task_id) skips the dated session thread and the
-    per-task lookup entirely, posting straight to the resolved guild channel."""
+async def test_notify_foreman_chat_no_task_id_skips_task_lookup(monkeypatch):
+    """A non-scoped message (no task_id) skips the per-task lookup entirely,
+    posting straight to the resolved guild channel."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
@@ -778,12 +751,10 @@ async def test_notify_foreman_chat_no_task_id_skips_daily_thread(monkeypatch):
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
         patch.object(discord_notifier, "_lookup_task_issue_coords", AsyncMock()) as coords_mock,
-        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_mock,
     ):
         await discord_notifier.notify_foreman_chat("guild-1", "General update.")
 
     coords_mock.assert_not_called()
-    ensure_mock.assert_not_called()
     mock_client.post.assert_called_once()
     call = mock_client.post.call_args
     assert f"/channels/{CHANNEL_ID}/messages" in call[0][0]
@@ -791,8 +762,9 @@ async def test_notify_foreman_chat_no_task_id_skips_daily_thread(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notify_foreman_chat_task_scoped_no_thread_falls_back_to_daily(monkeypatch):
-    """Task-scoped message with no per-task thread yet falls back to the daily thread."""
+async def test_notify_foreman_chat_task_scoped_no_thread_posts_to_main_channel(monkeypatch):
+    """Task-scoped message with no per-task thread yet posts to the main
+    channel — there is no dated/daily thread fallback."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
@@ -806,19 +778,18 @@ async def test_notify_foreman_chat_task_scoped_no_thread_falls_back_to_daily(mon
             AsyncMock(return_value=("org/repo", 42)),
         ),
         patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=None)),
-        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock(return_value=THREAD_ID)),
     ):
         await discord_notifier.notify_foreman_chat("guild-1", "No thread yet.", task_id="t-abc")
 
     mock_client.post.assert_called_once()
     call = mock_client.post.call_args
-    assert f"/channels/{THREAD_ID}/messages" in call[0][0]
+    assert f"/channels/{CHANNEL_ID}/messages" in call[0][0]
     assert call[1]["json"]["content"] == "No thread yet."
 
 
 @pytest.mark.asyncio
-async def test_notify_foreman_chat_task_with_no_linked_issue_falls_back_to_daily(monkeypatch):
-    """Task-scoped message where the task has no linked issue/PR falls back to the daily thread."""
+async def test_notify_foreman_chat_task_with_no_linked_issue_posts_to_main_channel(monkeypatch):
+    """Task-scoped message where the task has no linked issue/PR posts to the main channel."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
@@ -828,7 +799,6 @@ async def test_notify_foreman_chat_task_with_no_linked_issue_falls_back_to_daily
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
         patch.object(discord_notifier, "_lookup_task_issue_coords", AsyncMock(return_value=None)),
         patch.object(discord_notifier, "_lookup_thread", AsyncMock()) as lookup_thread_mock,
-        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock(return_value=THREAD_ID)),
     ):
         await discord_notifier.notify_foreman_chat(
             "guild-1", "No linked issue.", task_id="t-standalone"
@@ -837,7 +807,7 @@ async def test_notify_foreman_chat_task_with_no_linked_issue_falls_back_to_daily
     lookup_thread_mock.assert_not_called()
     mock_client.post.assert_called_once()
     call = mock_client.post.call_args
-    assert f"/channels/{THREAD_ID}/messages" in call[0][0]
+    assert f"/channels/{CHANNEL_ID}/messages" in call[0][0]
 
 
 # ---------------------------------------------------------------------------
