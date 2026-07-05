@@ -166,6 +166,11 @@ async def run_foreman_ai(
         raise ValueError("run_foreman_ai(child=True) requires a task_id")
     tools = CHILD_FOREMAN_TOOLS if child else FOREMAN_TOOLS
 
+    # Frontend badge id: set only on child (per-task) runs so the chat pane can
+    # mark lines scoped to a single task. Parent/whole-guild runs stay unbadged
+    # even when a task_id is present. See docs/foreman-per-task-context.md.
+    _badge_task_id = task_id if child else None
+
     if not HAS_ANTHROPIC:
         now = datetime.now(UTC).isoformat()
         await ws_send(
@@ -333,6 +338,7 @@ async def run_foreman_ai(
                             "to": "user",
                             "content": b.text.strip(),
                             "createdAt": _now,
+                            "taskId": _badge_task_id,
                         }
                     )
 
@@ -354,6 +360,7 @@ async def run_foreman_ai(
                         "toolInput": dict(tu.input) if tu.input else {},
                         "toolId": tu.id,
                         "createdAt": _now,
+                        "taskId": _badge_task_id,
                     }
                 )
 
@@ -394,6 +401,7 @@ async def run_foreman_ai(
                         "toolOutput": result.get("content", ""),
                         "isError": result.get("is_error", False),
                         "createdAt": _now,
+                        "taskId": _badge_task_id,
                     }
                 )
 
@@ -479,6 +487,7 @@ async def run_foreman_ai(
                             "to": "user",
                             "content": b.text.strip(),
                             "createdAt": _now,
+                            "taskId": _badge_task_id,
                         }
                     )
             cap_note = f"_(Foreman hit {config.max_rounds}-round safety cap and stopped.)_"
@@ -490,6 +499,7 @@ async def run_foreman_ai(
                     "to": "user",
                     "content": cap_note,
                     "createdAt": _now,
+                    "taskId": _badge_task_id,
                 }
             )
 
