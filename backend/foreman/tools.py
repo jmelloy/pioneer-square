@@ -443,22 +443,49 @@ async def notify_discord_task_assigned(
 
     This is what moves thread creation earlier in the lifecycle — previously
     the first per-issue Discord thread only appeared when a PR was opened.
-    Fire-and-forget via ``spawn``: Discord/GitHub failures must never affect
-    task assignment. Skips the live GitHub title lookup entirely when Discord
-    notifications aren't configured.
+    This whole coroutine (including the GitHub title lookup) only ever runs
+    via ``spawn``, which schedules it with ``asyncio.create_task`` and never
+    awaits it in the caller's context — so a slow GitHub API call delays this
+    background task, not the tool call that triggered it. Skips the live
+    GitHub title lookup entirely when Discord notifications aren't configured.
     """
     if not discord_notifier.is_configured():
         return
     title = await _resolve_issue_title(guild_id, issue_repo, issue_number, fallback_title)
+    prefix = f"#{issue_number}: "
+    thread_name = prefix + title[: 100 - len(prefix)]
     await discord_notifier.notify_event(
         "task-assigned",
         title=f"Task assigned: #{issue_number}",
         description=f"Foreman assigned task `{task_id}` on {issue_repo}#{issue_number}: {title}",
         issue_repo=issue_repo,
         issue_number=issue_number,
-        thread_name=f"#{issue_number}: {title}",
+        thread_name=thread_name,
         ps_guild_slug=guild_id,
     )
+
+
+def _spawn_discord_task_assigned(
+    guild_id: str,
+    inp: dict,
+    task_id: str,
+    fallback_title: str,
+) -> None:
+    """Fire off ``notify_discord_task_assigned`` when the tool call carries issue context.
+
+    Shared by both branches of ``assign_task`` (re-assign vs. newly created task).
+    """
+    if inp.get("issue_number") is not None and inp.get("issue_repo"):
+        spawn(
+            notify_discord_task_assigned(
+                guild_id,
+                inp["issue_repo"],
+                int(inp["issue_number"]),
+                task_id,
+                fallback_title,
+            ),
+            name=f"discord.task-assigned:{task_id}",
+        )
 
 
 async def notify_discord_followup(
@@ -1227,17 +1254,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
-                                if inp.get("issue_number") is not None and inp.get("issue_repo"):
-                                    spawn(
-                                        notify_discord_task_assigned(
-                                            guild_id,
-                                            inp["issue_repo"],
-                                            int(inp["issue_number"]),
-                                            task_id,
-                                            task_name,
-                                        ),
-                                        name=f"discord.task-assigned:{task_id}",
-                                    )
+                                _spawn_discord_task_assigned(guild_id, inp, task_id, task_name)
                                 result_text = f"Task {task_id} assigned to {wid}."
                             else:
                                 name = inp.get("name") or desc[:60]
@@ -1284,17 +1301,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
-                                if inp.get("issue_number") is not None and inp.get("issue_repo"):
-                                    spawn(
-                                        notify_discord_task_assigned(
-                                            guild_id,
-                                            inp["issue_repo"],
-                                            int(inp["issue_number"]),
-                                            task_id,
-                                            name,
-                                        ),
-                                        name=f"discord.task-assigned:{task_id}",
-                                    )
+                                _spawn_discord_task_assigned(guild_id, inp, task_id, name)
                                 result_text = f"Task {task_id} queued for {wid}."
                         finally:
                             await LockService(db).release(assign_lock_key, owner=assign_lock_id)

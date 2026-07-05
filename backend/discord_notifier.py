@@ -721,5 +721,15 @@ async def notify_existing_thread(
         if thread_id:
             await _post_to_thread(thread_id, event_type, title, description, url=url, color=color)
             return
+        logger.debug(
+            "notify_existing_thread: no thread on record for %s#%s, falling back to flat webhook",
+            issue_repo,
+            issue_number,
+        )
+    elif not is_configured():
+        logger.debug(
+            "notify_existing_thread: Discord not configured, skipping event=%s",
+            event_type,
+        )
 
     await notify(event_type, title, description, url=url, color=color)
