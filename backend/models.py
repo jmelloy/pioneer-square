@@ -93,6 +93,10 @@ class Message(SQLModel, table=True):
     # Task this message is associated with. NULL for general chat and system messages
     # that are not scoped to a specific task (e.g. worker-online, periodic-check).
     task_id: str | None = Field(default=None, foreign_key="tasks.id", index=True)
+    # Origin of a chat message: "web" (browser chat box), "discord" (routed in
+    # via discord/router.py), or "api" (posted directly through the REST
+    # messages endpoint). Lets the frontend show where a message came from.
+    source: str | None = Field(default="web")
 
 
 class Worker(SQLModel, table=True):
