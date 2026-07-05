@@ -330,9 +330,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                     try:
                         await stale_ws.close(code=1000, reason="superseded by new registration")
                     except Exception:
-                        logger.debug(
-                            "join: failed to close superseded socket for agent %s", dup_id
-                        )
+                        logger.debug("join: failed to close superseded socket for agent %s", dup_id)
     if not is_external_foreman:
         stmt = pg_insert(Agent).values(
             id=agent_id,
