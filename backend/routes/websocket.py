@@ -135,6 +135,14 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
 
             await ws_handlers.dispatch(ctx, data)
 
+            # Safety net: a handler that returns with an open (uncommitted)
+            # transaction — e.g. an early `return` after a SELECT — would pin
+            # this connection's pooled DB connection for the socket's entire
+            # lifetime, eventually exhausting the pool. Committed work is
+            # already flushed, so this rollback is a no-op for well-behaved
+            # handlers and releases the connection for leaky ones.
+            await db.rollback()
+
     except WebSocketDisconnect:
         if guild_id in connections and websocket in connections[guild_id]:
             connections[guild_id].remove(websocket)
