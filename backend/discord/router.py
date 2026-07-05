@@ -213,9 +213,7 @@ async def _route_inbound_message(message: dict) -> None:
     ps_user_id, label = await _resolve_identity(author.get("id"), author.get("username"))
     human_message = f"[Discord] {label}: {content}"
 
-    await _persist_inbound_message(
-        guild_slug, content, user_id=ps_user_id, task_id=task_id
-    )
+    await _persist_inbound_message(guild_slug, content, user_id=ps_user_id, task_id=task_id)
 
     from ws_handlers import _trigger_foreman  # noqa: PLC0415
 
