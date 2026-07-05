@@ -59,10 +59,8 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
       # --- Discord notifications (optional, see docs/discord.md) ---
-      # Phase 1: flat-channel webhook notifications.
-      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
-      # Phase 2: bot-based per-PR/issue thread notifications. Both required
-      # together; used when DISCORD_BOT_TOKEN is absent; falls back to webhook-only mode.
+      # Bot (gateway app) drives all notifications: flat-channel embeds and
+      # per-PR/issue thread notifications. Both required together; no-op when unset.
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID:-}
       # Phase 3: slash commands & bidirectional control.
