@@ -19,7 +19,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import discord_notifier
 
-WEBHOOK_URL = "https://discord.com/api/webhooks/test/token"
 BOT_TOKEN = "Bot.test.token"
 CHANNEL_ID = "111222333444"
 THREAD_ID = "555666777888"
@@ -28,7 +27,6 @@ THREAD_ID = "555666777888"
 @pytest.fixture(autouse=True)
 def reset_env(monkeypatch):
     """Start each test with no tokens set."""
-    monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
     monkeypatch.delenv("DISCORD_CHANNEL_ID", raising=False)
     monkeypatch.delenv("DISCORD_STREAM_TASKS", raising=False)
@@ -76,13 +74,24 @@ def _make_mock_client(status_code: int = 204, side_effect=None, json_response: d
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: flat webhook (unchanged behaviour)
+# Flat-channel notification (posted via the bot)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_notify_no_op_when_env_unset():
-    """notify() must not make any HTTP call when DISCORD_WEBHOOK_URL is unset."""
+async def test_notify_no_op_when_bot_token_unset():
+    """notify() must not make any HTTP call when DISCORD_BOT_TOKEN is unset."""
+    mock_client = _make_mock_client()
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
+        await discord_notifier.notify("task-complete", "Done", "All good")
+    mock_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_no_op_when_channel_unset(monkeypatch):
+    """notify() must not post when a destination channel cannot be resolved."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    # no DISCORD_CHANNEL_ID
     mock_client = _make_mock_client()
     with patch.object(discord_notifier, "_get_client", return_value=mock_client):
         await discord_notifier.notify("task-complete", "Done", "All good")
@@ -91,8 +100,9 @@ async def test_notify_no_op_when_env_unset():
 
 @pytest.mark.asyncio
 async def test_notify_posts_correct_embed(monkeypatch):
-    """notify() builds the right embed payload and POSTs it to the webhook."""
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    """notify() builds the right embed payload and POSTs it to the channel via the bot."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
     mock_client = _make_mock_client()
 
     with patch.object(discord_notifier, "_get_client", return_value=mock_client):
@@ -101,8 +111,9 @@ async def test_notify_posts_correct_embed(monkeypatch):
         )
 
     mock_client.post.assert_called_once()
-    _, kwargs = mock_client.post.call_args
-    body = kwargs["json"]
+    call_url = mock_client.post.call_args[0][0]
+    assert f"/channels/{CHANNEL_ID}/messages" in call_url
+    body = mock_client.post.call_args[1]["json"]
     assert body["embeds"][0]["title"] == "PR #42 opened"
     assert body["embeds"][0]["description"] == "New pull request"
     assert body["embeds"][0]["url"] == "https://example.com/pr/42"
@@ -112,7 +123,8 @@ async def test_notify_posts_correct_embed(monkeypatch):
 @pytest.mark.asyncio
 async def test_notify_no_url_field_when_omitted(monkeypatch):
     """url field must be absent from the embed when url=None."""
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
     mock_client = _make_mock_client()
 
     with patch.object(discord_notifier, "_get_client", return_value=mock_client):
@@ -145,7 +157,8 @@ async def test_notify_no_url_field_when_omitted(monkeypatch):
     ],
 )
 async def test_colour_by_event_type(monkeypatch, event_type, expected_color):
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
     mock_client = _make_mock_client()
 
     with patch.object(discord_notifier, "_get_client", return_value=mock_client):
@@ -158,7 +171,8 @@ async def test_colour_by_event_type(monkeypatch, event_type, expected_color):
 @pytest.mark.asyncio
 async def test_custom_color_overrides_event_type(monkeypatch):
     """Explicit color= kwarg takes precedence over the event-type colour map."""
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
     mock_client = _make_mock_client()
 
     with patch.object(discord_notifier, "_get_client", return_value=mock_client):
@@ -176,7 +190,8 @@ async def test_custom_color_overrides_event_type(monkeypatch):
 @pytest.mark.asyncio
 async def test_http_error_does_not_raise(monkeypatch):
     """An HTTP error must be swallowed and logged, never propagated."""
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
     mock_client = _make_mock_client(status_code=500)
 
     with patch.object(discord_notifier, "_get_client", return_value=mock_client):
@@ -186,7 +201,8 @@ async def test_http_error_does_not_raise(monkeypatch):
 @pytest.mark.asyncio
 async def test_network_error_does_not_raise(monkeypatch):
     """A network-level exception (connection refused etc.) must be swallowed."""
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
     mock_client = _make_mock_client(side_effect=httpx.ConnectError("refused"))
 
     with patch.object(discord_notifier, "_get_client", return_value=mock_client):
@@ -438,16 +454,15 @@ async def test_notify_event_archives_thread_on_close(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: graceful fallback
+# Graceful fallback
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_notify_event_falls_back_to_webhook_when_no_bot_token(monkeypatch):
-    """notify_event falls back to flat webhook when DISCORD_BOT_TOKEN is absent."""
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
-    # no bot token
-
+async def test_notify_event_noop_when_no_bot_token(monkeypatch):
+    """notify_event is a no-op when DISCORD_BOT_TOKEN is absent."""
+    # no bot token — the flat-channel fallback also runs through the bot, so
+    # without a token there is nothing to post through.
     mock_client = _make_mock_client(status_code=204)
 
     with patch.object(discord_notifier, "_get_client", return_value=mock_client):
@@ -460,18 +475,14 @@ async def test_notify_event_falls_back_to_webhook_when_no_bot_token(monkeypatch)
             issue_number=1,
         )
 
-    # Should use the webhook URL, not a bot API endpoint
-    mock_client.post.assert_called_once()
-    call_url = mock_client.post.call_args[0][0]
-    assert call_url == WEBHOOK_URL
+    mock_client.post.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_notify_event_falls_back_when_thread_creation_fails(monkeypatch):
-    """notify_event falls back to flat webhook when thread creation returns None."""
+async def test_notify_event_falls_back_to_channel_when_thread_creation_fails(monkeypatch):
+    """notify_event falls back to a flat channel embed when thread creation returns None."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
 
     mock_client = _make_mock_client(status_code=204)
 
@@ -487,10 +498,10 @@ async def test_notify_event_falls_back_when_thread_creation_fails(monkeypatch):
             issue_number=1,
         )
 
-    # Should use the webhook URL as fallback
+    # Should post a flat embed to the configured channel via the bot
     mock_client.post.assert_called_once()
     call_url = mock_client.post.call_args[0][0]
-    assert call_url == WEBHOOK_URL
+    assert f"/channels/{CHANNEL_ID}/messages" in call_url
 
 
 @pytest.mark.asyncio
@@ -544,10 +555,10 @@ async def test_notify_existing_thread_never_creates_new_thread(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notify_existing_thread_falls_back_to_webhook_when_no_thread(monkeypatch):
-    """notify_existing_thread falls back to the flat webhook when no thread is persisted."""
+async def test_notify_existing_thread_falls_back_to_channel_when_no_thread(monkeypatch):
+    """notify_existing_thread falls back to a flat channel embed when no thread is persisted."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
     mock_client = _make_mock_client(status_code=204)
 
@@ -565,14 +576,14 @@ async def test_notify_existing_thread_falls_back_to_webhook_when_no_thread(monke
 
     mock_client.post.assert_called_once()
     call_url = mock_client.post.call_args[0][0]
-    assert call_url == WEBHOOK_URL
+    assert f"/channels/{CHANNEL_ID}/messages" in call_url
 
 
 @pytest.mark.asyncio
-async def test_notify_existing_thread_without_issue_coords_uses_webhook(monkeypatch):
-    """notify_existing_thread without repo/number skips the lookup and uses the webhook."""
+async def test_notify_existing_thread_without_issue_coords_uses_channel(monkeypatch):
+    """notify_existing_thread without repo/number skips the lookup and posts to the channel."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
     mock_client = _make_mock_client(status_code=204)
 
@@ -589,13 +600,13 @@ async def test_notify_existing_thread_without_issue_coords_uses_webhook(monkeypa
     lookup_mock.assert_not_called()
     mock_client.post.assert_called_once()
     call_url = mock_client.post.call_args[0][0]
-    assert call_url == WEBHOOK_URL
+    assert f"/channels/{CHANNEL_ID}/messages" in call_url
 
 
 @pytest.mark.asyncio
-async def test_notify_event_silent_noop_when_no_tokens(monkeypatch):
-    """notify_event is a no-op when neither bot token nor webhook are set."""
-    # no bot token, no webhook URL
+async def test_notify_event_silent_noop_when_no_bot_token(monkeypatch):
+    """notify_event is a no-op when the bot token is not set."""
+    # no bot token
 
     mock_client = _make_mock_client()
 
@@ -616,10 +627,10 @@ async def test_notify_event_silent_noop_when_no_tokens(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notify_event_without_issue_coords_uses_webhook(monkeypatch):
-    """notify_event without repo/number falls back to flat webhook (no thread attempt)."""
+async def test_notify_event_without_issue_coords_uses_channel(monkeypatch):
+    """notify_event without repo/number falls back to a flat channel embed (no thread attempt)."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
-    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
     mock_client = _make_mock_client(status_code=204)
 
@@ -632,7 +643,7 @@ async def test_notify_event_without_issue_coords_uses_webhook(monkeypatch):
 
     mock_client.post.assert_called_once()
     call_url = mock_client.post.call_args[0][0]
-    assert call_url == WEBHOOK_URL
+    assert f"/channels/{CHANNEL_ID}/messages" in call_url
 
 
 # ---------------------------------------------------------------------------

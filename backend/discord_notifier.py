@@ -1,18 +1,16 @@
-"""Discord notification helpers: flat webhook (Phase 1), per-PR/issue threads (Phase 2),
-Foreman chat threads + user mentions (Phase 3), and live task-stream mirroring (Phase 4).
+"""Discord notification helpers, all driven by the bot (gateway app): flat-channel
+embeds, per-PR/issue threads, Foreman chat threads + user mentions, and live
+task-stream mirroring.
 
-Phase 1 — flat webhook
-    Set ``DISCORD_WEBHOOK_URL`` in the environment to post embeds to a single channel.
+Everything requires the bot. Set ``DISCORD_BOT_TOKEN`` **and** ``DISCORD_CHANNEL_ID``
+to post embeds to the configured channel and to create/reuse one Discord thread per
+GitHub PR or issue. The thread mapping is persisted in the ``discord_threads`` DB table
+so restarts never duplicate threads.
 
-Phase 2 — per-PR/issue threads
-    Set ``DISCORD_BOT_TOKEN`` **and** ``DISCORD_CHANNEL_ID`` to create/reuse one
-    Discord thread per GitHub PR or issue.  The mapping is persisted in the
-    ``discord_threads`` DB table so restarts never duplicate threads.
-
-    When ``DISCORD_BOT_TOKEN`` is absent, every thread-aware call transparently
-    falls back to the flat-webhook behaviour if ``DISCORD_WEBHOOK_URL`` is set.
-    Both tokens absent → silent no-op.  HTTP and DB failures are always logged
-    at WARNING level and never propagate.
+    When a thread-aware call has no ``(issue_repo, issue_number)`` — or thread
+    creation fails — it falls back to a flat embed posted to the resolved channel
+    via the bot. No bot token → silent no-op. HTTP and DB failures are always
+    logged at WARNING level and never propagate.
 
 Phase 3 — Foreman chat threads + user mentions
     ``notify_foreman_chat`` mirrors Foreman → user chat narration into Discord.
@@ -37,17 +35,17 @@ Phase 4 — live task-stream mirroring
     batch is posted as a *silent* message (``SUPPRESS_NOTIFICATIONS`` flag, no
     mentions parsed) so a firehose of build output never pings anyone — a
     genuinely low-priority feed. Opt-in via ``DISCORD_STREAM_TASKS`` (requires a
-    bot token, since the feed always routes into a thread — never the flat
-    webhook). The per-task thread mapping persists in ``discord_task_threads``.
+    bot token, since the feed always routes into a thread — never a flat channel
+    post). The per-task thread mapping persists in ``discord_task_threads``.
 
-Required bot permissions for Phase 2/3: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
+Required bot permissions: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
 
 Usage::
 
-    # Legacy flat webhook (unchanged):
+    # Flat embed posted to the configured channel via the bot:
     await discord_notifier.notify("task-complete", "Task done", "t-abc finished")
 
-    # Thread-aware (routes to a per-PR thread or falls back):
+    # Thread-aware (routes to a per-PR thread or falls back to the channel):
     await discord_notifier.notify_event(
         "pr-opened",
         title="#42: Fix the bug",
@@ -112,11 +110,6 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-def _webhook_url() -> str | None:
-    url = os.environ.get("DISCORD_WEBHOOK_URL")
-    return url if url else None
-
-
 def _bot_token() -> str | None:
     return os.environ.get("DISCORD_BOT_TOKEN") or None
 
@@ -126,17 +119,17 @@ def _channel_id() -> str | None:
 
 
 def is_configured() -> bool:
-    """Return True if either the flat webhook or the bot-thread path is set up.
+    """Return True if the Discord bot (gateway app) is set up.
 
     Cheap, side-effect-free check callers can use to skip expensive prep work
     (e.g. a live GitHub API call to resolve a thread title) when Discord
     notifications are disabled entirely.
     """
-    return bool(_bot_token() or _webhook_url())
+    return bool(_bot_token())
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: flat webhook
+# Flat-channel notification (posted via the bot)
 # ---------------------------------------------------------------------------
 
 
@@ -146,38 +139,28 @@ async def notify(
     description: str,
     url: str | None = None,
     color: int | None = None,
+    ps_guild_slug: str | None = None,
 ) -> None:
-    """Post a Discord embed to the configured webhook.
+    """Post a Discord embed to the bot's configured channel.
 
-    Silent no-op when ``DISCORD_WEBHOOK_URL`` is not set.
-    Never raises — HTTP errors are logged at WARNING level.
+    Resolves the destination channel via the ``discord_channel_guilds``
+    binding for *ps_guild_slug* (when given), falling back to the flat
+    ``DISCORD_CHANNEL_ID`` env var. Silent no-op when the bot token or a
+    destination channel are not configured. Never raises — errors are logged
+    at WARNING level by the underlying bot request.
     """
-    webhook_url = _webhook_url()
-    if not webhook_url:
+    if not _bot_token():
         return
 
-    resolved_color = color if color is not None else _COLOURS.get(event_type, _DEFAULT_COLOUR)
+    channel = await _resolve_channel_for_guild(ps_guild_slug)
+    if not channel:
+        return
 
-    embed: dict = {
-        "title": title,
-        "description": description,
-        "color": resolved_color,
-    }
-    if url:
-        embed["url"] = url
-
-    payload = {"embeds": [embed]}
-
-    try:
-        client = _get_client()
-        resp = await client.post(webhook_url, json=payload)
-        resp.raise_for_status()
-    except Exception:
-        logger.warning("Discord webhook notify failed (event=%s)", event_type, exc_info=True)
+    await _post_to_thread(channel, event_type, title, description, url=url, color=color)
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: bot-based thread helpers
+# Bot-based thread helpers
 # ---------------------------------------------------------------------------
 
 
@@ -561,8 +544,8 @@ async def notify_event(
     When ``close=True`` the thread is archived after the message is posted
     (used for PR merge/close events).
 
-    Falls back to the flat webhook when the bot token is absent or thread
-    operations fail.  Silent no-op when neither token is configured.
+    Falls back to a flat embed posted to the resolved channel when thread
+    operations fail. Silent no-op when the bot token is not configured.
     Never raises.
     """
     if _bot_token() and issue_repo and issue_number is not None:
@@ -583,8 +566,8 @@ async def notify_event(
                 await archive_thread(thread_id)
             return
 
-    # Fallback: flat webhook
-    await notify(event_type, title, description, url=url, color=color)
+    # Fallback: flat embed to the resolved channel
+    await notify(event_type, title, description, url=url, color=color, ps_guild_slug=ps_guild_slug)
 
 
 async def notify_existing_thread(
@@ -610,9 +593,9 @@ async def notify_existing_thread(
     would then be scattered across that wrong thread.
 
     ``notify_existing_thread`` avoids that by only ever looking up the thread
-    persisted in ``discord_threads``; when there isn't one, it falls back to
-    the flat webhook channel instead of creating anything. Silent no-op /
-    never raises, same guarantees as ``notify_event``.
+    persisted in ``discord_threads``; when there isn't one, it falls back to a
+    flat embed on the configured channel instead of creating anything. Silent
+    no-op / never raises, same guarantees as ``notify_event``.
     """
     if _bot_token() and issue_repo and issue_number is not None:
         thread_id = await _lookup_thread(issue_repo, issue_number)
@@ -620,7 +603,7 @@ async def notify_existing_thread(
             await _post_to_thread(thread_id, event_type, title, description, url=url, color=color)
             return
         logger.debug(
-            "notify_existing_thread: no thread on record for %s#%s, falling back to flat webhook",
+            "notify_existing_thread: no thread on record for %s#%s, falling back to flat channel",
             issue_repo,
             issue_number,
         )
@@ -657,7 +640,7 @@ def _stream_enabled() -> bool:
 
     Off by default: streaming a task's full terminal feed into Discord is
     high-volume and opt-in. Requires a bot token as well, since the feed is
-    always routed into a per-task thread (never the flat webhook).
+    always routed into a per-task thread (never a flat channel post).
     """
     flag = os.environ.get("DISCORD_STREAM_TASKS", "").strip().lower()
     return bool(_bot_token()) and flag in ("1", "true", "yes", "on")
