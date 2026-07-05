@@ -15,15 +15,17 @@ Phase 2 — per-PR/issue threads
     at WARNING level and never propagate.
 
 Phase 3 — Foreman chat threads + user mentions
-    ``notify_foreman_chat`` mirrors Foreman → user chat narration into one
-    Discord thread per guild per UTC day (mapping persisted in
-    ``discord_foreman_threads``), reusing the same bot token/channel as Phase 2.
+    ``notify_foreman_chat`` mirrors Foreman → user chat narration into Discord.
 
     When a chat line is scoped to a task (``task_id`` passed through) and that
     task's linked GitHub issue/PR already has a thread in ``discord_threads``,
-    the line is posted there instead — so task-scoped narration stays with
-    that task's Discord history rather than the daily catch-all thread.
-    Falls back to the per-day thread whenever no per-task thread applies.
+    the line is posted there. Otherwise, for task-scoped lines, it falls back
+    to a per-guild, per-UTC-day thread (mapping persisted in
+    ``discord_foreman_threads``), reusing the same bot token/channel as Phase 2.
+
+    When there is no task context at all (``task_id`` is None), the dated
+    session thread is skipped entirely and the line is posted directly to the
+    guild's main configured Discord channel.
 
     ``mention_or_login`` resolves a GitHub login to a real ``<@id>`` Discord
     mention via the ``discord_users`` table (populated through the
@@ -544,18 +546,28 @@ async def notify_foreman_chat(
 ) -> None:
     """Mirror a Foreman → user chat line into Discord.
 
-    When *task_id* is given and resolves (via ``discord_threads``) to a
-    per-task thread already created for that task's linked PR/issue, the
-    line is posted there. Otherwise it falls back to the per-guild, per-day
-    thread — one thread per ``(guild_id, session_key)`` pair, *session_key*
-    defaulting to the current UTC date, so a whole day's un-scoped
-    conversation lands together. The message is only ever posted to one
-    thread. Silent no-op when the bot token or channel are not configured,
-    or when *content* is blank. Never raises.
+    When *task_id* is given, the line is task-scoped: if it resolves (via
+    ``discord_threads``) to a per-task thread already created for that
+    task's linked PR/issue, it's posted there; otherwise it falls back to
+    the per-guild, per-day thread — one thread per ``(guild_id,
+    session_key)`` pair, *session_key* defaulting to the current UTC date,
+    so a whole day's task-scoped-but-unthreaded conversation lands together.
+
+    When *task_id* is None (no task context), the dated session thread is
+    skipped entirely and the line is posted directly to the guild's main
+    configured Discord channel.
+
+    The message is only ever posted to one destination. Silent no-op when
+    the bot token or channel are not configured, or when *content* is
+    blank. Never raises.
     """
     if not content or not content.strip():
         return
     if not _bot_token():
+        return
+
+    channel = await _resolve_channel_for_guild(guild_id)
+    if not channel:
         return
 
     if task_id:
@@ -567,16 +579,15 @@ async def notify_foreman_chat(
                 await _post_foreman_chat_line(task_thread_id, content)
                 return
 
-    channel = await _resolve_channel_for_guild(guild_id)
-    if not channel:
+        key = session_key or datetime.now(UTC).strftime("%Y-%m-%d")
+        thread_name = f"Foreman session {key} ({guild_id})"[:100]
+        thread_id = await _ensure_foreman_thread(guild_id, key, thread_name, channel=channel)
+        if not thread_id:
+            return
+        await _post_foreman_chat_line(thread_id, content)
         return
 
-    key = session_key or datetime.now(UTC).strftime("%Y-%m-%d")
-    thread_name = f"Foreman session {key} ({guild_id})"[:100]
-    thread_id = await _ensure_foreman_thread(guild_id, key, thread_name, channel=channel)
-    if not thread_id:
-        return
-    await _post_foreman_chat_line(thread_id, content)
+    await _post_foreman_chat_line(channel, content)
 
 
 # ---------------------------------------------------------------------------

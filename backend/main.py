@@ -358,9 +358,7 @@ async def lifespan(app: FastAPI):
         else None
     )
     reap_bg = (
-        spawn(force_kill_stale_workers(stale_ids), name="stale-worker-reap")
-        if stale_ids
-        else None
+        spawn(force_kill_stale_workers(stale_ids), name="stale-worker-reap") if stale_ids else None
     )
     # Refresh the models.dev catalog on startup: persist to DB and warm the
     # in-memory cache so the first /api/models request is fast.

@@ -496,7 +496,7 @@ async def _emit_foreman_chat(
     traces) goes through here so the Discord thread mirror in discord_notifier
     stays in sync with the WS chat stream. *task_id*, when known, lets
     discord_notifier route the line to that task's per-task thread instead of
-    the daily guild thread.
+    posting directly to the guild's main channel.
     """
     await broadcast_msg(
         guild_id,
