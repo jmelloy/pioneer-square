@@ -32,6 +32,7 @@ import logging
 import random
 import string
 from datetime import UTC, datetime
+from typing import Literal
 
 from auth_deps import get_guild_pk, require_member, require_worker_or_member_path
 from database import get_db_dep
@@ -565,7 +566,7 @@ class MessageCreate(BaseModel):
     message_type: str = "chat"
     user_id: str | None = None
     task_id: str | None = None
-    source: str | None = None
+    source: Literal["web", "discord", "api"] | None = None
 
 
 @router.post("/guilds/{guild_id}/messages")

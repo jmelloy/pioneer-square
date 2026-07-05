@@ -108,10 +108,12 @@ function senderLabel(msg: ChatMessage): string {
   return sender.toUpperCase()
 }
 
+const SOURCE_LABELS: Record<string, string> = { discord: 'Discord', api: 'API', web: 'Web' }
+
 function sourceLabel(msg: ChatMessage): string | null {
   const source = msg.source
   if (!source || source === 'web') return null
-  return source.charAt(0).toUpperCase() + source.slice(1)
+  return SOURCE_LABELS[source] ?? source
 }
 
 const formatTime = (iso?: string) => formatClock(iso)
