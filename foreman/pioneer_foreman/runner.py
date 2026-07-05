@@ -510,6 +510,7 @@ async def run_foreman_ai(
                 "user",
                 response_text,
                 user_id=user_id,
+                task_id=_badge_task_id,
             )
 
     except Exception as exc:

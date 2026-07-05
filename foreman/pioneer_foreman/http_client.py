@@ -180,8 +180,14 @@ class ForemanHTTPClient:
         *,
         user_id: str | None = None,
         message_type: str = "chat",
+        task_id: str | None = None,
     ) -> dict:
-        """Persist a chat message. Returns {message_id, created_at}."""
+        """Persist a chat message. Returns {message_id, created_at}.
+
+        ``task_id`` tags the row with the per-task child context that produced
+        it so it is stored — and reloaded — with the same badge the live WS
+        broadcast carries. See docs/foreman-per-task-context.md.
+        """
         body: dict = {
             "from_agent": from_agent,
             "to_agent": to_agent,
@@ -190,6 +196,8 @@ class ForemanHTTPClient:
         }
         if user_id:
             body["user_id"] = user_id
+        if task_id:
+            body["task_id"] = task_id
         return await self._post(self._guild_url("/messages"), body)
 
     # ── Tool execution ─────────────────────────────────────────────────────

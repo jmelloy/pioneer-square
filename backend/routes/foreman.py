@@ -618,6 +618,7 @@ async def create_message(
             content=body.content,
             createdAt=created_at.isoformat(),
             source=source,
+            taskId=body.task_id,
             **({"userId": body.user_id} if body.user_id else {}),
         ),
     )

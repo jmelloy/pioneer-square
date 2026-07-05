@@ -64,6 +64,66 @@ def test_get_guild_found(client):
     assert "messages" in data
 
 
+def test_message_dict_exposes_task_id_as_camelcase():
+    """History reload must carry the child-context id under `taskId` (the key
+    the live WS broadcast and the frontend badge use), not the raw `task_id`
+    column name row_to_dict would otherwise emit."""
+    from models import Message
+    from routes.guilds import _message_dict
+
+    m = Message(
+        guild_id=1,
+        from_agent="foreman",
+        to_agent="user",
+        content="working on it",
+        message_type="chat",
+        task_id="t-abc",
+    )
+    d = _message_dict(m)
+    assert d["taskId"] == "t-abc"
+    assert "task_id" not in d
+
+
+def test_message_dict_parent_message_has_null_task_id():
+    from models import Message
+    from routes.guilds import _message_dict
+
+    m = Message(
+        guild_id=1,
+        from_agent="foreman",
+        to_agent="user",
+        content="guild status",
+        message_type="chat",
+    )
+    d = _message_dict(m)
+    assert d["taskId"] is None
+    assert "task_id" not in d
+
+
+def test_message_dict_merges_meta_and_keeps_task_badge():
+    """A child-context tool_use row keeps both its merged meta (toolName/toolId)
+    and its camelCase taskId badge after serialization."""
+    import json
+
+    from models import Message
+    from routes.guilds import _message_dict
+
+    m = Message(
+        guild_id=1,
+        from_agent="foreman",
+        to_agent="user",
+        content="▶ send_followup",
+        message_type="chat",
+        role="tool_use",
+        task_id="t-abc",
+        meta=json.dumps({"toolId": "tu-1", "toolName": "send_followup"}),
+    )
+    d = _message_dict(m)
+    assert d["taskId"] == "t-abc"
+    assert d["toolName"] == "send_followup"
+    assert d["toolId"] == "tu-1"
+
+
 def test_get_guild_forbidden_for_non_member(client):
     test_client, db_url = client
     insert_guild(db_url, "private01", name="Private")
