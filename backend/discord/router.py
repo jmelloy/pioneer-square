@@ -11,7 +11,8 @@ Thread routing model (reuses the two thread types that already exist):
     - a message in a thread mapped in ``discord_foreman_threads``, or in any
       other wired channel with no task binding, is general/ad-hoc chat for
       that Pioneer Square guild — routed with ``task_id=None``, so the reply
-      lands in (or creates) today's daily guild thread.
+      is posted directly to the guild's main configured channel (the dated
+      session thread is skipped entirely when there's no task context).
     - anything else has nowhere to route to and is silently ignored.
 
 Consumes ``discord.gateway.gateway_message_queue``. Enable with the same

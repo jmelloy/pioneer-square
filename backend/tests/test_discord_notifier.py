@@ -573,8 +573,9 @@ async def test_archive_thread_http_error_does_not_raise(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notify_foreman_chat_creates_thread_and_posts(monkeypatch):
-    """notify_foreman_chat ensures a per-day thread exists and posts the message."""
+async def test_notify_foreman_chat_no_task_id_posts_directly_to_channel(monkeypatch):
+    """With no task_id, notify_foreman_chat posts straight to the main channel,
+    skipping the dated session thread entirely."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
@@ -582,13 +583,14 @@ async def test_notify_foreman_chat_creates_thread_and_posts(monkeypatch):
 
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock(return_value=THREAD_ID)),
+        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_mock,
     ):
         await discord_notifier.notify_foreman_chat("guild-1", "Spun up worker w-abc.")
 
+    ensure_mock.assert_not_called()
     mock_client.post.assert_called_once()
     call = mock_client.post.call_args
-    assert f"/channels/{THREAD_ID}/messages" in call[0][0]
+    assert f"/channels/{CHANNEL_ID}/messages" in call[0][0]
     assert call[1]["json"]["content"] == "Spun up worker w-abc."
 
 
@@ -614,8 +616,9 @@ async def test_notify_foreman_chat_no_op_when_not_configured(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_notify_foreman_chat_reuses_thread_for_same_session(monkeypatch):
-    """Two calls with the same session_key reuse the same thread (one lookup each, no dupes)."""
+async def test_notify_foreman_chat_no_task_id_never_touches_session_thread(monkeypatch):
+    """Repeated no-task_id calls each post directly to the channel; no session
+    thread is ever looked up or created."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
@@ -623,14 +626,17 @@ async def test_notify_foreman_chat_reuses_thread_for_same_session(monkeypatch):
 
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_lookup_foreman_thread", AsyncMock(return_value=THREAD_ID)),
+        patch.object(discord_notifier, "_lookup_foreman_thread", AsyncMock()) as lookup_mock,
         patch.object(discord_notifier, "_save_foreman_thread", AsyncMock()) as save_mock,
     ):
         await discord_notifier.notify_foreman_chat("guild-1", "first", session_key="2026-07-04")
         await discord_notifier.notify_foreman_chat("guild-1", "second", session_key="2026-07-04")
 
+    lookup_mock.assert_not_called()
     save_mock.assert_not_called()
     assert mock_client.post.call_count == 2
+    for call in mock_client.post.call_args_list:
+        assert f"/channels/{CHANNEL_ID}/messages" in call[0][0]
 
 
 @pytest.mark.asyncio
@@ -662,8 +668,9 @@ async def test_notify_foreman_chat_task_scoped_routes_to_task_thread(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_notify_foreman_chat_no_task_id_uses_daily_thread(monkeypatch):
-    """A non-scoped message (no task_id) goes straight to the daily guild thread."""
+async def test_notify_foreman_chat_no_task_id_skips_daily_thread(monkeypatch):
+    """A non-scoped message (no task_id) skips the dated session thread and the
+    per-task lookup entirely, posting straight to the resolved guild channel."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
@@ -672,14 +679,15 @@ async def test_notify_foreman_chat_no_task_id_uses_daily_thread(monkeypatch):
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
         patch.object(discord_notifier, "_lookup_task_issue_coords", AsyncMock()) as coords_mock,
-        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock(return_value=THREAD_ID)),
+        patch.object(discord_notifier, "_ensure_foreman_thread", AsyncMock()) as ensure_mock,
     ):
         await discord_notifier.notify_foreman_chat("guild-1", "General update.")
 
     coords_mock.assert_not_called()
+    ensure_mock.assert_not_called()
     mock_client.post.assert_called_once()
     call = mock_client.post.call_args
-    assert f"/channels/{THREAD_ID}/messages" in call[0][0]
+    assert f"/channels/{CHANNEL_ID}/messages" in call[0][0]
     assert call[1]["json"]["content"] == "General update."
 
 
