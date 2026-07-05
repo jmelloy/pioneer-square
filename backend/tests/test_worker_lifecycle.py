@@ -471,9 +471,7 @@ async def test_generate_worker_id_retries_on_collision():
 async def test_generate_worker_id_raises_after_max_attempts():
     """Persistent collisions raise instead of silently returning a duplicate ID."""
     mock_db = AsyncMock()
-    mock_db.exec = AsyncMock(
-        return_value=MagicMock(one_or_none=MagicMock(return_value="w-taken"))
-    )
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value="w-taken")))
 
     with (
         patch("worker_lifecycle.secrets.token_hex", return_value="taken0"),
