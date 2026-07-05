@@ -1,5 +1,5 @@
 """Discord notification helpers: flat webhook (Phase 1), per-PR/issue threads (Phase 2),
-and Foreman chat threads + user mentions (Phase 3).
+Foreman chat threads + user mentions (Phase 3), and live task-stream mirroring (Phase 4).
 
 Phase 1 — flat webhook
     Set ``DISCORD_WEBHOOK_URL`` in the environment to post embeds to a single channel.
@@ -28,6 +28,17 @@ Phase 3 — Foreman chat threads + user mentions
     mention via the ``discord_users`` table (populated through the
     ``/api/discord-users`` REST endpoints). Falls back to a plain ``@login``
     string when no mapping exists — never raises, never blocks a notification.
+
+Phase 4 — live task-stream mirroring
+    ``notify_task_stream`` mirrors a worker task's streaming terminal output
+    (Claude's assistant/thinking text) into a dedicated per-task Discord thread
+    while the task is working. Lines are buffered and flushed in batches (see
+    ``_STREAM_FLUSH_INTERVAL``) to stay under Discord's rate limit, and each
+    batch is posted as a *silent* message (``SUPPRESS_NOTIFICATIONS`` flag, no
+    mentions parsed) so a firehose of build output never pings anyone — a
+    genuinely low-priority feed. Opt-in via ``DISCORD_STREAM_TASKS`` (requires a
+    bot token, since the feed always routes into a thread — never the flat
+    webhook). The per-task thread mapping persists in ``discord_task_threads``.
 
 Required bot permissions for Phase 2/3: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
 
@@ -60,8 +71,10 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import httpx
@@ -618,3 +631,249 @@ async def notify_existing_thread(
         )
 
     await notify(event_type, title, description, url=url, color=color)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: live task-stream mirroring
+# ---------------------------------------------------------------------------
+
+# Discord message flag: SUPPRESS_NOTIFICATIONS. Marks a message "silent" so it
+# posts without pinging channel members or firing a push notification — exactly
+# the low-priority behaviour we want for a firehose of streaming task output.
+_SILENT_FLAG = 1 << 12  # 4096
+
+# How long to accumulate stream lines before flushing them as one Discord
+# message. Batching is essential: worker terminal output is line-per-event and
+# would blow past Discord's per-channel rate limit if each line were its own POST.
+_STREAM_FLUSH_INTERVAL = 4.0  # seconds
+
+# Force an early flush once the buffer reaches this many characters so a busy
+# task's feed stays live instead of waiting out the full interval.
+_STREAM_FLUSH_CHARS = 1500
+
+
+def _stream_enabled() -> bool:
+    """True when task-stream mirroring is switched on via ``DISCORD_STREAM_TASKS``.
+
+    Off by default: streaming a task's full terminal feed into Discord is
+    high-volume and opt-in. Requires a bot token as well, since the feed is
+    always routed into a per-task thread (never the flat webhook).
+    """
+    flag = os.environ.get("DISCORD_STREAM_TASKS", "").strip().lower()
+    return bool(_bot_token()) and flag in ("1", "true", "yes", "on")
+
+
+@dataclass
+class _StreamBuffer:
+    """In-memory accumulator for one task's pending stream lines."""
+
+    guild_id: str
+    lines: list[str] = field(default_factory=list)
+    size: int = 0
+    flush_task: asyncio.Task | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+# Keyed by task_id. Holds only tasks with un-flushed lines; entries are removed
+# by ``flush_task_stream`` when the task reaches a terminal state.
+_stream_buffers: dict[str, _StreamBuffer] = {}
+
+
+async def _lookup_task_thread(task_id: str) -> str | None:
+    """Return the persisted Discord thread_id for a task's stream, or None."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415 — lazy to avoid circular import
+        from models import DiscordTaskThread  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(DiscordTaskThread).where(col(DiscordTaskThread.task_id) == task_id)
+            )
+            row = result.one_or_none()
+            return row.thread_id if row else None
+    except Exception:
+        logger.warning("discord: task thread DB lookup failed task=%s", task_id, exc_info=True)
+        return None
+
+
+async def _save_task_thread(task_id: str, thread_id: str) -> None:
+    """Persist a task→thread mapping using an atomic upsert (ignore duplicates)."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import DiscordTaskThread  # noqa: PLC0415
+        from sqlalchemy.dialects.postgresql import insert  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            stmt = (
+                insert(DiscordTaskThread)
+                .values(
+                    task_id=task_id,
+                    thread_id=thread_id,
+                    created_at=datetime.now(UTC),
+                )
+                .on_conflict_do_nothing()
+            )
+            await db.execute(stmt)
+            await db.commit()
+    except Exception:
+        logger.warning(
+            "discord: task thread DB save failed task=%s thread=%s",
+            task_id,
+            thread_id,
+            exc_info=True,
+        )
+
+
+async def _lookup_task_description(task_id: str) -> str | None:
+    """Return *task_id*'s description (for naming its thread), or None."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Task  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(select(Task.description).where(col(Task.id) == task_id))
+            return result.one_or_none()
+    except Exception:
+        logger.warning("discord: task description lookup failed task=%s", task_id, exc_info=True)
+        return None
+
+
+async def _ensure_task_thread(task_id: str, channel: str) -> str | None:
+    """Return the Discord thread_id for *task_id*'s stream, creating it if needed.
+
+    Returns None on Discord API error. Never raises.
+    """
+    existing = await _lookup_task_thread(task_id)
+    if existing:
+        return existing
+
+    description = await _lookup_task_description(task_id)
+    thread_name = f"⚙ {task_id}: {description}" if description else f"⚙ {task_id}"
+
+    new_thread_id = await _create_thread_in_channel(channel, thread_name)
+    if not new_thread_id:
+        return None
+
+    await _save_task_thread(task_id, new_thread_id)
+    # Re-fetch after save: on_conflict_do_nothing means a concurrent creator wins;
+    # re-fetching ensures both callers converge on the same persisted thread_id.
+    return await _lookup_task_thread(task_id) or new_thread_id
+
+
+def _chunk_content(text: str, size: int) -> list[str]:
+    """Split *text* into pieces no longer than *size*, preferring newline breaks."""
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > size:
+        cut = remaining.rfind("\n", 0, size)
+        if cut <= 0:
+            cut = size
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+async def _post_task_stream(guild_id: str, task_id: str, content: str) -> None:
+    """Post *content* into *task_id*'s per-task thread as silent messages. Never raises."""
+    channel = await _resolve_channel_for_guild(guild_id)
+    if not channel:
+        return
+    thread_id = await _ensure_task_thread(task_id, channel)
+    if not thread_id:
+        return
+    for chunk in _chunk_content(content, _MAX_MESSAGE_LENGTH):
+        if not chunk:
+            continue
+        await _bot_request(
+            "post",
+            f"/channels/{thread_id}/messages",
+            {
+                "content": chunk,
+                "flags": _SILENT_FLAG,
+                # Never let streamed build output @-mention anyone.
+                "allowed_mentions": {"parse": []},
+            },
+        )
+
+
+async def _drain_and_post(buf: _StreamBuffer, task_id: str) -> None:
+    """Atomically swap out *buf*'s pending lines and post them. Never raises."""
+    async with buf.lock:
+        if not buf.lines:
+            return
+        content = "\n".join(buf.lines)
+        buf.lines = []
+        buf.size = 0
+    await _post_task_stream(buf.guild_id, task_id, content)
+
+
+async def _flush_task_stream(task_id: str) -> None:
+    """Flush the pending buffer for *task_id* if it is still registered."""
+    buf = _stream_buffers.get(task_id)
+    if buf is None:
+        return
+    await _drain_and_post(buf, task_id)
+
+
+async def _delayed_flush(task_id: str) -> None:
+    """Wait out the batching interval, then flush *task_id*'s buffer."""
+    try:
+        await asyncio.sleep(_STREAM_FLUSH_INTERVAL)
+    except asyncio.CancelledError:
+        return
+    buf = _stream_buffers.get(task_id)
+    if buf is not None:
+        buf.flush_task = None
+    await _flush_task_stream(task_id)
+
+
+async def notify_task_stream(guild_id: str, task_id: str, line: str) -> None:
+    """Buffer one streaming terminal line for *task_id* and schedule a flush.
+
+    Fast and non-blocking: appends to an in-memory buffer and (re)arms a
+    background flush task — the actual Discord POST happens off the caller's
+    path so a worker's terminal firehose never stalls the WebSocket handler.
+    Silent no-op unless ``DISCORD_STREAM_TASKS`` is enabled (and a bot token is
+    configured), or when *line*/*task_id* is blank. Never raises.
+    """
+    if not _stream_enabled():
+        return
+    if not task_id or not line or not line.strip():
+        return
+
+    buf = _stream_buffers.get(task_id)
+    if buf is None:
+        buf = _StreamBuffer(guild_id=guild_id)
+        _stream_buffers[task_id] = buf
+
+    buf.lines.append(line)
+    buf.size += len(line) + 1
+
+    if buf.size >= _STREAM_FLUSH_CHARS:
+        if buf.flush_task is not None:
+            buf.flush_task.cancel()
+            buf.flush_task = None
+        # Flush in the background so this call stays off the network path.
+        asyncio.ensure_future(_flush_task_stream(task_id))  # noqa: RUF006
+    elif buf.flush_task is None:
+        buf.flush_task = asyncio.ensure_future(_delayed_flush(task_id))
+
+
+async def flush_task_stream(task_id: str) -> None:
+    """Flush and drop *task_id*'s buffer — call when the task reaches a terminal state.
+
+    Posts any tail lines immediately (rather than waiting out the interval) and
+    frees the in-memory buffer. Silent no-op when the task has no buffered
+    stream. Never raises.
+    """
+    buf = _stream_buffers.pop(task_id, None)
+    if buf is None:
+        return
+    if buf.flush_task is not None:
+        buf.flush_task.cancel()
+        buf.flush_task = None
+    await _drain_and_post(buf, task_id)

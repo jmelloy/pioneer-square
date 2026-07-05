@@ -6,6 +6,7 @@ No real DB sessions are made — _lookup_thread and _save_thread are patched.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -30,6 +31,7 @@ def reset_env(monkeypatch):
     monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
     monkeypatch.delenv("DISCORD_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("DISCORD_STREAM_TASKS", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +40,14 @@ def reset_client():
     discord_notifier._client = None
     yield
     discord_notifier._client = None
+
+
+@pytest.fixture(autouse=True)
+def reset_stream_buffers():
+    """Clear the in-memory task-stream buffers between tests."""
+    discord_notifier._stream_buffers.clear()
+    yield
+    discord_notifier._stream_buffers.clear()
 
 
 def _make_mock_client(status_code: int = 204, side_effect=None, json_response: dict | None = None):
@@ -859,3 +869,196 @@ async def test_lookup_task_issue_coords_db_error_returns_none():
         result = await discord_notifier._lookup_task_issue_coords("t-abc")
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: live task-stream mirroring
+# ---------------------------------------------------------------------------
+
+
+def test_stream_enabled_requires_both_flag_and_token(monkeypatch):
+    """_stream_enabled is off unless DISCORD_STREAM_TASKS is truthy AND a bot token is set."""
+    assert discord_notifier._stream_enabled() is False
+
+    monkeypatch.setenv("DISCORD_STREAM_TASKS", "true")
+    assert discord_notifier._stream_enabled() is False  # still no bot token
+
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    assert discord_notifier._stream_enabled() is True
+
+    monkeypatch.setenv("DISCORD_STREAM_TASKS", "off")
+    assert discord_notifier._stream_enabled() is False
+
+
+@pytest.mark.asyncio
+async def test_notify_task_stream_noop_when_disabled(monkeypatch):
+    """notify_task_stream buffers nothing when the feature flag is unset."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)  # token set, flag NOT set
+
+    await discord_notifier.notify_task_stream("guild-1", "t-1", "hello")
+
+    assert "t-1" not in discord_notifier._stream_buffers
+
+
+@pytest.mark.asyncio
+async def test_notify_task_stream_noop_for_blank_line(monkeypatch):
+    """notify_task_stream ignores blank/whitespace-only lines."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_STREAM_TASKS", "1")
+
+    await discord_notifier.notify_task_stream("guild-1", "t-1", "   ")
+
+    assert "t-1" not in discord_notifier._stream_buffers
+
+
+@pytest.mark.asyncio
+async def test_notify_task_stream_buffers_short_line(monkeypatch):
+    """A short line is buffered and a delayed flush is armed (no immediate POST)."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_STREAM_TASKS", "1")
+
+    with patch.object(discord_notifier, "_delayed_flush", AsyncMock()):
+        await discord_notifier.notify_task_stream("guild-1", "t-1", "short line")
+
+        buf = discord_notifier._stream_buffers["t-1"]
+        assert buf.lines == ["short line"]
+        assert buf.guild_id == "guild-1"
+        assert buf.flush_task is not None
+        await buf.flush_task  # drain the scheduled (mocked) flush task
+
+
+@pytest.mark.asyncio
+async def test_notify_task_stream_flushes_when_buffer_large(monkeypatch):
+    """Crossing _STREAM_FLUSH_CHARS triggers an immediate background flush."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_STREAM_TASKS", "1")
+    monkeypatch.setattr(discord_notifier, "_STREAM_FLUSH_CHARS", 10)
+
+    with patch.object(discord_notifier, "_flush_task_stream", AsyncMock()) as flush_mock:
+        await discord_notifier.notify_task_stream("guild-1", "t-1", "a line much longer than ten")
+        await asyncio.sleep(0)  # let the scheduled flush task run
+
+    flush_mock.assert_awaited_once_with("t-1")
+
+
+@pytest.mark.asyncio
+async def test_post_task_stream_posts_silent_message_to_task_thread(monkeypatch):
+    """_post_task_stream posts into the per-task thread as a silent, no-mention message."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(
+            discord_notifier, "_resolve_channel_for_guild", AsyncMock(return_value=CHANNEL_ID)
+        ),
+        patch.object(discord_notifier, "_ensure_task_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier._post_task_stream("guild-1", "t-1", "line one\nline two")
+
+    mock_client.post.assert_called_once()
+    call_url = mock_client.post.call_args[0][0]
+    assert f"/channels/{THREAD_ID}/messages" in call_url
+    body = mock_client.post.call_args[1]["json"]
+    assert body["content"] == "line one\nline two"
+    assert body["flags"] == discord_notifier._SILENT_FLAG
+    assert body["allowed_mentions"] == {"parse": []}
+
+
+@pytest.mark.asyncio
+async def test_post_task_stream_noop_when_no_thread(monkeypatch):
+    """_post_task_stream posts nothing when the task thread can't be created."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(
+            discord_notifier, "_resolve_channel_for_guild", AsyncMock(return_value=CHANNEL_ID)
+        ),
+        patch.object(discord_notifier, "_ensure_task_thread", AsyncMock(return_value=None)),
+    ):
+        await discord_notifier._post_task_stream("guild-1", "t-1", "line")
+
+    mock_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_flush_task_stream_drains_and_removes_buffer():
+    """flush_task_stream posts the pending lines and drops the buffer entry."""
+    buf = discord_notifier._StreamBuffer(guild_id="guild-1")
+    buf.lines = ["a", "b"]
+    buf.size = 4
+    discord_notifier._stream_buffers["t-1"] = buf
+
+    with patch.object(discord_notifier, "_post_task_stream", AsyncMock()) as post_mock:
+        await discord_notifier.flush_task_stream("t-1")
+
+    post_mock.assert_awaited_once_with("guild-1", "t-1", "a\nb")
+    assert "t-1" not in discord_notifier._stream_buffers
+
+
+@pytest.mark.asyncio
+async def test_flush_task_stream_noop_when_no_buffer():
+    """flush_task_stream is a silent no-op for a task with no buffered stream."""
+    with patch.object(discord_notifier, "_post_task_stream", AsyncMock()) as post_mock:
+        await discord_notifier.flush_task_stream("t-unknown")
+
+    post_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_task_thread_reuses_existing():
+    """_ensure_task_thread returns a persisted thread without hitting the Discord API."""
+    with (
+        patch.object(discord_notifier, "_lookup_task_thread", AsyncMock(return_value=THREAD_ID)),
+        patch.object(discord_notifier, "_create_thread_in_channel", AsyncMock()) as create_mock,
+    ):
+        result = await discord_notifier._ensure_task_thread("t-1", CHANNEL_ID)
+
+    assert result == THREAD_ID
+    create_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_task_thread_creates_and_names_from_description():
+    """_ensure_task_thread creates a thread named from the task description when absent."""
+    with (
+        patch.object(
+            discord_notifier, "_lookup_task_thread", AsyncMock(side_effect=[None, THREAD_ID])
+        ),
+        patch.object(
+            discord_notifier, "_lookup_task_description", AsyncMock(return_value="Fix the bug")
+        ),
+        patch.object(
+            discord_notifier, "_create_thread_in_channel", AsyncMock(return_value=THREAD_ID)
+        ) as create_mock,
+        patch.object(discord_notifier, "_save_task_thread", AsyncMock()) as save_mock,
+    ):
+        result = await discord_notifier._ensure_task_thread("t-1", CHANNEL_ID)
+
+    assert result == THREAD_ID
+    create_mock.assert_awaited_once()
+    thread_name = create_mock.call_args[0][1]
+    assert "t-1" in thread_name
+    assert "Fix the bug" in thread_name
+    save_mock.assert_awaited_once_with("t-1", THREAD_ID)
+
+
+def test_chunk_content_hard_splits_without_newlines():
+    """A newline-free string is hard-split into <=size pieces that reconstruct exactly."""
+    text = "x" * 5000
+    chunks = discord_notifier._chunk_content(text, 2000)
+
+    assert [len(c) for c in chunks] == [2000, 2000, 1000]
+    assert "".join(chunks) == text
+
+
+def test_chunk_content_prefers_newline_boundaries():
+    """_chunk_content breaks on the last newline within the window when possible."""
+    chunks = discord_notifier._chunk_content("aaaa\nbbbb\ncccc", 7)
+
+    assert chunks == ["aaaa", "bbbb", "cccc"]
+    assert all(len(c) <= 7 for c in chunks)
