@@ -202,3 +202,88 @@ async def test_trigger_foreman_child_routing(monkeypatch, event, expect_child):
     assert captured["kwargs"].get("child") is expect_child
     if expect_child:
         assert captured["kwargs"].get("task_id") == "t-xyz"
+
+
+# ── _emit_foreman_chat: frontend badge vs Discord routing ────────────────────
+
+
+def _patch_emit(monkeypatch):
+    """Patch broadcast_msg / discord mirror / spawn on foreman.runner.
+
+    Returns ``(sent_msgs, discord_calls)`` — the ChatMsg objects broadcast to
+    WS clients and the ``(content, task_id)`` tuples passed to the Discord
+    mirror. ``spawn`` is replaced with a version that actually awaits the
+    coroutine so the Discord call is observed.
+    """
+    import foreman.runner as runner
+
+    sent_msgs: list = []
+    discord_calls: list = []
+
+    async def fake_broadcast(guild_id, msg):
+        sent_msgs.append(msg)
+
+    async def fake_notify(guild_id, content, task_id=None):
+        discord_calls.append((content, task_id))
+
+    def fake_spawn(coro, name=None):
+        return asyncio.ensure_future(coro)
+
+    monkeypatch.setattr(runner, "broadcast_msg", fake_broadcast)
+    monkeypatch.setattr(runner.discord_notifier, "notify_foreman_chat", fake_notify)
+    monkeypatch.setattr(runner, "spawn", fake_spawn)
+    return sent_msgs, discord_calls
+
+
+async def test_emit_child_run_badges_and_routes_to_task_thread(monkeypatch):
+    """A child run tags the WS message and mirrors to the task's Discord thread."""
+    import foreman.runner as runner
+
+    sent_msgs, discord_calls = _patch_emit(monkeypatch)
+
+    await runner._emit_foreman_chat(
+        "g1",
+        "working on it",
+        "2026-01-01T00:00:00Z",
+        child_task_id="t-abc",
+        discord_task_id="t-abc",
+    )
+    await asyncio.sleep(0)  # let the spawned Discord mirror run
+
+    assert sent_msgs[0].taskId == "t-abc"
+    assert discord_calls == [("working on it", "t-abc")]
+
+
+async def test_emit_parent_thread_chat_routes_to_thread_without_badge(monkeypatch):
+    """A parent run answering a task-thread message still replies in that thread.
+
+    The frontend badge (``taskId`` on the WS ChatMsg) stays absent — the run is
+    the parent/whole-guild conversation — but the Discord mirror routes to the
+    task's thread so the reply lands where the human is talking.
+    """
+    import foreman.runner as runner
+
+    sent_msgs, discord_calls = _patch_emit(monkeypatch)
+
+    await runner._emit_foreman_chat(
+        "g1", "here you go", "2026-01-01T00:00:00Z", child_task_id=None, discord_task_id="t-abc"
+    )
+    await asyncio.sleep(0)
+
+    assert sent_msgs[0].taskId is None
+    assert discord_calls == [("here you go", "t-abc")]
+
+
+async def test_emit_plain_parent_run_has_no_task_routing(monkeypatch):
+    """A parent run with no task concern badges nothing and posts to main channel."""
+    import foreman.runner as runner
+
+    sent_msgs, discord_calls = _patch_emit(monkeypatch)
+
+    await runner._emit_foreman_chat(
+        "g1", "guild status", "2026-01-01T00:00:00Z", child_task_id=None, discord_task_id=None
+    )
+    await asyncio.sleep(0)
+
+    assert sent_msgs[0].taskId is None
+    assert discord_calls == [("guild status", None)]

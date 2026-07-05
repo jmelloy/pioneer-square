@@ -95,6 +95,11 @@ class ChatMsg(_WS):
     # Origin of the message: "web", "discord", "api". Omitted (None) means
     # "web" — the frontend only renders an origin label for non-web sources.
     source: str | None = None
+    # Set on Foreman → user messages produced inside a per-task child context
+    # (see docs/foreman-per-task-context.md). None for parent/whole-guild runs.
+    # The frontend badges child-context messages so it's clear which are scoped
+    # to a single task rather than the guild-wide Foreman conversation.
+    taskId: str | None = None
 
 
 class TerminalOutputMsg(_WS):

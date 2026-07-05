@@ -8,6 +8,9 @@ export interface ToolUseGroup {
   from: string
   createdAt?: string
   created_at?: string
+  // Carried from the first tool_use in the group so a child-context turn's
+  // tool calls badge the same as its narration lines.
+  taskId?: string | null
 }
 
 export type GroupedMessage = ChatMessage | ToolUseGroup
@@ -53,6 +56,7 @@ export function useChatGrouping(
           from: (first.from || first.from_agent || 'foreman') as string,
           createdAt: first.createdAt,
           created_at: first.created_at,
+          taskId: (first.taskId as string | null | undefined) ?? null,
         })
       } else if (msg.role === 'tool_result') {
         i++

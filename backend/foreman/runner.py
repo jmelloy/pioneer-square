@@ -488,22 +488,42 @@ async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
 
 
 async def _emit_foreman_chat(
-    guild_id: str, content: str, created_at: str, task_id: str | None = None
+    guild_id: str,
+    content: str,
+    created_at: str,
+    *,
+    child_task_id: str | None = None,
+    discord_task_id: str | None = None,
 ) -> None:
     """Broadcast a Foreman -> user narration line and mirror it into Discord.
 
     Every plain-text line the Foreman sends to the user (not tool_use/tool_result
     traces) goes through here so the Discord thread mirror in discord_notifier
-    stays in sync with the WS chat stream. *task_id*, when known, lets
-    discord_notifier route the line to that task's per-task thread instead of
-    posting directly to the guild's main channel.
+    stays in sync with the WS chat stream.
+
+    The two ids are deliberately separate (see docs/foreman-per-task-context.md):
+
+    - ``child_task_id`` tags the WS ``ChatMsg`` so the frontend can badge lines
+      produced inside a per-task child context. It is None for parent runs even
+      when the run concerns a task (e.g. a human chatting in a task's Discord
+      thread stays on the parent conversation).
+    - ``discord_task_id`` routes the Discord mirror to that task's thread. It is
+      set whenever the run concerns a task — including the parent-context reply
+      to a message posted in a task thread — so the reply always lands back in
+      the thread the human is talking in rather than the guild's main channel.
     """
     await broadcast_msg(
         guild_id,
-        ChatMsg(from_="foreman", to="user", content=content, createdAt=created_at),
+        ChatMsg(
+            from_="foreman",
+            to="user",
+            content=content,
+            createdAt=created_at,
+            taskId=child_task_id,
+        ),
     )
     spawn(
-        discord_notifier.notify_foreman_chat(guild_id, content, task_id=task_id),
+        discord_notifier.notify_foreman_chat(guild_id, content, task_id=discord_task_id),
         name=f"discord.foreman-chat:{guild_id}",
     )
 
@@ -667,6 +687,15 @@ async def _run_foreman_ai(
             # untagged (task_id IS NULL) so they don't pollute that task's
             # isolated child context on its next run.
             _task_id = None
+
+        # Discord routing target for narration mirrored back to the human.
+        # ``_task_id`` (history tag) is None for parent runs, but a parent run
+        # can still concern a task — e.g. a human message posted in that task's
+        # Discord thread arrives as an ``event="chat"`` trigger with a task_id
+        # that stays on the parent conversation. Route the reply back into that
+        # thread using the incoming ``task_id`` even though the turn isn't
+        # tagged as child history. See docs/foreman-per-task-context.md.
+        _discord_task_id: str | None = _task_id or task_id
     except Exception:
         await db.close()
         raise
@@ -849,7 +878,11 @@ async def _run_foreman_ai(
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
                     await _emit_foreman_chat(
-                        guild_id, b.text.strip(), _now.isoformat(), task_id=_task_id
+                        guild_id,
+                        b.text.strip(),
+                        _now.isoformat(),
+                        child_task_id=_task_id,
+                        discord_task_id=_discord_task_id,
                     )
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
@@ -871,6 +904,7 @@ async def _run_foreman_ai(
                         toolInput=dict(tu.input) if tu.input else {},
                         toolId=tu.id,
                         createdAt=_now.isoformat(),
+                        taskId=_task_id,
                     ),
                 )
 
@@ -903,6 +937,7 @@ async def _run_foreman_ai(
                         toolOutput=result.get("content", ""),
                         isError=result.get("is_error", False),
                         createdAt=_now.isoformat(),
+                        taskId=_task_id,
                     ),
                 )
 
@@ -1057,10 +1092,22 @@ async def _run_foreman_ai(
             for b in wrap_resp.content:
                 if b.type == "text" and b.text.strip():
                     text_parts.append(b.text.strip())
-                    await _emit_foreman_chat(guild_id, b.text.strip(), _now, task_id=_task_id)
+                    await _emit_foreman_chat(
+                        guild_id,
+                        b.text.strip(),
+                        _now,
+                        child_task_id=_task_id,
+                        discord_task_id=_discord_task_id,
+                    )
             cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
-            await _emit_foreman_chat(guild_id, cap_note, _now, task_id=_task_id)
+            await _emit_foreman_chat(
+                guild_id,
+                cap_note,
+                _now,
+                child_task_id=_task_id,
+                discord_task_id=_discord_task_id,
+            )
 
         response_text = "\n".join(text_parts).strip()
         if response_text:

@@ -13,6 +13,13 @@
           :class="'msg-from--' + (isToolUseGroup(msg) ? msg.from : msgSender(msg as ChatMessage))"
           >{{ isToolUseGroup(msg) ? '⚙ FOREMAN' : senderLabel(msg as ChatMessage) }}</span
         >
+        <span
+          v-if="taskBadge(msg)"
+          class="msg-task-badge"
+          :title="'Scoped to task ' + taskBadge(msg)"
+        >
+          ⛬ {{ taskBadge(msg) }}
+        </span>
         <span v-if="!isToolUseGroup(msg) && sourceLabel(msg as ChatMessage)" class="msg-source">
           via {{ sourceLabel(msg as ChatMessage) }}
         </span>
@@ -76,6 +83,7 @@ import { renderMarkdown } from '../../utils/markdown'
 import { useGuildStore } from '../../stores/guild'
 import { formatClock } from '../../utils/format'
 import { useChatGrouping, isToolUseGroup } from '../../composables/useChatGrouping'
+import type { GroupedMessage } from '../../composables/useChatGrouping'
 import type { ChatMessage } from '../../types'
 
 const guildStore = useGuildStore()
@@ -106,6 +114,14 @@ function senderLabel(msg: ChatMessage): string {
   if (sender === 'system') return 'SYS'
   if (sender === 'foreman') return '⚙ FOREMAN'
   return sender.toUpperCase()
+}
+
+// A Foreman line produced inside a per-task child context carries a taskId
+// (see docs/foreman-per-task-context.md). Badge it so it's clear the line is
+// scoped to a single task rather than the guild-wide Foreman conversation.
+function taskBadge(msg: GroupedMessage): string | null {
+  const taskId = (msg as { taskId?: string | null }).taskId
+  return taskId ? taskId : null
 }
 
 const SOURCE_LABELS: Record<string, string> = { discord: 'Discord', api: 'API', web: 'Web' }
@@ -373,6 +389,19 @@ watch(
   color: var(--color-text-dim);
   font-style: italic;
   flex-shrink: 0;
+}
+
+.msg-task-badge {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 0.5px;
+  color: var(--color-amber);
+  background: rgba(232, 170, 0, 0.12);
+  border: 1px solid rgba(232, 170, 0, 0.4);
+  border-radius: 2px;
+  padding: 1px 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .msg-time {
