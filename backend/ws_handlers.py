@@ -294,6 +294,12 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         # socket is still lingering after a restart). Evict the older agent so
         # exactly one registration is authoritative instead of both racing for
         # task dispatch.
+        #
+        # A worker process runs a fixed pool of concurrent agent slots that all
+        # share one worker_id and join together over this same socket (see
+        # models.Agent.current_task_id docstring). Those siblings must not be
+        # evicted just because they were registered moments earlier — only an
+        # agent owned by a *different* socket is genuinely stale.
         dup_res = await ctx.db.exec(
             select(col(Agent.id)).where(
                 col(Agent.worker_id) == worker_id,
@@ -302,7 +308,13 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                 col(Agent.state) != "offline",
             )
         )
-        duplicate_agent_ids = dup_res.all()
+        candidate_dup_ids = dup_res.all()
+        async with agent_owner_lock(ctx.guild_id):
+            duplicate_agent_ids = [
+                dup_id
+                for dup_id in candidate_dup_ids
+                if agent_owners.get(dup_id) is not ctx.websocket
+            ]
         if duplicate_agent_ids:
             logger.warning(
                 "join: duplicate registration for worker_id=%s — evicting stale agent(s) "
