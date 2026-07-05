@@ -72,7 +72,8 @@ services:
       DISCORD_PIONEER_GUILD_SLUG: ${DISCORD_PIONEER_GUILD_SLUG:-}
       # Task-stream mirroring: mirror each working task's live terminal output
       # into a dedicated per-task thread as silent, low-priority messages.
-      # High-volume, off by default; needs DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID.
+      # High-volume, off by default; needs DISCORD_BOT_TOKEN and a channel from
+      # DISCORD_CHANNEL_ID or /join-channel.
       DISCORD_STREAM_TASKS: ${DISCORD_STREAM_TASKS:-false}
       # Phase 4: persistent Gateway websocket for inbound messages. Requires
       # DISCORD_BOT_TOKEN and the "Message Content Intent" enabled on the

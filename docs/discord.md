@@ -69,7 +69,7 @@ bot must already be a member of the guild that owns `DISCORD_CHANNEL_ID`.
 | `DISCORD_PIONEER_GUILD_SLUG` | 3 | For slash commands | The Pioneer Square guild (workspace) slug that `/ps` commands operate against. Not a Discord ID — see [Terminology note](#terminology-note-guild-vs-guild) below. |
 | `DISCORD_OPERATOR_ROLE_NAME` | 3 | No | Discord role name (in addition to the Manage Channels permission) allowed to run `/join-channel` and `/leave-channel`. Default `Pioneer Square Operator`. |
 | `DISCORD_DEV_GUILD_ID` | 3 (registration only) | No | Discord server ID. When set, `scripts/register_discord_commands.py` registers commands to that one server (near-instant) instead of globally (up to 1 hour to propagate). |
-| `DISCORD_STREAM_TASKS` | 2+ | No | When truthy (`1`/`true`/`yes`/`on`), mirror each working task's live terminal output into a dedicated per-task Discord thread as silent, low-priority messages. Off by default (high-volume). Requires `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` — the feed always routes into a thread, never the flat webhook. |
+| `DISCORD_STREAM_TASKS` | 2+ | No | When truthy (`1`/`true`/`yes`/`on`), mirror each working task's live terminal output into a dedicated per-task Discord thread as silent, low-priority messages. Off by default (high-volume). Requires `DISCORD_BOT_TOKEN` and a destination channel — either `DISCORD_CHANNEL_ID` or a channel wired to the guild via `/join-channel`. The feed always routes into a thread, never the flat webhook. |
 
 `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` must be set **together** — the bot needs both
 the credential and a destination channel to create threads.
@@ -215,12 +215,13 @@ sends to a user (not tool-call traces) is mirrored into Discord via
 
 ### Live task-stream mirroring
 
-Set `DISCORD_STREAM_TASKS` (plus the Phase 2 `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID`) to
-mirror a worker task's **live terminal output** into Discord while it runs — a low-priority
-feed of what each agent is actually doing, without leaving the app.
+Set `DISCORD_STREAM_TASKS` (with a `DISCORD_BOT_TOKEN` and a destination channel — either
+`DISCORD_CHANNEL_ID` or one wired via `/join-channel`) to mirror a worker task's **live
+terminal output** into Discord while it runs — a low-priority feed of what each agent is
+actually doing, without leaving the app.
 
 - **Per-task thread** — the streamed output for a task lands in its own thread (created lazily
-  off a starter message in the configured channel, named `⚙ <task-id>: <description>`). The
+  off a starter message in the resolved channel, named `⚙ <task-id>: <description>`). The
   mapping persists in the `discord_task_threads` table, unique on `task_id`, so restarts reuse
   the same thread. This is intentionally separate from the PR/issue thread: the stream is a
   verbose working feed, created while the task runs (before any PR exists), whereas the PR
