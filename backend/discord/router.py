@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 from discord.auth import is_member_authorized
 from discord.gateway import gateway_message_queue
@@ -212,6 +213,16 @@ async def _route_inbound_message(message: dict) -> None:
     ps_user_id, label = await _resolve_identity(author.get("id"), author.get("username"))
     human_message = f"[Discord] {label}: {content}"
 
+    try:
+        await _persist_inbound_message(guild_slug, content, user_id=ps_user_id, task_id=task_id)
+    except Exception:
+        logger.warning(
+            "discord router: failed to persist inbound message guild=%s — forwarding to "
+            "Foreman anyway",
+            guild_slug,
+            exc_info=True,
+        )
+
     from ws_handlers import _trigger_foreman  # noqa: PLC0415
 
     from foreman import reset_foreman_poll  # noqa: PLC0415
@@ -225,6 +236,54 @@ async def _route_inbound_message(message: dict) -> None:
         task_name=f"foreman.discord-chat:{guild_slug}",
     )
     reset_foreman_poll(guild_slug)
+
+
+async def _persist_inbound_message(
+    guild_slug: str, content: str, *, user_id: str | None, task_id: str | None
+) -> None:
+    """Write the inbound Discord message to the ``messages`` table and
+    broadcast it over WS so the frontend chat panel shows it live, tagged
+    ``source="discord"``. Best-effort — a failure here must not stop the
+    message from reaching the Foreman, so the caller wraps this call in its
+    own try/except and forwards to ``_trigger_foreman`` regardless.
+    """
+    from auth_deps import get_guild_pk  # noqa: PLC0415
+    from database import AsyncSessionLocal  # noqa: PLC0415
+    from events import broadcast_msg  # noqa: PLC0415
+    from models import Message  # noqa: PLC0415
+    from ws_types import ChatMsg  # noqa: PLC0415
+
+    created_at = datetime.now(UTC)
+    async with AsyncSessionLocal() as db:
+        guild_pk = await get_guild_pk(db, guild_slug)
+        if guild_pk is None:
+            return
+        db.add(
+            Message(
+                guild_id=guild_pk,
+                from_agent="user",
+                to_agent="foreman",
+                content=content,
+                message_type="chat",
+                created_at=created_at,
+                user_id=user_id,
+                task_id=task_id,
+                source="discord",
+            )
+        )
+        await db.commit()
+
+    await broadcast_msg(
+        guild_slug,
+        ChatMsg(
+            from_="user",
+            to="foreman",
+            content=content,
+            createdAt=created_at.isoformat(),
+            userId=user_id,
+            source="discord",
+        ),
+    )
 
 
 async def _consume_forever(queue: asyncio.Queue) -> None:

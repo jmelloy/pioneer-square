@@ -92,6 +92,9 @@ class ChatMsg(_WS):
     toolId: str | None = None
     toolOutput: str | None = None
     isError: bool | None = None
+    # Origin of the message: "web", "discord", "api". Omitted (None) means
+    # "web" — the frontend only renders an origin label for non-web sources.
+    source: str | None = None
 
 
 class TerminalOutputMsg(_WS):

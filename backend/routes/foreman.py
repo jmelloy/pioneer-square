@@ -32,6 +32,7 @@ import logging
 import random
 import string
 from datetime import UTC, datetime
+from typing import Literal
 
 from auth_deps import get_guild_pk, require_member, require_worker_or_member_path
 from database import get_db_dep
@@ -565,6 +566,7 @@ class MessageCreate(BaseModel):
     message_type: str = "chat"
     user_id: str | None = None
     task_id: str | None = None
+    source: Literal["web", "discord", "api"] | None = None
 
 
 @router.post("/guilds/{guild_id}/messages")
@@ -591,6 +593,7 @@ async def create_message(
     created_at = datetime.now(UTC)
     if body.task_id is not None:
         await _require_task_in_guild(db, body.task_id, guild_pk)
+    source = body.source or "web"
     msg = Message(
         guild_id=guild_pk,
         from_agent=body.from_agent,
@@ -600,6 +603,7 @@ async def create_message(
         created_at=created_at,
         user_id=body.user_id,
         task_id=body.task_id,
+        source=source,
     )
     db.add(msg)
     await db.commit()
@@ -613,6 +617,7 @@ async def create_message(
             to=body.to_agent,
             content=body.content,
             createdAt=created_at.isoformat(),
+            source=source,
             **({"userId": body.user_id} if body.user_id else {}),
         ),
     )

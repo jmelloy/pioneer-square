@@ -138,6 +138,8 @@ export interface ChatMessage {
   toolInput?: Record<string, unknown>
   isError?: boolean
   from_agent?: string
+  // Origin of the message: "web", "discord", "api". Missing/undefined means "web".
+  source?: string
   [key: string]: unknown
 }
 

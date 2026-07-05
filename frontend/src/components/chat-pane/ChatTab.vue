@@ -13,6 +13,9 @@
           :class="'msg-from--' + (isToolUseGroup(msg) ? msg.from : msgSender(msg as ChatMessage))"
           >{{ isToolUseGroup(msg) ? '⚙ FOREMAN' : senderLabel(msg as ChatMessage) }}</span
         >
+        <span v-if="!isToolUseGroup(msg) && sourceLabel(msg as ChatMessage)" class="msg-source">
+          via {{ sourceLabel(msg as ChatMessage) }}
+        </span>
         <span class="msg-time">{{
           formatTime(
             isToolUseGroup(msg)
@@ -103,6 +106,14 @@ function senderLabel(msg: ChatMessage): string {
   if (sender === 'system') return 'SYS'
   if (sender === 'foreman') return '⚙ FOREMAN'
   return sender.toUpperCase()
+}
+
+const SOURCE_LABELS: Record<string, string> = { discord: 'Discord', api: 'API', web: 'Web' }
+
+function sourceLabel(msg: ChatMessage): string | null {
+  const source = msg.source
+  if (!source || source === 'web') return null
+  return SOURCE_LABELS[source] ?? source
 }
 
 const formatTime = (iso?: string) => formatClock(iso)
@@ -355,6 +366,13 @@ watch(
   padding: 2px 8px;
   color: var(--color-text-dim);
   font-style: italic;
+}
+
+.msg-source {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  font-style: italic;
+  flex-shrink: 0;
 }
 
 .msg-time {
