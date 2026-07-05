@@ -484,6 +484,105 @@ async def test_notify_event_falls_back_when_thread_creation_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_notify_existing_thread_posts_when_thread_found(monkeypatch):
+    """notify_existing_thread posts to the thread when one is already persisted."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+
+    mock_client = _make_mock_client(status_code=204)
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_existing_thread(
+            "task-followup",
+            title="Follow-up sent",
+            description="desc",
+            issue_repo="org/repo",
+            issue_number=42,
+        )
+
+    mock_client.post.assert_called_once()
+    call_url = mock_client.post.call_args[0][0]
+    assert f"/channels/{THREAD_ID}/messages" in call_url
+
+
+@pytest.mark.asyncio
+async def test_notify_existing_thread_never_creates_new_thread(monkeypatch):
+    """notify_existing_thread must not call thread-creation machinery."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client(status_code=204)
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=None)),
+        patch.object(
+            discord_notifier, "_create_thread_in_channel", AsyncMock(return_value="new-thread")
+        ) as create_mock,
+    ):
+        await discord_notifier.notify_existing_thread(
+            "task-followup",
+            title="Follow-up sent",
+            description="desc",
+            issue_repo="org/repo",
+            issue_number=42,
+        )
+
+    create_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_existing_thread_falls_back_to_webhook_when_no_thread(monkeypatch):
+    """notify_existing_thread falls back to the flat webhook when no thread is persisted."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+
+    mock_client = _make_mock_client(status_code=204)
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=None)),
+    ):
+        await discord_notifier.notify_existing_thread(
+            "task-redirect",
+            title="Task redirected",
+            description="desc",
+            issue_repo="org/repo",
+            issue_number=42,
+        )
+
+    mock_client.post.assert_called_once()
+    call_url = mock_client.post.call_args[0][0]
+    assert call_url == WEBHOOK_URL
+
+
+@pytest.mark.asyncio
+async def test_notify_existing_thread_without_issue_coords_uses_webhook(monkeypatch):
+    """notify_existing_thread without repo/number skips the lookup and uses the webhook."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", WEBHOOK_URL)
+
+    mock_client = _make_mock_client(status_code=204)
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock()) as lookup_mock,
+    ):
+        await discord_notifier.notify_existing_thread(
+            "task-redirect",
+            title="Task redirected",
+            description="desc",
+        )
+
+    lookup_mock.assert_not_called()
+    mock_client.post.assert_called_once()
+    call_url = mock_client.post.call_args[0][0]
+    assert call_url == WEBHOOK_URL
+
+
+@pytest.mark.asyncio
 async def test_notify_event_silent_noop_when_no_tokens(monkeypatch):
     """notify_event is a no-op when neither bot token nor webhook are set."""
     # no bot token, no webhook URL

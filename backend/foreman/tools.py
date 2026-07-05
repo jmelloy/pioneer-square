@@ -461,6 +461,50 @@ async def notify_discord_task_assigned(
     )
 
 
+async def notify_discord_followup(
+    issue_repo: str | None,
+    issue_number: int | None,
+    task_id: str,
+    instructions: str,
+) -> None:
+    """Post a follow-up notification into the task's existing Discord thread.
+
+    Uses ``notify_existing_thread`` rather than ``notify_event``: the thread
+    should already exist from ``assign_task``, so a missing thread here
+    falls back to the flat channel instead of spawning a new one.
+    """
+    if not discord_notifier.is_configured():
+        return
+    await discord_notifier.notify_existing_thread(
+        "task-followup",
+        title=f"Follow-up sent: {task_id}",
+        description=f"Follow-up dispatched for task `{task_id}`: {instructions[:500]}",
+        issue_repo=issue_repo,
+        issue_number=issue_number,
+    )
+
+
+async def notify_discord_redirect(
+    issue_repo: str | None,
+    issue_number: int | None,
+    task_id: str,
+    instructions: str,
+) -> None:
+    """Post a redirect notification into the task's existing Discord thread.
+
+    See ``notify_discord_followup`` — same existing-thread-only routing.
+    """
+    if not discord_notifier.is_configured():
+        return
+    await discord_notifier.notify_existing_thread(
+        "task-redirect",
+        title=f"Task redirected: {task_id}",
+        description=f"Redirect sent for task `{task_id}`: {instructions[:500]}",
+        issue_repo=issue_repo,
+        issue_number=issue_number,
+    )
+
+
 # ---------------------------------------------------------------------------
 # code-review-agent helpers
 # ---------------------------------------------------------------------------
@@ -1395,6 +1439,16 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     issueRepo=task_issue_repo,
                                 ).model_dump(by_alias=True, exclude_none=True),
                             )
+                            if task_issue_number is not None and task_issue_repo:
+                                spawn(
+                                    notify_discord_followup(
+                                        task_issue_repo,
+                                        task_issue_number,
+                                        task_id,
+                                        instructions,
+                                    ),
+                                    name=f"discord.followup:{task_id}",
+                                )
                             if target_worker_id != original_worker_id and original_worker_id:
                                 result_text = (
                                     f"Follow-up reassigned from {original_worker_id} "
@@ -1470,15 +1524,18 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 task_id = inp["task_id"]
                 instructions = inp["instructions"]
                 result = await db.exec(
-                    select(col(Task.worker_id), col(Task.state)).where(
-                        col(Task.id) == task_id, col(Task.guild_id) == guild_pk
-                    )
+                    select(
+                        col(Task.worker_id),
+                        col(Task.state),
+                        col(Task.issue_number),
+                        col(Task.issue_repo),
+                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
                 )
                 row = result.one_or_none()
                 if not row:
                     result_text = f"Task {task_id} not found."
                 else:
-                    worker_id_val, state = row
+                    worker_id_val, state, redirect_issue_number, redirect_issue_repo = row
                     if state in ("done", "failed", "cancelled"):
                         result_text = f"Task {task_id} is {state} — cannot redirect."
                     else:
@@ -1495,6 +1552,16 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         await broadcast_msg(
                             guild_id, TaskUpdateMsg(taskId=task_id, state="working")
                         )
+                        if redirect_issue_number is not None and redirect_issue_repo:
+                            spawn(
+                                notify_discord_redirect(
+                                    redirect_issue_repo,
+                                    redirect_issue_number,
+                                    task_id,
+                                    instructions,
+                                ),
+                                name=f"discord.redirect:{task_id}",
+                            )
                         result_text = f"Redirect sent to {worker_id_val} for task {task_id}."
 
             elif tu.name == "cancel_task":
