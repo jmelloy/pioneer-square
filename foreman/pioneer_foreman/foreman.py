@@ -457,7 +457,7 @@ class Foreman:
                         # sleep, that value will be smaller than sleep_duration, so
                         # we advance from the reset value (not from sleep_duration).
                         base = min(self._poll_interval, sleep_duration)
-                        self._poll_interval = min(base * 2, self._config.poll_max_interval)
+                        self._poll_interval = min(base * 4, self._config.poll_max_interval)
 
                         if active and not self._processing:
                             task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active)
