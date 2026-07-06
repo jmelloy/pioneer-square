@@ -42,6 +42,7 @@ from database import AsyncSessionLocal
 from discord.auth import is_member_authorized
 from events import broadcast_msg
 from fastapi import APIRouter, BackgroundTasks, Request, Response
+from foreman.tools import spawn_worker
 from models import (
     Agent,
     DiscordAccountLink,
@@ -700,7 +701,8 @@ async def _cmd_worker_spawn(interaction: dict) -> None:
                     col(DiscordAccountLink.discord_user_id) == discord_user_id
                 )
             )
-            if not link_result.one_or_none():
+            ps_user_id = link_result.one_or_none()
+            if not ps_user_id:
                 await _send_followup(
                     token,
                     content=(
@@ -716,13 +718,12 @@ async def _cmd_worker_spawn(interaction: dict) -> None:
                 await _send_followup(token, content=f"Pioneer guild `{guild_slug}` not found.")
                 return
 
-            from foreman.tools import spawn_worker  # noqa: PLC0415
-
             result_text, is_error = await spawn_worker(
-                inp={"repos": repos, "tools": tools_list or None},
+                inp={"repos": repos or None, "tools": tools_list or None},
                 guild_id=guild_slug,
                 guild_pk=guild.id,
                 db=db,
+                user_id=ps_user_id,
             )
 
             if is_error:
@@ -741,7 +742,7 @@ async def _cmd_worker_spawn(interaction: dict) -> None:
         await _send_followup(token, content="Failed to spawn worker.")
         return
 
-    status = "online" if state not in ("offline", "spawn_failed") else "queued"
+    status = state if state == "online" else "queued"
     embeds = [
         {
             "title": f"Worker Spawned: {worker_id}",

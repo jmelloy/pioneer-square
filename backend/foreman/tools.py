@@ -842,8 +842,14 @@ async def spawn_worker(
     guild_id: str,
     guild_pk: int | None,
     db,
+    user_id: str | None = None,
 ) -> tuple[str, bool]:
     """Spawn a new worker container.
+
+    *user_id* identifies the human on whose behalf the worker is being spawned
+    (e.g. a Discord user's linked Pioneer Square account) and is stamped onto
+    the new ``Worker`` row for ownership attribution. ``None`` for
+    unattributed spawns.
 
     Returns (result_text, is_error).
     """
@@ -867,6 +873,7 @@ async def spawn_worker(
             created_at=created_at,
             auth_token=auth_token,
             name=worker_name,
+            user_id=user_id,
         )
     )
     await db.commit()

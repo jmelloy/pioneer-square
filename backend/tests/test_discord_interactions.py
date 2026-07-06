@@ -558,7 +558,7 @@ async def test_cmd_cancel_already_done(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _cmd_worker_spawn — all DB calls and foreman.tools.spawn_worker mocked
+# _cmd_worker_spawn — all DB calls and routes.discord.spawn_worker mocked
 # ---------------------------------------------------------------------------
 
 
@@ -608,7 +608,7 @@ async def test_cmd_worker_spawn_success(monkeypatch):
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
         patch("routes.discord._discord_patch", new=fake_patch),
-        patch("foreman.tools.spawn_worker", new=fake_spawn_worker),
+        patch("routes.discord.spawn_worker", new=fake_spawn_worker),
     ):
         from routes.discord import _cmd_worker_spawn
 
@@ -619,11 +619,57 @@ async def test_cmd_worker_spawn_success(monkeypatch):
     assert call_kwargs["inp"] == {"repos": ["org/repo"], "tools": ["claude"]}
     assert call_kwargs["guild_id"] == "test-guild"
     assert call_kwargs["guild_pk"] == 1
+    assert call_kwargs["user_id"] == "ps-user-1"
 
     assert sent
     embed = sent[0]["embeds"][0]
     assert "w-abc123" in embed["title"]
     assert "online" in embed["description"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_worker_spawn_reports_queued_status(monkeypatch):
+    """_cmd_worker_spawn reports 'queued' (not 'online') for a freshly-spawned worker."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    monkeypatch.setenv("DISCORD_PIONEER_GUILD_SLUG", "test-guild")
+
+    guild = MagicMock()
+    guild.id = 1
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value="ps-user-1")),  # account link lookup
+            MagicMock(one_or_none=MagicMock(return_value=guild)),  # guild lookup
+            MagicMock(one_or_none=MagicMock(return_value="spawning")),  # worker state lookup
+        ]
+    )
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    fake_spawn_worker = AsyncMock(
+        return_value=(json.dumps({"worker_id": "w-abc123", "repos": ["org/repo"]}), False)
+    )
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("routes.discord.spawn_worker", new=fake_spawn_worker),
+    ):
+        from routes.discord import _cmd_worker_spawn
+
+        await _cmd_worker_spawn(_worker_spawn_interaction())
+
+    assert sent
+    embed = sent[0]["embeds"][0]
+    assert "queued" in embed["description"]
+    assert "online" not in embed["description"]
 
 
 @pytest.mark.asyncio
@@ -648,7 +694,7 @@ async def test_cmd_worker_spawn_requires_connected_account(monkeypatch):
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
         patch("routes.discord._discord_patch", new=fake_patch),
-        patch("foreman.tools.spawn_worker", new=fake_spawn_worker),
+        patch("routes.discord.spawn_worker", new=fake_spawn_worker),
     ):
         from routes.discord import _cmd_worker_spawn
 
@@ -726,7 +772,7 @@ async def test_cmd_worker_spawn_reports_tool_error(monkeypatch):
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
         patch("routes.discord._discord_patch", new=fake_patch),
-        patch("foreman.tools.spawn_worker", new=fake_spawn_worker),
+        patch("routes.discord.spawn_worker", new=fake_spawn_worker),
     ):
         from routes.discord import _cmd_worker_spawn
 
