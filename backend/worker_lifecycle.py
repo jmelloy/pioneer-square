@@ -8,10 +8,15 @@ Lifecycle steps on backend startup
    Returns list of stale worker IDs.
 3. reset_connection_state()      — called by main.py AFTER step 2, sets all
    workers offline in the DB.
-4. force_kill_stale_workers(ids) — spawned as a background task AFTER step 3;
-   waits PIONEER_WORKER_DRAIN_TIMEOUT seconds then force-kills surviving
-   containers via Docker SDK using the stored container_id.
-   (Skipped when container_id is NULL — non-Docker workers rely on step 2 only.)
+4. reconcile_stale_workers(ids)  — spawned as a background task AFTER step 3;
+   waits up to PIONEER_WORKER_DRAIN_TIMEOUT seconds, dropping any worker that
+   reconnects on its own from the replacement list (a cold restart drops every
+   WebSocket at once, so the shutdown broadcast in step 2 reaches no one — the
+   worker's own reconnect loop brings it back within seconds and it should
+   count against the desired worker total, not trigger a redundant spawn).
+   Workers that never come back within the window get their container
+   force-killed (via Docker SDK, using the stored container_id — skipped when
+   NULL) and a single replacement spawned via spawn_replacement_workers().
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import subprocess
 from datetime import UTC, datetime
 
@@ -55,6 +61,24 @@ def get_current_version() -> str | None:
         return sha or None
     except Exception:
         return None
+
+
+async def generate_worker_id(db) -> str:
+    """Return a fresh ``w-``-prefixed worker ID guaranteed not to collide with an existing row.
+
+    secrets.token_hex(3) draws from ~16M possible suffixes, so a collision is
+    unlikely but not impossible — and an unchecked collision would silently
+    reassign an existing worker's identity to a new registration. Retry a
+    handful of times against the DB before giving up.
+    """
+    for _ in range(5):
+        candidate = "w-" + secrets.token_hex(3)
+        existing = (
+            await db.exec(select(col(Worker.id)).where(col(Worker.id) == candidate))
+        ).one_or_none()
+        if existing is None:
+            return candidate
+    raise RuntimeError("could not generate a unique worker_id after 5 attempts")
 
 
 async def record_worker_spawn(db, worker_id: str, container_id: str) -> None:
@@ -203,39 +227,10 @@ async def drain_stale_workers_on_startup() -> list[str]:
     return [worker.id for worker, _ in rows]
 
 
-async def force_kill_stale_workers(stale_ids: list[str]) -> None:
-    """Wait the drain window then force-kill surviving stale containers.
-
-    Must be spawned as a background task *after* reset_connection_state() has
-    run.  Because reset_connection_state() marks all workers offline in the DB,
-    a worker row flipping back to non-offline means its container reconnected
-    instead of honoring the graceful-shutdown signal — that's who we kill.
-    """
-    if not stale_ids:
-        return
-
-    # Poll every 5 s so we exit early if all stale workers self-terminate
-    # before the full drain window elapses.
-    poll_interval = 5.0
-    elapsed = 0.0
-    while elapsed < WORKER_DRAIN_TIMEOUT:
-        async with AsyncSessionLocal() as db:
-            remaining = (
-                await db.exec(
-                    select(col(Worker.id)).where(
-                        col(Worker.id).in_(stale_ids), col(Worker.state) != "offline"
-                    )
-                )
-            ).all()
-        if not remaining:
-            logger.info("worker_lifecycle: all stale workers exited cleanly after %.0fs", elapsed)
-            return
-        await asyncio.sleep(min(poll_interval, WORKER_DRAIN_TIMEOUT - elapsed))
-        elapsed += poll_interval
-
-    # Fetch stale workers that have a container_id to kill.
+async def _force_kill_containers(worker_ids: set[str]) -> None:
+    """Force-kill the Docker containers backing the given worker IDs, if any."""
     async with AsyncSessionLocal() as db:
-        workers = (await db.exec(select(Worker).where(col(Worker.id).in_(stale_ids)))).all()
+        workers = (await db.exec(select(Worker).where(col(Worker.id).in_(worker_ids)))).all()
 
     # Create the Docker client once; avoids per-container connection overhead and
     # ensures consistent failure behaviour across all kills in this batch.
@@ -270,3 +265,61 @@ async def force_kill_stale_workers(stale_ids: list[str]) -> None:
                 "relying on graceful-shutdown signal only",
                 worker.id,
             )
+
+
+async def reconcile_stale_workers(stale_ids: list[str]) -> None:
+    """Give drained workers a chance to reconnect on their own before replacing them.
+
+    Must be spawned as a background task *after* reset_connection_state() has
+    run.  Spawning a replacement immediately for every drained worker (the old
+    behaviour) overshoots the configured worker count on an ordinary restart:
+    the worker process's own reconnect loop brings it back within seconds —
+    it never saw the graceful-shutdown broadcast in the first place, since a
+    cold restart drops every WebSocket before that message can be sent — so
+    counting it as gone and spawning a full replacement leaves two workers
+    running under two different worker_ids. Waiting for the drain window and
+    checking who has already reconnected keeps replacement spawns limited to
+    workers that are actually still missing.
+    """
+    if not stale_ids:
+        return
+
+    # Poll every 5 s, dropping any worker that reconnects from the pending set.
+    poll_interval = 5.0
+    elapsed = 0.0
+    pending = set(stale_ids)
+    while pending and elapsed < WORKER_DRAIN_TIMEOUT:
+        await asyncio.sleep(min(poll_interval, WORKER_DRAIN_TIMEOUT - elapsed))
+        elapsed += poll_interval
+        async with AsyncSessionLocal() as db:
+            reconnected = set(
+                (
+                    await db.exec(
+                        select(col(Worker.id)).where(
+                            col(Worker.id).in_(pending), col(Worker.state) != "offline"
+                        )
+                    )
+                ).all()
+            )
+        if reconnected:
+            logger.info(
+                "worker_lifecycle: %d stale worker(s) reconnected on their own — "
+                "no replacement needed: %s",
+                len(reconnected),
+                sorted(reconnected),
+            )
+            pending -= reconnected
+
+    if not pending:
+        logger.info("worker_lifecycle: all stale workers reconnected within the drain window")
+        return
+
+    logger.info(
+        "worker_lifecycle: %d stale worker(s) did not reconnect within %.0fs — "
+        "force-killing and spawning replacements: %s",
+        len(pending),
+        WORKER_DRAIN_TIMEOUT,
+        sorted(pending),
+    )
+    await _force_kill_containers(pending)
+    await spawn_replacement_workers(list(pending))

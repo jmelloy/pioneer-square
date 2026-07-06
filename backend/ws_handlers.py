@@ -295,6 +295,60 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                 ctx.guild_id,
             )
             return
+        # Guard against two live connections claiming the same worker_id (e.g. a
+        # container that reconnects with a fresh agent_id while its previous
+        # socket is still lingering after a restart). Evict the older agent so
+        # exactly one registration is authoritative instead of both racing for
+        # task dispatch.
+        #
+        # A worker process runs a fixed pool of concurrent agent slots that all
+        # share one worker_id and join together over this same socket (see
+        # models.Agent.current_task_id docstring). Those siblings must not be
+        # evicted just because they were registered moments earlier — only an
+        # agent owned by a *different* socket is genuinely stale.
+        dup_res = await ctx.db.exec(
+            select(col(Agent.id)).where(
+                col(Agent.worker_id) == worker_id,
+                col(Agent.guild_id) == ctx.guild_pk,
+                col(Agent.id) != agent_id,
+                col(Agent.state) != "offline",
+            )
+        )
+        candidate_dup_ids = dup_res.all()
+        async with agent_owner_lock(ctx.guild_id):
+            duplicate_agent_ids = [
+                dup_id
+                for dup_id in candidate_dup_ids
+                if agent_owners.get(dup_id) is not ctx.websocket
+            ]
+        if duplicate_agent_ids:
+            logger.warning(
+                "join: duplicate registration for worker_id=%s — evicting stale agent(s) "
+                "%s in favor of new agent %s",
+                worker_id,
+                duplicate_agent_ids,
+                agent_id,
+            )
+            await ctx.db.exec(
+                update(Agent)
+                .where(
+                    col(Agent.id).in_(duplicate_agent_ids),
+                    col(Agent.guild_id) == ctx.guild_pk,
+                )
+                .values(state="offline", activity=None, current_task_id=None)
+            )
+            await ctx.db.commit()
+            async with agent_owner_lock(ctx.guild_id):
+                stale_sockets = [
+                    (dup_id, agent_owners.pop(dup_id, None)) for dup_id in duplicate_agent_ids
+                ]
+            for dup_id, stale_ws in stale_sockets:
+                await broadcast_msg(ctx.guild_id, AgentStateMsg(agentId=dup_id, state="offline"))
+                if stale_ws is not None and stale_ws is not ctx.websocket:
+                    try:
+                        await stale_ws.close(code=1000, reason="superseded by new registration")
+                    except Exception:
+                        logger.debug("join: failed to close superseded socket for agent %s", dup_id)
     if not is_external_foreman:
         stmt = pg_insert(Agent).values(
             id=agent_id,

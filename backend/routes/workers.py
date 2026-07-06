@@ -31,7 +31,7 @@ from utils import (
     row_to_dict,
     worker_display_name,
 )
-from worker_lifecycle import record_worker_spawn
+from worker_lifecycle import generate_worker_id, record_worker_spawn
 from ws_handlers import _resolve_user_identifier
 from ws_types import TaskAssignedMsg, WorkerMessageMsg
 
@@ -112,7 +112,7 @@ async def create_worker(
     credential when fetching guild secrets (Claude/GitHub creds). The token is
     only returned here — there is no read-after-create endpoint by design, so
     losing it means re-registering."""
-    worker_id = "w-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    worker_id = await generate_worker_id(db)
     created_at = datetime.now(UTC)
     worker_name = worker_display_name(worker_id, data.hostname)
     auth_token = secrets.token_urlsafe(32)
@@ -191,7 +191,7 @@ async def spawn_worker_container(
 
     # Pre-register the worker so the container inherits a known worker_id and
     # can skip self-registration on startup.
-    worker_id = "w-" + secrets.token_hex(3)
+    worker_id = await generate_worker_id(db)
     auth_token = secrets.token_urlsafe(32)
     worker_name = data.name or worker_display_name(worker_id, None)
     db.add(

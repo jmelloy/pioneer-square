@@ -16,7 +16,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from worker_lifecycle import (  # noqa: E402
     WORKER_DRAIN_TIMEOUT,
     drain_stale_workers_on_startup,
+    generate_worker_id,
     get_current_version,
+    reconcile_stale_workers,
     record_worker_spawn,
     spawn_replacement_workers,
 )
@@ -427,3 +429,144 @@ async def test_spawn_replacement_workers_skips_disabled():
 
     # No spawn calls because the disabled worker was excluded by the DB query.
     assert spawn_calls == []
+
+
+# ---------------------------------------------------------------------------
+# generate_worker_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_generate_worker_id_returns_candidate_when_no_collision():
+    """First candidate is used when the DB has no row with that ID."""
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=None)))
+
+    with patch("worker_lifecycle.secrets.token_hex", return_value="abc123"):
+        worker_id = await generate_worker_id(mock_db)
+
+    assert worker_id == "w-abc123"
+    mock_db.exec.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_worker_id_retries_on_collision():
+    """A colliding candidate is discarded and a fresh one is drawn."""
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value="w-aaa111")),
+            MagicMock(one_or_none=MagicMock(return_value=None)),
+        ]
+    )
+
+    with patch("worker_lifecycle.secrets.token_hex", side_effect=["aaa111", "bbb222"]):
+        worker_id = await generate_worker_id(mock_db)
+
+    assert worker_id == "w-bbb222"
+    assert mock_db.exec.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_worker_id_raises_after_max_attempts():
+    """Persistent collisions raise instead of silently returning a duplicate ID."""
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value="w-taken")))
+
+    with (
+        patch("worker_lifecycle.secrets.token_hex", return_value="taken0"),
+        pytest.raises(RuntimeError, match="unique worker_id"),
+    ):
+        await generate_worker_id(mock_db)
+
+    assert mock_db.exec.call_count == 5
+
+
+# ---------------------------------------------------------------------------
+# reconcile_stale_workers
+# ---------------------------------------------------------------------------
+
+
+class _FakeReconcileDB:
+    def __init__(self, reconnected_ids):
+        self._reconnected_ids = reconnected_ids
+        self.exec = AsyncMock(
+            return_value=MagicMock(all=MagicMock(return_value=self._reconnected_ids))
+        )
+        self.commit = AsyncMock()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_reconcile_noop_on_empty_ids():
+    """Empty stale_ids list → no DB polling, no force-kill, no respawn."""
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal") as mock_session,
+        patch("worker_lifecycle._force_kill_containers") as mock_kill,
+        patch("worker_lifecycle.spawn_replacement_workers") as mock_spawn,
+    ):
+        await reconcile_stale_workers([])
+
+    mock_session.assert_not_called()
+    mock_kill.assert_not_called()
+    mock_spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_respawn_when_all_workers_reconnect():
+    """Workers that reconnect on their own during the drain window are not replaced."""
+    session_iter = iter([_FakeReconcileDB(["w-a", "w-b"])])
+
+    with (
+        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.01),
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers") as mock_kill,
+        patch("worker_lifecycle.spawn_replacement_workers") as mock_spawn,
+    ):
+        await reconcile_stale_workers(["w-a", "w-b"])
+
+    mock_kill.assert_not_called()
+    mock_spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_force_kills_and_respawns_workers_that_never_reconnect():
+    """Workers still offline once the drain window elapses get killed and replaced."""
+    session_iter = iter([_FakeReconcileDB([])])
+    mock_kill = AsyncMock()
+    mock_spawn = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.01),
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+        patch("worker_lifecycle.spawn_replacement_workers", mock_spawn),
+    ):
+        await reconcile_stale_workers(["w-a"])
+
+    mock_kill.assert_called_once_with({"w-a"})
+    mock_spawn.assert_called_once_with(["w-a"])
+
+
+@pytest.mark.asyncio
+async def test_reconcile_only_respawns_workers_still_missing():
+    """A partial reconnect only triggers kill/respawn for the workers still missing."""
+    session_iter = iter([_FakeReconcileDB(["w-a"])])
+    mock_kill = AsyncMock()
+    mock_spawn = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.01),
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+        patch("worker_lifecycle.spawn_replacement_workers", mock_spawn),
+    ):
+        await reconcile_stale_workers(["w-a", "w-b"])
+
+    mock_kill.assert_called_once_with({"w-b"})
+    mock_spawn.assert_called_once_with(["w-b"])
