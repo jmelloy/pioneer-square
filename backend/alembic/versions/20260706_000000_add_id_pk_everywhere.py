@@ -50,6 +50,19 @@ _COMPOSITE_TABLES = [
 ]
 
 
+def _pk_constraint_name(table: str) -> str:
+    """Look up a table's actual primary-key constraint name.
+
+    Some tables (e.g. ``guild_members``) went through a create-as-``_new``-
+    then-rename migration (20260512_000002); PostgreSQL keeps the
+    constraint's original auto-generated name (``guild_members_new_pkey``)
+    across the rename, so we can't assume ``{table}_pkey``.
+    """
+    bind = op.get_bind()
+    pk = sa.inspect(bind).get_pk_constraint(table)
+    return pk["name"]
+
+
 def upgrade() -> None:
     # user_sessions.github_user_id FKs to github_tokens.github_user_id; drop
     # that FK before github_tokens' PK constraint changes, then recreate it.
@@ -57,7 +70,7 @@ def upgrade() -> None:
 
     for table, col in _SINGLE_COLUMN_TABLES:
         op.execute(sa.text(f"ALTER TABLE {table} ADD COLUMN id SERIAL"))
-        op.drop_constraint(f"{table}_pkey", table, type_="primary")
+        op.drop_constraint(_pk_constraint_name(table), table, type_="primary")
         op.create_primary_key(f"{table}_pkey", table, ["id"])
         op.create_unique_constraint(f"{table}_{col}_key", table, [col])
 
@@ -71,7 +84,7 @@ def upgrade() -> None:
 
     for table, cols, index_name in _COMPOSITE_TABLES:
         op.execute(sa.text(f"ALTER TABLE {table} ADD COLUMN id SERIAL"))
-        op.drop_constraint(f"{table}_pkey", table, type_="primary")
+        op.drop_constraint(_pk_constraint_name(table), table, type_="primary")
         op.create_primary_key(f"{table}_pkey", table, ["id"])
         op.create_index(index_name, table, cols, unique=True)
 
@@ -79,7 +92,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     for table, cols, index_name in reversed(_COMPOSITE_TABLES):
         op.drop_index(index_name, table_name=table)
-        op.drop_constraint(f"{table}_pkey", table, type_="primary")
+        op.drop_constraint(_pk_constraint_name(table), table, type_="primary")
         op.create_primary_key(f"{table}_pkey", table, cols)
         op.drop_column(table, "id")
 
@@ -87,7 +100,7 @@ def downgrade() -> None:
 
     for table, col in reversed(_SINGLE_COLUMN_TABLES):
         op.drop_constraint(f"{table}_{col}_key", table, type_="unique")
-        op.drop_constraint(f"{table}_pkey", table, type_="primary")
+        op.drop_constraint(_pk_constraint_name(table), table, type_="primary")
         op.create_primary_key(f"{table}_pkey", table, [col])
         op.drop_column(table, "id")
 
