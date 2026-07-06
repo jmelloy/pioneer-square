@@ -19,7 +19,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -46,6 +46,7 @@ from models import (
 )
 from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
+    _ci_pass_key,
     _get_guild_owner_github_login,
     _linked_issue_number_from_body,
     _linked_issue_number_from_branch,
@@ -481,7 +482,7 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
     headers = _signed_headers("ssecret", body, event="check_run", delivery="d-ci-1")
     with (
         patch("routes.webhooks._debounce_queue") as mock_q,
-        patch("routes.webhooks._dispatch_immediately", new=AsyncMock()) as mock_immediate,
+        patch("routes.webhooks._dispatch_immediately", new=MagicMock()) as mock_immediate,
     ):
         mock_q.schedule = AsyncMock()
         resp = test_client.post("/webhooks/github/gd4", content=body, headers=headers)
@@ -493,6 +494,43 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
     assert "rspec" in summary_arg
     assert task_arg == "t-ci"
     assert user_arg is None
+
+
+def test_webhook_routes_no_task_ci_pass_through_debounce_queue(client):
+    """A passing check_run with no matching task must still be routed through
+    the CI-pass debounce queue (issue #785 review comment #3) instead of
+    posting an immediate, un-coalesced Discord notification."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd5")
+    _set_webhook_secret(db_url, "gd5", "ssecret")
+    payload = {
+        "action": "completed",
+        "repository": {"full_name": "o/r"},
+        "check_run": {
+            "name": "rspec",
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": "shax",
+            "pull_requests": [{"number": 42, "html_url": "https://github.com/o/r/pull/42"}],
+        },
+        "sender": {"login": "github-actions[bot]"},
+    }
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("ssecret", body, event="check_run", delivery="d-no-task")
+    with (
+        patch("routes.webhooks._ci_pass_debounce_queue") as mock_q,
+        patch("routes.webhooks.discord_notifier.notify_event", new=AsyncMock()) as mock_notify,
+    ):
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd5", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 1
+    kwargs = mock_q.schedule.call_args.kwargs
+    assert kwargs["task_id"] is None
+    assert kwargs["label"] == "rspec"
+    # No immediate, per-check Discord post — the debounce queue's deliver
+    # function is responsible for the combined post once its window fires.
+    assert mock_notify.call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -730,6 +768,22 @@ class TestDebounce:
         assert "event B" in summary
 
 
+class TestCiPassKey:
+    """``_ci_pass_key`` guards against a shared ``...:None`` collision key."""
+
+    def test_deterministic_with_head_sha(self):
+        assert _ci_pass_key("g1", "o/r#7", "sha1") == "g1:ci-pass:o/r#7:sha1"
+        assert _ci_pass_key("g1", "o/r#7", "sha1") == _ci_pass_key("g1", "o/r#7", "sha1")
+
+    def test_missing_head_sha_does_not_collide(self):
+        """Two events with no head_sha must not share a key (unlike a naive f-string
+        that would collapse both to '...:None')."""
+        key_a = _ci_pass_key("g1", "o/r#7", None)
+        key_b = _ci_pass_key("g1", "o/r#7", None)
+        assert key_a != key_b
+        assert "None" not in key_a
+
+
 # ---------------------------------------------------------------------------
 # CI-pass debounce (issue #785): passing check_run/check_suite events coalesce
 # into one notification; failing checks bypass debounce entirely.
@@ -923,6 +977,32 @@ class TestCiPassDebounce:
         assert len(self._discord_calls) == 1
         assert "lint" in self._discord_calls[0]["description"]
         assert "typecheck" in self._discord_calls[0]["description"]
+
+    async def test_no_task_batch_coalesces_without_foreman_call(self):
+        """A passing check batch with no task_id (no matching task) still
+        coalesces into one Discord post, but must not wake the foreman —
+        it has no task context to act on (see _should_dispatch_to_foreman)."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            key = wh._ci_pass_key("g-ci4", "o/r#10", "sha4")
+            for name in ("lint", "typecheck"):
+                await wh._ci_pass_debounce_queue.schedule(
+                    key,
+                    "g-ci4",
+                    "[github-event] check_run/check_suite passed on o/r#10",
+                    None,
+                    task_id=None,
+                    label=name,
+                    context={"pr_label": "o/r#10", "repo": "o/r", "pr_number": 10},
+                )
+            await asyncio.sleep(0.2)
+
+        assert self._foreman_calls == []
+        assert len(self._discord_calls) == 1
+        description = self._discord_calls[0]["description"]
+        assert "lint" in description
+        assert "typecheck" in description
 
 
 # ---------------------------------------------------------------------------

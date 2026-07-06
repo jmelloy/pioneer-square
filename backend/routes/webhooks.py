@@ -23,6 +23,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import discord_notifier
 from database import get_db_dep
@@ -148,19 +149,27 @@ async def _default_deliver(
 async def _deliver_ci_pass(
     key: str, guild_id: str, combined: str, items: list[_DebounceItem]
 ) -> None:
-    """Foreman delivery (as usual) plus one combined Discord "CI passed" post.
+    """Foreman delivery (when a task is attached) plus one combined Discord
+    "CI passed" post.
 
     Replaces the old per-check-event immediate Discord notification (issue
     #785): instead of one Discord message per passing check_run/check_suite
     event, the several events GitHub fires per commit coalesce into a single
     message listing every check name that passed.
-    """
-    await _default_deliver(key, guild_id, combined, items)
 
+    Some items reach this queue without a task_id (a passing check on a PR
+    with no matching task — see the `github_webhook` check_run/check_suite
+    branch); the foreman has no context to act on there
+    (`_should_dispatch_to_foreman`'s "no matching task" rule), so the foreman
+    call is skipped for those batches and only the Discord post fires.
+    """
     ctx = next((c for _, _, _, _, c in items if c), None) or {}
     check_names = _dedupe_labels(items)
     task_id = next((tid for _, _, tid, _, _ in items if tid), None)
     pr_label = ctx.get("pr_label") or "unknown"
+
+    if task_id:
+        await _default_deliver(key, guild_id, combined, items)
     spawn(
         discord_notifier.notify_event(
             "ci-pass",
@@ -793,20 +802,35 @@ async def _run_foreman_immediately(
     reset_foreman_poll(guild_id)
 
 
-async def _dispatch_immediately(
+def _dispatch_immediately(
     guild_id: str, summary: str, user_id: str | None, task_id: str | None
 ) -> None:
     """Bypass debounce entirely and fire the foreman right away.
 
-    Wrapped as its own module-level seam (rather than inlining ``spawn`` at
-    the call site) so tests can patch it exactly like ``_debounce_queue`` —
-    the webhook response must not block on the foreman AI call, so the
-    actual work runs as a retained background task (see ``util.tasks.spawn``).
+    Plain (non-async) function: it only calls ``spawn()``, which schedules
+    the actual foreman call as a retained background task and returns
+    immediately — there is nothing here to await. Wrapped as its own
+    module-level seam (rather than inlining ``spawn`` at the call site) so
+    tests can patch it exactly like ``_debounce_queue``.
     """
     spawn(
         _run_foreman_immediately(guild_id, summary, user_id, task_id),
         name=f"foreman.ci-fail:{guild_id}:{task_id}",
     )
+
+
+def _ci_pass_key(guild_id: str, pr_label: str, head_sha: str | None) -> str:
+    """Build the CI-pass debounce key for one passing check event.
+
+    Normally scoped to ``head_sha`` so unrelated commits never coalesce.
+    Some payloads (e.g. certain ``check_suite`` events) omit ``head_sha``;
+    falling back to a literal ``None`` there would collide across different
+    commits/PRs that all lack one, so each such event instead gets a unique
+    key and is delivered on its own after the debounce window.
+    """
+    if not head_sha:
+        return f"{guild_id}:ci-pass:{pr_label}:{uuid4()}"
+    return f"{guild_id}:ci-pass:{pr_label}:{head_sha}"
 
 
 async def _dispatch_check_event(
@@ -845,7 +869,7 @@ async def _dispatch_check_event(
         summary = _build_foreman_summary(
             event_type, action, payload, repo, pr_number, task_id or "", sender_login
         )
-        await _dispatch_immediately(guild_id, summary, task_user_id, task_id)
+        _dispatch_immediately(guild_id, summary, task_user_id, task_id)
         logger.info(
             "github webhook ci-check failure dispatched immediately guild=%s delivery=%s "
             "repo=%s pr=%s check=%s conclusion=%s",
@@ -863,7 +887,7 @@ async def _dispatch_check_event(
         header = f"[github-event] check_run/check_suite passed on {pr_label}" + (
             f" (task {task_id})" if task_id else ""
         )
-        key = f"{guild_id}:ci-pass:{pr_label}:{head_sha}"
+        key = _ci_pass_key(guild_id, pr_label, head_sha)
         context = {
             "pr_label": pr_label,
             "repo": repo,
@@ -1249,23 +1273,31 @@ async def github_webhook(
             # When `dispatch` is True, this event goes through
             # _dispatch_check_event → the CI-pass debounce queue, which
             # posts one combined "Checks passed: a, b, c" Discord message
-            # once the window closes (see _deliver_ci_pass). Only send this
-            # immediate, single-check notification for the (rare) case where
-            # there's no context to debounce against, e.g. no matching task.
-            spawn(
-                discord_notifier.notify_event(
-                    "ci-pass",
-                    title=f"CI passed: {_pr_label}",
-                    description=f"`{check_name}` passed on `{_pr_label}`."
-                    + (f" Task: `{task_id}`." if task_id else ""),
-                    url=pr_url or None,
-                    issue_repo=repo,
-                    issue_number=pr_number,
-                    ps_guild_slug=guild_id,
-                    linked_issue_repo=linked_issue_repo,
-                    linked_issue_number=linked_issue_number,
-                ),
-                name=f"discord.ci-pass:{_pr_label}",
+            # once the window closes (see _deliver_ci_pass). `dispatch` is
+            # False here only because there's no matching task
+            # (`_should_dispatch_to_foreman`'s "no matching task" rule) — so
+            # task_id is already None. Route through the same CI-pass queue
+            # (with task_id=None, which _deliver_ci_pass treats as "skip the
+            # foreman call, Discord-only") rather than posting immediately,
+            # so these still coalesce instead of one message per check.
+            head_sha = node.get("head_sha") if isinstance(node, dict) else None
+            key = _ci_pass_key(guild_id, _pr_label or (repo or "unknown"), head_sha)
+            context = {
+                "pr_label": _pr_label or "unknown",
+                "repo": repo,
+                "pr_number": pr_number,
+                "pr_url": pr_url,
+                "linked_issue_repo": linked_issue_repo,
+                "linked_issue_number": linked_issue_number,
+            }
+            await _ci_pass_debounce_queue.schedule(
+                key,
+                guild_id,
+                f"[github-event] check_run/check_suite passed on {_pr_label}",
+                task_user_id,
+                task_id=None,
+                label=check_name,
+                context=context,
             )
         elif conclusion in {"failure", "cancelled", "timed_out", "action_required"}:
             spawn(
