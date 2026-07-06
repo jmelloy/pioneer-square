@@ -24,7 +24,7 @@ import discord_notifier
 from database import get_db
 from events import broadcast, broadcast_msg, emit_terminal_line
 from foreman_core.llm import get_foreman_model, make_anthropic_client
-from foreman_core.message_utils import _json_default
+from foreman_core.message_utils import _json_default, truncate_tool_result
 from foreman_core.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
@@ -1006,6 +1006,30 @@ async def exec_tools(guild_id: str, tool_uses: list, user_id: str | None = None)
     return list(await asyncio.gather(*coros))
 
 
+def _full_log_content(data_json: str | None) -> str | None:
+    """Extract the full, untruncated content from a TaskLog.data JSON blob.
+
+    Runners store the complete tool input/output in ``data`` while ``line``
+    holds a short display summary; this recovers the full text so it can be
+    surfaced to the Foreman via get_task_status.
+    """
+    if not data_json:
+        return None
+    try:
+        detail = json.loads(data_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(detail, dict):
+        return None
+    for key in ("output", "fullText", "input"):
+        val = detail.get(key)
+        if isinstance(val, str) and val:
+            return val
+        if val is not None:
+            return json.dumps(val, default=_json_default)
+    return None
+
+
 async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
     """Execute a single tool call and return its tool_result block."""
     inp = tu.input
@@ -1670,12 +1694,19 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         if agent_row:
                             agent_info = {"agent_id": agent_row[0], "agent_state": agent_row[1]}
                     logs_result = await db.exec(
-                        select(col(TaskLog.timestamp), col(TaskLog.line))
+                        select(col(TaskLog.timestamp), col(TaskLog.line), col(TaskLog.data))
                         .where(col(TaskLog.task_id) == task_id)
                         .order_by(col(TaskLog.id).desc())
                         .limit(limit)
                     )
                     log_rows = list(reversed(logs_result.all()))
+                    recent_logs = []
+                    for time_, line, data_json in log_rows:
+                        entry: dict = {"time": time_, "line": line}
+                        full = _full_log_content(data_json)
+                        if full and full != line:
+                            entry["data"] = truncate_tool_result(full)
+                        recent_logs.append(entry)
                     result_text = json.dumps(
                         {
                             "id": task.id,
@@ -1688,7 +1719,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             "pr_url": task.pr_url,
                             "created_at": task.created_at,
                             "deleted_at": task.deleted_at,
-                            "recent_logs": [{"time": r[0], "line": r[1]} for r in log_rows],
+                            "recent_logs": recent_logs,
                         },
                         default=_json_default,
                     )

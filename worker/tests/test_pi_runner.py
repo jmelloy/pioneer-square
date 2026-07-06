@@ -16,7 +16,7 @@ from pioneer_worker.pi_runner import parse_pi_event, run_pi_auto
 
 
 def test_parse_agent_start():
-    text, last = parse_pi_event({"type": "agent_start"}, "")
+    text, _, last = parse_pi_event({"type": "agent_start"}, "")
     assert text == "[pi] agent started"
     assert last == ""
 
@@ -26,7 +26,7 @@ def test_parse_message_update_full_text():
         "type": "message_update",
         "message": {"content": [{"type": "text", "text": "Hello world"}]},
     }
-    text, last = parse_pi_event(event, "")
+    text, _, last = parse_pi_event(event, "")
     assert text == "Hello world"
     assert last == "Hello world"
 
@@ -36,7 +36,7 @@ def test_parse_message_update_delta_only():
         "type": "message_update",
         "message": {"content": [{"type": "text", "text": "Hello world extended"}]},
     }
-    text, last = parse_pi_event(event, "Hello world")
+    text, _, last = parse_pi_event(event, "Hello world")
     # delta = " extended" (stripped) which has content
     assert text is not None
     assert "extended" in text
@@ -49,7 +49,7 @@ def test_parse_message_update_whitespace_delta_returns_none():
         "message": {"content": [{"type": "text", "text": "Hello world  "}]},
     }
     # delta is only whitespace → None
-    text, last = parse_pi_event(event, "Hello world  ")
+    text, _, last = parse_pi_event(event, "Hello world  ")
     assert text is None
 
 
@@ -59,7 +59,7 @@ def test_parse_tool_execution_start_bash():
         "toolName": "bash",
         "args": {"command": "ls -la"},
     }
-    text, _ = parse_pi_event(event, "")
+    text, _, _ = parse_pi_event(event, "")
     assert text == "▶ bash: ls -la"
 
 
@@ -69,7 +69,7 @@ def test_parse_tool_execution_start_read():
         "toolName": "read",
         "args": {"path": "/tmp/foo.py"},
     }
-    text, _ = parse_pi_event(event, "")
+    text, _, _ = parse_pi_event(event, "")
     assert text == "▶ read: /tmp/foo.py"
 
 
@@ -79,7 +79,7 @@ def test_parse_tool_execution_start_edit():
         "toolName": "edit",
         "args": {"file_path": "/tmp/bar.py"},
     }
-    text, _ = parse_pi_event(event, "")
+    text, _, _ = parse_pi_event(event, "")
     assert text == "▶ edit: /tmp/bar.py"
 
 
@@ -89,7 +89,7 @@ def test_parse_tool_execution_start_unknown():
         "toolName": "custom_tool",
         "args": {"key": "val"},
     }
-    text, _ = parse_pi_event(event, "")
+    text, _, _ = parse_pi_event(event, "")
     assert text is not None
     assert "custom_tool" in text
 
@@ -100,7 +100,7 @@ def test_parse_tool_execution_end_success():
         "result": {"content": [{"type": "text", "text": "output text"}]},
         "isError": False,
     }
-    text, _ = parse_pi_event(event, "")
+    text, _, _ = parse_pi_event(event, "")
     assert text == "  → output text"
 
 
@@ -110,7 +110,7 @@ def test_parse_tool_execution_end_error():
         "result": {"content": [{"type": "text", "text": "command failed"}]},
         "isError": True,
     }
-    text, _ = parse_pi_event(event, "")
+    text, _, _ = parse_pi_event(event, "")
     assert text == "  ✗ command failed"
 
 
@@ -120,7 +120,7 @@ def test_parse_tool_execution_end_empty_returns_none():
         "result": {"content": []},
         "isError": False,
     }
-    text, _ = parse_pi_event(event, "")
+    text, _, _ = parse_pi_event(event, "")
     assert text is None
 
 
@@ -130,19 +130,42 @@ def test_parse_tool_execution_end_multiline_shows_count():
         "result": {"content": [{"type": "text", "text": "line1\nline2\nline3"}]},
         "isError": False,
     }
-    text, _ = parse_pi_event(event, "")
+    text, _, _ = parse_pi_event(event, "")
     assert text is not None
     assert "+2 lines" in text
 
 
+def test_parse_tool_execution_end_preserves_full_output_in_detail():
+    """The display line is truncated to the first line, but detail carries the full output (#781)."""
+    long_output = "\n".join(f"line{i}" for i in range(100))
+    event = {
+        "type": "tool_execution_end",
+        "result": {"content": [{"type": "text", "text": long_output}]},
+        "isError": False,
+    }
+    text, detail, _ = parse_pi_event(event, "")
+    assert text == "  → line0 (+99 lines)"
+    assert detail == {"toolType": "tool_result", "output": long_output}
+
+
+def test_parse_tool_execution_start_preserves_full_input_in_detail():
+    event = {
+        "type": "tool_execution_start",
+        "toolName": "bash",
+        "args": {"command": "ls -la"},
+    }
+    _, detail, _ = parse_pi_event(event, "")
+    assert detail == {"toolType": "tool_use", "name": "bash", "input": {"command": "ls -la"}}
+
+
 def test_parse_unknown_event_returns_none():
-    text, last = parse_pi_event({"type": "unknown_type"}, "existing")
+    text, _, last = parse_pi_event({"type": "unknown_type"}, "existing")
     assert text is None
     assert last == "existing"
 
 
 def test_parse_empty_event_returns_none():
-    text, last = parse_pi_event({}, "abc")
+    text, _, last = parse_pi_event({}, "abc")
     assert text is None
     assert last == "abc"
 
@@ -169,7 +192,7 @@ sys.exit(0)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -189,7 +212,7 @@ async def test_run_pi_auto_not_found(tmp_path) -> None:
     """Missing pi binary → FileNotFoundError → returns (False, 'no_events', '', None)."""
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -217,7 +240,7 @@ sys.exit(1)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -245,7 +268,7 @@ sys.exit(0)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, _, _sid = await run_pi_auto(
@@ -276,7 +299,7 @@ sys.exit(1)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, _, _sid = await run_pi_auto(
@@ -312,7 +335,7 @@ while True:
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     # Should complete (not hang) even though pi refuses to exit on its own.
@@ -343,7 +366,7 @@ sys.exit(0)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     # Should complete without raising — either success or graceful error.
@@ -418,7 +441,7 @@ async def test_run_pi_auto_limit_overrun_skips_and_continues() -> None:
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     with patch("asyncio.create_subprocess_exec", new=_fake_create):
@@ -450,7 +473,7 @@ sys.exit(0)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     await run_pi_auto("do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi))
@@ -479,7 +502,7 @@ sys.exit(2)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -509,7 +532,7 @@ sys.exit(139)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -539,7 +562,7 @@ sys.exit(0)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -574,7 +597,7 @@ sys.exit(0)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -601,7 +624,7 @@ sys.exit(0)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -632,7 +655,7 @@ sys.exit(0)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -665,7 +688,7 @@ sys.exit(0)
     emitted: list[str] = []
     usage_records: list[dict] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     async def on_usage(rec: dict) -> None:
@@ -708,7 +731,7 @@ sys.exit(0)
     emitted: list[str] = []
     usage_records: list[dict] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     async def on_usage(rec: dict) -> None:
@@ -741,7 +764,7 @@ sys.exit(0)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text, session_id = await run_pi_auto(
@@ -783,7 +806,7 @@ sys.exit(1)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, _, _sid = await run_pi_auto(
@@ -814,7 +837,7 @@ sys.exit(0)
     emitted: list[str] = []
     usage_records: list[dict] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     async def on_usage(rec: dict) -> None:
