@@ -505,6 +505,159 @@ async def test_notify_event_falls_back_to_channel_when_thread_creation_fails(mon
 
 
 @pytest.mark.asyncio
+async def test_notify_event_routes_pr_into_linked_issue_thread(monkeypatch):
+    """A PR notification with a linked issue thread posts there, not a new PR thread."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client(status_code=204)
+    issue_thread_id = "111222333444"
+
+    async def fake_lookup_thread(repo, number):
+        assert (repo, number) == ("org/repo", 7)
+        return issue_thread_id
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_thread", fake_lookup_thread),
+        patch.object(discord_notifier, "_ensure_thread", AsyncMock()) as ensure_mock,
+    ):
+        await discord_notifier.notify_event(
+            "pr-opened",
+            title="PR opened: org/repo#42",
+            description="New PR",
+            issue_repo="org/repo",
+            issue_number=42,
+            linked_issue_repo="org/repo",
+            linked_issue_number=7,
+        )
+
+    # Posted straight into the issue's existing thread...
+    mock_client.post.assert_called_once()
+    call_url = mock_client.post.call_args[0][0]
+    assert f"/channels/{issue_thread_id}/messages" in call_url
+    # ...and never created (or looked up) a separate PR-numbered thread.
+    ensure_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_event_falls_back_to_pr_thread_when_no_linked_issue_thread(monkeypatch):
+    """No thread on record for the linked issue: falls back to the PR-keyed thread."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client(status_code=204)
+    pr_thread_id = "555666777888"
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=None)),
+        patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=pr_thread_id)),
+    ):
+        await discord_notifier.notify_event(
+            "pr-opened",
+            title="PR opened: org/repo#42",
+            description="New PR",
+            issue_repo="org/repo",
+            issue_number=42,
+            linked_issue_repo="org/repo",
+            linked_issue_number=7,
+        )
+
+    mock_client.post.assert_called_once()
+    call_url = mock_client.post.call_args[0][0]
+    assert f"/channels/{pr_thread_id}/messages" in call_url
+
+
+@pytest.mark.asyncio
+async def test_notify_event_ignores_close_when_routed_to_linked_issue_thread(monkeypatch):
+    """close=True must not archive the issue's thread — only a PR-owned thread."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client(status_code=204)
+    issue_thread_id = "111222333444"
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=issue_thread_id)),
+    ):
+        await discord_notifier.notify_event(
+            "pr-merged",
+            title="PR merged",
+            description="Merged!",
+            issue_repo="org/repo",
+            issue_number=42,
+            close=True,
+            linked_issue_repo="org/repo",
+            linked_issue_number=7,
+        )
+
+    mock_client.post.assert_called_once()
+    mock_client.patch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_event_resolves_linked_issue_from_task_id(monkeypatch):
+    """When only task_id is given, the linked issue is resolved via Task.issue_repo/number."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client(status_code=204)
+    issue_thread_id = "999000111222"
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(
+            discord_notifier,
+            "_lookup_task_issue_coords",
+            AsyncMock(return_value=("org/repo", 7)),
+        ),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=issue_thread_id)),
+    ):
+        await discord_notifier.notify_event(
+            "task-complete",
+            title="Task complete",
+            description="desc",
+            issue_repo="org/repo",
+            issue_number=42,
+            task_id="t-abc",
+        )
+
+    mock_client.post.assert_called_once()
+    call_url = mock_client.post.call_args[0][0]
+    assert f"/channels/{issue_thread_id}/messages" in call_url
+
+
+@pytest.mark.asyncio
+async def test_notify_event_task_id_skipped_when_linked_issue_explicit(monkeypatch):
+    """Explicit linked_issue_repo/number take precedence — task_id lookup is skipped."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+
+    mock_client = _make_mock_client(status_code=204)
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_lookup_task_issue_coords", AsyncMock()) as coords_mock,
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=None)),
+        patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_event(
+            "pr-opened",
+            title="PR opened",
+            description="desc",
+            issue_repo="org/repo",
+            issue_number=42,
+            linked_issue_repo="org/repo",
+            linked_issue_number=7,
+            task_id="t-abc",
+        )
+
+    coords_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_notify_existing_thread_posts_when_thread_found(monkeypatch):
     """notify_existing_thread posts to the thread when one is already persisted."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
