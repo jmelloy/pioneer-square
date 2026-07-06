@@ -443,11 +443,13 @@ def _extract_pr_info(payload: dict) -> tuple[int | None, str | None, str | None]
 async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None):
     """Match a webhook to one of this guild's tasks by (repo, pr_number).
 
-    Returns the task row (id, user_id, issue_repo, issue_number) or ``None``.
-    The user_id is needed so foreman dispatch routes back to the user who
-    originally created the task; issue_repo/issue_number is the task's linked
-    GitHub issue (set at ``assign_task`` time), used to route PR Discord
-    notifications into that issue's existing thread instead of a new one.
+    Returns the task row (id, user_id, issue_repo, issue_number, branch) or
+    ``None``. The user_id is needed so foreman dispatch routes back to the
+    user who originally created the task; issue_repo/issue_number is the
+    task's linked GitHub issue (set at ``assign_task`` time), used to route
+    PR Discord notifications into that issue's existing thread instead of a
+    new one; branch is the fallback source for that linkage when the PR
+    payload itself doesn't carry a head ref.
     """
     if not repo or pr_number is None:
         return None
@@ -457,6 +459,7 @@ async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None)
             col(Task.user_id),
             col(Task.issue_repo),
             col(Task.issue_number),
+            col(Task.branch),
         )
         .where(
             col(Task.guild_id) == guild_pk,
