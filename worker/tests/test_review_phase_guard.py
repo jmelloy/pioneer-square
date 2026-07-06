@@ -178,7 +178,8 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
 
     with (
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
-        patch("pioneer_worker.worker.git_ops.create_worktree", return_value=True),
+        patch("pioneer_worker.worker.git_ops.get_pr_head_branch", return_value="pr-42-branch"),
+        patch("pioneer_worker.worker.git_ops.checkout_pr_worktree", return_value=True),
         patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
         patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
@@ -200,3 +201,68 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
     assert "gh pr review" in desc_sent, (
         "review-phase description must show how to post review comments with gh pr review"
     )
+
+
+async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptureFixture):
+    """Review-phase tasks must check out the PR's own branch (via `gh pr checkout`,
+    wrapped by ``git_ops.checkout_pr_worktree``) instead of generating a new
+    ``claude/...`` branch, and must never push commits (issue #799).
+    """
+    import os
+    import tempfile
+    from unittest.mock import patch
+
+    worker = Worker(_make_cfg(repos=["owner/repo"]))
+    worker._joined = True
+    worker._send = AsyncMock()
+    worker.cfg.worker_id = "w-test01"
+
+    task = {
+        "id": "t-revcheckout",
+        "name": "Review PR #42",
+        "description": "Review the changes in PR #42",
+        "phase": "review",
+        "tool": "claude",
+        "issue_number": 42,
+        "issue_repo": "owner/repo",
+        "repos": ["owner/repo"],
+    }
+    slot = worker.agents[0]
+
+    async def fake_run_claude(desc, *args, **kwargs):
+        return True, "end_turn", "done", None
+
+    with (
+        patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
+        patch(
+            "pioneer_worker.worker.git_ops.get_pr_head_branch", return_value="feature/pr-42-branch"
+        ) as mock_get_branch,
+        patch(
+            "pioneer_worker.worker.git_ops.checkout_pr_worktree", return_value=True
+        ) as mock_checkout,
+        patch("pioneer_worker.worker.git_ops.create_worktree") as mock_create_worktree,
+        patch("pioneer_worker.worker.github_pr.push_branch") as mock_push,
+        patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
+        patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
+        patch.dict(os.environ, {}),
+        tempfile.TemporaryDirectory() as tmp,
+    ):
+        worker.cfg.work_dir = tmp
+        worker.cfg.repos_dir = tmp
+        await worker._execute_task(task, slot)
+
+    expected_wt_path = os.path.join(tmp, "test-guild", "w-test01", "t-revcheckout", "repo")
+    mock_get_branch.assert_awaited_once_with("owner/repo", 42)
+    mock_checkout.assert_awaited_once_with("/tmp/fake-repo", expected_wt_path, 42, "owner/repo")
+    mock_create_worktree.assert_not_called()
+    mock_push.assert_not_called()
+
+    updates = [
+        m
+        for m in worker._send.await_args_list
+        if m.args and m.args[0].get("branch") == "feature/pr-42-branch"
+    ]
+    assert updates, "task record must be updated with the PR's actual branch, not a generated one"
+    assert not any(
+        m.args[0].get("branch", "").startswith("claude/") for m in worker._send.await_args_list
+    ), "review tasks must never record a generated claude/... branch"

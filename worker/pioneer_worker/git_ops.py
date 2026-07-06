@@ -112,6 +112,73 @@ async def attach_worktree(repo_path: str, wt_path: str, branch: str) -> bool:
     return rc == 0
 
 
+async def run_gh(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
+    logger.debug("gh %s (cwd=%s)", " ".join(args), cwd or os.getcwd())
+    proc = await asyncio.create_subprocess_exec(
+        "gh",
+        *args,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    rc = proc.returncode if proc.returncode is not None else -1
+    if rc != 0:
+        logger.warning(
+            "gh %s failed rc=%s: %s",
+            " ".join(args),
+            rc,
+            stderr.decode(errors="replace").strip()[:200],
+        )
+    return rc, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+
+
+async def get_pr_head_branch(repo_full: str, pr_number: int | str) -> str | None:
+    """Look up a PR's head branch name via the ``gh`` CLI. Returns None on failure."""
+    rc, out, _ = await run_gh(
+        [
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            repo_full,
+            "--json",
+            "headRefName",
+            "-q",
+            ".headRefName",
+        ]
+    )
+    if rc != 0:
+        return None
+    branch = out.strip()
+    return branch or None
+
+
+async def checkout_pr_worktree(
+    repo_path: str, wt_path: str, pr_number: int | str, repo_full: str
+) -> bool:
+    """Create a worktree checked out to an existing PR's branch via ``gh pr checkout``.
+
+    Used for review-phase tasks: the worker must review the PR's actual branch
+    rather than a freshly generated one. A detached worktree is created first
+    (linked worktrees can't share a branch with the main checkout), then
+    ``gh pr checkout`` is run inside it so `gh` resolves the head branch
+    (including cross-fork PRs) and checks it out in place.
+    """
+    logger.info("Checking out PR #%s (%s) into worktree %s", pr_number, repo_full, wt_path)
+    os.makedirs(os.path.dirname(wt_path), exist_ok=True)
+    await run_git(["fetch", "origin"], cwd=repo_path)
+    rc, _, _ = await run_git(["worktree", "add", "--detach", wt_path, "origin/HEAD"], cwd=repo_path)
+    if rc != 0:
+        logger.error("Detached worktree add failed at %s (rc=%d)", wt_path, rc)
+        return False
+    rc, _, _ = await run_gh(["pr", "checkout", str(pr_number), "--repo", repo_full], cwd=wt_path)
+    if rc != 0:
+        logger.error("gh pr checkout failed for PR #%s (%s) in %s", pr_number, repo_full, wt_path)
+        return False
+    return True
+
+
 async def remove_worktree(repo_path: str, wt_path: str) -> None:
     logger.info("Removing worktree %s", wt_path)
     await run_git(["worktree", "remove", "--force", wt_path], cwd=repo_path)
