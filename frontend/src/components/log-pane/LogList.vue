@@ -7,8 +7,8 @@
       <LogLine
         v-if="item.type === 'line'"
         :log="item.log"
-        :expanded="expandedIdx === item.index"
-        @toggle="toggleDetail(item.index)"
+        :expanded="expandedLineIdx === item.index"
+        @toggle="toggleLineDetail(item.index)"
       />
       <div v-else class="turn-group">
         <div
@@ -26,8 +26,8 @@
             v-for="entry in item.entries"
             :key="entry.index"
             :log="entry.log"
-            :expanded="expandedIdx === entry.index"
-            @toggle="toggleDetail(entry.index)"
+            :expanded="expandedTurnLineIdx === entry.index"
+            @toggle="toggleTurnLineDetail(entry.index)"
           />
         </div>
       </div>
@@ -43,7 +43,12 @@ import type { LogEntry } from '../../types'
 const props = defineProps<{ logs: LogEntry[] }>()
 
 const bodyEl = ref<HTMLElement | null>(null)
-const expandedIdx = ref<number | null>(null)
+// Separate expansion state for top-level lines vs. lines nested inside a turn
+// body: both index into the same props.logs array, so sharing one ref would
+// let expanding a line in one context incorrectly expand/collapse the entry
+// at the same index in the other context.
+const expandedLineIdx = ref<number | null>(null)
+const expandedTurnLineIdx = ref<number | null>(null)
 const expandedTurns = ref<Set<number>>(new Set())
 
 interface LineItem {
@@ -114,14 +119,19 @@ function toggleTurn(turnNumber: number) {
   expandedTurns.value = next
 }
 
-function toggleDetail(i: number) {
-  expandedIdx.value = expandedIdx.value === i ? null : i
+function toggleLineDetail(i: number) {
+  expandedLineIdx.value = expandedLineIdx.value === i ? null : i
+}
+
+function toggleTurnLineDetail(i: number) {
+  expandedTurnLineIdx.value = expandedTurnLineIdx.value === i ? null : i
 }
 
 defineExpose({
   bodyEl,
   reset: () => {
-    expandedIdx.value = null
+    expandedLineIdx.value = null
+    expandedTurnLineIdx.value = null
     expandedTurns.value = new Set()
   },
 })

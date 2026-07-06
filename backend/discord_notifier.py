@@ -786,7 +786,7 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
     turn_number = start_turn
 
     def flush_group() -> None:
-        nonlocal turn_number
+        nonlocal turn_number, group
         if not group:
             return
         turn_number += 1
@@ -794,11 +794,13 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
         for entry in group:
             detail = entry.detail or {}
             if detail.get("toolType") == "tool_use":
+                # Lowercase intentionally, to match the frontend's formatTurnCounts
+                # (LogList.vue) so tool names group consistently regardless of case.
                 name = str(detail.get("name") or "tool").lower()
                 counts[name] = counts.get(name, 0) + 1
         parts = ", ".join(f"{name} × {count}" for name, count in counts.items())
         output.append(f"▶ Turn {turn_number}: {parts or 'tool activity'}")
-        group.clear()
+        group = []
 
     for entry in entries:
         detail = entry.detail or {}
