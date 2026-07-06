@@ -381,6 +381,106 @@ def test_task_complete_max_turns_notifies_foreman(client):
     )
 
 
+def test_task_complete_max_turns_does_not_truncate_last_text(client):
+    """task-complete's lastText must reach the foreman in full, not capped at 200 chars (#778)."""
+    test_client, db_url = client
+    guild_id = "nfy015"
+    worker_id = "w-nfy015"
+    task_id = "t-nfy015"
+    agent_id = "a-nfy015"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="working")
+
+    long_last_text = "This is a very long final message from Claude. " * 10
+    assert len(long_last_text) > 200
+
+    triggered, fake_trigger = _make_trigger_spy()
+
+    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+            ws_worker.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws_worker.receive_json()  # agent-joined broadcast
+
+            ws_worker.send_json(
+                {
+                    "type": "task-complete",
+                    "workerId": worker_id,
+                    "taskId": task_id,
+                    "branch": "feature/partial-work",
+                    "stopReason": "max_turns",
+                    "lastText": long_last_text,
+                    "prUrl": "",
+                    "sessionId": "",
+                }
+            )
+            ws_worker.send_json({"type": "ping"})
+            ws_worker.receive_json()  # pong — ensures handler is done
+
+    complete_triggers = [(e, m) for e, m in triggered if e == "task-complete"]
+    assert complete_triggers, f"Expected task-complete trigger, got: {triggered}"
+    _event, msg = complete_triggers[0]
+    assert long_last_text in msg, f"Expected full lastText in message, got: {msg}"
+
+
+def test_followup_done_max_turns_does_not_truncate_last_text(client):
+    """followup-done's lastText must reach the foreman in full, not capped at 200 chars (#778)."""
+    test_client, db_url = client
+    guild_id = "nfy016"
+    worker_id = "w-nfy016"
+    task_id = "t-nfy016"
+    agent_id = "a-nfy016"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="working")
+
+    long_last_text = "Another very long final message from Claude. " * 10
+    assert len(long_last_text) > 200
+
+    triggered, fake_trigger = _make_trigger_spy()
+
+    with patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+            ws_worker.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws_worker.receive_json()  # agent-joined broadcast
+
+            ws_worker.send_json(
+                {
+                    "type": "task-followup-done",
+                    "workerId": worker_id,
+                    "taskId": task_id,
+                    "stopReason": "max_turns",
+                    "lastText": long_last_text,
+                    "prUrl": "",
+                }
+            )
+            ws_worker.send_json({"type": "ping"})
+            ws_worker.receive_json()  # pong — ensures handler is done
+
+    followup_triggers = [(e, m) for e, m in triggered if e == "followup-done"]
+    assert followup_triggers, f"Expected followup-done trigger, got: {triggered}"
+    _event, msg = followup_triggers[0]
+    assert long_last_text in msg, f"Expected full lastText in message, got: {msg}"
+
+
 # ---------------------------------------------------------------------------
 # Guild-scoping tests (issue #621)
 # ---------------------------------------------------------------------------

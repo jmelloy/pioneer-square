@@ -914,7 +914,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
 
     task_uid = await _task_user_id(ctx.db, task_id)
     pr_line = f" PR: {pr_url}." if pr_url else ""
-    last_text_snippet = f' Last output: "{last_text[:200]}".' if last_text else ""
+    last_text_snippet = f' Last output: "{last_text}".' if last_text else ""
     if pr_url:
         # PR exists: lifecycle is driven by GitHub webhooks, not the foreman.
         # The task will be auto-finalized on merge or auto-failed on close without merge.
@@ -1021,7 +1021,7 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     task_uid = await _task_user_id(ctx.db, task_id)
 
     if stop_reason == "max_turns":
-        last_text_snippet = f' Last output: "{last_text_fud[:200]}".' if last_text_fud else ""
+        last_text_snippet = f' Last output: "{last_text_fud}".' if last_text_fud else ""
         human_msg = (
             f"[followup-done/max-turns] Worker {worker_id_msg} follow-up for task {task_id} "
             f"hit Claude's max-turns limit before finishing. Partial work committed.{last_text_snippet} "
