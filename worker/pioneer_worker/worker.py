@@ -1873,6 +1873,10 @@ class Worker:
         # The idle puller path has no followup_instructions (those lived only in
         # the WS message), so we must check phase as well.
         is_followup = bool(followup_instructions) or task.get("phase") == "followup"
+        phase = (task.get("phase") or "execute").lower()
+        is_review = phase == "review"
+        pr_repo = issue_repo
+        pr_number = task.get("issue_number")
 
         logger.info(
             "Executing task %s (agent=%s, followup=%s): %s",
@@ -1884,17 +1888,42 @@ class Worker:
         await self._set_state("working", agent)
         await self._task_update(task_id, agent=agent, state="working")
 
+        emit = self._task_emit(task_id, agent)
+
         name = task.get("name") or desc
-        # On follow-ups we must continue on the existing branch — the original
-        # worker pushed it and the foreman wants the same PR updated.
-        branch = followup_branch or f"claude/{_slug(name)}-{task_id}"
+        if is_review and not is_followup:
+            # Review tasks must operate on the PR's own branch — never a
+            # freshly generated claude/... branch — or the agent won't see
+            # the actual PR diff. Never fall back to a generated name here:
+            # doing so would silently review the wrong code.
+            branch = (
+                await git_ops.get_pr_head_branch(pr_repo, pr_number)
+                if pr_repo and pr_number
+                else None
+            )
+            if not branch:
+                logger.error(
+                    "Task %s: could not resolve PR branch for review (repo=%s pr=%s)",
+                    task_id,
+                    pr_repo,
+                    pr_number,
+                )
+                await emit(
+                    "✗ Could not resolve PR branch for review — aborting.", level=LEVEL_WORKER
+                )
+                await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
+                await self._set_state("error", agent)
+                return
+        else:
+            # On follow-ups we must continue on the existing branch — the original
+            # worker pushed it and the foreman wants the same PR updated.
+            branch = followup_branch or f"claude/{_slug(name)}-{task_id}"
         work_dir = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id, task_id)
         logger.info(
             "Task %s branch=%s work_dir=%s followup=%s", task_id, branch, work_dir, is_followup
         )
         os.makedirs(work_dir, exist_ok=True)
 
-        emit = self._task_emit(task_id, agent)
         if is_followup:
             await emit(f"Follow-up: {followup_instructions[:120]}", level=LEVEL_WORKER)
             await emit(f"Branch: {branch}", level=LEVEL_WORKER)
@@ -1933,7 +1962,7 @@ class Worker:
                 # Worktree from a prior run on the same task — reuse it.
                 logger.info("Task %s: reusing worktree at %s", task_id, wt_path)
                 await emit(f"Reusing worktree {repo_name}", level=LEVEL_WORKER)
-                if is_followup:
+                if is_followup or is_review:
                     # Pull latest so we don't clobber commits pushed since the
                     # last follow-up or by other workers.
                     await git_ops.run_git(["fetch", "origin", branch], cwd=wt_path)
@@ -1964,6 +1993,18 @@ class Worker:
                         level=LEVEL_WORKER,
                     )
                     ok = await git_ops.create_worktree(repo_path, wt_path, branch)
+            elif is_review and repo_full == pr_repo:
+                # Check out the PR's own branch via `gh pr checkout` instead of
+                # `git checkout -b` — review tasks read an existing PR, they
+                # never create a new branch.
+                logger.info(
+                    "Task %s: checking out PR #%s (%s) into worktree %s",
+                    task_id,
+                    pr_number,
+                    repo_full,
+                    wt_path,
+                )
+                ok = await git_ops.checkout_pr_worktree(repo_path, wt_path, pr_number, repo_full)
             else:
                 logger.info("Task %s: creating worktree %s on branch %s", task_id, wt_path, branch)
                 ok = await git_ops.create_worktree(repo_path, wt_path, branch)
@@ -2026,27 +2067,33 @@ class Worker:
         try:
             # ── Main execution with redirect loop ──────────────────────────
             if is_followup:
-                current_desc = (
-                    f"You are continuing existing work on branch `{branch}` for task {task_id}.\n\n"
-                    f"Original task:\n{desc}\n\n"
-                    f"Follow-up instructions:\n{followup_instructions}\n\n"
-                    "Make the requested changes, then commit and push:\n"
-                    f'  git add -A && git commit -m "<concise commit message>"\n'
-                    f"  git push origin {branch}\n"
-                    "If a PR already exists for this branch, no new PR is needed."
-                )
+                if is_review:
+                    current_desc = (
+                        f"You are continuing a review of branch `{branch}` for task {task_id}.\n\n"
+                        f"Original review task:\n{desc}\n\n"
+                        f"Follow-up instructions:\n{followup_instructions}\n\n"
+                        "Post updated findings via `gh pr review` — do NOT commit changes, "
+                        "push, or open a new PR."
+                    )
+                else:
+                    current_desc = (
+                        f"You are continuing existing work on branch `{branch}` for task {task_id}.\n\n"
+                        f"Original task:\n{desc}\n\n"
+                        f"Follow-up instructions:\n{followup_instructions}\n\n"
+                        "Make the requested changes, then commit and push:\n"
+                        f'  git add -A && git commit -m "<concise commit message>"\n'
+                        f"  git push origin {branch}\n"
+                        "If a PR already exists for this branch, no new PR is needed."
+                    )
             else:
                 current_desc = desc
                 if tool == "claude":
-                    _phase = (task.get("phase") or "execute").lower()
-                    if _phase == "review":
+                    if is_review:
                         # Review-phase tasks must post findings as GitHub PR review
                         # comments — NEVER by committing files and opening a new PR.
-                        _pr_repo = task.get("issue_repo") or ""
-                        _pr_num = task.get("issue_number")
-                        if _pr_repo and _pr_num:
-                            _pr_ref = f"https://github.com/{_pr_repo}/pull/{_pr_num}"
-                            _api_ref = f"repos/{_pr_repo}/pulls/{_pr_num}"
+                        if pr_repo and pr_number:
+                            _pr_ref = f"https://github.com/{pr_repo}/pull/{pr_number}"
+                            _api_ref = f"repos/{pr_repo}/pulls/{pr_number}"
                         else:
                             _pr_ref = "<PR-URL>"
                             _api_ref = "repos/OWNER/REPO/pulls/NUMBER"
@@ -2197,15 +2244,20 @@ class Worker:
                     records=usage_records,
                 )
 
-            # Push the branch regardless of outcome so partial work is visible
-            # and a follow-up run can build on it.
-            push_ok = await github_pr.push_branch(
-                branch=branch,
-                worktree_path=primary_wt,
-                emit=emit,
-            )
-            if push_ok:
-                await emit(f"Branch pushed: {branch}", level=LEVEL_WORKER)
+            if is_review:
+                # Review tasks only read the PR and post a `gh pr review` —
+                # never push commits or auto-commit stray local changes.
+                await emit("Review phase — skipping push (read-only task).", level=LEVEL_WORKER)
+            else:
+                # Push the branch regardless of outcome so partial work is visible
+                # and a follow-up run can build on it.
+                push_ok = await github_pr.push_branch(
+                    branch=branch,
+                    worktree_path=primary_wt,
+                    emit=emit,
+                )
+                if push_ok:
+                    await emit(f"Branch pushed: {branch}", level=LEVEL_WORKER)
 
             pr_url = await github_pr.find_existing_pr(
                 branch=branch,
@@ -2213,7 +2265,8 @@ class Worker:
                 token=token,
             )
             if pr_url:
-                await emit(f"✓ Claude-authored PR: {pr_url}", level=LEVEL_WORKER)
+                label = "Reviewed PR" if is_review else "✓ Claude-authored PR"
+                await emit(f"{label}: {pr_url}", level=LEVEL_WORKER)
                 await self._ensure_pr_webhook(pr_url, emit)
 
             logger.info("Task %s: pr_url=%s", task_id, pr_url)
