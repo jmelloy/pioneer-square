@@ -48,7 +48,12 @@ describe('LogList turn grouping', () => {
   })
 
   it('expands a turn to reveal its full log lines on click', async () => {
-    const logs = [toolLog('Read', 'tool_use'), toolLog('Read', 'tool_result')]
+    const logs = [
+      toolLog('Read', 'tool_use'),
+      toolLog('Read', 'tool_result'),
+      toolLog('Bash', 'tool_use'),
+      toolLog('Bash', 'tool_result'),
+    ]
     const wrapper = mount(LogList, { props: { logs } })
 
     expect(wrapper.find('.turn-body').exists()).toBe(false)
@@ -56,13 +61,25 @@ describe('LogList turn grouping', () => {
     expect(wrapper.find('.turn-body').exists()).toBe(true)
   })
 
+  it('renders a single tool call directly instead of collapsing it into a turn', () => {
+    const logs = [toolLog('Read', 'tool_use'), toolLog('Read', 'tool_result')]
+    const wrapper = mount(LogList, { props: { logs } })
+
+    expect(wrapper.find('.turn-summary').exists()).toBe(false)
+    expect(wrapper.text()).toContain('▶ Read')
+  })
+
   it('numbers multiple turns sequentially, separated by non-tool lines', () => {
     const logs = [
       toolLog('Edit', 'tool_use'),
       toolLog('Edit', 'tool_result'),
+      toolLog('Write', 'tool_use'),
+      toolLog('Write', 'tool_result'),
       textLog('thinking about next step'),
       toolLog('Bash', 'tool_use'),
       toolLog('Bash', 'tool_result'),
+      toolLog('Read', 'tool_use'),
+      toolLog('Read', 'tool_result'),
     ]
     const wrapper = mount(LogList, { props: { logs } })
 
