@@ -1887,7 +1887,7 @@ class Worker:
         name = task.get("name") or desc
         # On follow-ups we must continue on the existing branch — the original
         # worker pushed it and the foreman wants the same PR updated.
-        branch = followup_branch or f"claude/{_slug(name)}-{task_id[:6]}"
+        branch = followup_branch or f"claude/{_slug(name)}-{task_id}"
         work_dir = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id, task_id)
         logger.info(
             "Task %s branch=%s work_dir=%s followup=%s", task_id, branch, work_dir, is_followup
