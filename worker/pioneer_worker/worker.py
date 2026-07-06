@@ -2038,8 +2038,6 @@ class Worker:
             else:
                 current_desc = desc
                 if tool == "claude":
-                    pr_title = (task.get("name") or desc)[:72].replace('"', "'")
-                    closes = f" Closes #{task['issue_number']}" if task.get("issue_number") else ""
                     _phase = (task.get("phase") or "execute").lower()
                     if _phase == "review":
                         # Review-phase tasks must post findings as GitHub PR review
@@ -2097,7 +2095,7 @@ class Worker:
                 elif tool == "pi":
                     _pi_model = task.get("model") or self.cfg.pi_model
                     _pi_provider = task.get("provider") or self.cfg.pi_provider
-                    
+
                     logger.info(
                         "Task %s: launching pi in %s (model=%s provider=%s)",
                         task_id,
