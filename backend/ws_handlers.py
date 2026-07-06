@@ -118,6 +118,18 @@ def _parse_pr_url(pr_url: str | None) -> tuple[int | None, str | None]:
     return number, f"{owner}/{repo}"
 
 
+def _format_last_output(text: str, max_chars: int = 4000) -> str:
+    """Truncate worker output before it's embedded in a Foreman trigger message.
+
+    Foreman messages are delivered over the WebSocket and fed into the LLM's
+    context, so we still cap length — just far more generously than the old
+    200-char slice, which was cutting off Discord message content.
+    """
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "... [truncated]"
+
+
 async def _resolve_user_identifier(db, identifier: str) -> str | None:
     """Look up a User by id (numeric github id as text) or github_login.
 
@@ -915,7 +927,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
 
     task_uid = await _task_user_id(ctx.db, task_id)
     pr_line = f" PR: {pr_url}." if pr_url else ""
-    last_text_snippet = f' Last output: "{last_text[:200]}".' if last_text else ""
+    last_text_snippet = f' Last output: "{_format_last_output(last_text)}".' if last_text else ""
     if pr_url:
         # PR exists: lifecycle is driven by GitHub webhooks, not the foreman.
         # The task will be auto-finalized on merge or auto-failed on close without merge.
@@ -1022,7 +1034,9 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     task_uid = await _task_user_id(ctx.db, task_id)
 
     if stop_reason == "max_turns":
-        last_text_snippet = f' Last output: "{last_text_fud[:200]}".' if last_text_fud else ""
+        last_text_snippet = (
+            f' Last output: "{_format_last_output(last_text_fud)}".' if last_text_fud else ""
+        )
         human_msg = (
             f"[followup-done/max-turns] Worker {worker_id_msg} follow-up for task {task_id} "
             f"hit Claude's max-turns limit before finishing. Partial work committed.{last_text_snippet} "
