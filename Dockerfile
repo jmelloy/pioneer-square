@@ -74,11 +74,10 @@ FROM base AS worker
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Baseline system tools coding agents need to build, test, and lint typical
-# full-stack repos. Includes bundled Postgres (#786), which lets backend
-# tests run against a real Postgres inside the worker container without
-# depending on the postgres-test compose service. Bootstrapped at container
-# start by worker-entrypoint.sh rather than the Debian postinst cluster, so
-# it can run entirely as the unprivileged `worker` user.
+# full-stack repos. Includes the Postgres binaries (#786) so a coding agent
+# can initialise and start its own cluster on demand (e.g. `initdb`/`pg_ctl`)
+# without depending on the postgres-test compose service; no startup
+# automation runs here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
@@ -93,9 +92,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ripgrep \
         unzip \
     && rm -rf /var/lib/apt/lists/*
-
-COPY docker/postgres/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
-RUN chmod +x /usr/local/bin/worker-entrypoint.sh
 
 # Node.js 24 + corepack (for repos pinned to pnpm/yarn via `packageManager`).
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
@@ -133,15 +129,14 @@ RUN useradd --create-home --shell /bin/bash worker \
     && mkdir -p /work/repos /work/worktrees /config /home/worker/go \
     && chown -R worker:worker /work /config /home/worker
 
+# PGDATA gives the coding agent a sensible default cluster location to
+# initialise with `initdb`/`pg_ctl` when a repo's tests need a real Postgres.
 # TEST_DATABASE_URL is picked up by backend/tests/_test_config.py with zero
-# extra config — it matches that module's own fallback default. DATABASE_URL
-# points at a separate `pioneer` database for runtime use (e.g. `pioneer
-# worker` itself, or ad-hoc use inside the container), kept distinct from the
-# test database so test runs never touch runtime data.
-ENV DATABASE_URL=postgresql+asyncpg://pioneer:pioneer_password@localhost:5433/pioneer \
+# extra config — it matches that module's own fallback default. Postgres
+# itself is not started here; the agent starts it on demand.
+ENV PGDATA=/tmp/pgdata \
     TEST_DATABASE_URL=postgresql+asyncpg://pioneer:pioneer_password@localhost:5433/pioneer_test
 
 USER worker
 
-ENTRYPOINT ["/usr/local/bin/worker-entrypoint.sh"]
 CMD ["pioneer", "worker", "--config", "/config/pioneer-worker.toml"]
