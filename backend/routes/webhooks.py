@@ -392,6 +392,22 @@ def _linked_issue_number_from_body(body: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
+# Matches the issue number embedded in a task branch name, e.g.
+# "claude/discord-associate-pr-threads-773-t-0jlq" -> 773. The branch is
+# always set by the system when a task is created (unlike a "Closes #N" line,
+# which depends on the PR author remembering to write one), so this is
+# preferred over _linked_issue_number_from_body when both are available.
+_BRANCH_ISSUE_RE = re.compile(r"-(\d+)-t-[a-z0-9]+$")
+
+
+def _linked_issue_number_from_branch(branch: str | None) -> int | None:
+    """Return the issue number embedded in *branch*'s "-<N>-t-<id>" suffix."""
+    if not branch:
+        return None
+    match = _BRANCH_ISSUE_RE.search(branch)
+    return int(match.group(1)) if match else None
+
+
 def _extract_pr_info(payload: dict) -> tuple[int | None, str | None, str | None]:
     """Pull (pr_number, pr_url, repo) out of a webhook payload.
 
@@ -735,19 +751,32 @@ async def github_webhook(
     # The issue this PR is linked to, if any — used to route PR Discord
     # notifications into the issue's existing thread rather than a new one.
     # Prefer the task's own issue_number (set by the foreman at assign_task
-    # time); fall back to a "Closes #N"-style reference in the PR body for
-    # PRs not driven through a task (e.g. opened by a human).
+    # time); then the branch name's "-<N>-t-<id>" suffix (always set by the
+    # system, whether the branch comes from the PR payload itself or the
+    # task record); fall back to a "Closes #N"-style reference in the PR
+    # body last, since that depends on the author remembering to write one.
     linked_issue_repo: str | None = None
     linked_issue_number: int | None = None
     if task_row and task_row.issue_repo and task_row.issue_number is not None:
         linked_issue_repo, linked_issue_number = task_row.issue_repo, task_row.issue_number
     elif repo:
         pr_obj_for_link = payload.get("pull_request")
-        body_issue_number = _linked_issue_number_from_body(
-            pr_obj_for_link.get("body") if isinstance(pr_obj_for_link, dict) else None
+        head_ref = (
+            (pr_obj_for_link.get("head") or {}).get("ref")
+            if isinstance(pr_obj_for_link, dict)
+            else None
         )
-        if body_issue_number is not None:
-            linked_issue_repo, linked_issue_number = repo, body_issue_number
+        branch_issue_number = _linked_issue_number_from_branch(
+            head_ref or (task_row.branch if task_row else None)
+        )
+        if branch_issue_number is not None:
+            linked_issue_repo, linked_issue_number = repo, branch_issue_number
+        else:
+            body_issue_number = _linked_issue_number_from_body(
+                pr_obj_for_link.get("body") if isinstance(pr_obj_for_link, dict) else None
+            )
+            if body_issue_number is not None:
+                linked_issue_repo, linked_issue_number = repo, body_issue_number
 
     # Trim the persisted payload so a runaway diff hunk can't balloon the DB.
     body_text = body.decode("utf-8", errors="replace")
