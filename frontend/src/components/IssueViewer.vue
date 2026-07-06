@@ -988,9 +988,9 @@ onMounted(loadIssue)
 }
 
 .tl-logs-body {
-  padding: 6px 12px;
+  display: flex;
+  flex-direction: column;
+  height: 260px;
   background: var(--color-bg);
-  max-height: 260px;
-  overflow-y: auto;
 }
 </style>

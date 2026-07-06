@@ -53,9 +53,12 @@ def test_summarize_custom_prefix():
 
 def test_summarize_clips_long_lines():
     long_line = "x" * 500
-    result = _summarize_lines([long_line])
-    assert "…" in result
-    assert len(result.splitlines()[0]) < len(long_line)
+    prefix = "  → "
+    result = _summarize_lines([long_line], prefix=prefix)
+    first_line = result.splitlines()[0]
+    assert "…" in first_line
+    # +1 for the ellipsis character appended by _clip_line.
+    assert len(first_line) <= len(prefix) + _LINE_PREVIEW_LEN + 1
 
 
 def test_clip_line_short_unchanged():

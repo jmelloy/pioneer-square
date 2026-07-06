@@ -24,6 +24,9 @@ def _usage_tokens(usage: dict) -> dict:
     }
 
 
+# The task sidebar renders `line` in a narrow fixed-width column; 150 chars is
+# roughly 2-3 wrapped rows there before it starts pushing other tasks out of
+# view. Raise this only alongside a sidebar layout change.
 _LINE_PREVIEW_LEN = 150
 
 
