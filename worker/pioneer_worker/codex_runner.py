@@ -14,25 +14,36 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-EmitFn = Callable[[str], Awaitable[None]]
+EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 
 
-def parse_codex_event(event: dict) -> str | None:
-    """Extract a human-readable line from one codex stream-JSON event."""
+def parse_codex_event(event: dict) -> tuple[str | None, dict | None]:
+    """Extract (display_text, detail) from one codex stream-JSON event.
+
+    detail carries the full, untruncated tool input/output so callers can
+    persist it separately from the short display line (see claude_runner's
+    parse_claude_event for the same pattern).
+    """
     t = event.get("type")
     if t == "message" and event.get("role") == "assistant":
-        return (event.get("content") or "").strip() or None
+        text = (event.get("content") or "").strip()
+        return (text or None), None
     if t == "function_call":
         name = event.get("name", "")
         args = event.get("arguments", "")
-        return f"▶ {name}({args[:80]})"
+        summary = f"▶ {name}({args[:80]})"
+        detail = {"toolType": "tool_use", "name": name, "input": args}
+        return summary, detail
     if t == "function_result":
-        return f"  → {str(event.get('output', ''))[:200]}"
+        output = str(event.get("output", ""))
+        summary = f"  → {output[:200]}"
+        detail = {"toolType": "tool_result", "output": output}
+        return summary, detail
     if t == "done":
-        return "✓ Done"
+        return "✓ Done", None
     if t == "error":
-        return f"✗ {event.get('message', '')}"
-    return None
+        return f"✗ {event.get('message', '')}", None
+    return None, None
 
 
 async def run_codex_auto(
@@ -123,9 +134,9 @@ async def run_codex_auto(
                 stop_reason = "success"
             elif event.get("type") == "error":
                 stop_reason = "error_during_execution"
-            text = parse_codex_event(event)
+            text, detail = parse_codex_event(event)
             if text:
-                await emit(text)
+                await emit(text, detail)
                 if not text.startswith(("▶", "✓", "✗", "  →")):
                     last_text = text
 

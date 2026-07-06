@@ -8,7 +8,25 @@ from pioneer_worker.codex_runner import parse_codex_event, run_codex_auto
 
 
 def test_parse_codex_assistant_message() -> None:
-    assert parse_codex_event({"type": "message", "role": "assistant", "content": "done"}) == "done"
+    assert parse_codex_event({"type": "message", "role": "assistant", "content": "done"}) == (
+        "done",
+        None,
+    )
+
+
+def test_parse_codex_function_result_preserves_full_output_in_detail() -> None:
+    """The display line is truncated to 200 chars, but detail carries the full output (#781)."""
+    long_output = "x" * 500
+    text, detail = parse_codex_event({"type": "function_result", "output": long_output})
+    assert text == f"  → {long_output[:200]}"
+    assert detail == {"toolType": "tool_result", "output": long_output}
+
+
+def test_parse_codex_function_call_preserves_full_arguments_in_detail() -> None:
+    long_args = "y" * 500
+    text, detail = parse_codex_event({"type": "function_call", "name": "shell", "arguments": long_args})
+    assert text == f"▶ shell({long_args[:80]})"
+    assert detail == {"toolType": "tool_use", "name": "shell", "input": long_args}
 
 
 @pytest.mark.asyncio
@@ -42,7 +60,7 @@ print(json.dumps({{"type": "done"}}), flush=True)
 
     emitted: list[str] = []
 
-    async def emit(line: str) -> None:
+    async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
     success, stop_reason, last_text = await run_codex_auto(

@@ -349,7 +349,9 @@ FOREMAN_TOOLS = [
         "name": "get_task_status",
         "description": (
             "Get the current status of a task: state, phase, assigned worker and active agent state, "
-            "and the last log lines. Use this to verify a task is progressing and to diagnose stalls."
+            "and the last log lines. Use this to verify a task is progressing and to diagnose stalls. "
+            "Each log entry's `line` is a short summary; a `data` field with the full untruncated "
+            "tool output is included when it differs from the summary."
         ),
         "input_schema": {
             "type": "object",

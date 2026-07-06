@@ -250,6 +250,22 @@ def test_parse_user_tool_result_list_content():
     assert "result text" in pairs[0][1]["output"]
 
 
+def test_parse_user_tool_result_summarized_line_keeps_full_output_in_detail():
+    """Line is summarized (#781) middle-elided, but detail['output'] keeps the full text."""
+    lines = [f"line {i}" for i in range(50)]
+    full_output = "\n".join(lines)
+    event = {
+        "type": "user",
+        "message": {"content": [{"type": "tool_result", "content": full_output}]},
+    }
+    pairs = parse_claude_event(event)
+    assert len(pairs) == 1
+    text, detail = pairs[0]
+    assert "more lines" in text  # display line is elided
+    assert text != full_output
+    assert detail["output"] == full_output  # full content preserved untruncated
+
+
 def test_parse_user_tool_result_empty_skipped():
     event = {
         "type": "user",

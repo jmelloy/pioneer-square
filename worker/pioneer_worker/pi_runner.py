@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
-EmitFn = Callable[[str], Awaitable[None]]
+EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
 
 # Seconds to wait for pi to exit after stdin is closed before killing it.
@@ -53,10 +53,13 @@ def _parse_pi_usage(event: dict) -> dict | None:
     }
 
 
-def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, str]:
-    """Extract a human-readable line from one pi RPC event.
+def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, dict | None, str]:
+    """Extract a human-readable line (and full-content detail) from one pi RPC event.
 
-    Returns (display_text_or_None, updated_last_text).
+    Returns (display_text_or_None, detail_or_None, updated_last_text). detail
+    carries the full, untruncated tool input/output so callers can persist it
+    separately from the short display line (see claude_runner's
+    parse_claude_event for the same pattern).
     """
     t = event.get("type")
     if t == "message_update":
@@ -65,28 +68,32 @@ def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, str]:
             if isinstance(blk, dict) and blk.get("type") == "text":
                 full += blk.get("text", "")
         delta = full[len(last_text) :]
-        return (delta if delta.strip() else None), full
+        return (delta if delta.strip() else None), None, full
     if t == "tool_execution_start":
         name = event.get("toolName", "")
         inp = event.get("args", {})
         if name == "bash":
-            return f"▶ bash: {inp.get('command', '')[:120]}", last_text
-        if name in ("read", "write", "edit"):
-            return f"▶ {name}: {inp.get('path', inp.get('file_path', ''))}", last_text
-        return f"▶ {name}({json.dumps(inp)[:80]})", last_text
+            summary = f"▶ bash: {inp.get('command', '')[:120]}"
+        elif name in ("read", "write", "edit"):
+            summary = f"▶ {name}: {inp.get('path', inp.get('file_path', ''))}"
+        else:
+            summary = f"▶ {name}({json.dumps(inp)[:80]})"
+        detail = {"toolType": "tool_use", "name": name, "input": inp}
+        return summary, detail, last_text
     if t == "tool_execution_end":
         out = _result_text(event.get("result", {})).strip()
         if not out:
-            return None, last_text
+            return None, None, last_text
         lines = out.split("\n")
         preview = lines[0][:120]
         if len(lines) > 1:
             preview += f" (+{len(lines) - 1} lines)"
         prefix = "  ✗ " if event.get("isError") else "  → "
-        return f"{prefix}{preview}", last_text
+        detail = {"toolType": "tool_result", "output": out}
+        return f"{prefix}{preview}", detail, last_text
     if t == "agent_start":
-        return "[pi] agent started", last_text
-    return None, last_text
+        return "[pi] agent started", None, last_text
+    return None, None, last_text
 
 
 async def run_pi_auto(
@@ -259,7 +266,7 @@ async def run_pi_auto(
                                 **usage_data,
                             }
                         )
-            text, accumulated = parse_pi_event(event, accumulated)
+            text, detail, accumulated = parse_pi_event(event, accumulated)
             if etype == "message_update":
                 # Buffer streaming text; emit only at newline boundaries so
                 # each terminal-output message carries a full line, not a token.
@@ -276,7 +283,7 @@ async def run_pi_auto(
                 # is preserved, then emit the formatted summary line.
                 await _flush_text_buf()
                 if text:
-                    await emit(text)
+                    await emit(text, detail)
             if etype == "message_update" and accumulated.strip():
                 last_text = accumulated
             # We only send a single prompt; pi RPC mode stays alive waiting
