@@ -2070,14 +2070,7 @@ class Worker:
                             "        -f 'comments[][body]=inline comment'\n"
                             "Do NOT push any commits or open a PR as part of this review.\n"
                         )
-                    elif _phase in _PR_PHASES:
-                        current_desc = (
-                            f"{desc}\n\n"
-                            f"After completing your changes, commit, push, and open a PR:\n"
-                            f'  git add -A && git commit -m "<concise commit message>"\n'
-                            f"  git push origin {branch}\n"
-                            f'  gh pr create --title "{pr_title}" --body "<summary of changes>{closes}"\n'
-                        )
+
                     # plan / ephemeral / automation phases: leave current_desc = desc unchanged
             success = False
             stop_reason = "no_events"
@@ -2104,6 +2097,7 @@ class Worker:
                 elif tool == "pi":
                     _pi_model = task.get("model") or self.cfg.pi_model
                     _pi_provider = task.get("provider") or self.cfg.pi_provider
+                    
                     logger.info(
                         "Task %s: launching pi in %s (model=%s provider=%s)",
                         task_id,
