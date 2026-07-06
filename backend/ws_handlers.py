@@ -926,9 +926,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
 
     task_uid = await _task_user_id(ctx.db, task_id)
     pr_line = f" PR: {pr_url}." if pr_url else ""
-    last_text_snippet = (
-        f' Last output: "{_format_last_output(last_text)}".' if last_text else ""
-    )
+    last_text_snippet = f' Last output: "{_format_last_output(last_text)}".' if last_text else ""
     if pr_url:
         # PR exists: lifecycle is driven by GitHub webhooks, not the foreman.
         # The task will be auto-finalized on merge or auto-failed on close without merge.

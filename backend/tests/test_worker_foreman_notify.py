@@ -487,7 +487,9 @@ def test_task_complete_max_turns_caps_last_text_at_4000_chars(client):
     assert complete_triggers, f"Expected task-complete trigger, got: {triggered}"
     _event, msg = complete_triggers[0]
     assert huge_last_text not in msg, "lastText over 4000 chars should be truncated"
-    assert huge_last_text[:4000] in msg, "truncated lastText should still contain the first 4000 chars"
+    assert huge_last_text[:4000] in msg, (
+        "truncated lastText should still contain the first 4000 chars"
+    )
     assert "truncated" in msg, f"Expected a truncation marker in message, got: {msg}"
 
 
@@ -593,7 +595,9 @@ def test_followup_done_max_turns_caps_last_text_at_4000_chars(client):
     assert followup_triggers, f"Expected followup-done trigger, got: {triggered}"
     _event, msg = followup_triggers[0]
     assert huge_last_text not in msg, "lastText over 4000 chars should be truncated"
-    assert huge_last_text[:4000] in msg, "truncated lastText should still contain the first 4000 chars"
+    assert huge_last_text[:4000] in msg, (
+        "truncated lastText should still contain the first 4000 chars"
+    )
     assert "truncated" in msg, f"Expected a truncation marker in message, got: {msg}"
 
 
