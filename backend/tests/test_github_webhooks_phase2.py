@@ -47,6 +47,8 @@ from models import (
 from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
     _get_guild_owner_github_login,
+    _linked_issue_number_from_body,
+    _linked_issue_number_from_branch,
     _should_dispatch_to_foreman,
 )
 from sqlalchemy import update  # noqa: E402
@@ -165,6 +167,48 @@ class TestShouldDispatch:
             "pull_request_review", "submitted", {}, "human-reviewer", "t-1"
         )
         assert ok
+
+
+# ---------------------------------------------------------------------------
+# Linked-issue extraction (branch name / PR body)
+# ---------------------------------------------------------------------------
+
+
+class TestLinkedIssueFromBranch:
+    def test_extracts_issue_number_before_task_suffix(self):
+        assert (
+            _linked_issue_number_from_branch(
+                "claude/discord-associate-pr-threads-with-issue-thread-773-t-0jlq"
+            )
+            == 773
+        )
+
+    def test_extracts_from_short_branch(self):
+        assert _linked_issue_number_from_branch("claude/fix-thing-123-t-abc123") == 123
+
+    def test_no_task_suffix_returns_none(self):
+        assert _linked_issue_number_from_branch("claude/fix-thing-123") is None
+
+    def test_none_branch_returns_none(self):
+        assert _linked_issue_number_from_branch(None) is None
+
+    def test_non_matching_branch_returns_none(self):
+        assert _linked_issue_number_from_branch("main") is None
+
+
+class TestLinkedIssueFromBody:
+    def test_extracts_closes_reference(self):
+        assert _linked_issue_number_from_body("Some PR body.\n\nCloses #42") == 42
+
+    def test_case_insensitive_and_variants(self):
+        assert _linked_issue_number_from_body("this fixed #7") == 7
+        assert _linked_issue_number_from_body("RESOLVES #99") == 99
+
+    def test_no_reference_returns_none(self):
+        assert _linked_issue_number_from_body("Just a description, no linkage.") is None
+
+    def test_none_body_returns_none(self):
+        assert _linked_issue_number_from_body(None) is None
 
 
 # ---------------------------------------------------------------------------

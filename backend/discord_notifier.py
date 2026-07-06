@@ -93,6 +93,8 @@ _COLOURS: dict[str, int] = {
     "task-followup": 0xF1C40F,  # yellow
     "task-redirect": 0xE67E22,  # orange
     "pr-opened": 0x3498DB,  # blue
+    "pr-updated": 0x5DADE2,  # light blue
+    "pr-review": 0xF39C12,  # gold
     "pr-merged": 0x9B59B6,  # purple
     "pr-closed": 0x95A5A6,  # grey
     "worker-online": 0x1ABC9C,  # teal
@@ -529,12 +531,28 @@ async def notify_event(
     header_fields: dict[str, str] | None = None,
     close: bool = False,
     ps_guild_slug: str | None = None,
+    linked_issue_repo: str | None = None,
+    linked_issue_number: int | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Post a Discord notification, routing to a per-PR/issue thread when possible.
 
     Thread routing is attempted when ``DISCORD_BOT_TOKEN`` is set **and** both
     ``issue_repo`` and ``issue_number`` are provided.  The thread is lazily
     created on first use and its ID cached in the ``discord_threads`` table.
+
+    When *linked_issue_repo*/*linked_issue_number* are given (a PR's linked
+    GitHub issue, e.g. via ``Closes #N`` or the task's ``issue_number``) and
+    that issue already has a Discord thread on record, the message is posted
+    there instead — no new PR-numbered thread is created, and *close* is
+    ignored (the issue's thread outlives any single PR closing/merging into
+    it). Falls back to the ``issue_repo``/``issue_number`` (PR-keyed) behaviour
+    below when the linked issue has no thread yet.
+
+    When *linked_issue_repo*/*linked_issue_number* are omitted but *task_id*
+    is given, the linked issue is resolved from ``Task.issue_repo``/
+    ``Task.issue_number`` (same lookup ``notify_foreman_chat`` uses) — a
+    convenience for callers that only have a task_id on hand.
 
     When *ps_guild_slug* is provided, the destination channel is resolved via
     the ``discord_channel_guilds`` binding table (populated by
@@ -548,6 +566,25 @@ async def notify_event(
     operations fail. Silent no-op when the bot token is not configured.
     Never raises.
     """
+    if _bot_token() and not (linked_issue_repo and linked_issue_number is not None) and task_id:
+        coords = await _lookup_task_issue_coords(task_id)
+        if coords:
+            linked_issue_repo, linked_issue_number = coords
+
+    if _bot_token() and linked_issue_repo and linked_issue_number is not None:
+        linked_thread_id = await _lookup_thread(linked_issue_repo, linked_issue_number)
+        if linked_thread_id:
+            await _post_to_thread(
+                linked_thread_id,
+                event_type,
+                title,
+                description,
+                url=url,
+                color=color,
+                fields=header_fields,
+            )
+            return
+
     if _bot_token() and issue_repo and issue_number is not None:
         tn = thread_name or f"#{issue_number}: {title}"
         channel = await _resolve_channel_for_guild(ps_guild_slug)
