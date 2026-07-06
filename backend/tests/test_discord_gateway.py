@@ -94,7 +94,7 @@ async def test_identify_sent_after_hello_with_no_prior_session():
     identify = [m for m in ws.sent if m["op"] == gateway._OP_IDENTIFY]
     assert len(identify) == 1
     assert identify[0]["d"]["token"] == "test-token"
-    assert identify[0]["d"]["intents"] == 33281
+    assert identify[0]["d"]["intents"] == 33283
 
 
 @pytest.mark.asyncio
@@ -236,6 +236,62 @@ async def test_message_create_dispatch_reaches_queue_end_to_end():
 
     assert q.qsize() == 1
     assert (await q.get())["content"] == "hello"
+
+
+# ---------------------------------------------------------------------------
+# GUILD_MEMBER_ADD -> welcome DM
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_guild_member_add_sends_welcome_dm():
+    client = gateway.GatewayClient("token")
+    member = {"user": {"id": "u1", "username": "newperson", "bot": False}}
+    with patch("discord.gateway.send_welcome_dm", new=AsyncMock()) as mock_send:
+        await client._handle_guild_member_add(member)
+    mock_send.assert_awaited_once_with("u1", "newperson")
+
+
+@pytest.mark.asyncio
+async def test_guild_member_add_prefers_global_name():
+    client = gateway.GatewayClient("token")
+    member = {
+        "user": {"id": "u1", "username": "newperson", "global_name": "New Person", "bot": False}
+    }
+    with patch("discord.gateway.send_welcome_dm", new=AsyncMock()) as mock_send:
+        await client._handle_guild_member_add(member)
+    mock_send.assert_awaited_once_with("u1", "New Person")
+
+
+@pytest.mark.asyncio
+async def test_guild_member_add_skips_bot_accounts():
+    client = gateway.GatewayClient("token")
+    member = {"user": {"id": "u1", "username": "some-bot", "bot": True}}
+    with patch("discord.gateway.send_welcome_dm", new=AsyncMock()) as mock_send:
+        await client._handle_guild_member_add(member)
+    mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guild_member_add_skips_missing_user_id():
+    client = gateway.GatewayClient("token")
+    with patch("discord.gateway.send_welcome_dm", new=AsyncMock()) as mock_send:
+        await client._handle_guild_member_add({"user": {}})
+    mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guild_member_add_dispatch_end_to_end():
+    """A full GUILD_MEMBER_ADD dispatch frame triggers the welcome DM."""
+    member = {"user": {"id": "u1", "username": "newperson", "bot": False}}
+    frame = _dispatch("GUILD_MEMBER_ADD", member)
+    ws = FakeGatewayWebSocket([_hello(), frame, _CLOSE])
+    client = gateway.GatewayClient("test-token")
+
+    with patch("discord.gateway.send_welcome_dm", new=AsyncMock()) as mock_send:
+        await _run_briefly(client, ws)
+
+    mock_send.assert_awaited_once_with("u1", "newperson")
 
 
 # ---------------------------------------------------------------------------

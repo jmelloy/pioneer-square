@@ -13,14 +13,16 @@ Enable with::
     DISCORD_BOT_TOKEN=...          # reused from Phase 2/3
 
 The bot's Discord application must have the privileged "Message Content
-Intent" turned on in the Developer Portal (Bot page) — without it Discord
-rejects the IDENTIFY payload's ``MESSAGE_CONTENT`` intent bit.
+Intent" and "Server Members Intent" turned on in the Developer Portal (Bot
+page) — without them Discord rejects the IDENTIFY payload's
+``MESSAGE_CONTENT``/``GUILD_MEMBERS`` intent bits.
 
 Protocol handled, per https://discord.com/developers/docs/topics/gateway:
     HELLO (op 10)            -> start the heartbeat loop, then IDENTIFY/RESUME
     HEARTBEAT_ACK (op 11)    -> mark the last heartbeat as acknowledged
     DISPATCH (op 0)          -> READY stores session_id/resume url; MESSAGE_CREATE
-                                 is filtered and queued
+                                 is filtered and queued; GUILD_MEMBER_ADD sends a
+                                 welcome DM (see ``discord_notifier.send_welcome_dm``)
     RECONNECT (op 7)         -> close and reconnect, attempting RESUME
     INVALID_SESSION (op 9)   -> RESUME if resumable, otherwise fresh IDENTIFY
 
@@ -50,13 +52,15 @@ import random
 import time
 
 import websockets
+from discord_notifier import send_welcome_dm
 
 logger = logging.getLogger(__name__)
 
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 
-# GUILDS (1 << 0) | GUILD_MESSAGES (1 << 9) | MESSAGE_CONTENT (1 << 15)
-_INTENTS = 33281
+# GUILDS (1 << 0) | GUILD_MEMBERS (1 << 1) | GUILD_MESSAGES (1 << 9)
+# | MESSAGE_CONTENT (1 << 15)
+_INTENTS = 33283
 
 # Gateway opcodes.
 _OP_DISPATCH = 0
@@ -317,6 +321,8 @@ class GatewayClient:
             logger.info("discord gateway: RESUMED session_id=%s", self._session_id)
         elif event_type == "MESSAGE_CREATE":
             await self._handle_message_create(payload)
+        elif event_type == "GUILD_MEMBER_ADD":
+            await self._handle_guild_member_add(payload)
 
     async def _handle_message_create(self, message: dict) -> None:
         author = message.get("author") or {}
@@ -328,6 +334,22 @@ class GatewayClient:
         if not channel_id or not await _is_channel_wired(channel_id):
             return
         await self._queue.put(message)
+
+    async def _handle_guild_member_add(self, member: dict) -> None:
+        """DM a newly-joined guild member onboarding instructions.
+
+        Skips bot accounts (they can't run slash commands anyway) and members
+        with no resolvable user id. Delegates the actual DM — including
+        swallowing "DMs disabled" failures — to
+        ``discord_notifier.send_welcome_dm``, so this method never raises.
+        """
+        user = member.get("user") or {}
+        user_id = user.get("id")
+        if not user_id or user.get("bot"):
+            return
+        username = user.get("global_name") or user.get("username")
+
+        await send_welcome_dm(user_id, username)
 
 
 _gateway_task: asyncio.Task | None = None
