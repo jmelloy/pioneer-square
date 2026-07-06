@@ -932,7 +932,7 @@ async def test_notify_task_stream_buffers_short_line(monkeypatch):
         await discord_notifier.notify_task_stream("guild-1", "t-1", "short line")
 
         buf = discord_notifier._stream_buffers["t-1"]
-        assert buf.lines == ["short line"]
+        assert buf.lines == [discord_notifier._StreamEntry(line="short line")]
         assert buf.guild_id == "guild-1"
         assert buf.flush_task is not None
         await buf.flush_task  # drain the scheduled (mocked) flush task
@@ -1000,7 +1000,7 @@ async def test_post_task_stream_noop_when_no_thread(monkeypatch):
 async def test_flush_task_stream_drains_and_removes_buffer():
     """flush_task_stream posts the pending lines and drops the buffer entry."""
     buf = discord_notifier._StreamBuffer(guild_id="guild-1")
-    buf.lines = ["a", "b"]
+    buf.lines = [discord_notifier._StreamEntry(line="a"), discord_notifier._StreamEntry(line="b")]
     buf.size = 4
     discord_notifier._stream_buffers["t-1"] = buf
 
@@ -1018,6 +1018,77 @@ async def test_flush_task_stream_noop_when_no_buffer():
         await discord_notifier.flush_task_stream("t-unknown")
 
     post_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Turn-summary grouping (issue #770)
+# ---------------------------------------------------------------------------
+
+
+def _entry(line, tool_type=None, name=None):
+    detail = {"toolType": tool_type} if tool_type else None
+    if detail and name:
+        detail["name"] = name
+    return discord_notifier._StreamEntry(line=line, detail=detail)
+
+
+def test_format_stream_entries_groups_consecutive_tool_lines_into_a_turn():
+    """Consecutive tool_use/tool_result entries collapse into one compact turn line."""
+    entries = [
+        _entry("▶ edit: foo.py", "tool_use", "Edit"),
+        _entry("  → ok", "tool_result"),
+        _entry("▶ bash: pytest", "tool_use", "Bash"),
+        _entry("  → 3 passed", "tool_result"),
+        _entry("▶ edit: bar.py", "tool_use", "Edit"),
+        _entry("  → ok", "tool_result"),
+    ]
+
+    content, turn_count = discord_notifier._format_stream_entries(entries, 0)
+
+    assert content == "▶ Turn 1: edit × 2, bash × 1"
+    assert turn_count == 1
+
+
+def test_format_stream_entries_passes_through_non_tool_lines():
+    """Assistant text/thinking/result lines are posted as-is, not grouped."""
+    entries = [_entry("some assistant text"), _entry("✓ Done in 3 turns")]
+
+    content, turn_count = discord_notifier._format_stream_entries(entries, 0)
+
+    assert content == "some assistant text\n✓ Done in 3 turns"
+    assert turn_count == 0
+
+
+def test_format_stream_entries_numbers_turns_across_flushes():
+    """Turn numbers keep incrementing when starting from a prior batch's count."""
+    first_batch = [_entry("▶ bash: ls", "tool_use", "Bash")]
+    _, turn_count = discord_notifier._format_stream_entries(first_batch, 0)
+
+    second_batch = [_entry("▶ edit: foo.py", "tool_use", "Edit")]
+    content, turn_count = discord_notifier._format_stream_entries(second_batch, turn_count)
+
+    assert content == "▶ Turn 2: edit × 1"
+    assert turn_count == 2
+
+
+@pytest.mark.asyncio
+async def test_notify_task_stream_carries_detail_into_buffer(monkeypatch):
+    """notify_task_stream stores the passed-through detail on the buffered entry."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_STREAM_TASKS", "1")
+
+    with patch.object(discord_notifier, "_delayed_flush", AsyncMock()):
+        await discord_notifier.notify_task_stream(
+            "guild-1", "t-1", "▶ bash: ls", detail={"toolType": "tool_use", "name": "Bash"}
+        )
+
+        buf = discord_notifier._stream_buffers["t-1"]
+        assert buf.lines == [
+            discord_notifier._StreamEntry(
+                line="▶ bash: ls", detail={"toolType": "tool_use", "name": "Bash"}
+            )
+        ]
+        await buf.flush_task
 
 
 @pytest.mark.asyncio

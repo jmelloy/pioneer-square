@@ -647,14 +647,25 @@ def _stream_enabled() -> bool:
 
 
 @dataclass
+class _StreamEntry:
+    """One buffered stream line plus the structured tool detail that produced it."""
+
+    line: str
+    detail: dict | None = None
+
+
+@dataclass
 class _StreamBuffer:
     """In-memory accumulator for one task's pending stream lines."""
 
     guild_id: str
-    lines: list[str] = field(default_factory=list)
+    lines: list[_StreamEntry] = field(default_factory=list)
     size: int = 0
     flush_task: asyncio.Task | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Running count of turns already posted for this task, so turn numbers stay
+    # sequential across flush batches instead of resetting to 1 each time.
+    turn_count: int = 0
 
 
 # Keyed by task_id. Holds only tasks with un-flushed lines; entries are removed
@@ -760,6 +771,46 @@ def _chunk_content(text: str, size: int) -> list[str]:
     return chunks
 
 
+def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tuple[str, int]:
+    """Compact consecutive tool_use/tool_result entries into per-turn summary lines.
+
+    Mirrors the frontend's turn grouping (see LogList.vue): a run of consecutive
+    tool_use/tool_result entries between non-tool lines (assistant text, thinking,
+    turn-completion markers) becomes one ``▶ Turn N: edit × 2, bash × 1`` line
+    instead of dumping every raw tool call and result into the thread. Non-tool
+    lines pass through unchanged. Returns the formatted text and the turn count
+    to carry into the next batch, so numbering stays sequential across flushes.
+    """
+    output: list[str] = []
+    group: list[_StreamEntry] = []
+    turn_number = start_turn
+
+    def flush_group() -> None:
+        nonlocal turn_number
+        if not group:
+            return
+        turn_number += 1
+        counts: dict[str, int] = {}
+        for entry in group:
+            detail = entry.detail or {}
+            if detail.get("toolType") == "tool_use":
+                name = str(detail.get("name") or "tool").lower()
+                counts[name] = counts.get(name, 0) + 1
+        parts = ", ".join(f"{name} × {count}" for name, count in counts.items())
+        output.append(f"▶ Turn {turn_number}: {parts or 'tool activity'}")
+        group.clear()
+
+    for entry in entries:
+        detail = entry.detail or {}
+        if detail.get("toolType") in ("tool_use", "tool_result"):
+            group.append(entry)
+        else:
+            flush_group()
+            output.append(entry.line)
+    flush_group()
+    return "\n".join(output), turn_number
+
+
 async def _post_task_stream(guild_id: str, task_id: str, content: str) -> None:
     """Post *content* into *task_id*'s per-task thread as silent messages. Never raises."""
     channel = await _resolve_channel_for_guild(guild_id)
@@ -788,7 +839,7 @@ async def _drain_and_post(buf: _StreamBuffer, task_id: str) -> None:
     async with buf.lock:
         if not buf.lines:
             return
-        content = "\n".join(buf.lines)
+        content, buf.turn_count = _format_stream_entries(buf.lines, buf.turn_count)
         buf.lines = []
         buf.size = 0
     await _post_task_stream(buf.guild_id, task_id, content)
@@ -814,12 +865,18 @@ async def _delayed_flush(task_id: str) -> None:
     await _flush_task_stream(task_id)
 
 
-async def notify_task_stream(guild_id: str, task_id: str, line: str) -> None:
+async def notify_task_stream(
+    guild_id: str, task_id: str, line: str, detail: dict | None = None
+) -> None:
     """Buffer one streaming terminal line for *task_id* and schedule a flush.
 
     Fast and non-blocking: appends to an in-memory buffer and (re)arms a
     background flush task — the actual Discord POST happens off the caller's
     path so a worker's terminal firehose never stalls the WebSocket handler.
+    *detail* is the same structured tool-call payload the frontend uses (see
+    ``LogDetail`` in ``frontend/src/types.ts``) — passed through so tool_use/
+    tool_result lines can be folded into per-turn summaries at flush time
+    (see ``_format_stream_entries``) instead of posted raw.
     Silent no-op unless ``DISCORD_STREAM_TASKS`` is enabled (and a bot token is
     configured), or when *line*/*task_id* is blank. Never raises.
     """
@@ -833,7 +890,7 @@ async def notify_task_stream(guild_id: str, task_id: str, line: str) -> None:
         buf = _StreamBuffer(guild_id=guild_id)
         _stream_buffers[task_id] = buf
 
-    buf.lines.append(line)
+    buf.lines.append(_StreamEntry(line=line, detail=detail))
     buf.size += len(line) + 1
 
     if buf.size >= _STREAM_FLUSH_CHARS:
