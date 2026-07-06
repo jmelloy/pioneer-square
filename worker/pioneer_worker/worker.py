@@ -1913,6 +1913,7 @@ class Worker:
                 )
                 await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
                 await self._set_state("error", agent)
+                await self._set_state("idle", agent)
                 return
         else:
             # On follow-ups we must continue on the existing branch — the original
@@ -1993,10 +1994,11 @@ class Worker:
                         level=LEVEL_WORKER,
                     )
                     ok = await git_ops.create_worktree(repo_path, wt_path, branch)
-            elif is_review and repo_full == pr_repo:
+            elif is_review and pr_repo and repo_full.lower() == pr_repo.lower():
                 # Check out the PR's own branch via `gh pr checkout` instead of
                 # `git checkout -b` — review tasks read an existing PR, they
-                # never create a new branch.
+                # never create a new branch. Compared case-insensitively since
+                # GitHub repo slugs are case-insensitive.
                 logger.info(
                     "Task %s: checking out PR #%s (%s) into worktree %s",
                     task_id,
@@ -2006,6 +2008,14 @@ class Worker:
                 )
                 ok = await git_ops.checkout_pr_worktree(repo_path, wt_path, pr_number, repo_full)
             else:
+                if is_review:
+                    logger.warning(
+                        "Task %s: repo %s does not match PR repo %s (case-insensitive) — "
+                        "falling back to create_worktree instead of gh pr checkout",
+                        task_id,
+                        repo_full,
+                        pr_repo,
+                    )
                 logger.info("Task %s: creating worktree %s on branch %s", task_id, wt_path, branch)
                 ok = await git_ops.create_worktree(repo_path, wt_path, branch)
             if ok:
