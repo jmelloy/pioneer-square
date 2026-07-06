@@ -66,13 +66,23 @@ interface TurnItem {
 }
 
 function isToolLine(log: LogEntry): boolean {
-  return log.detail?.toolType === 'tool_use' || log.detail?.toolType === 'tool_result'
+  // 'thinking' blocks routinely appear between tool calls in the same logical
+  // turn (Claude emits thinking → tool_use → tool_result per step), so they're
+  // treated as part of the run rather than a boundary — otherwise every
+  // tool call in a multi-step turn gets its own thinking-separated fragment
+  // and never accumulates past toolCallCount 1, defeating grouping entirely.
+  return (
+    log.detail?.toolType === 'tool_use' ||
+    log.detail?.toolType === 'tool_result' ||
+    log.detail?.toolType === 'thinking'
+  )
 }
 
-// Groups consecutive tool_use/tool_result entries into a single collapsible
-// "turn" (mirrors the Discord thread grouping in backend/discord_notifier.py's
-// _format_stream_entries). Non-tool lines (assistant text, thinking, status)
-// pass through individually and break the current turn.
+// Groups consecutive tool_use/tool_result/thinking entries into a single
+// collapsible "turn" (mirrors the Discord thread grouping in
+// backend/discord_notifier.py's _format_stream_entries). Non-tool lines
+// (assistant text, status) pass through individually and break the current
+// turn.
 const groupedLogs = computed<(LineItem | TurnItem)[]>(() => {
   const result: (LineItem | TurnItem)[] = []
   let turnNumber = 0
