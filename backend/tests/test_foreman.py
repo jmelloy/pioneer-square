@@ -899,6 +899,42 @@ class TestExecToolsDispatching:
         assert data["state"] == "working"
         assert "recent_logs" in data
 
+    async def test_get_task_status_includes_log_data(self, db_session):
+        insert_guild(db_session, "g-status-data")
+        _insert_worker(db_session, "g-status-data", "w-status-data")
+        _insert_task(db_session, "t-stat2", "g-status-data", "w-status-data", state="working")
+        now = datetime.now(UTC)
+        detail = {"tool": "Read", "input": {"file_path": "/tmp/foo.py"}, "output": "full contents"}
+        with _sync_session(db_session) as session:
+            session.add(
+                TaskLog(
+                    task_id="t-stat2",
+                    timestamp=now,
+                    line="Read /tmp/foo.py",
+                    worker_id="w-status-data",
+                    data=json.dumps(detail),
+                )
+            )
+            session.add(
+                TaskLog(
+                    task_id="t-stat2",
+                    timestamp=now,
+                    line="plain log line",
+                    worker_id="w-status-data",
+                )
+            )
+            session.commit()
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-status-data", [_fake_tool_use("get_task_status", {"task_id": "t-stat2"})]
+            )
+        data = json.loads(results[0]["content"])
+        logs = data["recent_logs"]
+        assert logs[0]["line"] == "Read /tmp/foo.py"
+        assert logs[0]["data"] == "full contents"
+        assert logs[1]["line"] == "plain log line"
+        assert "data" not in logs[1]
+
     async def test_unknown_tool_name_returns_empty_result(self, db_session):
         """An unknown tool name should not raise; result content may be empty."""
         insert_guild(db_session, "g-unknown")
