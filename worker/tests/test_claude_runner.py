@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import pytest
 from pioneer_worker.claude_runner import (
+    _LINE_PREVIEW_LEN,
+    _clip_line,
     _summarize_lines,
     _truncate_at_word,
     _usage_tokens,
@@ -47,6 +49,24 @@ def test_summarize_custom_prefix():
     lines = ["alpha", "beta", "gamma", "delta", "epsilon"]
     result = _summarize_lines(lines, prefix=">> ")
     assert result.count(">> ") >= 3
+
+
+def test_summarize_clips_long_lines():
+    long_line = "x" * 500
+    result = _summarize_lines([long_line])
+    assert "…" in result
+    assert len(result.splitlines()[0]) < len(long_line)
+
+
+def test_clip_line_short_unchanged():
+    assert _clip_line("short") == "short"
+
+
+def test_clip_line_long_clipped():
+    long_line = "y" * 500
+    clipped = _clip_line(long_line)
+    assert clipped.endswith("…")
+    assert len(clipped) == _LINE_PREVIEW_LEN + 1
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +284,24 @@ def test_parse_user_tool_result_summarized_line_keeps_full_output_in_detail():
     assert "more lines" in text  # display line is elided
     assert text != full_output
     assert detail["output"] == full_output  # full content preserved untruncated
+
+
+def test_parse_user_tool_result_single_long_line_clipped_but_detail_full():
+    """A single line under the 4-line elision threshold can still be huge
+
+    (e.g. minified JSON); the display line must still be clipped for the
+    sidebar while ``detail['output']`` keeps the untruncated content.
+    """
+    full_output = "x" * 5000
+    event = {
+        "type": "user",
+        "message": {"content": [{"type": "tool_result", "content": full_output}]},
+    }
+    pairs = parse_claude_event(event)
+    assert len(pairs) == 1
+    text, detail = pairs[0]
+    assert len(text) < 200
+    assert detail["output"] == full_output
 
 
 def test_parse_user_tool_result_empty_skipped():

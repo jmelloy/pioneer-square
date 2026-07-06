@@ -24,16 +24,32 @@ def _usage_tokens(usage: dict) -> dict:
     }
 
 
+_LINE_PREVIEW_LEN = 150
+
+
+def _clip_line(line: str, limit: int = _LINE_PREVIEW_LEN) -> str:
+    """Clip a single display line to *limit* chars. The full text always lives
+    in the accompanying ``detail`` payload — this only shortens the sidebar
+    preview.
+    """
+    return line if len(line) <= limit else line[:limit] + "…"
+
+
 def _summarize_lines(lines: list[str], prefix: str = "  → ") -> str:
-    """Format a list of lines as a 2+ellipsis+1 summary."""
+    """Format a list of lines as a short 2+ellipsis+1 summary.
+
+    Each shown line is clipped to `_LINE_PREVIEW_LEN` chars so the summary
+    stays sidebar-sized; callers pair this with a ``detail`` dict carrying
+    the untruncated content for click-to-expand.
+    """
     if len(lines) <= 4:
-        return "\n".join(f"{prefix}{l}" for l in lines)
+        return "\n".join(f"{prefix}{_clip_line(l)}" for l in lines)
     middle = len(lines) - 3
     return (
-        f"{prefix}{lines[0]}\n"
-        f"{prefix}{lines[1]}\n"
+        f"{prefix}{_clip_line(lines[0])}\n"
+        f"{prefix}{_clip_line(lines[1])}\n"
         f"{prefix}… ({middle} more lines)\n"
-        f"{prefix}{lines[-1]}"
+        f"{prefix}{_clip_line(lines[-1])}"
     )
 
 
