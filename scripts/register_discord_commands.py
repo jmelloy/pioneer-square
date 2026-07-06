@@ -119,6 +119,24 @@ COMMANDS = [
         "description": "Link your Discord account to your Pioneer Square account",
         "options": [],
     },
+    {
+        "name": "worker-spawn",
+        "description": "Spawn a new Pioneer Square worker (requires a connected account)",
+        "options": [
+            {
+                "name": "repos",
+                "description": "Comma-separated owner/repo list (e.g. jmelloy/pioneer-square)",
+                "type": 3,  # STRING
+                "required": False,
+            },
+            {
+                "name": "tools",
+                "description": "Comma-separated tools/agents (e.g. claude,codex)",
+                "type": 3,  # STRING
+                "required": False,
+            },
+        ],
+    },
 ]
 
 DISCORD_API = "https://discord.com/api/v10"

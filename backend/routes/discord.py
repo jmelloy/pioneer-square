@@ -23,6 +23,7 @@ Registered slash commands (see scripts/register_discord_commands.py):
     /join-channel <channel> [guild]     — wire a Discord channel to a Pioneer Square guild
     /leave-channel [channel]            — remove a channel's Pioneer Square guild binding
     /connect-account                    — link your Discord account to Pioneer Square
+    /worker-spawn [repos] [tools]       — spawn a new worker (requires a connected account)
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from events import broadcast_msg
 from fastapi import APIRouter, BackgroundTasks, Request, Response
 from models import (
     Agent,
+    DiscordAccountLink,
     DiscordChannelGuild,
     DiscordConnectToken,
     Guild,
@@ -662,6 +664,99 @@ async def _cmd_connect_account(interaction: dict) -> None:
     )
 
 
+async def _cmd_worker_spawn(interaction: dict) -> None:
+    """Spawn a new worker via the same tool the Foreman AI uses to spawn workers.
+
+    Requires the invoking Discord user to have linked their account with
+    ``/connect-account`` first — spawning a worker starts a container and
+    consumes credentials, so it's gated on the same account link used to
+    resolve identity elsewhere (see ``discord/router.py::_resolve_identity``).
+    """
+    token = interaction.get("token", "")
+    data = interaction.get("data", {})
+
+    identity = _interaction_user(interaction)
+    if not identity:
+        await _send_followup(token, content="Could not determine your Discord account.")
+        return
+    discord_user_id, _ = identity
+
+    options = {o["name"]: o for o in data.get("options", [])}
+    repos_opt = options.get("repos")
+    tools_opt = options.get("tools")
+    repos = (
+        [r.strip() for r in str(repos_opt["value"]).split(",") if r.strip()] if repos_opt else []
+    )
+    tools_list = (
+        [t.strip() for t in str(tools_opt["value"]).split(",") if t.strip()] if tools_opt else []
+    )
+
+    guild_slug = _pioneer_guild_slug() or ""
+
+    try:
+        async with AsyncSessionLocal() as db:
+            link_result = await db.exec(
+                select(col(DiscordAccountLink.ps_user_id)).where(
+                    col(DiscordAccountLink.discord_user_id) == discord_user_id
+                )
+            )
+            if not link_result.one_or_none():
+                await _send_followup(
+                    token,
+                    content=(
+                        "Your Discord account isn't linked to Pioneer Square yet. "
+                        "Run `/connect-account` first, then try again."
+                    ),
+                )
+                return
+
+            guild_result = await db.exec(select(Guild).where(col(Guild.slug) == guild_slug))
+            guild = guild_result.one_or_none()
+            if not guild:
+                await _send_followup(token, content=f"Pioneer guild `{guild_slug}` not found.")
+                return
+
+            from foreman.tools import spawn_worker  # noqa: PLC0415
+
+            result_text, is_error = await spawn_worker(
+                inp={"repos": repos, "tools": tools_list or None},
+                guild_id=guild_slug,
+                guild_pk=guild.id,
+                db=db,
+            )
+
+            if is_error:
+                await _send_followup(token, content=f"Failed to spawn worker: {result_text}")
+                return
+
+            info = json.loads(result_text)
+            worker_id = info.get("worker_id", "unknown")
+
+            state_result = await db.exec(
+                select(col(Worker.state)).where(col(Worker.id) == worker_id)
+            )
+            state = state_result.one_or_none() or "offline"
+    except Exception:
+        logger.exception("discord: /worker-spawn failed")
+        await _send_followup(token, content="Failed to spawn worker.")
+        return
+
+    status = "online" if state not in ("offline", "spawn_failed") else "queued"
+    embeds = [
+        {
+            "title": f"Worker Spawned: {worker_id}",
+            "description": (
+                f"Status: **{status}**\n"
+                f"Repos: {', '.join(repos) if repos else '—'}\n"
+                f"Tools: {', '.join(tools_list) if tools_list else 'default'}"
+            ),
+            "color": 0xF39C12,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+    ]
+    await _send_followup(token, embeds=embeds)
+
+
 async def _permission_denied_message() -> str:
     return (
         "You need the `Manage Channels` permission or the "
@@ -831,6 +926,9 @@ async def _dispatch_command(interaction: dict) -> None:
         return
     if command_name == "connect-account":
         await _cmd_connect_account(interaction)
+        return
+    if command_name == "worker-spawn":
+        await _cmd_worker_spawn(interaction)
         return
 
     guild_slug = _pioneer_guild_slug() or ""
