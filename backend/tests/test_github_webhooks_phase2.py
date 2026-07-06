@@ -452,6 +452,8 @@ def test_webhook_skips_foreman_for_bot_on_non_ci(client):
 
 
 def test_webhook_dispatches_for_ci_bot_check_run(client):
+    """A failing check_run bypasses debounce entirely (issue #785) — it goes
+    through ``_dispatch_immediately``, not the buffered ``_debounce_queue``."""
     test_client, db_url = client
     insert_guild(db_url, "gd4")
     _set_webhook_secret(db_url, "gd4", "ssecret")
@@ -477,15 +479,20 @@ def test_webhook_dispatches_for_ci_bot_check_run(client):
     }
     body = json.dumps(payload).encode()
     headers = _signed_headers("ssecret", body, event="check_run", delivery="d-ci-1")
-    with patch("routes.webhooks._debounce_queue") as mock_q:
+    with (
+        patch("routes.webhooks._debounce_queue") as mock_q,
+        patch("routes.webhooks._dispatch_immediately", new=AsyncMock()) as mock_immediate,
+    ):
         mock_q.schedule = AsyncMock()
         resp = test_client.post("/webhooks/github/gd4", content=body, headers=headers)
     assert resp.status_code == 202
-    assert mock_q.schedule.call_count == 1
-    key_arg, guild_arg, summary_arg, _user_arg = mock_q.schedule.call_args.args
-    assert "gd4" in key_arg
+    assert mock_q.schedule.call_count == 0
+    assert mock_immediate.call_count == 1
+    guild_arg, summary_arg, user_arg, task_arg = mock_immediate.call_args.args
     assert guild_arg == "gd4"
     assert "rspec" in summary_arg
+    assert task_arg == "t-ci"
+    assert user_arg is None
 
 
 # ---------------------------------------------------------------------------

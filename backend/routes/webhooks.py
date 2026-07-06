@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 import discord_notifier
@@ -52,6 +53,20 @@ router = APIRouter()
 # Configurable via WEBHOOK_DEBOUNCE_SECONDS (default: 30 seconds).
 DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "30"))
 
+# How long (seconds) to wait for further *passing* check_run/check_suite
+# events on the same commit before delivering one combined "checks passed"
+# notification. Short by design (issue #785): passing CI checks aren't
+# actionable individually, so a short window is enough to coalesce the
+# handful of check_run/check_suite events GitHub sends per commit without
+# meaningfully delaying the foreman's view of a green PR. Configurable via
+# CI_PASS_DEBOUNCE_SECONDS (default: 7 seconds).
+CI_PASS_DEBOUNCE_SECONDS: float = float(os.environ.get("CI_PASS_DEBOUNCE_SECONDS", "7"))
+
+# Conclusions that must bypass debounce entirely and reach the foreman
+# immediately — these are actionable failures the foreman should react to
+# without waiting on a coalescing window.
+_FAILING_CHECK_CONCLUSIONS = frozenset({"failure", "action_required", "timed_out", "cancelled"})
+
 
 # Shared secret for the /foreman/ci-notify endpoint.  GitHub Actions sets
 # Authorization: Bearer <PIONEER_CI_KEY> on each CI completion POST.
@@ -74,16 +89,112 @@ _MAX_PAYLOAD_BYTES = 64 * 1024
 _BOT_OK_EVENTS = frozenset({"check_run", "check_suite", "status"})
 
 
+# (summary, user_id, task_id, label, context) — label and context are unused
+# by the default combine/deliver and only populated by the CI-pass queue
+# (label = check name, context = repo/PR/issue-linkage info needed to build
+# the combined Discord notification at delivery time).
+_DebounceItem = tuple[str, "str | None", "str | None", "str | None", "dict | None"]
+
+
+def _default_combine(items: list[_DebounceItem]) -> str:
+    """Join buffered summaries with a separator (the original combine behavior)."""
+    summaries = [s for s, _, _, _, _ in items]
+    return "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
+
+
+def _combine_ci_pass_items(items: list[_DebounceItem]) -> str:
+    """Render one "checks passed" message listing every distinct check name.
+
+    Every item scheduled under a CI-pass key shares the same pre-built header
+    (see ``key`` construction in ``_dispatch_check_event``); only the label
+    (check name) varies, so the header is taken from the first item and check
+    names are deduped while preserving first-seen order.
+    """
+    header = items[0][0]
+    checks_str = ", ".join(_dedupe_labels(items)) or "checks"
+    return f"{header}\nChecks passed: {checks_str}"
+
+
+def _dedupe_labels(items: list[_DebounceItem]) -> list[str]:
+    """Distinct check names across *items*, preserving first-seen order."""
+    seen: set[str] = set()
+    names: list[str] = []
+    for _, _, _, label, _ in items:
+        if label and label not in seen:
+            seen.add(label)
+            names.append(label)
+    return names
+
+
+async def _default_deliver(
+    key: str, guild_id: str, combined: str, items: list[_DebounceItem]
+) -> None:
+    """Send the combined summary to the foreman (the original deliver behavior)."""
+    # Use the first non-bot user_id in the batch. All items share the same
+    # task owner, but a bot user_id (ending in "[bot]") is less useful for
+    # attribution than a real human.  Fall back to any non-None user_id if
+    # every entry is a bot, and to None if the batch is entirely anonymous.
+    user_id = next(
+        (uid for _, uid, _, _, _ in items if uid and not uid.endswith("[bot]")),
+        next((uid for _, uid, _, _, _ in items if uid), None),
+    )
+    # All events buffered under one key share a task (key is "{guild}:{task_id}");
+    # github events for a known task run in that task's isolated child context.
+    task_id = next((tid for _, _, tid, _, _ in items if tid), None)
+    await run_foreman_ai(guild_id, combined, user_id=user_id, task_id=task_id, child=bool(task_id))
+    reset_foreman_poll(guild_id)
+
+
+async def _deliver_ci_pass(
+    key: str, guild_id: str, combined: str, items: list[_DebounceItem]
+) -> None:
+    """Foreman delivery (as usual) plus one combined Discord "CI passed" post.
+
+    Replaces the old per-check-event immediate Discord notification (issue
+    #785): instead of one Discord message per passing check_run/check_suite
+    event, the several events GitHub fires per commit coalesce into a single
+    message listing every check name that passed.
+    """
+    await _default_deliver(key, guild_id, combined, items)
+
+    ctx = next((c for _, _, _, _, c in items if c), None) or {}
+    check_names = _dedupe_labels(items)
+    task_id = next((tid for _, _, tid, _, _ in items if tid), None)
+    pr_label = ctx.get("pr_label") or "unknown"
+    spawn(
+        discord_notifier.notify_event(
+            "ci-pass",
+            title=f"CI passed: {pr_label}",
+            description=f"Checks passed: {', '.join(check_names)}."
+            + (f" Task: `{task_id}`." if task_id else ""),
+            url=ctx.get("pr_url"),
+            issue_repo=ctx.get("repo"),
+            issue_number=ctx.get("pr_number"),
+            ps_guild_slug=guild_id,
+            linked_issue_repo=ctx.get("linked_issue_repo"),
+            linked_issue_number=ctx.get("linked_issue_number"),
+        ),
+        name=f"discord.ci-pass:{pr_label}",
+    )
+
+
 class DebounceQueue:
-    """Per-PR debounce queue that coalesces rapid webhook events.
+    """Per-key debounce queue that coalesces rapid webhook events.
 
     State is scoped to the instance so tests can create an isolated copy
     without touching the module-level singleton.
     """
 
-    def __init__(self, window_seconds: float = DEBOUNCE_WINDOW_SECONDS) -> None:
+    def __init__(
+        self,
+        window_seconds: float = DEBOUNCE_WINDOW_SECONDS,
+        combine: Callable[[list[_DebounceItem]], str] | None = None,
+        deliver: Callable[[str, str, str, list[_DebounceItem]], Awaitable[None]] | None = None,
+    ) -> None:
         self._window = window_seconds
-        self._buffers: dict[str, list[tuple[str, str | None, str | None]]] = {}
+        self._combine = combine or _default_combine
+        self._deliver_fn = deliver or _default_deliver
+        self._buffers: dict[str, list[_DebounceItem]] = {}
         self._tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
         self._generation: dict[str, int] = {}
 
@@ -129,26 +240,9 @@ class DebounceQueue:
                 exc_info=exc,
             )
 
-    async def _deliver(
-        self, key: str, guild_id: str, items: list[tuple[str, str | None, str | None]]
-    ) -> None:
-        summaries = [s for s, _, _ in items]
-        combined = "\n\n---\n\n".join(summaries) if len(summaries) > 1 else summaries[0]
-        # Use the first non-bot user_id in the batch. All items share the same
-        # task owner, but a bot user_id (ending in "[bot]") is less useful for
-        # attribution than a real human.  Fall back to any non-None user_id if
-        # every entry is a bot, and to None if the batch is entirely anonymous.
-        user_id = next(
-            (uid for _, uid, _ in items if uid and not uid.endswith("[bot]")),
-            next((uid for _, uid, _ in items if uid), None),
-        )
-        # All events buffered under one key share a task (key is "{guild}:{task_id}");
-        # github events for a known task run in that task's isolated child context.
-        task_id = next((tid for _, _, tid in items if tid), None)
-        await run_foreman_ai(
-            guild_id, combined, user_id=user_id, task_id=task_id, child=bool(task_id)
-        )
-        reset_foreman_poll(guild_id)
+    async def _deliver(self, key: str, guild_id: str, items: list[_DebounceItem]) -> None:
+        combined = self._combine(items)
+        await self._deliver_fn(key, guild_id, combined, items)
         logger.info(
             "github webhook debounce fired key=%s events=%d guild=%s",
             key,
@@ -192,13 +286,19 @@ class DebounceQueue:
         summary: str,
         user_id: str | None,
         task_id: str | None = None,
+        label: str | None = None,
+        context: dict | None = None,
     ) -> None:
-        """Buffer *summary* and (re)start the per-PR debounce timer.
+        """Buffer *summary* (optionally tagged with *label*/*context*) and (re)start the timer.
 
         Each call resets the window so the foreman is only invoked after
-        _window seconds of silence on this PR.  The old timer is cancelled
+        _window seconds of silence on this key.  The old timer is cancelled
         and awaited before the new one starts so there is never a window
-        where two timers for the same key are both live.
+        where two timers for the same key are both live. *label* and
+        *context* are passed through to the combine/deliver functions
+        untouched (e.g. a check name and repo/PR/issue info for the CI-pass
+        queue's "Checks passed: a, b, c" foreman + Discord rendering) and
+        ignored by the defaults.
         """
         existing = self._tasks.pop(key, None)
         # Snapshot the buffer BEFORE bumping the generation or cancelling.
@@ -220,7 +320,7 @@ class DebounceQueue:
         # above ensures the old task cannot also deliver the same events, so
         # there is no risk of double delivery.
         self._buffers[key] = snapshot
-        self._buffers[key].append((summary, user_id, task_id))
+        self._buffers[key].append((summary, user_id, task_id, label, context))
         # Use asyncio.create_task directly: the task is kept alive by
         # self._tasks[key] (a strong reference), so GC is not a concern.
         # _log_fire_error handles unexpected exceptions via the done callback.
@@ -238,6 +338,19 @@ class DebounceQueue:
 
 
 _debounce_queue = DebounceQueue()
+
+# Dedicated queue for passing check_run/check_suite events (issue #785).
+# Kept separate from _debounce_queue because it needs a much shorter window,
+# a different combine function (list of check names vs. joined summaries),
+# and a different deliver function (foreman + one combined Discord "CI
+# passed" post instead of just the foreman); failing/erroring checks never
+# go through either queue — they bypass debounce and reach the foreman (and
+# Discord) immediately (see github_webhook / _dispatch_check_event).
+_ci_pass_debounce_queue = DebounceQueue(
+    window_seconds=CI_PASS_DEBOUNCE_SECONDS,
+    combine=_combine_ci_pass_items,
+    deliver=_deliver_ci_pass,
+)
 
 _DEFAULT_FINALIZE_TTL_SECS = 3 * 24 * 60 * 60  # 3 days
 _DEFAULT_FAIL_TTL_SECS = 24 * 60 * 60  # 1 day
@@ -363,9 +476,13 @@ async def _auto_fail_task_on_pr_close(
 async def shutdown_debouncer() -> None:
     """Cancel all in-flight debounce timers and wait for them to complete.
 
-    Call at server shutdown and in async test teardown fixtures.
+    Call at server shutdown and in async test teardown fixtures. Sequential
+    (not asyncio.gather) so this stays anyio-backend-agnostic — some tests
+    run this fixture under the trio backend, where asyncio.gather isn't
+    usable.
     """
     await _debounce_queue.shutdown()
+    await _ci_pass_debounce_queue.shutdown()
 
 
 def _verify_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
@@ -668,6 +785,114 @@ def _build_chat_line(
     return f"[github-event] {event_action}{pr_part}{extra_part}{task_part}"
 
 
+async def _run_foreman_immediately(
+    guild_id: str, summary: str, user_id: str | None, task_id: str | None
+) -> None:
+    """Invoke the foreman without debounce (used for failing CI checks)."""
+    await run_foreman_ai(guild_id, summary, user_id=user_id, task_id=task_id, child=bool(task_id))
+    reset_foreman_poll(guild_id)
+
+
+async def _dispatch_immediately(
+    guild_id: str, summary: str, user_id: str | None, task_id: str | None
+) -> None:
+    """Bypass debounce entirely and fire the foreman right away.
+
+    Wrapped as its own module-level seam (rather than inlining ``spawn`` at
+    the call site) so tests can patch it exactly like ``_debounce_queue`` —
+    the webhook response must not block on the foreman AI call, so the
+    actual work runs as a retained background task (see ``util.tasks.spawn``).
+    """
+    spawn(
+        _run_foreman_immediately(guild_id, summary, user_id, task_id),
+        name=f"foreman.ci-fail:{guild_id}:{task_id}",
+    )
+
+
+async def _dispatch_check_event(
+    guild_id: str,
+    delivery_id: str,
+    event_type: str,
+    action: str | None,
+    payload: dict,
+    repo: str | None,
+    pr_number: int | None,
+    pr_url: str | None,
+    task_id: str | None,
+    task_user_id: str | None,
+    sender_login: str | None,
+    linked_issue_repo: str | None,
+    linked_issue_number: int | None,
+) -> None:
+    """Route a dispatch-eligible check_run/check_suite event (issue #785).
+
+    Failing/erroring conclusions bypass debounce entirely and reach the
+    foreman immediately. Passing conclusions are buffered on a short,
+    per-(repo, PR, head_sha) debounce window so that the several check_run/
+    check_suite events GitHub fires per commit coalesce into a single
+    "checks passed" notification listing every check name.
+    """
+    node = payload.get(event_type) or {}
+    conclusion = node.get("conclusion") if isinstance(node, dict) else None
+    head_sha = node.get("head_sha") if isinstance(node, dict) else None
+    check_name = (
+        (node.get("name") or (node.get("app") or {}).get("slug") or "check")
+        if isinstance(node, dict)
+        else "check"
+    )
+
+    if conclusion in _FAILING_CHECK_CONCLUSIONS:
+        summary = _build_foreman_summary(
+            event_type, action, payload, repo, pr_number, task_id or "", sender_login
+        )
+        await _dispatch_immediately(guild_id, summary, task_user_id, task_id)
+        logger.info(
+            "github webhook ci-check failure dispatched immediately guild=%s delivery=%s "
+            "repo=%s pr=%s check=%s conclusion=%s",
+            guild_id,
+            delivery_id,
+            repo,
+            pr_number,
+            check_name,
+            conclusion,
+        )
+        return
+
+    if conclusion == "success":
+        pr_label = f"{repo}#{pr_number}" if repo and pr_number else (repo or "unknown")
+        header = f"[github-event] check_run/check_suite passed on {pr_label}" + (
+            f" (task {task_id})" if task_id else ""
+        )
+        key = f"{guild_id}:ci-pass:{pr_label}:{head_sha}"
+        context = {
+            "pr_label": pr_label,
+            "repo": repo,
+            "pr_number": pr_number,
+            "pr_url": pr_url,
+            "linked_issue_repo": linked_issue_repo,
+            "linked_issue_number": linked_issue_number,
+        }
+        await _ci_pass_debounce_queue.schedule(
+            key,
+            guild_id,
+            header,
+            task_user_id,
+            task_id=task_id,
+            label=check_name,
+            context=context,
+        )
+        return
+
+    # Any other completed conclusion (e.g. an unrecognized value GitHub might
+    # add in the future) falls back to the generic per-task debounce so it
+    # still reaches the foreman rather than being silently dropped.
+    summary = _build_foreman_summary(
+        event_type, action, payload, repo, pr_number, task_id or "", sender_login
+    )
+    key = f"{guild_id}:{task_id}"
+    await _debounce_queue.schedule(key, guild_id, summary, task_user_id, task_id=task_id)
+
+
 @router.post("/webhooks/github/{guild_id}")
 async def github_webhook(
     guild_id: str,
@@ -899,6 +1124,14 @@ async def github_webhook(
         task_id,
     )
 
+    # Computed early so the Discord check-run/check_suite branch below can
+    # tell whether a passing check will be handled by the CI-pass debounce
+    # (see _dispatch_check_event) and skip its own immediate notification to
+    # avoid posting the same "CI passed" news twice.
+    dispatch, skip_reason = _should_dispatch_to_foreman(
+        event_type, action, payload, sender_login, task_id
+    )
+
     # Discord notifications for key GitHub events.
     _pr_label = f"{repo}#{pr_number}" if repo and pr_number else (repo or "")
     if event_type == "pull_request" and action == "opened":
@@ -1012,7 +1245,13 @@ async def github_webhook(
             if isinstance(node, dict)
             else "CI"
         )
-        if conclusion == "success":
+        if conclusion == "success" and not dispatch:
+            # When `dispatch` is True, this event goes through
+            # _dispatch_check_event → the CI-pass debounce queue, which
+            # posts one combined "Checks passed: a, b, c" Discord message
+            # once the window closes (see _deliver_ci_pass). Only send this
+            # immediate, single-check notification for the (rare) case where
+            # there's no context to debounce against, e.g. no matching task.
             spawn(
                 discord_notifier.notify_event(
                     "ci-pass",
@@ -1118,10 +1357,23 @@ async def github_webhook(
                 guild_owner_login,
             )
     else:
-        dispatch, skip_reason = _should_dispatch_to_foreman(
-            event_type, action, payload, sender_login, task_id
-        )
-        if dispatch:
+        if dispatch and event_type in {"check_run", "check_suite"}:
+            await _dispatch_check_event(
+                guild_id,
+                delivery_id,
+                event_type,
+                action,
+                payload,
+                repo,
+                pr_number,
+                pr_url,
+                task_id,
+                task_user_id,
+                sender_login,
+                linked_issue_repo,
+                linked_issue_number,
+            )
+        elif dispatch:
             summary = _build_foreman_summary(
                 event_type, action, payload, repo, pr_number, task_id or "", sender_login
             )
