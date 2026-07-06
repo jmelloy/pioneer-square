@@ -731,6 +731,201 @@ class TestDebounce:
 
 
 # ---------------------------------------------------------------------------
+# CI-pass debounce (issue #785): passing check_run/check_suite events coalesce
+# into one notification; failing checks bypass debounce entirely.
+# ---------------------------------------------------------------------------
+
+
+class TestCiPassDebounce:
+    """``_dispatch_check_event`` routing: pass → debounced, fail → immediate."""
+
+    @asynccontextmanager
+    async def _patched_env(self, wh):
+        """Fresh CI-pass DebounceQueue + captured foreman/Discord calls.
+
+        Mirrors ``TestDebounce._patched_env`` but swaps in
+        ``wh._ci_pass_debounce_queue`` (short window, CI-pass combine/deliver)
+        and also captures ``discord_notifier.notify_event`` calls so the
+        combined "Checks passed: a, b, c" post can be asserted on.
+        """
+        self._foreman_calls: list[tuple[str, str, str | None, str | None]] = []
+        self._discord_calls: list[dict] = []
+
+        async def fake_run_foreman(guild_id, summary, *, user_id=None, task_id=None, child=False):
+            self._foreman_calls.append((guild_id, summary, user_id, task_id))
+
+        async def fake_notify_event(event_type, **kwargs):
+            self._discord_calls.append({"event_type": event_type, **kwargs})
+
+        queue = wh.DebounceQueue(
+            window_seconds=0.05,
+            combine=wh._combine_ci_pass_items,
+            deliver=wh._deliver_ci_pass,
+        )
+        with (
+            patch.object(wh, "_ci_pass_debounce_queue", queue),
+            patch.object(wh, "run_foreman_ai", new=fake_run_foreman),
+            patch.object(wh, "reset_foreman_poll"),
+            patch.object(wh.discord_notifier, "notify_event", new=fake_notify_event),
+        ):
+            try:
+                yield
+            finally:
+                await queue.shutdown()
+
+    @staticmethod
+    def _check_payload(*, conclusion: str, name: str, repo: str, pr_number: int, head_sha: str):
+        return {
+            "action": "completed",
+            "repository": {"full_name": repo},
+            "check_run": {
+                "name": name,
+                "status": "completed",
+                "conclusion": conclusion,
+                "head_sha": head_sha,
+                "pull_requests": [
+                    {"number": pr_number, "html_url": f"https://github.com/{repo}/pull/{pr_number}"}
+                ],
+            },
+            "sender": {"login": "github-actions[bot]"},
+        }
+
+    async def test_multiple_passing_checks_coalesce(self):
+        """Several passing check_run events on the same PR/SHA fire one combined notification."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            for name in ("rspec", "lint", "typecheck"):
+                await wh._dispatch_check_event(
+                    "g-ci1",
+                    f"d-{name}",
+                    "check_run",
+                    "completed",
+                    self._check_payload(
+                        conclusion="success", name=name, repo="o/r", pr_number=7, head_sha="sha1"
+                    ),
+                    "o/r",
+                    7,
+                    "https://github.com/o/r/pull/7",
+                    "t-ci1",
+                    "user-1",
+                    "github-actions[bot]",
+                    None,
+                    None,
+                )
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 1, f"expected 1 call, got {self._foreman_calls}"
+        guild_id, summary, user_id, task_id = self._foreman_calls[0]
+        assert guild_id == "g-ci1"
+        assert task_id == "t-ci1"
+        assert user_id == "user-1"
+        assert "rspec" in summary
+        assert "lint" in summary
+        assert "typecheck" in summary
+
+        assert len(self._discord_calls) == 1
+        assert self._discord_calls[0]["event_type"] == "ci-pass"
+        description = self._discord_calls[0]["description"]
+        assert "rspec" in description
+        assert "lint" in description
+        assert "typecheck" in description
+
+    async def test_failing_check_bypasses_debounce(self):
+        """A failing check_run reaches the foreman immediately, without waiting on any window."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            await wh._dispatch_check_event(
+                "g-ci2",
+                "d-fail",
+                "check_run",
+                "completed",
+                self._check_payload(
+                    conclusion="failure", name="rspec", repo="o/r", pr_number=8, head_sha="sha2"
+                ),
+                "o/r",
+                8,
+                "https://github.com/o/r/pull/8",
+                "t-ci2",
+                "user-2",
+                "github-actions[bot]",
+                None,
+                None,
+            )
+            # No window wait — the failure must already have been dispatched
+            # (as a background task via spawn()); yield once so it can run.
+            await asyncio.sleep(0.05)
+
+        assert len(self._foreman_calls) == 1
+        guild_id, summary, _user_id, task_id = self._foreman_calls[0]
+        assert guild_id == "g-ci2"
+        assert task_id == "t-ci2"
+        assert "rspec" in summary
+        assert "failure" in summary
+        # No debounce notification is emitted for a failure.
+        assert self._discord_calls == []
+
+    async def test_mixed_batch_failure_immediate_pass_still_debounced(self):
+        """A failing check on a PR fires immediately; passing checks for the same
+        PR/SHA still coalesce into their own, separately-timed notification."""
+        import routes.webhooks as wh
+
+        async with self._patched_env(wh):
+            await wh._dispatch_check_event(
+                "g-ci3",
+                "d-mix-fail",
+                "check_run",
+                "completed",
+                self._check_payload(
+                    conclusion="failure", name="rspec", repo="o/r", pr_number=9, head_sha="sha3"
+                ),
+                "o/r",
+                9,
+                "https://github.com/o/r/pull/9",
+                "t-ci3",
+                "user-3",
+                "github-actions[bot]",
+                None,
+                None,
+            )
+            await asyncio.sleep(0.05)
+
+            # The failure must already be delivered before any passing check
+            # in the same batch is scheduled.
+            assert len(self._foreman_calls) == 1
+            assert "rspec" in self._foreman_calls[0][1]
+
+            for name in ("lint", "typecheck"):
+                await wh._dispatch_check_event(
+                    "g-ci3",
+                    f"d-mix-{name}",
+                    "check_run",
+                    "completed",
+                    self._check_payload(
+                        conclusion="success", name=name, repo="o/r", pr_number=9, head_sha="sha3"
+                    ),
+                    "o/r",
+                    9,
+                    "https://github.com/o/r/pull/9",
+                    "t-ci3",
+                    "user-3",
+                    "github-actions[bot]",
+                    None,
+                    None,
+                )
+            await asyncio.sleep(0.2)
+
+        assert len(self._foreman_calls) == 2
+        assert "rspec" in self._foreman_calls[0][1]
+        assert "lint" in self._foreman_calls[1][1]
+        assert "typecheck" in self._foreman_calls[1][1]
+        assert len(self._discord_calls) == 1
+        assert "lint" in self._discord_calls[0]["description"]
+        assert "typecheck" in self._discord_calls[0]["description"]
+
+
+# ---------------------------------------------------------------------------
 # get_pr_status tool
 # ---------------------------------------------------------------------------
 
