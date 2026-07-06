@@ -456,9 +456,7 @@ async def send_welcome_dm(discord_user_id: str, username: str | None = None) -> 
             "post", f"/channels/{channel_id}/messages", {"content": content[:_MAX_MESSAGE_LENGTH]}
         )
     except httpx.HTTPError as e:
-        logger.warning(
-            "discord: welcome DM failed for new member user=%s: %s", discord_user_id, e
-        )
+        logger.warning("discord: welcome DM failed for new member user=%s: %s", discord_user_id, e)
 
 
 # ---------------------------------------------------------------------------

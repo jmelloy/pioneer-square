@@ -255,7 +255,9 @@ async def test_guild_member_add_sends_welcome_dm():
 @pytest.mark.asyncio
 async def test_guild_member_add_prefers_global_name():
     client = gateway.GatewayClient("token")
-    member = {"user": {"id": "u1", "username": "newperson", "global_name": "New Person", "bot": False}}
+    member = {
+        "user": {"id": "u1", "username": "newperson", "global_name": "New Person", "bot": False}
+    }
     with patch("discord.gateway.send_welcome_dm", new=AsyncMock()) as mock_send:
         await client._handle_guild_member_add(member)
     mock_send.assert_awaited_once_with("u1", "New Person")
