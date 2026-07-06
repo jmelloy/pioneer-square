@@ -38,6 +38,15 @@ Phase 4 — live task-stream mirroring
     bot token, since the feed always routes into a thread — never a flat channel
     post). The per-task thread mapping persists in ``discord_task_threads``.
 
+Phase 5 — new-member welcome DM
+    ``send_welcome_dm`` is called by the Gateway client (``discord.gateway``)
+    when a ``GUILD_MEMBER_ADD`` event arrives, and DMs the new member
+    onboarding instructions pointing them at ``/connect-account``. Requires
+    ``DISCORD_GATEWAY_ENABLED`` plus the privileged Server Members intent (see
+    ``discord.gateway``). Message text is configurable via
+    ``DISCORD_WELCOME_DM_TEXT``. DM failures (e.g. DMs disabled) are logged at
+    WARNING and never raised.
+
 Required bot permissions: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
 
 Usage::
@@ -376,6 +385,72 @@ async def _post_to_thread(
 async def archive_thread(thread_id: str) -> None:
     """Archive a Discord thread. Never raises."""
     await _bot_request("patch", f"/channels/{thread_id}", {"archived": True})
+
+
+# ---------------------------------------------------------------------------
+# New-member welcome DM
+# ---------------------------------------------------------------------------
+
+_DEFAULT_WELCOME_DM_TEXT = (
+    "Welcome, {username}! 👋\n\n"
+    "Pioneer Square is an AI-assisted engineering system: a Foreman AI turns GitHub "
+    "issues into shipped pull requests using a fleet of coding workers.\n\n"
+    "Run `/connect-account` here to link your Discord identity to Pioneer Square — "
+    "that unlocks personal login keys and lets you chat directly with the Foreman."
+)
+
+
+def _welcome_dm_text(username: str) -> str:
+    """Return the welcome DM body, filling in *username* if the template uses it.
+
+    Reads ``DISCORD_WELCOME_DM_TEXT`` on every call (rather than caching) so an
+    operator's env var change takes effect without a restart. Falls back to the
+    literal template when it doesn't reference ``{username}`` — or references an
+    unknown placeholder — so a misconfigured env var never blocks the DM.
+    """
+    template = os.environ.get("DISCORD_WELCOME_DM_TEXT") or _DEFAULT_WELCOME_DM_TEXT
+    try:
+        return template.format(username=username)
+    except (KeyError, IndexError):
+        return template
+
+
+async def send_welcome_dm(discord_user_id: str, username: str | None = None) -> None:
+    """DM a newly-joined guild member with onboarding instructions.
+
+    Opens a DM channel with the bot (``POST /users/@me/channels``), then posts
+    the welcome message there. Some users have DMs disabled for non-friends —
+    Discord's API returns an error opening the channel or sending the message
+    in that case, which is caught and logged at WARNING. Silent no-op when the
+    bot token is not configured. Never raises.
+    """
+    if not _bot_token():
+        return
+    try:
+        dm_channel = await _bot_request(
+            "post", "/users/@me/channels", {"recipient_id": discord_user_id}
+        )
+        channel_id = dm_channel.get("id") if dm_channel else None
+        if not channel_id:
+            logger.warning(
+                "discord: could not open DM channel for new member user=%s", discord_user_id
+            )
+            return
+
+        content = _welcome_dm_text(username or "there")
+        sent = await _bot_request(
+            "post", f"/channels/{channel_id}/messages", {"content": content[:_MAX_MESSAGE_LENGTH]}
+        )
+        if sent is None:
+            logger.warning(
+                "discord: failed to send welcome DM to new member user=%s", discord_user_id
+            )
+    except Exception:
+        logger.warning(
+            "discord: unexpected error sending welcome DM to user=%s",
+            discord_user_id,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

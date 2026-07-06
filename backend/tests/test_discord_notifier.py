@@ -841,6 +841,125 @@ async def test_archive_thread_http_error_does_not_raise(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# New-member welcome DM
+# ---------------------------------------------------------------------------
+
+
+def _json_response(payload: dict, status_code: int = 200):
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = status_code
+    resp.content = json.dumps(payload).encode()
+    resp.json = MagicMock(return_value=payload)
+    if status_code >= 400:
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "error", request=MagicMock(), response=resp
+        )
+    else:
+        resp.raise_for_status.return_value = None
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_send_welcome_dm_opens_channel_and_posts_message(monkeypatch):
+    """send_welcome_dm opens a DM channel then posts the welcome text there."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    DM_CHANNEL_ID = "dm-channel-999"
+
+    channel_response = _json_response({"id": DM_CHANNEL_ID})
+    message_response = _json_response({"id": "msg-1"})
+
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    mock_client.post = AsyncMock(side_effect=[channel_response, message_response])
+
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
+        await discord_notifier.send_welcome_dm("u123", "newperson")
+
+    assert mock_client.post.call_count == 2
+
+    open_call = mock_client.post.call_args_list[0]
+    assert "/users/@me/channels" in open_call[0][0]
+    assert open_call[1]["json"] == {"recipient_id": "u123"}
+
+    send_call = mock_client.post.call_args_list[1]
+    assert f"/channels/{DM_CHANNEL_ID}/messages" in send_call[0][0]
+    assert "/connect-account" in send_call[1]["json"]["content"]
+    assert "newperson" in send_call[1]["json"]["content"]
+
+
+@pytest.mark.asyncio
+async def test_send_welcome_dm_no_op_when_bot_token_unset():
+    """send_welcome_dm makes no HTTP call when DISCORD_BOT_TOKEN is unset."""
+    mock_client = _make_mock_client()
+
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
+        await discord_notifier.send_welcome_dm("u123", "newperson")
+
+    mock_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_welcome_dm_swallows_dm_disabled_error(monkeypatch):
+    """A user with DMs disabled makes channel-open fail; never raises."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    mock_client = _make_mock_client(status_code=403)
+
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
+        await discord_notifier.send_welcome_dm("u123", "newperson")  # must not raise
+
+    mock_client.post.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_welcome_dm_swallows_send_failure(monkeypatch):
+    """Channel opens fine but the message POST fails; never raises."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    channel_response = _json_response({"id": "dm-channel-999"})
+    failure_response = _json_response({}, status_code=500)
+
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    mock_client.post = AsyncMock(side_effect=[channel_response, failure_response])
+
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
+        await discord_notifier.send_welcome_dm("u123", "newperson")  # must not raise
+
+    assert mock_client.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_send_welcome_dm_defaults_username_when_missing(monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    channel_response = _json_response({"id": "dm-channel-999"})
+    message_response = _json_response({"id": "msg-1"})
+
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    mock_client.post = AsyncMock(side_effect=[channel_response, message_response])
+
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
+        await discord_notifier.send_welcome_dm("u123", None)
+
+    send_call = mock_client.post.call_args_list[1]
+    assert "there" in send_call[1]["json"]["content"]
+
+
+def test_welcome_dm_text_uses_default_template(monkeypatch):
+    monkeypatch.delenv("DISCORD_WELCOME_DM_TEXT", raising=False)
+    text = discord_notifier._welcome_dm_text("alice")
+    assert "alice" in text
+    assert "/connect-account" in text
+
+
+def test_welcome_dm_text_honours_env_override(monkeypatch):
+    monkeypatch.setenv("DISCORD_WELCOME_DM_TEXT", "Hey {username}, welcome aboard!")
+    assert discord_notifier._welcome_dm_text("alice") == "Hey alice, welcome aboard!"
+
+
+def test_welcome_dm_text_env_override_without_placeholder(monkeypatch):
+    """A custom template with no {username} placeholder is used verbatim."""
+    monkeypatch.setenv("DISCORD_WELCOME_DM_TEXT", "Welcome! Run /connect-account.")
+    assert discord_notifier._welcome_dm_text("alice") == "Welcome! Run /connect-account."
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: Foreman chat threads
 # ---------------------------------------------------------------------------
 
