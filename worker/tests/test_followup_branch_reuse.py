@@ -227,3 +227,60 @@ async def test_new_task_still_generates_fresh_branch():
     assert "t-new1"[:6] in created_branches[0], (
         f"New task branch should contain the task_id prefix, got {created_branches[0]!r}"
     )
+
+
+async def test_new_task_branch_contains_full_task_id_not_truncated():
+    """Regression test for issue #775: branch names must embed the full
+    6-character task_id suffix (e.g. ``t-b6u2we``), not a 4-character
+    truncation (e.g. ``t-b6u2``).
+    """
+    worker = Worker(_make_cfg())
+    worker._joined = True
+    worker._send = AsyncMock()
+    slot = worker.agents[0]
+
+    task_id = "t-b6u2we"
+    task = {
+        "id": task_id,
+        "name": "Fix branch name truncation",
+        "description": "Ensure the full task id is used in branch names",
+        "phase": "execute",
+        "tool": "claude",
+        "repos": ["owner/repo"],
+        # No branch, no followup_branch, no followup_instructions
+    }
+
+    created_branches: list[str] = []
+
+    async def fake_create(repo_path: str, wt_path: str, branch: str) -> bool:
+        created_branches.append(branch)
+        return True
+
+    async def fake_run_claude(desc, *args, **kwargs):
+        return True, "end_turn", "done", None
+
+    with (
+        patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
+        patch("pioneer_worker.worker.git_ops.create_worktree", side_effect=fake_create),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch(
+            "pioneer_worker.worker.github_pr.open_pr",
+            return_value=("https://github.com/o/r/pull/1", 1),
+        ),
+        patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
+        patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
+        tempfile.TemporaryDirectory() as tmp,
+    ):
+        worker.cfg.work_dir = tmp
+        worker.cfg.repos_dir = tmp
+        await worker._execute_task(task, slot)
+
+    assert created_branches, "create_worktree should have been called for a new task"
+    branch = created_branches[0]
+    assert task_id in branch, (
+        f"Branch name must contain the full task_id {task_id!r}, got {branch!r}; "
+        "the branch suffix must not be truncated to 4 chars"
+    )
+    assert branch.endswith(f"-{task_id}"), (
+        f"Branch name must end with the full '-{task_id}' suffix, got {branch!r}"
+    )
