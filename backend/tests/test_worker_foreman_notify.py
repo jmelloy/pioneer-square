@@ -409,6 +409,9 @@ def test_task_complete_max_turns_does_not_truncate_last_text(client):
                     "workerId": worker_id,
                 }
             )
+            # The task is pre-assigned in "working" state, so the join handler
+            # replays a task-assigned message before the agent-joined broadcast.
+            ws_worker.receive_json()  # task-assigned replay
             ws_worker.receive_json()  # agent-joined broadcast
 
             ws_worker.send_json(
@@ -460,6 +463,9 @@ def test_followup_done_max_turns_does_not_truncate_last_text(client):
                     "workerId": worker_id,
                 }
             )
+            # The task is pre-assigned in "working" state, so the join handler
+            # replays a task-assigned message before the agent-joined broadcast.
+            ws_worker.receive_json()  # task-assigned replay
             ws_worker.receive_json()  # agent-joined broadcast
 
             ws_worker.send_json(
