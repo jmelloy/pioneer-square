@@ -74,7 +74,10 @@ FROM base AS worker
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Baseline system tools coding agents need to build, test, and lint typical
-# full-stack repos.
+# full-stack repos. Includes the Postgres binaries (#786) so a coding agent
+# can initialise and start its own cluster on demand (e.g. `initdb`/`pg_ctl`)
+# without depending on the postgres-test compose service; no startup
+# automation runs here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
@@ -84,6 +87,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         jq \
         make \
         openssh-client \
+        postgresql \
+        postgresql-client \
         ripgrep \
         unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -123,6 +128,14 @@ RUN npm install -g \
 RUN useradd --create-home --shell /bin/bash worker \
     && mkdir -p /work/repos /work/worktrees /config /home/worker/go \
     && chown -R worker:worker /work /config /home/worker
+
+# PGDATA gives the coding agent a sensible default cluster location to
+# initialise with `initdb`/`pg_ctl` when a repo's tests need a real Postgres.
+# TEST_DATABASE_URL is picked up by backend/tests/_test_config.py with zero
+# extra config — it matches that module's own fallback default. Postgres
+# itself is not started here; the agent starts it on demand.
+ENV PGDATA=/tmp/pgdata \
+    TEST_DATABASE_URL=postgresql+asyncpg://pioneer:pioneer_password@localhost:5433/pioneer_test
 
 USER worker
 
