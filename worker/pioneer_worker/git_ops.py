@@ -166,7 +166,8 @@ async def checkout_pr_worktree(
     (including cross-fork PRs) and checks it out in place.
     """
     logger.info("Checking out PR #%s (%s) into worktree %s", pr_number, repo_full, wt_path)
-    os.makedirs(os.path.dirname(wt_path), exist_ok=True)
+    if parent := os.path.dirname(wt_path):
+        os.makedirs(parent, exist_ok=True)
     await run_git(["fetch", "origin"], cwd=repo_path)
     rc, _, _ = await run_git(["worktree", "add", "--detach", wt_path, "origin/HEAD"], cwd=repo_path)
     if rc != 0:
@@ -175,6 +176,9 @@ async def checkout_pr_worktree(
     rc, _, _ = await run_gh(["pr", "checkout", str(pr_number), "--repo", repo_full], cwd=wt_path)
     if rc != 0:
         logger.error("gh pr checkout failed for PR #%s (%s) in %s", pr_number, repo_full, wt_path)
+        # Detached worktree add succeeded but the checkout didn't — remove the
+        # orphaned worktree so it doesn't linger as a dangling checkout.
+        await run_git(["worktree", "remove", "--force", wt_path], cwd=repo_path)
         return False
     return True
 
