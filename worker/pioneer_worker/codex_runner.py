@@ -20,29 +20,56 @@ EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None =
 def parse_codex_event(event: dict) -> tuple[str | None, dict | None]:
     """Extract (display_text, detail) from one codex stream-JSON event.
 
+    Codex ``exec --json`` emits a threaded event schema (codex-cli >= ~0.30):
+    ``thread.started`` / ``turn.started`` / ``turn.completed`` envelopes plus
+    ``item.started`` / ``item.completed`` events carrying a nested ``item``
+    with its own ``type`` (``agent_message``, ``command_execution``, etc.).
+
     detail carries the full, untruncated tool input/output so callers can
     persist it separately from the short display line (see claude_runner's
     parse_claude_event for the same pattern).
     """
     t = event.get("type")
-    if t == "message" and event.get("role") == "assistant":
-        text = (event.get("content") or "").strip()
-        return (text or None), None
-    if t == "function_call":
-        name = event.get("name", "")
-        args = event.get("arguments", "")
-        summary = f"▶ {name}({args[:80]})"
-        detail = {"toolType": "tool_use", "name": name, "input": args}
-        return summary, detail
-    if t == "function_result":
-        output = str(event.get("output", ""))
-        summary = f"  → {output[:200]}"
-        detail = {"toolType": "tool_result", "output": output}
-        return summary, detail
-    if t == "done":
+
+    if t == "turn.completed":
         return "✓ Done", None
     if t == "error":
         return f"✗ {event.get('message', '')}", None
+
+    if t in ("item.started", "item.completed"):
+        item = event.get("item") or {}
+        it = item.get("type")
+        completed = t == "item.completed"
+
+        if it == "agent_message":
+            if not completed:
+                return None, None  # wait for the final text on item.completed
+            text = (item.get("text") or "").strip()
+            return (text or None), None
+
+        if it == "reasoning":
+            if not completed:
+                return None, None
+            text = (item.get("text") or "").strip()
+            return (f"💭 {text}" if text else None), None
+
+        if it == "command_execution":
+            cmd = item.get("command", "")
+            if not completed:
+                return f"▶ {cmd[:100]}", {"toolType": "tool_use", "name": "shell", "input": cmd}
+            output = str(item.get("aggregated_output", ""))
+            exit_code = item.get("exit_code")
+            summary = f"  → (exit {exit_code}) {output[:200]}"
+            return summary, {"toolType": "tool_result", "output": output}
+
+        # Any other item type (mcp_tool_call, file_change, web_search, todo_list…):
+        # surface it once on completion with a tool-like prefix so it never gets
+        # mistaken for the agent's final message.
+        if completed and it:
+            detail = {"toolType": "tool_use", "name": it, "input": json.dumps(item)}
+            return f"▶ {it}", detail
+        return None, None
+
     return None, None
 
 
@@ -130,9 +157,13 @@ async def run_codex_auto(
             except json.JSONDecodeError:
                 await emit(line_str)
                 continue
-            if event.get("type") == "done":
+            etype = event.get("type")
+            if etype == "turn.completed":
                 stop_reason = "success"
-            elif event.get("type") == "error":
+            elif etype == "error" or (
+                etype in ("item.started", "item.completed")
+                and (event.get("item") or {}).get("type") == "error"
+            ):
                 stop_reason = "error_during_execution"
             text, detail = parse_codex_event(event)
             if text:
