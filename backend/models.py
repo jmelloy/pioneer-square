@@ -219,7 +219,8 @@ class Task(SQLModel, table=True):
 class GithubToken(SQLModel, table=True):
     __tablename__ = "github_tokens"  # type: ignore[assignment]
 
-    github_user_id: str = Field(primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
+    github_user_id: str = Field(unique=True)
     github_username: str | None = None
     access_token: str
     token_type: str = Field(default="bearer", sa_column_kwargs={"server_default": "'bearer'"})
@@ -231,7 +232,8 @@ class GithubToken(SQLModel, table=True):
 class UserSession(SQLModel, table=True):
     __tablename__ = "user_sessions"  # type: ignore[assignment]
 
-    token: str = Field(primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
+    token: str = Field(unique=True)
     github_user_id: str = Field(foreign_key="github_tokens.github_user_id")
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
@@ -254,11 +256,20 @@ class User(SQLModel, table=True):
 
 class GuildMember(SQLModel, table=True):
     __tablename__ = "guild_members"  # type: ignore[assignment]
-    __table_args__ = (Index("ix_guild_members_guild_id_role", "guild_id", "role"),)
+    __table_args__ = (
+        Index("ix_guild_members_guild_id_role", "guild_id", "role"),
+        Index(
+            "uq_guild_members_guild_id_user_id",
+            "guild_id",
+            "user_id",
+            unique=True,
+        ),
+    )
 
+    id: int | None = Field(default=None, primary_key=True)
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
-    guild_id: int = Field(foreign_key="guilds.id", primary_key=True)
-    user_id: str = Field(foreign_key="users.id", primary_key=True)
+    guild_id: int = Field(foreign_key="guilds.id")
+    user_id: str = Field(foreign_key="users.id")
     role: str = Field(
         default="member", sa_column_kwargs={"server_default": "'member'"}
     )  # owner | member | viewer
@@ -495,9 +506,18 @@ class UserSpawnSettings(SQLModel, table=True):
     """
 
     __tablename__ = "user_spawn_settings"  # type: ignore[assignment]
+    __table_args__ = (
+        Index(
+            "uq_user_spawn_settings_guild_id_user_id",
+            "guild_id",
+            "user_id",
+            unique=True,
+        ),
+    )
 
-    guild_id: int = Field(foreign_key="guilds.id", primary_key=True)
-    user_id: str = Field(foreign_key="users.id", primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: int = Field(foreign_key="guilds.id")
+    user_id: str = Field(foreign_key="users.id")
     # JSON blob: {repos: [...], tools: [...], envVars: [{key, value}, ...]}
     # SECURITY: this column may contain sensitive values (API tokens, credentials,
     # secret env vars). Operators must restrict DB-level read access to this table.
@@ -513,14 +533,15 @@ class UserSpawnSettings(SQLModel, table=True):
 class PushToken(SQLModel, table=True):
     """APNs (or, in the future, FCM) device token registered by the iOS app.
 
-    The token is the primary key because Apple's tokens are globally unique
-    per app install — when the same token comes back from a different user
-    it means the device was re-provisioned and we overwrite ``user_id``.
+    ``token`` is unique because Apple's tokens are globally unique per app
+    install — when the same token comes back from a different user it means
+    the device was re-provisioned and we overwrite ``user_id``.
     """
 
     __tablename__ = "push_tokens"
 
-    token: str = Field(primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
+    token: str = Field(unique=True)
     user_id: str = Field(foreign_key="users.id", index=True)
     platform: str = Field(
         default="ios", sa_column_kwargs={"server_default": "'ios'"}
@@ -615,7 +636,8 @@ class DiscordUser(SQLModel, table=True):
 
     __tablename__ = "discord_users"  # type: ignore[assignment]
 
-    github_login: str = Field(primary_key=True)  # stored lowercase
+    id: int | None = Field(default=None, primary_key=True)
+    github_login: str = Field(unique=True)  # stored lowercase
     discord_user_id: str
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
@@ -657,7 +679,8 @@ class DiscordConnectToken(SQLModel, table=True):
 
     __tablename__ = "discord_connect_tokens"  # type: ignore[assignment]
 
-    token: str = Field(primary_key=True)  # UUID4 string
+    id: int | None = Field(default=None, primary_key=True)
+    token: str = Field(unique=True)  # UUID4 string
     discord_user_id: str  # Discord snowflake ID of the invoking user
     discord_username: str
     expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
@@ -687,13 +710,22 @@ class ModelCatalog(SQLModel, table=True):
     """Persisted snapshot of models.dev provider/model entries.
 
     Upserted from the models.dev API on startup and periodically refreshed.
-    Primary key is (provider, model_id) so upserts are idempotent.
+    ``(provider, model_id)`` is unique so upserts are idempotent.
     """
 
     __tablename__ = "model_catalog"  # type: ignore[assignment]
+    __table_args__ = (
+        Index(
+            "uq_model_catalog_provider_model_id",
+            "provider",
+            "model_id",
+            unique=True,
+        ),
+    )
 
-    provider: str = Field(primary_key=True)
-    model_id: str = Field(primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
+    provider: str
+    model_id: str
     display_name: str
     capabilities: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     raw: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))

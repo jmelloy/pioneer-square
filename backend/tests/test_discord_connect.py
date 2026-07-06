@@ -186,7 +186,7 @@ def test_connect_valid_token_links_account(client):
         assert link is not None
         assert link.ps_user_id == "gh-conn-2"
 
-        used_row = session.get(DiscordConnectToken, connect_token)
+        used_row = session.query(DiscordConnectToken).filter_by(token=connect_token).one_or_none()
         assert used_row.used_at is not None
 
 
