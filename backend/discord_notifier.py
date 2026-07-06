@@ -175,6 +175,33 @@ async def notify(
 # ---------------------------------------------------------------------------
 
 
+async def _bot_request_raw(
+    method: str,
+    path: str,
+    json_body: dict | None = None,
+) -> dict:
+    """Make an authenticated Discord bot API request, raising on failure.
+
+    Returns the parsed JSON response dict, or an empty dict for 204/empty
+    bodies. Unlike ``_bot_request``, this does not swallow errors — callers
+    that need to distinguish an expected API failure (``httpx.HTTPError``)
+    from a genuine bug use this directly (see ``send_welcome_dm``).
+    """
+    token = _bot_token()
+    headers = {
+        "Authorization": f"Bot {token}",
+        "Content-Type": "application/json",
+    }
+    client = _get_client()
+    resp = await getattr(client, method)(
+        f"{_DISCORD_API_BASE}{path}",
+        json=json_body,
+        headers=headers,
+    )
+    resp.raise_for_status()
+    return resp.json() if resp.content else {}
+
+
 async def _bot_request(
     method: str,
     path: str,
@@ -185,24 +212,10 @@ async def _bot_request(
     Returns the parsed JSON response dict, an empty dict for 204/empty bodies,
     or None on error.  Never raises.
     """
-    token = _bot_token()
-    if not token:
+    if not _bot_token():
         return None
-    headers = {
-        "Authorization": f"Bot {token}",
-        "Content-Type": "application/json",
-    }
     try:
-        client = _get_client()
-        resp = await getattr(client, method)(
-            f"{_DISCORD_API_BASE}{path}",
-            json=json_body,
-            headers=headers,
-        )
-        resp.raise_for_status()
-        if resp.content:
-            return resp.json()
-        return {}
+        return await _bot_request_raw(method, path, json_body)
     except Exception:
         logger.warning(
             "Discord bot API request failed method=%s path=%s", method, path, exc_info=True
@@ -411,7 +424,8 @@ def _welcome_dm_text(username: str) -> str:
     template = os.environ.get("DISCORD_WELCOME_DM_TEXT") or _DEFAULT_WELCOME_DM_TEXT
     try:
         return template.format(username=username)
-    except (KeyError, IndexError):
+    except (KeyError, IndexError) as e:
+        logger.warning("DISCORD_WELCOME_DM_TEXT render failed, using raw template: %s", e)
         return template
 
 
@@ -420,17 +434,17 @@ async def send_welcome_dm(discord_user_id: str, username: str | None = None) -> 
 
     Opens a DM channel with the bot (``POST /users/@me/channels``), then posts
     the welcome message there. Some users have DMs disabled for non-friends —
-    Discord's API returns an error opening the channel or sending the message
-    in that case, which is caught and logged at WARNING. Silent no-op when the
-    bot token is not configured. Never raises.
+    Discord's API returns an HTTP error opening the channel or sending the
+    message in that case, which is caught and logged at WARNING. Silent
+    no-op when the bot token is not configured. Never raises.
     """
     if not _bot_token():
         return
     try:
-        dm_channel = await _bot_request(
+        dm_channel = await _bot_request_raw(
             "post", "/users/@me/channels", {"recipient_id": discord_user_id}
         )
-        channel_id = dm_channel.get("id") if dm_channel else None
+        channel_id = dm_channel.get("id")
         if not channel_id:
             logger.warning(
                 "discord: could not open DM channel for new member user=%s", discord_user_id
@@ -438,18 +452,12 @@ async def send_welcome_dm(discord_user_id: str, username: str | None = None) -> 
             return
 
         content = _welcome_dm_text(username or "there")
-        sent = await _bot_request(
+        await _bot_request_raw(
             "post", f"/channels/{channel_id}/messages", {"content": content[:_MAX_MESSAGE_LENGTH]}
         )
-        if sent is None:
-            logger.warning(
-                "discord: failed to send welcome DM to new member user=%s", discord_user_id
-            )
-    except Exception:
+    except httpx.HTTPError as e:
         logger.warning(
-            "discord: unexpected error sending welcome DM to user=%s",
-            discord_user_id,
-            exc_info=True,
+            "discord: welcome DM failed for new member user=%s: %s", discord_user_id, e
         )
 
 

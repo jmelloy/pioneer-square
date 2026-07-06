@@ -52,6 +52,7 @@ import random
 import time
 
 import websockets
+from discord_notifier import send_welcome_dm
 
 logger = logging.getLogger(__name__)
 
@@ -347,8 +348,6 @@ class GatewayClient:
         if not user_id or user.get("bot"):
             return
         username = user.get("global_name") or user.get("username")
-
-        from discord_notifier import send_welcome_dm  # noqa: PLC0415
 
         await send_welcome_dm(user_id, username)
 
