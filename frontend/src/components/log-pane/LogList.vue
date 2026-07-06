@@ -80,7 +80,6 @@ const groupedLogs = computed<(LineItem | TurnItem)[]>(() => {
 
   const flush = () => {
     if (current.length === 0) return
-    turnNumber += 1
     const counts: Record<string, number> = {}
     let toolCallCount = 0
     for (const { log } of current) {
@@ -90,6 +89,19 @@ const groupedLogs = computed<(LineItem | TurnItem)[]>(() => {
         toolCallCount += 1
       }
     }
+    // A single tool call carries no useful grouping information — showing its
+    // own line (e.g. "▶ bash: pytest") is more informative than collapsing it
+    // behind a generic "bash × 1 (1 tool call)" turn summary. toolCallCount can
+    // also be 0 here (a run of tool_result entries with no tool_use), which
+    // likewise needs no grouping and should just pass through as plain lines.
+    if (toolCallCount <= 1) {
+      for (const entry of current) {
+        result.push({ type: 'line', log: entry.log, index: entry.index })
+      }
+      current = []
+      return
+    }
+    turnNumber += 1
     result.push({ type: 'turn', turnNumber, entries: current, counts, toolCallCount })
     current = []
   }
