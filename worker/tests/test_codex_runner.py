@@ -24,7 +24,9 @@ def test_parse_codex_function_result_preserves_full_output_in_detail() -> None:
 
 def test_parse_codex_function_call_preserves_full_arguments_in_detail() -> None:
     long_args = "y" * 500
-    text, detail = parse_codex_event({"type": "function_call", "name": "shell", "arguments": long_args})
+    text, detail = parse_codex_event(
+        {"type": "function_call", "name": "shell", "arguments": long_args}
+    )
     assert text == f"▶ shell({long_args[:80]})"
     assert detail == {"toolType": "tool_use", "name": "shell", "input": long_args}
 

@@ -144,7 +144,7 @@ def test_parse_tool_execution_end_preserves_full_output_in_detail():
         "isError": False,
     }
     text, detail, _ = parse_pi_event(event, "")
-    assert text == "line0 (+99 lines)"
+    assert text == "  → line0 (+99 lines)"
     assert detail == {"toolType": "tool_result", "output": long_output}
 
 
