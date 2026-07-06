@@ -558,6 +558,232 @@ async def test_cmd_cancel_already_done(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _cmd_worker_spawn — all DB calls and routes.discord.spawn_worker mocked
+# ---------------------------------------------------------------------------
+
+
+def _worker_spawn_interaction(repos: str | None = "org/repo", tools: str | None = "claude"):
+    options = []
+    if repos is not None:
+        options.append({"name": "repos", "value": repos})
+    if tools is not None:
+        options.append({"name": "tools", "value": tools})
+    return {
+        "token": "tok-spawn",
+        "data": {"name": "worker-spawn", "options": options},
+        "member": {"user": {"id": "discord-1", "username": "alice"}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_cmd_worker_spawn_success(monkeypatch):
+    """_cmd_worker_spawn spawns a worker and reports its id and status."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    monkeypatch.setenv("DISCORD_PIONEER_GUILD_SLUG", "test-guild")
+
+    guild = MagicMock()
+    guild.id = 1
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value="ps-user-1")),  # account link lookup
+            MagicMock(one_or_none=MagicMock(return_value=guild)),  # guild lookup
+            MagicMock(one_or_none=MagicMock(return_value="online")),  # worker state lookup
+        ]
+    )
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    fake_spawn_worker = AsyncMock(
+        return_value=(json.dumps({"worker_id": "w-abc123", "repos": ["org/repo"]}), False)
+    )
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("routes.discord.spawn_worker", new=fake_spawn_worker),
+    ):
+        from routes.discord import _cmd_worker_spawn
+
+        await _cmd_worker_spawn(_worker_spawn_interaction())
+
+    assert fake_spawn_worker.called
+    call_kwargs = fake_spawn_worker.call_args.kwargs
+    assert call_kwargs["inp"] == {"repos": ["org/repo"], "tools": ["claude"]}
+    assert call_kwargs["guild_id"] == "test-guild"
+    assert call_kwargs["guild_pk"] == 1
+    assert call_kwargs["user_id"] == "ps-user-1"
+
+    assert sent
+    embed = sent[0]["embeds"][0]
+    assert "w-abc123" in embed["title"]
+    assert "online" in embed["description"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_worker_spawn_reports_queued_status(monkeypatch):
+    """_cmd_worker_spawn reports 'queued' (not 'online') for a freshly-spawned worker."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    monkeypatch.setenv("DISCORD_PIONEER_GUILD_SLUG", "test-guild")
+
+    guild = MagicMock()
+    guild.id = 1
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value="ps-user-1")),  # account link lookup
+            MagicMock(one_or_none=MagicMock(return_value=guild)),  # guild lookup
+            MagicMock(one_or_none=MagicMock(return_value="spawning")),  # worker state lookup
+        ]
+    )
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    fake_spawn_worker = AsyncMock(
+        return_value=(json.dumps({"worker_id": "w-abc123", "repos": ["org/repo"]}), False)
+    )
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("routes.discord.spawn_worker", new=fake_spawn_worker),
+    ):
+        from routes.discord import _cmd_worker_spawn
+
+        await _cmd_worker_spawn(_worker_spawn_interaction())
+
+    assert sent
+    embed = sent[0]["embeds"][0]
+    assert "queued" in embed["description"]
+    assert "online" not in embed["description"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_worker_spawn_requires_connected_account(monkeypatch):
+    """_cmd_worker_spawn refuses when the Discord account isn't linked."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    monkeypatch.setenv("DISCORD_PIONEER_GUILD_SLUG", "test-guild")
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=None)))
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    fake_spawn_worker = AsyncMock()
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("routes.discord.spawn_worker", new=fake_spawn_worker),
+    ):
+        from routes.discord import _cmd_worker_spawn
+
+        await _cmd_worker_spawn(_worker_spawn_interaction())
+
+    fake_spawn_worker.assert_not_called()
+    assert sent
+    assert "isn't linked" in sent[0]["content"]
+    assert "/connect-account" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_worker_spawn_unknown_guild(monkeypatch):
+    """_cmd_worker_spawn reports an error when the configured guild slug is missing."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    monkeypatch.setenv("DISCORD_PIONEER_GUILD_SLUG", "missing-guild")
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value="ps-user-1")),
+            MagicMock(one_or_none=MagicMock(return_value=None)),
+        ]
+    )
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+    ):
+        from routes.discord import _cmd_worker_spawn
+
+        await _cmd_worker_spawn(_worker_spawn_interaction())
+
+    assert sent
+    assert "not found" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_worker_spawn_reports_tool_error(monkeypatch):
+    """_cmd_worker_spawn surfaces the tool's error message (e.g. missing repos)."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    monkeypatch.setenv("DISCORD_PIONEER_GUILD_SLUG", "test-guild")
+
+    guild = MagicMock()
+    guild.id = 1
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value="ps-user-1")),
+            MagicMock(one_or_none=MagicMock(return_value=guild)),
+        ]
+    )
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    fake_spawn_worker = AsyncMock(
+        return_value=("spawn_worker requires at least one repo in the 'repos' list.", True)
+    )
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("routes.discord.spawn_worker", new=fake_spawn_worker),
+    ):
+        from routes.discord import _cmd_worker_spawn
+
+        await _cmd_worker_spawn(_worker_spawn_interaction(repos=None, tools=None))
+
+    assert sent
+    assert "Failed to spawn worker" in sent[0]["content"]
+    assert "at least one repo" in sent[0]["content"]
+
+
+# ---------------------------------------------------------------------------
 # Permission helpers for /join-channel and /leave-channel (pure unit)
 # ---------------------------------------------------------------------------
 
