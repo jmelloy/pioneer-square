@@ -67,6 +67,9 @@ describe('LogList turn grouping', () => {
 
     expect(wrapper.find('.turn-summary').exists()).toBe(false)
     expect(wrapper.text()).toContain('▶ Read')
+    // Both entries (tool_use + tool_result) should render inline, not be
+    // swallowed by an accidental turn summary rendering alongside them.
+    expect(wrapper.findAll('.log-line')).toHaveLength(2)
   })
 
   it('numbers multiple turns sequentially, separated by non-tool lines', () => {

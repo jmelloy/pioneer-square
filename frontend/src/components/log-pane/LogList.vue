@@ -91,7 +91,9 @@ const groupedLogs = computed<(LineItem | TurnItem)[]>(() => {
     }
     // A single tool call carries no useful grouping information — showing its
     // own line (e.g. "▶ bash: pytest") is more informative than collapsing it
-    // behind a generic "bash × 1 (1 tool call)" turn summary.
+    // behind a generic "bash × 1 (1 tool call)" turn summary. toolCallCount can
+    // also be 0 here (a run of tool_result entries with no tool_use), which
+    // likewise needs no grouping and should just pass through as plain lines.
     if (toolCallCount <= 1) {
       for (const entry of current) {
         result.push({ type: 'line', log: entry.log, index: entry.index })
