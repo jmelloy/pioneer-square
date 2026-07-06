@@ -74,7 +74,11 @@ FROM base AS worker
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Baseline system tools coding agents need to build, test, and lint typical
-# full-stack repos.
+# full-stack repos. Includes bundled Postgres (#786), which lets backend
+# tests run against a real Postgres inside the worker container without
+# depending on the postgres-test compose service. Bootstrapped at container
+# start by worker-entrypoint.sh rather than the Debian postinst cluster, so
+# it can run entirely as the unprivileged `worker` user.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
@@ -84,18 +88,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         jq \
         make \
         openssh-client \
-        ripgrep \
-        unzip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Bundled Postgres (#786) — lets backend tests run against a real Postgres
-# inside the worker container without depending on the postgres-test compose
-# service. Bootstrapped at container start by worker-entrypoint.sh rather
-# than the Debian postinst cluster, so it can run entirely as the
-# unprivileged `worker` user.
-RUN apt-get update && apt-get install -y --no-install-recommends \
         postgresql \
         postgresql-client \
+        ripgrep \
+        unzip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/postgres/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
@@ -137,10 +133,12 @@ RUN useradd --create-home --shell /bin/bash worker \
     && mkdir -p /work/repos /work/worktrees /config /home/worker/go \
     && chown -R worker:worker /work /config /home/worker
 
-# Picked up by backend/tests/_test_config.py with zero extra config — it
-# matches that module's own fallback default, so TEST_DATABASE_URL/
-# DATABASE_URL only need to be set here, not in docker-compose.yml too.
-ENV DATABASE_URL=postgresql+asyncpg://pioneer:pioneer_password@localhost:5433/pioneer_test \
+# TEST_DATABASE_URL is picked up by backend/tests/_test_config.py with zero
+# extra config — it matches that module's own fallback default. DATABASE_URL
+# points at a separate `pioneer` database for runtime use (e.g. `pioneer
+# worker` itself, or ad-hoc use inside the container), kept distinct from the
+# test database so test runs never touch runtime data.
+ENV DATABASE_URL=postgresql+asyncpg://pioneer:pioneer_password@localhost:5433/pioneer \
     TEST_DATABASE_URL=postgresql+asyncpg://pioneer:pioneer_password@localhost:5433/pioneer_test
 
 USER worker
