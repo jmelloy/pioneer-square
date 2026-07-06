@@ -149,9 +149,9 @@
                 <div v-if="taskLogsFetching.has(task.id)" class="tl-logs-loading">
                   Fetching logs…
                 </div>
-                <pre v-else-if="taskLogsMap[task.id]?.length" class="tl-logs-pre"><code>{{
-                  taskLogsMap[task.id].slice(-50).map((l) => l.line).join('\n')
-                }}</code></pre>
+                <div v-else-if="taskLogsMap[task.id]?.length" class="tl-logs-body">
+                  <LogList :logs="taskLogsMap[task.id].slice(-50)" />
+                </div>
                 <div v-else class="tl-logs-empty">No log lines stored for this task.</div>
               </div>
             </div>
@@ -218,6 +218,7 @@ import { useGitHubStore } from '../stores/github'
 import type { GitHubIssueDetail, GitHubComment } from '../stores/github'
 import { useGuildStore } from '../stores/guild'
 import { useTasksStore } from '../stores/tasks'
+import LogList from './log-pane/LogList.vue'
 import type { Task, LogEntry } from '../types'
 import { api } from '../utils/api'
 import { renderMarkdown } from '../utils/markdown'
@@ -986,22 +987,10 @@ onMounted(loadIssue)
   padding: 8px 12px;
 }
 
-.tl-logs-pre {
-  margin: 0;
-  padding: 10px 12px;
+.tl-logs-body {
+  padding: 6px 12px;
   background: var(--color-bg);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  line-height: 1.5;
-  overflow-x: auto;
   max-height: 260px;
   overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.tl-logs-pre code {
-  background: none;
-  padding: 0;
 }
 </style>
