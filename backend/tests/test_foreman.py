@@ -520,6 +520,88 @@ class TestExecToolsDispatching:
             )
         assert task_tool == "pi"
 
+    async def test_two_assign_task_calls_same_worker_in_one_batch(self, db_session):
+        """Two assign_task calls to the same worker within a single foreman turn
+        (i.e. one exec_tools batch, dispatched concurrently via asyncio.gather)
+        must not both succeed — the per-worker assign_task:<worker_id> lock
+        forces exactly one to win, the other reports a clean error instead of
+        double-assigning the worker. Regression test for issue #555."""
+        insert_guild(db_session, "g-assign-batch-race")
+        _insert_worker(db_session, "g-assign-batch-race", "w-batchrace1")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-assign-batch-race",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-batchrace1", "description": "Task A", "name": "Task A"},
+                        tool_id="tid-a",
+                    ),
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-batchrace1", "description": "Task B", "name": "Task B"},
+                        tool_id="tid-b",
+                    ),
+                ],
+            )
+
+        assert len(results) == 2
+        # Result order must match tool_use order regardless of which finished first.
+        assert results[0]["tool_use_id"] == "tid-a"
+        assert results[1]["tool_use_id"] == "tid-b"
+
+        successes = [r for r in results if not r.get("is_error")]
+        errors = [r for r in results if r.get("is_error")]
+        assert len(successes) == 1
+        assert len(errors) == 1
+        assert "queued" in successes[0]["content"].lower()
+        assert "already being assigned" in errors[0]["content"].lower()
+
+        # Exactly one task should have actually been persisted for this worker.
+        with _sync_session(db_session) as session:
+            count = session.scalar(
+                select(func.count()).select_from(Task).where(col(Task.worker_id) == "w-batchrace1")
+            )
+        assert count == 1
+
+    async def test_mixed_tool_types_in_one_batch(self, db_session):
+        """A single foreman turn mixing create_task, assign_task, and
+        message_worker must dispatch all of them concurrently and return
+        correctly matched, correctly ordered results for each."""
+        insert_guild(db_session, "g-mixed-batch")
+        _insert_worker(db_session, "g-mixed-batch", "w-mixed1")
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+            patch("foreman.tools.broadcast_msg", new=AsyncMock()),
+        ):
+            results = await exec_tools(
+                "g-mixed-batch",
+                [
+                    _fake_tool_use(
+                        "create_task",
+                        {"name": "Standalone task", "description": "desc"},
+                        tool_id="tid-create",
+                    ),
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-mixed1", "description": "Do work", "name": "Do it"},
+                        tool_id="tid-assign",
+                    ),
+                    _fake_tool_use(
+                        "message_worker",
+                        {"worker_id": "w-mixed1", "message": "hello"},
+                        tool_id="tid-message",
+                    ),
+                ],
+            )
+
+        assert [r["tool_use_id"] for r in results] == ["tid-create", "tid-assign", "tid-message"]
+        assert not any(r.get("is_error") for r in results)
+        assert "t-" in results[0]["content"]
+        assert "queued" in results[1]["content"].lower()
+        assert "delivered" in results[2]["content"].lower()
+
     async def test_send_followup_defaults_to_first_worker_tool(self, db_session):
         insert_guild(db_session, "g-followup-tooldefault")
         insert_worker(
