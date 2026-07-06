@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -519,6 +520,115 @@ class TestExecToolsDispatching:
                 select(col(Task.tool)).where(col(Task.worker_id) == "w-tooldefault")
             )
         assert task_tool == "pi"
+
+    async def test_two_assign_task_calls_same_worker_in_one_batch(self, db_session):
+        """Two assign_task calls to the same worker within a single foreman turn
+        (i.e. one exec_tools batch, dispatched concurrently via asyncio.gather)
+        must not both succeed.
+
+        Each concurrent call opens its *own* AsyncSession (see exec_tools'
+        docstring), so mutual exclusion can't come from an in-process
+        asyncio.Lock — there isn't one shared between the two coroutines, and
+        even if there were, holding it across the `await` points inside
+        assign_task wouldn't be guaranteed reentrant-safe. Instead assign_task
+        takes a **database-level** lock: LockService.acquire() INSERTs into the
+        `locks` table under a partial unique index on (key) for active rows
+        (`locks_key_active_unique`), and the loser gets an IntegrityError that
+        is converted into `acquired = False`. That uniqueness constraint is
+        enforced by Postgres itself, so exactly one of the two concurrent
+        inserts can ever succeed regardless of how the event loop interleaves
+        the two coroutines — this is what makes the test deterministic rather
+        than a race that happens to usually work.
+
+        Regression test for issue #555.
+        """
+        insert_guild(db_session, "g-assign-batch-race")
+        _insert_worker(db_session, "g-assign-batch-race", "w-batchrace1")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-assign-batch-race",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-batchrace1", "description": "Task A", "name": "Task A"},
+                        tool_id="tid-a",
+                    ),
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-batchrace1", "description": "Task B", "name": "Task B"},
+                        tool_id="tid-b",
+                    ),
+                ],
+            )
+
+        assert len(results) == 2
+        # Result order must match tool_use order regardless of which finished first.
+        assert results[0]["tool_use_id"] == "tid-a"
+        assert results[1]["tool_use_id"] == "tid-b"
+
+        successes = [r for r in results if not r.get("is_error")]
+        errors = [r for r in results if r.get("is_error")]
+        # Exactly one success and one error — not >=1 of each — so the test
+        # fails loudly if the DB lock ever stops serializing the two calls
+        # (e.g. both succeed, or both get locked out).
+        assert len(successes) == 1
+        assert len(errors) == 1
+        assert "queued" in successes[0]["content"].lower()
+        assert "already being assigned" in errors[0]["content"].lower()
+
+        # Exactly one task should have actually been persisted for this worker.
+        # assign_task commits its own AsyncSession before exec_tools returns
+        # (see the `await db.commit()` right after the lock acquire/recheck in
+        # foreman/tools.py), so a fresh session from the same AsyncSessionLocal
+        # used by the app — the same factory the db_session fixture points at
+        # database_module.AsyncSessionLocal — is guaranteed to observe the
+        # committed row(s), unlike a session opened before the commit lands.
+        async with database_module.AsyncSessionLocal() as db:
+            count = await db.scalar(
+                select(func.count()).select_from(Task).where(col(Task.worker_id) == "w-batchrace1")
+            )
+        assert count == 1
+
+    async def test_mixed_tool_types_in_one_batch(self, db_session):
+        """A single foreman turn mixing create_task, assign_task, and
+        message_worker must dispatch all of them concurrently and return
+        correctly matched, correctly ordered results for each."""
+        insert_guild(db_session, "g-mixed-batch")
+        _insert_worker(db_session, "g-mixed-batch", "w-mixed1")
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+            patch("foreman.tools.broadcast_msg", new=AsyncMock()),
+        ):
+            results = await exec_tools(
+                "g-mixed-batch",
+                [
+                    _fake_tool_use(
+                        "create_task",
+                        {"name": "Standalone task", "description": "desc"},
+                        tool_id="tid-create",
+                    ),
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-mixed1", "description": "Do work", "name": "Do it"},
+                        tool_id="tid-assign",
+                    ),
+                    _fake_tool_use(
+                        "message_worker",
+                        {"worker_id": "w-mixed1", "message": "hello"},
+                        tool_id="tid-message",
+                    ),
+                ],
+            )
+
+        assert [r["tool_use_id"] for r in results] == ["tid-create", "tid-assign", "tid-message"]
+        assert not any(r.get("is_error") for r in results)
+        # Match the full "t-<6 lowercase alnum>" task id format (see the id
+        # generator in foreman/tools.py) rather than a bare "t-" substring,
+        # which would also match unrelated error text.
+        assert re.search(r"\bt-[a-z0-9]{6}\b", results[0]["content"])
+        assert "queued" in results[1]["content"].lower()
+        assert "delivered" in results[2]["content"].lower()
 
     async def test_send_followup_defaults_to_first_worker_tool(self, db_session):
         insert_guild(db_session, "g-followup-tooldefault")
