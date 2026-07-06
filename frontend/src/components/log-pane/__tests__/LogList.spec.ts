@@ -15,6 +15,14 @@ function textLog(line: string): LogEntry {
   return { line, timestamp: '2026-01-01T00:00:00Z' }
 }
 
+function thinkingLog(text: string): LogEntry {
+  return {
+    line: `[thinking] ${text}`,
+    timestamp: '2026-01-01T00:00:00Z',
+    detail: { toolType: 'thinking', input: text, summary: text, fullText: text },
+  }
+}
+
 describe('LogList turn grouping', () => {
   it('renders plain lines normally when there are no tool calls', () => {
     const logs = [textLog('hello'), textLog('world')]
@@ -70,6 +78,26 @@ describe('LogList turn grouping', () => {
     // Both entries (tool_use + tool_result) should render inline, not be
     // swallowed by an accidental turn summary rendering alongside them.
     expect(wrapper.findAll('.log-line')).toHaveLength(2)
+  })
+
+  it('groups tool calls interleaved with thinking blocks into a single turn', () => {
+    // Mirrors real Claude transcripts: each tool call is preceded by its own
+    // thinking block, so a 5-bash-call turn looks like
+    // thinking, tool_use, tool_result, thinking, tool_use, tool_result, ...
+    const logs: LogEntry[] = []
+    for (let i = 0; i < 5; i++) {
+      logs.push(thinkingLog(`step ${i}`), toolLog('Bash', 'tool_use'), toolLog('Bash', 'tool_result'))
+    }
+    const wrapper = mount(LogList, { props: { logs } })
+
+    const summaries = wrapper.findAll('.turn-summary')
+    expect(summaries).toHaveLength(1)
+    expect(summaries[0].text()).toContain('Turn 1')
+    expect(summaries[0].text()).toContain('bash × 5')
+    expect(summaries[0].text()).toContain('5 tool calls')
+
+    // Collapsed by default: none of the individual tool calls are visible.
+    expect(wrapper.find('.turn-body').exists()).toBe(false)
   })
 
   it('numbers multiple turns sequentially, separated by non-tool lines', () => {
