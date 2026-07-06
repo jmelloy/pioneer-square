@@ -666,7 +666,7 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
     # low-priority feed (opt-in via DISCORD_STREAM_TASKS). Buffered internally,
     # so this call stays off the network path and is a no-op when disabled.
     if task_id and line and level in _DISCORD_STREAM_LEVELS:
-        await discord_notifier.notify_task_stream(ctx.guild_id, task_id, line)
+        await discord_notifier.notify_task_stream(ctx.guild_id, task_id, line, detail)
 
 
 async def handle_worker_register(ctx: WSContext, data: dict) -> None:
