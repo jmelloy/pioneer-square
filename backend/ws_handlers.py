@@ -1164,7 +1164,7 @@ async def handle_worker_auth_response(ctx: WSContext, data: dict) -> None:
 async def handle_foreman_broadcast(ctx: WSContext, data: dict) -> None:
     """External foreman relays a broadcast payload to all guild connections.
 
-    The standalone foreman/main.py cannot call broadcast() directly (its
+    The standalone foreman process cannot call broadcast() directly (its
     connections dict is empty — only the backend process holds live WS
     connections).  Instead it sends a foreman-broadcast envelope; this handler
     extracts the payload and fans it out to every frontend client in the guild.

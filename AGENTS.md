@@ -202,10 +202,11 @@ foreman is triggered by:
 3. `task-followup-done` WS messages
 4. `needs-input` worker escalations
 
-**Phase 2 — standalone foreman**: `foreman/main.py` is an opt-in external foreman process. It
-connects to the backend WS with `agentType="foreman"` and `external=true`; the backend routes
-triggers to it and the embedded loop becomes a fallback. See the `foreman` build target in the
-root `Dockerfile` and the `foreman` service in `docker-compose.yml`.
+**Phase 2 — standalone foreman**: `foreman/pioneer_foreman/` (run via `pioneer foreman`) is an
+opt-in external foreman process. It connects to the backend WS with `agentType="foreman"` and
+`external=true`; the backend routes triggers to it and the embedded loop becomes a fallback. See
+the `foreman` build target in the root `Dockerfile` and the `foreman` service in
+`docker-compose.yml`.
 
 ### WebSocket message protocol
 
