@@ -375,6 +375,7 @@ def test_foreman_config_env_vars_round_trip_in_clear(client):
         headers=headers,
         json={
             "provider": "bedrock",
+            "model": "arn:aws:bedrock:eu-west-1:111111111111:inference-profile/us.anthropic.claude-sonnet-4-6",
             "env_vars": [
                 {"key": "AWS_DEFAULT_REGION", "value": "eu-west-1"},
                 {"key": "AWS_ACCESS_KEY_ID", "value": "AKIASECRET"},
@@ -392,3 +393,43 @@ def test_foreman_config_env_vars_round_trip_in_clear(client):
         "AWS_ACCESS_KEY_ID": "AKIASECRET",
         "AWS_SECRET_ACCESS_KEY": "topsecret",  # secret returned in clear, not masked
     }
+
+
+def test_foreman_config_bedrock_without_model_rejected(client, monkeypatch):
+    """Regression for #817: saving provider=bedrock with no model configured must be
+    rejected up front — Bedrock inference profiles are AWS-account-scoped, so silently
+    accepting this would only fail later, opaquely, against a placeholder ARN."""
+    monkeypatch.delenv("FOREMAN_BEDROCK_MODEL", raising=False)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
+    insert_guild(db_url, "g-fconf2")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    patch = test_client.patch(
+        "/api/guilds/g-fconf2/foreman-config",
+        headers=headers,
+        json={"provider": "bedrock"},
+    )
+    assert patch.status_code == 400
+
+    got = test_client.get("/api/guilds/g-fconf2/foreman-config", headers=headers)
+    assert got.json() == {}
+
+
+def test_foreman_config_bedrock_with_model_accepted(client, monkeypatch):
+    """A model supplied alongside provider=bedrock passes validation."""
+    monkeypatch.delenv("FOREMAN_BEDROCK_MODEL", raising=False)
+    test_client, db_url = client
+    token = make_auth_token(db_url)
+    insert_guild(db_url, "g-fconf3")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    patch = test_client.patch(
+        "/api/guilds/g-fconf3/foreman-config",
+        headers=headers,
+        json={
+            "provider": "bedrock",
+            "model": "arn:aws:bedrock:us-east-1:111111111111:inference-profile/us.anthropic.claude-sonnet-4-6",
+        },
+    )
+    assert patch.status_code == 200

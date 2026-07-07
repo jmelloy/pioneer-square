@@ -64,6 +64,7 @@ def _get_anthropic_client(config: Config):
             region=region,
             aws_profile=profile,
             extra_env=extra_env or None,
+            model=getattr(config, "bedrock_model", None),
         )
     return _anthropic_clients[cache_key]
 
@@ -262,6 +263,11 @@ async def run_foreman_ai(
 
         _inject_state_preamble(messages, state_preamble)
 
+        # Resolve the model before building the client (and before any task is
+        # dispatched) so a stale config — saved before #817 added validation,
+        # with no bedrock_model — fails here with a clear error instead of
+        # surfacing deep inside the API call.
+        effective_model = config.effective_model
         client = _get_anthropic_client(config)
 
         text_parts = []
@@ -276,7 +282,7 @@ async def run_foreman_ai(
                 len(messages),
             )
             _raw = await client.messages.with_raw_response.create(
-                model=config.effective_model,
+                model=effective_model,
                 max_tokens=1024,
                 system=system_blocks,
                 messages=messages,
