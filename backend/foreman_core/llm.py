@@ -43,20 +43,33 @@ FOREMAN_PROVIDER = os.environ.get("FOREMAN_PROVIDER", "anthropic").lower()
 _BEDROCK_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
 
 
-def get_foreman_model(provider: str | None = None) -> str:
+def get_foreman_model(
+    provider: str | None = None,
+    *,
+    model: str | None = None,
+    bedrock_model: str | None = None,
+) -> str:
     """Return the model ID to use for the given provider.
 
     When provider is 'bedrock' (or FOREMAN_PROVIDER=bedrock), returns
-    FOREMAN_BEDROCK_MODEL, raising BedrockModelNotConfiguredError if it's unset —
-    Bedrock inference-profile ARNs are AWS-account-scoped, so there is no safe
-    default to fall back to. Otherwise returns FOREMAN_MODEL.
+    bedrock_model (falling back to FOREMAN_BEDROCK_MODEL), raising
+    BedrockModelNotConfiguredError if both are unset — Bedrock inference-profile
+    ARNs are AWS-account-scoped, so there is no safe default to fall back to.
+    Otherwise returns model (falling back to FOREMAN_MODEL).
 
-    Reads os.environ on every call so that tests can patch env vars directly.
+    model/bedrock_model let callers with their own config source (e.g. the
+    standalone foreman's Config dataclass) pass explicit overrides instead of
+    duplicating this provider-branching logic against their own fields.
+
+    Reads os.environ on every call (when no explicit override is given) so
+    that tests can patch env vars directly.
     """
     resolved = (provider or os.environ.get("FOREMAN_PROVIDER", "anthropic")).lower()
     if resolved == "bedrock":
-        bedrock_model = os.environ.get("FOREMAN_BEDROCK_MODEL")
-        if not bedrock_model:
+        resolved_bedrock_model = (
+            bedrock_model if bedrock_model is not None else os.environ.get("FOREMAN_BEDROCK_MODEL")
+        )
+        if not resolved_bedrock_model:
             raise BedrockModelNotConfiguredError(
                 "Bedrock provider selected but no model is configured. Unlike AWS "
                 "credentials, which boto3 can resolve on its own (IAM role, profile, "
@@ -68,8 +81,8 @@ def get_foreman_model(provider: str | None = None) -> str:
                 "foreman settings, or set the FOREMAN_BEDROCK_MODEL environment "
                 "variable."
             )
-        return bedrock_model
-    return os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
+        return resolved_bedrock_model
+    return model if model is not None else os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 
 
 def _log_bedrock_credentials(
