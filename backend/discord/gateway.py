@@ -204,9 +204,15 @@ class GatewayClient:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("discord gateway: connection error (%s)", exc)
+                # str(ConnectionClosed) carries Discord's close code + reason
+                # (e.g. 4014 disallowed intents, 4004 auth failed) — the key
+                # signal for why a session keeps ending. Include the type for
+                # non-close errors (DNS, TLS, timeouts).
+                logger.warning("discord gateway: connection error [%s] %s", type(exc).__name__, exc)
             finally:
                 await self._stop_heartbeat()
+
+            uptime = time.monotonic() - started
 
             # Reset the backoff only for a connection that reached READY/RESUMED
             # *and* stayed up a while. Resetting on mere socket-open (the
@@ -215,13 +221,21 @@ class GatewayClient:
             # ~3s forever, tripping Discord's abuse guard. The uptime floor also
             # covers a connection that reaches READY then drops instantly
             # (flapping): still a zero-delay storm without it.
-            if self._healthy and time.monotonic() - started >= _HEALTHY_MIN_SECONDS:
+            if self._healthy and uptime >= _HEALTHY_MIN_SECONDS:
                 attempt = 0
                 self._identify_count = 0
             else:
                 delay = _backoff_delay(attempt)
+                # "healthy but short" here == flapping: reached READY/RESUMED
+                # then dropped almost immediately. Distinguish it from a
+                # never-connected failure so the logs show which one is spinning.
                 logger.warning(
-                    "discord gateway: reconnecting in %.1fs (attempt %d)", delay, attempt + 1
+                    "discord gateway: %s after %.1fs — reconnecting in %.1fs (attempt %d, identifies=%d)",
+                    "flapping" if self._healthy else "connect failed",
+                    uptime,
+                    delay,
+                    attempt + 1,
+                    self._identify_count,
                 )
                 await asyncio.sleep(delay)
                 attempt += 1
@@ -240,8 +254,16 @@ class GatewayClient:
         )
 
         if self._session_id and self._seq is not None:
+            logger.info(
+                "discord gateway: RESUMEing session_id=%s seq=%s", self._session_id, self._seq
+            )
             await self._send_resume(ws)
         else:
+            logger.info(
+                "discord gateway: IDENTIFYing (no resumable session; session_id=%s seq=%s)",
+                self._session_id,
+                self._seq,
+            )
             await self._send_identify(ws)
 
         async for raw in ws:
