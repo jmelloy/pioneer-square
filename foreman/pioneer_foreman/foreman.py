@@ -38,12 +38,6 @@ class Foreman:
         self._processing: bool = False
         # Triggers buffered while _processing is True; drained FIFO after each turn.
         self._message_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_QUEUE_MAX)
-        # Monotonic timestamp of the last run that made at least one tool call.
-        # Used to decide whether to reset the poll backoff.
-        self._last_action_at: float = 0.0
-        # Current poll interval in seconds.  Reset to poll_min_interval when
-        # the foreman makes tool calls; otherwise advanced exponentially each tick.
-        self._poll_interval: int = config.poll_min_interval
         # Per-task child contexts (task_id → TaskContext), populated on assign_task
         # when config.child_contexts is enabled.  See docs/foreman-per-task-context.md.
         self._child_contexts: dict[str, TaskContext] = {}
@@ -247,7 +241,6 @@ class Foreman:
         ws_url = self._config.ws_url
         logger.info("Connecting to backend at %s", ws_url)
         evicted = False
-        poll_task: asyncio.Task | None = None
 
         async with websockets.connect(ws_url) as ws:
             logger.info("WebSocket connected to %s", ws_url)
@@ -293,7 +286,7 @@ class Foreman:
                 self._processing = True
                 try:
                     try:
-                        made_calls = await run_foreman_ai(
+                        await run_foreman_ai(
                             guild_id,
                             human_message,
                             extra_context=extra_context,
@@ -304,9 +297,6 @@ class Foreman:
                             config=self._config,
                             tool_observer=self._parent_tool_observer,
                         )
-                        if made_calls:
-                            self._last_action_at = time.monotonic()
-                            self._poll_interval = self._config.poll_min_interval
                     except Exception:
                         logger.exception("guild=%s %s: unhandled error", guild_id, task_name)
 
@@ -320,7 +310,7 @@ class Foreman:
                         q_name = f"foreman.queued:{queued['guild_id']}:{queued.get('event', '?')}"
                         logger.debug("Processing queued message: %s", q_name)
                         try:
-                            made_calls = await run_foreman_ai(
+                            await run_foreman_ai(
                                 queued["guild_id"],
                                 queued["human_message"],
                                 extra_context=queued.get("extra_context", ""),
@@ -331,9 +321,6 @@ class Foreman:
                                 config=self._config,
                                 tool_observer=self._parent_tool_observer,
                             )
-                            if made_calls:
-                                self._last_action_at = time.monotonic()
-                                self._poll_interval = self._config.poll_min_interval
                         except Exception:
                             logger.exception(
                                 "guild=%s %s: unhandled error", queued["guild_id"], q_name

@@ -29,8 +29,6 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from ws_types import AgentStateMsg
 
-from foreman import resume_foreman_poll
-
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -170,7 +168,6 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                 # subsequent trigger events fall back to the embedded foreman.
                 if foreman_connections.get(guild_id) is websocket:
                     foreman_connections.pop(guild_id, None)
-                    resume_foreman_poll(guild_id)
                     logger.info("guild=%s external foreman WS closed (socket disconnect)", guild_id)
 
                 # Only mark agents offline if this WS is still the current owner.
