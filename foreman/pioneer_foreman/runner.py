@@ -149,6 +149,10 @@ async def run_foreman_ai(
     ``task_id`` must be passed explicitly by the caller; it is not inferred from
     guild state so there is no ambiguity when multiple tasks are active.
 
+    ``http`` is the only path to storage this process has — all state lives in
+    the backend's DB. ``ws_send`` relays a message to the backend for fan-out;
+    it does not deliver directly to the end user.
+
     When ``child`` is True the run is scoped to a single task (``task_id`` is
     required): history, system prompt, state preamble, and tool set are all
     narrowed to that one task (see docs/foreman-per-task-context.md). When False

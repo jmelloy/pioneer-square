@@ -1,10 +1,13 @@
-"""Standalone Foreman process: WebSocket connection, trigger handling.
+"""Standalone Foreman process: WebSocket connection, trigger dispatch.
 
-Periodic task-health polling is scheduled by the backend (see
-backend/foreman/runner.py's ``_poll_loop``), which dispatches each tick as a
-``foreman-trigger`` to whichever foreman — embedded or external — currently
-owns the guild. This process only reacts to triggers it receives over the WS
-connection; it does not run its own poll timer.
+Connects to the backend over WebSocket, registers as the external foreman for
+one guild, and dispatches each incoming ``foreman-trigger`` 1:1 to
+``run_foreman_ai`` (task-scoped triggers go through a per-task lock instead of
+the whole-guild queue; see docs/foreman-per-task-context.md). Any broadcast
+the run produces is relayed back to the backend as a ``foreman-broadcast``
+message for it to fan out. This process holds no state of its own beyond what
+is needed to serialize concurrent runs — see docs/foreman-split-plan.md for
+the full protocol.
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ class Foreman:
 
     def __init__(self, config: Config):
         self._config = config
+        # REST client back to the backend — the only storage this process can reach;
+        # it never holds its own copy of guild/task state.
         self._http: ForemanHTTPClient | None = None
         # Keys with a parent (whole-guild) run currently in flight. A trigger for
         # a key that's already running is dropped rather than buffered; the backend
@@ -159,6 +164,9 @@ class Foreman:
             logger.info("WebSocket connected to %s", ws_url)
 
             async def _ws_send(message: dict) -> None:
+                # Wraps `message` in a foreman-broadcast envelope for the backend to fan
+                # out to the guild's connections — this process never talks to end-user
+                # clients directly, only to the backend over this one WS connection.
                 try:
                     await ws.send(
                         json.dumps(
