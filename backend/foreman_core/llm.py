@@ -67,9 +67,7 @@ def get_foreman_model(
     resolved = (provider or os.environ.get("FOREMAN_PROVIDER", "anthropic")).lower()
     if resolved == "bedrock":
         resolved_bedrock_model = (
-            bedrock_model
-            if bedrock_model is not None
-            else os.environ.get("FOREMAN_BEDROCK_MODEL")
+            bedrock_model if bedrock_model is not None else os.environ.get("FOREMAN_BEDROCK_MODEL")
         )
         if not resolved_bedrock_model:
             raise BedrockModelNotConfiguredError(
