@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import secrets
 from datetime import UTC, datetime
@@ -482,6 +483,23 @@ async def update_foreman_config(
             config.pop(field, None)
         else:
             config[field] = value
+
+    # Bedrock inference-profile ARNs are AWS-account-scoped, so there is no safe
+    # default model to fall back to at run time (see #817). Reject the save now
+    # rather than let it fail opaquely against a placeholder/wrong-account ARN.
+    if (
+        config.get("provider") == "bedrock"
+        and not config.get("model")
+        and not os.environ.get("FOREMAN_BEDROCK_MODEL")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Bedrock provider requires a model: set the Model field to an "
+                "inference-profile ARN or model ID for your AWS account."
+            ),
+        )
+
     guild.foreman_config = config
     await db.commit()
     return config

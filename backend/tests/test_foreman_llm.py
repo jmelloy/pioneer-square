@@ -42,18 +42,24 @@ class TestGetForemanModel:
 
         assert get_foreman_model() == "claude-sonnet-4-6"
 
-    def test_bedrock_provider_env_returns_bedrock_model(self, monkeypatch):
+    def test_bedrock_provider_env_without_model_raises(self, monkeypatch):
+        """Regression for #817: Bedrock inference profiles are AWS-account-scoped, so
+        silently falling back to a hardcoded ARN sends requests to the wrong account.
+        Must raise a clear, actionable error instead."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
         monkeypatch.delenv("FOREMAN_BEDROCK_MODEL", raising=False)
-        from foreman_core.llm import _DEFAULT_BEDROCK_MODEL, get_foreman_model
+        from foreman_core.llm import BedrockModelNotConfiguredError, get_foreman_model
 
-        assert get_foreman_model() == _DEFAULT_BEDROCK_MODEL
+        with pytest.raises(BedrockModelNotConfiguredError):
+            get_foreman_model()
 
-    def test_explicit_provider_overrides_env(self, monkeypatch):
+    def test_explicit_provider_without_model_raises(self, monkeypatch):
         monkeypatch.setenv("FOREMAN_PROVIDER", "anthropic")
-        from foreman_core.llm import _DEFAULT_BEDROCK_MODEL, get_foreman_model
+        monkeypatch.delenv("FOREMAN_BEDROCK_MODEL", raising=False)
+        from foreman_core.llm import BedrockModelNotConfiguredError, get_foreman_model
 
-        assert get_foreman_model(provider="bedrock") == _DEFAULT_BEDROCK_MODEL
+        with pytest.raises(BedrockModelNotConfiguredError):
+            get_foreman_model(provider="bedrock")
 
     def test_custom_bedrock_model_env(self, monkeypatch):
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")

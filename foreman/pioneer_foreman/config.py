@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from backend.foreman_core.llm import _DEFAULT_BEDROCK_MODEL
+from backend.foreman_core.llm import BedrockModelNotConfiguredError
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +31,10 @@ class Config:
     auth_token: str | None = None
     # Claude / AI provider settings
     model: str = "claude-sonnet-4-6"
-    # Bedrock uses cross-region inference profiles, not plain model IDs.
-    # Ignored when provider != "bedrock".
-    bedrock_model: str = _DEFAULT_BEDROCK_MODEL
+    # Bedrock uses cross-region inference profiles, not plain model IDs, and those
+    # profiles are scoped to a single AWS account, so there is no valid default.
+    # Ignored when provider != "bedrock"; required when it is (see effective_model).
+    bedrock_model: str | None = None
     api_key: str | None = None
     # Anthropic auth token (OAuth/claude.ai accounts).  Mutually exclusive with
     # api_key; when set it is forwarded as `auth_token` to AsyncAnthropic and
@@ -71,7 +72,15 @@ class Config:
         standalone foreman without the full backend env-var stack, so it needs
         its own copy operating on dataclass fields rather than os.environ.
         """
-        return self.bedrock_model if self.provider == "bedrock" else self.model
+        if self.provider == "bedrock":
+            if not self.bedrock_model:
+                raise BedrockModelNotConfiguredError(
+                    "Bedrock provider selected but no model is configured. Set "
+                    "[claude] bedrock_model in the config TOML or the "
+                    "FOREMAN_BEDROCK_MODEL environment variable."
+                )
+            return self.bedrock_model
+        return self.model
 
     @property
     def http_url(self) -> str:
@@ -190,8 +199,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         overrides.get("bedrock_model")
         or claude_block.get("bedrock_model")
         or os.environ.get("FOREMAN_BEDROCK_MODEL")
-        or _DEFAULT_BEDROCK_MODEL
-    )
+    ) or None
 
     provider = (
         overrides.get("provider")

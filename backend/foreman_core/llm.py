@@ -20,15 +20,22 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BEDROCK_MODEL = (
-    "arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6"
-)
+
+class BedrockModelNotConfiguredError(ValueError):
+    """Raised when provider=bedrock is selected but no model/inference-profile is configured.
+
+    Bedrock has no universal default model — inference profile ARNs are scoped to a
+    single AWS account — so there is no safe value to fall back to silently. Callers
+    must configure one explicitly (guild settings `model` field or FOREMAN_BEDROCK_MODEL).
+    """
+
 
 FOREMAN_MODEL = os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
-# Bedrock uses cross-region inference profiles, not plain model IDs.
-# Set this to the profile ARN/ID appropriate for your region, e.g.:
-#   arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6
-FOREMAN_BEDROCK_MODEL = os.environ.get("FOREMAN_BEDROCK_MODEL", _DEFAULT_BEDROCK_MODEL)
+# Bedrock uses cross-region inference profiles, not plain model IDs, and those
+# profiles are scoped to a single AWS account, so there is no valid cross-account
+# default. Set this to the profile ARN/ID appropriate for your account/region, e.g.:
+#   arn:aws:bedrock:us-east-1:<account-id>:inference-profile/us.anthropic.claude-sonnet-4-6
+FOREMAN_BEDROCK_MODEL = os.environ.get("FOREMAN_BEDROCK_MODEL")
 
 # Set FOREMAN_PROVIDER=bedrock to use Amazon Bedrock instead of the Anthropic API.
 # Requires: pip install "anthropic[bedrock]"  +  AWS credentials in env / IAM role.
@@ -40,13 +47,22 @@ def get_foreman_model(provider: str | None = None) -> str:
     """Return the model ID to use for the given provider.
 
     When provider is 'bedrock' (or FOREMAN_PROVIDER=bedrock), returns
-    FOREMAN_BEDROCK_MODEL; otherwise returns FOREMAN_MODEL.
+    FOREMAN_BEDROCK_MODEL, raising BedrockModelNotConfiguredError if it's unset —
+    Bedrock inference-profile ARNs are AWS-account-scoped, so there is no safe
+    default to fall back to. Otherwise returns FOREMAN_MODEL.
 
     Reads os.environ on every call so that tests can patch env vars directly.
     """
     resolved = (provider or os.environ.get("FOREMAN_PROVIDER", "anthropic")).lower()
     if resolved == "bedrock":
-        return os.environ.get("FOREMAN_BEDROCK_MODEL", _DEFAULT_BEDROCK_MODEL)
+        bedrock_model = os.environ.get("FOREMAN_BEDROCK_MODEL")
+        if not bedrock_model:
+            raise BedrockModelNotConfiguredError(
+                "Bedrock provider selected but no model is configured. Set a model "
+                "(inference-profile ARN or model ID) in the guild's foreman settings, "
+                "or set the FOREMAN_BEDROCK_MODEL environment variable."
+            )
+        return bedrock_model
     return os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 
 
@@ -213,7 +229,7 @@ def make_anthropic_client(
             "bearer-token"
             if bearer_token
             else ("explicit-keys" if (access_key and secret_key) else "sigv4"),
-            get_foreman_model("bedrock"),
+            env.get("FOREMAN_BEDROCK_MODEL") or "<not configured>",
         )
         bedrock_kwargs: dict = {"aws_region": resolved_region}
         if bearer_token:
