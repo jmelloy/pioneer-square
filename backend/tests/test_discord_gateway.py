@@ -205,23 +205,20 @@ async def test_healthy_longlived_connection_does_not_back_off():
     """A connection that reaches READY and stays up past the uptime floor
     reconnects promptly without ever computing a backoff delay."""
     ready = _dispatch("READY", {"session_id": "s", "resume_gateway_url": "wss://r/"})
-
-    def fresh_ws(*_a, **_kw):
-        return FakeGatewayWebSocket([_hello(), ready, _CLOSE])
+    # First connect reaches READY (floor patched to 0 -> counts as long-lived);
+    # the second aborts the loop so the test terminates deterministically.
+    connects = [FakeGatewayWebSocket([_hello(), ready, _CLOSE]), asyncio.CancelledError]
 
     client = gateway.GatewayClient("test-token")
     with (
-        patch("discord.gateway.websockets.connect", side_effect=fresh_ws),
+        patch("discord.gateway.websockets.connect", side_effect=connects),
         patch("discord.gateway._HEALTHY_MIN_SECONDS", 0.0),  # count as long-lived
         patch("discord.gateway._backoff_delay") as backoff,
     ):
-        task = asyncio.create_task(client.run())
-        await asyncio.sleep(0.05)
-        task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await client.run()
 
-    assert client._healthy is True
+    assert client._session_id == "s"  # READY was processed (healthy path)
     backoff.assert_not_called()  # never hit the unhealthy backoff branch
 
 
