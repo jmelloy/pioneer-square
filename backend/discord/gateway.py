@@ -201,7 +201,9 @@ class GatewayClient:
                 attempt = 0
             else:
                 delay = _backoff_delay(attempt)
-                logger.warning("discord gateway: reconnecting in %.1fs (attempt %d)", delay, attempt + 1)
+                logger.warning(
+                    "discord gateway: reconnecting in %.1fs (attempt %d)", delay, attempt + 1
+                )
                 await asyncio.sleep(delay)
                 attempt += 1
 
