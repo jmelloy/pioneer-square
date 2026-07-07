@@ -1,4 +1,11 @@
-"""Standalone Foreman process: WebSocket connection, trigger handling, poll loop."""
+"""Standalone Foreman process: WebSocket connection, trigger handling.
+
+Periodic task-health polling is scheduled by the backend (see
+backend/foreman/runner.py's ``_poll_loop``), which dispatches each tick as a
+``foreman-trigger`` to whichever foreman — embedded or external — currently
+owns the guild. This process only reacts to triggers it receives over the WS
+connection; it does not run its own poll timer.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +13,6 @@ import asyncio
 import json
 import logging
 import re
-import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -393,85 +399,6 @@ class Foreman:
                     name=f"foreman.trigger:{guild_id}:{data.get('event', '?')}",
                 )
 
-            async def _poll_loop() -> None:
-                """Background poll — check active tasks periodically."""
-                while True:
-                    # Capture the sleep duration so we can detect if a run reset
-                    # self._poll_interval during the sleep.
-                    sleep_duration = self._poll_interval
-                    try:
-                        await asyncio.sleep(sleep_duration)
-                    except asyncio.CancelledError:
-                        return
-
-                    try:
-                        state = await self._http.get_state()
-                        active = [
-                            t
-                            for t in (state.get("tasks") or [])
-                            if t.get("state") not in ("done", "failed", "cancelled")
-                        ]
-
-                        # Orphan recovery + ownership split: when child contexts are
-                        # enabled, each assigned task is monitored by its own child, so
-                        # the parent's periodic check only covers tasks WITHOUT a live
-                        # child (unassigned/pending or orphaned). Spawn a child for any
-                        # assigned task missing one.
-                        if self._config.child_contexts:
-                            for t in active:
-                                tid = t.get("id")
-                                if (
-                                    tid
-                                    and t.get("worker_id")
-                                    and not (
-                                        tid in self._child_contexts
-                                        and self._child_contexts[tid].is_alive()
-                                    )
-                                ):
-                                    self._spawn_child(tid)
-                            active = [
-                                t
-                                for t in active
-                                if not (
-                                    t.get("id") in self._child_contexts
-                                    and self._child_contexts[t["id"]].is_alive()
-                                )
-                            ]
-                        n = len(active)
-
-                        # Advance the interval for the next tick.  If a triggered run
-                        # reset self._poll_interval to poll_min_interval during our
-                        # sleep, that value will be smaller than sleep_duration, so
-                        # we advance from the reset value (not from sleep_duration).
-                        base = min(self._poll_interval, sleep_duration)
-                        self._poll_interval = min(base * 4, self._config.poll_max_interval)
-
-                        if active and not self._processing:
-                            task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active)
-                            msg = (
-                                f"[periodic-check] Automated status poll — {n} non-terminal "
-                                f"task(s): {task_summary}. Check whether any are stalled."
-                            )
-                            asyncio.create_task(
-                                _run_foreman(
-                                    self._config.guild_id,
-                                    msg,
-                                    task_name=f"foreman.poll:{self._config.guild_id}",
-                                ),
-                                name=f"foreman.poll:{self._config.guild_id}",
-                            )
-
-                        await _ws_send(
-                            {
-                                "type": "foreman-poll-status",
-                                "nextCheckIn": self._poll_interval,
-                            }
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        logger.exception("poll_loop iteration failed")
-
             # Register as external foreman
             logger.debug("guild=%s sending join message", self._config.guild_id)
             await ws.send(
@@ -484,7 +411,6 @@ class Foreman:
                 )
             )
 
-            poll_task = asyncio.create_task(_poll_loop(), name="foreman.poll-loop")
             try:
                 async for raw in ws:
                     try:
@@ -528,12 +454,6 @@ class Foreman:
                     evicted,
                 )
             finally:
-                if poll_task and not poll_task.done():
-                    poll_task.cancel()
-                    try:
-                        await poll_task
-                    except asyncio.CancelledError:
-                        pass
                 # Child contexts hold this connection's ws_send; tear them down so
                 # the next connection respawns them cleanly from state.
                 await self._cancel_all_children()

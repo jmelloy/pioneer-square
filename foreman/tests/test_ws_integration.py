@@ -22,9 +22,6 @@ def _make_config(**kwargs) -> Config:
         backend_url="ws://localhost:8000",
         guild_id="test123",
         backend_key="s3cr3t",
-        # Large poll interval so the poll loop doesn't fire during tests
-        poll_min_interval=3600,
-        poll_max_interval=14400,
         **kwargs,
     )
 
@@ -322,36 +319,6 @@ async def test_processing_cleared_after_run():
         await asyncio.sleep(0.05)  # let the trigger task finish
 
     assert foreman._processing is False
-
-
-# ── graceful exit ─────────────────────────────────────────────────────────
-
-
-async def test_run_cancels_poll_task_on_eviction():
-    """poll_task is cancelled and awaited when _run_connection exits."""
-    original_create_task = asyncio.create_task
-
-    created_poll_task: list[asyncio.Task] = []
-
-    def patched_create_task(coro, *, name=None):
-        task = original_create_task(coro, name=name)
-        if name and "poll-loop" in name:
-            created_poll_task.append(task)
-        return task
-
-    ws = MockWebSocket([{"type": "foreman-evicted", "reason": "cleanup test"}])
-
-    with (
-        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
-        patch("asyncio.create_task", side_effect=patched_create_task),
-    ):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        await foreman._run_connection()
-
-    # The poll task should be done (cancelled or finished)
-    assert created_poll_task, "Expected a poll-loop task to be created"
-    assert created_poll_task[0].done(), "poll task should be done after _run_connection exits"
 
 
 # ── message queue ─────────────────────────────────────────────────────────

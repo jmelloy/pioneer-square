@@ -34,7 +34,3 @@ history_limit = 40
 # provider      = "anthropic"
 # bedrock_model = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
 # aws_region    = "us-east-1"          # falls back to AWS_DEFAULT_REGION env var
-
-[poll]
-min_interval = 60     # seconds (doubles each cycle up to max_interval)
-max_interval = 3600
