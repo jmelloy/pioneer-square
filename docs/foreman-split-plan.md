@@ -46,8 +46,9 @@ foreman/
   pioneer_foreman/
     cli.py           – argument parser + entry point
     config.py        – Config dataclass; reads TOML + env vars + CLI overrides
-    foreman.py       – Foreman class: WS lifecycle, trigger dispatch
+    foreman.py       – Foreman class: WS lifecycle, trigger dispatch, per-task locks
     runner.py        – Claude API loop (thin wrapper around foreman_core)
+    prompt.py        – system prompt / state preamble builders (parent + child)
     tools.py         – tool definitions; all execution delegated to /exec_tool
     http_client.py   – ForemanHTTPClient: typed methods for every backend endpoint
     jwt_auth.py      – JWTTokenManager: mints short-lived HS256 tokens from backend_key

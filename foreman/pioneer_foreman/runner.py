@@ -137,8 +137,10 @@ async def run_foreman_ai(
     user_id: str | None = None,
     task_id: str | None = None,
     *,
-    http: ForemanHTTPClient,
-    ws_send: Callable[[dict], Awaitable[None]],
+    http: ForemanHTTPClient,  # only path to storage; all state lives in the backend's DB
+    ws_send: Callable[
+        [dict], Awaitable[None]
+    ],  # relays to the backend for fan-out, not to the user
     config: Config,
     child: bool = False,
     tool_observer: ToolObserver | None = None,
