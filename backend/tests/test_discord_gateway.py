@@ -169,6 +169,125 @@ async def test_invalid_session_resumable_sends_resume_and_keeps_state():
 
 
 # ---------------------------------------------------------------------------
+# Reconnect backoff (regression: connect-then-immediately-closed loop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_connection_backs_off():
+    """A connection that opens but never reaches READY must go through the
+    backoff branch — not reconnect immediately every cycle (the bug that opened
+    1000+ connections and got the bot token reset)."""
+    attempts: list[int] = []
+
+    def fake_backoff(attempt, *a, **k):
+        attempts.append(attempt)
+        raise asyncio.CancelledError  # stop the loop after the first backoff
+
+    # Socket opens, HELLO arrives, then closes before READY — the failure mode.
+    def fresh_ws(*_a, **_kw):
+        return FakeGatewayWebSocket([_hello(), _CLOSE])
+
+    client = gateway.GatewayClient("test-token")
+    with (
+        patch("discord.gateway.websockets.connect", side_effect=fresh_ws),
+        patch("discord.gateway._backoff_delay", side_effect=fake_backoff),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await client.run()
+
+    assert client._healthy is False
+    assert attempts == [0]  # entered the backoff branch on the first failure
+
+
+@pytest.mark.asyncio
+async def test_healthy_longlived_connection_does_not_back_off():
+    """A connection that reaches READY and stays up past the uptime floor
+    reconnects promptly without ever computing a backoff delay."""
+    ready = _dispatch("READY", {"session_id": "s", "resume_gateway_url": "wss://r/"})
+    # First connect reaches READY (floor patched to 0 -> counts as long-lived);
+    # the second aborts the loop so the test terminates deterministically.
+    connects = [FakeGatewayWebSocket([_hello(), ready, _CLOSE]), asyncio.CancelledError]
+
+    client = gateway.GatewayClient("test-token")
+    with (
+        patch("discord.gateway.websockets.connect", side_effect=connects),
+        patch("discord.gateway._HEALTHY_MIN_SECONDS", 0.0),  # count as long-lived
+        patch("discord.gateway._backoff_delay") as backoff,
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await client.run()
+
+    assert client._session_id == "s"  # READY was processed (healthy path)
+    backoff.assert_not_called()  # never hit the unhealthy backoff branch
+
+
+@pytest.mark.asyncio
+async def test_healthy_but_flapping_connection_backs_off():
+    """A connection that reaches READY but drops before the uptime floor must
+    still back off — otherwise it's a zero-delay storm past the handshake."""
+    ready = _dispatch("READY", {"session_id": "s", "resume_gateway_url": "wss://r/"})
+    attempts: list[int] = []
+
+    def fake_backoff(attempt, *a, **k):
+        attempts.append(attempt)
+        raise asyncio.CancelledError
+
+    def fresh_ws(*_a, **_kw):
+        return FakeGatewayWebSocket([_hello(), ready, _CLOSE])
+
+    client = gateway.GatewayClient("test-token")
+    # Default _HEALTHY_MIN_SECONDS (30s) — the ~0s connection is "flapping".
+    with (
+        patch("discord.gateway.websockets.connect", side_effect=fresh_ws),
+        patch("discord.gateway._backoff_delay", side_effect=fake_backoff),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await client.run()
+
+    assert client._healthy is True  # it did reach READY...
+    assert attempts == [0]  # ...but still backed off because it dropped instantly
+
+
+@pytest.mark.asyncio
+async def test_identify_throttled_after_max_consecutive():
+    """Once _MAX_IDENTIFIES fresh IDENTIFYs pile up, the next one cools down
+    (Discord caps identifies ~1000/day) rather than firing immediately."""
+    ws = FakeGatewayWebSocket([])
+    client = gateway.GatewayClient("test-token")
+    client._identify_count = gateway._MAX_IDENTIFIES
+    client._identify_reset_after = 123.0  # from a prior READY
+
+    sleep = AsyncMock()
+    with patch("discord.gateway.asyncio.sleep", new=sleep):
+        await client._send_identify(ws)
+
+    sleep.assert_awaited_once_with(123.0)  # waited Discord's window, not a guess
+    assert client._identify_count == 1  # counter reset, then this identify counted
+    assert [m for m in ws.sent if m["op"] == gateway._OP_IDENTIFY]
+
+
+@pytest.mark.asyncio
+async def test_ready_captures_identify_reset_window():
+    ready = _dispatch(
+        "READY",
+        {"session_id": "s", "session_start_limit": {"remaining": 3, "reset_after": 5000}},
+    )
+    ws = FakeGatewayWebSocket([_hello(), ready, _CLOSE])
+    client = gateway.GatewayClient("test-token")
+
+    def stop(*_a, **_k):
+        raise asyncio.CancelledError  # break the reconnect loop after one pass
+
+    with patch("discord.gateway.websockets.connect", return_value=ws):
+        with patch("discord.gateway._backoff_delay", side_effect=stop):
+            with pytest.raises(asyncio.CancelledError):
+                await client.run()
+
+    assert client._identify_reset_after == 5.0  # 5000ms -> seconds
+
+
+# ---------------------------------------------------------------------------
 # MESSAGE_CREATE filtering
 # ---------------------------------------------------------------------------
 

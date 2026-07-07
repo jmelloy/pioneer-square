@@ -89,6 +89,19 @@ def _backoff_delay(attempt: int, base: float = 2.0, cap: float = 60.0) -> float:
     return min(cap, base * (2**attempt)) + random.uniform(0, base)
 
 
+# A connection must stay up at least this long to count as "healthy" and reset
+# the backoff. Without it, a socket that reaches READY then drops instantly
+# (flapping) would reconnect with zero delay — the same storm the backoff
+# prevents, just past the handshake.
+_HEALTHY_MIN_SECONDS = 30.0
+
+# Discord caps IDENTIFY (a fresh session, not a RESUME) at ~1000/day and closes
+# abusive reconnect loops. Cap consecutive IDENTIFYs and cool down hard past it
+# so an INVALID_SESSION loop can't quietly burn the daily identify budget.
+_MAX_IDENTIFIES = 5
+_IDENTIFY_COOLDOWN = 300.0  # fallback when READY didn't supply a reset window
+
+
 # Short-lived cache so a busy wired channel doesn't open a DB session on
 # every single message. Keyed on channel_id -> (wired, expires_at_monotonic).
 _CHANNEL_WIRED_CACHE_TTL = 30.0
@@ -172,27 +185,60 @@ class GatewayClient:
         self._resume_url: str = _GATEWAY_URL
         self._heartbeat_task: asyncio.Task | None = None
         self._heartbeat_acked = True
+        self._healthy = False
+        # #2: throttle fresh IDENTIFYs. Count resets when a connection proves
+        # healthy; reset_after is Discord's own identify-window from READY.
+        self._identify_count = 0
+        self._identify_reset_after = 0.0
 
     async def run(self) -> None:
         """Connect and process Gateway events forever. Never returns normally."""
         attempt = 0
         while True:
             url = self._resume_url if self._session_id else _GATEWAY_URL
+            self._healthy = False
+            started = time.monotonic()
             try:
                 async with websockets.connect(url, max_size=8 * 1024 * 1024) as ws:
-                    attempt = 0
                     await self._handle_connection(ws)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                # str(ConnectionClosed) carries Discord's close code + reason
+                # (e.g. 4014 disallowed intents, 4004 auth failed) — the key
+                # signal for why a session keeps ending. Include the type for
+                # non-close errors (DNS, TLS, timeouts).
+                logger.warning("discord gateway: connection error [%s] %s", type(exc).__name__, exc)
+            finally:
+                await self._stop_heartbeat()
+
+            uptime = time.monotonic() - started
+
+            # Reset the backoff only for a connection that reached READY/RESUMED
+            # *and* stayed up a while. Resetting on mere socket-open (the
+            # original bug) let a connect-then-immediately-closed failure — bad
+            # token, or privileged intents disabled (close 4014) — retry every
+            # ~3s forever, tripping Discord's abuse guard. The uptime floor also
+            # covers a connection that reaches READY then drops instantly
+            # (flapping): still a zero-delay storm without it.
+            if self._healthy and uptime >= _HEALTHY_MIN_SECONDS:
+                attempt = 0
+                self._identify_count = 0
+            else:
                 delay = _backoff_delay(attempt)
+                # "healthy but short" here == flapping: reached READY/RESUMED
+                # then dropped almost immediately. Distinguish it from a
+                # never-connected failure so the logs show which one is spinning.
                 logger.warning(
-                    "discord gateway: connection error (%s) — retrying in %.1fs", exc, delay
+                    "discord gateway: %s after %.1fs — reconnecting in %.1fs (attempt %d, identifies=%d)",
+                    "flapping" if self._healthy else "connect failed",
+                    uptime,
+                    delay,
+                    attempt + 1,
+                    self._identify_count,
                 )
                 await asyncio.sleep(delay)
                 attempt += 1
-            finally:
-                await self._stop_heartbeat()
 
     async def _handle_connection(self, ws) -> None:
         """Run the HELLO handshake, then process frames until the socket closes."""
@@ -208,8 +254,16 @@ class GatewayClient:
         )
 
         if self._session_id and self._seq is not None:
+            logger.info(
+                "discord gateway: RESUMEing session_id=%s seq=%s", self._session_id, self._seq
+            )
             await self._send_resume(ws)
         else:
+            logger.info(
+                "discord gateway: IDENTIFYing (no resumable session; session_id=%s seq=%s)",
+                self._session_id,
+                self._seq,
+            )
             await self._send_identify(ws)
 
         async for raw in ws:
@@ -244,6 +298,20 @@ class GatewayClient:
         self._heartbeat_task = None
 
     async def _send_identify(self, ws) -> None:
+        # #2: a runaway INVALID_SESSION loop re-IDENTIFYs every 1–5s; cap it so
+        # it can't burn Discord's ~1000/day identify budget. RESUME is exempt
+        # (Discord doesn't rate-limit it), so only this path is counted.
+        if self._identify_count >= _MAX_IDENTIFIES:
+            wait = self._identify_reset_after or _IDENTIFY_COOLDOWN
+            logger.warning(
+                "discord gateway: %d consecutive IDENTIFYs — cooling down %.0fs "
+                "to stay under Discord's identify limit",
+                self._identify_count,
+                wait,
+            )
+            await asyncio.sleep(wait)
+            self._identify_count = 0
+        self._identify_count += 1
         await ws.send(
             json.dumps(
                 {
@@ -314,10 +382,17 @@ class GatewayClient:
         event_type = data.get("t")
         payload = data.get("d") or {}
         if event_type == "READY":
+            self._healthy = True
+            # Remember Discord's identify-window so the #2 throttle cools down
+            # for exactly as long as Discord says, not a guessed fallback.
+            reset_after = (payload.get("session_start_limit") or {}).get("reset_after")
+            if reset_after:
+                self._identify_reset_after = reset_after / 1000.0
             self._session_id = payload.get("session_id")
             self._resume_url = payload.get("resume_gateway_url") or _GATEWAY_URL
             logger.info("discord gateway: READY session_id=%s", self._session_id)
         elif event_type == "RESUMED":
+            self._healthy = True
             logger.info("discord gateway: RESUMED session_id=%s", self._session_id)
         elif event_type == "MESSAGE_CREATE":
             await self._handle_message_create(payload)
