@@ -183,6 +183,7 @@ class Foreman:
                 user_id: str | None = None,
                 task_id: str | None = None,
                 task_name: str = "foreman.run",
+                active_run_key: tuple[str, str | None] | None = None,
             ) -> None:
                 """Run one parent (whole-guild) foreman turn.
 
@@ -190,8 +191,13 @@ class Foreman:
                 log and drop the trigger rather than buffering it — the backend's
                 poll/re-trigger mechanism recovers it on the next tick. Matches
                 backend/foreman/runner.py:run_foreman_ai (the embedded foreman's policy).
+
+                `active_run_key` overrides the default (guild_id, user_id) key used for
+                `_active_runs` bookkeeping — used by the poll loop so its own in-flight
+                check doesn't collide with a real user trigger whose `user_id` is None.
+                It has no bearing on `user_id`, which is passed to run_foreman_ai as-is.
                 """
-                key = (guild_id, user_id)
+                key = active_run_key if active_run_key is not None else (guild_id, user_id)
                 if key in self._active_runs:
                     if "[periodic-check]" in human_message:
                         logger.debug(
@@ -219,6 +225,9 @@ class Foreman:
                         config=self._config,
                     )
                 except Exception:
+                    # Must stay inside this try/finally: if a future refactor moves this
+                    # `except` outside, an unhandled error would skip the `finally` below
+                    # and leak `key` in `_active_runs`, permanently wedging that key.
                     logger.exception("guild=%s %s: unhandled error", guild_id, task_name)
                 finally:
                     self._active_runs.discard(key)

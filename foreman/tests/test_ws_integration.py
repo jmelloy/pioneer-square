@@ -380,7 +380,9 @@ async def test_ws_triggers_for_different_users_run_concurrently():
 
     call_count = 0
     # One "started" gate per user, so we can confirm both runs are genuinely
-    # in flight simultaneously before releasing them.
+    # in flight simultaneously before releasing them — waiting on a single
+    # shared gate (or a fixed sleep) can't distinguish "both started" from
+    # "one started, one still pending".
     started_gates = {"u1": asyncio.Event(), "u2": asyncio.Event()}
     release_gate = asyncio.Event()
 
