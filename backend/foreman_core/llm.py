@@ -58,9 +58,15 @@ def get_foreman_model(provider: str | None = None) -> str:
         bedrock_model = os.environ.get("FOREMAN_BEDROCK_MODEL")
         if not bedrock_model:
             raise BedrockModelNotConfiguredError(
-                "Bedrock provider selected but no model is configured. Set a model "
-                "(inference-profile ARN or model ID) in the guild's foreman settings, "
-                "or set the FOREMAN_BEDROCK_MODEL environment variable."
+                "Bedrock provider selected but no model is configured. Unlike AWS "
+                "credentials, which boto3 can resolve on its own (IAM role, profile, "
+                "env vars) and report clearly if missing, there is no discoverable "
+                "default model or inference profile — the Bedrock API call itself "
+                "requires one to be passed explicitly, and an account-scoped ARN "
+                "guessed here could silently send requests to the wrong AWS account. "
+                "Set a model (inference-profile ARN or model ID) in the guild's "
+                "foreman settings, or set the FOREMAN_BEDROCK_MODEL environment "
+                "variable."
             )
         return bedrock_model
     return os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
@@ -224,9 +230,15 @@ def make_anthropic_client(
         resolved_model = model or env.get("FOREMAN_BEDROCK_MODEL")
         if not resolved_model:
             raise BedrockModelNotConfiguredError(
-                "Bedrock provider selected but no model is configured. Set a model "
-                "(inference-profile ARN or model ID) in the guild's foreman settings, "
-                "or set the FOREMAN_BEDROCK_MODEL environment variable."
+                "Bedrock provider selected but no model is configured. Unlike AWS "
+                "credentials, which boto3 can resolve on its own (IAM role, profile, "
+                "env vars) and report clearly if missing, there is no discoverable "
+                "default model or inference profile — the Bedrock API call itself "
+                "requires one to be passed explicitly, and an account-scoped ARN "
+                "guessed here could silently send requests to the wrong AWS account. "
+                "Set a model (inference-profile ARN or model ID) in the guild's "
+                "foreman settings, or set the FOREMAN_BEDROCK_MODEL environment "
+                "variable."
             )
         resolved_region = (
             region or env.get("AWS_DEFAULT_REGION") or env.get("AWS_REGION") or _BEDROCK_REGION
