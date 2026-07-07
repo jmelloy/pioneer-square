@@ -261,13 +261,18 @@ class WorkerPingMsg(_WS):
     from_: str = Field("foreman", alias="from")
 
 
-class ForemanTriggerMsg(_WS):
-    type: Literal["foreman-trigger"] = "foreman-trigger"
-    event: str
+class ForemanApiRequestMsg(_WS):
+    """Backend -> external foreman proxy: execute one LLM API request."""
+
+    type: Literal["foreman-api-request"] = "foreman-api-request"
+    requestId: str
     guildId: str
-    humanMessage: str
-    userId: str | None = None
-    taskId: str | None = None
+    model: str
+    maxTokens: int = 1024
+    system: list[dict[str, Any]]
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]]
+    toolChoice: dict[str, Any] | None = None
 
 
 class ForemanRegisteredMsg(_WS):
@@ -382,9 +387,18 @@ class WorkerPongMsg(_WS):
     timestamp: str | None = None
 
 
-class ForemanBroadcastMsg(_WS):
-    type: Literal["foreman-broadcast"] = "foreman-broadcast"
-    payload: dict[str, Any]
+class ForemanApiResponseMsg(_WS):
+    """External foreman proxy -> backend: result for one LLM API request."""
+
+    type: Literal["foreman-api-response"] = "foreman-api-response"
+    requestId: str
+    guildId: str | None = None
+    ok: bool = True
+    response: dict[str, Any] | None = None
+    error: str | None = None
+    apiRequestId: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +426,7 @@ OutboundWSMessage = Annotated[
     | WorkerMessageMsg
     | WorkerShutdownMsg
     | WorkerPingMsg
-    | ForemanTriggerMsg
+    | ForemanApiRequestMsg
     | ForemanRegisteredMsg
     | ForemanEvictedMsg
     | ForemanDisconnectMsg
@@ -441,7 +455,7 @@ InboundWSMessage = Annotated[
     | NeedsInputMsg
     | ClaudeAuthRequiredMsg
     | ForemanDisconnectMsg
-    | ForemanBroadcastMsg
+    | ForemanApiResponseMsg
     | WorkerAuthResponseMsg
     | OfferMsg
     | AnswerMsg
@@ -468,7 +482,7 @@ KNOWN_INBOUND_TYPES: frozenset[str] = frozenset(
         "needs-input",
         "claude-auth-required",
         "foreman-disconnect",
-        "foreman-broadcast",
+        "foreman-api-response",
         "worker-auth-response",
         "offer",
         "answer",

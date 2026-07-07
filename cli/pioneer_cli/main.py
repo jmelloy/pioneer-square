@@ -93,7 +93,7 @@ def _run_worker(argv: list[str]) -> int:
 
 
 def _run_foreman(argv: list[str]) -> int:
-    """Launch the standalone foreman (delegates to pioneer_foreman.cli.main)."""
+    """Launch the standalone Foreman API proxy (delegates to pioneer_foreman.cli.main)."""
     root = _resolve_root()
     # foreman/ holds the pioneer_foreman package; root makes ``backend.foreman_core``
     # importable from source (backend/__init__.py + backend/foreman_core/).
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "usage: pioneer {serve|foreman|worker} [args...]\n\n"
             "  serve     run the HTTP backend (FastAPI)\n"
-            "  foreman   run the standalone foreman agent\n"
+            "  foreman   run the standalone Foreman API proxy\n"
             "  worker    run a worker agent\n\n"
             "Run 'pioneer <mode> --help' for mode-specific options.",
             file=sys.stderr,

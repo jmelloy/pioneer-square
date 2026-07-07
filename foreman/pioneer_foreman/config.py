@@ -23,13 +23,7 @@ DEFAULT_CONFIG_NAME = "pioneer-foreman.toml"
 class Config:
     backend_url: str
     guild_id: str
-    # JWT auth — shared HS256 secret (PIONEER_FOREMAN_KEY on the backend side).
-    # Preferred over auth_token: the foreman mints short-lived tokens automatically.
-    backend_key: str | None = None
-    # Static token fallback — a member login_token or worker auth_token.
-    # Used only when backend_key is not set.
-    auth_token: str | None = None
-    # Claude / AI provider settings
+    # LLM provider settings for the API proxy.
     model: str = "claude-sonnet-4-6"
     # Bedrock uses cross-region inference profiles, not plain model IDs, and those
     # profiles are scoped to a single AWS account, so there is no valid default.
@@ -39,22 +33,19 @@ class Config:
     # Anthropic auth token (OAuth/claude.ai accounts).  Mutually exclusive with
     # api_key; when set it is forwarded as `auth_token` to AsyncAnthropic and
     # ANTHROPIC_API_KEY is ignored.  Reads ANTHROPIC_AUTH_TOKEN env var or
-    # [claude] auth_token in the TOML.
+    # [llm] auth_token in the TOML ([claude] still works as a back-compat alias).
     anthropic_auth_token: str | None = None
-    # "anthropic" (default) or "bedrock" (Amazon Bedrock via AsyncAnthropicBedrock)
+    # "anthropic" (default), "bedrock" (Amazon Bedrock via AsyncAnthropicBedrock),
+    # or "openai" (OpenAI-compatible /v1/chat/completions endpoint).
     provider: str = "anthropic"
+    # Base URL for provider="openai"; e.g. http://localhost:11434/v1 for Ollama.
+    openai_base_url: str = "http://localhost:11434/v1"
+    api_timeout: float = 600.0
     # AWS region for Bedrock; ignored when provider != "bedrock"
     aws_region: str = "us-east-1"
     # Named AWS profile for Bedrock (defaults to AWS_PROFILE env); ignored when
     # provider != "bedrock". None falls back to boto3's default credential chain.
     aws_profile: str | None = None
-    max_rounds: int = 10
-    history_limit: int = 40
-    # When True, the foreman spawns an isolated per-task child context on each
-    # assign_task and routes task-specific events to it. See
-    # docs/foreman-per-task-context.md. Set false to fall back to the legacy
-    # single-context behaviour.
-    child_contexts: bool = True
     # Logging
     log_level: str = "INFO"
 
@@ -79,7 +70,7 @@ class Config:
         except BedrockModelNotConfiguredError as exc:
             raise BedrockModelNotConfiguredError(
                 "Bedrock provider selected but no model is configured. Set "
-                "[claude] bedrock_model in the config TOML or the "
+                "[llm] bedrock_model in the config TOML or the "
                 "FOREMAN_BEDROCK_MODEL environment variable."
             ) from exc
 
@@ -97,18 +88,6 @@ class Config:
         scheme = {"http": "ws", "https": "wss"}.get(parsed.scheme, parsed.scheme or "ws")
         base = urlunparse((scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
         return f"{base}/ws/{self.guild_id}"
-
-
-def _as_bool(*values, default: bool) -> bool:
-    """Return the first non-None value coerced to bool (TOML bools pass through,
-    strings like '0'/'false'/'no'/'off' are falsy)."""
-    for v in values:
-        if v is None:
-            continue
-        if isinstance(v, bool):
-            return v
-        return str(v).strip().lower() not in ("0", "false", "no", "off", "")
-    return default
 
 
 def _resolve_config_path(explicit: str | None) -> Path:
@@ -144,7 +123,10 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
                 "or supply --backend-url and --guild-id."
             )
 
+    # [claude] is the historical name; [llm] is preferred now that the process
+    # can proxy Anthropic, Bedrock, or OpenAI-compatible API calls.
     claude_block = raw.get("claude") or {}
+    llm_block = {**claude_block, **(raw.get("llm") or {})}
 
     backend_url = (
         overrides.get("backend_url")
@@ -163,36 +145,34 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     if not guild_id:
         raise ValueError("guild_id is required.")
 
-    backend_key = (
-        overrides.get("backend_key")
-        or raw.get("backend_key")
-        or os.environ.get("PIONEER_FOREMAN_KEY")
-    ) or None
-
-    auth_token = (
-        overrides.get("auth_token")
-        or raw.get("auth_token")
-        or os.environ.get("PIONEER_AUTH_TOKEN")
-        or os.environ.get("FOREMAN_AUTH_TOKEN")
-    ) or None
+    provider = (
+        overrides.get("provider")
+        or llm_block.get("provider")
+        or os.environ.get("FOREMAN_PROVIDER")
+        or "anthropic"
+    ).lower()
 
     api_key = (
         overrides.get("api_key")
-        or claude_block.get("api_key")
-        or os.environ.get("ANTHROPIC_API_KEY")
+        or llm_block.get("api_key")
+        or (
+            os.environ.get("OPENAI_API_KEY")
+            if provider == "openai"
+            else os.environ.get("ANTHROPIC_API_KEY")
+        )
     ) or None
 
     anthropic_auth_token = (
         overrides.get("anthropic_auth_token")
-        or claude_block.get("auth_token")
+        or llm_block.get("auth_token")
         or os.environ.get("ANTHROPIC_AUTH_TOKEN")
     ) or None
 
     model = (
         overrides.get("model")
-        or claude_block.get("model")
+        or llm_block.get("model")
         or os.environ.get("FOREMAN_MODEL")
-        or "claude-sonnet-4-6"
+        or ("llama3.1" if provider == "openai" else "claude-sonnet-4-6")
     )
 
     # Trailing `or None` normalises an empty string (e.g. an unset TOML/env
@@ -201,27 +181,30 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     # to raise BedrockModelNotConfiguredError instead of failing on empty.
     bedrock_model = (
         overrides.get("bedrock_model")
-        or claude_block.get("bedrock_model")
+        or llm_block.get("bedrock_model")
         or os.environ.get("FOREMAN_BEDROCK_MODEL")
     ) or None
 
-    provider = (
-        overrides.get("provider")
-        or claude_block.get("provider")
-        or os.environ.get("FOREMAN_PROVIDER")
-        or "anthropic"
-    ).lower()
+    openai_base_url = (
+        overrides.get("base_url")
+        or overrides.get("openai_base_url")
+        or llm_block.get("base_url")
+        or llm_block.get("openai_base_url")
+        or os.environ.get("FOREMAN_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or "http://localhost:11434/v1"
+    )
 
     aws_region = (
         overrides.get("aws_region")
-        or claude_block.get("aws_region")
+        or llm_block.get("aws_region")
         or os.environ.get("AWS_DEFAULT_REGION")
         or "us-east-1"
     )
 
     aws_profile = (
         overrides.get("aws_profile")
-        or claude_block.get("aws_profile")
+        or llm_block.get("aws_profile")
         or os.environ.get("AWS_PROFILE")
     ) or None
 
@@ -236,23 +219,20 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
-        backend_key=backend_key,
-        auth_token=auth_token,
         model=model,
         bedrock_model=bedrock_model,
         api_key=api_key,
         anthropic_auth_token=anthropic_auth_token,
         provider=provider,
+        openai_base_url=openai_base_url.rstrip("/"),
+        api_timeout=float(
+            overrides.get(
+                "api_timeout",
+                llm_block.get("api_timeout", os.environ.get("FOREMAN_API_TIMEOUT", 600.0)),
+            )
+        ),
         aws_region=aws_region,
         aws_profile=aws_profile,
-        max_rounds=int(overrides.get("max_rounds", claude_block.get("max_rounds", 10))),
-        history_limit=int(overrides.get("history_limit", claude_block.get("history_limit", 40))),
-        child_contexts=_as_bool(
-            overrides.get("child_contexts"),
-            raw.get("child_contexts"),
-            os.environ.get("FOREMAN_CHILD_CONTEXTS"),
-            default=True,
-        ),
         log_level=log_level.upper(),
         config_path=cfg_path,
     )

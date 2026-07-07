@@ -120,28 +120,9 @@ def test_load_overrides_defaults_preserved(tmp_path):
         str(tmp_path / "missing.toml"),
         overrides={"backend_url": "ws://x:1", "guild_id": "g"},
     )
-    assert cfg.max_rounds == 10
-    assert cfg.history_limit == 40
     assert cfg.model == "claude-sonnet-4-6"
     assert cfg.provider == "anthropic"
-    # Per-task child contexts default on.
-    assert cfg.child_contexts is True
-
-
-def test_child_contexts_disabled_via_toml(tmp_path):
-    toml_path = tmp_path / "pioneer-foreman.toml"
-    toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\nchild_contexts = false\n')
-    cfg = load(str(toml_path))
-    assert cfg.child_contexts is False
-
-
-def test_child_contexts_disabled_via_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("FOREMAN_CHILD_CONTEXTS", "0")
-    cfg = load(
-        str(tmp_path / "missing.toml"),
-        overrides={"backend_url": "ws://x:1", "guild_id": "g"},
-    )
-    assert cfg.child_contexts is False
+    assert cfg.openai_base_url == "http://localhost:11434/v1"
 
 
 # ── load() — from TOML file ──────────────────────────────────────────────
@@ -155,31 +136,45 @@ def test_load_from_toml(tmp_path):
     assert cfg.guild_id == "guild1"
 
 
-def test_load_toml_backend_key(tmp_path):
-    toml_path = tmp_path / "pioneer-foreman.toml"
-    toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\nbackend_key = "s3cr3t"\n')
-    cfg = load(str(toml_path))
-    assert cfg.backend_key == "s3cr3t"
-
-
-def test_load_toml_claude_block(tmp_path):
+def test_load_toml_llm_block(tmp_path):
     toml_path = tmp_path / "pioneer-foreman.toml"
     toml_path.write_text(
-        'backend_url = "ws://x:1"\nguild_id = "g"\n[claude]\nmodel = "claude-opus-4-8"\nmax_rounds = 20\n'
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[llm]\nmodel = "claude-opus-4-8"\n'
     )
     cfg = load(str(toml_path))
     assert cfg.model == "claude-opus-4-8"
-    assert cfg.max_rounds == 20
+
+
+def test_load_toml_claude_block_backcompat(tmp_path):
+    toml_path = tmp_path / "pioneer-foreman.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[claude]\nmodel = "claude-opus-4-8"\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.model == "claude-opus-4-8"
 
 
 def test_load_toml_bedrock_provider(tmp_path):
     toml_path = tmp_path / "pioneer-foreman.toml"
     toml_path.write_text(
-        'backend_url = "ws://x:1"\nguild_id = "g"\n[claude]\nprovider = "bedrock"\naws_region = "us-west-2"\n'
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[llm]\nprovider = "bedrock"\naws_region = "us-west-2"\n'
     )
     cfg = load(str(toml_path))
     assert cfg.provider == "bedrock"
     assert cfg.aws_region == "us-west-2"
+
+
+def test_load_toml_openai_provider(tmp_path):
+    toml_path = tmp_path / "pioneer-foreman.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\n'
+        '[llm]\nprovider = "openai"\nmodel = "llama3.1"\nbase_url = "http://ollama:11434/v1"\napi_key = "ollama"\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.provider == "openai"
+    assert cfg.model == "llama3.1"
+    assert cfg.openai_base_url == "http://ollama:11434/v1"
+    assert cfg.api_key == "ollama"
 
 
 # ── load() — env var overrides ────────────────────────────────────────────
@@ -199,14 +194,6 @@ def test_load_env_legacy_backend_url(tmp_path, monkeypatch):
     monkeypatch.setenv("PIONEER_GUILD_ID", "g")
     cfg = load(str(tmp_path / "missing.toml"))
     assert cfg.backend_url == "ws://legacy:8000"
-
-
-def test_load_env_backend_key_fallback(tmp_path, monkeypatch):
-    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
-    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
-    monkeypatch.setenv("PIONEER_FOREMAN_KEY", "envkey123")
-    cfg = load(str(tmp_path / "missing.toml"))
-    assert cfg.backend_key == "envkey123"
 
 
 def test_load_env_model(tmp_path, monkeypatch):
@@ -244,14 +231,6 @@ def test_overrides_beat_env(tmp_path, monkeypatch):
     assert cfg.backend_url == "ws://override:2"
 
 
-def test_toml_beats_env_for_backend_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("PIONEER_FOREMAN_KEY", "envkey")
-    toml_path = tmp_path / "pioneer-foreman.toml"
-    toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\nbackend_key = "tomlkey"\n')
-    cfg = load(str(toml_path))
-    assert cfg.backend_key == "tomlkey"
-
-
 def test_log_level_uppercased(tmp_path):
     toml_path = tmp_path / "pioneer-foreman.toml"
     toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\nlog_level = "debug"\n')
@@ -270,10 +249,10 @@ def test_backend_url_trailing_slash_stripped(tmp_path):
 
 
 def test_load_toml_claude_auth_token(tmp_path):
-    """[claude] auth_token in TOML is loaded as anthropic_auth_token."""
+    """[llm] auth_token in TOML is loaded as anthropic_auth_token."""
     toml_path = tmp_path / "pioneer-foreman.toml"
     toml_path.write_text(
-        'backend_url = "ws://x:1"\nguild_id = "g"\n[claude]\nauth_token = "tok-toml"\n'
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[llm]\nauth_token = "tok-toml"\n'
     )
     cfg = load(str(toml_path))
     assert cfg.anthropic_auth_token == "tok-toml"
@@ -289,11 +268,11 @@ def test_load_env_anthropic_auth_token(tmp_path, monkeypatch):
 
 
 def test_load_toml_auth_token_beats_env(tmp_path, monkeypatch):
-    """TOML [claude] auth_token takes precedence over ANTHROPIC_AUTH_TOKEN env var."""
+    """TOML [llm] auth_token takes precedence over ANTHROPIC_AUTH_TOKEN env var."""
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-env")
     toml_path = tmp_path / "pioneer-foreman.toml"
     toml_path.write_text(
-        'backend_url = "ws://x:1"\nguild_id = "g"\n[claude]\nauth_token = "tok-toml"\n'
+        'backend_url = "ws://x:1"\nguild_id = "g"\n[llm]\nauth_token = "tok-toml"\n'
     )
     cfg = load(str(toml_path))
     assert cfg.anthropic_auth_token == "tok-toml"

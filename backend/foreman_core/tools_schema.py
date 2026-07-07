@@ -1,8 +1,9 @@
-"""Foreman tool schema definitions shared by embedded and standalone runners.
+"""Foreman tool schema definitions for the backend Foreman runner.
 
 FOREMAN_TOOLS is the single source of truth for the Claude tool JSON schema.
-Both the embedded foreman (backend/foreman/tools.py) and standalone foreman
-(foreman/pioneer_foreman/tools.py) import from here.
+The backend executes all Foreman tools; a standalone proxy only receives this
+schema as part of an LLM API request so local/OpenAI-compatible providers can
+produce tool calls in the same shape.
 """
 
 FOREMAN_TOOLS = [

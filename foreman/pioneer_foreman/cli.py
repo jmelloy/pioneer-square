@@ -14,23 +14,28 @@ from .logging_config import setup_logging
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="pioneer-foreman",
-        description="Standalone foreman agent for Pioneer Square.",
+        description="Standalone Foreman API proxy for Pioneer Square.",
     )
     p.add_argument("--config", metavar="PATH", help="Path to TOML config file.")
     p.add_argument("--backend-url", metavar="URL", help="Override backend WebSocket URL.")
     p.add_argument("--guild-id", metavar="ID", help="Override guild ID.")
-    p.add_argument("--model", metavar="MODEL", help="Override Claude model ID.")
     p.add_argument(
-        "--backend-key",
-        metavar="SECRET",
-        help="Shared HMAC secret for JWT auth (matches PIONEER_FOREMAN_KEY on the backend).",
+        "--provider",
+        choices=("anthropic", "bedrock", "openai"),
+        help="LLM provider for proxied API calls.",
+    )
+    p.add_argument("--model", metavar="MODEL", help="Override model ID.")
+    p.add_argument(
+        "--bedrock-model",
+        metavar="MODEL_OR_ARN",
+        help="Bedrock model ID or inference-profile ARN.",
     )
     p.add_argument(
-        "--auth-token",
-        metavar="TOKEN",
-        help="Static token fallback (member login_token or worker auth_token); "
-        "used only when --backend-key is not set.",
+        "--base-url",
+        metavar="URL",
+        help="OpenAI-compatible base URL, e.g. http://localhost:11434/v1.",
     )
+    p.add_argument("--api-key", metavar="KEY", help="Provider API key.")
     p.add_argument(
         "--log-level",
         metavar="LEVEL",
@@ -49,12 +54,16 @@ def main() -> None:
         overrides["backend_url"] = args.backend_url
     if args.guild_id:
         overrides["guild_id"] = args.guild_id
+    if args.provider:
+        overrides["provider"] = args.provider
     if args.model:
         overrides["model"] = args.model
-    if args.backend_key:
-        overrides["backend_key"] = args.backend_key
-    if args.auth_token:
-        overrides["auth_token"] = args.auth_token
+    if args.bedrock_model:
+        overrides["bedrock_model"] = args.bedrock_model
+    if args.base_url:
+        overrides["base_url"] = args.base_url
+    if args.api_key:
+        overrides["api_key"] = args.api_key
     if args.log_level:
         overrides["log_level"] = args.log_level
 
