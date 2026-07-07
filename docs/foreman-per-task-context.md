@@ -37,13 +37,14 @@ out by task-list noise.
 task A interleave with task B's context in the same conversation thread. A `send_followup`
 intended for task A might reference task B's branch name if the history is dense enough.
 
-**Serial throughput.** The `_processing` flag ensures exactly one foreman run at a time. If
-task A's `task-complete` review triggers a 10-round Claude conversation (CI failure
-analysis, redirect, follow-up), task B's `task-complete` event waits in the 100-slot
-`_message_queue`. With N concurrent tasks, p99 latency scales with N × average-run-duration.
+**Serial throughput.** A single parent run key ensures exactly one whole-guild foreman run
+at a time. If task A's `task-complete` review triggers a 10-round Claude conversation (CI
+failure analysis, redirect, follow-up), task B's `task-complete` event is dropped rather
+than queued — it only comes back on the next poll tick. With N concurrent tasks, p99
+recovery latency scales with N × poll interval.
 
 **Single point of failure.** A crash or hang during one task's review blocks all other tasks
-until the connection resets and the queue is drained.
+until the connection resets.
 
 **Periodic-check noise.** The poll loop (`_poll_loop` in `foreman.py`) sends all
 non-terminal tasks to the foreman every cycle (`[periodic-check] ... {task_summary}`). As
