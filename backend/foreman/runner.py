@@ -736,7 +736,7 @@ async def _run_foreman_ai(
             len(extra_context),
         )
         logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
-        logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
+        # logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
 
         # Persist the rendered prompt + human turn for auditing; the API receives
         # `system_blocks` (cacheable) and the state preamble injected at send time.
