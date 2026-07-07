@@ -89,6 +89,19 @@ def _backoff_delay(attempt: int, base: float = 2.0, cap: float = 60.0) -> float:
     return min(cap, base * (2**attempt)) + random.uniform(0, base)
 
 
+# A connection must stay up at least this long to count as "healthy" and reset
+# the backoff. Without it, a socket that reaches READY then drops instantly
+# (flapping) would reconnect with zero delay — the same storm the backoff
+# prevents, just past the handshake.
+_HEALTHY_MIN_SECONDS = 30.0
+
+# Discord caps IDENTIFY (a fresh session, not a RESUME) at ~1000/day and closes
+# abusive reconnect loops. Cap consecutive IDENTIFYs and cool down hard past it
+# so an INVALID_SESSION loop can't quietly burn the daily identify budget.
+_MAX_IDENTIFIES = 5
+_IDENTIFY_COOLDOWN = 300.0  # fallback when READY didn't supply a reset window
+
+
 # Short-lived cache so a busy wired channel doesn't open a DB session on
 # every single message. Keyed on channel_id -> (wired, expires_at_monotonic).
 _CHANNEL_WIRED_CACHE_TTL = 30.0
@@ -173,6 +186,10 @@ class GatewayClient:
         self._heartbeat_task: asyncio.Task | None = None
         self._heartbeat_acked = True
         self._healthy = False
+        # #2: throttle fresh IDENTIFYs. Count resets when a connection proves
+        # healthy; reset_after is Discord's own identify-window from READY.
+        self._identify_count = 0
+        self._identify_reset_after = 0.0
 
     async def run(self) -> None:
         """Connect and process Gateway events forever. Never returns normally."""
@@ -180,6 +197,7 @@ class GatewayClient:
         while True:
             url = self._resume_url if self._session_id else _GATEWAY_URL
             self._healthy = False
+            started = time.monotonic()
             try:
                 async with websockets.connect(url, max_size=8 * 1024 * 1024) as ws:
                     await self._handle_connection(ws)
@@ -190,15 +208,16 @@ class GatewayClient:
             finally:
                 await self._stop_heartbeat()
 
-            # Reset the backoff only once a connection actually reached
-            # READY/RESUMED. Resetting on mere socket-open (the old behaviour)
-            # let a connect-then-immediately-closed failure — bad/expired token,
-            # or the privileged intents not being enabled (close 4014) — retry
-            # every ~3s forever: 1000+ connections in under an hour, which is
-            # what tripped Discord's abuse guard. An unhealthy connection now
-            # backs off exponentially instead.
-            if self._healthy:
+            # Reset the backoff only for a connection that reached READY/RESUMED
+            # *and* stayed up a while. Resetting on mere socket-open (the
+            # original bug) let a connect-then-immediately-closed failure — bad
+            # token, or privileged intents disabled (close 4014) — retry every
+            # ~3s forever, tripping Discord's abuse guard. The uptime floor also
+            # covers a connection that reaches READY then drops instantly
+            # (flapping): still a zero-delay storm without it.
+            if self._healthy and time.monotonic() - started >= _HEALTHY_MIN_SECONDS:
                 attempt = 0
+                self._identify_count = 0
             else:
                 delay = _backoff_delay(attempt)
                 logger.warning(
@@ -257,6 +276,20 @@ class GatewayClient:
         self._heartbeat_task = None
 
     async def _send_identify(self, ws) -> None:
+        # #2: a runaway INVALID_SESSION loop re-IDENTIFYs every 1–5s; cap it so
+        # it can't burn Discord's ~1000/day identify budget. RESUME is exempt
+        # (Discord doesn't rate-limit it), so only this path is counted.
+        if self._identify_count >= _MAX_IDENTIFIES:
+            wait = self._identify_reset_after or _IDENTIFY_COOLDOWN
+            logger.warning(
+                "discord gateway: %d consecutive IDENTIFYs — cooling down %.0fs "
+                "to stay under Discord's identify limit",
+                self._identify_count,
+                wait,
+            )
+            await asyncio.sleep(wait)
+            self._identify_count = 0
+        self._identify_count += 1
         await ws.send(
             json.dumps(
                 {
@@ -328,6 +361,11 @@ class GatewayClient:
         payload = data.get("d") or {}
         if event_type == "READY":
             self._healthy = True
+            # Remember Discord's identify-window so the #2 throttle cools down
+            # for exactly as long as Discord says, not a guessed fallback.
+            reset_after = (payload.get("session_start_limit") or {}).get("reset_after")
+            if reset_after:
+                self._identify_reset_after = reset_after / 1000.0
             self._session_id = payload.get("session_id")
             self._resume_url = payload.get("resume_gateway_url") or _GATEWAY_URL
             logger.info("discord gateway: READY session_id=%s", self._session_id)
