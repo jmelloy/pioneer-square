@@ -25,8 +25,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_QUEUE_MAX = 100
-
 
 class Foreman:
     """Manages the standalone foreman lifecycle for one guild."""
@@ -34,10 +32,11 @@ class Foreman:
     def __init__(self, config: Config):
         self._config = config
         self._http: ForemanHTTPClient | None = None
-        # True while a foreman run (including its queue drain) is executing.
-        self._processing: bool = False
-        # Triggers buffered while _processing is True; drained FIFO after each turn.
-        self._message_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_QUEUE_MAX)
+        # Keys with a parent (whole-guild) run currently in flight. A trigger for
+        # a key that's already running is dropped rather than buffered; the backend
+        # poll/re-trigger mechanism recovers it on the next tick. See
+        # backend/foreman/runner.py:run_foreman_ai for the matching embedded policy.
+        self._active_runs: set[tuple[str, str | None]] = set()
         # Per-task locks serialising per-task child-context runs (task_id -> Lock).
         # Mirrors backend/foreman/runner.py's _guild_locks: if a task's lock is
         # already held, the incoming trigger is dropped rather than queued or
@@ -185,60 +184,44 @@ class Foreman:
                 task_id: str | None = None,
                 task_name: str = "foreman.run",
             ) -> None:
-                """Run one foreman turn, then drain any buffered messages in FIFO order.
+                """Run one parent (whole-guild) foreman turn.
 
-                Holds _processing=True for the entire duration (initial turn + drain) so
-                that triggers arriving during the drain are queued rather than dispatched.
+                Drop-if-busy: if a run is already in flight for this (guild, user) key,
+                log and drop the trigger rather than buffering it — the backend's
+                poll/re-trigger mechanism recovers it on the next tick. Matches
+                backend/foreman/runner.py:run_foreman_ai (the embedded foreman's policy).
                 """
-                if self._processing:
-                    logger.info(
-                        "guild=%s %s: dropped — run already in-flight",
-                        guild_id,
-                        task_name,
-                    )
-                    return
-                self._processing = True
-                try:
-                    try:
-                        await run_foreman_ai(
+                key = (guild_id, user_id)
+                if key in self._active_runs:
+                    if "[periodic-check]" in human_message:
+                        logger.debug(
+                            "guild=%s %s: dropping periodic-check — run already in-flight",
                             guild_id,
-                            human_message,
-                            extra_context=extra_context,
-                            user_id=user_id,
-                            task_id=task_id,
-                            http=self._http,
-                            ws_send=_ws_send,
-                            config=self._config,
+                            task_name,
                         )
-                    except Exception:
-                        logger.exception("guild=%s %s: unhandled error", guild_id, task_name)
-
-                    # Drain buffered messages in FIFO order.  _processing stays True so
-                    # any triggers arriving during draining are queued, not dispatched.
-                    while not self._message_queue.empty():
-                        try:
-                            queued = self._message_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                        q_name = f"foreman.queued:{queued['guild_id']}:{queued.get('event', '?')}"
-                        logger.debug("Processing queued message: %s", q_name)
-                        try:
-                            await run_foreman_ai(
-                                queued["guild_id"],
-                                queued["human_message"],
-                                extra_context=queued.get("extra_context", ""),
-                                user_id=queued.get("user_id"),
-                                task_id=queued.get("task_id"),
-                                http=self._http,
-                                ws_send=_ws_send,
-                                config=self._config,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "guild=%s %s: unhandled error", queued["guild_id"], q_name
-                            )
+                    else:
+                        logger.info(
+                            "guild=%s %s: dropped — run already in-flight",
+                            guild_id,
+                            task_name,
+                        )
+                    return
+                self._active_runs.add(key)
+                try:
+                    await run_foreman_ai(
+                        guild_id,
+                        human_message,
+                        extra_context=extra_context,
+                        user_id=user_id,
+                        task_id=task_id,
+                        http=self._http,
+                        ws_send=_ws_send,
+                        config=self._config,
+                    )
+                except Exception:
+                    logger.exception("guild=%s %s: unhandled error", guild_id, task_name)
                 finally:
-                    self._processing = False
+                    self._active_runs.discard(key)
 
             async def _handle_trigger(data: dict) -> None:
                 guild_id = data.get("guildId", "")
@@ -260,40 +243,6 @@ class Foreman:
                         ),
                         name=f"foreman.task:{trigger_task_id}",
                     )
-                    return
-
-                if self._processing:
-                    # Periodic-check messages re-fire on the next poll interval; discard them.
-                    if "[periodic-check]" in human_message:
-                        logger.debug(
-                            "Discarding periodic-check trigger while busy: guild=%s", guild_id
-                        )
-                        return
-                    # Buffer all other triggers; drop with a warning if the queue is full.
-                    try:
-                        self._message_queue.put_nowait(
-                            {
-                                "guild_id": guild_id,
-                                "human_message": human_message,
-                                "extra_context": extra_context,
-                                "user_id": user_id,
-                                "task_id": trigger_task_id,
-                                "event": data.get("event", "?"),
-                            }
-                        )
-                        logger.debug(
-                            "Buffered trigger while busy (queue=%d): guild=%s event=%s",
-                            self._message_queue.qsize(),
-                            guild_id,
-                            data.get("event", "?"),
-                        )
-                    except asyncio.QueueFull:
-                        logger.warning(
-                            "Message queue full (%d); dropping trigger for guild=%s event=%s",
-                            _QUEUE_MAX,
-                            guild_id,
-                            data.get("event", "?"),
-                        )
                     return
 
                 asyncio.create_task(

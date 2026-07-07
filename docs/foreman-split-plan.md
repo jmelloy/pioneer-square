@@ -190,12 +190,16 @@ shared HMAC secret matching `PIONEER_FOREMAN_KEY`) generates short-lived
 HS256 JWTs automatically via `JWTTokenManager`. A static token fallback
 (`auth_token`) exists but JWT is the expected path.
 
-### Message queue
+### Drop-if-busy (no message queue)
 
-Triggers that arrive while a foreman run is in progress are buffered in a
-bounded asyncio queue (max 100). After each run completes, the queue is
-drained in FIFO order before releasing the `_processing` lock.
-`[periodic-check]` triggers are silently dropped when busy.
+Triggers that arrive while a run is already in flight for the same key are
+dropped rather than buffered, matching the embedded foreman's policy
+(`backend/foreman/runner.py:run_foreman_ai`). The key is `(guild_id, user_id)`
+for parent (whole-guild) runs; per-task child contexts serialise against
+themselves independently via their own queue. There is no FIFO drain —
+dropped triggers are recovered by the backend's poll/re-trigger mechanism on
+the next tick, which keeps memory bounded and avoids stale snapshots piling
+up under load.
 
 ### Single-foreman enforcement
 
