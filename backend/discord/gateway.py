@@ -172,27 +172,38 @@ class GatewayClient:
         self._resume_url: str = _GATEWAY_URL
         self._heartbeat_task: asyncio.Task | None = None
         self._heartbeat_acked = True
+        self._healthy = False
 
     async def run(self) -> None:
         """Connect and process Gateway events forever. Never returns normally."""
         attempt = 0
         while True:
             url = self._resume_url if self._session_id else _GATEWAY_URL
+            self._healthy = False
             try:
                 async with websockets.connect(url, max_size=8 * 1024 * 1024) as ws:
-                    attempt = 0
                     await self._handle_connection(ws)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                delay = _backoff_delay(attempt)
-                logger.warning(
-                    "discord gateway: connection error (%s) — retrying in %.1fs", exc, delay
-                )
-                await asyncio.sleep(delay)
-                attempt += 1
+                logger.warning("discord gateway: connection error (%s)", exc)
             finally:
                 await self._stop_heartbeat()
+
+            # Reset the backoff only once a connection actually reached
+            # READY/RESUMED. Resetting on mere socket-open (the old behaviour)
+            # let a connect-then-immediately-closed failure — bad/expired token,
+            # or the privileged intents not being enabled (close 4014) — retry
+            # every ~3s forever: 1000+ connections in under an hour, which is
+            # what tripped Discord's abuse guard. An unhealthy connection now
+            # backs off exponentially instead.
+            if self._healthy:
+                attempt = 0
+            else:
+                delay = _backoff_delay(attempt)
+                logger.warning("discord gateway: reconnecting in %.1fs (attempt %d)", delay, attempt + 1)
+                await asyncio.sleep(delay)
+                attempt += 1
 
     async def _handle_connection(self, ws) -> None:
         """Run the HELLO handshake, then process frames until the socket closes."""
@@ -314,10 +325,12 @@ class GatewayClient:
         event_type = data.get("t")
         payload = data.get("d") or {}
         if event_type == "READY":
+            self._healthy = True
             self._session_id = payload.get("session_id")
             self._resume_url = payload.get("resume_gateway_url") or _GATEWAY_URL
             logger.info("discord gateway: READY session_id=%s", self._session_id)
         elif event_type == "RESUMED":
+            self._healthy = True
             logger.info("discord gateway: RESUMED session_id=%s", self._session_id)
         elif event_type == "MESSAGE_CREATE":
             await self._handle_message_create(payload)

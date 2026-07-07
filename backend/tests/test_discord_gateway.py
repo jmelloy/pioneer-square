@@ -169,6 +169,62 @@ async def test_invalid_session_resumable_sends_resume_and_keeps_state():
 
 
 # ---------------------------------------------------------------------------
+# Reconnect backoff (regression: connect-then-immediately-closed loop)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_connection_backs_off():
+    """A connection that opens but never reaches READY must go through the
+    backoff branch — not reconnect immediately every cycle (the bug that opened
+    1000+ connections and got the bot token reset)."""
+    attempts: list[int] = []
+
+    def fake_backoff(attempt, *a, **k):
+        attempts.append(attempt)
+        raise asyncio.CancelledError  # stop the loop after the first backoff
+
+    # Socket opens, HELLO arrives, then closes before READY — the failure mode.
+    def fresh_ws(*_a, **_kw):
+        return FakeGatewayWebSocket([_hello(), _CLOSE])
+
+    client = gateway.GatewayClient("test-token")
+    with (
+        patch("discord.gateway.websockets.connect", side_effect=fresh_ws),
+        patch("discord.gateway._backoff_delay", side_effect=fake_backoff),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await client.run()
+
+    assert client._healthy is False
+    assert attempts == [0]  # entered the backoff branch on the first failure
+
+
+@pytest.mark.asyncio
+async def test_healthy_connection_does_not_back_off():
+    """Once READY is seen, a clean close (e.g. server RECONNECT) reconnects
+    promptly without ever computing a backoff delay."""
+    ready = _dispatch("READY", {"session_id": "s", "resume_gateway_url": "wss://r/"})
+
+    def fresh_ws(*_a, **_kw):
+        return FakeGatewayWebSocket([_hello(), ready, _CLOSE])
+
+    client = gateway.GatewayClient("test-token")
+    with (
+        patch("discord.gateway.websockets.connect", side_effect=fresh_ws),
+        patch("discord.gateway._backoff_delay") as backoff,
+    ):
+        task = asyncio.create_task(client.run())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert client._healthy is True
+    backoff.assert_not_called()  # never hit the unhealthy backoff branch
+
+
+# ---------------------------------------------------------------------------
 # MESSAGE_CREATE filtering
 # ---------------------------------------------------------------------------
 
