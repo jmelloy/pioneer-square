@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from backend.foreman_core.llm import BedrockModelNotConfiguredError
+from backend.foreman_core.llm import get_foreman_model
 
 logger = logging.getLogger(__name__)
 
@@ -64,20 +64,12 @@ class Config:
     def effective_model(self) -> str:
         """Return the model ID appropriate for the configured provider.
 
-        Intentional duplication of the provider-branching logic in
-        backend.foreman_core.llm.get_foreman_model(): Config is used by the
-        standalone foreman without the full backend env-var stack, so it needs
-        its own copy operating on dataclass fields rather than os.environ.
+        Delegates the provider-branching logic to
+        backend.foreman_core.llm.get_foreman_model(), passing this Config's own
+        fields as explicit overrides (they already fold in the TOML/env layering
+        done in load()) rather than re-implementing the branch here.
         """
-        if self.provider == "bedrock":
-            if not self.bedrock_model:
-                raise BedrockModelNotConfiguredError(
-                    "Bedrock provider selected but no model is configured. Set "
-                    "[claude] bedrock_model in the config TOML or the "
-                    "FOREMAN_BEDROCK_MODEL environment variable."
-                )
-            return self.bedrock_model
-        return self.model
+        return get_foreman_model(self.provider, model=self.model, bedrock_model=self.bedrock_model)
 
     @property
     def http_url(self) -> str:
