@@ -55,9 +55,6 @@ class Config:
     # docs/foreman-per-task-context.md. Set false to fall back to the legacy
     # single-context behaviour.
     child_contexts: bool = True
-    # Poll settings
-    poll_min_interval: int = 60
-    poll_max_interval: int = 14400
     # Logging
     log_level: str = "INFO"
 
@@ -144,7 +141,6 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             )
 
     claude_block = raw.get("claude") or {}
-    poll_block = raw.get("poll") or {}
 
     backend_url = (
         overrides.get("backend_url")
@@ -252,12 +248,6 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             raw.get("child_contexts"),
             os.environ.get("FOREMAN_CHILD_CONTEXTS"),
             default=True,
-        ),
-        poll_min_interval=int(
-            overrides.get("poll_min_interval", poll_block.get("min_interval", 60))
-        ),
-        poll_max_interval=int(
-            overrides.get("poll_max_interval", poll_block.get("max_interval", 14400))
         ),
         log_level=log_level.upper(),
         config_path=cfg_path,

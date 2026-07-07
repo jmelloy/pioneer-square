@@ -19,7 +19,6 @@ def _make_config(**kwargs) -> Config:
         backend_url="ws://localhost:8000",
         guild_id="g1",
         backend_key="k",
-        poll_min_interval=3600,
         **kwargs,
     )
 

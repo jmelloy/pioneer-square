@@ -64,8 +64,6 @@ _HISTORY_FETCH_LIMIT = 100
 
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
-# Guilds whose embedded poll loop is suppressed while an external foreman owns polling.
-_suppressed_poll_guilds: set[str] = set()
 
 # Per-guild locks to serialise foreman runs.  If a run is already in progress
 # for a (guild, user) pair, new invocations are dropped rather than queued —
@@ -318,12 +316,15 @@ async def _complete_api_request_log(
 
 
 async def _poll_loop(guild_id: str) -> None:
-    """Background loop: check non-terminal tasks and call the foreman if any are found.
+    """Background loop: check non-terminal tasks and trigger the foreman if any are found.
 
     Interval doubles each cycle from POLL_MIN_SECS up to POLL_MAX_SECS (or per-guild
     overrides). Cancelled (via reset_foreman_poll) whenever a significant event arrives.
-    The foreman-poll-status broadcast is sent after each poll so the UI can
-    display the countdown to the *next* check.
+    Runs for every guild regardless of whether an external foreman is connected —
+    each tick is dispatched through ``_trigger_foreman``, which routes it to whichever
+    foreman (embedded or external) currently owns this guild. The foreman-poll-status
+    broadcast is sent after each poll so the UI can display the countdown to the
+    *next* check.
     """
     interval = POLL_MIN_SECS
     while True:
@@ -340,19 +341,6 @@ async def _poll_loop(guild_id: str) -> None:
             # Reload config each cycle so guild owners see changes without restarting.
             cfg = await _load_foreman_config(guild_id)
             poll_max = int(cfg.get("poll_max_interval", POLL_MAX_SECS))
-
-            # If an external foreman is connected for this guild it owns the
-            # poll loop — skip the embedded run to avoid double-triggering.
-            from events import foreman_connections
-
-            if guild_id in foreman_connections:
-                next_interval = min(interval * 2, poll_max)
-                logger.debug(
-                    "guild=%s external foreman connected, skipping embedded poll", guild_id
-                )
-                interval = next_interval
-                await broadcast_msg(guild_id, ForemanPollStatusMsg(nextCheckIn=interval))
-                continue
 
             db = await get_db()
             try:
@@ -393,7 +381,14 @@ async def _poll_loop(guild_id: str) -> None:
                     "Use get_task_status to inspect a task if it looks stuck. "
                     "If everything looks healthy, no action is needed."
                 )
-                spawn(run_foreman_ai(guild_id, msg), name=f"foreman.poll:{guild_id}")
+                # Deferred import: ws_handlers imports from the foreman package at
+                # module load time, so importing it back at module scope here would
+                # create a circular import.
+                from ws_handlers import _trigger_foreman
+
+                await _trigger_foreman(
+                    guild_id, "periodic-check", msg, task_name=f"foreman.poll:{guild_id}"
+                )
 
             # Announce next check interval so the UI can display a countdown.
             interval = next_interval
@@ -425,10 +420,6 @@ def reset_foreman_poll(guild_id: str) -> None:
         logger.debug("guild=%s reset_foreman_poll: run in-flight, skipping timer reset", guild_id)
         return
 
-    if guild_id in _suppressed_poll_guilds:
-        logger.debug("guild=%s reset_foreman_poll: suppressed (external foreman active)", guild_id)
-        return
-
     if _guild_active_recently(guild_id):
         # Foreman was active recently — cancel and restart at the minimum interval
         # so the next check happens in POLL_MIN_SECS.
@@ -444,20 +435,6 @@ def reset_foreman_poll(guild_id: str) -> None:
         if existing is None or existing.done():
             task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
             _poll_tasks[guild_id] = task
-
-
-def suppress_foreman_poll(guild_id: str) -> None:
-    """Pause the embedded poll loop for *guild_id* while an external foreman is active."""
-    _suppressed_poll_guilds.add(guild_id)
-    old = _poll_tasks.pop(guild_id, None)
-    if old and not old.done():
-        old.cancel()
-
-
-def resume_foreman_poll(guild_id: str) -> None:
-    """Resume the embedded poll loop for *guild_id* after external foreman disconnect."""
-    _suppressed_poll_guilds.discard(guild_id)
-    reset_foreman_poll(guild_id)
 
 
 async def _fetch_online_workers(db, guild_id: str) -> list[dict]:

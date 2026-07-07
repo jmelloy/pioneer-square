@@ -172,16 +172,6 @@ def test_load_toml_claude_block(tmp_path):
     assert cfg.max_rounds == 20
 
 
-def test_load_toml_poll_block(tmp_path):
-    toml_path = tmp_path / "pioneer-foreman.toml"
-    toml_path.write_text(
-        'backend_url = "ws://x:1"\nguild_id = "g"\n[poll]\nmin_interval = 120\nmax_interval = 7200\n'
-    )
-    cfg = load(str(toml_path))
-    assert cfg.poll_min_interval == 120
-    assert cfg.poll_max_interval == 7200
-
-
 def test_load_toml_bedrock_provider(tmp_path):
     toml_path = tmp_path / "pioneer-foreman.toml"
     toml_path.write_text(

@@ -27,6 +27,14 @@ WS messages and the foreman executes the AI turn, calling back via REST.
 When no standalone foreman is connected, the backend falls back to the
 embedded foreman (`backend/foreman/`).
 
+Periodic task-health polling is scheduled entirely by the backend
+(`backend/foreman/runner.py`'s `_poll_loop`), which runs continuously for
+every guild regardless of who is connected. Each tick is dispatched through
+`_trigger_foreman()` (`backend/ws_handlers.py`), which routes it to whichever
+foreman — embedded or external — currently owns the guild. The standalone
+foreman has no poll timer of its own; it only reacts to `foreman-trigger`
+messages it receives over the WS connection.
+
 ---
 
 ## Packages and files
@@ -38,7 +46,7 @@ foreman/
   pioneer_foreman/
     cli.py           – argument parser + entry point
     config.py        – Config dataclass; reads TOML + env vars + CLI overrides
-    foreman.py       – Foreman class: WS lifecycle, trigger dispatch, poll loop
+    foreman.py       – Foreman class: WS lifecycle, trigger dispatch
     runner.py        – Claude API loop (thin wrapper around foreman_core)
     tools.py         – tool definitions; all execution delegated to /exec_tool
     http_client.py   – ForemanHTTPClient: typed methods for every backend endpoint
@@ -140,10 +148,6 @@ provider = "anthropic"              # "anthropic" | "bedrock"
 # provider       = "bedrock"
 # bedrock_model  = "arn:aws:bedrock:..."
 # aws_region     = "us-east-1"
-
-[poll]
-min_interval = 60      # seconds (doubles each idle tick)
-max_interval = 14400   # cap (~4 hours)
 ```
 
 **Environment variables (override TOML):**
@@ -201,9 +205,13 @@ reconnects.
 
 ### Poll backoff
 
-Poll interval starts at `poll_min_interval` (default 60 s) and doubles each
-idle tick up to `poll_max_interval` (default ~4 hours). Any run that makes
-at least one tool call resets the interval to `poll_min_interval`.
+Polling lives entirely on the backend, not the standalone foreman. Interval
+starts at `POLL_MIN_SECS` (default 60 s) and doubles each idle tick up to
+`POLL_MAX_SECS` (default ~4 hours, per-guild overridable). Any run that makes
+at least one tool call resets the interval to `POLL_MIN_SECS`. This applies
+uniformly whether the guild's foreman is embedded or an external standalone
+process — the backend's `_poll_loop` never suppresses itself based on who is
+connected.
 
 ---
 
