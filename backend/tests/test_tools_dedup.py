@@ -1,18 +1,15 @@
-"""Verify all foreman entry points share the same FOREMAN_TOOLS from backend.foreman_core."""
+"""Verify the backend Foreman tool schema."""
 
 import os
 import sys
 
-# Repo root — needed so `import backend` resolves backend/foreman_core.
+# Repo root — needed so `import backend` resolves backend.foreman.
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _ROOT)
 
-# Add the standalone foreman package to sys.path so we can import without installing it.
-sys.path.insert(0, os.path.join(_ROOT, "foreman"))
-
 
 def test_foreman_tools_canonical_is_list():
-    from backend.foreman_core.tools_schema import FOREMAN_TOOLS
+    from backend.foreman.tools_schema import FOREMAN_TOOLS
 
     assert isinstance(FOREMAN_TOOLS, list)
     assert len(FOREMAN_TOOLS) > 0
@@ -23,7 +20,7 @@ def test_foreman_tools_canonical_is_list():
 
 def test_spawn_worker_not_in_foreman_tools():
     """spawn_worker must stay out of FOREMAN_TOOLS until async/lock fixes land (#567)."""
-    from backend.foreman_core.tools_schema import FOREMAN_TOOLS
+    from backend.foreman.tools_schema import FOREMAN_TOOLS
 
     names = [t["name"] for t in FOREMAN_TOOLS]
     assert "spawn_worker" not in names, (

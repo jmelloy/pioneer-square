@@ -225,9 +225,8 @@ async def _route_inbound_message(message: dict) -> None:
             exc_info=True,
         )
 
+    from foreman.runner import reset_foreman_poll  # noqa: PLC0415
     from ws_handlers import _trigger_foreman  # noqa: PLC0415
-
-    from foreman import reset_foreman_poll  # noqa: PLC0415
 
     await _trigger_foreman(
         guild_slug,

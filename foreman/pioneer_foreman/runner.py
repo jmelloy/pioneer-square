@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import httpx
 
-from backend.foreman_core.llm import HAS_ANTHROPIC, make_anthropic_client
+from backend.foreman.llm import HAS_ANTHROPIC, make_anthropic_client
 
 if TYPE_CHECKING:
     from .config import Config

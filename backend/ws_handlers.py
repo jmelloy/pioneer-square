@@ -31,6 +31,8 @@ from events import (
 )
 from fastapi import WebSocket
 from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
+from foreman.runner import reset_foreman_poll, run_foreman_ai
+from foreman.tools import maybe_post_plan_comment
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
 from pydantic import ValidationError
@@ -61,12 +63,6 @@ from ws_types import (
     TerminalOutputMsg,
     WorkerAuthResponseMsg,
     parse_inbound_message,
-)
-
-from foreman import (
-    maybe_post_plan_comment,
-    reset_foreman_poll,
-    run_foreman_ai,
 )
 
 logger = logging.getLogger(__name__)

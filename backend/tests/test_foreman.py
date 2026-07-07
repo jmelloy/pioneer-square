@@ -27,6 +27,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
 from _test_config import TEST_DATABASE_URL  # noqa: E402
+from foreman.constants import MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS
+from foreman.message_utils import (
+    _serialize_content,
+    _summarize_task,
+    prune_history,
+    truncate_tool_result,
+)
 from foreman.prompt import FOREMAN_SYSTEM, build_state_preamble, build_system_prompt
 from foreman.runner import (
     _fetch_online_workers,  # noqa: E402
@@ -34,13 +41,6 @@ from foreman.runner import (
     _save_turn,
 )
 from foreman.tools import exec_tools
-from foreman_core.constants import MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS
-from foreman_core.message_utils import (
-    _serialize_content,
-    _summarize_task,
-    prune_history,
-    truncate_tool_result,
-)
 from helpers import _sync_session, create_db, insert_agent, insert_guild, insert_task, insert_worker
 from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog, Worker  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
@@ -1895,7 +1895,7 @@ class TestSummarizeTask:
     """Terminal tasks are summarised/excluded; non-terminal tasks are kept in full."""
 
     _24H = 86_400
-    # Must match foreman_core/constants._DEFAULT_TASK_TTL_SECS (3 days)
+    # Must match foreman/constants._DEFAULT_TASK_TTL_SECS (3 days)
     _TTL = 3 * 24 * 60 * 60
 
     def _now_ts(self):

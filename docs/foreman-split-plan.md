@@ -58,10 +58,13 @@ backend/foreman/
   runner.py          – Foreman conversation loop; uses proxy at the LLM boundary
   proxy.py           – pending foreman-api-request registry
   tools.py           – canonical backend-side tool execution
+  prompt.py          – system prompt and prompt builders
+  tools_schema.py    – Foreman tool JSON schema
+  message_utils.py   – Anthropic message/history helpers
+  llm.py             – provider/model selection and Anthropic/Bedrock client factory
 ```
 
-Shared prompt, tool schema, message, and LLM helpers remain in
-`backend/foreman_core/`.
+Shared Foreman helpers live in the backend Foreman package with the runner that owns them.
 
 ---
 

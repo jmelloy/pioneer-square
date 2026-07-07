@@ -36,7 +36,7 @@ from auth_deps import get_guild_pk, require_member, require_worker_or_member_pat
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Query
-from foreman.runner import _fetch_online_workers
+from foreman.runner import _fetch_online_workers, clear_foreman_history, get_foreman_history
 from models import (
     ForemanTurn,
     Guild,
@@ -51,8 +51,6 @@ from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from ws_types import ChatMsg, TaskCreatedMsg, TaskUpdateMsg
-
-from foreman import clear_foreman_history, get_foreman_history
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

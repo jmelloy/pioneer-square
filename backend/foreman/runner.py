@@ -14,28 +14,19 @@ import discord_notifier
 from auth_deps import get_guild_pk
 from database import AsyncSessionLocal, get_db
 from events import broadcast_msg
-from foreman.prompt import (
-    build_child_state_preamble,
-    build_child_system_blocks,
-    build_state_preamble,
-    build_system_blocks,
-    build_system_prompt,
-)
-from foreman.proxy import call_foreman_api_proxy, has_foreman_proxy
-from foreman.tools import exec_tools
-from foreman_core.constants import (
+from foreman.constants import (
     _24H_SECS,
     _HUMAN_TURN_WINDOW,
     _TERMINAL_STATES,
     MAX_FOREMAN_ROUNDS,
 )
-from foreman_core.llm import (
+from foreman.llm import (
     HAS_ANTHROPIC,
     BedrockModelNotConfiguredError,
     get_foreman_model,
     make_anthropic_client,
 )
-from foreman_core.message_utils import (
+from foreman.message_utils import (
     _inject_state_preamble,
     _json_default,
     _serialize_content,
@@ -45,7 +36,16 @@ from foreman_core.message_utils import (
     strip_orphaned_tool_results,
     truncate_tool_result,
 )
-from foreman_core.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
+from foreman.prompt import (
+    build_child_state_preamble,
+    build_child_system_blocks,
+    build_state_preamble,
+    build_system_blocks,
+    build_system_prompt,
+)
+from foreman.proxy import call_foreman_api_proxy, has_foreman_proxy
+from foreman.tools import exec_tools
+from foreman.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
 from models import (
     Agent,
     ApiRequestLog,

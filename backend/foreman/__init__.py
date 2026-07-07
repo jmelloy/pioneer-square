@@ -1,17 +1,6 @@
-"""Foreman AI package — re-exports for convenient importing from main.py."""
+"""Backend Foreman implementation package.
 
-from foreman.runner import (
-    clear_foreman_history,
-    get_foreman_history,
-    reset_foreman_poll,
-    run_foreman_ai,
-)
-from foreman.tools import maybe_post_plan_comment
-
-__all__ = [
-    "run_foreman_ai",
-    "reset_foreman_poll",
-    "clear_foreman_history",
-    "get_foreman_history",
-    "maybe_post_plan_comment",
-]
+Keep this module lightweight: the standalone proxy imports ``backend.foreman.llm``
+for shared provider/client helpers, and importing that should not pull in the
+backend runner, database models, or tool executor.
+"""

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from backend.foreman_core.llm import BedrockModelNotConfiguredError, get_foreman_model
+from backend.foreman.llm import BedrockModelNotConfiguredError, get_foreman_model
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class Config:
         """Return the model ID appropriate for the configured provider.
 
         Delegates the provider-branching logic to
-        backend.foreman_core.llm.get_foreman_model(), passing this Config's own
+        backend.foreman.llm.get_foreman_model(), passing this Config's own
         fields as explicit overrides (they already fold in the TOML/env layering
         done in load()) rather than re-implementing the branch here. The
         Bedrock-not-configured error is caught and re-raised with a

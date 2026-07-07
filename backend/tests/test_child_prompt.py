@@ -1,13 +1,13 @@
 """Tests for per-task child context prompt builders and tool set
-(backend.foreman_core)."""
+(backend.foreman)."""
 
 from __future__ import annotations
 
-from backend.foreman_core.prompt import (
+from backend.foreman.prompt import (
     build_child_state_preamble,
     build_child_system_blocks,
 )
-from backend.foreman_core.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
+from backend.foreman.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
 
 
 def test_child_tools_exclude_create_and_assign():

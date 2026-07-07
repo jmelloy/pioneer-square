@@ -27,6 +27,7 @@ import discord_notifier
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from foreman.runner import reset_foreman_poll, run_foreman_ai
 from lock_service import LockService
 from models import GithubEvent, GithubToken, Guild, GuildMember, Message, Task, TaskEvent
 from pydantic import BaseModel
@@ -37,8 +38,6 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
 from ws_types import ChatMsg, GithubEventMsg, TaskFinalizeMsg, TaskUpdateMsg
-
-from foreman import reset_foreman_poll, run_foreman_ai
 
 logger = logging.getLogger(__name__)
 
