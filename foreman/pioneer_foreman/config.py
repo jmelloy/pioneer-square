@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from backend.foreman_core.llm import get_foreman_model
+from backend.foreman_core.llm import BedrockModelNotConfiguredError, get_foreman_model
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +67,21 @@ class Config:
         Delegates the provider-branching logic to
         backend.foreman_core.llm.get_foreman_model(), passing this Config's own
         fields as explicit overrides (they already fold in the TOML/env layering
-        done in load()) rather than re-implementing the branch here.
+        done in load()) rather than re-implementing the branch here. The
+        Bedrock-not-configured error is caught and re-raised with a
+        Config/TOML-specific message, since the standalone foreman's users
+        configure this via pioneer-foreman.toml, not guild settings.
         """
-        return get_foreman_model(self.provider, model=self.model, bedrock_model=self.bedrock_model)
+        try:
+            return get_foreman_model(
+                self.provider, model=self.model, bedrock_model=self.bedrock_model
+            )
+        except BedrockModelNotConfiguredError as exc:
+            raise BedrockModelNotConfiguredError(
+                "Bedrock provider selected but no model is configured. Set "
+                "[claude] bedrock_model in the config TOML or the "
+                "FOREMAN_BEDROCK_MODEL environment variable."
+            ) from exc
 
     @property
     def http_url(self) -> str:

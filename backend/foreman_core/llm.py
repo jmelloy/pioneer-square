@@ -66,7 +66,11 @@ def get_foreman_model(
     """
     resolved = (provider or os.environ.get("FOREMAN_PROVIDER", "anthropic")).lower()
     if resolved == "bedrock":
-        resolved_bedrock_model = bedrock_model or os.environ.get("FOREMAN_BEDROCK_MODEL")
+        resolved_bedrock_model = (
+            bedrock_model
+            if bedrock_model is not None
+            else os.environ.get("FOREMAN_BEDROCK_MODEL")
+        )
         if not resolved_bedrock_model:
             raise BedrockModelNotConfiguredError(
                 "Bedrock provider selected but no model is configured. Unlike AWS "
@@ -80,7 +84,7 @@ def get_foreman_model(
                 "variable."
             )
         return resolved_bedrock_model
-    return model or os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
+    return model if model is not None else os.environ.get("FOREMAN_MODEL", "claude-sonnet-4-6")
 
 
 def _log_bedrock_credentials(
