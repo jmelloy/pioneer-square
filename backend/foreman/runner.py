@@ -782,14 +782,19 @@ async def _run_foreman_ai(
         # supplies its own env vars (e.g. Bedrock AWS credentials/region from
         # the settings dialogue, which otherwise never reach this process).
         effective_provider = cfg_provider or os.environ.get("FOREMAN_PROVIDER", "anthropic").lower()
+        # Resolve the model before building the client (and before any task is
+        # dispatched) so a stale guild config — saved before the #817 fix added
+        # save-time validation, with no model or a placeholder ARN — fails here
+        # with a clear error instead of surfacing deep inside the API call.
+        foreman_model = cfg_model or get_foreman_model(provider=effective_provider)
         if cfg_provider or cfg_env_vars:
             client = make_anthropic_client(
                 provider=effective_provider,
                 extra_env=cfg_env_vars or None,
+                model=cfg_model,
             )
         else:
             client = _get_anthropic_client()
-        foreman_model = cfg_model or get_foreman_model(provider=effective_provider)
 
         text_parts = []
         for round_num in range(cfg_max_rounds):

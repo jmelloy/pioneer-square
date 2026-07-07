@@ -185,6 +185,7 @@ def make_anthropic_client(
     region: str | None = None,
     aws_profile: str | None = None,
     extra_env: Mapping[str, str] | None = None,
+    model: str | None = None,
 ):
     """Create and return an Anthropic async client.
 
@@ -197,6 +198,12 @@ def make_anthropic_client(
                  ANTHROPIC_* for the direct API. These do NOT reach the foreman
                  process otherwise: the dialogue's env_vars are only injected
                  into spawned workers, never this process.
+    model:       Resolved model/inference-profile for Bedrock (e.g. the guild's
+                 configured model), checked against FOREMAN_BEDROCK_MODEL when
+                 absent. Ignored for the direct Anthropic API. Callers that
+                 build a client before resolving the model (see get_foreman_model)
+                 would otherwise only discover a missing Bedrock model deep
+                 inside the first API call; passing it here fails fast instead.
     """
     if not HAS_ANTHROPIC or _anthropic_mod is None:
         raise ImportError("anthropic package is not installed")
@@ -210,6 +217,17 @@ def make_anthropic_client(
     env: Mapping[str, str] = {**os.environ, **(extra_env or {})}
 
     if resolved_provider == "bedrock":
+        # Fail fast: a Bedrock client with no model would only surface this
+        # deep inside the first API call. Check it here, before the client
+        # (and any of its credential resolution) is even built — consistent
+        # with the same check in get_foreman_model().
+        resolved_model = model or env.get("FOREMAN_BEDROCK_MODEL")
+        if not resolved_model:
+            raise BedrockModelNotConfiguredError(
+                "Bedrock provider selected but no model is configured. Set a model "
+                "(inference-profile ARN or model ID) in the guild's foreman settings, "
+                "or set the FOREMAN_BEDROCK_MODEL environment variable."
+            )
         resolved_region = (
             region or env.get("AWS_DEFAULT_REGION") or env.get("AWS_REGION") or _BEDROCK_REGION
         )
@@ -229,7 +247,7 @@ def make_anthropic_client(
             "bearer-token"
             if bearer_token
             else ("explicit-keys" if (access_key and secret_key) else "sigv4"),
-            env.get("FOREMAN_BEDROCK_MODEL") or "<not configured>",
+            resolved_model,
         )
         bedrock_kwargs: dict = {"aws_region": resolved_region}
         if bearer_token:

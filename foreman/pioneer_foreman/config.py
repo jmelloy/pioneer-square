@@ -195,6 +195,10 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         or "claude-sonnet-4-6"
     )
 
+    # Trailing `or None` normalises an empty string (e.g. an unset TOML/env
+    # value) to None rather than propagating it — an empty string is not a
+    # valid ARN/model, and `effective_model` treats None as "not configured"
+    # to raise BedrockModelNotConfiguredError instead of failing on empty.
     bedrock_model = (
         overrides.get("bedrock_model")
         or claude_block.get("bedrock_model")

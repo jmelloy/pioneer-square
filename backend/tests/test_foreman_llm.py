@@ -128,7 +128,7 @@ class TestMakeAnthropicClient:
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
         monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
-        llm_mod.make_anthropic_client()
+        llm_mod.make_anthropic_client(model="test-bedrock-model")
         mock_mod.AsyncAnthropicBedrock.assert_called_once()
         mock_mod.AsyncAnthropic.assert_not_called()
 
@@ -140,9 +140,36 @@ class TestMakeAnthropicClient:
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
         monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
-        llm_mod.make_anthropic_client(provider="bedrock")
+        llm_mod.make_anthropic_client(provider="bedrock", model="test-bedrock-model")
         mock_mod.AsyncAnthropicBedrock.assert_called_once()
         mock_mod.AsyncAnthropic.assert_not_called()
+
+    def test_bedrock_no_model_raises_before_client_construction(self, monkeypatch):
+        """Regression for PR #818 review: a missing Bedrock model must raise
+        BedrockModelNotConfiguredError immediately, before AsyncAnthropicBedrock is
+        ever constructed — not fail later inside the first API call."""
+        monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
+        monkeypatch.delenv("FOREMAN_BEDROCK_MODEL", raising=False)
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        with pytest.raises(llm_mod.BedrockModelNotConfiguredError):
+            llm_mod.make_anthropic_client()
+        mock_mod.AsyncAnthropicBedrock.assert_not_called()
+
+    def test_bedrock_model_falls_back_to_env(self, monkeypatch):
+        """When no model arg is passed, FOREMAN_BEDROCK_MODEL satisfies the check."""
+        monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
+        monkeypatch.setenv("FOREMAN_BEDROCK_MODEL", "arn:aws:bedrock:us-west-2::my-profile")
+        import foreman_core.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client()
+        mock_mod.AsyncAnthropicBedrock.assert_called_once()
 
     def test_explicit_anthropic_provider_arg_overrides_bedrock_env(self, monkeypatch):
         """Passing provider='anthropic' must use AsyncAnthropic even if env says bedrock."""
@@ -167,7 +194,7 @@ class TestMakeAnthropicClient:
         monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
         # Patch the module-level constant directly rather than relying on env + reload.
         monkeypatch.setattr(llm_mod, "_BEDROCK_REGION", "eu-west-1")
-        llm_mod.make_anthropic_client()
+        llm_mod.make_anthropic_client(model="test-bedrock-model")
         mock_mod.AsyncAnthropicBedrock.assert_called_once_with(aws_region="eu-west-1")
 
     def test_bedrock_region_explicit_arg_overrides_env(self, monkeypatch):
@@ -178,7 +205,9 @@ class TestMakeAnthropicClient:
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
         monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
         monkeypatch.setattr(llm_mod, "_BEDROCK_REGION", "us-east-1")
-        llm_mod.make_anthropic_client(provider="bedrock", region="ap-southeast-1")
+        llm_mod.make_anthropic_client(
+            provider="bedrock", region="ap-southeast-1", model="test-bedrock-model"
+        )
         mock_mod.AsyncAnthropicBedrock.assert_called_once_with(aws_region="ap-southeast-1")
 
     def test_bedrock_aws_env_explicit_keys_forwarded(self, monkeypatch):
@@ -195,6 +224,7 @@ class TestMakeAnthropicClient:
         monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
         llm_mod.make_anthropic_client(
             provider="bedrock",
+            model="test-bedrock-model",
             extra_env={
                 "AWS_ACCESS_KEY_ID": "AKIATEST",
                 "AWS_SECRET_ACCESS_KEY": "secret",
@@ -219,6 +249,7 @@ class TestMakeAnthropicClient:
         monkeypatch.setattr(llm_mod, "_BEDROCK_REGION", "us-east-1")
         llm_mod.make_anthropic_client(
             provider="bedrock",
+            model="test-bedrock-model",
             extra_env={"AWS_BEARER_TOKEN_BEDROCK": "bedrock-token-xyz"},
         )
         mock_mod.AsyncAnthropicBedrock.assert_called_once_with(
@@ -236,7 +267,9 @@ class TestMakeAnthropicClient:
         # Patch boto3 session probe so a missing real profile doesn't error the test.
         with patch.object(llm_mod, "_log_bedrock_credentials"):
             llm_mod.make_anthropic_client(
-                provider="bedrock", extra_env={"AWS_PROFILE": "my-sso-profile"}
+                provider="bedrock",
+                model="test-bedrock-model",
+                extra_env={"AWS_PROFILE": "my-sso-profile"},
             )
         mock_mod.AsyncAnthropicBedrock.assert_called_once_with(
             aws_region="us-east-1", aws_profile="my-sso-profile"
@@ -383,7 +416,7 @@ class TestMakeAnthropicClientDynamicEnv:
         mock_mod = _make_mock_anthropic()
         with patch.object(llm_mod, "_anthropic_mod", mock_mod):
             llm_mod.HAS_ANTHROPIC = True
-            llm_mod.make_anthropic_client()
+            llm_mod.make_anthropic_client(model="test-bedrock-model")
             mock_mod.AsyncAnthropicBedrock.assert_called_once()
             mock_mod.AsyncAnthropic.assert_not_called()
 
