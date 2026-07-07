@@ -311,32 +311,34 @@ different worker or escalate. If no other worker is available, it escalates thro
 
 ## 7. Implementation Path
 
-> **Implementation note (2026-06-21):** Phases 0–2 are implemented in **both** foremen.
+> **Implementation note (2026-07-07, updated for #807):** Phases 0–2 are implemented in
+> **both** foremen, and both now use the same lightweight design.
 > `FOREMAN_CHILD_CONTEXTS` (env) / `child_contexts` (standalone config), default on, gate
 > the behaviour. Shared: `build_child_system_blocks` / `build_child_state_preamble` and
 > `CHILD_FOREMAN_TOOLS` in `backend/foreman_core/`, plus a `task_id` filter on the history
 > read path.
 >
-> **Standalone** (`foreman/`) uses a persistent `TaskContext` per task
-> (`task_context.py`) because it has a single WebSocket connection and needs concurrent
-> asyncio loops; the `Foreman` class does routing, spawn-on-assign, teardown-on-finalize,
-> reconnect-respawn, and orphan-recovery.
+> Neither foreman keeps a persistent per-task supervisor object anymore (the standalone
+> foreman's original `TaskContext` — its own queue, consumer loop, spawn-on-assign,
+> teardown-on-finalize, reconnect-respawn — was removed in #807). Per-task isolation is
+> achieved with three primitives instead: (1) `task_id`-filtered history in
+> `_load_history`, (2) child-mode prompt/state/tools in `run_foreman_ai(child=True,
+> task_id=...)`, and (3) a per-task `asyncio.Lock` (embedded: keyed `(guild_id,
+> "task:<id>")` in `_guild_locks`; standalone: `Foreman._task_locks[task_id]`) so
+> different tasks run concurrently while one task's review loop serialises against
+> itself — a run is dropped, not queued, if the task's lock is already held. "Spawn on
+> assign" and "teardown on finalize" are implicit — each task-specific event runs an
+> ephemeral child-mode turn, with continuity provided by DB-backed history. Routing lives
+> at the trigger sites: `ws_handlers._trigger_foreman` (task-complete / followup-done /
+> needs-input / task-error) for the embedded foreman, and `Foreman._handle_trigger`
+> (any trigger carrying a `taskId`, gated on `config.child_contexts`) for the standalone
+> foreman. Cross-cutting events (human chat, worker lifecycle, periodic-check,
+> claude-auth) stay on the whole-guild parent context in both.
 >
-> **Embedded** (`backend/foreman/`) does **not** need a persistent `TaskContext`: it is
-> in-process with direct DB access and already gets concurrency from independent
-> `run_foreman_ai` asyncio tasks. Per-task isolation is achieved with three primitives
-> instead: (1) `task_id`-filtered history in `_load_history`, (2) child-mode
-> prompt/state/tools in `_run_foreman_ai(child=True, task_id=...)`, and (3) a per-task
-> lock key `(guild_id, "task:<id>")` in `run_foreman_ai` so different tasks run
-> concurrently while one task's review loop serialises against itself. "Spawn on assign"
-> and "teardown on finalize" are implicit — each task-specific event runs an ephemeral
-> child-mode turn, with continuity provided by DB-backed history. Routing lives at the
-> trigger sites: `ws_handlers._trigger_foreman` (task-complete / followup-done /
-> needs-input / task-error), the webhook debounce path (github events for a known task),
-> and the user-followup task route. Cross-cutting events (human chat, worker lifecycle,
-> periodic-check, claude-auth) stay on the whole-guild parent context.
->
-> Phase 3 (escalation queue, stall watchdog) and Phase 4 (observability) remain.
+> Phase 3 (escalation queue, stall watchdog) and Phase 4 (observability) remain, but the
+> "child crash / stall" and "parent crash while children are active" recovery sections
+> below (§6) no longer apply as written — there is no long-lived child process to crash
+> or respawn; each task-scoped trigger is a one-shot, lock-serialised run.
 
 ### Phase 0 — Plumbing (no behavior change) ✅
 
@@ -380,28 +382,27 @@ different worker or escalate. If no other worker is available, it escalates thro
 16. **Independent history caps** — parent may want a smaller `MAX_HISTORY_MESSAGES`;
     long-running children may want larger.
 
-### New files
+### New files (superseded — see implementation note above)
 
 | File | Purpose |
 |---|---|
-| `foreman/pioneer_foreman/task_context.py` | `TaskContext` — the child context runner |
-| `foreman/pioneer_foreman/escalation.py` | `EscalationRequest` dataclass + queue helpers |
+| ~~`foreman/pioneer_foreman/task_context.py`~~ | Removed in #807 — replaced by `Foreman._task_locks` + ephemeral `run_foreman_ai(child=True)` calls |
+| `foreman/pioneer_foreman/escalation.py` | `EscalationRequest` dataclass + queue helpers (Phase 3, not yet done) |
 
 ### Files to modify
 
 | File | Change |
 |---|---|
-| `foreman/pioneer_foreman/foreman.py` | Routing map, child spawn/teardown, escalation drain, pre-spawn buffer |
+| `foreman/pioneer_foreman/foreman.py` | Per-task lock (`_task_locks`), drop-if-busy trigger routing |
 | `foreman/pioneer_foreman/runner.py` | `task_id`-filtered history loader; `child=True` flag to narrow state |
 | `foreman/pioneer_foreman/prompt.py` | `build_child_system_blocks`, `build_child_state_preamble` |
 | `foreman/pioneer_foreman/http_client.py` | `task_id` param on `get_history` |
 | `backend/foreman_core/tools_schema.py` | Export `CHILD_FOREMAN_TOOLS` |
 | `backend/routes/foreman.py` | `task_id` filter on the history endpoint |
 
-The embedded foreman (`backend/foreman/`) follows the same design with `TaskContext` objects
-running inside the backend process; the class can be shared via `backend/foreman_core/`. Note
-that `docs/foreman-split-plan.md` Phase 5 anticipates removing the embedded foreman entirely,
-so this design should be prototyped in the standalone foreman first (see open question 7).
+The embedded foreman (`backend/foreman/`) and the standalone foreman (`foreman/`) now share
+the same lock-based design; neither uses a persistent per-task supervisor object. Note that
+`docs/foreman-split-plan.md` Phase 5 anticipates removing the embedded foreman entirely.
 
 ---
 
