@@ -513,6 +513,78 @@ def test_webhook_backfills_task_pr_url(client):
     assert pr_url == "https://github.com/org/my-repo/pull/55"
 
 
+def _issues_payload(*, action: str, repo: str, number: int, title: str = "Do the thing") -> dict:
+    return {
+        "action": action,
+        "repository": {"full_name": repo},
+        "issue": {"number": number, "title": title},
+        "sender": {"login": "octocat"},
+    }
+
+
+def test_issues_closed_webhook_finalizes_issue_root_task(client):
+    """A GitHub `issues` `closed` event must finalize the matching phase='issue'
+    root task directly (state='done', deleted_at set) without any AI round-trip."""
+    test_client, db_url = client
+    insert_guild(db_url, "gissue1")
+    _set_webhook_secret(db_url, "gissue1", "sissue1")
+    insert_worker(db_url, "gissue1", "w-issue1", state="online")
+    insert_task(
+        db_url,
+        "gissue1",
+        "t-issue-root1",
+        worker_id="w-issue1",
+        state="working",
+        phase="issue",
+        issue_repo="owner/repo",
+        issue_number=77,
+    )
+    payload = _issues_payload(action="closed", repo="owner/repo", number=77)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("sissue1", body, event="issues", delivery="d-issue-close-1")
+    resp = test_client.post("/webhooks/github/gissue1", content=body, headers=headers)
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        row = session.execute(
+            select(col(Task.state), col(Task.deleted_at)).where(col(Task.id) == "t-issue-root1")
+        ).one()
+    state, deleted_at = row
+    assert state == "done"
+    assert deleted_at is not None
+
+
+def test_issues_closed_webhook_ignores_already_terminal_root(client):
+    """Must not re-finalize (or error on) a phase='issue' root already in a
+    terminal state — the webhook path should be a no-op there."""
+    test_client, db_url = client
+    insert_guild(db_url, "gissue2")
+    _set_webhook_secret(db_url, "gissue2", "sissue2")
+    insert_worker(db_url, "gissue2", "w-issue2", state="online")
+    insert_task(
+        db_url,
+        "gissue2",
+        "t-issue-root2",
+        worker_id="w-issue2",
+        state="done",
+        phase="issue",
+        issue_repo="owner/repo",
+        issue_number=88,
+    )
+    payload = _issues_payload(action="closed", repo="owner/repo", number=88)
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("sissue2", body, event="issues", delivery="d-issue-close-2")
+    resp = test_client.post("/webhooks/github/gissue2", content=body, headers=headers)
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        deleted_at = session.scalar(
+            select(col(Task.deleted_at)).where(col(Task.id) == "t-issue-root2")
+        )
+    # Was already 'done' with no expiry set before the webhook — must stay untouched.
+    assert deleted_at is None
+
+
 # ---------------------------------------------------------------------------
 # /guilds/{guild_id}/foreman/ci-notify
 # ---------------------------------------------------------------------------
