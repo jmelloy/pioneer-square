@@ -388,10 +388,11 @@ async def call_anthropic(
     `.model_dump()` themselves; callers that stay in-process (the embedded
     foreman's local call path) can use it directly.
 
-    `tools` is only included in the request when non-empty: some Anthropic API
-    endpoints reject an explicit empty `tools` array, and omitting the param
-    (rather than defaulting a missing/None value to `[]`) also means a caller
-    that explicitly passes `tools=None` isn't silently overridden.
+    `tools` and `tool_choice` are only included in the request when non-empty:
+    some Anthropic API endpoints (e.g. Bedrock) reject an explicit empty
+    `tools` array or `tool_choice` object, and omitting the param (rather than
+    defaulting a missing/None value to `[]`/`{}`) also means a caller that
+    explicitly passes `tools=None`/`tool_choice=None` isn't silently overridden.
     """
     kwargs: dict[str, Any] = {
         "model": model,
@@ -401,7 +402,7 @@ async def call_anthropic(
     }
     if tools:
         kwargs["tools"] = tools
-    if tool_choice is not None:
+    if tool_choice:
         kwargs["tool_choice"] = tool_choice
     raw = await client.messages.with_raw_response.create(**kwargs)
     return raw.parse(), raw.headers.get("request-id")
