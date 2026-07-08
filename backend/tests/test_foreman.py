@@ -708,6 +708,224 @@ class TestExecToolsDispatching:
         assert len(followup_msgs) == 1
         assert followup_msgs[0]["tool"] == "pi"
 
+    async def test_send_followup_preserves_tool_model_when_omitted(self, db_session):
+        """Backward compatibility: omitting tool/model/provider keeps the task's
+        existing values unchanged (#838)."""
+        insert_guild(db_session, "g-followup-preserve")
+        insert_worker(db_session, "g-followup-preserve", "w-preserve", tools='["claude", "codex"]')
+        _insert_agent(db_session, "g-followup-preserve", "w-preserve", "a-preserve")
+        insert_task(
+            db_session,
+            "g-followup-preserve",
+            "t-preserve1",
+            worker_id="w-preserve",
+            tool="claude",
+            model="claude-opus-4-8",
+            branch="claude/test-branch-preserve",
+        )
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            await exec_tools(
+                "g-followup-preserve",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {"task_id": "t-preserve1", "instructions": "Fix CI"},
+                    )
+                ],
+            )
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 1
+        assert followup_msgs[0]["tool"] == "claude"
+        assert followup_msgs[0]["model"] == "claude-opus-4-8"
+
+        with _sync_session(db_session) as session:
+            task = session.execute(
+                select(Task).where(col(Task.id) == "t-preserve1")
+            ).scalar_one()
+        assert task.tool == "claude"
+        assert task.model == "claude-opus-4-8"
+
+    async def test_send_followup_tool_override_switches_agent(self, db_session):
+        """Passing tool= on send_followup switches the coding agent and drops
+        the stale model (which belonged to the previous tool) (#838)."""
+        insert_guild(db_session, "g-followup-toolswitch")
+        insert_worker(
+            db_session, "g-followup-toolswitch", "w-toolswitch", tools='["claude", "codex"]'
+        )
+        _insert_agent(db_session, "g-followup-toolswitch", "w-toolswitch", "a-toolswitch")
+        insert_task(
+            db_session,
+            "g-followup-toolswitch",
+            "t-toolswitch1",
+            worker_id="w-toolswitch",
+            tool="claude",
+            model="claude-opus-4-8",
+            branch="claude/test-branch-toolswitch",
+        )
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-followup-toolswitch",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {
+                            "task_id": "t-toolswitch1",
+                            "instructions": "Retry with codex",
+                            "tool": "codex",
+                        },
+                    )
+                ],
+            )
+        assert "does not support" not in results[0]["content"]
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 1
+        assert followup_msgs[0]["tool"] == "codex"
+        assert "model" not in followup_msgs[0]
+
+        with _sync_session(db_session) as session:
+            task = session.execute(
+                select(Task).where(col(Task.id) == "t-toolswitch1")
+            ).scalar_one()
+        assert task.tool == "codex"
+        assert task.model is None
+
+    async def test_send_followup_unsupported_tool_override_errors(self, db_session):
+        insert_guild(db_session, "g-followup-badtool")
+        insert_worker(db_session, "g-followup-badtool", "w-badtool", tools='["claude"]')
+        _insert_agent(db_session, "g-followup-badtool", "w-badtool", "a-badtool")
+        insert_task(
+            db_session,
+            "g-followup-badtool",
+            "t-badtool1",
+            worker_id="w-badtool",
+            tool="claude",
+            branch="claude/test-branch-badtool",
+        )
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-followup-badtool",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {
+                            "task_id": "t-badtool1",
+                            "instructions": "Retry with codex",
+                            "tool": "codex",
+                        },
+                    )
+                ],
+            )
+        content = results[0]["content"]
+        assert "does not support tool" in content
+        assert "codex" in content
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 0, "No dispatch should occur for an unsupported tool override"
+
+        with _sync_session(db_session) as session:
+            task = session.execute(
+                select(Task).where(col(Task.id) == "t-badtool1")
+            ).scalar_one()
+        assert task.tool == "claude", "Task tool must be unchanged after a rejected override"
+
+    async def test_send_followup_model_override_rejected_when_not_in_catalog(self, db_session):
+        insert_guild(db_session, "g-followup-badmodel")
+        insert_worker(
+            db_session,
+            "g-followup-badmodel",
+            "w-badmodel",
+            tools='["claude"]',
+            provider="anthropic",
+        )
+        _insert_agent(db_session, "g-followup-badmodel", "w-badmodel", "a-badmodel")
+        insert_task(
+            db_session,
+            "g-followup-badmodel",
+            "t-badmodel1",
+            worker_id="w-badmodel",
+            tool="claude",
+            branch="claude/test-branch-badmodel",
+        )
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-followup-badmodel",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {
+                            "task_id": "t-badmodel1",
+                            "instructions": "Retry",
+                            "model": "not-a-real-model",
+                        },
+                    )
+                ],
+            )
+        content = results[0]["content"]
+        assert "not available" in content.lower()
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 0
+
+    async def test_send_followup_provider_override_persists(self, db_session):
+        insert_guild(db_session, "g-followup-provider")
+        insert_worker(db_session, "g-followup-provider", "w-provider", tools='["pi"]')
+        _insert_agent(db_session, "g-followup-provider", "w-provider", "a-provider")
+        insert_task(
+            db_session,
+            "g-followup-provider",
+            "t-provider1",
+            worker_id="w-provider",
+            tool="pi",
+            provider="anthropic",
+            branch="claude/test-branch-provider",
+        )
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            await exec_tools(
+                "g-followup-provider",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {
+                            "task_id": "t-provider1",
+                            "instructions": "Retry with openai",
+                            "provider": "openai",
+                        },
+                    )
+                ],
+            )
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 1
+        assert followup_msgs[0]["provider"] == "openai"
+
+        with _sync_session(db_session) as session:
+            task = session.execute(
+                select(Task).where(col(Task.id) == "t-provider1")
+            ).scalar_one()
+        assert task.provider == "openai"
+
     async def test_send_followup_task_not_found(self, db_session):
         insert_guild(db_session, "g-followup-missing")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):

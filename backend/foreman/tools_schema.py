@@ -143,7 +143,10 @@ FOREMAN_TOOLS = [
             "offline, any idle worker in the guild picks up the branch from "
             "GitHub. Pass preferred_worker_id to force a specific worker. "
             "Call this in response to task-complete, task-followup-done, "
-            "user comments on a parked PR task, or CI failures."
+            "user comments on a parked PR task, or CI failures. "
+            "Optionally pass tool/model/provider to switch coding agent for "
+            "the follow-up (e.g. escalate a stuck claude task to codex); "
+            "omit all three to keep using whatever the task already ran with."
         ),
         "input_schema": {
             "type": "object",
@@ -158,6 +161,33 @@ FOREMAN_TOOLS = [
                     "description": (
                         "Optional: prefer this worker if idle. Defaults to the "
                         "task's current worker_id."
+                    ),
+                },
+                "tool": {
+                    "type": "string",
+                    "enum": ["claude", "codex", "pi"],
+                    "description": (
+                        "Optional: coding agent to use for this follow-up. Must be "
+                        "supported by the dispatched worker. Defaults to the task's "
+                        "current tool."
+                    ),
+                },
+                "model": {
+                    "type": "string",
+                    "description": (
+                        "Optional: model override for this follow-up (e.g. "
+                        "'claude-opus-4-8', 'o4-mini'). Defaults to the task's current "
+                        "model; if tool is changed without an explicit model, the prior "
+                        "model is dropped and the worker picks its own default for the "
+                        "new tool. Explicit values are validated against the catalog."
+                    ),
+                },
+                "provider": {
+                    "type": "string",
+                    "description": (
+                        "Optional: provider override for pi follow-ups (e.g. "
+                        "'anthropic', 'openai', 'google'). Ignored for claude and "
+                        "codex. Defaults to the task's current provider."
                     ),
                 },
             },
