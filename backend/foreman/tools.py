@@ -1088,15 +1088,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 desc = inp.get("description", "")
                 phase = inp.get("phase", "execute")
                 requested_tool: str | None = inp.get("tool")
-                tool = requested_tool or "claude"  # may be replaced below during tool validation
                 model = inp.get("model") or None
                 provider = inp.get("provider") or None
-                # Always compute the tier from phase+tool upfront so it can be
-                # persisted on the task row regardless of whether model is
-                # auto-selected or caller-specified.
-                from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
-
-                model_tier = _select_tier(phase, tool)
                 existing_task_id = inp.get("task_id")
                 guild_result = await db.exec(
                     select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
@@ -1119,6 +1112,30 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 else:
                     worker_tools: list[str] = json.loads(worker_row.tools or "[]")
                     worker_provider: str | None = worker_row.provider
+
+                    # Resolve the tool FIRST — before computing the model tier or
+                    # auto-selecting a model — so both are derived from the tool the
+                    # worker actually has, never from a "claude" placeholder. A worker
+                    # with tools=["pi"] must never end up with a claude model_tier.
+                    if requested_tool is None:
+                        tool = worker_tools[0] if worker_tools else "claude"
+                    elif worker_tools and requested_tool not in worker_tools:
+                        available = ", ".join(worker_tools)
+                        result_text = (
+                            f"Worker {wid} does not support tool {requested_tool!r}. "
+                            f"Available tools: {available}"
+                        )
+                        is_error = True
+                        tool = requested_tool
+                    else:
+                        # requested_tool is set and either matches worker_tools or the
+                        # worker is legacy (no tools registered) — accept it as-is.
+                        tool = requested_tool
+
+                    from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
+
+                    model_tier = _select_tier(phase, tool)
+
                     # Filter model selection to only provider-compatible models.
                     if worker_provider and not is_error:
                         from models import ModelCatalog  # noqa: PLC0415
@@ -1167,21 +1184,6 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 "— using short ID as fallback; worker may fail at inference time",
                                 model,
                             )
-
-                    if requested_tool is None:
-                        tool = worker_tools[0] if worker_tools else "claude"
-                    elif worker_tools and requested_tool not in worker_tools:
-                        available = ", ".join(worker_tools)
-                        result_text = (
-                            f"Worker {wid} does not support tool {requested_tool!r}. "
-                            f"Available tools: {available}"
-                        )
-                        is_error = True
-                    elif not worker_tools:
-                        # legacy worker: no tools registered, accept any requested tool
-                        tool = requested_tool
-                    else:
-                        tool = requested_tool
                     if not is_error and repos:
                         worker_repos: list[str] = json.loads(worker_row.repos or "[]")
                         worker_org: str | None = worker_row.org

@@ -1890,6 +1890,35 @@ class Worker:
 
         emit = self._task_emit(task_id, agent)
 
+        # Resolve the tool to dispatch with. Never default to "claude" blindly —
+        # fall back to this worker's own detected/configured tools instead, and
+        # refuse outright if the foreman asked for a tool we don't actually have
+        # (e.g. a worker with tools=["pi"] must never end up invoking claude).
+        requested_tool = (task.get("tool") or "").lower()
+        if requested_tool:
+            tool = requested_tool
+        elif self._available_tools:
+            tool = self._available_tools[0]
+        else:
+            tool = (self.cfg.tool or "claude").lower()
+
+        if self._available_tools and tool not in self._available_tools:
+            logger.error(
+                "Task %s: tool %r is not among this worker's available tools %s — aborting",
+                task_id,
+                tool,
+                self._available_tools,
+            )
+            await emit(
+                f"✗ Tool {tool!r} is not available on this worker "
+                f"(available: {', '.join(self._available_tools)}) — aborting.",
+                level=LEVEL_WORKER,
+            )
+            await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
+            await self._set_state("error", agent)
+            await self._set_state("idle", agent)
+            return
+
         name = task.get("name") or desc
         if is_review and not is_followup:
             # Review tasks must operate on the PR's own branch — never a
@@ -2039,8 +2068,6 @@ class Worker:
         # Register worktrees for the deferred sweeper — touched again below in
         # finally so the timestamp reflects the most recent activity.
         self._register_worktrees(task_id, worktree_entries)
-
-        tool = (task.get("tool") or "claude").lower()
 
         # Tracks the last claude session ID so redirects can --resume with full context
         resume_session_id: str | None = None
