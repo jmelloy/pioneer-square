@@ -421,6 +421,64 @@ async def _complete_api_request_log(
         await db.close()
 
 
+async def _fetch_pr_status_lines(guild_id: str, pr_tasks: list[dict]) -> list[str]:
+    """Fetch fresh GitHub PR status for each non-terminal task with an open PR.
+
+    Called on every periodic-check cycle so the foreman can detect merges, CI
+    failures, and review decisions without relying on webhook delivery. Best
+    effort: an individual PR fetch failure (rate limit, deleted PR, missing
+    token, etc.) is logged and skipped rather than aborting the whole poll.
+    """
+    if not pr_tasks:
+        return []
+
+    from foreman.tools import _PR_URL_RE, _guild_github_token, fetch_pr_status
+
+    creds = await _guild_github_token(guild_id)
+    if not creds:
+        return []
+    token, _username = creds
+
+    lines: list[str] = []
+    for t in pr_tasks:
+        pr_repo, pr_number = t.get("pr_repo"), t.get("pr_number")
+        if not pr_repo or not pr_number:
+            m = _PR_URL_RE.match((t.get("pr_url") or "").rstrip("/"))
+            if not m:
+                continue
+            pr_repo, pr_number = m.group(1), int(m.group(2))
+
+        try:
+            status = await fetch_pr_status(pr_repo, pr_number, token)
+        except Exception:
+            logger.warning(
+                "guild=%s task=%s failed to fetch PR status for %s#%s",
+                guild_id,
+                t["id"],
+                pr_repo,
+                pr_number,
+                exc_info=True,
+            )
+            continue
+
+        checks = status.get("checks") or []
+        check_summary = (
+            ", ".join(f"{c['name']}={c['conclusion'] or c['status']}" for c in checks)
+            if checks
+            else "none"
+        )
+        reviews = status.get("reviews") or []
+        review_summary = (
+            ", ".join(f"{r['user']}={r['state']}" for r in reviews) if reviews else "none"
+        )
+        lines.append(
+            f"- task {t['id']} PR {pr_repo}#{pr_number} ({t['pr_url']}): "
+            f"state={status['state']} merged={status['merged']} "
+            f"checks=[{check_summary}] reviews=[{review_summary}]"
+        )
+    return lines
+
+
 async def _poll_loop(guild_id: str) -> None:
     """Background loop: check non-terminal tasks and trigger the foreman if any are found.
 
@@ -452,7 +510,14 @@ async def _poll_loop(guild_id: str) -> None:
             try:
                 guild_pk_val = await get_guild_pk(db, guild_id)
                 result = await db.exec(
-                    select(col(Task.id), col(Task.state), col(Task.name)).where(
+                    select(
+                        col(Task.id),
+                        col(Task.state),
+                        col(Task.name),
+                        col(Task.pr_url),
+                        col(Task.pr_number),
+                        col(Task.pr_repo),
+                    ).where(
                         col(Task.guild_id) == guild_pk_val,
                         ~col(Task.state).in_(list(_TERMINAL_STATES)),
                         live_tasks_filter(),
@@ -481,12 +546,27 @@ async def _poll_loop(guild_id: str) -> None:
 
             if active_tasks:
                 task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
+                pr_tasks = [t for t in active_tasks if t.get("pr_url")]
+                pr_status_lines = await _fetch_pr_status_lines(guild_id, pr_tasks)
+
                 msg = (
                     f"[periodic-check] Automated status poll — {n} non-terminal "
                     f"task(s): {task_summary}. Check whether any are stalled. "
-                    "Use get_task_status to inspect a task if it looks stuck. "
-                    "If everything looks healthy, no action is needed."
+                    "Use get_task_status to inspect a task if it looks stuck."
                 )
+                if pr_status_lines:
+                    msg += (
+                        "\n\nFresh GitHub PR status (fetched this cycle for each "
+                        "open-PR task):\n"
+                        + "\n".join(pr_status_lines)
+                        + "\nFor merged PRs, call finalize_task now. For CI failures or "
+                        "requested changes on these PRs, call send_followup with concrete "
+                        "fix instructions. Approved PRs with no open issues need no "
+                        "further action."
+                    )
+                else:
+                    msg += " If everything looks healthy, no action is needed."
+
                 # Deferred import: ws_handlers imports from the foreman package at
                 # module load time, so importing it back at module scope here would
                 # create a circular import.

@@ -190,6 +190,23 @@ On every [periodic-check] event:
    c. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number and issue_repo so the worker's PR references the issue automatically.
 3. The label check must cover (case-insensitive): devReady, dev-ready, ready-for-dev, ready.
 4. Never pick up an issue that is already assigned to someone else.
+
+## Periodic PR status refresh
+Every [periodic-check] message that mentions open-PR tasks includes a "Fresh GitHub PR
+status" section — merge state, check-run conclusions, and submitted reviews fetched
+directly from GitHub this cycle for every non-terminal task with a pr_url. This closes
+the gap when a webhook was missed or never fired. Act on it immediately, per task:
+- **merged=True**: call finalize_task now — do not wait for a [github-event] webhook.
+- **CI failure** (any check with conclusion=failure): call send_followup with concrete
+  instructions to fix it.
+- **A review with state=changes_requested**: call send_followup with the requested changes.
+- **state=closed and merged=False**: read the reviews/checks for context, then either
+  send_followup with a fix or finalize_task with expires_in_seconds=86400 if abandoning.
+- **Approved (state=approved review, no failing checks) with nothing else pending**: no
+  action needed beyond noting it — a human or auto-merge will land it.
+This section is a snapshot fetched moments ago — you do not need to call get_pr_status
+again for these tasks unless you need detail beyond what's summarized (e.g. full review
+body or check output).
 """
 
 
