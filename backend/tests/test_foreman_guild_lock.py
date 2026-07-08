@@ -256,3 +256,75 @@ def test_human_queue_bounded_drops_oldest():
         assert ("g6", None) not in runner._human_queues
 
     _run(_test())
+
+
+def test_drain_snapshots_queue_before_processing():
+    """Messages enqueued mid-drain don't get spliced into the in-flight pass.
+
+    Regression test for a re-entrancy bug where ``_drain_human_queue`` popped
+    directly from the live ``_human_queues`` deque. If a message arrives while
+    a queued turn is being processed, it must land in a fresh deque for the
+    *next* drain pass rather than mutating the deque the current pass is
+    iterating over.
+    """
+
+    async def _test():
+        import foreman.runner as runner
+
+        runner._guild_locks.clear()
+        runner._human_queues.clear()
+
+        call_log: list[str] = []
+        hold_first = asyncio.Event()
+        hold_second = asyncio.Event()
+        key = ("g7", None)
+
+        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+            call_log.append(msg)
+            if msg == "first":
+                await hold_first.wait()
+            elif "second" in msg:
+                await hold_second.wait()
+
+        with patch.object(runner, "_run_foreman_ai", side_effect=_impl):
+            first = asyncio.create_task(runner.run_foreman_ai("g7", "first", is_human=True))
+            await asyncio.sleep(0)
+
+            # Two messages queue up before the drain starts.
+            await runner.run_foreman_ai("g7", "second", is_human=True)
+            await runner.run_foreman_ai("g7", "extra", is_human=True)
+            assert len(runner._human_queues[key]) == 2
+
+            # Let "first" finish; the drain snapshots ["second", "extra"] and
+            # starts processing "second".
+            hold_first.set()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert len(call_log) == 2
+            assert call_log[0] == "first"
+            assert "second" in call_log[1]
+
+            # While "second" is in flight, the live queue must already be a
+            # fresh, empty deque — "extra" lives only in the drain's local
+            # snapshot, not in _human_queues.
+            assert len(runner._human_queues[key]) == 0
+
+            # A message arriving now must not be spliced into the pass
+            # currently processing "second"/"extra".
+            await runner.run_foreman_ai("g7", "third", is_human=True)
+            assert len(runner._human_queues[key]) == 1
+            assert runner._human_queues[key][0].human_message == "third"
+
+            # Unblock "second"; the current pass should finish "extra" next,
+            # not "third".
+            hold_second.set()
+            await first
+
+        assert len(call_log) == 4
+        assert call_log[0] == "first"
+        assert "second" in call_log[1]
+        assert "extra" in call_log[2]
+        assert "third" in call_log[3]
+        assert key not in runner._human_queues
+
+    _run(_test())

@@ -926,40 +926,51 @@ async def _drain_human_queue(lock_key: tuple[str, str | None]) -> None:
 
     Called while the caller still holds the lock for *lock_key*, so queued
     turns run back-to-back without an automated trigger (periodic-check,
-    github-event) sneaking in between them. Any message that queues up while
-    a queued turn is itself running is picked up by the same loop.
+    github-event) sneaking in between them.
+
+    Each pass snapshots the current queue by swapping in a fresh deque before
+    processing it, rather than popping from the live deque while iterating.
+    Messages enqueued by ``_enqueue_human_turn`` while a snapshot is being
+    processed (e.g. because a queued turn's own side effects send another
+    human message) land in the new deque and are left for the next pass, so
+    the drain never consumes a message that arrived after this pass started.
     """
-    queue = _human_queues.get(lock_key)
-    if not queue:
-        return
-    while queue:
-        turn = queue.popleft()
-        logger.info(
-            "guild=%s key=%s draining queued human message (queued_at=%s, remaining=%d)",
-            turn.guild_id,
-            lock_key[1],
-            turn.queued_at,
-            len(queue),
-        )
-        annotated_message = (
-            f"[queued at {turn.queued_at} while Foreman was busy]\n{turn.human_message}"
-        )
-        try:
-            await _run_foreman_ai(
-                turn.guild_id,
-                annotated_message,
-                turn.extra_context,
-                turn.user_id,
-                task_id=turn.task_id,
-                child=turn.child,
-            )
-        except Exception:
-            logger.exception(
-                "guild=%s key=%s error processing queued human message",
+    while True:
+        queue = _human_queues.get(lock_key)
+        if not queue:
+            return
+        pending = queue
+        _human_queues[lock_key] = deque()
+        while pending:
+            turn = pending.popleft()
+            logger.info(
+                "guild=%s key=%s draining queued human message (queued_at=%s, remaining=%d)",
                 turn.guild_id,
                 lock_key[1],
+                turn.queued_at,
+                len(pending),
             )
-    _human_queues.pop(lock_key, None)
+            annotated_message = (
+                f"[queued at {turn.queued_at} while Foreman was busy]\n{turn.human_message}"
+            )
+            try:
+                await _run_foreman_ai(
+                    turn.guild_id,
+                    annotated_message,
+                    turn.extra_context,
+                    turn.user_id,
+                    task_id=turn.task_id,
+                    child=turn.child,
+                )
+            except Exception:
+                logger.exception(
+                    "guild=%s key=%s error processing queued human message",
+                    turn.guild_id,
+                    lock_key[1],
+                )
+        if not _human_queues.get(lock_key):
+            _human_queues.pop(lock_key, None)
+            return
 
 
 async def _run_foreman_ai(
