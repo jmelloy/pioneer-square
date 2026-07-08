@@ -176,6 +176,12 @@ async def _task_user_id(db, task_id: str | None) -> str | None:
 # context. See docs/foreman-per-task-context.md.
 _CHILD_FOREMAN_EVENTS = frozenset({"task-complete", "followup-done", "needs-input", "task-error"})
 
+# Events that originate from a human (Discord message, web UI chat input) as
+# opposed to automated triggers (periodic-check, worker lifecycle, github-event
+# webhooks, task review escalations). Human events are queued rather than
+# dropped when the foreman is busy — see ``run_foreman_ai``'s ``is_human`` param.
+_HUMAN_FOREMAN_EVENTS = frozenset({"chat"})
+
 
 async def _trigger_foreman(
     guild_id: str,
@@ -201,8 +207,16 @@ async def _trigger_foreman(
     # lifecycle, periodic-check, claude-auth) stay on the parent whole-guild
     # context.
     child = bool(task_id) and event in _CHILD_FOREMAN_EVENTS
+    is_human = event in _HUMAN_FOREMAN_EVENTS
     spawn(
-        run_foreman_ai(guild_id, human_message, user_id=user_id, task_id=task_id, child=child),
+        run_foreman_ai(
+            guild_id,
+            human_message,
+            user_id=user_id,
+            task_id=task_id,
+            child=child,
+            is_human=is_human,
+        ),
         name=task_name,
     )
 

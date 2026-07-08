@@ -147,3 +147,112 @@ def test_lock_released_after_impl_exception():
         assert call_count == 2
 
     _run(_test())
+
+
+def test_human_message_queued_when_busy_then_drained():
+    """A human message arriving while busy is queued, not dropped, and runs after."""
+
+    async def _test():
+        import foreman.runner as runner
+
+        runner._guild_locks.clear()
+        runner._human_queues.clear()
+
+        call_log: list[str] = []
+        hold = asyncio.Event()
+
+        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+            call_log.append(msg)
+            if len(call_log) == 1:
+                await hold.wait()
+
+        with patch.object(runner, "_run_foreman_ai", side_effect=_impl):
+            first = asyncio.create_task(runner.run_foreman_ai("g4", "first", is_human=True))
+            await asyncio.sleep(0)
+
+            # Second human message while busy: queued, not dropped.
+            await runner.run_foreman_ai("g4", "second", is_human=True)
+            assert call_log == ["first"], "queued message must not run until the lock frees up"
+            assert len(runner._human_queues[("g4", None)]) == 1
+
+            hold.set()
+            await first
+
+        assert len(call_log) == 2
+        assert "second" in call_log[1]
+        # Queue is drained (and its entry removed) once processed.
+        assert ("g4", None) not in runner._human_queues
+
+    _run(_test())
+
+
+def test_automated_still_drops_while_human_queue_exists():
+    """is_human=False keeps drop-if-busy even though human messages now queue."""
+
+    async def _test():
+        import foreman.runner as runner
+
+        runner._guild_locks.clear()
+        runner._human_queues.clear()
+
+        call_log: list[str] = []
+        hold = asyncio.Event()
+
+        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+            call_log.append(msg)
+            if len(call_log) == 1:
+                await hold.wait()
+
+        with patch.object(runner, "_run_foreman_ai", side_effect=_impl):
+            first = asyncio.create_task(runner.run_foreman_ai("g5", "first", is_human=True))
+            await asyncio.sleep(0)
+
+            # An automated trigger (e.g. periodic-check) while busy: dropped, not queued.
+            await runner.run_foreman_ai("g5", "periodic", is_human=False)
+            assert call_log == ["first"]
+            assert ("g5", None) not in runner._human_queues
+
+            hold.set()
+            await first
+
+        assert call_log == ["first"], "dropped automated trigger must never run"
+
+    _run(_test())
+
+
+def test_human_queue_bounded_drops_oldest():
+    """The human queue is capped; overflow drops the oldest queued entry."""
+
+    async def _test():
+        import foreman.runner as runner
+
+        runner._guild_locks.clear()
+        runner._human_queues.clear()
+
+        hold = asyncio.Event()
+
+        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+            await hold.wait()
+
+        with patch.object(runner, "_run_foreman_ai", side_effect=_impl):
+            first = asyncio.create_task(runner.run_foreman_ai("g6", "first", is_human=True))
+            await asyncio.sleep(0)
+
+            max_queue = runner._HUMAN_QUEUE_MAX
+            for i in range(max_queue + 1):
+                await runner.run_foreman_ai("g6", f"queued-{i}", is_human=True)
+
+            queue = runner._human_queues[("g6", None)]
+            assert len(queue) == max_queue, "queue must not grow past the configured max"
+            # The oldest entry (queued-0) was dropped to make room for the newest.
+            assert queue[0].human_message == "queued-1"
+            assert queue[-1].human_message == f"queued-{max_queue}"
+
+            # Unblocking lets "first" finish and the drain loop process (and
+            # empty) the whole backlog, since hold is already set by then.
+            hold.set()
+            await first
+
+        assert ("g6", None) not in runner._human_queues
+
+    _run(_test())

@@ -247,6 +247,7 @@ async def create_task_followup(
             user_id=github_user_id,
             task_id=task_id,
             child=True,
+            is_human=True,
         ),
         name=f"foreman.user-followup:{task_id}",
     )

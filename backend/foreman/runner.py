@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -81,7 +82,35 @@ _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 # the poll loop will re-trigger on the next tick.  Dropping (vs. queuing) keeps
 # memory bounded and avoids stale snapshots piling up under load.
 # Entries are popped in the finally block after each run so the dict stays small.
+#
+# Human-originated messages (Discord/web UI chat, user-requested follow-ups)
+# are the one exception: they are never silently dropped. When the lock for
+# their key is held, they are appended to ``_human_queues`` instead, and
+# drained (FIFO) once the in-flight run finishes — see ``run_foreman_ai``.
 _guild_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
+
+# Max number of queued human messages per (guild, user)/(guild, task) key.
+# Bounded so a guild nobody is watching can't grow this without limit; the
+# oldest entry is dropped (with a warning) once the cap is hit.
+_HUMAN_QUEUE_MAX = 50
+
+# FIFO queues of human messages that arrived while the foreman was busy,
+# keyed by the same lock key used for ``_guild_locks``.
+_human_queues: dict[tuple[str, str | None], "deque[_QueuedHumanTurn]"] = {}
+
+
+@dataclass
+class _QueuedHumanTurn:
+    """One human message waiting for the busy foreman lock to free up."""
+
+    guild_id: str
+    human_message: str
+    extra_context: str
+    user_id: str | None
+    task_id: str | None
+    child: bool
+    queued_at: str
+
 
 # Monotonic timestamp (time.monotonic()) of the last foreman run that made at
 # least one tool call, keyed by guild_id.  Used by reset_foreman_poll to decide
@@ -789,12 +818,20 @@ async def run_foreman_ai(
     task_id: str | None = None,
     *,
     child: bool = False,
+    is_human: bool = False,
 ) -> None:
     """Serialise per-context and delegate to ``_run_foreman_ai``.
 
     Uses an ``asyncio.Lock`` stored in ``_guild_locks``.  If the lock is already
-    held the invocation is dropped; the poll loop re-triggers on the next tick.
-    Dropping is preferred over queuing to avoid unbounded build-up.
+    held, automated invocations (``is_human=False`` — periodic-check, GitHub
+    webhook events, worker lifecycle, task review escalations) are dropped;
+    the poll loop re-triggers on the next tick. Dropping is preferred over
+    queuing for these to avoid unbounded build-up of stale automated snapshots.
+
+    Human-originated invocations (``is_human=True`` — Discord/web UI chat,
+    user-requested follow-ups) are never dropped: when busy, they are appended
+    to a small bounded FIFO queue (``_human_queues``) and drained in order once
+    the in-flight run for that key finishes, before the lock is released.
 
     Whole-guild (parent) runs key the lock on ``(guild_id, user_id)``.  Per-task
     child runs (``child=True`` with a ``task_id``, gated by FOREMAN_CHILD_CONTEXTS)
@@ -814,20 +851,115 @@ async def run_foreman_ai(
     lock_key = (guild_id, f"task:{task_id}") if use_child else (guild_id, user_id)
     lock = _guild_locks.setdefault(lock_key, asyncio.Lock())
     if lock.locked():
-        logger.info(
-            "guild=%s key=%s run_foreman_ai: dropping concurrent invocation (already running)",
-            guild_id,
-            lock_key[1],
-        )
+        if is_human:
+            _enqueue_human_turn(
+                lock_key, guild_id, human_message, extra_context, user_id, task_id, use_child
+            )
+        else:
+            logger.info(
+                "guild=%s key=%s run_foreman_ai: dropping concurrent invocation (already running)",
+                guild_id,
+                lock_key[1],
+            )
         return
     await lock.acquire()
     try:
         await _run_foreman_ai(
             guild_id, human_message, extra_context, user_id, task_id=task_id, child=use_child
         )
+        # Drain any human messages that queued up while this turn ran, before
+        # going idle — each drained turn can itself queue further messages, so
+        # loop until the queue for this key is empty.
+        await _drain_human_queue(lock_key)
     finally:
         lock.release()
         _guild_locks.pop(lock_key, None)
+
+
+def _enqueue_human_turn(
+    lock_key: tuple[str, str | None],
+    guild_id: str,
+    human_message: str,
+    extra_context: str,
+    user_id: str | None,
+    task_id: str | None,
+    child: bool,
+) -> None:
+    """Append a human message to the busy queue for *lock_key*, bounded and FIFO.
+
+    When the queue is already at capacity, the oldest queued message is
+    dropped (with a warning) to make room — better to lose the stalest queued
+    turn than to grow memory without bound or drop the newest arrival.
+    """
+    queue = _human_queues.setdefault(lock_key, deque())
+    if len(queue) >= _HUMAN_QUEUE_MAX:
+        dropped = queue.popleft()
+        logger.warning(
+            "guild=%s key=%s human message queue full (max=%d); dropping oldest "
+            "queued message (queued_at=%s)",
+            guild_id,
+            lock_key[1],
+            _HUMAN_QUEUE_MAX,
+            dropped.queued_at,
+        )
+    queue.append(
+        _QueuedHumanTurn(
+            guild_id=guild_id,
+            human_message=human_message,
+            extra_context=extra_context,
+            user_id=user_id,
+            task_id=task_id,
+            child=child,
+            queued_at=datetime.now(UTC).isoformat(),
+        )
+    )
+    logger.info(
+        "guild=%s key=%s run_foreman_ai: foreman busy, queued human message (queue_len=%d)",
+        guild_id,
+        lock_key[1],
+        len(queue),
+    )
+
+
+async def _drain_human_queue(lock_key: tuple[str, str | None]) -> None:
+    """Process every human message queued for *lock_key*, in FIFO order.
+
+    Called while the caller still holds the lock for *lock_key*, so queued
+    turns run back-to-back without an automated trigger (periodic-check,
+    github-event) sneaking in between them. Any message that queues up while
+    a queued turn is itself running is picked up by the same loop.
+    """
+    queue = _human_queues.get(lock_key)
+    if not queue:
+        return
+    while queue:
+        turn = queue.popleft()
+        logger.info(
+            "guild=%s key=%s draining queued human message (queued_at=%s, remaining=%d)",
+            turn.guild_id,
+            lock_key[1],
+            turn.queued_at,
+            len(queue),
+        )
+        annotated_message = (
+            f"[queued at {turn.queued_at} while Foreman was busy]\n{turn.human_message}"
+        )
+        try:
+            await _run_foreman_ai(
+                turn.guild_id,
+                annotated_message,
+                turn.extra_context,
+                turn.user_id,
+                task_id=turn.task_id,
+                child=turn.child,
+            )
+        except Exception:
+            logger.exception(
+                "guild=%s key=%s error processing queued human message",
+                turn.guild_id,
+                lock_key[1],
+            )
+    _human_queues.pop(lock_key, None)
 
 
 async def _run_foreman_ai(
