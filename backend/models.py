@@ -3,6 +3,11 @@ from datetime import UTC, datetime
 from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, or_, text
 from sqlmodel import Field, SQLModel, col
 
+# Coding agent runners a worker can be configured with. Single source of
+# truth for the "tool" enum used across worker registration, task dispatch,
+# and the foreman's send_followup/assign_task tool schemas.
+VALID_TOOLS = ("claude", "codex", "pi")
+
 
 def live_tasks_filter(now: datetime | None = None):
     """SQL clause matching tasks that have not been soft-deleted.

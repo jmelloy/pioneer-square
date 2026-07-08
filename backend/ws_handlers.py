@@ -112,6 +112,19 @@ def _parse_pr_url(pr_url: str | None) -> tuple[int | None, str | None]:
     return number, f"{owner}/{repo}"
 
 
+def _format_queued_followup(index: int, payload: dict) -> str:
+    """Render one queued pending-followup payload for a foreman trigger message.
+
+    Includes tool/model/provider overrides (when present) so the foreman can
+    reissue an equivalent send_followup call instead of losing the override.
+    """
+    overrides = ", ".join(
+        f"{key}={payload[key]}" for key in ("tool", "model", "provider") if payload.get(key)
+    )
+    suffix = f" [{overrides}]" if overrides else ""
+    return f"  {index + 1}. {payload.get('instructions', '')}{suffix}"
+
+
 def _format_last_output(text: str, max_chars: int = 4000) -> str:
     """Truncate worker output before it's embedded in a Foreman trigger message.
 
@@ -795,7 +808,7 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         task_uid = await _task_user_id(ctx.db, task_id)
         if queued_payloads:
             queued_summary = "\n".join(
-                f"  {i + 1}. {p.get('instructions', '')}" for i, p in enumerate(queued_payloads)
+                _format_queued_followup(i, p) for i, p in enumerate(queued_payloads)
             )
             human_msg = (
                 f"[task-error] Worker {worker_id_upd} reported task {task_id} as errored. "
@@ -999,7 +1012,7 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
         )
     elif queued_payloads:
         queued_summary = "\n".join(
-            f"  {i + 1}. {p.get('instructions', '')}" for i, p in enumerate(queued_payloads)
+            _format_queued_followup(i, p) for i, p in enumerate(queued_payloads)
         )
         human_msg = (
             f"[followup-done] Worker {worker_id_msg} completed a follow-up for task {task_id}. "
