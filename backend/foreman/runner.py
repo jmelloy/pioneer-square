@@ -508,27 +508,27 @@ async def _sweep_closed_issue_tasks(guild_id: str, issue_tasks: list[dict]) -> N
         return
     token, _username = creds
 
-    for t in issue_tasks:
-        repo, number = t["issue_repo"], t["issue_number"]
-        try:
-            state = await fetch_issue_state(repo, number, token)
-        except Exception:
-            logger.warning(
-                "guild=%s task=%s failed to fetch issue status for %s#%s",
-                guild_id,
-                t["id"],
-                repo,
-                number,
-                exc_info=True,
-            )
-            continue
+    db = await get_db()
+    try:
+        guild_pk_val = await get_guild_pk(db, guild_id)
+        for t in issue_tasks:
+            repo, number = t["issue_repo"], t["issue_number"]
+            try:
+                state = await fetch_issue_state(repo, number, token)
+            except Exception:
+                logger.warning(
+                    "guild=%s task=%s failed to fetch issue status for %s#%s",
+                    guild_id,
+                    t["id"],
+                    repo,
+                    number,
+                    exc_info=True,
+                )
+                continue
 
-        if state != "closed":
-            continue
+            if state != "closed":
+                continue
 
-        db = await get_db()
-        try:
-            guild_pk_val = await get_guild_pk(db, guild_id)
             finalized = await finalize_issue_root_task(db, guild_pk_val, guild_id, t["id"])
             if finalized:
                 logger.info(
@@ -539,8 +539,8 @@ async def _sweep_closed_issue_tasks(guild_id: str, issue_tasks: list[dict]) -> N
                     number,
                 )
                 await warn_if_issue_task_has_open_children(db, guild_id, t["id"])
-        finally:
-            await db.close()
+    finally:
+        await db.close()
 
 
 async def _poll_loop(guild_id: str) -> None:

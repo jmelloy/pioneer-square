@@ -169,20 +169,11 @@ async def finalize_issue_root_task(db, guild_pk: int, guild_id: str, task_id: st
     Shared by the periodic closed-issue sweep (``foreman.runner._sweep_closed_issue_tasks``)
     and the ``issues`` webhook handler (``routes.webhooks.github_webhook``) so both paths
     apply the same terminal-state guard and broadcast behaviour. Uses a single conditional
-    UPDATE (rather than SELECT-then-UPDATE) to avoid a TOCTOU race with a concurrent
-    finalize/follow-up on the same task. Does not touch child tasks — callers should warn
-    if any remain non-terminal. Returns True if finalization occurred.
+    ``UPDATE ... RETURNING`` (rather than SELECT-then-UPDATE) so ``worker_id`` is only ever
+    read off the winning update row — a separate prior SELECT would reopen the same TOCTOU
+    race with a concurrent finalize/follow-up on this task. Does not touch child tasks —
+    callers should warn if any remain non-terminal. Returns True if finalization occurred.
     """
-    row_result = await db.exec(
-        select(col(Task.id), col(Task.worker_id)).where(
-            col(Task.id) == task_id, col(Task.guild_id) == guild_pk
-        )
-    )
-    task_row = row_result.one_or_none()
-    if task_row is None:
-        return False
-    worker_id = task_row[1]
-
     deleted_at = datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS)
     upd = await db.exec(
         update(Task)
@@ -192,9 +183,12 @@ async def finalize_issue_root_task(db, guild_pk: int, guild_id: str, task_id: st
             ~col(Task.state).in_(list(_TERMINAL_STATES)),
         )
         .values(state="done", deleted_at=deleted_at)
+        .returning(col(Task.worker_id))
     )
-    if (getattr(upd, "rowcount", 0) or 0) == 0:
+    row = upd.one_or_none()
+    if row is None:
         return False
+    worker_id = row[0]
 
     await LockService(db).release(f"task:{task_id}")
     await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))

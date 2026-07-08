@@ -882,6 +882,7 @@ async def github_webhook(
                         col(Task.issue_repo) == repo,
                         col(Task.issue_number) == issue_num,
                         col(Task.phase) == "issue",
+                        col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
                     )
                 )
                 for row in root_result.all():
