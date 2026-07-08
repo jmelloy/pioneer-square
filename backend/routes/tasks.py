@@ -19,6 +19,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
+from foreman.classify import is_human_event
 from foreman.runner import run_foreman_ai
 from lock_service import LockService
 from models import GithubToken, Guild, GuildMember, Task, TaskLog, live_tasks_filter
@@ -247,6 +248,10 @@ async def create_task_followup(
             user_id=github_user_id,
             task_id=task_id,
             child=True,
+            # See foreman.classify — REST follow-ups have no dispatch "event"
+            # string of their own, so they tag "user-followup" purely to
+            # share the same human/automated classifier as ws_handlers.
+            is_human=is_human_event("user-followup"),
         ),
         name=f"foreman.user-followup:{task_id}",
     )

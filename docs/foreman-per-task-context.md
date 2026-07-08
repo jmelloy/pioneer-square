@@ -43,8 +43,13 @@ single Foreman turn with three pieces of isolation:
 3. A per-task `asyncio.Lock` keyed as `(guild_id, "task:<id>")` in `_guild_locks`.
 
 If a task-scoped run is already active for the same task, the new invocation is
-dropped instead of queued. The backend poll/re-trigger mechanism recovers stale
-or missed work on a later tick. Different tasks may run concurrently.
+dropped instead of queued — unless it's human-originated (e.g. a user-requested
+follow-up posted from the web UI), in which case it's appended to a small FIFO
+queue and drained once the in-flight run for that task finishes. See
+"Human message queueing" below. Automated child-context triggers (task-complete,
+followup-done, needs-input) keep the drop-if-busy behavior; the backend
+poll/re-trigger mechanism recovers stale or missed work on a later tick.
+Different tasks may run concurrently.
 
 Parent runs are keyed by `(guild_id, user_id)` and never read task-tagged child
 history, even if the incoming parent trigger includes a `task_id` for Discord

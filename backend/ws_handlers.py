@@ -30,6 +30,7 @@ from events import (
     send_ws_message,
 )
 from fastapi import WebSocket
+from foreman.classify import is_human_event
 from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
 from foreman.runner import reset_foreman_poll, run_foreman_ai
 from foreman.tools import maybe_post_plan_comment
@@ -201,8 +202,18 @@ async def _trigger_foreman(
     # lifecycle, periodic-check, claude-auth) stay on the parent whole-guild
     # context.
     child = bool(task_id) and event in _CHILD_FOREMAN_EVENTS
+    # See foreman.classify for the human/automated event classification shared
+    # with routes.tasks.create_task_followup's REST follow-up path.
+    is_human = is_human_event(event)
     spawn(
-        run_foreman_ai(guild_id, human_message, user_id=user_id, task_id=task_id, child=child),
+        run_foreman_ai(
+            guild_id,
+            human_message,
+            user_id=user_id,
+            task_id=task_id,
+            child=child,
+            is_human=is_human,
+        ),
         name=task_name,
     )
 
