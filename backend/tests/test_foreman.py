@@ -78,6 +78,15 @@ def _fake_tool_use(name: str, inputs: dict, tool_id: str = "tool-abc123") -> Sim
     return SimpleNamespace(name=name, input=inputs, id=tool_id)
 
 
+def _extract_task_id(content: str) -> str:
+    """Pull the t-XXXX task id out of a tool-result message, independent of the
+    surrounding wording — a positional split()[1] silently breaks if the
+    success-message phrasing changes."""
+    match = re.search(r"\bt-\w+\b", content)
+    assert match, f"no task id found in tool result: {content!r}"
+    return match.group(0)
+
+
 def _insert_worker(db_url: str, guild_id: str, worker_id: str) -> None:
     insert_worker(db_url, guild_id, worker_id, state="idle")
 
@@ -238,6 +247,41 @@ class TestBuildSystemPrompt:
 
         assert "parent_task_id" in FOREMAN_SYSTEM
 
+    def test_devready_pickup_creates_issue_root_task_first(self):
+        """Picking up a devReady issue must create a phase='issue' root task before any
+        plan/execute task (#829)."""
+        from foreman.prompt import FOREMAN_SYSTEM
+
+        section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
+        section = FOREMAN_SYSTEM[section_start:]
+        assert "create_task(phase='issue'" in section or 'create_task(phase="issue"' in section
+        # Anchor to the lettered sub-steps rather than a loose substring search — step
+        # 'c' (issue-root creation) must be described before step 'd' (plan/execute pair).
+        step_c_idx = section.index("c. Call create_task(phase='issue'")
+        step_d_idx = section.index("d. Call create_task + assign_task")
+        assert step_c_idx < step_d_idx
+
+    def test_devready_pickup_child_tasks_reference_issue_root(self):
+        """Subsequent plan/execute tasks for a devReady issue must pass parent_task_id
+        pointing at the issue-root task (#829)."""
+        from foreman.prompt import FOREMAN_SYSTEM
+
+        section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
+        section = FOREMAN_SYSTEM[section_start:]
+        # Assert the full phrase, not just the bare "parent_task_id" token, which also
+        # appears in unrelated sections of FOREMAN_SYSTEM (e.g. review dispatch).
+        assert "parent_task_id=<issue-root task_id" in section
+
+    def test_devready_issue_root_never_assigned_to_worker(self):
+        """Prompt must describe the issue-root task as never assigned to a worker and
+        without a branch/PR (#829)."""
+        from foreman.prompt import FOREMAN_SYSTEM
+
+        section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
+        section = FOREMAN_SYSTEM[section_start:]
+        assert "never assigned to a worker" in section
+        assert "no branch or PR" in section or "no branch/PR" in section
+
 
 # ---------------------------------------------------------------------------
 # 1b. _fetch_online_workers (filters workers by state=='online')
@@ -362,7 +406,7 @@ class TestExecToolsDispatching:
                 "g-phase", [_fake_tool_use("create_task", {"name": "Task", "description": "Work"})]
             )
         # Task row should have phase=execute (not specified → default)
-        task_id = results[0]["content"].split()[1]
+        task_id = _extract_task_id(results[0]["content"])
 
         with _sync_session(db_session) as session:
             phase = session.scalar(select(col(Task.phase)).where(col(Task.id) == task_id))
@@ -379,7 +423,7 @@ class TestExecToolsDispatching:
                 [_fake_tool_use("create_task", {"name": "Owned", "description": "task"})],
                 user_id="gh-user-42",
             )
-        task_id = results[0]["content"].split()[1]
+        task_id = _extract_task_id(results[0]["content"])
 
         with _sync_session(db_session) as session:
             user_id = session.scalar(select(col(Task.user_id)).where(col(Task.id) == task_id))
@@ -419,11 +463,38 @@ class TestExecToolsDispatching:
                     )
                 ],
             )
-        task_id = results[0]["content"].split()[1]
+        task_id = _extract_task_id(results[0]["content"])
 
         with _sync_session(db_session) as session:
             phase = session.scalar(select(col(Task.phase)).where(col(Task.id) == task_id))
         assert phase == "plan"
+
+    async def test_create_task_issue_phase_creates_unassigned_root_task(self, db_session):
+        """create_task(phase='issue') must persist phase='issue' and leave the task
+        unassigned (no worker) — it's a sidebar anchor, never dispatched to a worker (#829)."""
+        insert_guild(db_session, "g-issuephase")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-issuephase",
+                [
+                    _fake_tool_use(
+                        "create_task",
+                        {
+                            "name": "Issue: add foo",
+                            "description": "Root task for issue #123",
+                            "phase": "issue",
+                        },
+                    )
+                ],
+            )
+        task_id = _extract_task_id(results[0]["content"])
+
+        with _sync_session(db_session) as session:
+            task = session.get(Task, task_id)
+        assert task.phase == "issue"
+        assert task.worker_id is None
+        assert task.pr_url is None
+        assert task.branch is None
 
     async def test_assign_task_unknown_worker(self, db_session):
         insert_guild(db_session, "g-assign-bad")
@@ -494,7 +565,7 @@ class TestExecToolsDispatching:
             create_content = create_results[0]["content"]
             assert create_content.startswith("Task t-"), create_content
             assert "created" in create_content
-            task_id = create_content.split()[1]
+            task_id = _extract_task_id(create_content)
 
             with _sync_session(db_session) as session:
                 parent_task_id_before = session.scalar(
