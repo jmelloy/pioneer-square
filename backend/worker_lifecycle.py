@@ -285,10 +285,11 @@ async def force_kill_worker_if_unresponsive(
     e.g. because it's wedged and never received/processed the shutdown signal.
     """
     poll_interval = 5.0
+    start = asyncio.get_event_loop().time()
     elapsed = 0.0
     while elapsed < timeout:
         await asyncio.sleep(min(poll_interval, timeout - elapsed))
-        elapsed += poll_interval
+        elapsed = asyncio.get_event_loop().time() - start
         async with AsyncSessionLocal() as db:
             state = (
                 await db.exec(select(col(Worker.state)).where(col(Worker.id) == worker_id))
@@ -300,6 +301,21 @@ async def force_kill_worker_if_unresponsive(
                 elapsed,
             )
             return
+
+    # Re-check right before escalating: the worker may have gone offline in the
+    # window between the last poll above and now, and we don't want to force-kill
+    # a container that already shut down gracefully.
+    async with AsyncSessionLocal() as db:
+        state = (
+            await db.exec(select(col(Worker.state)).where(col(Worker.id) == worker_id))
+        ).one_or_none()
+    if state is None or state == "offline":
+        logger.info(
+            "worker_lifecycle: worker %s shut down gracefully just before the force-kill "
+            "escalation — skipping container kill",
+            worker_id,
+        )
+        return
 
     logger.warning(
         "worker_lifecycle: worker %s did not shut down within %.0fs of the graceful "
