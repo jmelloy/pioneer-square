@@ -491,7 +491,16 @@ class TestExecToolsDispatching:
                 "g-assign-parent",
                 [_fake_tool_use("create_task", {"name": "Sub Task", "description": "Do part"})],
             )
-            task_id = create_results[0]["content"].split()[1]
+            create_content = create_results[0]["content"]
+            assert create_content.startswith("Task t-"), create_content
+            assert "created" in create_content
+            task_id = create_content.split()[1]
+
+            with _sync_session(db_session) as session:
+                parent_task_id_before = session.scalar(
+                    select(col(Task.parent_task_id)).where(col(Task.id) == task_id)
+                )
+            assert parent_task_id_before is None
 
             results = await exec_tools(
                 "g-assign-parent",

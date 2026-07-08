@@ -1233,6 +1233,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 )
                                 .limit(1)
                             )
+                            parent_task_id = inp.get("parent_task_id")
                             if not worker_recheck.one_or_none():
                                 result_text = (
                                     f"Worker {wid} went offline — task NOT assigned. "
@@ -1241,7 +1242,6 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 is_error = True
                             elif existing_task_id:
                                 name_override = inp.get("name")
-                                parent_task_id = inp.get("parent_task_id")
                                 update_values: dict = {
                                     "worker_id": wid,
                                     "description": desc,
@@ -1295,7 +1295,6 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 result_text = f"Task {task_id} assigned to {wid}."
                             else:
                                 name = inp.get("name") or desc[:60]
-                                parent_task_id = inp.get("parent_task_id")
                                 task_id = "t-" + "".join(
                                     random.choices(string.ascii_lowercase + string.digits, k=6)
                                 )
