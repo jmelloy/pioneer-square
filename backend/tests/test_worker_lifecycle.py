@@ -603,7 +603,7 @@ class _FakeStateDB:
 
 
 def test_shutdown_force_kill_timeout_default():
-    assert SHUTDOWN_FORCE_KILL_TIMEOUT == 30.0
+    assert SHUTDOWN_FORCE_KILL_TIMEOUT == 600.0
 
 
 def test_shutdown_force_kill_timeout_env_override(monkeypatch):

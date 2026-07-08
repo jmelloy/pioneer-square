@@ -45,7 +45,7 @@ WORKER_DRAIN_TIMEOUT = float(os.environ.get("PIONEER_WORKER_DRAIN_TIMEOUT", "60"
 # an unresponsive worker's container. Separate from WORKER_DRAIN_TIMEOUT (which
 # guards the much rarer startup version-mismatch drain) since this is the window
 # the foreman AI waits on every ordinary "stop this worker" request.
-SHUTDOWN_FORCE_KILL_TIMEOUT = float(os.environ.get("PIONEER_SHUTDOWN_TIMEOUT", "30"))
+SHUTDOWN_FORCE_KILL_TIMEOUT = float(os.environ.get("PIONEER_SHUTDOWN_TIMEOUT", "600"))
 
 
 def get_current_version() -> str | None:
