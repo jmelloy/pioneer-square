@@ -1,8 +1,8 @@
 """Foreman tool definitions (embedded), GitHub API helpers, and tool-call executor.
 
-FOREMAN_TOOLS is imported from backend.foreman_core.tools_schema — the single source
-of truth shared with the standalone foreman.  This module owns the embedded executor
-(exec_tools) and all GitHub/DB helpers.
+FOREMAN_TOOLS is imported from foreman.tools_schema — the single source of truth
+for the schema sent to the LLM or API proxy. This module owns backend-side tool
+execution and all GitHub/DB helpers.
 """
 
 import asyncio
@@ -23,9 +23,9 @@ from typing import Any
 import discord_notifier
 from database import get_db
 from events import broadcast, broadcast_msg, emit_terminal_line
-from foreman_core.llm import get_foreman_model, make_anthropic_client
-from foreman_core.message_utils import _json_default, truncate_tool_result
-from foreman_core.tools_schema import (
+from foreman.llm import get_foreman_model, make_anthropic_client
+from foreman.message_utils import _json_default, truncate_tool_result
+from foreman.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
 from lock_service import LockService

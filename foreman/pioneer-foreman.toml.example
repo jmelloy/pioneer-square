@@ -1,36 +1,22 @@
-backend_url = "ws://localhost:8000"    # same base as workers
-guild_id    = "abc123"
+backend_url = "ws://localhost:8000"
+guild_id = "abc123"
+log_level = "INFO"
 
-# Shared HMAC secret for JWT authentication.
-# Set the same value as PIONEER_FOREMAN_KEY on the backend.
-# The foreman mints short-lived tokens automatically — no manual refresh needed.
-backend_key = ""
+[llm]
+# The proxy executes one backend-supplied Foreman API request at a time.
+# State, trigger routing, history, and tool execution stay in the backend.
+provider = "anthropic" # "anthropic" | "bedrock" | "openai"
+model = "claude-sonnet-4-6"
+api_key = "" # anthropic/openai key; can also come from ANTHROPIC_API_KEY or OPENAI_API_KEY
 
-# Static token fallback — only needed when backend_key is not set.
-# Use a member login_token (from browser dev tools after login) or a worker
-# auth_token. Ignored when backend_key is provided.
+# Anthropic OAuth/claude.ai token. Mutually exclusive with api_key; auth_token wins.
 # auth_token = ""
 
-# Per-task child contexts: spawn an isolated conversation thread per assigned
-# task and route task-specific events to it (see docs/foreman-per-task-context.md).
-# Defaults to true; set false (or FOREMAN_CHILD_CONTEXTS=0) for the legacy
-# single-context behaviour.
-# child_contexts = true
+# OpenAI-compatible local/remote endpoint, used when provider = "openai".
+# For Ollama: base_url = "http://localhost:11434/v1", model = "llama3.1"
+# base_url = "http://localhost:11434/v1"
 
-[claude]
-model         = "claude-sonnet-4-6"    # used when provider = "anthropic"
-api_key       = ""                     # falls back to ANTHROPIC_API_KEY env var
-# auth_token  = ""                     # OAuth/claude.ai token; falls back to
-                                       # ANTHROPIC_AUTH_TOKEN env var.  Mutually
-                                       # exclusive with api_key — auth_token wins.
-max_rounds    = 10
-history_limit = 40
-
-# AI provider: "anthropic" (default) or "bedrock" (Amazon Bedrock).
-# When using Bedrock: set provider = "bedrock", ensure AWS credentials are
-# available (env vars, ~/.aws/credentials, or IAM role), and set bedrock_model
-# to a cross-region inference profile ID (not a plain model ID).
-# Requires: pip install "anthropic[bedrock]"
-# provider      = "anthropic"
+# Bedrock settings, used when provider = "bedrock".
 # bedrock_model = "us.anthropic.claude-sonnet-4-6-20250514-v1:0"
-# aws_region    = "us-east-1"          # falls back to AWS_DEFAULT_REGION env var
+# aws_region = "us-east-1"
+# aws_profile = ""

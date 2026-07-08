@@ -50,11 +50,9 @@ pending_claude_auth: dict[str, dict[str, str]] = {}
 # get its just-joined agent stamped offline.
 _agent_owner_locks: dict[str, asyncio.Lock] = {}
 
-# Active external foreman WebSocket per guild — at most one per guild at a
-# time. Set by ws_handlers.handle_join when an agent with agentType="foreman"
-# joins; cleared on graceful disconnect or when the socket drops.
-# Phase 2: ws_handlers reads this to decide whether to send a foreman-trigger
-# WS message or fall back to the embedded run_foreman_ai().
+# Active external Foreman API proxy WebSocket per guild — at most one per guild
+# at a time. The backend still runs the Foreman loop; the external process only
+# executes LLM API requests that the backend sends over this socket.
 foreman_connections: dict[str, WebSocket] = {}
 
 # Worker liveness probes currently awaiting a response. Keys are

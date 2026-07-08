@@ -62,7 +62,7 @@ def _run_serve(argv: list[str]) -> int:
         return 2
 
     # The backend imports its modules as top-level names (``from events import``,
-    # ``main:app``, ``foreman_core``...) and resolves Alembic/static paths from
+    # ``main:app``, ``foreman``...) and resolves Alembic/static paths from
     # its own directory, so run it exactly as ``python main.py`` would.
     _prepend_path(backend_dir)
     os.chdir(backend_dir)
@@ -93,10 +93,10 @@ def _run_worker(argv: list[str]) -> int:
 
 
 def _run_foreman(argv: list[str]) -> int:
-    """Launch the standalone foreman (delegates to pioneer_foreman.cli.main)."""
+    """Launch the standalone Foreman API proxy (delegates to pioneer_foreman.cli.main)."""
     root = _resolve_root()
-    # foreman/ holds the pioneer_foreman package; root makes ``backend.foreman_core``
-    # importable from source (backend/__init__.py + backend/foreman_core/).
+    # foreman/ holds the pioneer_foreman package; root makes ``backend.foreman.llm``
+    # importable from source without importing the backend runtime.
     _prepend_path(root / "foreman")
     _prepend_path(root)
     from pioneer_foreman.cli import main as foreman_main  # noqa: PLC0415
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "usage: pioneer {serve|foreman|worker} [args...]\n\n"
             "  serve     run the HTTP backend (FastAPI)\n"
-            "  foreman   run the standalone foreman agent\n"
+            "  foreman   run the standalone Foreman API proxy\n"
             "  worker    run a worker agent\n\n"
             "Run 'pioneer <mode> --help' for mode-specific options.",
             file=sys.stderr,

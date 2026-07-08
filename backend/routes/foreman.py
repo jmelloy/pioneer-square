@@ -1,11 +1,9 @@
-"""Foreman REST API — conversation history (existing debug endpoints) and the
-new Phase 1 endpoints that let an external standalone foreman process read
-guild state and write task/message mutations without direct DB access.
+"""Foreman REST API — conversation history, debug context, and tool/state helpers.
 
-Auth: all new endpoints accept either a worker auth_token *or* a member
-login_token via ``require_worker_or_member_path``. This matches the existing
-worker credential endpoints and keeps the door open for the standalone
-foreman to register with a worker-style auth_token in Phase 3.
+Auth: helper endpoints accept either a worker auth_token *or* a member
+login_token via ``require_worker_or_member_path``. The standalone Foreman API
+proxy no longer uses these endpoints; the backend owns the Foreman loop and
+only delegates LLM API calls over WebSocket.
 
 Endpoint summary
 ----------------
@@ -13,12 +11,12 @@ Existing (unchanged):
   GET  /guilds/{guild_id}/foreman/context        — debug: stored turns for calling user
   POST /guilds/{guild_id}/foreman/clear-context  — debug: delete all turns for calling user
 
-Phase 1 additions — state reads:
+State reads:
   GET  /guilds/{guild_id}/foreman/state          — online workers, active tasks, guild metadata
   GET  /guilds/{guild_id}/foreman/history        — raw ForemanTurn rows for a given user_id
   GET  /guilds/{guild_id}/guild-key              — Ed25519 private key PEM for JWT signing
 
-Phase 1 additions — state writes:
+State writes:
   POST  /guilds/{guild_id}/foreman/history       — persist one ForemanTurn row
   POST  /guilds/{guild_id}/tasks                 — create a foreman-owned task
   PATCH /guilds/{guild_id}/tasks/{task_id}       — update task fields (state, worker, branch, …)
@@ -38,7 +36,7 @@ from auth_deps import get_guild_pk, require_member, require_worker_or_member_pat
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Query
-from foreman.runner import _fetch_online_workers
+from foreman.runner import _fetch_online_workers, clear_foreman_history, get_foreman_history
 from models import (
     ForemanTurn,
     Guild,
@@ -53,8 +51,6 @@ from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from ws_types import ChatMsg, TaskCreatedMsg, TaskUpdateMsg
-
-from foreman import clear_foreman_history, get_foreman_history
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -121,7 +117,7 @@ async def clear_foreman_context(
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 — State reads
+# State reads
 # ---------------------------------------------------------------------------
 
 
@@ -131,7 +127,7 @@ async def get_foreman_state(
     _caller: str = Depends(require_worker_or_member_path),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Return a snapshot of guild state for an external foreman process.
+    """Return a snapshot of guild state for debugging/API clients.
 
     Response shape::
 
@@ -158,8 +154,7 @@ async def get_foreman_state(
 
     ``workers`` lists only online workers (state == 'online'). ``tasks``
     lists all non-terminal, non-soft-deleted tasks, most recent first.
-    Mirrors the state snapshot built by ``run_foreman_ai()`` so the
-    standalone foreman can construct the same system-prompt preamble.
+    Mirrors the state snapshot built by ``run_foreman_ai()``.
     """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
@@ -375,9 +370,6 @@ async def create_foreman_turn(
 ):
     """Persist one foreman conversation turn to the DB.
 
-    Replaces ``_save_turn()`` in ``foreman/runner.py`` for the standalone
-    foreman — it calls this endpoint instead of writing the DB directly.
-
     Response: ``{ "id": int, "created_at": str }``
     """
     import json as _json
@@ -576,11 +568,7 @@ async def create_message(
     _caller: str = Depends(require_worker_or_member_path),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Persist a chat message sent by the external foreman.
-
-    Used by the standalone foreman at the end of a ``run_foreman_ai()`` run
-    to store the final text response in the ``messages`` table (the same
-    write that the embedded foreman does in ``runner.py``).
+    """Persist a chat message from an authenticated worker/API caller.
 
     Also broadcasts a ``chat`` WS event so the frontend chat panel updates.
 

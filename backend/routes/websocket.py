@@ -23,6 +23,7 @@ from events import (
     pending_worker_probes,
 )
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from foreman.proxy import fail_pending_for_websocket
 from models import Agent, Guild, UserSession, Worker
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -164,11 +165,18 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
         # group to cancel sibling connections.
         with anyio.CancelScope(shield=True):
             try:
-                # If this socket was the active external foreman, evict it so
-                # subsequent trigger events fall back to the embedded foreman.
+                # If this socket was the active external Foreman API proxy,
+                # fail any in-flight provider calls owned by it.
                 if foreman_connections.get(guild_id) is websocket:
                     foreman_connections.pop(guild_id, None)
-                    logger.info("guild=%s external foreman WS closed (socket disconnect)", guild_id)
+                    fail_pending_for_websocket(
+                        websocket,
+                        f"external foreman API proxy disconnected for guild {guild_id}",
+                    )
+                    logger.info(
+                        "guild=%s external foreman API proxy WS closed (socket disconnect)",
+                        guild_id,
+                    )
 
                 # Only mark agents offline if this WS is still the current owner.
                 # The per-guild lock pairs with handle_join's ownership write so a
@@ -219,8 +227,8 @@ async def websocket_endpoint(websocket: WebSocket, guild_id: str):
                         # The DB connection may have been closed by a
                         # CancelledError delivered during a handler (e.g.
                         # when a close frame races a db.commit() inside the
-                        # message loop).  Log and continue so the broadcast
-                        # and foreman-trigger below still run.
+                        # message loop). Log and continue so the offline
+                        # broadcast below still runs.
                         logger.warning(
                             "WS teardown: DB error for guild %s — stale agents/workers"
                             " may remain online in DB until sweeper runs",

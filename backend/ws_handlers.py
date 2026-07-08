@@ -30,6 +30,9 @@ from events import (
     send_ws_message,
 )
 from fastapi import WebSocket
+from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
+from foreman.runner import reset_foreman_poll, run_foreman_ai
+from foreman.tools import maybe_post_plan_comment
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
 from pydantic import ValidationError
@@ -49,7 +52,6 @@ from ws_types import (
     ForemanDisconnectMsg,
     ForemanEvictedMsg,
     ForemanRegisteredMsg,
-    ForemanTriggerMsg,
     IceCandidateMsg,
     NeedsInputMsg,
     OfferMsg,
@@ -61,12 +63,6 @@ from ws_types import (
     TerminalOutputMsg,
     WorkerAuthResponseMsg,
     parse_inbound_message,
-)
-
-from foreman import (
-    maybe_post_plan_comment,
-    reset_foreman_poll,
-    run_foreman_ai,
 )
 
 logger = logging.getLogger(__name__)
@@ -157,7 +153,7 @@ async def _task_user_id(db, task_id: str | None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: External-foreman dispatch helper
+# Foreman trigger dispatch helper
 # ---------------------------------------------------------------------------
 
 
@@ -177,59 +173,20 @@ async def _trigger_foreman(
     task_id: str | None = None,
     task_name: str = "foreman.unknown",
 ) -> None:
-    """Send a ``foreman-trigger`` WS message to an external foreman if one is
-    connected for this guild; otherwise fall back to the embedded foreman.
+    """Dispatch a trigger into the embedded Foreman runner.
 
-    The ``foreman-trigger`` payload carries all context the standalone process
-    needs to call its own ``run_foreman_ai()``:
+    The standalone process no longer receives trigger events. It is only an API
+    proxy used by ``backend.foreman.runner`` at the LLM-call boundary.
 
-    .. code-block:: json
-
-        {
-          "type": "foreman-trigger",
-          "event": "<event-type>",
-          "guildId": "<guild_id>",
-          "humanMessage": "<message>",
-          "userId": "<user_id>",   // omitted when None
-          "taskId": "<task_id>"    // omitted when None
-        }
-
-    If the send fails (broken socket) the foreman is evicted and the embedded
-    fallback fires so the trigger is never lost.
-
-    ``event`` mirrors the plan's trigger-type vocabulary:
+    ``event`` mirrors the trigger-type vocabulary:
     ``chat``, ``task-complete``, ``followup-done``, ``needs-input``,
     ``claude-auth``, ``periodic-check``, ``worker-online``,
     ``worker-offline``.
     """
-    ws = foreman_connections.get(guild_id)
-    if ws is not None:
-        msg = ForemanTriggerMsg(
-            event=event,
-            guildId=guild_id,
-            humanMessage=human_message,
-            userId=user_id or None,  # coerce empty string to None
-            taskId=task_id or None,  # coerce empty string to None
-        )
-        try:
-            await send_ws_message(ws, msg)
-            logger.debug(
-                "guild=%s foreman-trigger dispatched to external foreman: event=%s",
-                guild_id,
-                event,
-            )
-            return
-        except Exception:
-            logger.warning(
-                "guild=%s external foreman WS broken (event=%s), falling back to embedded",
-                guild_id,
-                event,
-            )
-            foreman_connections.pop(guild_id, None)
-    # Embedded fallback. Task-specific review events run in an isolated per-task
-    # child context (see docs/foreman-per-task-context.md); cross-cutting events
-    # (chat, worker lifecycle, periodic-check, claude-auth) stay on the parent
-    # whole-guild context.
+    # Task-specific review events run in an isolated per-task child context
+    # (see docs/foreman-per-task-context.md); cross-cutting events (chat, worker
+    # lifecycle, periodic-check, claude-auth) stay on the parent whole-guild
+    # context.
     child = bool(task_id) and event in _CHILD_FOREMAN_EVENTS
     spawn(
         run_foreman_ai(guild_id, human_message, user_id=user_id, task_id=task_id, child=child),
@@ -400,19 +357,18 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         # decide it owns the agent, and stamp the just-joined agent offline.
         async with agent_owner_lock(ctx.guild_id):
             agent_owners[agent_id] = ctx.websocket
-    # Only an explicit external foreman client may claim the foreman seat —
+    # Only an explicit external Foreman API proxy may claim the proxy seat —
     # the legacy browser join still carries agentType="foreman" but must NOT
-    # be registered in foreman_connections, or every chat trigger gets routed
-    # to the browser (which has no handler) and the embedded foreman AI never
-    # runs. The external client signals its intent with `external: true`.
+    # be registered in foreman_connections. The external client signals its
+    # intent with `external: true`.
     if agent_type == "foreman" and data.get("external") is True:
-        # Register as the active external foreman for this guild.
-        # Evict any previously connected foreman so there is never more than
-        # one active at a time (prevents duplicate task mutations / triggers).
+        # Register as the active external API proxy for this guild.
+        # Evict any previously connected proxy so there is never more than one
+        # active provider-call endpoint at a time.
         existing_ws = foreman_connections.get(ctx.guild_id)
         if existing_ws is not None and existing_ws is not ctx.websocket:
             logger.info(
-                "guild=%s evicting previous external foreman (new foreman connected)",
+                "guild=%s evicting previous external foreman API proxy (new proxy connected)",
                 ctx.guild_id,
             )
             try:
@@ -426,8 +382,10 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
             except Exception:
                 pass
         foreman_connections[ctx.guild_id] = ctx.websocket
-        logger.info("guild=%s external foreman registered: agentId=%s", ctx.guild_id, agent_id)
-        # Acknowledge registration so the foreman knows it is the active one.
+        logger.info(
+            "guild=%s external foreman API proxy registered: agentId=%s", ctx.guild_id, agent_id
+        )
+        # Acknowledge registration so the proxy knows it is the active one.
         await send_ws_message(
             ctx.websocket,
             ForemanRegisteredMsg(guildId=ctx.guild_id, agentId=agent_id),
@@ -1123,16 +1081,19 @@ async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
 
 
 async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:
-    """External foreman announcing a graceful shutdown.
+    """External Foreman API proxy announcing a graceful shutdown.
 
-    Removes the guild's foreman_connections entry so subsequent trigger events
-    fall back to the embedded foreman immediately rather than waiting for a
-    failed send to discover the socket is gone.
+    Removes the guild's foreman_connections entry and fails any pending API
+    requests owned by this socket immediately.
     """
     if foreman_connections.get(ctx.guild_id) is ctx.websocket:
         foreman_connections.pop(ctx.guild_id, None)
+        fail_pending_for_websocket(
+            ctx.websocket,
+            f"external foreman API proxy disconnected gracefully for guild {ctx.guild_id}",
+        )
         logger.info(
-            "guild=%s external foreman disconnected gracefully",
+            "guild=%s external foreman API proxy disconnected gracefully",
             ctx.guild_id,
         )
     await broadcast_msg(
@@ -1161,18 +1122,15 @@ async def handle_worker_auth_response(ctx: WSContext, data: dict) -> None:
     await broadcast_msg(ctx.guild_id, WorkerAuthResponseMsg.model_validate(data))
 
 
-async def handle_foreman_broadcast(ctx: WSContext, data: dict) -> None:
-    """External foreman relays a broadcast payload to all guild connections.
-
-    The standalone foreman process cannot call broadcast() directly (its
-    connections dict is empty — only the backend process holds live WS
-    connections).  Instead it sends a foreman-broadcast envelope; this handler
-    extracts the payload and fans it out to every frontend client in the guild.
-    """
-    payload = data.get("payload")
-    if not isinstance(payload, dict):
+async def handle_foreman_api_response(ctx: WSContext, data: dict) -> None:
+    """Resolve one pending LLM API request from the external proxy."""
+    if foreman_connections.get(ctx.guild_id) is not ctx.websocket:
+        logger.warning(
+            "Ignoring foreman-api-response from non-active proxy for guild=%s",
+            ctx.guild_id,
+        )
         return
-    await broadcast(ctx.guild_id, payload, exclude=ctx.websocket)
+    resolve_foreman_api_response(data)
 
 
 async def handle_webrtc_signal(ctx: WSContext, data: dict) -> None:
@@ -1199,7 +1157,7 @@ HANDLERS: dict[str, Any] = {
     "needs-input": handle_needs_input,
     "claude-auth-required": handle_claude_auth_required,
     "foreman-disconnect": handle_foreman_disconnect,
-    "foreman-broadcast": handle_foreman_broadcast,
+    "foreman-api-response": handle_foreman_api_response,
     "worker-auth-response": handle_worker_auth_response,
     "offer": handle_webrtc_signal,
     "answer": handle_webrtc_signal,

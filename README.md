@@ -135,9 +135,13 @@ See [`worker/README.md`](worker/README.md) for details.
 
 ### Standalone Foreman (local, no Docker)
 
+The backend-owned foreman loop remains responsible for state, history, tools, and task
+coordination. The standalone process is only an optional LLM API proxy for calling Anthropic,
+Bedrock, or an OpenAI-compatible endpoint from a different network environment.
+
 ```bash
 cp foreman/pioneer-foreman.toml.example foreman/pioneer-foreman.toml
-# edit pioneer-foreman.toml: backend_url, guild_id, backend_key
+# edit pioneer-foreman.toml: backend_url, guild_id, [llm] provider/model/base_url/api_key
 pioneer foreman --config foreman/pioneer-foreman.toml
 ```
 
@@ -146,14 +150,14 @@ Or with environment variables only (no config file):
 ```bash
 PIONEER_BACKEND_URL=ws://localhost:8000 \
 PIONEER_GUILD_ID=<your-guild-id> \
-PIONEER_FOREMAN_KEY=<your-secret> \
+FOREMAN_PROVIDER=anthropic \
 ANTHROPIC_API_KEY=<key> \
 pioneer foreman
 ```
 
-`PIONEER_FOREMAN_KEY` must match the same variable set on the backend.  When an
-external foreman is connected the backend routes all `foreman-trigger` events to
-it; if it disconnects the backend's embedded foreman takes over automatically.
+When the proxy is connected the backend sends `foreman-api-request` messages to it
+for provider calls. If it disconnects, the backend falls back to local provider calls
+from the embedded foreman.
 
 ### Discord integration (optional)
 

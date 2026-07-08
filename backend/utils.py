@@ -187,11 +187,10 @@ def _b64url_decode(s: str) -> bytes:
 
 
 def make_foreman_jwt(guild_id: str, secret: str, ttl: int = _FOREMAN_JWT_TTL) -> str:
-    """Create a short-lived HS256 JWT for the standalone foreman.
+    """Create a short-lived HS256 JWT for Foreman REST helper endpoints.
 
-    Both the foreman (via ``backend_key`` in its TOML) and the backend
-    (via ``PIONEER_FOREMAN_KEY`` env var) must share the same *secret*.
-    The token is valid for *ttl* seconds (default 1 hour).
+    The signer and backend (via ``PIONEER_FOREMAN_KEY`` env var) must share the
+    same *secret*. The token is valid for *ttl* seconds (default 1 hour).
     """
     header = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     now = int(time.time())

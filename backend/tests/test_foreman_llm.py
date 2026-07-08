@@ -1,4 +1,4 @@
-"""Tests for foreman_core/llm.py — provider selection and client factory.
+"""Tests for foreman/llm.py — provider selection and client factory.
 
 Verifies that make_anthropic_client() and get_foreman_model() correctly handle
 both the default Anthropic provider and alternate providers (e.g. AWS Bedrock).
@@ -38,7 +38,7 @@ class TestGetForemanModel:
     def test_default_returns_anthropic_model(self, monkeypatch):
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
         monkeypatch.delenv("FOREMAN_MODEL", raising=False)
-        from foreman_core.llm import get_foreman_model
+        from foreman.llm import get_foreman_model
 
         assert get_foreman_model() == "claude-sonnet-4-6"
 
@@ -48,7 +48,7 @@ class TestGetForemanModel:
         Must raise a clear, actionable error instead."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
         monkeypatch.delenv("FOREMAN_BEDROCK_MODEL", raising=False)
-        from foreman_core.llm import BedrockModelNotConfiguredError, get_foreman_model
+        from foreman.llm import BedrockModelNotConfiguredError, get_foreman_model
 
         with pytest.raises(BedrockModelNotConfiguredError):
             get_foreman_model()
@@ -56,7 +56,7 @@ class TestGetForemanModel:
     def test_explicit_provider_without_model_raises(self, monkeypatch):
         monkeypatch.setenv("FOREMAN_PROVIDER", "anthropic")
         monkeypatch.delenv("FOREMAN_BEDROCK_MODEL", raising=False)
-        from foreman_core.llm import BedrockModelNotConfiguredError, get_foreman_model
+        from foreman.llm import BedrockModelNotConfiguredError, get_foreman_model
 
         with pytest.raises(BedrockModelNotConfiguredError):
             get_foreman_model(provider="bedrock")
@@ -64,14 +64,14 @@ class TestGetForemanModel:
     def test_custom_bedrock_model_env(self, monkeypatch):
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
         monkeypatch.setenv("FOREMAN_BEDROCK_MODEL", "arn:aws:bedrock:us-west-2::my-profile")
-        from foreman_core.llm import get_foreman_model
+        from foreman.llm import get_foreman_model
 
         assert get_foreman_model() == "arn:aws:bedrock:us-west-2::my-profile"
 
     def test_custom_anthropic_model_env(self, monkeypatch):
         monkeypatch.setenv("FOREMAN_PROVIDER", "anthropic")
         monkeypatch.setenv("FOREMAN_MODEL", "claude-opus-4-8")
-        from foreman_core.llm import get_foreman_model
+        from foreman.llm import get_foreman_model
 
         assert get_foreman_model() == "claude-opus-4-8"
 
@@ -111,7 +111,7 @@ class TestMakeAnthropicClient:
     def test_default_creates_anthropic_client(self, monkeypatch):
         """When no provider is specified and FOREMAN_PROVIDER is unset, use AsyncAnthropic."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -123,7 +123,7 @@ class TestMakeAnthropicClient:
     def test_bedrock_env_creates_bedrock_client(self, monkeypatch):
         """FOREMAN_PROVIDER=bedrock must produce an AsyncAnthropicBedrock client."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -135,7 +135,7 @@ class TestMakeAnthropicClient:
     def test_explicit_bedrock_provider_arg_overrides_env(self, monkeypatch):
         """Passing provider='bedrock' explicitly must use Bedrock even if env says anthropic."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "anthropic")
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -150,7 +150,7 @@ class TestMakeAnthropicClient:
         ever constructed — not fail later inside the first API call."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
         monkeypatch.delenv("FOREMAN_BEDROCK_MODEL", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -163,7 +163,7 @@ class TestMakeAnthropicClient:
         """When no model arg is passed, FOREMAN_BEDROCK_MODEL satisfies the check."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
         monkeypatch.setenv("FOREMAN_BEDROCK_MODEL", "arn:aws:bedrock:us-west-2::my-profile")
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -175,7 +175,7 @@ class TestMakeAnthropicClient:
         """Passing provider='anthropic' must use AsyncAnthropic even if env says bedrock."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -187,7 +187,7 @@ class TestMakeAnthropicClient:
     def test_bedrock_passes_region(self, monkeypatch):
         """The aws_region argument must be forwarded to AsyncAnthropicBedrock."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -199,7 +199,7 @@ class TestMakeAnthropicClient:
 
     def test_bedrock_region_explicit_arg_overrides_env(self, monkeypatch):
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -217,7 +217,7 @@ class TestMakeAnthropicClient:
         env_vars, which only ever reached spawned workers — not the foreman's
         own Bedrock client — so boto3 raised 'could not resolve credentials'.
         """
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -241,7 +241,7 @@ class TestMakeAnthropicClient:
 
     def test_bedrock_aws_env_bearer_token_forwarded(self, monkeypatch):
         """A bearer token in guild env_vars must be passed as api_key, not SigV4."""
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -258,7 +258,7 @@ class TestMakeAnthropicClient:
 
     def test_bedrock_aws_env_profile_forwarded(self, monkeypatch):
         """An AWS_PROFILE in guild env_vars must be passed as aws_profile."""
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -277,7 +277,7 @@ class TestMakeAnthropicClient:
 
     def test_api_key_forwarded_to_anthropic_client(self, monkeypatch):
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -288,7 +288,7 @@ class TestMakeAnthropicClient:
     def test_no_api_key_omitted_from_kwargs(self, monkeypatch):
         """When api_key is None, it must not be passed to AsyncAnthropic (lets SDK read env)."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -303,7 +303,7 @@ class TestMakeAnthropicClient:
         foreman process, so they must be forwarded explicitly.
         """
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -322,7 +322,7 @@ class TestMakeAnthropicClient:
     def test_anthropic_extra_env_auth_token_forwarded(self, monkeypatch):
         """ANTHROPIC_AUTH_TOKEN in guild env_vars must be passed as auth_token."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -335,7 +335,7 @@ class TestMakeAnthropicClient:
     def test_explicit_api_key_wins_over_extra_env(self, monkeypatch):
         """An explicit api_key arg takes precedence over extra_env ANTHROPIC_API_KEY."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -353,7 +353,7 @@ class TestMakeAnthropicClient:
         # Simulate a server environment where ANTHROPIC_API_KEY is set in the process env
         # while the guild config supplies ANTHROPIC_AUTH_TOKEN via extra_env.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-process-level")
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -367,7 +367,7 @@ class TestMakeAnthropicClient:
     def test_auth_token_wins_over_explicit_api_key_arg(self, monkeypatch):
         """ANTHROPIC_AUTH_TOKEN in extra_env wins even when api_key is passed explicitly."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         mock_mod = _make_mock_anthropic()
         monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
@@ -382,7 +382,7 @@ class TestMakeAnthropicClient:
     def test_missing_anthropic_package_raises(self, monkeypatch):
         """If anthropic is not installed, make_anthropic_client must raise ImportError."""
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         # Explicitly force the "no anthropic" path regardless of CI environment so the
         # test exercises the ImportError branch even when the package is installed.
@@ -410,7 +410,7 @@ class TestMakeAnthropicClientDynamicEnv:
         # Start with anthropic, import module, then switch to bedrock — the call must still
         # create AsyncAnthropicBedrock because we read os.environ dynamically.
         monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
         mock_mod = _make_mock_anthropic()
@@ -423,7 +423,7 @@ class TestMakeAnthropicClientDynamicEnv:
     def test_anthropic_env_set_after_bedrock_reload(self, monkeypatch):
         """Switching from bedrock back to anthropic must produce an AsyncAnthropic client."""
         monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
-        import foreman_core.llm as llm_mod
+        import foreman.llm as llm_mod
 
         monkeypatch.setenv("FOREMAN_PROVIDER", "anthropic")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")

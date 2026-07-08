@@ -1,237 +1,165 @@
-# Foreman as a Standalone Service
+# Foreman API Proxy
 
-**Status:** Phases 1–4 shipped. Phase 5 (remove embedded foreman) not yet done.
-**Original plan date:** 2026-05-15
+**Status:** Current architecture. The backend owns the Foreman loop; the optional
+standalone process is a thin LLM API proxy.
 
 ---
 
 ## Architecture
 
-The Foreman AI runs as a standalone process that connects to the backend over
-WebSocket and REST, with no direct database access — mirroring how workers
-operate.
+The embedded Foreman in `backend/foreman/` handles triggers, state snapshots,
+history, tool execution, broadcasts, child-context locking, and periodic polling.
+When a standalone proxy is connected, only the low-level LLM API call crosses the
+WebSocket boundary.
 
 ```
-browser
-  │  (chat / github webhook)
+browser / worker / webhook
+  │
   ▼
-backend ──── WS: foreman-trigger ────► standalone foreman process
-  │                                     (pioneer foreman)
-  │◄──────── WS: foreman-broadcast ───┘
-  │                                     ↑ REST: state reads + tool exec
-  └── REST: /guilds/{id}/foreman/…  ───┘
+backend embedded Foreman
+  │
+  ├─ direct Anthropic/Bedrock call when no proxy is connected
+  │
+  └─ WS: foreman-api-request ──► standalone proxy (`pioneer foreman`)
+      ◄─ WS: foreman-api-response ── provider call
+                                      Anthropic / Bedrock / OpenAI-compatible
 ```
 
-When a standalone foreman is connected, the backend sends `foreman-trigger`
-WS messages and the foreman executes the AI turn, calling back via REST.
-When no standalone foreman is connected, the backend falls back to the
-embedded foreman (`backend/foreman/`).
+The proxy does not read the database, persist history, execute tools, route
+triggers, or broadcast to frontend/worker sockets. That keeps all product logic
+in the backend and lets operators run only the provider call across a
+network/firewall boundary or against a local endpoint such as Ollama.
 
 Periodic task-health polling is scheduled entirely by the backend
-(`backend/foreman/runner.py`'s `_poll_loop`), which runs continuously for
-every guild regardless of who is connected. Each tick is dispatched through
-`_trigger_foreman()` (`backend/ws_handlers.py`), which routes it to whichever
-foreman — embedded or external — currently owns the guild. The standalone
-foreman has no poll timer of its own; it only reacts to `foreman-trigger`
-messages it receives over the WS connection.
+(`backend/foreman/runner.py`'s `_poll_loop`) for every guild. Poll ticks call
+`ws_handlers._trigger_foreman()`, which always dispatches into the embedded
+runner; the runner delegates API calls to a connected proxy only when needed.
 
 ---
 
 ## Packages and files
 
-### Standalone foreman — `foreman/`
+### Standalone proxy — `foreman/`
 
 ```
 foreman/
   pioneer_foreman/
     cli.py           – argument parser + entry point
-    config.py        – Config dataclass; reads TOML + env vars + CLI overrides
-    foreman.py       – Foreman class: WS lifecycle, trigger dispatch, per-task locks
-    runner.py        – Claude API loop (thin wrapper around foreman_core)
-    prompt.py        – system prompt / state preamble builders (parent + child)
-    tools.py         – tool definitions; all execution delegated to /exec_tool
-    http_client.py   – ForemanHTTPClient: typed methods for every backend endpoint
-    jwt_auth.py      – JWTTokenManager: mints short-lived HS256 tokens from backend_key
+    config.py        – provider/model/base-url config from TOML/env/CLI
+    foreman.py       – WebSocket lifecycle and request/response handling
+    runner.py        – execute one LLM API request and normalize the response
     logging_config.py
-  tests/
-    test_config.py
-    test_jwt_auth.py
-    test_tools.py
-    test_ws_integration.py
 ```
 
-### Shared logic — `backend/foreman_core/`
-
-Shared between the embedded foreman (`backend/foreman/`) and the standalone
-process. Neither should duplicate LLM-call logic or constants.
+### Backend Foreman — `backend/foreman/`
 
 ```
-backend/foreman_core/
-  llm.py           – get_foreman_client(), get_foreman_model(), stream helpers
-  prompt.py        – system prompt builders
-  tools_schema.py  – canonical FOREMAN_TOOLS list (Anthropic tool-use dicts)
-  message_utils.py – content-block helpers
-  constants.py     – shared literals
+backend/foreman/
+  runner.py          – Foreman conversation loop; uses proxy at the LLM boundary
+  proxy.py           – pending foreman-api-request registry
+  tools.py           – canonical backend-side tool execution
+  prompt.py          – system prompt and prompt builders
+  tools_schema.py    – Foreman tool JSON schema
+  message_utils.py   – Anthropic message/history helpers
+  llm.py             – provider/model selection and Anthropic/Bedrock client factory
 ```
 
-### Backend additions — `backend/routes/foreman.py`
-
-All new REST endpoints for the standalone foreman. Auth: JWT (preferred) or
-static worker/member token.
-
-**State reads:**
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/guilds/{id}/foreman/state` | Online workers, active tasks, guild metadata |
-| `GET` | `/guilds/{id}/foreman/history` | Raw ForemanTurn rows for a user |
-| `GET` | `/guilds/{id}/guild-key` | Ed25519 signing key for dnsid tool |
-| `GET` | `/guilds/{id}/foreman/env-vars` | Guild-configured env vars (API keys, etc.) |
-
-**State writes:**
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/guilds/{id}/foreman/history` | Persist one ForemanTurn |
-| `PATCH` | `/guilds/{id}/foreman/turns/{turn_id}/tokens` | Update token counts |
-| `POST` | `/guilds/{id}/tasks` | Create a task |
-| `PATCH` | `/guilds/{id}/tasks/{task_id}` | Update task fields |
-| `POST` | `/guilds/{id}/messages` | Persist a chat message |
-
-**Tool execution:**
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/guilds/{id}/foreman/exec_tool` | Execute one tool call via backend |
-
-All tool business logic (worker selection, DB writes, WS broadcasts) lives
-in `backend/foreman/tools.py:_exec_one_tool()`. The standalone foreman POSTs
-tool calls to `/exec_tool` rather than maintaining its own tool executor.
+Shared Foreman helpers live in the backend Foreman package with the runner that owns them.
 
 ---
 
-## WebSocket protocol additions
+## WebSocket protocol
 
-**Backend → foreman:**
-
-| Type | Payload | Purpose |
-|------|---------|---------|
-| `foreman-trigger` | `{ guildId, humanMessage, event, userId?, taskId?, extraContext? }` | Trigger one foreman AI turn |
-| `foreman-registered` | `{ agentId }` | Acknowledgement on join |
-| `foreman-evicted` | `{ reason }` | Another foreman registered; this one should reconnect later |
-
-**Foreman → backend:**
+**Backend → proxy:**
 
 | Type | Payload | Purpose |
 |------|---------|---------|
-| `join` | `{ agentType: "foreman", external: true }` | Register as external foreman |
-| `foreman-broadcast` | `{ guildId, payload: { type, ... } }` | Send any WS message to guild (task-assigned, chat, etc.) |
+| `foreman-api-request` | `{ requestId, guildId, model, maxTokens, system, messages, tools, toolChoice? }` | Execute one LLM API request |
+| `foreman-registered` | `{ guildId, agentId? }` | Acknowledge active proxy registration |
+| `foreman-evicted` | `{ guildId, reason }` | Another proxy registered; this one should reconnect later |
 
-The `foreman-broadcast` wrapper is how the standalone foreman dispatches
-`task-assigned`, `task-followup`, `task-finalize`, `terminal-output`, etc.
-to workers — the backend fans these out to the relevant WebSocket connections.
+**Proxy → backend:**
+
+| Type | Payload | Purpose |
+|------|---------|---------|
+| `join` | `{ agentType: "foreman", agentName: "Foreman API Proxy", external: true }` | Register as the active proxy |
+| `foreman-api-response` | `{ requestId, guildId, ok, response?, error?, apiRequestId?, provider?, model? }` | Return one normalized LLM response or error |
+| `foreman-disconnect` | `{ guildId? }` | Graceful shutdown notice |
+
+The `response` payload is Anthropic Messages shaped even when the proxy calls an
+OpenAI-compatible endpoint. This lets the backend keep one message/history/tool
+pipeline.
 
 ---
 
 ## Configuration
 
-**TOML file (`pioneer-foreman.toml`):**
+**TOML (`pioneer-foreman.toml`):**
 
 ```toml
-backend_url = "ws://backend:8000"   # derives HTTP URL automatically
-guild_id    = "abc123"
-backend_key = ""                    # matches PIONEER_FOREMAN_KEY on the backend
+backend_url = "ws://backend:8000"
+guild_id = "abc123"
+log_level = "INFO"
 
-[claude]
-model    = "claude-sonnet-4-6"      # direct Anthropic API
-provider = "anthropic"              # "anthropic" | "bedrock"
-# Bedrock:
-# provider       = "bedrock"
-# bedrock_model  = "arn:aws:bedrock:..."
-# aws_region     = "us-east-1"
+[llm]
+provider = "openai"                 # "anthropic" | "bedrock" | "openai"
+model = "llama3.1"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"                  # optional for local unauthenticated servers
 ```
 
-**Environment variables (override TOML):**
+`[claude]` is still accepted as a backward-compatible alias for `[llm]`, but new
+configs should use `[llm]`.
+
+**Environment variables:**
 
 | Variable | Purpose |
 |----------|---------|
-| `PIONEER_FOREMAN_KEY` | HMAC secret for JWT auth (required; same value on backend) |
-| `PIONEER_BACKEND_URL` or `BACKEND_WS_URL` | Backend WebSocket URL |
+| `PIONEER_BACKEND_URL` or `BACKEND_WS_URL` | Backend WebSocket base URL |
 | `PIONEER_GUILD_ID` or `GUILD_ID` | Guild to serve |
-| `ANTHROPIC_API_KEY` | API key for direct Anthropic |
-| `FOREMAN_MODEL` | Override Claude model |
-| `FOREMAN_PROVIDER` | `anthropic` or `bedrock` |
-| `FOREMAN_BEDROCK_MODEL` | Cross-region inference profile ARN (Bedrock only) |
-| `AWS_DEFAULT_REGION`, `AWS_BEARER_TOKEN_BEDROCK`, etc. | Bedrock credentials |
+| `FOREMAN_PROVIDER` | `anthropic`, `bedrock`, or `openai` |
+| `FOREMAN_MODEL` | Provider model ID |
+| `FOREMAN_BASE_URL` or `OPENAI_BASE_URL` | OpenAI-compatible base URL |
+| `FOREMAN_API_TIMEOUT` | API request timeout in seconds |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` | Anthropic credentials |
+| `OPENAI_API_KEY` | OpenAI-compatible endpoint key |
+| `FOREMAN_BEDROCK_MODEL`, `AWS_DEFAULT_REGION`, `AWS_PROFILE`, `AWS_*` | Bedrock config |
 | `LOG_LEVEL` | Log verbosity |
 
-**CLI flags** (override env vars):
+**CLI flags:**
 
-```
+```bash
 pioneer foreman [--config PATH] [--backend-url URL] [--guild-id ID]
-                [--model MODEL] [--backend-key SECRET] [--log-level LEVEL]
+                [--provider anthropic|bedrock|openai]
+                [--model MODEL] [--bedrock-model MODEL_OR_ARN]
+                [--base-url URL] [--api-key KEY] [--log-level LEVEL]
 ```
 
 ---
 
-## Key design decisions (vs. original plan)
+## Design decisions
 
-### Tool execution via `/exec_tool`
+### Backend-owned Foreman loop
 
-The original plan proposed individual REST endpoints per tool action and a
-full tool executor in the standalone foreman. What shipped instead: a single
-`POST /exec_tool` endpoint that calls `backend/foreman/tools.py:_exec_one_tool()`
-directly. All tool logic stays in one place in the backend; the standalone
-foreman is a thin dispatcher.
+`foreman-trigger` was removed. Triggers no longer cross the process boundary.
+`ws_handlers._trigger_foreman()` always spawns the embedded
+`backend.foreman.runner.run_foreman_ai()` path.
 
-### JWT auth
+### API proxy only
 
-The original plan floated a static token. What shipped: `backend_key` (a
-shared HMAC secret matching `PIONEER_FOREMAN_KEY`) generates short-lived
-HS256 JWTs automatically via `JWTTokenManager`. A static token fallback
-(`auth_token`) exists but JWT is the expected path.
+The standalone process no longer has a REST client, JWT helper, tool executor,
+message-history loader, task locks, or child-context supervisor. It executes one
+provider call per `foreman-api-request`.
 
-### Drop-if-busy (no message queue)
+### Provider normalization
 
-Triggers that arrive while a run is already in flight for the same key are
-dropped rather than buffered, matching the embedded foreman's policy
-(`backend/foreman/runner.py:run_foreman_ai`). The key is `(guild_id, user_id)`
-for parent (whole-guild) runs; per-task child contexts serialise against
-themselves independently via their own queue. There is no FIFO drain —
-dropped triggers are recovered by the backend's poll/re-trigger mechanism on
-the next tick, which keeps memory bounded and avoids stale snapshots piling
-up under load.
+Anthropic and Bedrock are called with the Anthropic SDK. OpenAI-compatible
+providers are called with `POST /chat/completions`; tools and messages are
+translated at the proxy boundary, and responses are normalized back to
+Anthropic content blocks for the backend.
 
-### Single-foreman enforcement
+### Single-proxy enforcement
 
-The backend tracks one active external foreman per guild. A second `join`
-evicts the first via `foreman-evicted`. The evicted process waits and
-reconnects.
-
-### Poll backoff
-
-Polling lives entirely on the backend, not the standalone foreman. Interval
-starts at `POLL_MIN_SECS` (default 60 s) and doubles each idle tick up to
-`POLL_MAX_SECS` (default ~4 hours, per-guild overridable). Any run that makes
-at least one tool call resets the interval to `POLL_MIN_SECS`. This applies
-uniformly whether the guild's foreman is embedded or an external standalone
-process — the backend's `_poll_loop` never suppresses itself based on who is
-connected.
-
----
-
-## What's not done yet (Phase 5)
-
-The embedded foreman (`backend/foreman/`) is still present and still the
-fallback when no external foreman is connected. Phase 5 — deleting the
-embedded foreman and making the standalone the only path — has not been done.
-
-Before Phase 5:
-- All webhook triggers (`backend/routes/webhooks.py`) currently call
-  `run_foreman_ai()` directly as the embedded-foreman fallback; these would
-  need to go through the `foreman-trigger` dispatch path exclusively.
-- `backend/foreman/` can be deleted once the embedded fallback is removed
-  from `ws_handlers.py` and `webhooks.py`.
-- `ForemanTurn` model and its table stay (history is still stored there).
-- `AGENTS.md` diagrams should be updated to reflect the three-process model
-  as the only path.
+The backend tracks one active external proxy per guild. A second `join` evicts
+the first via `foreman-evicted`. Any pending API requests owned by a disconnecting
+proxy socket fail immediately.

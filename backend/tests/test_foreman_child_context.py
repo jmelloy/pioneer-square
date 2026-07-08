@@ -204,6 +204,40 @@ async def test_trigger_foreman_child_routing(monkeypatch, event, expect_child):
         assert captured["kwargs"].get("task_id") == "t-xyz"
 
 
+async def test_trigger_foreman_runs_embedded_even_when_proxy_connected(monkeypatch):
+    import ws_handlers
+
+    class FakeWS:
+        pass
+
+    captured = {}
+
+    def fake_spawn(coro, name=None):
+        coro.close()
+        captured["name"] = name
+        return None
+
+    def capturing_run(guild_id, human_message, **kwargs):
+        captured["guild_id"] = guild_id
+        captured["human_message"] = human_message
+        captured["kwargs"] = kwargs
+
+        async def _coro():
+            return None
+
+        return _coro()
+
+    monkeypatch.setattr(ws_handlers, "foreman_connections", {"g1": FakeWS()})
+    monkeypatch.setattr(ws_handlers, "spawn", fake_spawn)
+    monkeypatch.setattr(ws_handlers, "run_foreman_ai", capturing_run)
+
+    await ws_handlers._trigger_foreman("g1", "chat", "hello", user_id="u-1")
+
+    assert captured["guild_id"] == "g1"
+    assert captured["human_message"] == "hello"
+    assert captured["kwargs"]["user_id"] == "u-1"
+
+
 # ── _emit_foreman_chat: frontend badge vs Discord routing ────────────────────
 
 

@@ -1,41 +1,25 @@
-"""WebSocket integration tests for the standalone foreman.
-
-Uses an in-process MockWebSocket to exercise Foreman._run_connection()
-without a real backend.  The LLM call (run_foreman_ai) is patched out.
-"""
+"""WebSocket integration tests for the standalone Foreman API proxy."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
-import pytest
 from pioneer_foreman.config import Config
 from pioneer_foreman.foreman import Foreman
-
-# ── helpers ───────────────────────────────────────────────────────────────
 
 
 def _make_config(**kwargs) -> Config:
     return Config(
         backend_url="ws://localhost:8000",
         guild_id="test123",
-        backend_key="s3cr3t",
         **kwargs,
     )
 
 
 class MockWebSocket:
-    """Lightweight WebSocket stand-in.
-
-    Yields predefined messages one by one; blocks on an asyncio.sleep once
-    the queue is drained.  The sleep is cancelled when the outer task that
-    called _run_connection() is cancelled or when the loop breaks naturally
-    (e.g. after receiving foreman-evicted).
-
-    sent — list of decoded dicts that were passed to send().
-    """
+    """Lightweight WebSocket stand-in for Foreman._run_connection()."""
 
     def __init__(self, messages: list[dict]) -> None:
         self.sent: list[dict] = []
@@ -49,13 +33,11 @@ class MockWebSocket:
         return self
 
     async def __anext__(self) -> str:
-        # Yield to the event loop so tasks created by previous messages run
         await asyncio.sleep(0)
         if self._idx < len(self._messages):
             msg = self._messages[self._idx]
             self._idx += 1
             return json.dumps(msg)
-        # No more messages — block until cancelled (simulates an idle connection)
         await asyncio.sleep(3600)
         raise StopAsyncIteration
 
@@ -66,33 +48,26 @@ class MockWebSocket:
         pass
 
 
-# ── WS registration ───────────────────────────────────────────────────────
-
-
 async def test_ws_sends_join_on_connect():
-    """Foreman sends join with agentType=foreman and external=True right after connecting."""
     ws = MockWebSocket([{"type": "foreman-evicted", "reason": "test"}])
 
     with patch("pioneer_foreman.foreman.websockets.connect", return_value=ws):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        await foreman._run_connection()
+        await Foreman(_make_config())._run_connection()
 
     join_msgs = [m for m in ws.sent if m.get("type") == "join"]
-    assert len(join_msgs) == 1, f"Expected exactly one join message, got: {ws.sent}"
+    assert len(join_msgs) == 1
     assert join_msgs[0]["agentType"] == "foreman"
+    assert join_msgs[0]["agentName"] == "Foreman API Proxy"
     assert join_msgs[0]["external"] is True
 
 
 async def test_ws_join_sent_before_first_message_processed():
-    """join is sent before the foreman starts consuming messages."""
     joined_before_registered = []
 
     class TrackingWS(MockWebSocket):
         async def __anext__(self) -> str:
             await asyncio.sleep(0)
             if self._idx == 0:
-                # Record whether join was sent before we deliver foreman-registered
                 joined_before_registered.append(any(m.get("type") == "join" for m in self.sent))
             return await super().__anext__()
 
@@ -104,52 +79,21 @@ async def test_ws_join_sent_before_first_message_processed():
     )
 
     with patch("pioneer_foreman.foreman.websockets.connect", return_value=ws):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        foreman._http.get_state.return_value = {"tasks": [], "workers": [], "guild": {}}
-        await foreman._run_connection()
+        await Foreman(_make_config())._run_connection()
 
-    assert joined_before_registered[0] is True, "join should be sent before first message"
-
-
-async def test_ws_foreman_registered_accepted():
-    """Foreman continues running after receiving foreman-registered (no error)."""
-    ws = MockWebSocket(
-        [
-            {"type": "foreman-registered", "agentId": "a-ext01"},
-            {"type": "foreman-evicted", "reason": "clean exit"},
-        ]
-    )
-
-    with patch("pioneer_foreman.foreman.websockets.connect", return_value=ws):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        foreman._http.get_state.return_value = {"tasks": [], "workers": [], "guild": {}}
-        evicted = await foreman._run_connection()
-
-    # Reaching here without exception means foreman-registered was handled
-    assert evicted is True
-
-
-# ── foreman-evicted ───────────────────────────────────────────────────────
+    assert joined_before_registered[0] is True
 
 
 async def test_ws_evicted_returns_true():
-    """_run_connection returns True when foreman-evicted is received."""
-    ws = MockWebSocket([{"type": "foreman-evicted", "reason": "another foreman connected"}])
+    ws = MockWebSocket([{"type": "foreman-evicted", "reason": "another proxy connected"}])
 
     with patch("pioneer_foreman.foreman.websockets.connect", return_value=ws):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        foreman._http.get_state.return_value = {"tasks": [], "workers": [], "guild": {}}
-        evicted = await foreman._run_connection()
+        evicted = await Foreman(_make_config())._run_connection()
 
     assert evicted is True
 
 
 async def test_ws_clean_disconnect_returns_false():
-    """_run_connection returns False when the WS closes without eviction."""
-
     class ClosingWS(MockWebSocket):
         async def __anext__(self) -> str:
             raise StopAsyncIteration
@@ -157,253 +101,85 @@ async def test_ws_clean_disconnect_returns_false():
     ws = ClosingWS([])
 
     with patch("pioneer_foreman.foreman.websockets.connect", return_value=ws):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        foreman._http.get_state.return_value = {"tasks": [], "workers": [], "guild": {}}
-        evicted = await foreman._run_connection()
+        evicted = await Foreman(_make_config())._run_connection()
 
     assert evicted is False
 
 
-# ── foreman-trigger dispatch ──────────────────────────────────────────────
-
-
-async def test_ws_trigger_dispatches_run_foreman_ai():
-    """foreman-trigger causes run_foreman_ai to be called with the right args."""
-    trigger = {
-        "type": "foreman-trigger",
+async def test_ws_api_request_sends_response():
+    request = {
+        "type": "foreman-api-request",
+        "requestId": "req-1",
         "guildId": "test123",
-        "humanMessage": "check tasks",
-        "userId": "u-abc",
-        "event": "task-complete",
+        "model": "backend-model",
+        "maxTokens": 1024,
+        "system": [],
+        "messages": [],
+        "tools": [],
     }
-    ws = MockWebSocket([trigger, {"type": "foreman-evicted", "reason": "done"}])
-
-    calls: list[dict] = []
-
-    async def fake_run_foreman_ai(guild_id, human_message, *, http, ws_send, config, **kwargs):
-        calls.append({"guild_id": guild_id, "human_message": human_message, **kwargs})
-        return False
-
-    with (
-        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
-        patch("pioneer_foreman.foreman.run_foreman_ai", fake_run_foreman_ai),
-    ):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        await foreman._run_connection()
-        # Drain any pending tasks
-        await asyncio.sleep(0.05)
-
-    assert len(calls) == 1, f"Expected one run_foreman_ai call, got {calls}"
-    assert calls[0]["guild_id"] == "test123"
-    assert calls[0]["human_message"] == "check tasks"
-    assert calls[0].get("user_id") == "u-abc"
-
-
-async def test_ws_trigger_with_extra_context():
-    """extraContext is forwarded to run_foreman_ai."""
-    trigger = {
-        "type": "foreman-trigger",
-        "guildId": "test123",
-        "humanMessage": "review PR",
-        "extraContext": "PR #42 was opened",
-        "event": "pr-opened",
-    }
-    ws = MockWebSocket([trigger, {"type": "foreman-evicted", "reason": "done"}])
-
-    calls: list[dict] = []
-
-    async def fake_run(*args, extra_context="", **kwargs):
-        calls.append(extra_context)
-        return False
-
-    with (
-        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
-        patch("pioneer_foreman.foreman.run_foreman_ai", fake_run),
-    ):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        await foreman._run_connection()
-        await asyncio.sleep(0.05)
-
-    assert calls == ["PR #42 was opened"]
-
-
-async def test_ws_trigger_malformed_ignored():
-    """A foreman-trigger missing humanMessage is silently dropped."""
-    bad_trigger = {
-        "type": "foreman-trigger",
-        "guildId": "test123",
-        # humanMessage missing
-    }
-    ws = MockWebSocket([bad_trigger, {"type": "foreman-evicted", "reason": "done"}])
-
-    calls: list = []
-
-    async def fake_run(*args, **kwargs):
-        calls.append(1)
-        return False
-
-    with (
-        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
-        patch("pioneer_foreman.foreman.run_foreman_ai", fake_run),
-    ):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        await foreman._run_connection()
-        await asyncio.sleep(0.05)
-
-    assert calls == [], "Malformed trigger should not spawn a run"
-
-
-async def test_ws_second_trigger_dropped_when_in_flight():
-    """If a run is already in-flight for the same key, a second trigger is dropped."""
-    triggers = [
-        {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "first"},
-        {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "second"},
-        {"type": "foreman-evicted", "reason": "done"},
-    ]
-    ws = MockWebSocket(triggers)
-
-    call_count = 0
-    gate = asyncio.Event()
-
-    async def blocking_run(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        await gate.wait()
-        return True
-
-    with (
-        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
-        patch("pioneer_foreman.foreman.run_foreman_ai", blocking_run),
-    ):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        run_task = asyncio.create_task(foreman._run_connection())
-        # Let the first trigger start and the second arrive while first is blocking
-        await asyncio.sleep(0.05)
-        gate.set()
-        await run_task
-        await asyncio.sleep(0.05)
-
-    assert call_count == 1, f"Expected 1 run_foreman_ai call (second dropped), got {call_count}"
-
-
-# ── in-flight key reset ────────────────────────────────────────────────────
-
-
-async def test_active_run_key_cleared_after_run():
-    """The (guild, user) key is removed from _active_runs once a foreman run completes."""
-    ws = MockWebSocket(
-        [
-            {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "do stuff"},
-            {"type": "foreman-evicted", "reason": "done"},
-        ]
-    )
-
-    async def fake_run(*args, **kwargs):
-        return False
-
-    foreman = Foreman(_make_config())
-    foreman._http = AsyncMock()
-
-    with (
-        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
-        patch("pioneer_foreman.foreman.run_foreman_ai", fake_run),
-    ):
-        await foreman._run_connection()
-        await asyncio.sleep(0.05)  # let the trigger task finish
-
-    assert foreman._active_runs == set()
-
-
-# ── drop-if-busy ───────────────────────────────────────────────────────────
-
-
-async def test_ws_periodic_check_dropped_when_busy():
-    """Periodic-check triggers are dropped (not run) while a run is in-flight for the same key."""
-    periodic_msg = (
-        "[periodic-check] Automated status poll — 1 non-terminal task(s): t-abc (working). "
-        "Check whether any are stalled."
-    )
-    triggers = [
-        {"type": "foreman-trigger", "guildId": "test123", "humanMessage": "real task"},
-        {"type": "foreman-trigger", "guildId": "test123", "humanMessage": periodic_msg},
-        {"type": "foreman-evicted", "reason": "done"},
-    ]
-    ws = MockWebSocket(triggers)
-
-    processed: list[str] = []
-    gate = asyncio.Event()
-
-    async def tracking_run(guild_id, human_message, *, http, ws_send, config, **kwargs):
-        if human_message == "real task":
-            await gate.wait()
-        processed.append(human_message)
-        return False
-
-    with (
-        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
-        patch("pioneer_foreman.foreman.run_foreman_ai", tracking_run),
-    ):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        run_task = asyncio.create_task(foreman._run_connection())
-        await asyncio.sleep(0.05)
-        gate.set()
-        await run_task
-        await asyncio.sleep(0.05)
-
-    assert processed == ["real task"], f"Periodic-check should be dropped; got {processed}"
-
-
-async def test_ws_triggers_for_different_users_run_concurrently():
-    """Triggers keyed by different users don't block each other (only same-key runs drop)."""
-    triggers = [
-        {
-            "type": "foreman-trigger",
-            "guildId": "test123",
-            "humanMessage": "from u1",
-            "userId": "u1",
+    ws = MockWebSocket([request, {"type": "foreman-evicted", "reason": "done"}])
+    result = {
+        "response": {
+            "id": "msg-1",
+            "type": "message",
+            "role": "assistant",
+            "model": "proxy-model",
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
         },
-        {
-            "type": "foreman-trigger",
-            "guildId": "test123",
-            "humanMessage": "from u2",
-            "userId": "u2",
-        },
-        {"type": "foreman-evicted", "reason": "done"},
-    ]
-    ws = MockWebSocket(triggers)
+        "apiRequestId": "api-1",
+        "provider": "anthropic",
+        "model": "proxy-model",
+    }
 
-    call_count = 0
-    # One "started" gate per user, so we can confirm both runs are genuinely
-    # in flight simultaneously before releasing them — waiting on a single
-    # shared gate (or a fixed sleep) can't distinguish "both started" from
-    # "one started, one still pending".
-    started_gates = {"u1": asyncio.Event(), "u2": asyncio.Event()}
-    release_gate = asyncio.Event()
-
-    async def blocking_run(guild_id, human_message, *, user_id, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        started_gates[user_id].set()
-        await release_gate.wait()
-        return False
+    async def fake_run_api_request(data, config):
+        assert data["requestId"] == "req-1"
+        return result
 
     with (
         patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
-        patch("pioneer_foreman.foreman.run_foreman_ai", blocking_run),
+        patch("pioneer_foreman.foreman.run_api_request", fake_run_api_request),
     ):
-        foreman = Foreman(_make_config())
-        foreman._http = AsyncMock()
-        run_task = asyncio.create_task(foreman._run_connection())
-        await asyncio.wait_for(started_gates["u1"].wait(), timeout=1)
-        await asyncio.wait_for(started_gates["u2"].wait(), timeout=1)
-        release_gate.set()
-        await run_task
-        await asyncio.sleep(0.05)
+        await Foreman(_make_config())._run_connection()
+        await asyncio.sleep(0)
 
-    assert call_count == 2, f"Expected both users' runs to proceed concurrently, got {call_count}"
+    responses = [m for m in ws.sent if m.get("type") == "foreman-api-response"]
+    assert responses == [
+        {
+            "type": "foreman-api-response",
+            "requestId": "req-1",
+            "guildId": "test123",
+            "ok": True,
+            **result,
+        }
+    ]
+
+
+async def test_ws_api_request_error_sends_error_response():
+    request = {
+        "type": "foreman-api-request",
+        "requestId": "req-err",
+        "guildId": "test123",
+        "model": "backend-model",
+        "system": [],
+        "messages": [],
+        "tools": [],
+    }
+    ws = MockWebSocket([request, {"type": "foreman-evicted", "reason": "done"}])
+
+    async def fake_run_api_request(data, config):
+        raise RuntimeError("provider failed")
+
+    with (
+        patch("pioneer_foreman.foreman.websockets.connect", return_value=ws),
+        patch("pioneer_foreman.foreman.run_api_request", fake_run_api_request),
+    ):
+        await Foreman(_make_config())._run_connection()
+        await asyncio.sleep(0)
+
+    responses = [m for m in ws.sent if m.get("type") == "foreman-api-response"]
+    assert len(responses) == 1
+    assert responses[0]["requestId"] == "req-err"
+    assert responses[0]["ok"] is False
+    assert "provider failed" in responses[0]["error"]

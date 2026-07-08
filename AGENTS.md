@@ -62,32 +62,40 @@ pioneer worker --config worker/pioneer-worker.toml --log-level DEBUG   # verbose
 ```
 
 ### Standalone Foreman (opt-in)
-The embedded foreman (inside the backend process) is the default. A standalone foreman process
-can be run alongside the backend; it registers as an external foreman and takes over trigger
-handling for a specific guild, allowing independent scaling and model changes without restarting
-the backend.
+The embedded foreman (inside the backend process) owns trigger handling, state, history,
+tool execution, and polling. A standalone foreman process can be run alongside the backend as
+a thin LLM API proxy: it registers for a specific guild, receives `foreman-api-request`
+messages, calls the configured provider (Anthropic, Bedrock, or an OpenAI-compatible endpoint
+such as Ollama), and returns `foreman-api-response`.
 
 ```bash
-# Requires backend + ANTHROPIC_API_KEY
 cp foreman/pioneer-foreman.toml.example foreman/pioneer-foreman.toml
-# Edit: backend_url, guild_id, backend_key (matches PIONEER_FOREMAN_KEY on backend)
+# Edit: backend_url, guild_id, [llm] provider/model/base_url/api_key
 pioneer foreman --config foreman/pioneer-foreman.toml
 pioneer foreman --config foreman/pioneer-foreman.toml --log-level DEBUG   # verbose
 
 # Or via environment variables (no config file needed):
 PIONEER_BACKEND_URL=ws://localhost:8000 \
 PIONEER_GUILD_ID=<your-6-char-guild-id> \
-PIONEER_FOREMAN_KEY=<shared-secret> \
+FOREMAN_PROVIDER=anthropic \
 ANTHROPIC_API_KEY=<key> \
+pioneer foreman
+
+# OpenAI-compatible local endpoint example:
+PIONEER_BACKEND_URL=ws://localhost:8000 \
+PIONEER_GUILD_ID=<your-6-char-guild-id> \
+FOREMAN_PROVIDER=openai \
+FOREMAN_MODEL=llama3.1 \
+FOREMAN_BASE_URL=http://localhost:11434/v1 \
 pioneer foreman
 
 # Or via docker compose (profile "foreman"):
 GUILD_ID=abc123 docker compose --profile foreman up --build foreman
 ```
 
-When an external foreman is connected, the backend routes `foreman-trigger` events to it instead
-of running the embedded loop. If the external foreman disconnects, the backend falls back to the
-embedded foreman automatically.
+When an external proxy is connected, the backend still runs the embedded Foreman loop and
+delegates only LLM API calls to the proxy. If the proxy disconnects, subsequent turns use the
+backend's direct provider configuration.
 
 ### Quickstart
 - `docker compose up --build`: run the backend and SPA quickstart.
@@ -202,11 +210,11 @@ foreman is triggered by:
 3. `task-followup-done` WS messages
 4. `needs-input` worker escalations
 
-**Phase 2 — standalone foreman**: `foreman/pioneer_foreman/` (run via `pioneer foreman`) is an
-opt-in external foreman process. It connects to the backend WS with `agentType="foreman"` and
-`external=true`; the backend routes triggers to it and the embedded loop becomes a fallback. See
-the `foreman` build target in the root `Dockerfile` and the `foreman` service in
-`docker-compose.yml`.
+**Standalone Foreman API proxy**: `foreman/pioneer_foreman/` (run via `pioneer foreman`) is an
+opt-in external LLM API proxy. It connects to the backend WS with `agentType="foreman"` and
+`external=true`; the backend still runs the embedded Foreman loop and sends only
+`foreman-api-request` calls to the proxy. See the `foreman` build target in the root
+`Dockerfile` and the `foreman` service in `docker-compose.yml`.
 
 ### WebSocket message protocol
 
@@ -225,8 +233,8 @@ All real-time communication is JSON over `ws://localhost:8000/ws/{guild_id}`. Ke
 | `task-followup-done` | worker→backend | Follow-up finished |
 | `task-finalize` | backend→worker | No more follow-ups needed |
 | `needs-input` | worker→backend | Claude stopped and needs human input |
-| `foreman-trigger` | backend→foreman | Trigger an external foreman AI run |
-| `foreman-broadcast` | foreman→backend | External foreman relays a broadcast to frontend clients |
+| `foreman-api-request` | backend→foreman | Ask external proxy to execute one LLM API request |
+| `foreman-api-response` | foreman→backend | Return one proxied LLM API response or error |
 | `foreman-registered` | backend→foreman | Confirms external foreman registration |
 | `foreman-evicted` | backend→foreman | Another foreman connected; this one should exit |
 | `offer`/`answer`/`ice-candidate` | any→backend | WebRTC signaling (forwarded to all peers) |

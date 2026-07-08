@@ -19,6 +19,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
+from foreman.runner import run_foreman_ai
 from lock_service import LockService
 from models import GithubToken, Guild, GuildMember, Task, TaskLog, live_tasks_filter
 from pydantic import BaseModel
@@ -27,8 +28,6 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
 from ws_types import TaskCancelMsg, TaskFinalizeMsg, TaskRedirectMsg, TaskUpdateMsg
-
-from foreman import run_foreman_ai
 
 router = APIRouter()
 

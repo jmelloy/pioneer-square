@@ -1,13 +1,9 @@
-"""Standalone Foreman process: WebSocket connection, trigger dispatch.
+"""Standalone Foreman proxy WebSocket lifecycle.
 
-Connects to the backend over WebSocket, registers as the external foreman for
-one guild, and dispatches each incoming ``foreman-trigger`` 1:1 to
-``run_foreman_ai`` (task-scoped triggers go through a per-task lock instead of
-the whole-guild queue; see docs/foreman-per-task-context.md). Any broadcast
-the run produces is relayed back to the backend as a ``foreman-broadcast``
-message for it to fan out. This process holds no state of its own beyond what
-is needed to serialize concurrent runs — see docs/foreman-split-plan.md for
-the full protocol.
+This process does not run the Foreman conversation loop. The backend owns
+triggers, state, history, tools, and locking. The proxy holds one WebSocket
+connection and answers ``foreman-api-request`` messages by executing one LLM
+API call against the operator-selected provider.
 """
 
 from __future__ import annotations
@@ -15,13 +11,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 import websockets
 
-from .http_client import ForemanHTTPClient
-from .runner import run_foreman_ai
+from .runner import close_clients, run_api_request
 
 if TYPE_CHECKING:
     from .config import Config
@@ -30,76 +24,14 @@ logger = logging.getLogger(__name__)
 
 
 class Foreman:
-    """Manages the standalone foreman lifecycle for one guild."""
+    """Manages the standalone Foreman API proxy lifecycle for one guild."""
 
     def __init__(self, config: Config):
         self._config = config
-        # REST client back to the backend — the only storage this process can reach;
-        # it never holds its own copy of guild/task state.
-        self._http: ForemanHTTPClient | None = None
-        # Keys with a parent (whole-guild) run currently in flight. A trigger for
-        # a key that's already running is dropped rather than buffered; the backend
-        # poll/re-trigger mechanism recovers it on the next tick. See
-        # backend/foreman/runner.py:run_foreman_ai for the matching embedded policy.
-        self._active_runs: set[tuple[str, str | None]] = set()
-        # Per-task locks serialising per-task child-context runs (task_id -> Lock).
-        # Mirrors backend/foreman/runner.py's _guild_locks: if a task's lock is
-        # already held, the incoming trigger is dropped rather than queued or
-        # buffered — the next lifecycle event or poll tick will retry.  See
-        # docs/foreman-per-task-context.md.
-        self._task_locks: dict[str, asyncio.Lock] = {}
-        # Per-connection broadcast closure; set in _run_connection, cleared on exit.
-        self._ws_send: Callable[[dict], Awaitable[None]] | None = None
-
-    # ── per-task child contexts ────────────────────────────────────────────
-
-    async def _run_task_trigger(
-        self,
-        guild_id: str,
-        human_message: str,
-        extra_context: str,
-        user_id: str | None,
-        task_id: str,
-    ) -> None:
-        """Run one child-scoped foreman turn for ``task_id``, serialised by a
-        per-task lock. Drops the trigger if a run for this task is already
-        in flight instead of queuing it (see docs/foreman-per-task-context.md).
-        """
-        lock = self._task_locks.setdefault(task_id, asyncio.Lock())
-        if lock.locked():
-            logger.info(
-                "guild=%s task=%s: dropping concurrent invocation (already running)",
-                guild_id,
-                task_id,
-            )
-            return
-        await lock.acquire()
-        try:
-            await run_foreman_ai(
-                guild_id,
-                human_message,
-                extra_context=extra_context,
-                user_id=user_id,
-                task_id=task_id,
-                http=self._http,
-                ws_send=self._ws_send,
-                config=self._config,
-                child=True,
-            )
-        except Exception:
-            logger.exception("guild=%s task=%s: unhandled error in child run", guild_id, task_id)
-        finally:
-            lock.release()
-            self._task_locks.pop(task_id, None)
+        self._inflight: set[asyncio.Task[None]] = set()
 
     async def run(self) -> None:
-        """Connect to the backend and handle triggers until stopped."""
-        self._http = ForemanHTTPClient(
-            self._config.http_url,
-            self._config.guild_id,
-            backend_key=self._config.backend_key,
-            auth_token=self._config.auth_token,
-        )
+        """Connect to the backend and proxy API requests until stopped."""
         retry_delay = 5
         try:
             while True:
@@ -132,7 +64,7 @@ class Foreman:
                 except websockets.exceptions.InvalidHandshake as exc:
                     logger.error(
                         "guild=%s backend rejected WS handshake at %s — "
-                        "check guild_id and backend_key. Retrying in %ds. (%s)",
+                        "check guild_id. Retrying in %ds. (%s)",
                         self._config.guild_id,
                         self._config.ws_url,
                         retry_delay,
@@ -151,139 +83,66 @@ class Foreman:
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, 60)
         finally:
-            if self._http:
-                await self._http.close()
+            await close_clients()
 
     async def _run_connection(self) -> bool:
         """Connect once; return True if evicted, False on clean disconnect."""
         ws_url = self._config.ws_url
         logger.info("Connecting to backend at %s", ws_url)
         evicted = False
+        send_lock = asyncio.Lock()
 
         async with websockets.connect(ws_url) as ws:
             logger.info("WebSocket connected to %s", ws_url)
 
-            async def _ws_send(message: dict) -> None:
-                # Wraps `message` in a foreman-broadcast envelope for the backend to fan
-                # out to the guild's connections — this process never talks to end-user
-                # clients directly, only to the backend over this one WS connection.
+            async def _send(message: dict) -> None:
+                async with send_lock:
+                    await ws.send(json.dumps(message))
+
+            async def _handle_api_request(data: dict) -> None:
+                request_id = data.get("requestId")
+                if not request_id:
+                    logger.warning("Ignoring malformed foreman-api-request: %s", data)
+                    return
                 try:
-                    await ws.send(
-                        json.dumps(
-                            {
-                                "type": "foreman-broadcast",
-                                "guildId": self._config.guild_id,
-                                "payload": message,
-                            }
-                        )
+                    result = await run_api_request(data, self._config)
+                    await _send(
+                        {
+                            "type": "foreman-api-response",
+                            "requestId": request_id,
+                            "guildId": self._config.guild_id,
+                            "ok": True,
+                            **result,
+                        }
                     )
                 except Exception as exc:
-                    logger.warning("_ws_send failed: %s", exc)
-
-            # Expose the broadcast closure to child contexts spawned this connection.
-            self._ws_send = _ws_send
-
-            async def _run_foreman(
-                guild_id: str,
-                human_message: str,
-                *,
-                extra_context: str = "",
-                user_id: str | None = None,
-                task_id: str | None = None,
-                task_name: str = "foreman.run",
-                active_run_key: tuple[str, str | None] | None = None,
-            ) -> None:
-                """Run one parent (whole-guild) foreman turn.
-
-                Drop-if-busy: if a run is already in flight for this (guild, user) key,
-                log and drop the trigger rather than buffering it — the backend's
-                poll/re-trigger mechanism recovers it on the next tick. Matches
-                backend/foreman/runner.py:run_foreman_ai (the embedded foreman's policy).
-
-                `active_run_key` overrides the default (guild_id, user_id) key used for
-                `_active_runs` bookkeeping — used by the poll loop so its own in-flight
-                check doesn't collide with a real user trigger whose `user_id` is None.
-                It has no bearing on `user_id`, which is passed to run_foreman_ai as-is.
-                """
-                key = active_run_key if active_run_key is not None else (guild_id, user_id)
-                if key in self._active_runs:
-                    if "[periodic-check]" in human_message:
-                        logger.debug(
-                            "guild=%s %s: dropping periodic-check — run already in-flight",
-                            guild_id,
-                            task_name,
-                        )
-                    else:
-                        logger.info(
-                            "guild=%s %s: dropped — run already in-flight",
-                            guild_id,
-                            task_name,
-                        )
-                    return
-                self._active_runs.add(key)
-                try:
-                    await run_foreman_ai(
-                        guild_id,
-                        human_message,
-                        extra_context=extra_context,
-                        user_id=user_id,
-                        task_id=task_id,
-                        http=self._http,
-                        ws_send=_ws_send,
-                        config=self._config,
+                    logger.exception("foreman-api-request failed requestId=%s", request_id)
+                    await _send(
+                        {
+                            "type": "foreman-api-response",
+                            "requestId": request_id,
+                            "guildId": self._config.guild_id,
+                            "ok": False,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
                     )
-                except Exception:
-                    # Must stay inside this try/finally: if a future refactor moves this
-                    # `except` outside, an unhandled error would skip the `finally` below
-                    # and leak `key` in `_active_runs`, permanently wedging that key.
-                    logger.exception("guild=%s %s: unhandled error", guild_id, task_name)
-                finally:
-                    self._active_runs.discard(key)
 
-            async def _handle_trigger(data: dict) -> None:
-                guild_id = data.get("guildId", "")
-                human_message = data.get("humanMessage", "")
-                user_id = data.get("userId")
-                extra_context = data.get("extraContext", "")
-                trigger_task_id = data.get("taskId")
-                if not guild_id or not human_message:
-                    logger.warning("Ignoring malformed foreman-trigger: %s", data)
-                    return
-
-                # Task-scoped triggers run in an isolated, per-task child context
-                # serialised by a per-task lock rather than the whole-guild queue
-                # below. See docs/foreman-per-task-context.md.
-                if self._config.child_contexts and trigger_task_id:
-                    asyncio.create_task(
-                        self._run_task_trigger(
-                            guild_id, human_message, extra_context, user_id, trigger_task_id
-                        ),
-                        name=f"foreman.task:{trigger_task_id}",
-                    )
-                    return
-
-                asyncio.create_task(
-                    _run_foreman(
-                        guild_id,
-                        human_message,
-                        extra_context=extra_context,
-                        user_id=user_id,
-                        task_id=trigger_task_id,
-                        task_name=f"foreman.trigger:{guild_id}:{data.get('event', '?')}",
-                    ),
-                    name=f"foreman.trigger:{guild_id}:{data.get('event', '?')}",
+            def _spawn_api_request(data: dict) -> None:
+                task = asyncio.create_task(
+                    _handle_api_request(data),
+                    name=f"foreman-api-request:{data.get('requestId', '?')}",
                 )
+                self._inflight.add(task)
+                task.add_done_callback(self._inflight.discard)
 
-            # Register as external foreman
             logger.debug("guild=%s sending join message", self._config.guild_id)
-            await ws.send(
-                json.dumps(
-                    {
-                        "type": "join",
-                        "agentType": "foreman",
-                        "external": True,
-                    }
-                )
+            await _send(
+                {
+                    "type": "join",
+                    "agentType": "foreman",
+                    "agentName": "Foreman API Proxy",
+                    "external": True,
+                }
             )
 
             try:
@@ -297,23 +156,12 @@ class Foreman:
                     msg_type = msg.get("type")
                     if msg_type == "foreman-registered":
                         logger.info(
-                            "Registered as external foreman: agentId=%s guild=%s",
+                            "Registered as external Foreman API proxy: agentId=%s guild=%s",
                             msg.get("agentId"),
                             self._config.guild_id,
                         )
-                    elif msg_type == "foreman-trigger":
-                        logger.debug(
-                            "Received foreman-trigger: event=%s",
-                            msg.get("event"),
-                        )
-                        try:
-                            await _handle_trigger(msg)
-                        except Exception:
-                            logger.exception(
-                                "guild=%s _handle_trigger raised — event=%s",
-                                self._config.guild_id,
-                                msg.get("event"),
-                            )
+                    elif msg_type == "foreman-api-request":
+                        _spawn_api_request(msg)
                     elif msg_type == "foreman-evicted":
                         logger.warning("Evicted: %s", msg.get("reason"))
                         evicted = True
@@ -326,6 +174,10 @@ class Foreman:
                     evicted,
                 )
             finally:
-                self._ws_send = None
+                for task in list(self._inflight):
+                    task.cancel()
+                if self._inflight:
+                    await asyncio.gather(*self._inflight, return_exceptions=True)
+                self._inflight.clear()
 
         return evicted

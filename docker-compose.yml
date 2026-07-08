@@ -92,25 +92,26 @@ services:
     command: pioneer foreman
     profiles: [ "foreman" ]
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pioneer}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_USER:-pioneer}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # WebSocket base URL of the backend service (no trailing slash)
       BACKEND_WS_URL: ${BACKEND_WS_URL:-ws://backend:8000}
       # 6-char guild ID this foreman instance manages (required)
       GUILD_ID: ${GUILD_ID:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      # Model and provider — set FOREMAN_PROVIDER=bedrock to use Amazon Bedrock.
+      # Model and provider — set FOREMAN_PROVIDER=openai for Ollama/vLLM/LM Studio,
+      # or FOREMAN_PROVIDER=bedrock to use Amazon Bedrock.
       # Direct Anthropic API: FOREMAN_MODEL is a plain model ID (e.g. claude-sonnet-4-6).
+      # OpenAI-compatible: FOREMAN_BASE_URL points at /v1 (e.g. http://host.docker.internal:11434/v1).
       # Amazon Bedrock: FOREMAN_BEDROCK_MODEL must be a cross-region inference profile
       # ARN scoped to *your* AWS account, e.g.:
       #   arn:aws:bedrock:us-east-1:<your-account-id>:inference-profile/us.anthropic.claude-sonnet-4-6
       # There is no safe default (profiles are account-scoped) — it's required when
       # FOREMAN_PROVIDER=bedrock; otherwise FOREMAN_MODEL is used.
       FOREMAN_MODEL: ${FOREMAN_MODEL:-claude-sonnet-4-6}
+      FOREMAN_BASE_URL: ${FOREMAN_BASE_URL:-}
       FOREMAN_BEDROCK_MODEL: ${FOREMAN_BEDROCK_MODEL:-}
       FOREMAN_PROVIDER: ${FOREMAN_PROVIDER:-anthropic}
-      # Shared HMAC secret for JWT auth between the foreman and backend.
-      PIONEER_FOREMAN_KEY: ${PIONEER_FOREMAN_KEY:-}
       # AWS credentials for Bedrock (ignored when FOREMAN_PROVIDER=anthropic).
       # Supply either a bearer token OR access key + secret (+ optional session token).
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}

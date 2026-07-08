@@ -5,28 +5,28 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any
 
 import discord_notifier
 from auth_deps import get_guild_pk
 from database import AsyncSessionLocal, get_db
 from events import broadcast_msg
-from foreman.prompt import (
-    build_child_state_preamble,
-    build_child_system_blocks,
-    build_state_preamble,
-    build_system_blocks,
-    build_system_prompt,
-)
-from foreman.tools import exec_tools
-from foreman_core.constants import (
+from foreman.constants import (
     _24H_SECS,
     _HUMAN_TURN_WINDOW,
     _TERMINAL_STATES,
     MAX_FOREMAN_ROUNDS,
 )
-from foreman_core.llm import HAS_ANTHROPIC, get_foreman_model, make_anthropic_client
-from foreman_core.message_utils import (
+from foreman.llm import (
+    HAS_ANTHROPIC,
+    BedrockModelNotConfiguredError,
+    get_foreman_model,
+    make_anthropic_client,
+)
+from foreman.message_utils import (
     _inject_state_preamble,
     _json_default,
     _serialize_content,
@@ -36,7 +36,16 @@ from foreman_core.message_utils import (
     strip_orphaned_tool_results,
     truncate_tool_result,
 )
-from foreman_core.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
+from foreman.prompt import (
+    build_child_state_preamble,
+    build_child_system_blocks,
+    build_state_preamble,
+    build_system_blocks,
+    build_system_prompt,
+)
+from foreman.proxy import call_foreman_api_proxy, has_foreman_proxy
+from foreman.tools import exec_tools
+from foreman.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
 from models import (
     Agent,
     ApiRequestLog,
@@ -101,6 +110,103 @@ def _get_anthropic_client():
     return _anthropic_client
 
 
+@dataclass
+class _LLMCallResult:
+    response: Any
+    response_dict: dict[str, Any]
+    request_id: str | None
+    provider: str
+    model: str
+
+
+class _ProxyContentBlock(SimpleNamespace):
+    def __init__(self, raw: dict[str, Any]):
+        super().__init__(**raw)
+        self._raw = raw
+
+    def model_dump(self) -> dict[str, Any]:
+        return self._raw
+
+
+class _ProxyResponse(SimpleNamespace):
+    """Anthropic-SDK-shaped wrapper around a proxy-normalised response dict."""
+
+    def __init__(self, raw: dict[str, Any]):
+        content = [_ProxyContentBlock(block) for block in raw.get("content") or []]
+        usage = SimpleNamespace(**(raw.get("usage") or {}))
+        super().__init__(
+            id=raw.get("id"),
+            type=raw.get("type", "message"),
+            role=raw.get("role", "assistant"),
+            model=raw.get("model"),
+            content=content,
+            stop_reason=raw.get("stop_reason"),
+            stop_sequence=raw.get("stop_sequence"),
+            usage=usage,
+            _raw=raw,
+        )
+
+    def model_dump(self) -> dict[str, Any]:
+        return self._raw
+
+
+async def _call_llm(
+    guild_id: str,
+    *,
+    client,
+    provider: str,
+    model: str,
+    max_tokens: int,
+    system_blocks: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    tool_choice: dict[str, Any] | None = None,
+) -> _LLMCallResult:
+    """Execute one LLM request, either locally or through the external proxy."""
+    if has_foreman_proxy(guild_id):
+        data = await call_foreman_api_proxy(
+            guild_id,
+            model=model,
+            max_tokens=max_tokens,
+            system=system_blocks,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        response_dict = data["response"]
+        proxy_model = data.get("model") or response_dict.get("model") or model
+        proxy_provider = data.get("provider") or "proxy"
+        return _LLMCallResult(
+            response=_ProxyResponse(response_dict),
+            response_dict=response_dict,
+            request_id=data.get("apiRequestId"),
+            provider=proxy_provider,
+            model=proxy_model,
+        )
+
+    if client is None:
+        raise RuntimeError("No Anthropic client available and no external foreman proxy connected")
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system_blocks,
+        "messages": messages,
+        "tools": tools,
+    }
+    if tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
+    raw = await client.messages.with_raw_response.create(**kwargs)
+    response = raw.parse()
+    return _LLMCallResult(
+        response=response,
+        response_dict=response.model_dump(),
+        request_id=raw.headers.get("request-id"),
+        provider=provider,
+        model=model,
+    )
+
+
 async def _load_foreman_config(guild_id: str) -> dict:
     """Load per-guild foreman config from the DB. Returns {} if unset."""
     async with AsyncSessionLocal() as db:
@@ -128,9 +234,9 @@ async def _get_guild_user_id(guild_id: str) -> str | None:
 def _child_contexts_enabled() -> bool:
     """Whether per-task child contexts are enabled for the embedded foreman.
 
-    Mirrors the standalone foreman's ``child_contexts`` config flag. Defaults on;
-    set ``FOREMAN_CHILD_CONTEXTS`` to a falsy value (0/false/no/off) to fall back
-    to the legacy single whole-guild context. See docs/foreman-per-task-context.md.
+    Defaults on; set ``FOREMAN_CHILD_CONTEXTS`` to a falsy value
+    (0/false/no/off) to fall back to the legacy single whole-guild context.
+    See docs/foreman-per-task-context.md.
     """
     return os.environ.get("FOREMAN_CHILD_CONTEXTS", "1").strip().lower() not in (
         "0",
@@ -574,14 +680,15 @@ async def _run_foreman_ai(
     # scoping runs — for every ``task_id=_task_id`` use further down.
     _task_id: str | None = None
 
-    if not HAS_ANTHROPIC:
+    proxy_available = has_foreman_proxy(guild_id)
+    if not HAS_ANTHROPIC and not proxy_available:
         now = datetime.now(UTC).isoformat()
         await broadcast_msg(
             guild_id,
             ChatMsg(
                 from_="foreman",
                 to="user",
-                content="Foreman AI offline (install `anthropic` package to enable).",
+                content="Foreman AI offline (install `anthropic` package or connect a foreman proxy).",
                 createdAt=now,
             ),
         )
@@ -763,14 +870,26 @@ async def _run_foreman_ai(
         # dispatched) so a stale guild config — saved before the #817 fix added
         # save-time validation, with no model or a placeholder ARN — fails here
         # with a clear error instead of surfacing deep inside the API call.
-        foreman_model = cfg_model or get_foreman_model(provider=effective_provider)
-        if cfg_provider or cfg_env_vars:
+        proxy_available = has_foreman_proxy(guild_id)
+        try:
+            foreman_model = cfg_model or get_foreman_model(provider=effective_provider)
+        except BedrockModelNotConfiguredError:
+            if not proxy_available:
+                raise
+            foreman_model = cfg_model or os.environ.get("FOREMAN_MODEL", "external-proxy")
+
+        client = None
+        if not proxy_available and effective_provider not in {"anthropic", "bedrock"}:
+            raise RuntimeError(
+                f"FOREMAN_PROVIDER={effective_provider!r} requires a connected foreman API proxy"
+            )
+        if not proxy_available and (cfg_provider or cfg_env_vars):
             client = make_anthropic_client(
                 provider=effective_provider,
                 extra_env=cfg_env_vars or None,
                 model=cfg_model,
             )
-        else:
+        elif not proxy_available:
             client = _get_anthropic_client()
 
         text_parts = []
@@ -779,7 +898,7 @@ async def _run_foreman_ai(
             messages = strip_orphaned_tool_results(messages)
             _stamp_message_cache_breakpoint(messages)
             logger.info(
-                "guild=%s run_foreman_ai round %d: sending %d messages to Claude",
+                "guild=%s run_foreman_ai round %d: sending %d messages to LLM",
                 guild_id,
                 round_num,
                 len(messages),
@@ -791,23 +910,26 @@ async def _run_foreman_ai(
                 extra={"max_tokens": 1024, "tools": tools},
                 task_id=_task_id,
             )
-            _raw = await client.messages.with_raw_response.create(
+            llm_result = await _call_llm(
+                guild_id,
+                client=client,
+                provider=effective_provider,
                 model=foreman_model,
                 max_tokens=1024,
-                system=system_blocks,  # type: ignore[arg-type]
-                messages=messages,  # type: ignore[arg-type]
-                tools=tools,  # type: ignore[arg-type]
+                system_blocks=system_blocks,
+                messages=messages,
+                tools=tools,
             )
-            resp = _raw.parse()
+            resp = llm_result.response
             usage = resp.usage
             _input_tokens = getattr(usage, "input_tokens", 0) or 0
             _output_tokens = getattr(usage, "output_tokens", 0) or 0
             _cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
             _cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
-            _anthropic_request_id = _raw.headers.get("request-id")
+            _api_request_id = llm_result.request_id
             logger.info(
                 "guild=%s run_foreman_ai round %d: stop_reason=%s content_blocks=%d "
-                "input=%d cache_read=%d cache_write=%d output=%d request_id=%s",
+                "input=%d cache_read=%d cache_write=%d output=%d request_id=%s provider=%s",
                 guild_id,
                 round_num,
                 resp.stop_reason,
@@ -816,12 +938,13 @@ async def _run_foreman_ai(
                 _cache_read,
                 _cache_write,
                 _output_tokens,
-                _anthropic_request_id,
+                _api_request_id,
+                llm_result.provider,
             )
             await _complete_api_request_log(
                 api_log_id,
-                request_id=_anthropic_request_id,
-                response_dict=resp.model_dump(),
+                request_id=_api_request_id,
+                response_dict=llm_result.response_dict,
                 input_tokens=_input_tokens,
                 output_tokens=_output_tokens,
                 cache_read_tokens=_cache_read,
@@ -830,8 +953,9 @@ async def _run_foreman_ai(
             )
 
             _api_call_meta = {
-                "request_id": _anthropic_request_id,
-                "model": foreman_model,
+                "request_id": _api_request_id,
+                "provider": llm_result.provider,
+                "model": llm_result.model,
                 "input_tokens": _input_tokens,
                 "output_tokens": _output_tokens,
                 "cache_read_tokens": _cache_read,
@@ -1016,24 +1140,27 @@ async def _run_foreman_ai(
                 },
                 task_id=_task_id,
             )
-            _wrap_raw = await client.messages.with_raw_response.create(
+            wrap_llm_result = await _call_llm(
+                guild_id,
+                client=client,
+                provider=effective_provider,
                 model=foreman_model,
                 max_tokens=1024,
-                system=system_blocks,  # type: ignore[arg-type]
-                messages=messages,  # type: ignore[arg-type]
-                tools=tools,  # type: ignore[arg-type]
-                tool_choice={"type": "none"},  # type: ignore[arg-type]
+                system_blocks=system_blocks,
+                messages=messages,
+                tools=tools,
+                tool_choice={"type": "none"},
             )
-            wrap_resp = _wrap_raw.parse()
+            wrap_resp = wrap_llm_result.response
             wrap_usage = wrap_resp.usage
             _wrap_input = getattr(wrap_usage, "input_tokens", 0) or 0
             _wrap_output = getattr(wrap_usage, "output_tokens", 0) or 0
             _wrap_cache_read = getattr(wrap_usage, "cache_read_input_tokens", 0) or 0
             _wrap_cache_write = getattr(wrap_usage, "cache_creation_input_tokens", 0) or 0
-            _wrap_request_id = _wrap_raw.headers.get("request-id")
+            _wrap_request_id = wrap_llm_result.request_id
             logger.info(
                 "guild=%s run_foreman_ai wrap-up: stop_reason=%s "
-                "input=%d cache_read=%d cache_write=%d output=%d request_id=%s",
+                "input=%d cache_read=%d cache_write=%d output=%d request_id=%s provider=%s",
                 guild_id,
                 wrap_resp.stop_reason,
                 _wrap_input,
@@ -1041,11 +1168,12 @@ async def _run_foreman_ai(
                 _wrap_cache_write,
                 _wrap_output,
                 _wrap_request_id,
+                wrap_llm_result.provider,
             )
             await _complete_api_request_log(
                 _wrap_api_log_id,
                 request_id=_wrap_request_id,
-                response_dict=wrap_resp.model_dump(),
+                response_dict=wrap_llm_result.response_dict,
                 input_tokens=_wrap_input,
                 output_tokens=_wrap_output,
                 cache_read_tokens=_wrap_cache_read,
@@ -1054,7 +1182,8 @@ async def _run_foreman_ai(
             )
             _wrap_api_meta = {
                 "request_id": _wrap_request_id,
-                "model": foreman_model,
+                "provider": wrap_llm_result.provider,
+                "model": wrap_llm_result.model,
                 "input_tokens": _wrap_input,
                 "output_tokens": _wrap_output,
                 "cache_read_tokens": _wrap_cache_read,
