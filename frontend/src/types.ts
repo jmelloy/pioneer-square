@@ -70,11 +70,16 @@ export type TaskState =
   | 'followup'
   | 'cancelled'
 
+// Root tasks (no worker, no branch/PR) are created once per GitHub issue with
+// phase='issue'; plan/execute/review/followup tasks nest under them via
+// parent_task_id. Keep in sync with FOREMAN_TOOLS in backend/foreman/tools_schema.py.
+export type TaskPhase = 'issue' | 'plan' | 'execute' | 'review' | 'followup'
+
 export interface Task {
   id: string
   name?: string
   description?: string
-  phase?: string
+  phase?: TaskPhase
   state: TaskState
   worker_id?: string
   parent_task_id?: string | null
@@ -240,7 +245,7 @@ export interface TaskCreatedWS {
   taskId: string
   name?: string
   description?: string
-  phase?: string
+  phase?: TaskPhase
   state: TaskState
   createdAt?: string
 }
@@ -254,7 +259,7 @@ export interface TaskAssignedWS {
   tool?: string
   model?: string | null
   provider?: string | null
-  phase?: string
+  phase?: TaskPhase
   parentTaskId?: string | null
 }
 
