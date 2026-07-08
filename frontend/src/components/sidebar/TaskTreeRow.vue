@@ -17,7 +17,7 @@
       >
         {{ expanded ? '▾' : '▸' }}
       </span>
-      <span v-else class="row-toggle-spacer"></span>
+      <span v-else-if="!isIssueRoot" class="row-toggle-spacer"></span>
 
       <template v-if="isIssueRoot">
         <span class="issue-icon" aria-hidden="true">
@@ -35,7 +35,7 @@
           class="issue-link"
           :href="`https://github.com/${task.issue_repo}/issues/${task.issue_number}`"
           target="_blank"
-          rel="noopener"
+          rel="noopener noreferrer"
           @click.stop
         >
           {{ task.issue_repo }}#{{ task.issue_number }}
@@ -164,7 +164,7 @@ function isActiveState(state: string): boolean {
 
 .issue-link {
   font-family: var(--font-pixel);
-  font-size: 6px;
+  font-size: 0.7rem;
   letter-spacing: 0.5px;
   color: var(--color-brass);
   background: rgba(232, 170, 0, 0.15);
