@@ -259,7 +259,7 @@ async def find_descendant_tasks(db, root_task_id: str) -> list[Task]:
     chain = chain.union_all(recursive_step)
 
     id_result = await db.exec(select(chain.c.id))
-    ids = [row[0] for row in id_result.all()]
+    ids = list(id_result.all())
     if not ids:
         return []
     task_result = await db.exec(select(Task).where(col(Task.id).in_(ids)))

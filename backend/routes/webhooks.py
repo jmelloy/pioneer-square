@@ -885,8 +885,7 @@ async def github_webhook(
                         col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
                     )
                 )
-                for row in root_result.all():
-                    root_task_id = row[0]
+                for root_task_id in root_result.all():
                     finalized = await finalize_issue_root_task(db, guild_pk, guild_id, root_task_id)
                     if finalized:
                         logger.info(
