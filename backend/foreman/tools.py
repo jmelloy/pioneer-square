@@ -470,7 +470,9 @@ async def notify_discord_task_assigned(
     await discord_notifier.notify_event(
         "task-assigned",
         title=(
-            f"Task assigned: #{issue_number}" if issue_number is not None else f"Task assigned: {task_id}"
+            f"Task assigned: #{issue_number}"
+            if issue_number is not None
+            else f"Task assigned: {task_id}"
         ),
         description=description,
         issue_repo=issue_repo,
@@ -504,7 +506,9 @@ def _spawn_discord_task_assigned(
                 task_id,
                 fallback_title,
                 issue_repo=inp.get("issue_repo"),
-                issue_number=int(inp["issue_number"]) if inp.get("issue_number") is not None else None,
+                issue_number=int(inp["issue_number"])
+                if inp.get("issue_number") is not None
+                else None,
             ),
             name=f"discord.task-assigned:{task_id}",
         )
@@ -1312,7 +1316,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 # caller passed one this call — re-select the persisted value
                                 # so root-thread routing sees a parent set by an earlier call
                                 # (e.g. the original create_task), not just this one's input.
-                                effective_parent_task_id = name_row[1] if name_row else parent_task_id
+                                effective_parent_task_id = (
+                                    name_row[1] if name_row else parent_task_id
+                                )
                                 task_id = existing_task_id
                                 await broadcast(
                                     guild_id,

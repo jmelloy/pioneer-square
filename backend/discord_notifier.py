@@ -402,31 +402,50 @@ async def _resolve_root_thread_id(task_id: str) -> str | None:
     """Walk ``parent_task_id`` up from *task_id* to its root and return the root's thread.
 
     The root is the top of the chain (``parent_task_id IS NULL``), normally the
-    phase='issue' task created via ``create_task``. Returns None when the
-    chain has no root with a ``discord_thread_id`` set — callers should fall
-    back to the legacy issue_repo/issue_number thread lookup (unrooted or
+    phase='issue' task created via ``create_task``. Fetches the whole ancestor
+    chain (up to ``_MAX_PARENT_CHAIN_DEPTH`` levels) in a single recursive-CTE
+    query rather than one round-trip per level. Returns None when the chain
+    has no root with a ``discord_thread_id`` set — callers should fall back to
+    the legacy issue_repo/issue_number thread lookup (unrooted or
     pre-migration tasks). Never raises.
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
         from models import Task  # noqa: PLC0415
-        from sqlmodel import col, select  # noqa: PLC0415
+        from sqlalchemy import literal  # noqa: PLC0415
+        from sqlalchemy import select as sa_select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
-            current_id = task_id
-            for _ in range(_MAX_PARENT_CHAIN_DEPTH):
-                result = await db.exec(
-                    select(Task.parent_task_id, Task.discord_thread_id).where(
-                        col(Task.id) == current_id
-                    )
+            anchor = sa_select(
+                Task.id.label("id"),
+                Task.parent_task_id.label("parent_task_id"),
+                Task.discord_thread_id.label("discord_thread_id"),
+                literal(0).label("depth"),
+            ).where(Task.id == task_id)
+            chain = anchor.cte(name="parent_chain", recursive=True)
+            parent = (
+                sa_select(
+                    Task.id.label("id"),
+                    Task.parent_task_id.label("parent_task_id"),
+                    Task.discord_thread_id.label("discord_thread_id"),
+                    (chain.c.depth + 1).label("depth"),
                 )
-                row = result.one_or_none()
-                if row is None:
-                    return None
-                parent_id, thread_id = row
+                .join(chain, Task.id == chain.c.parent_task_id)
+                .where(chain.c.depth < _MAX_PARENT_CHAIN_DEPTH - 1)
+            )
+            chain = chain.union_all(parent)
+
+            result = await db.execute(
+                sa_select(chain.c.parent_task_id, chain.c.discord_thread_id).order_by(
+                    chain.c.depth.asc()
+                )
+            )
+            rows = result.all()
+            if not rows:
+                return None
+            for parent_id, thread_id in rows:
                 if parent_id is None:
                     return thread_id
-                current_id = parent_id
             logger.warning(
                 "discord: parent_task_id chain exceeded depth=%d starting task=%s",
                 _MAX_PARENT_CHAIN_DEPTH,
@@ -436,28 +455,6 @@ async def _resolve_root_thread_id(task_id: str) -> str | None:
     except Exception:
         logger.warning("discord: root-thread resolution failed task=%s", task_id, exc_info=True)
         return None
-
-
-async def _save_root_thread(task_id: str, thread_id: str) -> None:
-    """Persist *thread_id* directly on the root task's ``discord_thread_id`` column."""
-    try:
-        from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import Task  # noqa: PLC0415
-        from sqlalchemy import update  # noqa: PLC0415
-        from sqlmodel import col  # noqa: PLC0415
-
-        async with AsyncSessionLocal() as db:
-            await db.exec(
-                update(Task).where(col(Task.id) == task_id).values(discord_thread_id=thread_id)
-            )
-            await db.commit()
-    except Exception:
-        logger.warning(
-            "discord: root thread DB save failed task=%s thread=%s",
-            task_id,
-            thread_id,
-            exc_info=True,
-        )
 
 
 async def ensure_issue_root_thread(
@@ -471,17 +468,52 @@ async def ensure_issue_root_thread(
     resolves the same thread through ``_resolve_root_thread_id`` for the
     rest of the issue's lifetime. Returns the new thread_id, or None when
     Discord isn't configured or thread creation fails. Never raises.
+
+    ``create_task`` can be invoked through two independent paths — the REST
+    endpoint in ``routes/foreman.py`` and the ``create_task`` tool in
+    ``foreman/tools.py`` — that could race each other for the same task_id.
+    To avoid both creating a Discord thread and one silently losing the DB
+    write, this locks the task row (``SELECT ... FOR UPDATE``) and re-checks
+    ``discord_thread_id`` before creating anything: a racing caller blocks on
+    the lock until the winner commits, then observes the already-persisted
+    thread and returns it instead of creating a duplicate.
     """
     if not _bot_token():
         return None
     channel = await _resolve_channel_for_guild(ps_guild_slug)
     if not channel:
         return None
-    thread_id = await _create_thread_in_channel(channel, thread_name)
-    if not thread_id:
+
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Task  # noqa: PLC0415
+        from sqlalchemy import update  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(Task.discord_thread_id).where(col(Task.id) == task_id).with_for_update()
+            )
+            existing = result.one_or_none()
+            if existing:
+                return existing
+
+            thread_id = await _create_thread_in_channel(channel, thread_name)
+            if not thread_id:
+                return None
+
+            await db.execute(
+                update(Task).where(col(Task.id) == task_id).values(discord_thread_id=thread_id)
+            )
+            await db.commit()
+            return thread_id
+    except Exception:
+        logger.warning(
+            "discord: ensure_issue_root_thread failed task=%s",
+            task_id,
+            exc_info=True,
+        )
         return None
-    await _save_root_thread(task_id, thread_id)
-    return thread_id
 
 
 async def _post_to_thread(
@@ -863,7 +895,9 @@ async def notify_existing_thread(
     if _bot_token() and task_id:
         root_thread_id = await _resolve_root_thread_id(task_id)
         if root_thread_id:
-            await _post_to_thread(root_thread_id, event_type, title, description, url=url, color=color)
+            await _post_to_thread(
+                root_thread_id, event_type, title, description, url=url, color=color
+            )
             return
 
     if _bot_token() and issue_repo and issue_number is not None:
