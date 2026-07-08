@@ -77,17 +77,37 @@ _HISTORY_FETCH_LIMIT = 100
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 
-# Per-guild locks to serialise foreman runs.  If a run is already in progress
-# for a (guild, user) pair, new invocations are dropped rather than queued —
-# the poll loop will re-trigger on the next tick.  Dropping (vs. queuing) keeps
-# memory bounded and avoids stale snapshots piling up under load.
+# Per-guild run state, used to serialise foreman runs.  If a run is already in
+# progress for a (guild, user) pair, new invocations are dropped rather than
+# queued — the poll loop will re-trigger on the next tick.  Dropping (vs.
+# queuing) keeps memory bounded and avoids stale snapshots piling up under load.
 # Entries are popped in the finally block after each run so the dict stays small.
 #
 # Human-originated messages (Discord/web UI chat, user-requested follow-ups)
-# are the one exception: they are never silently dropped. When the lock for
-# their key is held, they are appended to ``_human_queues`` instead, and
+# are the one exception: they are never silently dropped. When the entry for
+# their key is busy, they are appended to ``_human_queues`` instead, and
 # drained (FIFO) once the in-flight run finishes — see ``run_foreman_ai``.
-_guild_locks: dict[tuple[str, str | None], asyncio.Lock] = {}
+@dataclass
+class _GuildRunLock:
+    """Tracks whether a foreman run currently owns a given (guild, key) slot.
+
+    ``busy`` is checked and flipped to True in the same synchronous step (no
+    ``await`` in between) inside ``run_foreman_ai``, so two concurrent
+    invocations can never both observe ``busy=False`` and both proceed:
+    asyncio's single-threaded, cooperative scheduler only switches between
+    coroutines at an ``await`` point, so nothing can interleave between the
+    check and the claim. This is deliberately a plain flag rather than
+    ``asyncio.Lock.locked()`` + ``await lock.acquire()`` — that pattern is
+    *currently* just as atomic (acquiring an uncontended ``asyncio.Lock``
+    never suspends), but it relies on ``Lock`` internals that a future edit
+    could silently break (e.g. adding an ``await`` between the check and the
+    acquire). A dedicated flag makes the invariant self-evident.
+    """
+
+    busy: bool = False
+
+
+_guild_locks: dict[tuple[str, str | None], _GuildRunLock] = {}
 
 # Max number of queued human messages per (guild, user)/(guild, task) key.
 # Bounded so a guild nobody is watching can't grow this without limit; the
@@ -720,7 +740,7 @@ def reset_foreman_poll(guild_id: str) -> None:
     # Debounce: any in-flight run for this guild (regardless of user_id) means we
     # skip the reset entirely.  The run was already dispatched; another timer reset
     # would be wasteful and could mask the first run's backoff contribution.
-    in_flight = any(k[0] == guild_id and lock.locked() for k, lock in _guild_locks.items())
+    in_flight = any(k[0] == guild_id and state.busy for k, state in _guild_locks.items())
     if in_flight:
         logger.debug("guild=%s reset_foreman_poll: run in-flight, skipping timer reset", guild_id)
         return
@@ -822,16 +842,17 @@ async def run_foreman_ai(
 ) -> None:
     """Serialise per-context and delegate to ``_run_foreman_ai``.
 
-    Uses an ``asyncio.Lock`` stored in ``_guild_locks``.  If the lock is already
-    held, automated invocations (``is_human=False`` — periodic-check, GitHub
-    webhook events, worker lifecycle, task review escalations) are dropped;
-    the poll loop re-triggers on the next tick. Dropping is preferred over
-    queuing for these to avoid unbounded build-up of stale automated snapshots.
+    Uses the ``busy`` flag on the ``_GuildRunLock`` stored in ``_guild_locks``.
+    If a run is already in progress, automated invocations (``is_human=False``
+    — periodic-check, GitHub webhook events, worker lifecycle, task review
+    escalations) are dropped; the poll loop re-triggers on the next tick.
+    Dropping is preferred over queuing for these to avoid unbounded build-up
+    of stale automated snapshots.
 
     Human-originated invocations (``is_human=True`` — Discord/web UI chat,
     user-requested follow-ups) are never dropped: when busy, they are appended
     to a small bounded FIFO queue (``_human_queues``) and drained in order once
-    the in-flight run for that key finishes, before the lock is released.
+    the in-flight run for that key finishes, before the slot is freed.
 
     Whole-guild (parent) runs key the lock on ``(guild_id, user_id)``.  Per-task
     child runs (``child=True`` with a ``task_id``, gated by FOREMAN_CHILD_CONTEXTS)
@@ -839,9 +860,7 @@ async def run_foreman_ai(
     single task's review loop still serialises against itself.  See
     docs/foreman-per-task-context.md.
 
-    lock.locked() + lock.acquire() is atomic here: asyncio is single-threaded
-    and cooperative, so no other coroutine can run between the check and the
-    acquire (there is no ``await`` between them).
+    See ``_GuildRunLock`` for why the busy-check and claim below are atomic.
     """
     use_child = child and bool(task_id) and _child_contexts_enabled()
     # When user_id is None (system-triggered/poll runs), all such invocations
@@ -849,8 +868,8 @@ async def run_foreman_ai(
     # each other.  This is intentional — system runs are per-guild work and
     # should not overlap with themselves.
     lock_key = (guild_id, f"task:{task_id}") if use_child else (guild_id, user_id)
-    lock = _guild_locks.setdefault(lock_key, asyncio.Lock())
-    if lock.locked():
+    state = _guild_locks.setdefault(lock_key, _GuildRunLock())
+    if state.busy:
         if is_human:
             _enqueue_human_turn(
                 lock_key, guild_id, human_message, extra_context, user_id, task_id, use_child
@@ -862,7 +881,7 @@ async def run_foreman_ai(
                 lock_key[1],
             )
         return
-    await lock.acquire()
+    state.busy = True
     try:
         await _run_foreman_ai(
             guild_id, human_message, extra_context, user_id, task_id=task_id, child=use_child
@@ -872,7 +891,7 @@ async def run_foreman_ai(
         # loop until the queue for this key is empty.
         await _drain_human_queue(lock_key)
     finally:
-        lock.release()
+        state.busy = False
         _guild_locks.pop(lock_key, None)
 
 
@@ -962,15 +981,44 @@ async def _drain_human_queue(lock_key: tuple[str, str | None]) -> None:
                     task_id=turn.task_id,
                     child=turn.child,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "guild=%s key=%s error processing queued human message",
                     turn.guild_id,
                     lock_key[1],
                 )
+                await _notify_queued_turn_failure(lock_key, turn, exc)
         if not _human_queues.get(lock_key):
             _human_queues.pop(lock_key, None)
             return
+
+
+async def _notify_queued_turn_failure(
+    lock_key: tuple[str, str | None], turn: "_QueuedHumanTurn", exc: Exception
+) -> None:
+    """Best-effort error reply to the human whose queued message failed to process.
+
+    ``_drain_human_queue`` swallows exceptions from ``_run_foreman_ai`` so one
+    bad queued turn doesn't abort the rest of the drain; without this, the
+    human whose message failed would see no reply at all. Routed through
+    ``_emit_foreman_chat`` so it reaches both the WS chat stream and, when the
+    queued turn concerned a task, that task's Discord thread. Failures here
+    are only logged — a broken notification path must not crash the drain.
+    """
+    try:
+        await _emit_foreman_chat(
+            turn.guild_id,
+            f"Sorry, something went wrong processing your message: {exc}",
+            datetime.now(UTC).isoformat(),
+            child_task_id=turn.task_id if turn.child else None,
+            discord_task_id=turn.task_id,
+        )
+    except Exception:
+        logger.exception(
+            "guild=%s key=%s failed to send error feedback for queued human message",
+            turn.guild_id,
+            lock_key[1],
+        )
 
 
 async def _run_foreman_ai(

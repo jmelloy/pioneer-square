@@ -64,7 +64,7 @@ def test_guild_active_recently_false_for_unknown_guild():
 
 
 def test_reset_poll_skips_when_run_in_flight():
-    """reset_foreman_poll must not restart the loop when a run holds the lock."""
+    """reset_foreman_poll must not restart the loop when a run is in-flight."""
 
     async def _test():
         import foreman.runner as runner
@@ -74,16 +74,13 @@ def test_reset_poll_skips_when_run_in_flight():
         runner._poll_tasks.pop(guild, None)
         runner._guild_last_action_at[guild] = time.monotonic()  # recently active
 
-        # Acquire the lock as if a run is in progress.
-        lock = asyncio.Lock()
-        await lock.acquire()
-        runner._guild_locks[(guild, None)] = lock
+        # Mark the slot busy, as if a run is in progress.
+        runner._guild_locks[(guild, None)] = runner._GuildRunLock(busy=True)
 
         spawned = []
         with patch.object(runner, "spawn", side_effect=lambda c, **kw: spawned.append(c)):
             runner.reset_foreman_poll(guild)
 
-        lock.release()
         assert spawned == [], "spawn must not be called while a run is in-flight"
 
     _run(_test())

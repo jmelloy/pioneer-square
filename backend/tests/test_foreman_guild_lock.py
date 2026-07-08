@@ -1,4 +1,4 @@
-"""Tests for per-guild asyncio.Lock in run_foreman_ai.
+"""Tests for per-guild run serialisation in run_foreman_ai.
 
 Verifies that concurrent invocations for the same guild are dropped (not
 queued) while invocations for different guilds proceed independently.
@@ -7,7 +7,7 @@ queued) while invocations for different guilds proceed independently.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 async def _run_foreman_ai_patched(guild_id: str, impl_event: asyncio.Event | None = None):
