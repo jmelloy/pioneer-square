@@ -137,6 +137,12 @@ _COLOURS: dict[str, int] = {
 }
 _DEFAULT_COLOUR = 0x7289DA  # blurple
 
+# Discord message flag: SUPPRESS_NOTIFICATIONS. Marks a message "silent" so it
+# posts without pinging channel members or firing a push notification — used
+# for the streaming task-output firehose (Phase 4) and combined CI summaries
+# (Phase 7), both of which are high-volume/low-urgency by design.
+_SILENT_FLAG = 1 << 12  # 4096
+
 
 def _get_client() -> httpx.AsyncClient:
     global _client
@@ -963,11 +969,6 @@ async def notify_existing_thread(
 # Phase 4: live task-stream mirroring
 # ---------------------------------------------------------------------------
 
-# Discord message flag: SUPPRESS_NOTIFICATIONS. Marks a message "silent" so it
-# posts without pinging channel members or firing a push notification — exactly
-# the low-priority behaviour we want for a firehose of streaming task output.
-_SILENT_FLAG = 1 << 12  # 4096
-
 # How long to accumulate stream lines before flushing them as one Discord
 # message. Batching is essential: worker terminal output is line-per-event and
 # would blow past Discord's per-channel rate limit if each line were its own POST.
@@ -1286,6 +1287,17 @@ _CI_CONCLUSION_VERBS: dict[str, str] = {
     "action_required": "need attention",
 }
 
+# Rendering order for the combined summary: failures first (most actionable),
+# then warning-ish/neutral conclusions, then successes last. Unknown
+# conclusions are treated as neutral so they don't get buried below successes.
+_CI_CONCLUSION_PRIORITY: dict[str, int] = {
+    "failure": 0,
+    "timed_out": 1,
+    "action_required": 1,
+    "cancelled": 1,
+    "success": 2,
+}
+
 
 def _pr_debounce_seconds() -> float:
     """Debounce window (seconds) before flushing a PR's buffered CI checks.
@@ -1322,15 +1334,20 @@ def _format_ci_summary(entries: list[_CICheckEntry]) -> str:
     """Combine buffered check completions into a compact, multi-line summary.
 
     Groups by conclusion so e.g. two passing checks plus one failing check
-    renders as two lines: ``"✅ 2 checks passed: lint, test"`` followed by
-    ``"❌ 1 check failed: build"`` — rather than one Discord message per check.
+    renders as two lines: ``"❌ 1 check failed: build"`` followed by
+    ``"✅ 2 checks passed: lint, test"`` — rather than one Discord message per
+    check. Lines are ordered by ``_CI_CONCLUSION_PRIORITY`` (failures, then
+    warning-ish/neutral conclusions, then successes) rather than arrival
+    order, so the most actionable line is always first regardless of which
+    check happened to complete first.
     """
     by_conclusion: dict[str, list[str]] = {}
     for entry in entries:
         by_conclusion.setdefault(entry.conclusion, []).append(entry.check_name)
 
     lines = []
-    for conclusion, names in by_conclusion.items():
+    for conclusion in sorted(by_conclusion, key=lambda c: _CI_CONCLUSION_PRIORITY.get(c, 1)):
+        names = by_conclusion[conclusion]
         icon = _CI_CONCLUSION_ICONS.get(conclusion, "ℹ️")
         noun = "check" if len(names) == 1 else "checks"
         verb = _CI_CONCLUSION_VERBS.get(conclusion, conclusion.replace("_", " "))
@@ -1339,9 +1356,26 @@ def _format_ci_summary(entries: list[_CICheckEntry]) -> str:
 
 
 async def _flush_ci_batch(key: str) -> None:
-    """Post the combined summary for *key*'s buffered CI checks, then drop the batch."""
-    batch = _ci_batches.pop(key, None)
-    if batch is None or not batch.entries:
+    """Post the combined summary for *key*'s buffered CI checks, then drop the batch.
+
+    Cancels the batch's own pending debounce task before popping it (guarding
+    against self-cancellation when this runs from inside that very task via
+    ``_delayed_ci_flush``). Without this, an early/manual flush — as tests do
+    to avoid waiting out the real debounce window — leaves the original timer
+    running; if a new batch is later created for the same *key* before that
+    stale timer fires, it would wake up and flush the *new* batch prematurely.
+    """
+    batch = _ci_batches.get(key)
+    if batch is None:
+        return
+    if (
+        batch.flush_task is not None
+        and batch.flush_task is not asyncio.current_task()
+        and not batch.flush_task.done()
+    ):
+        batch.flush_task.cancel()
+    _ci_batches.pop(key, None)
+    if not batch.entries:
         return
     conclusions = {entry.conclusion for entry in batch.entries}
     event_type = "ci-pass" if conclusions == {"success"} else "ci-fail"
@@ -1385,6 +1419,16 @@ async def notify_ci_check(
     (see ``notify_task_stream``) rather than a sliding debounce, so a steady
     trickle of checks can't indefinitely postpone the summary. Silent no-op
     when the bot token is not configured. Never raises.
+
+    Guards against the batch being popped out from under it by a concurrent
+    ``_flush_ci_batch(key)``: since asyncio only switches tasks at ``await``
+    points and this function has none between reading and writing
+    ``_ci_batches[key]``, that can only happen across two separate calls —
+    e.g. a debounce timer flushes the batch this call just fetched a
+    reference to, in between our ``.get()`` and this point. If so, our entry
+    just landed on an object nothing will ever flush; re-registering it under
+    *key* and treating it as freshly created (forcing a new flush task) keeps
+    it from being silently dropped.
     """
     if not _bot_token():
         return
@@ -1407,5 +1451,9 @@ async def notify_ci_check(
         _ci_batches[key] = batch
     batch.entries.append(_CICheckEntry(check_name=check_name, conclusion=conclusion))
 
-    if batch.flush_task is None:
+    if _ci_batches.get(key) is not batch:
+        _ci_batches[key] = batch
+        batch.flush_task = None
+
+    if batch.flush_task is None or batch.flush_task.done():
         batch.flush_task = asyncio.ensure_future(_delayed_ci_flush(key))

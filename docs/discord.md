@@ -158,6 +158,13 @@ each other. The combined message always carries Discord's `SUPPRESS_NOTIFICATION
 results don't trigger a push notification. Non-CI events (PR opened/merged/closed, reviews) are
 unaffected — they post immediately, at normal notification priority.
 
+`DISCORD_PR_DEBOUNCE_SECONDS` is a **fixed-start** window, not a sliding one: the timer arms on
+the first buffered check for a PR and is not reset by later checks arriving in the same window.
+A CI matrix with checks completing at t=0s, t=14s, and t=14.5s will flush at t=15s and catch all
+three, but one completing at t=16s misses the window and gets its own follow-up message instead
+of joining the summary. Set the value comfortably above the longest expected gap between checks
+in your CI matrix to avoid fragmenting a single CI run across two Discord messages.
+
 ### Per-PR/issue threads
 
 Add `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` to route PR/issue-related events into one
