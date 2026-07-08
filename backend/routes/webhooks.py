@@ -865,6 +865,38 @@ async def github_webhook(
                 guild_id,
             )
 
+            # A closed issue finalizes its phase='issue' root task directly — no
+            # foreman/LLM round-trip needed, since the issue's own state is the
+            # only signal that matters here. The periodic sweep in
+            # foreman.runner._sweep_closed_issue_tasks is a safety net for
+            # missed deliveries; this is the primary (near-instant) path.
+            if action == "closed":
+                from foreman.tools import (
+                    finalize_issue_root_task,
+                    warn_if_issue_task_has_open_children,
+                )
+
+                root_result = await db.exec(
+                    select(col(Task.id)).where(
+                        col(Task.guild_id) == guild_pk,
+                        col(Task.issue_repo) == repo,
+                        col(Task.issue_number) == issue_num,
+                        col(Task.phase) == "issue",
+                        col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
+                    )
+                )
+                for row in root_result.all():
+                    root_task_id = row[0]
+                    finalized = await finalize_issue_root_task(db, guild_pk, guild_id, root_task_id)
+                    if finalized:
+                        logger.info(
+                            "github webhook auto-finalized issue-root task=%s on issue "
+                            "close guild=%s",
+                            root_task_id,
+                            guild_id,
+                        )
+                        await warn_if_issue_task_has_open_children(db, guild_id, root_task_id)
+
     # Deterministic lifecycle transitions: finalize on merge, fail on close-without-merge.
     # These happen directly — no AI decision needed for these clear-cut outcomes.
     if task_id and event_type == "pull_request" and action == "closed":
