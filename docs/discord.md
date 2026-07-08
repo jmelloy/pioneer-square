@@ -69,6 +69,7 @@ bot must already be a member of the guild that owns `DISCORD_CHANNEL_ID`.
 | `DISCORD_OPERATOR_ROLE_NAME` | No | Discord role name (in addition to the Manage Channels permission) allowed to run `/join-channel` and `/leave-channel`. Default `Pioneer Square Operator`. |
 | `DISCORD_DEV_GUILD_ID` | No (registration only) | Discord server ID. When set, `scripts/register_discord_commands.py` registers commands to that one server (near-instant) instead of globally (up to 1 hour to propagate). |
 | `DISCORD_STREAM_TASKS` | No | When truthy (`1`/`true`/`yes`/`on`), mirror each working task's live terminal output into a dedicated per-task Discord thread as silent, low-priority messages. Off by default (high-volume). Requires `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` — the feed always routes into a thread, never a flat channel post. |
+| `DISCORD_PR_DEBOUNCE_SECONDS` | No | Seconds to buffer `check_run`/`check_suite` completions for the same PR before flushing them as one combined, silent Discord message. Default `15`. |
 
 `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` must be set **together** — the bot needs both
 the credential and a destination channel to create threads.
@@ -148,6 +149,14 @@ call site — only the events listed below actually fire notifications today:
 - `pr-opened`, `pr-merged`, `pr-closed` — fired from the GitHub webhook handler.
 - `ci-pass`, `ci-fail` — fired from GitHub `check_run`/`check_suite` webhook events.
 - `task-complete` — fired when a worker reports a task finished.
+
+**CI check debounce/combine** — `check_run`/`check_suite` completions for the same PR are
+buffered per PR and flushed as a single combined message (e.g. `✅ 3 checks passed: lint, test,
+build`) after `DISCORD_PR_DEBOUNCE_SECONDS` (default 15) of silence on that PR, instead of one
+Discord message per check — a CI matrix routinely completes several checks within seconds of
+each other. The combined message always carries Discord's `SUPPRESS_NOTIFICATIONS` flag so CI
+results don't trigger a push notification. Non-CI events (PR opened/merged/closed, reviews) are
+unaffected — they post immediately, at normal notification priority.
 
 ### Per-PR/issue threads
 

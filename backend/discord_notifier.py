@@ -60,6 +60,17 @@ Phase 6 — issue-rooted task tree thread routing
     routing below when *task_id* has no root, or the root predates this
     column and has no thread yet.
 
+Phase 7 — CI check debounce/combine
+    ``notify_ci_check`` buffers ``check_run``/``check_suite`` completions per
+    PR and flushes a single combined summary (e.g. ``"✅ 3 checks passed:
+    lint, test, build"``) after ``DISCORD_PR_DEBOUNCE_SECONDS`` (default 15)
+    of silence on that PR, instead of one Discord message per check — a CI
+    matrix routinely fires several of these within a few seconds of each
+    other. The combined message always carries ``SUPPRESS_NOTIFICATIONS``
+    (see ``_SILENT_FLAG``) so CI results don't page anyone; non-CI events
+    (PR opened/merged/closed, reviews) are unaffected and keep posting
+    immediately at normal priority.
+
 Required bot permissions: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
 
 Usage::
@@ -164,6 +175,7 @@ async def notify(
     url: str | None = None,
     color: int | None = None,
     ps_guild_slug: str | None = None,
+    flags: int | None = None,
 ) -> None:
     """Post a Discord embed to the bot's configured channel.
 
@@ -180,7 +192,9 @@ async def notify(
     if not channel:
         return
 
-    await _post_to_thread(channel, event_type, title, description, url=url, color=color)
+    await _post_to_thread(
+        channel, event_type, title, description, url=url, color=color, flags=flags
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -524,15 +538,24 @@ async def _post_to_thread(
     url: str | None = None,
     color: int | None = None,
     fields: dict[str, str] | None = None,
+    flags: int | None = None,
 ) -> None:
-    """Post an embed to an existing Discord thread. Never raises."""
+    """Post an embed to an existing Discord thread. Never raises.
+
+    *flags* is the raw Discord message-flags bitmask (see ``_SILENT_FLAG``) —
+    passed through so callers like ``notify_ci_check`` can mark a message
+    silent without duplicating the request-building logic here.
+    """
     resolved_color = color if color is not None else _COLOURS.get(event_type, _DEFAULT_COLOUR)
     embed: dict = {"title": title, "description": description, "color": resolved_color}
     if url:
         embed["url"] = url
     if fields:
         embed["fields"] = [{"name": k, "value": v, "inline": True} for k, v in fields.items()]
-    await _bot_request("post", f"/channels/{thread_id}/messages", {"embeds": [embed]})
+    payload: dict = {"embeds": [embed]}
+    if flags:
+        payload["flags"] = flags
+    await _bot_request("post", f"/channels/{thread_id}/messages", payload)
 
 
 async def archive_thread(thread_id: str) -> None:
@@ -762,6 +785,7 @@ async def notify_event(
     linked_issue_repo: str | None = None,
     linked_issue_number: int | None = None,
     task_id: str | None = None,
+    flags: int | None = None,
 ) -> None:
     """Post a Discord notification, routing to a per-PR/issue thread when possible.
 
@@ -798,6 +822,11 @@ async def notify_event(
     When ``close=True`` the thread is archived after the message is posted
     (used for PR merge/close events).
 
+    *flags* is the raw Discord message-flags bitmask (see ``_SILENT_FLAG``),
+    passed straight through to whichever destination the message ends up at
+    — used by ``notify_ci_check`` to mark combined CI summaries silent
+    without affecting any other event type's priority.
+
     Falls back to a flat embed posted to the resolved channel when thread
     operations fail. Silent no-op when the bot token is not configured.
     Never raises.
@@ -813,6 +842,7 @@ async def notify_event(
                 url=url,
                 color=color,
                 fields=header_fields,
+                flags=flags,
             )
             return
 
@@ -832,6 +862,7 @@ async def notify_event(
                 url=url,
                 color=color,
                 fields=header_fields,
+                flags=flags,
             )
             return
 
@@ -848,13 +879,22 @@ async def notify_event(
                 url=url,
                 color=color,
                 fields=header_fields,
+                flags=flags,
             )
             if close:
                 await archive_thread(thread_id)
             return
 
     # Fallback: flat embed to the resolved channel
-    await notify(event_type, title, description, url=url, color=color, ps_guild_slug=ps_guild_slug)
+    await notify(
+        event_type,
+        title,
+        description,
+        url=url,
+        color=color,
+        ps_guild_slug=ps_guild_slug,
+        flags=flags,
+    )
 
 
 async def notify_existing_thread(
@@ -1222,3 +1262,150 @@ async def flush_task_stream(task_id: str) -> None:
         buf.flush_task.cancel()
         buf.flush_task = None
     await _drain_and_post(buf, task_id)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: CI check debounce/combine
+# ---------------------------------------------------------------------------
+
+# Icon + verb used when rendering the combined CI summary line, keyed by
+# GitHub's check-run "conclusion" field.
+_CI_CONCLUSION_ICONS: dict[str, str] = {
+    "success": "✅",
+    "failure": "❌",
+    "cancelled": "⚠️",
+    "timed_out": "⚠️",
+    "action_required": "⚠️",
+}
+
+_CI_CONCLUSION_VERBS: dict[str, str] = {
+    "success": "passed",
+    "failure": "failed",
+    "cancelled": "cancelled",
+    "timed_out": "timed out",
+    "action_required": "need attention",
+}
+
+
+def _pr_debounce_seconds() -> float:
+    """Debounce window (seconds) before flushing a PR's buffered CI checks.
+
+    Read at call time (not cached) so ``DISCORD_PR_DEBOUNCE_SECONDS`` can be
+    tuned — or overridden in tests — without a restart. Defaults to 15s.
+    """
+    return float(os.environ.get("DISCORD_PR_DEBOUNCE_SECONDS", "15"))
+
+
+@dataclass
+class _CICheckEntry:
+    """One buffered check_run/check_suite completion pending combination."""
+
+    check_name: str
+    conclusion: str
+
+
+@dataclass
+class _CIBatch:
+    """Pending CI check completions for one PR, plus the shared notify_event routing kwargs."""
+
+    kwargs: dict
+    entries: list[_CICheckEntry] = field(default_factory=list)
+    flush_task: asyncio.Task | None = None
+
+
+# Keyed by "{issue_repo}#{issue_number}" (or the PR label when repo/number
+# aren't available). Holds only PRs with un-flushed CI entries.
+_ci_batches: dict[str, _CIBatch] = {}
+
+
+def _format_ci_summary(entries: list[_CICheckEntry]) -> str:
+    """Combine buffered check completions into a compact, multi-line summary.
+
+    Groups by conclusion so e.g. two passing checks plus one failing check
+    renders as two lines: ``"✅ 2 checks passed: lint, test"`` followed by
+    ``"❌ 1 check failed: build"`` — rather than one Discord message per check.
+    """
+    by_conclusion: dict[str, list[str]] = {}
+    for entry in entries:
+        by_conclusion.setdefault(entry.conclusion, []).append(entry.check_name)
+
+    lines = []
+    for conclusion, names in by_conclusion.items():
+        icon = _CI_CONCLUSION_ICONS.get(conclusion, "ℹ️")
+        noun = "check" if len(names) == 1 else "checks"
+        verb = _CI_CONCLUSION_VERBS.get(conclusion, conclusion.replace("_", " "))
+        lines.append(f"{icon} {len(names)} {noun} {verb}: {', '.join(names)}")
+    return "\n".join(lines)
+
+
+async def _flush_ci_batch(key: str) -> None:
+    """Post the combined summary for *key*'s buffered CI checks, then drop the batch."""
+    batch = _ci_batches.pop(key, None)
+    if batch is None or not batch.entries:
+        return
+    conclusions = {entry.conclusion for entry in batch.entries}
+    event_type = "ci-pass" if conclusions == {"success"} else "ci-fail"
+    description = _format_ci_summary(batch.entries)
+    await notify_event(event_type, description=description, flags=_SILENT_FLAG, **batch.kwargs)
+
+
+async def _delayed_ci_flush(key: str) -> None:
+    """Wait out the debounce window, then flush *key*'s buffered CI checks."""
+    try:
+        await asyncio.sleep(_pr_debounce_seconds())
+    except asyncio.CancelledError:
+        return
+    await _flush_ci_batch(key)
+
+
+async def notify_ci_check(
+    check_name: str,
+    conclusion: str,
+    *,
+    pr_label: str,
+    url: str | None = None,
+    issue_repo: str | None = None,
+    issue_number: int | None = None,
+    ps_guild_slug: str | None = None,
+    linked_issue_repo: str | None = None,
+    linked_issue_number: int | None = None,
+    task_id: str | None = None,
+) -> None:
+    """Buffer one CI check completion for *pr_label* and (re)arm a debounced flush.
+
+    Multiple ``check_run``/``check_suite`` completions for the same PR
+    arriving within ``DISCORD_PR_DEBOUNCE_SECONDS`` of each other (a CI
+    matrix routinely fires several within a few seconds) are combined into a
+    single Discord message — see ``_format_ci_summary`` — instead of one
+    message per check. The combined message always carries
+    ``SUPPRESS_NOTIFICATIONS`` (``_SILENT_FLAG``): a CI result is useful to
+    see in the thread but shouldn't page anyone. The timer starts on the
+    first buffered check for a PR and is not reset by later ones in the same
+    window — matching the existing task-stream buffer's batching behaviour
+    (see ``notify_task_stream``) rather than a sliding debounce, so a steady
+    trickle of checks can't indefinitely postpone the summary. Silent no-op
+    when the bot token is not configured. Never raises.
+    """
+    if not _bot_token():
+        return
+
+    key = f"{issue_repo}#{issue_number}" if issue_repo and issue_number is not None else pr_label
+    batch = _ci_batches.get(key)
+    if batch is None:
+        batch = _CIBatch(
+            kwargs={
+                "title": f"CI results: {pr_label}",
+                "url": url,
+                "issue_repo": issue_repo,
+                "issue_number": issue_number,
+                "ps_guild_slug": ps_guild_slug,
+                "linked_issue_repo": linked_issue_repo,
+                "linked_issue_number": linked_issue_number,
+                "task_id": task_id,
+            }
+        )
+        _ci_batches[key] = batch
+    batch.entries.append(_CICheckEntry(check_name=check_name, conclusion=conclusion))
+
+    if batch.flush_task is None:
+        batch.flush_task = asyncio.ensure_future(_delayed_ci_flush(key))

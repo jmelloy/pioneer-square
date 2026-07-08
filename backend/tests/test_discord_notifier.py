@@ -48,6 +48,14 @@ def reset_stream_buffers():
     discord_notifier._stream_buffers.clear()
 
 
+@pytest.fixture(autouse=True)
+def reset_ci_batches():
+    """Clear the in-memory CI check batches between tests."""
+    discord_notifier._ci_batches.clear()
+    yield
+    discord_notifier._ci_batches.clear()
+
+
 def _make_mock_client(status_code: int = 204, side_effect=None, json_response: dict | None = None):
     """Return a mock httpx.AsyncClient with stubbed HTTP methods."""
     mock_response = MagicMock(spec=httpx.Response)
@@ -1416,3 +1424,219 @@ def test_chunk_content_prefers_newline_boundaries():
 
     assert chunks == ["aaaa", "bbbb", "cccc"]
     assert all(len(c) <= 7 for c in chunks)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: CI check debounce/combine (issue #843)
+# ---------------------------------------------------------------------------
+
+
+def test_pr_debounce_seconds_defaults_to_15(monkeypatch):
+    monkeypatch.delenv("DISCORD_PR_DEBOUNCE_SECONDS", raising=False)
+    assert discord_notifier._pr_debounce_seconds() == 15.0
+
+
+def test_pr_debounce_seconds_honours_env_override(monkeypatch):
+    monkeypatch.setenv("DISCORD_PR_DEBOUNCE_SECONDS", "5")
+    assert discord_notifier._pr_debounce_seconds() == 5.0
+
+
+def test_format_ci_summary_all_passed():
+    entries = [
+        discord_notifier._CICheckEntry(check_name="lint", conclusion="success"),
+        discord_notifier._CICheckEntry(check_name="test", conclusion="success"),
+        discord_notifier._CICheckEntry(check_name="build", conclusion="success"),
+    ]
+    summary = discord_notifier._format_ci_summary(entries)
+    assert summary == "✅ 3 checks passed: lint, test, build"
+
+
+def test_format_ci_summary_mixed_pass_and_fail():
+    entries = [
+        discord_notifier._CICheckEntry(check_name="lint", conclusion="success"),
+        discord_notifier._CICheckEntry(check_name="build", conclusion="failure"),
+    ]
+    summary = discord_notifier._format_ci_summary(entries)
+    assert "✅ 1 check passed: lint" in summary
+    assert "❌ 1 check failed: build" in summary
+
+
+def test_format_ci_summary_singular_wording():
+    entries = [discord_notifier._CICheckEntry(check_name="lint", conclusion="success")]
+    assert discord_notifier._format_ci_summary(entries) == "✅ 1 check passed: lint"
+
+
+@pytest.mark.asyncio
+async def test_notify_ci_check_noop_when_no_bot_token(monkeypatch):
+    """notify_ci_check must not buffer anything when the bot token is unset."""
+    await discord_notifier.notify_ci_check("lint", "success", pr_label="org/repo#1")
+
+    assert discord_notifier._ci_batches == {}
+
+
+@pytest.mark.asyncio
+async def test_notify_ci_check_buffers_without_posting_immediately(monkeypatch):
+    """A single CI check is buffered and a delayed flush armed — no immediate POST."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_delayed_ci_flush", AsyncMock()),
+    ):
+        await discord_notifier.notify_ci_check(
+            "lint", "success", pr_label="org/repo#1", issue_repo="org/repo", issue_number=1
+        )
+
+    mock_client.post.assert_not_called()
+    batch = discord_notifier._ci_batches["org/repo#1"]
+    assert batch.entries == [
+        discord_notifier._CICheckEntry(check_name="lint", conclusion="success")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_notify_ci_check_combines_multiple_checks_into_one_message(monkeypatch):
+    """Multiple rapid check completions for the same PR flush as one combined message."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        for name in ("lint", "test", "build"):
+            await discord_notifier.notify_ci_check(
+                name,
+                "success",
+                pr_label="org/repo#1",
+                issue_repo="org/repo",
+                issue_number=1,
+            )
+        # Flush directly instead of waiting out the real debounce window.
+        await discord_notifier._flush_ci_batch("org/repo#1")
+
+    mock_client.post.assert_called_once()
+    body = mock_client.post.call_args[1]["json"]
+    assert body["embeds"][0]["description"] == "✅ 3 checks passed: lint, test, build"
+    assert "org/repo#1" not in discord_notifier._ci_batches
+
+
+@pytest.mark.asyncio
+async def test_flush_ci_batch_uses_ci_pass_when_all_succeed(monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_ci_check(
+            "lint", "success", pr_label="org/repo#1", issue_repo="org/repo", issue_number=1
+        )
+        await discord_notifier._flush_ci_batch("org/repo#1")
+
+    body = mock_client.post.call_args[1]["json"]
+    assert body["embeds"][0]["color"] == discord_notifier._COLOURS["ci-pass"]
+
+
+@pytest.mark.asyncio
+async def test_flush_ci_batch_uses_ci_fail_when_any_check_fails(monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_ci_check(
+            "lint", "success", pr_label="org/repo#1", issue_repo="org/repo", issue_number=1
+        )
+        await discord_notifier.notify_ci_check(
+            "build", "failure", pr_label="org/repo#1", issue_repo="org/repo", issue_number=1
+        )
+        await discord_notifier._flush_ci_batch("org/repo#1")
+
+    body = mock_client.post.call_args[1]["json"]
+    assert body["embeds"][0]["color"] == discord_notifier._COLOURS["ci-fail"]
+
+
+@pytest.mark.asyncio
+async def test_flush_ci_batch_posts_with_suppress_notifications_flag(monkeypatch):
+    """Combined CI summaries must always carry SUPPRESS_NOTIFICATIONS (flags=4096)."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_ci_check(
+            "build", "failure", pr_label="org/repo#1", issue_repo="org/repo", issue_number=1
+        )
+        await discord_notifier._flush_ci_batch("org/repo#1")
+
+    body = mock_client.post.call_args[1]["json"]
+    assert body["flags"] == 4096 == discord_notifier._SILENT_FLAG
+
+
+@pytest.mark.asyncio
+async def test_flush_ci_batch_noop_when_batch_missing():
+    """Flushing an already-flushed / unknown key is a silent no-op."""
+    with patch.object(discord_notifier, "notify_event", AsyncMock()) as notify_mock:
+        await discord_notifier._flush_ci_batch("unknown-key")
+
+    notify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notify_event_non_ci_has_no_suppress_flag(monkeypatch):
+    """Non-CI events (e.g. pr-merged) must post without the silent flag."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
+    mock_client = _make_mock_client()
+
+    with (
+        patch.object(discord_notifier, "_get_client", return_value=mock_client),
+        patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=THREAD_ID)),
+    ):
+        await discord_notifier.notify_event(
+            "pr-merged",
+            title="PR merged",
+            description="Merged!",
+            issue_repo="org/repo",
+            issue_number=1,
+        )
+
+    body = mock_client.post.call_args[1]["json"]
+    assert "flags" not in body
+
+
+@pytest.mark.asyncio
+async def test_post_to_thread_omits_flags_key_when_not_given(monkeypatch):
+    """_post_to_thread must not add a flags key to the payload when flags=None."""
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    mock_client = _make_mock_client()
+
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
+        await discord_notifier._post_to_thread(THREAD_ID, "pr-opened", "t", "d")
+
+    body = mock_client.post.call_args[1]["json"]
+    assert "flags" not in body
+
+
+@pytest.mark.asyncio
+async def test_post_to_thread_includes_flags_when_given(monkeypatch):
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
+    mock_client = _make_mock_client()
+
+    with patch.object(discord_notifier, "_get_client", return_value=mock_client):
+        await discord_notifier._post_to_thread(THREAD_ID, "ci-pass", "t", "d", flags=4096)
+
+    body = mock_client.post.call_args[1]["json"]
+    assert body["flags"] == 4096

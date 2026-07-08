@@ -1016,13 +1016,15 @@ async def github_webhook(
             if isinstance(node, dict)
             else "CI"
         )
-        if conclusion == "success":
+        # Buffered per-PR and combined into one Discord message (see
+        # discord_notifier.notify_ci_check) instead of one message per check —
+        # a CI matrix can complete several of these within seconds of each other.
+        if conclusion in {"success", "failure", "cancelled", "timed_out", "action_required"}:
             spawn(
-                discord_notifier.notify_event(
-                    "ci-pass",
-                    title=f"CI passed: {_pr_label}",
-                    description=f"`{check_name}` passed on `{_pr_label}`."
-                    + (f" Task: `{task_id}`." if task_id else ""),
+                discord_notifier.notify_ci_check(
+                    check_name,
+                    conclusion,
+                    pr_label=_pr_label,
                     url=pr_url or None,
                     issue_repo=repo,
                     issue_number=pr_number,
@@ -1031,24 +1033,7 @@ async def github_webhook(
                     linked_issue_number=linked_issue_number,
                     task_id=task_id,
                 ),
-                name=f"discord.ci-pass:{_pr_label}",
-            )
-        elif conclusion in {"failure", "cancelled", "timed_out", "action_required"}:
-            spawn(
-                discord_notifier.notify_event(
-                    "ci-fail",
-                    title=f"CI failed: {_pr_label}",
-                    description=f"`{check_name}` {conclusion} on `{_pr_label}`."
-                    + (f" Task: `{task_id}`." if task_id else ""),
-                    url=pr_url or None,
-                    issue_repo=repo,
-                    issue_number=pr_number,
-                    ps_guild_slug=guild_id,
-                    linked_issue_repo=linked_issue_repo,
-                    linked_issue_number=linked_issue_number,
-                    task_id=task_id,
-                ),
-                name=f"discord.ci-fail:{_pr_label}",
+                name=f"discord.ci-check:{_pr_label}:{check_name}",
             )
 
     await broadcast_msg(
