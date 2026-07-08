@@ -14,8 +14,10 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from worker_lifecycle import (  # noqa: E402
+    SHUTDOWN_FORCE_KILL_TIMEOUT,
     WORKER_DRAIN_TIMEOUT,
     drain_stale_workers_on_startup,
+    force_kill_worker_if_unresponsive,
     generate_worker_id,
     get_current_version,
     reconcile_stale_workers,
@@ -570,3 +572,135 @@ async def test_reconcile_only_respawns_workers_still_missing():
 
     mock_kill.assert_called_once_with({"w-b"})
     mock_spawn.assert_called_once_with(["w-b"])
+
+
+# ---------------------------------------------------------------------------
+# force_kill_worker_if_unresponsive
+# ---------------------------------------------------------------------------
+
+
+class _FakeStateDB:
+    """Fake session whose exec().one_or_none() returns states from a queue, in order.
+
+    Each call to exec() advances to the next queued state, so a single instance
+    can simulate a worker observed across several consecutive polls (e.g. online,
+    online, then offline) rather than always returning the same result.
+    """
+
+    def __init__(self, states):
+        self._states = iter(states)
+        self.call_count = 0
+
+    async def exec(self, *a, **k):
+        self.call_count += 1
+        return MagicMock(one_or_none=MagicMock(return_value=next(self._states)))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def test_shutdown_force_kill_timeout_default():
+    assert SHUTDOWN_FORCE_KILL_TIMEOUT == 600.0
+
+
+def test_shutdown_force_kill_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("PIONEER_SHUTDOWN_TIMEOUT", "45")
+    import importlib
+
+    import worker_lifecycle as wl
+
+    try:
+        importlib.reload(wl)
+        assert wl.SHUTDOWN_FORCE_KILL_TIMEOUT == 45.0
+    finally:
+        monkeypatch.delenv("PIONEER_SHUTDOWN_TIMEOUT", raising=False)
+        importlib.reload(wl)
+
+
+@pytest.mark.asyncio
+async def test_force_kill_if_unresponsive_noop_when_worker_goes_offline():
+    """A worker that reports offline within the timeout is never force-killed."""
+    session_iter = iter([_FakeStateDB(["offline"])])
+    mock_kill = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+    ):
+        await force_kill_worker_if_unresponsive("w-graceful", timeout=0.01)
+
+    mock_kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_force_kill_if_unresponsive_noop_when_worker_row_gone():
+    """A worker row that's disappeared (e.g. deleted) is treated as already gone."""
+    session_iter = iter([_FakeStateDB([None])])
+    mock_kill = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+    ):
+        await force_kill_worker_if_unresponsive("w-gone", timeout=0.01)
+
+    mock_kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_force_kill_if_unresponsive_escalates_after_timeout():
+    """A worker that never goes offline gets force-killed once the timeout elapses."""
+    # Second _FakeStateDB is consumed by the final re-check done immediately
+    # before force-killing.
+    session_iter = iter([_FakeStateDB(["working"]), _FakeStateDB(["working"])])
+    mock_kill = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+    ):
+        await force_kill_worker_if_unresponsive("w-wedged", timeout=0.01)
+
+    mock_kill.assert_called_once_with({"w-wedged"})
+
+
+@pytest.mark.asyncio
+async def test_force_kill_if_unresponsive_skips_kill_when_offline_just_before_escalation():
+    """The final re-check catches a worker that went offline right after the last poll,
+    avoiding an unnecessary force-kill.
+    """
+    session_iter = iter([_FakeStateDB(["working"]), _FakeStateDB(["offline"])])
+    mock_kill = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+    ):
+        await force_kill_worker_if_unresponsive("w-just-in-time", timeout=0.01)
+
+    mock_kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_force_kill_if_unresponsive_polls_across_multiple_iterations():
+    """A worker seen online for two polls and offline on the third is neither
+    force-killed nor mistaken for offline early — each poll advances the state queue.
+    """
+    fake_db = _FakeStateDB(["working", "working", "offline"])
+    mock_kill = AsyncMock()
+    fake_loop = MagicMock()
+    fake_loop.time = MagicMock(side_effect=[0.0, 5.0, 10.0, 12.0])
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: fake_db),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+        patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
+        patch("worker_lifecycle.asyncio.get_event_loop", return_value=fake_loop),
+    ):
+        await force_kill_worker_if_unresponsive("w-slow-to-drain", timeout=12.0)
+
+    assert fake_db.call_count == 3
+    mock_kill.assert_not_called()

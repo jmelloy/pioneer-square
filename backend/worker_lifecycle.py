@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 # How long to wait for stale workers to exit gracefully before force-killing.
 WORKER_DRAIN_TIMEOUT = float(os.environ.get("PIONEER_WORKER_DRAIN_TIMEOUT", "60"))
 
+# How long to wait after an explicit shutdown_worker request before force-killing
+# an unresponsive worker's container. Separate from WORKER_DRAIN_TIMEOUT (which
+# guards the much rarer startup version-mismatch drain) since this is the window
+# the foreman AI waits on every ordinary "stop this worker" request.
+SHUTDOWN_FORCE_KILL_TIMEOUT = float(os.environ.get("PIONEER_SHUTDOWN_TIMEOUT", "600"))
+
 
 def get_current_version() -> str | None:
     """Return the running backend version.
@@ -265,6 +271,59 @@ async def _force_kill_containers(worker_ids: set[str]) -> None:
                 "relying on graceful-shutdown signal only",
                 worker.id,
             )
+
+
+async def force_kill_worker_if_unresponsive(
+    worker_id: str, timeout: float = SHUTDOWN_FORCE_KILL_TIMEOUT
+) -> None:
+    """Give a worker time to shut down gracefully; force-kill its container if it doesn't.
+
+    Spawned as a background task right after shutdown_worker broadcasts a graceful
+    WorkerShutdownMsg, so an in-progress task on that worker gets a chance to finish
+    before anything is force-killed. Only escalates to a hard Docker kill (last
+    resort) if the worker never reports going offline within *timeout* seconds —
+    e.g. because it's wedged and never received/processed the shutdown signal.
+    """
+    poll_interval = 5.0
+    start = asyncio.get_event_loop().time()
+    elapsed = 0.0
+    while elapsed < timeout:
+        await asyncio.sleep(min(poll_interval, timeout - elapsed))
+        elapsed = asyncio.get_event_loop().time() - start
+        async with AsyncSessionLocal() as db:
+            state = (
+                await db.exec(select(col(Worker.state)).where(col(Worker.id) == worker_id))
+            ).one_or_none()
+        if state is None or state == "offline":
+            logger.info(
+                "worker_lifecycle: worker %s shut down gracefully within %.0fs",
+                worker_id,
+                elapsed,
+            )
+            return
+
+    # Re-check right before escalating: the worker may have gone offline in the
+    # window between the last poll above and now, and we don't want to force-kill
+    # a container that already shut down gracefully.
+    async with AsyncSessionLocal() as db:
+        state = (
+            await db.exec(select(col(Worker.state)).where(col(Worker.id) == worker_id))
+        ).one_or_none()
+    if state is None or state == "offline":
+        logger.info(
+            "worker_lifecycle: worker %s shut down gracefully just before the force-kill "
+            "escalation — skipping container kill",
+            worker_id,
+        )
+        return
+
+    logger.warning(
+        "worker_lifecycle: worker %s did not shut down within %.0fs of the graceful "
+        "shutdown signal — force-killing its container",
+        worker_id,
+        timeout,
+    )
+    await _force_kill_containers({worker_id})
 
 
 async def reconcile_stale_workers(stale_ids: list[str]) -> None:
