@@ -27,8 +27,13 @@ FOREMAN_TOOLS = [
                 },
                 "phase": {
                     "type": "string",
-                    "enum": ["plan", "execute", "review"],
-                    "description": "Starting phase. Default: execute.",
+                    "enum": ["issue", "plan", "execute", "review"],
+                    "description": (
+                        "Starting phase. Default: execute. Use 'issue' for the root task "
+                        "of an issue-rooted task tree — never assigned to a worker; has no "
+                        "branch or PR — created once per GitHub issue, with plan/execute "
+                        "tasks pointing at it via parent_task_id."
+                    ),
                 },
             },
             "required": ["name", "description"],
