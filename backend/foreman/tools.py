@@ -1241,6 +1241,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 is_error = True
                             elif existing_task_id:
                                 name_override = inp.get("name")
+                                parent_task_id = inp.get("parent_task_id")
                                 update_values: dict = {
                                     "worker_id": wid,
                                     "description": desc,
@@ -1257,6 +1258,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     update_values["issue_number"] = inp["issue_number"]
                                 if inp.get("issue_repo"):
                                     update_values["issue_repo"] = inp["issue_repo"]
+                                if parent_task_id is not None:
+                                    update_values["parent_task_id"] = parent_task_id
                                 await db.exec(
                                     update(Task)
                                     .where(
@@ -1282,6 +1285,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         model=model,
                                         provider=provider,
                                         phase=phase,
+                                        parentTaskId=parent_task_id,
                                         issueNumber=inp.get("issue_number"),
                                         issueRepo=inp.get("issue_repo"),
                                         repos=repos,
