@@ -2,33 +2,66 @@
   <div class="tree-row-group">
     <div
       class="task-row"
-      :class="{ selected: selectedTaskId === task.id, 'has-indent': depth > 0 }"
+      :class="{
+        selected: selectedTaskId === task.id,
+        'has-indent': depth > 0,
+        'issue-root-row': isIssueRoot,
+      }"
       :style="{ paddingLeft: `${10 + depth * 14}px` }"
       @click="$emit('open-task', task.id)"
     >
-      <span v-if="task.children.length" class="row-toggle" @click.stop="expanded = !expanded">
+      <span
+        v-if="task.children.length && !isIssueRoot"
+        class="row-toggle"
+        @click.stop="expanded = !expanded"
+      >
         {{ expanded ? '▾' : '▸' }}
       </span>
-      <span v-else class="row-toggle-spacer"></span>
+      <span v-else-if="!isIssueRoot" class="row-toggle-spacer"></span>
 
-      <span class="task-dot" :class="'dot-' + dotClass(task.state)"></span>
+      <template v-if="isIssueRoot">
+        <span class="issue-icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor">
+            <path
+              d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm9 3a1 1 0 1 1-2 0 1 1 0 0 1 2 0Zm-.25-6.25a.75.75 0 0 0-1.5 0v3.5a.75.75 0 0 0 1.5 0v-3.5Z"
+            />
+          </svg>
+        </span>
 
-      <span class="task-name">{{ task.name || task.id }}</span>
+        <span class="task-name issue-root-name">{{ task.name || task.id }}</span>
 
-      <span v-if="task.phase" class="phase-pill" :class="'phase-' + task.phase">
-        {{ task.phase }}
-      </span>
+        <a
+          v-if="task.issue_repo && task.issue_number"
+          class="issue-link"
+          :href="`https://github.com/${task.issue_repo}/issues/${task.issue_number}`"
+          target="_blank"
+          rel="noopener noreferrer"
+          @click.stop
+        >
+          {{ task.issue_repo }}#{{ task.issue_number }}
+        </a>
+      </template>
 
-      <span class="state-pill" :class="'state-' + dotClass(task.state)">
-        {{ stateLabel(task.state) }}
-      </span>
+      <template v-else>
+        <span class="task-dot" :class="'dot-' + dotClass(task.state)"></span>
 
-      <span v-if="task.worker_id && isActiveState(task.state)" class="worker-id">
-        {{ task.worker_id.slice(0, 10) }}
-      </span>
+        <span class="task-name">{{ task.name || task.id }}</span>
+
+        <span v-if="task.phase" class="phase-pill" :class="'phase-' + task.phase">
+          {{ task.phase }}
+        </span>
+
+        <span class="state-pill" :class="'state-' + dotClass(task.state)">
+          {{ stateLabel(task.state) }}
+        </span>
+
+        <span v-if="task.worker_id && isActiveState(task.state)" class="worker-id">
+          {{ task.worker_id.slice(0, 10) }}
+        </span>
+      </template>
     </div>
 
-    <template v-if="expanded && task.children.length">
+    <template v-if="(isIssueRoot || expanded) && task.children.length">
       <TaskTreeRow
         v-for="child in task.children"
         :key="child.id"
@@ -42,10 +75,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { TaskTreeNode } from '../../types'
 
-defineProps<{
+const props = defineProps<{
   task: TaskTreeNode
   depth: number
   selectedTaskId: string | null
@@ -55,6 +88,11 @@ defineEmits<{ (e: 'open-task', id: string): void }>()
 
 const ACTIVE_STATES = new Set(['pending', 'planning', 'working', 'followup'])
 const expanded = ref(true)
+
+// Root task of an issue-rooted subtree — never assigned to a worker, has no
+// branch/PR, so it gets a dedicated GH-issue-link treatment instead of the
+// usual phase/state pills, and is always shown expanded.
+const isIssueRoot = computed(() => props.task.phase === 'issue')
 
 function dotClass(state: string): string {
   return (state || 'pending').replace(/[^a-z]/g, '-')
@@ -106,6 +144,39 @@ function isActiveState(state: string): boolean {
 .task-row.selected {
   background: rgba(232, 170, 0, 0.12);
   border-left: 3px solid var(--color-brass);
+}
+
+.issue-root-row {
+  background: rgba(232, 170, 0, 0.05);
+  border-bottom: 1px solid var(--color-brass-dark);
+}
+
+.issue-icon {
+  display: flex;
+  align-items: center;
+  color: var(--color-brass);
+  flex-shrink: 0;
+}
+
+.issue-root-name {
+  font-weight: 600;
+}
+
+.issue-link {
+  font-family: var(--font-pixel);
+  font-size: 0.7rem;
+  letter-spacing: 0.5px;
+  color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.15);
+  padding: 2px 5px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.issue-link:hover {
+  text-decoration: underline;
 }
 
 .row-toggle {
