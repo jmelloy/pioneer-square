@@ -319,7 +319,8 @@ async def post_issue_close_summary_comment(
             except Exception:
                 merged = False
                 logger.warning(
-                    "issue close summary: failed to fetch PR status for task=%s", t.id,
+                    "issue close summary: failed to fetch PR status for task=%s",
+                    t.id,
                     exc_info=True,
                 )
             if not merged:
@@ -1933,7 +1934,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 else None,
                             ),
                         )
-                        if task.phase == "issue" and task.issue_repo and task.issue_number is not None:
+                        if (
+                            task.phase == "issue"
+                            and task.issue_repo
+                            and task.issue_number is not None
+                        ):
                             await post_issue_close_summary_comment(
                                 guild_id, task.issue_repo, task.issue_number, descendants
                             )
