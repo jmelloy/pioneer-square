@@ -27,6 +27,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
 from _test_config import TEST_DATABASE_URL  # noqa: E402
+from auth_deps import get_guild_pk
+from database import get_db
 from foreman.constants import MAX_HISTORY_MESSAGES, MAX_TOOL_RESULT_CHARS
 from foreman.message_utils import (
     _serialize_content,
@@ -1872,6 +1874,57 @@ class TestExecToolsDispatching:
                 select(TaskEvent).where(TaskEvent.task_id == "t-err1")
             ).scalar_one_or_none()
         assert ev is None, "No pending-followup event should be queued — follow-up was dispatched"
+
+
+class TestFinalizeIssueRootTaskAtomicity:
+    """finalize_issue_root_task (backend/foreman/tools.py) guards against a lost-update
+    race (jmelloy/pioneer-square#851, PR #848 review) by making the terminal-state
+    check and the state='done' write a single conditional UPDATE...RETURNING instead
+    of a SELECT followed by an UPDATE. A prior SELECT would let two concurrent callers
+    (the issues webhook and the periodic closed-issue sweep) both observe the
+    non-terminal state, then both write — double-finalizing the task and racing on
+    which worker_id gets broadcast. With the atomic UPDATE, Postgres serializes the
+    two writers on the row and only the first to commit can win."""
+
+    async def test_concurrent_finalize_only_one_caller_wins(self, db_session):
+        from foreman.tools import finalize_issue_root_task
+
+        insert_guild(db_session, "g-race")
+        _insert_worker(db_session, "g-race", "w-race")
+        insert_task(
+            db_session,
+            "g-race",
+            "t-race-root",
+            worker_id="w-race",
+            state="working",
+            phase="issue",
+            issue_repo="o/r",
+            issue_number=42,
+        )
+
+        db_a = await get_db()
+        db_b = await get_db()
+        try:
+            guild_pk = await get_guild_pk(db_a, "g-race")
+            with patch("foreman.tools._guild_github_token", return_value=None):
+                results = await asyncio.gather(
+                    finalize_issue_root_task(db_a, guild_pk, "g-race", "t-race-root"),
+                    finalize_issue_root_task(db_b, guild_pk, "g-race", "t-race-root"),
+                )
+        finally:
+            await db_a.close()
+            await db_b.close()
+
+        # Exactly one of the two concurrent callers must observe the terminal-state
+        # guard flip and back off — a lost-update bug would let both return True.
+        assert sorted(results) == [False, True]
+
+        with _sync_session(db_session) as session:
+            state, deleted_at = session.execute(
+                select(col(Task.state), col(Task.deleted_at)).where(col(Task.id) == "t-race-root")
+            ).one()
+        assert state == "done"
+        assert deleted_at is not None
 
 
 class TestSpawnWorker:
