@@ -21,8 +21,10 @@ from foreman.constants import (
     MAX_FOREMAN_ROUNDS,
 )
 from foreman.llm import (
+    ANTHROPIC_SDK_PROVIDERS,
     HAS_ANTHROPIC,
     BedrockModelNotConfiguredError,
+    call_anthropic,
     get_foreman_model,
     make_anthropic_client,
 )
@@ -120,6 +122,14 @@ class _LLMCallResult:
 
 
 class _ProxyContentBlock(SimpleNamespace):
+    """Attribute-access view of one content-block dict from a proxied response.
+
+    The foreman API proxy returns plain JSON (dicts), not SDK model instances,
+    so this mimics the Anthropic SDK's content-block attribute access
+    (`.type`/`.text`/`.input`/...) for code shared with the local call path
+    below, which gets real SDK objects from foreman.llm.call_anthropic.
+    """
+
     def __init__(self, raw: dict[str, Any]):
         super().__init__(**raw)
         self._raw = raw
@@ -162,7 +172,15 @@ async def _call_llm(
     tools: list[dict[str, Any]],
     tool_choice: dict[str, Any] | None = None,
 ) -> _LLMCallResult:
-    """Execute one LLM request, either locally or through the external proxy."""
+    """Execute one LLM request.
+
+    Either locally, via foreman.llm.call_anthropic against our own client (for
+    providers in ANTHROPIC_SDK_PROVIDERS), or through the connected foreman API
+    proxy — which can reach any provider, including OpenAI-compatible ones this
+    embedded foreman never calls directly. Request/response translation for
+    every provider lives in foreman.llm, shared with the proxy; this function
+    only picks which of those two call paths to use.
+    """
     if has_foreman_proxy(guild_id):
         data = await call_foreman_api_proxy(
             guild_id,
@@ -187,21 +205,19 @@ async def _call_llm(
     if client is None:
         raise RuntimeError("No Anthropic client available and no external foreman proxy connected")
 
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": system_blocks,
-        "messages": messages,
-        "tools": tools,
-    }
-    if tool_choice is not None:
-        kwargs["tool_choice"] = tool_choice
-    raw = await client.messages.with_raw_response.create(**kwargs)
-    response = raw.parse()
+    response, request_id = await call_anthropic(
+        client,
+        model=model,
+        max_tokens=max_tokens,
+        system=system_blocks,
+        messages=messages,
+        tools=tools,
+        tool_choice=tool_choice,
+    )
     return _LLMCallResult(
         response=response,
         response_dict=response.model_dump(),
-        request_id=raw.headers.get("request-id"),
+        request_id=request_id,
         provider=provider,
         model=model,
     )
@@ -1033,9 +1049,15 @@ async def _run_foreman_ai(
             foreman_model = cfg_model or os.environ.get("FOREMAN_MODEL", "external-proxy")
 
         client = None
-        if not proxy_available and effective_provider not in {"anthropic", "bedrock"}:
+        if not proxy_available and effective_provider not in ANTHROPIC_SDK_PROVIDERS:
+            # This embedded foreman only calls the Anthropic SDK directly
+            # (ANTHROPIC_SDK_PROVIDERS); any other provider — e.g. an
+            # OpenAI-compatible endpoint — is only reachable through a
+            # connected foreman API proxy, which owns that provider's
+            # request/response translation (foreman.llm.call_openai_compatible).
             raise RuntimeError(
-                f"FOREMAN_PROVIDER={effective_provider!r} requires a connected foreman API proxy"
+                f"FOREMAN_PROVIDER={effective_provider!r} is not an embedded provider "
+                f"({sorted(ANTHROPIC_SDK_PROVIDERS)}) and no foreman API proxy is connected"
             )
         if not proxy_available and (cfg_provider or cfg_env_vars):
             client = make_anthropic_client(

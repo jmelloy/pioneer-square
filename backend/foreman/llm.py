@@ -1,14 +1,33 @@
-"""Anthropic client factory supporting both the direct API and Amazon Bedrock.
+"""Shared LLM provider logic: client factory, the Anthropic call, and OpenAI-
+compatible request/response translation.
 
-Both the embedded foreman (backend) and standalone foreman import this to build
-their own module-level singleton — the factory is shared, the instance is not.
+Both the embedded foreman (backend/foreman/runner.py) and the standalone proxy
+(foreman/pioneer_foreman/runner.py) import this module for ALL provider
+normalization — this is the one place that knows the shape of each provider's
+wire format. Neither runner re-implements or duplicates any of it.
+
+Architecture boundary (see issue #826): the proxy exists only to decide *which
+machine* makes the outbound call — a different Bedrock region/profile, a
+locally-reachable OpenAI-compatible endpoint (e.g. Ollama), whatever the
+operator configured. It holds no provider-specific logic of its own; it just
+plumbs its own config into the helpers below. The embedded foreman calls
+`make_anthropic_client` + `call_anthropic` directly for the providers the
+Anthropic SDK can reach itself (`ANTHROPIC_SDK_PROVIDERS`); for anything else
+(currently just `"openai"`) it requires a connected foreman API proxy rather
+than calling `call_openai_compatible` locally — see the FOREMAN_PROVIDER check
+in `backend/foreman/runner.py`.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Mapping
+from typing import Any
+from uuid import uuid4
+
+import httpx
 
 try:
     import anthropic as _anthropic_mod
@@ -19,6 +38,13 @@ except ImportError:
     HAS_ANTHROPIC = False
 
 logger = logging.getLogger(__name__)
+
+# Providers the Anthropic SDK (make_anthropic_client) can call directly, either
+# against the direct API or Amazon Bedrock. Any other provider value (e.g.
+# "openai") needs call_openai_compatible, which the embedded foreman never
+# calls locally — only the standalone proxy does, since that's the process an
+# operator points at their own OpenAI-compatible endpoint.
+ANTHROPIC_SDK_PROVIDERS = frozenset({"anthropic", "bedrock"})
 
 
 class BedrockModelNotConfiguredError(ValueError):
@@ -331,3 +357,269 @@ def make_anthropic_client(
         kwargs.get("base_url", "default"),
     )
     return _anthropic_mod.AsyncAnthropic(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages API call
+# ---------------------------------------------------------------------------
+
+
+async def call_anthropic(
+    client: Any,
+    *,
+    model: str,
+    max_tokens: int,
+    system: list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: dict[str, Any] | None = None,
+) -> tuple[Any, str | None]:
+    """Execute one Anthropic Messages API call. Returns (parsed_response, request_id).
+
+    `client` is any Anthropic SDK async client from make_anthropic_client
+    (AsyncAnthropic or AsyncAnthropicBedrock — Bedrock speaks the same Messages
+    API shape, so one call path covers both). Both the embedded foreman and the
+    standalone proxy call this against whichever client their own config
+    selected, so the request/response shape only has to be gotten right here.
+
+    `parsed_response` is the SDK's own response model (exposing both attribute
+    access like `.content`/`.usage` and `.model_dump()`) — callers that need a
+    plain dict (e.g. the proxy, to send the response back over the wire) call
+    `.model_dump()` themselves; callers that stay in-process (the embedded
+    foreman's local call path) can use it directly.
+
+    `tools` is only included in the request when non-empty: some Anthropic API
+    endpoints reject an explicit empty `tools` array, and omitting the param
+    (rather than defaulting a missing/None value to `[]`) also means a caller
+    that explicitly passes `tools=None` isn't silently overridden.
+    """
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system or [],
+        "messages": messages or [],
+    }
+    if tools:
+        kwargs["tools"] = tools
+    if tool_choice is not None:
+        kwargs["tool_choice"] = tool_choice
+    raw = await client.messages.with_raw_response.create(**kwargs)
+    return raw.parse(), raw.headers.get("request-id")
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible provider: translation to/from the Anthropic Messages API
+# shape that the rest of this codebase (history storage, tool-use parsing,
+# call_anthropic above) speaks natively.
+# ---------------------------------------------------------------------------
+
+
+def _anthropic_content_to_text(blocks: Any) -> str:
+    """Flatten Anthropic content (a string, or a list of text/tool_result blocks)
+    into plain text — OpenAI chat messages take a single string, not blocks."""
+    if isinstance(blocks, str):
+        return blocks
+    if not isinstance(blocks, list):
+        return "" if blocks is None else str(blocks)
+    parts: list[str] = []
+    for block in blocks:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict):
+            if block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+            elif block.get("type") == "tool_result":
+                parts.append(str(block.get("content") or ""))
+    return "\n".join(p for p in parts if p)
+
+
+def anthropic_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Anthropic tool schemas (name/description/input_schema) to OpenAI's
+    function-calling schema."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool["name"],
+                "description": tool.get("description", ""),
+                "parameters": tool.get("input_schema") or {},
+            },
+        }
+        for tool in tools
+    ]
+
+
+def _parse_openai_tool_arguments(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("OpenAI-compatible tool call returned invalid JSON arguments: %.200r", raw)
+        return {"_raw_arguments": raw}
+    return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+
+def anthropic_messages_to_openai(
+    system: list[dict[str, Any]], messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Convert an Anthropic system+messages pair into an OpenAI chat `messages` list.
+
+    Anthropic `tool_use`/`tool_result` blocks become OpenAI `tool_calls` and
+    `role: "tool"` messages respectively; everything else is flattened to text.
+    """
+    converted: list[dict[str, Any]] = []
+    system_text = _anthropic_content_to_text(system)
+    if system_text:
+        converted.append({"role": "system", "content": system_text})
+
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role == "assistant" and isinstance(content, list):
+            text = _anthropic_content_to_text(
+                [
+                    block
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+            )
+            tool_calls = []
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                tool_calls.append(
+                    {
+                        "id": block.get("id") or f"toolu_{uuid4().hex}",
+                        "type": "function",
+                        "function": {
+                            "name": block.get("name") or "",
+                            "arguments": json.dumps(block.get("input") or {}),
+                        },
+                    }
+                )
+            converted.append(
+                {
+                    "role": "assistant",
+                    "content": text or None,
+                    **({"tool_calls": tool_calls} if tool_calls else {}),
+                }
+            )
+            continue
+
+        if role == "user" and isinstance(content, list):
+            pending_text: list[str] = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    if pending_text:
+                        converted.append({"role": "user", "content": "\n".join(pending_text)})
+                        pending_text = []
+                    converted.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": block.get("tool_use_id") or "",
+                            "content": str(block.get("content") or ""),
+                        }
+                    )
+                else:
+                    text = _anthropic_content_to_text([block])
+                    if text:
+                        pending_text.append(text)
+            if pending_text:
+                converted.append({"role": "user", "content": "\n".join(pending_text)})
+            continue
+
+        converted.append({"role": role, "content": _anthropic_content_to_text(content)})
+
+    return converted
+
+
+def openai_response_to_anthropic(raw: dict[str, Any], model: str) -> dict[str, Any]:
+    """Convert an OpenAI chat-completion response into an Anthropic Messages API
+    response dict, so callers only ever handle one response shape."""
+    choice = (raw.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content_blocks: list[dict[str, Any]] = []
+    if message.get("content"):
+        content_blocks.append({"type": "text", "text": str(message["content"])})
+
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        content_blocks.append(
+            {
+                "type": "tool_use",
+                "id": call.get("id") or f"toolu_{uuid4().hex}",
+                "name": fn.get("name") or "",
+                "input": _parse_openai_tool_arguments(fn.get("arguments")),
+            }
+        )
+
+    finish_reason = choice.get("finish_reason")
+    stop_reason = {
+        "tool_calls": "tool_use",
+        "stop": "end_turn",
+        "length": "max_tokens",
+    }.get(finish_reason, finish_reason or "end_turn")
+    usage = raw.get("usage") or {}
+    return {
+        "id": raw.get("id") or f"msg_{uuid4().hex}",
+        "type": "message",
+        "role": "assistant",
+        "model": raw.get("model") or model,
+        "content": content_blocks,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0) or 0,
+            "output_tokens": usage.get("completion_tokens", 0) or 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+    }
+
+
+async def call_openai_compatible(
+    client: httpx.AsyncClient,
+    *,
+    model: str,
+    max_tokens: int,
+    base_url: str,
+    system: list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: dict[str, Any] | None = None,
+    api_key: str | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """Execute one OpenAI-compatible POST /chat/completions call.
+
+    Takes the same Anthropic-shaped, snake_case keyword arguments as
+    call_anthropic (model/max_tokens/system/messages/tools/tool_choice) rather
+    than a raw request dict, so the two provider call paths share one calling
+    convention. The caller (the standalone proxy) is responsible for
+    translating its own wire format (the backend's camelCase
+    maxTokens/toolChoice JSON) into these kwargs — that's the "which machine"
+    plumbing the proxy owns; everything below is the provider translation this
+    module owns. The request is converted to OpenAI chat-completion format,
+    POSTed, and the response is translated back to an Anthropic Messages API
+    response dict, so callers don't need to know which wire format actually
+    served the request. Returns (response_dict, request_id).
+    """
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": anthropic_messages_to_openai(system or [], messages or []),
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        body["tools"] = anthropic_tools_to_openai(tools)
+    if tool_choice:
+        body["tool_choice"] = "none" if tool_choice.get("type") == "none" else tool_choice
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    response = await client.post(url, json=body, headers=headers)
+    response.raise_for_status()
+    request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
+    return openai_response_to_anthropic(response.json(), model), request_id
