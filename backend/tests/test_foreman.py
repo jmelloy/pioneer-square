@@ -744,9 +744,7 @@ class TestExecToolsDispatching:
         assert followup_msgs[0]["model"] == "claude-opus-4-8"
 
         with _sync_session(db_session) as session:
-            task = session.execute(
-                select(Task).where(col(Task.id) == "t-preserve1")
-            ).scalar_one()
+            task = session.execute(select(Task).where(col(Task.id) == "t-preserve1")).scalar_one()
         assert task.tool == "claude"
         assert task.model == "claude-opus-4-8"
 
@@ -793,9 +791,7 @@ class TestExecToolsDispatching:
         assert "model" not in followup_msgs[0]
 
         with _sync_session(db_session) as session:
-            task = session.execute(
-                select(Task).where(col(Task.id) == "t-toolswitch1")
-            ).scalar_one()
+            task = session.execute(select(Task).where(col(Task.id) == "t-toolswitch1")).scalar_one()
         assert task.tool == "codex"
         assert task.model is None
 
@@ -837,9 +833,7 @@ class TestExecToolsDispatching:
         assert len(followup_msgs) == 0, "No dispatch should occur for an unsupported tool override"
 
         with _sync_session(db_session) as session:
-            task = session.execute(
-                select(Task).where(col(Task.id) == "t-badtool1")
-            ).scalar_one()
+            task = session.execute(select(Task).where(col(Task.id) == "t-badtool1")).scalar_one()
         assert task.tool == "claude", "Task tool must be unchanged after a rejected override"
 
     async def test_send_followup_model_override_rejected_when_not_in_catalog(self, db_session):
@@ -921,9 +915,7 @@ class TestExecToolsDispatching:
         assert followup_msgs[0]["provider"] == "openai"
 
         with _sync_session(db_session) as session:
-            task = session.execute(
-                select(Task).where(col(Task.id) == "t-provider1")
-            ).scalar_one()
+            task = session.execute(select(Task).where(col(Task.id) == "t-provider1")).scalar_one()
         assert task.provider == "openai"
 
     async def test_send_followup_task_not_found(self, db_session):

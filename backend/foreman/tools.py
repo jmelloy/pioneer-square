@@ -1401,9 +1401,17 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         is_error = True
                     else:
                         followup_worker_result = await db.exec(
-                            select(col(Worker.tools)).where(col(Worker.id) == target_worker_id)
+                            select(col(Worker.tools), col(Worker.provider)).where(
+                                col(Worker.id) == target_worker_id
+                            )
                         )
-                        followup_worker_tools_json = followup_worker_result.one_or_none()
+                        followup_worker_row = followup_worker_result.one_or_none()
+                        followup_worker_tools_json = (
+                            followup_worker_row[0] if followup_worker_row else None
+                        )
+                        followup_worker_provider = (
+                            followup_worker_row[1] if followup_worker_row else None
+                        )
                         if isinstance(followup_worker_tools_json, str):
                             followup_worker_tools: list[str] = json.loads(
                                 followup_worker_tools_json or "[]"
@@ -1438,7 +1446,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             else:
                                 effective_model = task_model
                             effective_provider = (
-                                requested_provider if requested_provider is not None else task_provider
+                                requested_provider
+                                if requested_provider is not None
+                                else task_provider
+                                if task_provider is not None
+                                else followup_worker_provider
                             )
                             if effective_model and effective_provider:
                                 from models import ModelCatalog  # noqa: PLC0415
