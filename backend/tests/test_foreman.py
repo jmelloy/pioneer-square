@@ -481,6 +481,49 @@ class TestExecToolsDispatching:
         assert "assigned" in results[0]["content"].lower()
         assert "t-exist1" in results[0]["content"]
 
+    async def test_assign_task_update_path_persists_parent_task_id(self, db_session):
+        """create_task -> assign_task(task_id=..., parent_task_id=...) must persist
+        parent_task_id on the update path, not just on the create-new-row path (#830)."""
+        insert_guild(db_session, "g-assign-parent")
+        _insert_worker(db_session, "g-assign-parent", "w-wkr3")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            create_results = await exec_tools(
+                "g-assign-parent",
+                [_fake_tool_use("create_task", {"name": "Sub Task", "description": "Do part"})],
+            )
+            create_content = create_results[0]["content"]
+            assert create_content.startswith("Task t-"), create_content
+            assert "created" in create_content
+            task_id = create_content.split()[1]
+
+            with _sync_session(db_session) as session:
+                parent_task_id_before = session.scalar(
+                    select(col(Task.parent_task_id)).where(col(Task.id) == task_id)
+                )
+            assert parent_task_id_before is None
+
+            results = await exec_tools(
+                "g-assign-parent",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {
+                            "worker_id": "w-wkr3",
+                            "description": "Updated description",
+                            "task_id": task_id,
+                            "parent_task_id": "t-parent1",
+                        },
+                    )
+                ],
+            )
+        assert "assigned" in results[0]["content"].lower()
+
+        with _sync_session(db_session) as session:
+            parent_task_id = session.scalar(
+                select(col(Task.parent_task_id)).where(col(Task.id) == task_id)
+            )
+        assert parent_task_id == "t-parent1"
+
     async def test_assign_task_unsupported_tool(self, db_session):
         insert_guild(db_session, "g-assign-toolcheck")
         insert_worker(db_session, "g-assign-toolcheck", "w-toolcheck", tools='["claude", "pi"]')
