@@ -9,7 +9,7 @@ Priority order for ``select_model_tier()``:
   1. ``complexity_hint`` — explicit caller override, highest priority.
   2. Tool hard tier — tools like ``codex`` always require a specific tier
      regardless of phase.
-  3. Phase tier — plan/execute → standard, review → cheap.
+  3. Phase tier — plan/execute → standard, issue/review → cheap.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ _TIER_ORDER: dict[str, int] = {TIER_CHEAP: 0, TIER_STANDARD: 1, TIER_POWERFUL: 2
 # ---------------------------------------------------------------------------
 
 _PHASE_TIERS: dict[str, str] = {
+    "issue": TIER_CHEAP,
     "plan": TIER_STANDARD,
     "execute": TIER_STANDARD,
     "review": TIER_CHEAP,
@@ -107,7 +108,7 @@ def select_model_tier(
     """Return the appropriate tier string for a task.
 
     Args:
-        phase: Task phase — ``"plan"``, ``"execute"``, or ``"review"``.
+        phase: Task phase — ``"issue"``, ``"plan"``, ``"execute"``, or ``"review"``.
                Unknown values fall back to ``TIER_STANDARD``.
         tool: Runner name — ``"claude"``, ``"codex"``, or ``"pi"``.
               Unknown values fall back to the phase tier.

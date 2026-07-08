@@ -494,7 +494,7 @@ async def patch_task(
     - ``branch``: git branch name
     - ``pr_url``: GitHub PR URL
     - ``deleted_at``: ISO-8601 soft-delete / expiry timestamp
-    - ``phase``: task phase (plan / execute / review / followup)
+    - ``phase``: task phase (issue / plan / execute / review / followup)
 
     Broadcasts a ``task-update`` WS event with the changed fields so the
     frontend sidebar stays in sync.
