@@ -294,6 +294,57 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
         await db.close()
 
 
+async def fetch_pr_status(repo: str, pr_number: int, token: str) -> dict:
+    """Fetch merge state, reviews, and check-runs for one PR.
+
+    Shared by the ``get_pr_status`` tool and the periodic-check poll loop
+    (foreman.runner._poll_loop), which proactively refreshes PR status for
+    every non-terminal task with an open PR on each poll cycle.
+    """
+    pr = await _to_thread(_gh_api, f"/repos/{repo}/pulls/{pr_number}", token)
+    reviews_raw = await _to_thread(
+        _gh_api,
+        f"/repos/{repo}/pulls/{pr_number}/reviews?per_page=20",
+        token,
+    )
+    head_sha = (pr.get("head") or {}).get("sha")
+    check_runs: list = []
+    if head_sha:
+        crs = await _to_thread(
+            _gh_api,
+            f"/repos/{repo}/commits/{head_sha}/check-runs?per_page=30",
+            token,
+        )
+        if isinstance(crs, dict):
+            check_runs = crs.get("check_runs", []) or []
+    return {
+        "number": pr["number"],
+        "state": pr["state"],
+        "merged": pr.get("merged", False),
+        "mergeable": pr.get("mergeable"),
+        "draft": pr.get("draft", False),
+        "head_sha": head_sha,
+        "reviews": [
+            {
+                "user": (r.get("user") or {}).get("login"),
+                "state": r.get("state"),
+                "body": (r.get("body") or "")[:300],
+                "submitted_at": r.get("submitted_at"),
+            }
+            for r in reviews_raw
+        ],
+        "checks": [
+            {
+                "name": cr.get("name"),
+                "status": cr.get("status"),
+                "conclusion": cr.get("conclusion"),
+                "summary": ((cr.get("output") or {}).get("summary") or "")[:300],
+            }
+            for cr in check_runs
+        ],
+    }
+
+
 async def _guild_private_key_pem(guild_id: str) -> str | None:
     """Return the Ed25519 private key PEM for the guild, or None if not found."""
     from auth_deps import get_guild_pk
@@ -1979,52 +2030,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     elif tu.name == "get_pr_status":
                         repo = inp["repo"]
                         num = int(inp["pr_number"])
-                        pr = await _to_thread(_gh_api, f"/repos/{repo}/pulls/{num}", token)
-                        reviews_raw = await _to_thread(
-                            _gh_api,
-                            f"/repos/{repo}/pulls/{num}/reviews?per_page=20",
-                            token,
-                        )
-                        head_sha = (pr.get("head") or {}).get("sha")
-                        check_runs: list = []
-                        if head_sha:
-                            crs = await _to_thread(
-                                _gh_api,
-                                f"/repos/{repo}/commits/{head_sha}/check-runs?per_page=30",
-                                token,
-                            )
-                            if isinstance(crs, dict):
-                                check_runs = crs.get("check_runs", []) or []
-                        result_text = json.dumps(
-                            {
-                                "number": pr["number"],
-                                "state": pr["state"],
-                                "merged": pr.get("merged", False),
-                                "mergeable": pr.get("mergeable"),
-                                "draft": pr.get("draft", False),
-                                "head_sha": head_sha,
-                                "reviews": [
-                                    {
-                                        "user": (r.get("user") or {}).get("login"),
-                                        "state": r.get("state"),
-                                        "body": (r.get("body") or "")[:300],
-                                        "submitted_at": r.get("submitted_at"),
-                                    }
-                                    for r in reviews_raw
-                                ],
-                                "checks": [
-                                    {
-                                        "name": cr.get("name"),
-                                        "status": cr.get("status"),
-                                        "conclusion": cr.get("conclusion"),
-                                        "summary": ((cr.get("output") or {}).get("summary") or "")[
-                                            :300
-                                        ],
-                                    }
-                                    for cr in check_runs
-                                ],
-                            }
-                        )
+                        result_text = json.dumps(await fetch_pr_status(repo, num, token))
 
                     elif tu.name == "search_github_issues":
                         repo = inp["repo"]
