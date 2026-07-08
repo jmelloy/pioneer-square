@@ -1142,6 +1142,158 @@ class TestExecToolsDispatching:
             state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-fin-inv"))
         assert state == "done"
 
+    async def test_finalize_task_cascades_to_terminal_children_only(self, db_session):
+        """Finalizing a phase='issue' root must soft-delete already-terminal
+        descendants but leave in-progress/pending ones alone for a human to decide."""
+        insert_guild(db_session, "g-cascade")
+        _insert_worker(db_session, "g-cascade", "w-cascade")
+        insert_task(
+            db_session,
+            "g-cascade",
+            "t-root",
+            worker_id="w-cascade",
+            state="working",
+            phase="issue",
+            issue_repo="o/r",
+            issue_number=99,
+        )
+        insert_task(
+            db_session,
+            "g-cascade",
+            "t-child-done",
+            worker_id="w-cascade",
+            state="done",
+            phase="execute",
+            parent_task_id="t-root",
+        )
+        insert_task(
+            db_session,
+            "g-cascade",
+            "t-child-failed",
+            worker_id="w-cascade",
+            state="failed",
+            phase="execute",
+            parent_task_id="t-root",
+        )
+        insert_task(
+            db_session,
+            "g-cascade",
+            "t-child-working",
+            worker_id="w-cascade",
+            state="working",
+            phase="execute",
+            parent_task_id="t-root",
+        )
+        insert_task(
+            db_session,
+            "g-cascade",
+            "t-grandchild-done",
+            worker_id="w-cascade",
+            state="done",
+            phase="review",
+            parent_task_id="t-child-working",
+        )
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=None),
+        ):
+            results = await exec_tools(
+                "g-cascade", [_fake_tool_use("finalize_task", {"task_id": "t-root"})]
+            )
+        assert "finalized" in results[0]["content"].lower()
+
+        with _sync_session(db_session) as session:
+            rows = {
+                row[0]: (row[1], row[2])
+                for row in session.execute(
+                    select(col(Task.id), col(Task.state), col(Task.deleted_at)).where(
+                        col(Task.id).in_(
+                            [
+                                "t-root",
+                                "t-child-done",
+                                "t-child-failed",
+                                "t-child-working",
+                                "t-grandchild-done",
+                            ]
+                        )
+                    )
+                ).all()
+            }
+        assert rows["t-root"][1] is not None
+        assert rows["t-child-done"][1] is not None
+        assert rows["t-child-failed"][1] is not None
+        # In-progress child (and anything beneath it) must not be force-closed
+        assert rows["t-child-working"][0] == "working"
+        assert rows["t-child-working"][1] is None
+        assert rows["t-grandchild-done"][1] is not None
+
+    async def test_finalize_task_posts_pre_close_summary_comment(self, db_session):
+        """Finalizing a phase='issue' root must post a GitHub comment summarising
+        child-PR merge status before/around closing the issue."""
+        insert_guild(db_session, "g-precomment")
+        _insert_worker(db_session, "g-precomment", "w-precomment")
+        insert_task(
+            db_session,
+            "g-precomment",
+            "t-root2",
+            worker_id="w-precomment",
+            state="working",
+            phase="issue",
+            issue_repo="o/r",
+            issue_number=123,
+        )
+        insert_task(
+            db_session,
+            "g-precomment",
+            "t-child-merged",
+            worker_id="w-precomment",
+            state="done",
+            phase="execute",
+            parent_task_id="t-root2",
+            pr_url="https://github.com/o/r/pull/1",
+            pr_number=1,
+            pr_repo="o/r",
+        )
+        insert_task(
+            db_session,
+            "g-precomment",
+            "t-child-unmerged",
+            worker_id="w-precomment",
+            state="done",
+            phase="execute",
+            parent_task_id="t-root2",
+            pr_url="https://github.com/o/r/pull/2",
+            pr_number=2,
+            pr_repo="o/r",
+        )
+
+        async def fake_fetch_pr_status(repo, pr_number, token):
+            return {"merged": pr_number == 1}
+
+        gh_post_calls = []
+
+        def fake_gh_api_post(path, token, payload, method="POST"):
+            gh_post_calls.append((path, payload))
+            return {}
+
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools.fetch_pr_status", side_effect=fake_fetch_pr_status),
+            patch("foreman.tools._gh_api_post", side_effect=fake_gh_api_post),
+        ):
+            results = await exec_tools(
+                "g-precomment", [_fake_tool_use("finalize_task", {"task_id": "t-root2"})]
+            )
+        assert "finalized" in results[0]["content"].lower()
+
+        assert len(gh_post_calls) == 1
+        path, payload = gh_post_calls[0]
+        assert path == "/repos/o/r/issues/123/comments"
+        assert "1 of 2" in payload["body"]
+        assert "pull/1" in payload["body"]
+        assert "pull/2" in payload["body"]
+
     async def test_message_worker_dispatches(self, db_session):
         insert_guild(db_session, "g-msgwkr")
         _insert_worker(db_session, "g-msgwkr", "w-msgwkr")
