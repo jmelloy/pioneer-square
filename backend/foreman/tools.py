@@ -1104,6 +1104,16 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 result_text = (
                     f"Task {task_id} created: '{name}'. Reference this task_id in assign_task."
                 )
+                if phase == "issue" and discord_notifier.is_configured():
+                    # Create the issue's stable Discord thread now, at root-task
+                    # mint time, rather than lazily on the first child post — see
+                    # discord_notifier.ensure_issue_root_thread.
+                    spawn(
+                        discord_notifier.ensure_issue_root_thread(
+                            task_id, name, ps_guild_slug=guild_id
+                        ),
+                        name=f"discord.issue-root-thread:{task_id}",
+                    )
 
             elif tu.name == "assign_task":
                 wid = inp["worker_id"]

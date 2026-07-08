@@ -32,6 +32,7 @@ import string
 from datetime import UTC, datetime
 from typing import Literal
 
+import discord_notifier
 from auth_deps import get_guild_pk, require_member, require_worker_or_member_path
 from database import get_db_dep
 from events import broadcast_msg
@@ -50,6 +51,7 @@ from pydantic import BaseModel
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from util.tasks import spawn
 from ws_types import ChatMsg, TaskCreatedMsg, TaskUpdateMsg
 
 router = APIRouter()
@@ -456,6 +458,16 @@ async def create_foreman_task(
             createdAt=created_at.isoformat(),
         ),
     )
+
+    if body.phase == "issue" and discord_notifier.is_configured():
+        # Create the issue's stable Discord thread now, at root-task mint
+        # time, rather than lazily on the first child post — see
+        # discord_notifier.ensure_issue_root_thread.
+        spawn(
+            discord_notifier.ensure_issue_root_thread(task_id, name, ps_guild_slug=guild_id),
+            name=f"discord.issue-root-thread:{task_id}",
+        )
+
     return {"task_id": task_id, "created_at": created_at}
 
 

@@ -927,6 +927,7 @@ async def github_webhook(
                 ps_guild_slug=guild_id,
                 linked_issue_repo=linked_issue_repo,
                 linked_issue_number=linked_issue_number,
+                task_id=task_id,
             ),
             name=f"discord.pr-opened:{_pr_label}",
         )
@@ -946,6 +947,7 @@ async def github_webhook(
                     ps_guild_slug=guild_id,
                     linked_issue_repo=linked_issue_repo,
                     linked_issue_number=linked_issue_number,
+                    task_id=task_id,
                 ),
                 name=f"discord.pr-merged:{_pr_label}",
             )
@@ -963,6 +965,7 @@ async def github_webhook(
                     ps_guild_slug=guild_id,
                     linked_issue_repo=linked_issue_repo,
                     linked_issue_number=linked_issue_number,
+                    task_id=task_id,
                 ),
                 name=f"discord.pr-closed:{_pr_label}",
             )
@@ -979,6 +982,7 @@ async def github_webhook(
                 ps_guild_slug=guild_id,
                 linked_issue_repo=linked_issue_repo,
                 linked_issue_number=linked_issue_number,
+                task_id=task_id,
             ),
             name=f"discord.pr-updated:{_pr_label}",
         )
@@ -1000,6 +1004,7 @@ async def github_webhook(
                 ps_guild_slug=guild_id,
                 linked_issue_repo=linked_issue_repo,
                 linked_issue_number=linked_issue_number,
+                task_id=task_id,
             ),
             name=f"discord.pr-review:{_pr_label}",
         )
@@ -1024,6 +1029,7 @@ async def github_webhook(
                     ps_guild_slug=guild_id,
                     linked_issue_repo=linked_issue_repo,
                     linked_issue_number=linked_issue_number,
+                    task_id=task_id,
                 ),
                 name=f"discord.ci-pass:{_pr_label}",
             )
@@ -1040,6 +1046,7 @@ async def github_webhook(
                     ps_guild_slug=guild_id,
                     linked_issue_repo=linked_issue_repo,
                     linked_issue_number=linked_issue_number,
+                    task_id=task_id,
                 ),
                 name=f"discord.ci-fail:{_pr_label}",
             )
