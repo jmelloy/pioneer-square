@@ -1665,6 +1665,18 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                     )
                     await db.exec(update(Worker).where(col(Worker.id) == wid).values(disabled=True))
                     await db.commit()
+                    # Graceful signal only: give the worker a chance to finish any
+                    # in-progress task and exit on its own. Force-kill its container
+                    # only if it's still not offline after the timeout — see
+                    # worker_lifecycle.force_kill_worker_if_unresponsive.
+                    from worker_lifecycle import (  # noqa: PLC0415
+                        force_kill_worker_if_unresponsive as _force_kill_if_unresponsive,
+                    )
+
+                    spawn(
+                        _force_kill_if_unresponsive(wid),
+                        name=f"shutdown-escalate:{wid}",
+                    )
                     result_text = f"Shutdown signal sent to {wid}." + (
                         f" Reason: {reason}" if reason else ""
                     )

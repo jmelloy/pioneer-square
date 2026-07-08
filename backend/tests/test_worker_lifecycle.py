@@ -14,8 +14,10 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from worker_lifecycle import (  # noqa: E402
+    SHUTDOWN_FORCE_KILL_TIMEOUT,
     WORKER_DRAIN_TIMEOUT,
     drain_stale_workers_on_startup,
+    force_kill_worker_if_unresponsive,
     generate_worker_id,
     get_current_version,
     reconcile_stale_workers,
@@ -570,3 +572,87 @@ async def test_reconcile_only_respawns_workers_still_missing():
 
     mock_kill.assert_called_once_with({"w-b"})
     mock_spawn.assert_called_once_with(["w-b"])
+
+
+# ---------------------------------------------------------------------------
+# force_kill_worker_if_unresponsive
+# ---------------------------------------------------------------------------
+
+
+class _FakeStateDB:
+    """Fake session whose exec().one_or_none() returns states from a queue, in order."""
+
+    def __init__(self, states):
+        self._states = iter(states)
+        self.exec = AsyncMock(
+            side_effect=lambda *a, **k: MagicMock(one_or_none=lambda: next(self._states))
+        )
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def test_shutdown_force_kill_timeout_default():
+    assert SHUTDOWN_FORCE_KILL_TIMEOUT == 30.0
+
+
+def test_shutdown_force_kill_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("PIONEER_SHUTDOWN_TIMEOUT", "45")
+    import importlib
+
+    import worker_lifecycle as wl
+
+    try:
+        importlib.reload(wl)
+        assert wl.SHUTDOWN_FORCE_KILL_TIMEOUT == 45.0
+    finally:
+        monkeypatch.delenv("PIONEER_SHUTDOWN_TIMEOUT", raising=False)
+        importlib.reload(wl)
+
+
+@pytest.mark.asyncio
+async def test_force_kill_if_unresponsive_noop_when_worker_goes_offline():
+    """A worker that reports offline within the timeout is never force-killed."""
+    session_iter = iter([_FakeStateDB(["offline"])])
+    mock_kill = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+    ):
+        await force_kill_worker_if_unresponsive("w-graceful", timeout=0.01)
+
+    mock_kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_force_kill_if_unresponsive_noop_when_worker_row_gone():
+    """A worker row that's disappeared (e.g. deleted) is treated as already gone."""
+    session_iter = iter([_FakeStateDB([None])])
+    mock_kill = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+    ):
+        await force_kill_worker_if_unresponsive("w-gone", timeout=0.01)
+
+    mock_kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_force_kill_if_unresponsive_escalates_after_timeout():
+    """A worker that never goes offline gets force-killed once the timeout elapses."""
+    session_iter = iter([_FakeStateDB(["working"])])
+    mock_kill = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+    ):
+        await force_kill_worker_if_unresponsive("w-wedged", timeout=0.01)
+
+    mock_kill.assert_called_once_with({"w-wedged"})
