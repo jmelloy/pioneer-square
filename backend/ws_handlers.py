@@ -177,6 +177,7 @@ async def _task_user_id(db, task_id: str | None) -> str | None:
 # context. See docs/foreman-per-task-context.md.
 _CHILD_FOREMAN_EVENTS = frozenset({"task-complete", "followup-done", "needs-input", "task-error"})
 
+
 async def _trigger_foreman(
     guild_id: str,
     event: str,

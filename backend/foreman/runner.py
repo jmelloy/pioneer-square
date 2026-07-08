@@ -77,6 +77,7 @@ _HISTORY_FETCH_LIMIT = 100
 # Per-guild background poll task registry
 _poll_tasks: dict[str, "asyncio.Task[None]"] = {}
 
+
 # Per-guild run state, used to serialise foreman runs.  If a run is already in
 # progress for a (guild, user) pair, new invocations are dropped rather than
 # queued — the poll loop will re-trigger on the next tick.  Dropping (vs.
