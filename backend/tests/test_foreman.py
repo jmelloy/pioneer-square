@@ -78,6 +78,15 @@ def _fake_tool_use(name: str, inputs: dict, tool_id: str = "tool-abc123") -> Sim
     return SimpleNamespace(name=name, input=inputs, id=tool_id)
 
 
+def _extract_task_id(content: str) -> str:
+    """Pull the t-XXXX task id out of a tool-result message, independent of the
+    surrounding wording — a positional split()[1] silently breaks if the
+    success-message phrasing changes."""
+    match = re.search(r"\bt-\w+\b", content)
+    assert match, f"no task id found in tool result: {content!r}"
+    return match.group(0)
+
+
 def _insert_worker(db_url: str, guild_id: str, worker_id: str) -> None:
     insert_worker(db_url, guild_id, worker_id, state="idle")
 
@@ -246,14 +255,11 @@ class TestBuildSystemPrompt:
         section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
         section = FOREMAN_SYSTEM[section_start:]
         assert "create_task(phase='issue'" in section or 'create_task(phase="issue"' in section
-        issue_root_idx = (
-            section.index("phase='issue'")
-            if "phase='issue'" in section
-            else section.index('phase="issue"')
-        )
-        # The plan/execute create_task + assign_task pair must be described after the issue-root step.
-        plan_pair_idx = section.index("create_task + assign_task")
-        assert issue_root_idx < plan_pair_idx
+        # Anchor to the lettered sub-steps rather than a loose substring search — step
+        # 'c' (issue-root creation) must be described before step 'd' (plan/execute pair).
+        step_c_idx = section.index("c. Call create_task(phase='issue'")
+        step_d_idx = section.index("d. Call create_task + assign_task")
+        assert step_c_idx < step_d_idx
 
     def test_devready_pickup_child_tasks_reference_issue_root(self):
         """Subsequent plan/execute tasks for a devReady issue must pass parent_task_id
@@ -262,7 +268,9 @@ class TestBuildSystemPrompt:
 
         section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
         section = FOREMAN_SYSTEM[section_start:]
-        assert "parent_task_id" in section
+        # Assert the full phrase, not just the bare "parent_task_id" token, which also
+        # appears in unrelated sections of FOREMAN_SYSTEM (e.g. review dispatch).
+        assert "parent_task_id=<issue-root task_id" in section
 
     def test_devready_issue_root_never_assigned_to_worker(self):
         """Prompt must describe the issue-root task as never assigned to a worker and
@@ -398,7 +406,7 @@ class TestExecToolsDispatching:
                 "g-phase", [_fake_tool_use("create_task", {"name": "Task", "description": "Work"})]
             )
         # Task row should have phase=execute (not specified → default)
-        task_id = results[0]["content"].split()[1]
+        task_id = _extract_task_id(results[0]["content"])
 
         with _sync_session(db_session) as session:
             phase = session.scalar(select(col(Task.phase)).where(col(Task.id) == task_id))
@@ -415,7 +423,7 @@ class TestExecToolsDispatching:
                 [_fake_tool_use("create_task", {"name": "Owned", "description": "task"})],
                 user_id="gh-user-42",
             )
-        task_id = results[0]["content"].split()[1]
+        task_id = _extract_task_id(results[0]["content"])
 
         with _sync_session(db_session) as session:
             user_id = session.scalar(select(col(Task.user_id)).where(col(Task.id) == task_id))
@@ -455,7 +463,7 @@ class TestExecToolsDispatching:
                     )
                 ],
             )
-        task_id = results[0]["content"].split()[1]
+        task_id = _extract_task_id(results[0]["content"])
 
         with _sync_session(db_session) as session:
             phase = session.scalar(select(col(Task.phase)).where(col(Task.id) == task_id))
@@ -479,7 +487,7 @@ class TestExecToolsDispatching:
                     )
                 ],
             )
-        task_id = results[0]["content"].split()[1]
+        task_id = _extract_task_id(results[0]["content"])
 
         with _sync_session(db_session) as session:
             task = session.get(Task, task_id)
@@ -557,7 +565,7 @@ class TestExecToolsDispatching:
             create_content = create_results[0]["content"]
             assert create_content.startswith("Task t-"), create_content
             assert "created" in create_content
-            task_id = create_content.split()[1]
+            task_id = _extract_task_id(create_content)
 
             with _sync_session(db_session) as session:
                 parent_task_id_before = session.scalar(

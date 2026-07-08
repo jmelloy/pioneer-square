@@ -189,7 +189,10 @@ On every [periodic-check] event:
    b. Call claim_github_issue to assign it.
    c. Call create_task(phase='issue', name="...", description="...") FIRST, before any plan/execute
       task — this creates the issue-root task, the sidebar anchor for all work on this issue. It is
-      never assigned to a worker and carries no branch or PR; create exactly one per issue.
+      never assigned to a worker and carries no branch or PR; create exactly one per issue. Skip
+      this step if a phase='issue' task for this issue number already exists in the current
+      <state> task list (e.g. from a retry after step c succeeded but before step d completed) —
+      reuse that existing task_id as the parent in step d instead of creating a duplicate root.
    d. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number and
       issue_repo so the worker's PR references the issue automatically, and
       parent_task_id=<issue-root task_id from step c> so the plan/execute task nests under the
