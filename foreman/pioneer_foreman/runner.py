@@ -63,6 +63,12 @@ def _get_http_client(config: Config) -> httpx.AsyncClient:
 
 
 async def _call_anthropic(request: dict[str, Any], config: Config) -> dict[str, Any]:
+    """Translate the backend's camelCase wire request into call_anthropic's kwargs.
+
+    This camelCase-to-snake_case translation is the proxy's own "which machine"
+    plumbing (the WebSocket wire format), not provider logic — the provider
+    request/response shape itself is entirely owned by backend.foreman.llm.
+    """
     if not HAS_ANTHROPIC:
         raise RuntimeError("anthropic package is not installed")
     model = config.effective_model or request["model"]
@@ -73,7 +79,7 @@ async def _call_anthropic(request: dict[str, Any], config: Config) -> dict[str, 
         max_tokens=request.get("maxTokens") or 1024,
         system=request.get("system") or [],
         messages=request.get("messages") or [],
-        tools=request.get("tools") or [],
+        tools=request.get("tools"),
         tool_choice=request.get("toolChoice"),
     )
     return {
@@ -85,12 +91,22 @@ async def _call_anthropic(request: dict[str, Any], config: Config) -> dict[str, 
 
 
 async def _call_openai_compatible(request: dict[str, Any], config: Config) -> dict[str, Any]:
+    """Translate the backend's camelCase wire request into call_openai_compatible's kwargs.
+
+    Same boundary as _call_anthropic above: the wire format is this proxy's own
+    concern, the provider translation it feeds into is shared with the
+    embedded foreman.
+    """
     model = config.effective_model or request["model"]
     client = _get_http_client(config)
     response, request_id = await call_openai_compatible(
         client,
-        request,
         model=model,
+        max_tokens=request.get("maxTokens") or 1024,
+        system=request.get("system"),
+        messages=request.get("messages"),
+        tools=request.get("tools"),
+        tool_choice=request.get("toolChoice"),
         base_url=config.openai_base_url,
         api_key=config.api_key,
     )

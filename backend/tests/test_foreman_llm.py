@@ -580,14 +580,10 @@ class TestOpenAiTranslation:
         try:
             response, request_id = await call_openai_compatible(
                 client,
-                {
-                    "model": "backend-model",
-                    "maxTokens": 32,
-                    "system": [{"type": "text", "text": "System"}],
-                    "messages": [{"role": "user", "content": "Hi"}],
-                    "tools": [],
-                },
                 model="llama3.1",
+                max_tokens=32,
+                system=[{"type": "text", "text": "System"}],
+                messages=[{"role": "user", "content": "Hi"}],
                 base_url="http://ollama.test/v1",
                 api_key="key",
             )
@@ -596,9 +592,46 @@ class TestOpenAiTranslation:
 
         assert captured["url"] == "http://ollama.test/v1/chat/completions"
         assert captured["json"]["model"] == "llama3.1"
+        assert "tools" not in captured["json"]
         assert captured["headers"]["authorization"] == "Bearer key"
         assert request_id == "req-openai"
         assert response["content"] == [{"type": "text", "text": "done"}]
+
+    async def test_call_openai_compatible_omits_tools_when_none_given(self):
+        """No tools passed → no `tools` key in the POSTed body, matching
+        call_anthropic — some OpenAI-compatible endpoints reject an empty list."""
+        import httpx
+        from foreman.llm import call_openai_compatible
+
+        captured = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            import json
+
+            captured["json"] = json.loads(request.read())
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-3",
+                    "model": "llama3.1",
+                    "choices": [{"finish_reason": "stop", "message": {"content": "done"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            await call_openai_compatible(
+                client,
+                model="llama3.1",
+                max_tokens=32,
+                messages=[{"role": "user", "content": "Hi"}],
+                base_url="http://ollama.test/v1",
+            )
+        finally:
+            await client.aclose()
+
+        assert "tools" not in captured["json"]
 
 
 # ---------------------------------------------------------------------------
@@ -645,3 +678,65 @@ class TestCallAnthropic:
         assert response.model_dump() == response_payload
         assert request_id == "req-1"
         assert create.kwargs["tool_choice"] == {"type": "auto"}
+        assert "tools" not in create.kwargs
+
+    async def test_call_anthropic_omits_tools_when_none_given(self):
+        """Regression for PR #849 review: an empty `tools` array is not sent to
+        the Anthropic API — some endpoints reject it — and an explicit
+        `tools=None` from the caller isn't silently coerced into `[]` either."""
+        from foreman.llm import call_anthropic
+
+        async def create(**kwargs):
+            create.kwargs = kwargs
+
+            class _RawResponse:
+                headers = {}
+
+                def parse(self):
+                    return SimpleNamespace(model_dump=lambda: {})
+
+            return _RawResponse()
+
+        client = SimpleNamespace(
+            messages=SimpleNamespace(with_raw_response=SimpleNamespace(create=create))
+        )
+
+        await call_anthropic(
+            client,
+            model="claude-sonnet-4-6",
+            max_tokens=256,
+            system=[{"type": "text", "text": "sys"}],
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+        )
+
+        assert "tools" not in create.kwargs
+
+    async def test_call_anthropic_includes_tools_when_given(self):
+        from foreman.llm import call_anthropic
+
+        async def create(**kwargs):
+            create.kwargs = kwargs
+
+            class _RawResponse:
+                headers = {}
+
+                def parse(self):
+                    return SimpleNamespace(model_dump=lambda: {})
+
+            return _RawResponse()
+
+        client = SimpleNamespace(
+            messages=SimpleNamespace(with_raw_response=SimpleNamespace(create=create))
+        )
+
+        tools = [{"name": "assign_task", "input_schema": {}}]
+        await call_anthropic(
+            client,
+            model="claude-sonnet-4-6",
+            max_tokens=256,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+        )
+
+        assert create.kwargs["tools"] == tools

@@ -387,14 +387,20 @@ async def call_anthropic(
     plain dict (e.g. the proxy, to send the response back over the wire) call
     `.model_dump()` themselves; callers that stay in-process (the embedded
     foreman's local call path) can use it directly.
+
+    `tools` is only included in the request when non-empty: some Anthropic API
+    endpoints reject an explicit empty `tools` array, and omitting the param
+    (rather than defaulting a missing/None value to `[]`) also means a caller
+    that explicitly passes `tools=None` isn't silently overridden.
     """
     kwargs: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
         "system": system or [],
         "messages": messages or [],
-        "tools": tools or [],
     }
+    if tools:
+        kwargs["tools"] = tools
     if tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
     raw = await client.messages.with_raw_response.create(**kwargs)
@@ -574,30 +580,37 @@ def openai_response_to_anthropic(raw: dict[str, Any], model: str) -> dict[str, A
 
 async def call_openai_compatible(
     client: httpx.AsyncClient,
-    request: dict[str, Any],
     *,
     model: str,
+    max_tokens: int,
     base_url: str,
+    system: list[dict[str, Any]] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: dict[str, Any] | None = None,
     api_key: str | None = None,
 ) -> tuple[dict[str, Any], str | None]:
     """Execute one OpenAI-compatible POST /chat/completions call.
 
-    `request` is the same Anthropic-shaped request dict call_anthropic takes
-    (model/maxTokens/system/messages/tools/toolChoice); the request is
-    translated to OpenAI chat-completion format, POSTed, and the response is
-    translated back to an Anthropic Messages API response dict — so callers
-    (the standalone proxy today) don't need to know which wire format actually
+    Takes the same Anthropic-shaped, snake_case keyword arguments as
+    call_anthropic (model/max_tokens/system/messages/tools/tool_choice) rather
+    than a raw request dict, so the two provider call paths share one calling
+    convention. The caller (the standalone proxy) is responsible for
+    translating its own wire format (the backend's camelCase
+    maxTokens/toolChoice JSON) into these kwargs — that's the "which machine"
+    plumbing the proxy owns; everything below is the provider translation this
+    module owns. The request is converted to OpenAI chat-completion format,
+    POSTed, and the response is translated back to an Anthropic Messages API
+    response dict, so callers don't need to know which wire format actually
     served the request. Returns (response_dict, request_id).
     """
     body: dict[str, Any] = {
         "model": model,
-        "messages": anthropic_messages_to_openai(
-            request.get("system") or [], request.get("messages") or []
-        ),
-        "tools": anthropic_tools_to_openai(request.get("tools") or []),
-        "max_tokens": request.get("maxTokens") or 1024,
+        "messages": anthropic_messages_to_openai(system or [], messages or []),
+        "max_tokens": max_tokens,
     }
-    tool_choice = request.get("toolChoice")
+    if tools:
+        body["tools"] = anthropic_tools_to_openai(tools)
     if tool_choice:
         body["tool_choice"] = "none" if tool_choice.get("type") == "none" else tool_choice
 
