@@ -1401,17 +1401,9 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         is_error = True
                     else:
                         followup_worker_result = await db.exec(
-                            select(col(Worker.tools), col(Worker.provider)).where(
-                                col(Worker.id) == target_worker_id
-                            )
+                            select(col(Worker.tools)).where(col(Worker.id) == target_worker_id)
                         )
-                        followup_worker_row = followup_worker_result.one_or_none()
-                        followup_worker_tools_json = (
-                            followup_worker_row[0] if followup_worker_row else None
-                        )
-                        followup_worker_provider = (
-                            followup_worker_row[1] if followup_worker_row else None
-                        )
+                        followup_worker_tools_json = followup_worker_result.one_or_none()
                         if isinstance(followup_worker_tools_json, str):
                             followup_worker_tools: list[str] = json.loads(
                                 followup_worker_tools_json or "[]"
@@ -1430,9 +1422,6 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 f"{requested_tool!r}. Available tools: {available}"
                             )
                             is_error = True
-                            effective_tool = requested_tool
-                            effective_model = requested_model
-                            effective_provider = requested_provider
                         else:
                             effective_tool = (
                                 requested_tool
@@ -1451,19 +1440,19 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             effective_provider = (
                                 requested_provider if requested_provider is not None else task_provider
                             )
-                            if effective_model and followup_worker_provider:
+                            if effective_model and effective_provider:
                                 from models import ModelCatalog  # noqa: PLC0415
 
                                 catalog_check = await db.exec(
                                     select(col(ModelCatalog.model_id)).where(
-                                        col(ModelCatalog.provider) == followup_worker_provider,
+                                        col(ModelCatalog.provider) == effective_provider,
                                         col(ModelCatalog.model_id) == effective_model,
                                     )
                                 )
                                 if catalog_check.one_or_none() is None:
                                     result_text = (
                                         f"Model {effective_model!r} is not available for "
-                                        f"provider {followup_worker_provider!r}. Use GET "
+                                        f"provider {effective_provider!r}. Use GET "
                                         "/api/models to see available models for each provider."
                                     )
                                     is_error = True
