@@ -364,6 +364,16 @@ def make_anthropic_client(
 # ---------------------------------------------------------------------------
 
 
+def _has_payload(value: dict[str, Any] | list[Any] | None) -> bool:
+    """True when `value` is a non-None, non-empty dict/list.
+
+    Explicit rather than a bare truthiness check so intent is clear and a
+    future falsy-but-meaningful value (e.g. `False`) wouldn't be silently
+    dropped the way an empty `tools`/`tool_choice` should be.
+    """
+    return value is not None and value != {} and value != []
+
+
 async def call_anthropic(
     client: Any,
     *,
@@ -388,10 +398,11 @@ async def call_anthropic(
     `.model_dump()` themselves; callers that stay in-process (the embedded
     foreman's local call path) can use it directly.
 
-    `tools` is only included in the request when non-empty: some Anthropic API
-    endpoints reject an explicit empty `tools` array, and omitting the param
-    (rather than defaulting a missing/None value to `[]`) also means a caller
-    that explicitly passes `tools=None` isn't silently overridden.
+    `tools` and `tool_choice` are only included in the request when non-empty:
+    some Anthropic API endpoints (e.g. Bedrock) reject an explicit empty
+    `tools` array or `tool_choice` object, and omitting the param (rather than
+    defaulting a missing/None value to `[]`/`{}`) also means a caller that
+    explicitly passes `tools=None`/`tool_choice=None` isn't silently overridden.
     """
     kwargs: dict[str, Any] = {
         "model": model,
@@ -399,9 +410,9 @@ async def call_anthropic(
         "system": system or [],
         "messages": messages or [],
     }
-    if tools:
+    if _has_payload(tools):
         kwargs["tools"] = tools
-    if tool_choice is not None:
+    if _has_payload(tool_choice):
         kwargs["tool_choice"] = tool_choice
     raw = await client.messages.with_raw_response.create(**kwargs)
     return raw.parse(), raw.headers.get("request-id")
@@ -609,9 +620,9 @@ async def call_openai_compatible(
         "messages": anthropic_messages_to_openai(system or [], messages or []),
         "max_tokens": max_tokens,
     }
-    if tools:
+    if _has_payload(tools):
         body["tools"] = anthropic_tools_to_openai(tools)
-    if tool_choice:
+    if _has_payload(tool_choice):
         body["tool_choice"] = "none" if tool_choice.get("type") == "none" else tool_choice
 
     headers = {"Content-Type": "application/json"}
