@@ -46,6 +46,7 @@ from models import (
 )
 from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
+    _devready_issue_trigger,
     _get_guild_owner_github_login,
     _linked_issue_number_from_body,
     _linked_issue_number_from_branch,
@@ -1080,3 +1081,243 @@ def test_prompt_describes_review_requested_behavior():
     assert "--approve" in FOREMAN_SYSTEM
     assert "Do NOT commit" in FOREMAN_SYSTEM
     assert "duplicates" in FOREMAN_SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# devReady issue pickup: _devready_issue_trigger
+# ---------------------------------------------------------------------------
+
+
+class TestDevReadyIssueTrigger:
+    def _issue_payload(self, *, labels: list[str], number: int = 1) -> dict:
+        return {"issue": {"number": number, "labels": [{"name": name} for name in labels]}}
+
+    def test_labeled_devready_triggers(self):
+        payload = {"issue": {"number": 1}, "label": {"name": "devReady"}}
+        assert _devready_issue_trigger("issues", "labeled", payload) == "devReady"
+
+    def test_labeled_non_devready_does_not_trigger(self):
+        payload = {"issue": {"number": 1}, "label": {"name": "bug"}}
+        assert _devready_issue_trigger("issues", "labeled", payload) is None
+
+    def test_labeled_case_insensitive(self):
+        payload = {"issue": {"number": 1}, "label": {"name": "DEV-READY"}}
+        assert _devready_issue_trigger("issues", "labeled", payload) == "DEV-READY"
+
+    def test_labeled_all_aliases(self):
+        for alias in ("devReady", "dev-ready", "ready-for-dev", "ready"):
+            payload = {"issue": {"number": 1}, "label": {"name": alias}}
+            assert _devready_issue_trigger("issues", "labeled", payload) == alias
+
+    def test_opened_with_devready_label_triggers(self):
+        payload = self._issue_payload(labels=["enhancement", "ready-for-dev"])
+        assert _devready_issue_trigger("issues", "opened", payload) == "ready-for-dev"
+
+    def test_opened_without_devready_label_does_not_trigger(self):
+        payload = self._issue_payload(labels=["enhancement"])
+        assert _devready_issue_trigger("issues", "opened", payload) is None
+
+    def test_reopened_with_devready_label_triggers(self):
+        payload = self._issue_payload(labels=["devReady"])
+        assert _devready_issue_trigger("issues", "reopened", payload) == "devReady"
+
+    def test_other_actions_do_not_trigger(self):
+        payload = self._issue_payload(labels=["devReady"])
+        assert _devready_issue_trigger("issues", "closed", payload) is None
+        assert _devready_issue_trigger("issues", "edited", payload) is None
+        assert _devready_issue_trigger("issues", "unlabeled", payload) is None
+
+    def test_non_issues_event_does_not_trigger(self):
+        payload = {"issue": {"number": 1}, "label": {"name": "devReady"}}
+        assert _devready_issue_trigger("issue_comment", "labeled", payload) is None
+
+    def test_missing_issue_object_does_not_trigger(self):
+        assert _devready_issue_trigger("issues", "opened", {}) is None
+
+
+# ---------------------------------------------------------------------------
+# devReady issue pickup: summary builder
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSummaryDevReadyIssue:
+    def test_labeled_summary_contains_key_fields(self):
+        payload = {
+            "issue": {
+                "number": 42,
+                "title": "Add dark mode",
+                "html_url": "https://github.com/o/r/issues/42",
+                "assignees": [],
+            },
+            "label": {"name": "devReady"},
+        }
+        s = _build_foreman_summary("issues", "labeled", payload, "o/r", 42, "", None)
+        assert "[github-event] issues/labeled on o/r#42 (new)" in s
+        assert "Label applied: devReady" in s
+        assert "Add dark mode" in s
+        assert "claim_github_issue" in s
+        assert "devReady pickup flow" in s
+
+    def test_opened_with_label_summary(self):
+        payload = {
+            "issue": {
+                "number": 7,
+                "title": "Fix flaky test",
+                "html_url": "https://github.com/o/r/issues/7",
+                "labels": [{"name": "ready"}],
+                "assignees": [{"login": "alice"}],
+            },
+        }
+        s = _build_foreman_summary("issues", "opened", payload, "o/r", 7, "", "alice")
+        assert "[github-event] issues/opened on o/r#7 (new)" in s
+        assert "Label applied: ready" in s
+        assert "Current assignees: alice" in s
+
+
+# ---------------------------------------------------------------------------
+# devReady issue pickup: end-to-end webhook -> foreman dispatch
+# ---------------------------------------------------------------------------
+
+
+def _issues_payload(*, action: str, repo: str, number: int, labels: list[str], **extra) -> dict:
+    return {
+        "action": action,
+        "repository": {"full_name": repo},
+        "issue": {
+            "number": number,
+            "title": extra.pop("title", "Some issue"),
+            "html_url": f"https://github.com/{repo}/issues/{number}",
+            "labels": [{"name": name} for name in labels],
+            "assignees": extra.pop("assignees", []),
+        },
+        "sender": {"login": extra.pop("sender_login", "octocat")},
+        **({"label": {"name": extra.pop("label_name")}} if "label_name" in extra else {}),
+        **extra,
+    }
+
+
+def test_issues_labeled_devready_dispatches_to_foreman(client):
+    test_client, db_url = client
+    insert_guild(db_url, "gd-dr-1")
+    _set_webhook_secret(db_url, "gd-dr-1", "secret-dr-1")
+
+    payload = _issues_payload(
+        action="labeled", repo="o/r", number=100, labels=["devReady"], label_name="devReady"
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-dr-1", body, event="issues", delivery="d-dr-1")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-dr-1", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 1
+    key_arg, guild_arg, summary_arg, _user_arg = mock_q.schedule.call_args.args
+    assert "gd-dr-1" in key_arg
+    assert "issues-devready" in key_arg
+    assert "o/r#100" in key_arg
+    assert guild_arg == "gd-dr-1"
+    assert "devReady" in summary_arg
+    assert "claim_github_issue" in summary_arg
+
+
+def test_issues_labeled_non_devready_does_not_dispatch(client):
+    test_client, db_url = client
+    insert_guild(db_url, "gd-dr-2")
+    _set_webhook_secret(db_url, "gd-dr-2", "secret-dr-2")
+
+    payload = _issues_payload(
+        action="labeled", repo="o/r", number=101, labels=["bug"], label_name="bug"
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-dr-2", body, event="issues", delivery="d-dr-2")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-dr-2", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 0
+
+
+def test_issues_opened_with_devready_label_dispatches(client):
+    test_client, db_url = client
+    insert_guild(db_url, "gd-dr-3")
+    _set_webhook_secret(db_url, "gd-dr-3", "secret-dr-3")
+
+    payload = _issues_payload(
+        action="opened", repo="o/r", number=102, labels=["dev-ready", "enhancement"]
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-dr-3", body, event="issues", delivery="d-dr-3")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-dr-3", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 1
+    key_arg, *_ = mock_q.schedule.call_args.args
+    assert "o/r#102" in key_arg
+
+
+def test_issues_opened_without_devready_label_does_not_dispatch(client):
+    test_client, db_url = client
+    insert_guild(db_url, "gd-dr-4")
+    _set_webhook_secret(db_url, "gd-dr-4", "secret-dr-4")
+
+    payload = _issues_payload(action="opened", repo="o/r", number=103, labels=["enhancement"])
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-dr-4", body, event="issues", delivery="d-dr-4")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-dr-4", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 0
+
+
+def test_issues_reopened_with_devready_label_dispatches(client):
+    test_client, db_url = client
+    insert_guild(db_url, "gd-dr-5")
+    _set_webhook_secret(db_url, "gd-dr-5", "secret-dr-5")
+
+    payload = _issues_payload(action="reopened", repo="o/r", number=104, labels=["ready"])
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-dr-5", body, event="issues", delivery="d-dr-5")
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp = test_client.post("/webhooks/github/gd-dr-5", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert mock_q.schedule.call_count == 1
+
+
+def test_issues_devready_duplicate_delivery_is_idempotent(client):
+    test_client, db_url = client
+    insert_guild(db_url, "gd-dr-6")
+    _set_webhook_secret(db_url, "gd-dr-6", "secret-dr-6")
+
+    payload = _issues_payload(
+        action="labeled", repo="o/r", number=105, labels=["devReady"], label_name="devReady"
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("secret-dr-6", body, event="issues", delivery="d-dr-6-dup")
+
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp1 = test_client.post("/webhooks/github/gd-dr-6", content=body, headers=headers)
+        resp2 = test_client.post("/webhooks/github/gd-dr-6", content=body, headers=headers)
+
+    assert resp1.status_code == 202
+    assert resp2.status_code == 202
+    assert mock_q.schedule.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Prompt: devReady issue webhook section
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_describes_devready_issue_webhook_behavior():
+    """System prompt must document the immediate devReady webhook pickup flow."""
+    from foreman.prompt import FOREMAN_SYSTEM
+
+    assert "issues/labeled" in FOREMAN_SYSTEM
+    assert "issues/opened" in FOREMAN_SYSTEM
+    assert "issues/reopened" in FOREMAN_SYSTEM
+    assert "claim_github_issue" in FOREMAN_SYSTEM
+    assert "devReady pickup flow" in FOREMAN_SYSTEM

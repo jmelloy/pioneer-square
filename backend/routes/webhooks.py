@@ -72,6 +72,45 @@ _MAX_PAYLOAD_BYTES = 64 * 1024
 # events we want to react to.
 _BOT_OK_EVENTS = frozenset({"check_run", "check_suite", "status"})
 
+# Label names (case-insensitive) that mark a GitHub issue ready for the foreman
+# to pick up. Mirrors the "Periodic devReady issue pickup" label list in
+# foreman/prompt.py so a webhook-triggered claim and the periodic sweep agree
+# on what counts as devReady.
+_DEVREADY_LABELS = frozenset({"devready", "dev-ready", "ready-for-dev", "ready"})
+
+
+def _issue_label_names(issue_obj: dict) -> list[str]:
+    labels = issue_obj.get("labels") or []
+    return [lb["name"] for lb in labels if isinstance(lb, dict) and lb.get("name")]
+
+
+def _matching_devready_label(label_names: list[str]) -> str | None:
+    return next((name for name in label_names if name.lower() in _DEVREADY_LABELS), None)
+
+
+def _devready_issue_trigger(event_type: str, action: str | None, payload: dict) -> str | None:
+    """Return the matched devReady label name if this ``issues`` event should trigger
+    immediate pickup, else ``None``.
+
+    Triggers on ``action == "labeled"`` where the label just applied is a devReady
+    alias, or ``action in {"opened", "reopened"}`` where the issue already carries one
+    (e.g. it was created with the label already attached, or reopened after having it).
+    """
+    if event_type != "issues":
+        return None
+    issue_obj = payload.get("issue")
+    if not isinstance(issue_obj, dict):
+        return None
+    if action == "labeled":
+        label_obj = payload.get("label")
+        label_name = label_obj.get("name") if isinstance(label_obj, dict) else None
+        if label_name and label_name.lower() in _DEVREADY_LABELS:
+            return label_name
+        return None
+    if action in {"opened", "reopened"}:
+        return _matching_devready_label(_issue_label_names(issue_obj))
+    return None
+
 
 class DebounceQueue:
     """Per-PR debounce queue that coalesces rapid webhook events.
@@ -621,6 +660,28 @@ def _build_foreman_summary(
         context = payload.get("context") or "status"
         description = payload.get("description") or ""
         detail = f"{context}: {state}.{(' ' + description) if description else ''}"
+    elif event_type == "issues" and action in {"labeled", "opened", "reopened"}:
+        issue_obj = payload.get("issue") or {}
+        matched_label = _devready_issue_trigger(event_type, action, payload)
+        title = (issue_obj.get("title") or "")[:200]
+        issue_url = issue_obj.get("html_url") or ""
+        assignees = issue_obj.get("assignees") or []
+        assignee_logins = [a["login"] for a in assignees if isinstance(a, dict) and a.get("login")]
+        assignee_str = ", ".join(assignee_logins) or "none"
+        label_line = f"Label applied: {matched_label}\n" if matched_label else ""
+        detail = (
+            f"{label_line}"
+            f"Issue title: {title}\n"
+            f"Issue URL: {issue_url}\n"
+            f"Current assignees: {assignee_str}\n"
+            "This issue is devReady — run the devReady pickup flow now (same as "
+            "periodic-check): skip if already assigned to someone else, or if a "
+            "non-terminal task already references this issue number in the current "
+            "<state> task list; otherwise claim_github_issue, create the phase='issue' "
+            "root task (skip if one already exists for this issue number), then "
+            "create_task + assign_task as an atomic pair with issue_number, issue_repo, "
+            "and parent_task_id set."
+        )
 
     return f"{header}{sender_line}\n{detail}".strip() if detail else f"{header}{sender_line}"
 
@@ -1139,6 +1200,27 @@ async def github_webhook(
                 requested_reviewer,
                 guild_owner_login,
             )
+    elif (devready_label := _devready_issue_trigger(event_type, action, payload)) is not None:
+        # devReady issue pickup, same as review_requested above: no existing task/PR
+        # is required, so this bypasses _should_dispatch_to_foreman's task_id gate.
+        issue_obj = payload.get("issue") or {}
+        issue_num = issue_obj.get("number")
+        summary = _build_foreman_summary(
+            event_type, action, payload, repo, issue_num, task_id or "", sender_login
+        )
+        # Key is issue-scoped so rapid re-labeling of the same issue coalesces.
+        key = f"{guild_id}:issues-devready:{repo}#{issue_num}"
+        await _debounce_queue.schedule(key, guild_id, summary, task_user_id, task_id=task_id)
+        logger.info(
+            "github webhook issues devready dispatched guild=%s delivery=%s repo=%s issue=%s "
+            "action=%s label=%s",
+            guild_id,
+            delivery_id,
+            repo,
+            issue_num,
+            action,
+            devready_label,
+        )
     else:
         dispatch, skip_reason = _should_dispatch_to_foreman(
             event_type, action, payload, sender_login, task_id
