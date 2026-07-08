@@ -670,6 +670,43 @@ class TestOpenAiTranslation:
 
         assert "tool_choice" not in captured["json"]
 
+    async def test_call_openai_compatible_includes_tool_choice_when_given(self):
+        """Complements test_call_openai_compatible_omits_empty_tool_choice: a
+        non-empty `tool_choice` is forwarded through to the POSTed body."""
+        import json
+
+        import httpx
+        from foreman.llm import call_openai_compatible
+
+        captured = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["json"] = json.loads(request.read())
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-5",
+                    "model": "llama3.1",
+                    "choices": [{"finish_reason": "stop", "message": {"content": "done"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            await call_openai_compatible(
+                client,
+                model="llama3.1",
+                max_tokens=32,
+                messages=[{"role": "user", "content": "Hi"}],
+                base_url="http://ollama.test/v1",
+                tool_choice={"type": "auto"},
+            )
+        finally:
+            await client.aclose()
+
+        assert captured["json"]["tool_choice"] == {"type": "auto"}
+
 
 # ---------------------------------------------------------------------------
 # call_anthropic — shared Anthropic Messages API call, used locally by the
@@ -781,13 +818,14 @@ class TestCallAnthropic:
     async def test_call_anthropic_omits_empty_tool_choice(self):
         """Regression for #850: an empty `tool_choice={}` must not be forwarded —
         some endpoints reject an empty tool_choice object just like empty tools."""
+        import httpx
         from foreman.llm import call_anthropic
 
         async def create(**kwargs):
             create.kwargs = kwargs
 
             class _RawResponse:
-                headers = {}
+                headers = httpx.Headers({})
 
                 def parse(self):
                     return SimpleNamespace(model_dump=lambda: {})
@@ -807,3 +845,34 @@ class TestCallAnthropic:
         )
 
         assert "tool_choice" not in create.kwargs
+
+    async def test_call_anthropic_includes_tool_choice_when_given(self):
+        """Complements test_call_anthropic_omits_empty_tool_choice: a non-empty
+        `tool_choice` is forwarded to the API as-is."""
+        import httpx
+        from foreman.llm import call_anthropic
+
+        async def create(**kwargs):
+            create.kwargs = kwargs
+
+            class _RawResponse:
+                headers = httpx.Headers({})
+
+                def parse(self):
+                    return SimpleNamespace(model_dump=lambda: {})
+
+            return _RawResponse()
+
+        client = SimpleNamespace(
+            messages=SimpleNamespace(with_raw_response=SimpleNamespace(create=create))
+        )
+
+        await call_anthropic(
+            client,
+            model="claude-sonnet-4-6",
+            max_tokens=256,
+            messages=[{"role": "user", "content": "hi"}],
+            tool_choice={"type": "auto"},
+        )
+
+        assert create.kwargs["tool_choice"] == {"type": "auto"}
