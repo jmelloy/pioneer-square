@@ -153,10 +153,13 @@ provider call per `foreman-api-request`.
 
 ### Provider normalization
 
-Anthropic and Bedrock are called with the Anthropic SDK. OpenAI-compatible
-providers are called with `POST /chat/completions`; tools and messages are
-translated at the proxy boundary, and responses are normalized back to
-Anthropic content blocks for the backend.
+All provider request/response translation — the Anthropic SDK client factory
+and call, and OpenAI-compatible `POST /chat/completions` translation — lives in
+`backend/foreman/llm.py`, shared by the embedded foreman and this proxy (issue
+#826). The proxy holds no provider-specific logic of its own: it only decides
+*which machine* makes the call (its own config selects the client/credentials)
+and forwards the shared module's already Anthropic-shaped response back to the
+backend.
 
 ### Single-proxy enforcement
 

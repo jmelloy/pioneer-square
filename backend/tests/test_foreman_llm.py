@@ -433,3 +433,215 @@ class TestMakeAnthropicClientDynamicEnv:
             llm_mod.make_anthropic_client()
             mock_mod.AsyncAnthropic.assert_called_once()
             mock_mod.AsyncAnthropicBedrock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible translation (issue #826: shared with the standalone proxy,
+# which has no translation logic of its own — see foreman/tests/test_runner.py)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAiTranslation:
+    def test_anthropic_tools_to_openai_wrap_schema(self):
+        from foreman.llm import anthropic_tools_to_openai
+
+        tools = [
+            {
+                "name": "assign_task",
+                "description": "Assign a task.",
+                "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}},
+            }
+        ]
+
+        assert anthropic_tools_to_openai(tools) == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "assign_task",
+                    "description": "Assign a task.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"task_id": {"type": "string"}},
+                    },
+                },
+            }
+        ]
+
+    def test_anthropic_messages_to_openai_convert_tool_exchange(self):
+        from foreman.llm import anthropic_messages_to_openai
+
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "Create it"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I'll do that."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu-1",
+                        "name": "create_task",
+                        "input": {"name": "Build"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu-1", "content": "created"}
+                ],
+            },
+        ]
+
+        converted = anthropic_messages_to_openai([{"type": "text", "text": "System"}], messages)
+
+        assert converted == [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "Create it"},
+            {
+                "role": "assistant",
+                "content": "I'll do that.",
+                "tool_calls": [
+                    {
+                        "id": "toolu-1",
+                        "type": "function",
+                        "function": {"name": "create_task", "arguments": '{"name": "Build"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "toolu-1", "content": "created"},
+        ]
+
+    def test_openai_response_to_anthropic_maps_tool_calls(self):
+        from foreman.llm import openai_response_to_anthropic
+
+        raw = {
+            "id": "chatcmpl-1",
+            "model": "llama3.1",
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "content": "Checking.",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "get_task_status",
+                                    "arguments": '{"task_id": "t-1"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 3},
+        }
+
+        normalised = openai_response_to_anthropic(raw, "llama3.1")
+
+        assert normalised["stop_reason"] == "tool_use"
+        assert normalised["usage"]["input_tokens"] == 12
+        assert normalised["usage"]["output_tokens"] == 3
+        assert normalised["content"] == [
+            {"type": "text", "text": "Checking."},
+            {
+                "type": "tool_use",
+                "id": "call-1",
+                "name": "get_task_status",
+                "input": {"task_id": "t-1"},
+            },
+        ]
+
+    async def test_call_openai_compatible_posts_chat_completion(self):
+        import json
+
+        import httpx
+        from foreman.llm import call_openai_compatible
+
+        captured = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["headers"] = dict(request.headers)
+            captured["json"] = json.loads(request.read())
+            return httpx.Response(
+                200,
+                headers={"x-request-id": "req-openai"},
+                json={
+                    "id": "chatcmpl-2",
+                    "model": "llama3.1",
+                    "choices": [{"finish_reason": "stop", "message": {"content": "done"}}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            response, request_id = await call_openai_compatible(
+                client,
+                {
+                    "model": "backend-model",
+                    "maxTokens": 32,
+                    "system": [{"type": "text", "text": "System"}],
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "tools": [],
+                },
+                model="llama3.1",
+                base_url="http://ollama.test/v1",
+                api_key="key",
+            )
+        finally:
+            await client.aclose()
+
+        assert captured["url"] == "http://ollama.test/v1/chat/completions"
+        assert captured["json"]["model"] == "llama3.1"
+        assert captured["headers"]["authorization"] == "Bearer key"
+        assert request_id == "req-openai"
+        assert response["content"] == [{"type": "text", "text": "done"}]
+
+
+# ---------------------------------------------------------------------------
+# call_anthropic — shared Anthropic Messages API call, used locally by the
+# embedded foreman and by the standalone proxy against its own client.
+# ---------------------------------------------------------------------------
+
+
+class TestCallAnthropic:
+    async def test_call_anthropic_returns_parsed_response_and_request_id(self):
+        """call_anthropic returns the SDK's own parsed response object (not a
+        pre-dumped dict) so local callers keep full attribute access; callers
+        that need JSON (the proxy) call .model_dump() themselves."""
+        from foreman.llm import call_anthropic
+
+        response_payload = {"id": "msg_1", "type": "message", "content": []}
+        parsed_response = SimpleNamespace(model_dump=lambda: response_payload)
+
+        class _RawResponse:
+            headers = {"request-id": "req-1"}
+
+            def parse(self):
+                return parsed_response
+
+        async def create(**kwargs):
+            create.kwargs = kwargs
+            return _RawResponse()
+
+        client = SimpleNamespace(
+            messages=SimpleNamespace(with_raw_response=SimpleNamespace(create=create))
+        )
+
+        response, request_id = await call_anthropic(
+            client,
+            model="claude-sonnet-4-6",
+            max_tokens=256,
+            system=[{"type": "text", "text": "sys"}],
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            tool_choice={"type": "auto"},
+        )
+
+        assert response is parsed_response
+        assert response.model_dump() == response_payload
+        assert request_id == "req-1"
+        assert create.kwargs["tool_choice"] == {"type": "auto"}

@@ -1,4 +1,10 @@
-"""Tests for the standalone proxy LLM request executor."""
+"""Tests for the standalone proxy LLM request executor.
+
+The OpenAI-compatible request/response translation itself lives in and is
+tested by backend/tests/test_foreman_llm.py (shared with the embedded
+foreman). These tests cover only what's local to the proxy: dispatching to the
+right provider and wiring config into the shared helpers.
+"""
 
 from __future__ import annotations
 
@@ -7,118 +13,7 @@ import json
 import httpx
 import pioneer_foreman.runner as runner
 from pioneer_foreman.config import Config
-from pioneer_foreman.runner import (
-    _normalise_openai_response,
-    _openai_messages,
-    _openai_tools,
-    run_api_request,
-)
-
-
-def test_openai_tools_wrap_anthropic_schema():
-    tools = [
-        {
-            "name": "assign_task",
-            "description": "Assign a task.",
-            "input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}}},
-        }
-    ]
-
-    assert _openai_tools(tools) == [
-        {
-            "type": "function",
-            "function": {
-                "name": "assign_task",
-                "description": "Assign a task.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"task_id": {"type": "string"}},
-                },
-            },
-        }
-    ]
-
-
-def test_openai_messages_convert_tool_exchange():
-    messages = [
-        {"role": "user", "content": [{"type": "text", "text": "Create it"}]},
-        {
-            "role": "assistant",
-            "content": [
-                {"type": "text", "text": "I'll do that."},
-                {
-                    "type": "tool_use",
-                    "id": "toolu-1",
-                    "name": "create_task",
-                    "input": {"name": "Build"},
-                },
-            ],
-        },
-        {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "toolu-1", "content": "created"}],
-        },
-    ]
-
-    converted = _openai_messages([{"type": "text", "text": "System"}], messages)
-
-    assert converted == [
-        {"role": "system", "content": "System"},
-        {"role": "user", "content": "Create it"},
-        {
-            "role": "assistant",
-            "content": "I'll do that.",
-            "tool_calls": [
-                {
-                    "id": "toolu-1",
-                    "type": "function",
-                    "function": {"name": "create_task", "arguments": '{"name": "Build"}'},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": "toolu-1", "content": "created"},
-    ]
-
-
-def test_normalise_openai_response_maps_tool_calls():
-    raw = {
-        "id": "chatcmpl-1",
-        "model": "llama3.1",
-        "choices": [
-            {
-                "finish_reason": "tool_calls",
-                "message": {
-                    "content": "Checking.",
-                    "tool_calls": [
-                        {
-                            "id": "call-1",
-                            "type": "function",
-                            "function": {
-                                "name": "get_task_status",
-                                "arguments": '{"task_id": "t-1"}',
-                            },
-                        }
-                    ],
-                },
-            }
-        ],
-        "usage": {"prompt_tokens": 12, "completion_tokens": 3},
-    }
-
-    normalised = _normalise_openai_response(raw, "llama3.1")
-
-    assert normalised["stop_reason"] == "tool_use"
-    assert normalised["usage"]["input_tokens"] == 12
-    assert normalised["usage"]["output_tokens"] == 3
-    assert normalised["content"] == [
-        {"type": "text", "text": "Checking."},
-        {
-            "type": "tool_use",
-            "id": "call-1",
-            "name": "get_task_status",
-            "input": {"task_id": "t-1"},
-        },
-    ]
+from pioneer_foreman.runner import run_api_request
 
 
 async def test_run_api_request_openai_posts_chat_completion(monkeypatch):
@@ -169,3 +64,14 @@ async def test_run_api_request_openai_posts_chat_completion(monkeypatch):
     assert result["response"]["content"] == [{"type": "text", "text": "done"}]
 
     await client.aclose()
+
+
+async def test_run_api_request_unsupported_provider_raises():
+    cfg = Config(backend_url="ws://x:1", guild_id="g", provider="unsupported")
+
+    try:
+        await run_api_request({"model": "m"}, cfg)
+    except ValueError as exc:
+        assert "unsupported" in str(exc).lower()
+    else:
+        raise AssertionError("expected ValueError for an unsupported provider")
