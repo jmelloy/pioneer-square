@@ -43,7 +43,7 @@ from models import (
     Worker,
     live_tasks_filter,
 )
-from sqlalchemy import delete, update
+from sqlalchemy import delete, literal, update
 from sqlmodel import col, select
 from util.tasks import spawn
 from utils import build_spawn_worker_env, decode_claude_oauth_token, worker_display_name
@@ -171,8 +171,10 @@ async def finalize_issue_root_task(db, guild_pk: int, guild_id: str, task_id: st
     apply the same terminal-state guard and broadcast behaviour. Uses a single conditional
     ``UPDATE ... RETURNING`` (rather than SELECT-then-UPDATE) so ``worker_id`` is only ever
     read off the winning update row — a separate prior SELECT would reopen the same TOCTOU
-    race with a concurrent finalize/follow-up on this task. Does not touch child tasks —
-    callers should warn if any remain non-terminal. Returns True if finalization occurred.
+    race with a concurrent finalize/follow-up on this task. Cascades ``deleted_at`` to any
+    already-terminal descendant tasks and posts a pre-close verification comment
+    summarising child-PR merge status — see ``cascade_soft_delete_terminal_descendants``
+    and ``post_issue_close_summary_comment``. Returns True if finalization occurred.
     """
     deleted_at = datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS)
     upd = await db.exec(
@@ -183,12 +185,15 @@ async def finalize_issue_root_task(db, guild_pk: int, guild_id: str, task_id: st
             ~col(Task.state).in_(list(_TERMINAL_STATES)),
         )
         .values(state="done", deleted_at=deleted_at)
-        .returning(col(Task.worker_id))
+        .returning(col(Task.worker_id), col(Task.issue_repo), col(Task.issue_number))
     )
     row = upd.one_or_none()
     if row is None:
         return False
-    worker_id = row[0]
+    worker_id, issue_repo, issue_number = row
+
+    descendants = await find_descendant_tasks(db, task_id)
+    await cascade_soft_delete_terminal_descendants(db, descendants, deleted_at)
 
     await LockService(db).release(f"task:{task_id}")
     await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
@@ -199,6 +204,9 @@ async def finalize_issue_root_task(db, guild_pk: int, guild_id: str, task_id: st
         guild_id,
         TaskUpdateMsg(taskId=task_id, state="done", deletedAt=deleted_at.isoformat()),
     )
+
+    if issue_repo and issue_number is not None:
+        await post_issue_close_summary_comment(guild_id, issue_repo, issue_number, descendants)
     return True
 
 
@@ -224,6 +232,123 @@ async def warn_if_issue_task_has_open_children(db, guild_id: str, root_task_id: 
             root_task_id,
             len(open_children),
             ", ".join(open_children),
+        )
+
+
+# Guards find_descendant_tasks against an (expected-impossible) cyclic
+# parent_task_id chain so a bad row can never spin the lookup forever. Mirrors
+# discord_notifier._MAX_PARENT_CHAIN_DEPTH, which walks the same chain upward.
+_MAX_DESCENDANT_CHAIN_DEPTH = 20
+
+
+async def find_descendant_tasks(db, root_task_id: str) -> list[Task]:
+    """Return every task reachable from *root_task_id* via the ``parent_task_id`` chain.
+
+    Walks the tree downward (plan/execute/review/followup, and anything chained
+    off of those) in a single recursive CTE rather than one round-trip per level.
+    """
+    anchor = select(col(Task.id).label("id"), literal(0).label("depth")).where(
+        col(Task.parent_task_id) == root_task_id
+    )
+    chain = anchor.cte(name="descendant_tasks", recursive=True)
+    recursive_step = (
+        select(col(Task.id).label("id"), (chain.c.depth + 1).label("depth"))
+        .join(chain, col(Task.parent_task_id) == chain.c.id)
+        .where(chain.c.depth < _MAX_DESCENDANT_CHAIN_DEPTH - 1)
+    )
+    chain = chain.union_all(recursive_step)
+
+    id_result = await db.exec(select(chain.c.id))
+    ids = [row[0] for row in id_result.all()]
+    if not ids:
+        return []
+    task_result = await db.exec(select(Task).where(col(Task.id).in_(ids)))
+    return list(task_result.all())
+
+
+async def cascade_soft_delete_terminal_descendants(
+    db, descendants: list[Task], deleted_at: datetime
+) -> list[str]:
+    """Soft-delete every already-terminal descendant task, leaving open ones alone.
+
+    Only tasks already in a terminal state (done/failed/cancelled/error — see
+    ``_TERMINAL_STATES``) and not yet soft-deleted are touched. In-progress or
+    pending descendants are never force-closed here; a human decides whether to
+    cancel in-flight work (see ``warn_if_issue_task_has_open_children``). Returns
+    the ids that were updated.
+    """
+    terminal_ids = [
+        t.id for t in descendants if t.state in _TERMINAL_STATES and t.deleted_at is None
+    ]
+    if terminal_ids:
+        await db.exec(
+            update(Task).where(col(Task.id).in_(terminal_ids)).values(deleted_at=deleted_at)
+        )
+    return terminal_ids
+
+
+async def post_issue_close_summary_comment(
+    guild_id: str, issue_repo: str, issue_number: int, descendants: list[Task]
+) -> None:
+    """Post a pre-close verification comment summarising child-PR merge status.
+
+    Fetches merge status for every descendant task with a PR attached, then posts
+    one summary comment to the GitHub issue (e.g. "all 3 child PRs merged" or a
+    list of the ones that aren't). Best effort: never raises — a GitHub API
+    failure here must not block finalizing the root task.
+    """
+    try:
+        creds = await _guild_github_token(guild_id)
+        if not creds:
+            logger.warning(
+                "issue close summary: no GitHub token for guild=%s %s#%s",
+                guild_id,
+                issue_repo,
+                issue_number,
+            )
+            return
+        token, _ = creds
+
+        with_pr = [t for t in descendants if t.pr_url and t.pr_repo and t.pr_number]
+        lines: list[str] = []
+        unmerged = 0
+        for t in with_pr:
+            try:
+                status = await fetch_pr_status(t.pr_repo, t.pr_number, token)
+                merged = bool(status.get("merged"))
+            except Exception:
+                merged = False
+                logger.warning(
+                    "issue close summary: failed to fetch PR status for task=%s", t.id,
+                    exc_info=True,
+                )
+            if not merged:
+                unmerged += 1
+            mark = "✅" if merged else "❌"
+            lines.append(
+                f"- {mark} task `{t.id}` — {t.pr_url} ({'merged' if merged else 'not merged'})"
+            )
+
+        if with_pr:
+            header = (
+                f"Closing issue — all {len(with_pr)} child PR(s) merged ✅"
+                if unmerged == 0
+                else f"Closing issue — {unmerged} of {len(with_pr)} child PR(s) not merged ⚠️"
+            )
+            body = header + "\n\n" + "\n".join(lines)
+        else:
+            body = "Closing issue — no child PRs to verify."
+
+        await _to_thread(
+            _gh_api_post,
+            f"/repos/{issue_repo}/issues/{issue_number}/comments",
+            token,
+            {"body": body},
+        )
+        logger.info("issue close summary posted to %s#%s", issue_repo, issue_number)
+    except Exception:
+        logger.warning(
+            "issue close summary failed for %s#%s", issue_repo, issue_number, exc_info=True
         )
 
 
