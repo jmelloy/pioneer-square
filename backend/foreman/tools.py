@@ -434,34 +434,50 @@ async def _resolve_issue_title(
 
 async def notify_discord_task_assigned(
     guild_id: str,
-    issue_repo: str,
-    issue_number: int,
     task_id: str,
     fallback_title: str,
+    issue_repo: str | None = None,
+    issue_number: int | None = None,
 ) -> None:
-    """Create (or reuse) the issue's Discord thread as soon as a task is assigned.
+    """Notify Discord that a task was assigned, routing to the right thread.
 
-    This is what moves thread creation earlier in the lifecycle — previously
+    When *issue_repo*/*issue_number* are given, resolves (or creates) the
+    issue's legacy per-issue Discord thread as soon as a task is assigned —
+    this is what moves thread creation earlier in the lifecycle; previously
     the first per-issue Discord thread only appeared when a PR was opened.
     This whole coroutine (including the GitHub title lookup) only ever runs
     via ``spawn``, which schedules it with ``asyncio.create_task`` and never
     awaits it in the caller's context — so a slow GitHub API call delays this
-    background task, not the tool call that triggered it. Skips the live
-    GitHub title lookup entirely when Discord notifications aren't configured.
+    background task, not the tool call that triggered it.
+
+    When they're omitted — a child task of an issue-rooted tree, linked to
+    its root only via ``parent_task_id`` — the GitHub title lookup is
+    skipped and ``notify_event``'s task_id-based root-thread resolution finds
+    the destination instead (see ``_resolve_root_thread_id``).
+
+    Skips entirely when Discord notifications aren't configured.
     """
     if not discord_notifier.is_configured():
         return
-    title = await _resolve_issue_title(guild_id, issue_repo, issue_number, fallback_title)
-    prefix = f"#{issue_number}: "
-    thread_name = prefix + title[: 100 - len(prefix)]
+    title = fallback_title
+    thread_name = None
+    description = f"Foreman assigned task `{task_id}`."
+    if issue_repo and issue_number is not None:
+        title = await _resolve_issue_title(guild_id, issue_repo, issue_number, fallback_title)
+        prefix = f"#{issue_number}: "
+        thread_name = prefix + title[: 100 - len(prefix)]
+        description = f"Foreman assigned task `{task_id}` on {issue_repo}#{issue_number}: {title}"
     await discord_notifier.notify_event(
         "task-assigned",
-        title=f"Task assigned: #{issue_number}",
-        description=f"Foreman assigned task `{task_id}` on {issue_repo}#{issue_number}: {title}",
+        title=(
+            f"Task assigned: #{issue_number}" if issue_number is not None else f"Task assigned: {task_id}"
+        ),
+        description=description,
         issue_repo=issue_repo,
         issue_number=issue_number,
         thread_name=thread_name,
         ps_guild_slug=guild_id,
+        task_id=task_id,
     )
 
 
@@ -470,19 +486,25 @@ def _spawn_discord_task_assigned(
     inp: dict,
     task_id: str,
     fallback_title: str,
+    parent_task_id: str | None = None,
 ) -> None:
-    """Fire off ``notify_discord_task_assigned`` when the tool call carries issue context.
+    """Fire off ``notify_discord_task_assigned`` when there's a thread to route to.
 
-    Shared by both branches of ``assign_task`` (re-assign vs. newly created task).
+    Shared by both branches of ``assign_task`` (re-assign vs. newly created
+    task). Fires when the tool call carries issue context (legacy per-issue
+    thread routing) or a *parent_task_id* (root-thread routing via the
+    issue-rooted task tree) — either gives ``notify_event`` something to
+    resolve a destination thread from.
     """
-    if inp.get("issue_number") is not None and inp.get("issue_repo"):
+    has_issue = inp.get("issue_number") is not None and inp.get("issue_repo")
+    if has_issue or parent_task_id is not None:
         spawn(
             notify_discord_task_assigned(
                 guild_id,
-                inp["issue_repo"],
-                int(inp["issue_number"]),
                 task_id,
                 fallback_title,
+                issue_repo=inp.get("issue_repo"),
+                issue_number=int(inp["issue_number"]) if inp.get("issue_number") is not None else None,
             ),
             name=f"discord.task-assigned:{task_id}",
         )
@@ -1270,9 +1292,17 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 )
                                 await db.commit()
                                 name_result = await db.exec(
-                                    select(col(Task.name)).where(col(Task.id) == existing_task_id)
+                                    select(col(Task.name), col(Task.parent_task_id)).where(
+                                        col(Task.id) == existing_task_id
+                                    )
                                 )
-                                task_name = name_result.one_or_none() or desc[:60]
+                                name_row = name_result.one_or_none()
+                                task_name = (name_row[0] if name_row else None) or desc[:60]
+                                # The update above only overwrites parent_task_id when the
+                                # caller passed one this call — re-select the persisted value
+                                # so root-thread routing sees a parent set by an earlier call
+                                # (e.g. the original create_task), not just this one's input.
+                                effective_parent_task_id = name_row[1] if name_row else parent_task_id
                                 task_id = existing_task_id
                                 await broadcast(
                                     guild_id,
@@ -1291,7 +1321,13 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
-                                _spawn_discord_task_assigned(guild_id, inp, task_id, task_name)
+                                _spawn_discord_task_assigned(
+                                    guild_id,
+                                    inp,
+                                    task_id,
+                                    task_name,
+                                    parent_task_id=effective_parent_task_id,
+                                )
                                 result_text = f"Task {task_id} assigned to {wid}."
                             else:
                                 name = inp.get("name") or desc[:60]

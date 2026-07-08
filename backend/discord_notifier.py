@@ -47,6 +47,19 @@ Phase 5 — new-member welcome DM
     ``DISCORD_WELCOME_DM_TEXT``. DM failures (e.g. DMs disabled) are logged at
     WARNING and never raised.
 
+Phase 6 — issue-rooted task tree thread routing
+    Every thread-aware entry point (``notify_event``, ``notify_existing_thread``,
+    ``notify_foreman_chat``) accepts a *task_id* and, before anything else,
+    calls ``_resolve_root_thread_id`` to walk ``parent_task_id`` up to that
+    task's root (the phase='issue' task created via ``create_task``). When the
+    root has a ``discord_thread_id`` — set once, immediately, by
+    ``ensure_issue_root_thread`` when the root task is minted — the
+    notification posts there, so every plan/execute/review/followup task
+    parented to the same issue lands in one stable thread for the issue's
+    whole lifetime. Falls back to the legacy ``issue_repo``/``issue_number``
+    routing below when *task_id* has no root, or the root predates this
+    column and has no thread yet.
+
 Required bot permissions: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
 
 Usage::
@@ -376,6 +389,101 @@ async def _ensure_thread(
     return await _lookup_thread(issue_repo, issue_number) or new_thread_id
 
 
+# ---------------------------------------------------------------------------
+# Issue-rooted task tree: stable thread anchored to the phase='issue' root task
+# ---------------------------------------------------------------------------
+
+# Guards _resolve_root_thread_id against an (expected-impossible) cyclic
+# parent_task_id chain so a bad row can never spin the lookup forever.
+_MAX_PARENT_CHAIN_DEPTH = 20
+
+
+async def _resolve_root_thread_id(task_id: str) -> str | None:
+    """Walk ``parent_task_id`` up from *task_id* to its root and return the root's thread.
+
+    The root is the top of the chain (``parent_task_id IS NULL``), normally the
+    phase='issue' task created via ``create_task``. Returns None when the
+    chain has no root with a ``discord_thread_id`` set — callers should fall
+    back to the legacy issue_repo/issue_number thread lookup (unrooted or
+    pre-migration tasks). Never raises.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Task  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            current_id = task_id
+            for _ in range(_MAX_PARENT_CHAIN_DEPTH):
+                result = await db.exec(
+                    select(Task.parent_task_id, Task.discord_thread_id).where(
+                        col(Task.id) == current_id
+                    )
+                )
+                row = result.one_or_none()
+                if row is None:
+                    return None
+                parent_id, thread_id = row
+                if parent_id is None:
+                    return thread_id
+                current_id = parent_id
+            logger.warning(
+                "discord: parent_task_id chain exceeded depth=%d starting task=%s",
+                _MAX_PARENT_CHAIN_DEPTH,
+                task_id,
+            )
+            return None
+    except Exception:
+        logger.warning("discord: root-thread resolution failed task=%s", task_id, exc_info=True)
+        return None
+
+
+async def _save_root_thread(task_id: str, thread_id: str) -> None:
+    """Persist *thread_id* directly on the root task's ``discord_thread_id`` column."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Task  # noqa: PLC0415
+        from sqlalchemy import update  # noqa: PLC0415
+        from sqlmodel import col  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            await db.exec(
+                update(Task).where(col(Task.id) == task_id).values(discord_thread_id=thread_id)
+            )
+            await db.commit()
+    except Exception:
+        logger.warning(
+            "discord: root thread DB save failed task=%s thread=%s",
+            task_id,
+            thread_id,
+            exc_info=True,
+        )
+
+
+async def ensure_issue_root_thread(
+    task_id: str, thread_name: str, ps_guild_slug: str | None = None
+) -> str | None:
+    """Create and persist the stable Discord thread for a new issue-root task.
+
+    Called once, when a phase='issue' root task is minted (see
+    ``create_task`` in ``foreman/tools.py``) — not lazily on first child
+    post — so every task parented to *task_id* via ``parent_task_id``
+    resolves the same thread through ``_resolve_root_thread_id`` for the
+    rest of the issue's lifetime. Returns the new thread_id, or None when
+    Discord isn't configured or thread creation fails. Never raises.
+    """
+    if not _bot_token():
+        return None
+    channel = await _resolve_channel_for_guild(ps_guild_slug)
+    if not channel:
+        return None
+    thread_id = await _create_thread_in_channel(channel, thread_name)
+    if not thread_id:
+        return None
+    await _save_root_thread(task_id, thread_id)
+    return thread_id
+
+
 async def _post_to_thread(
     thread_id: str,
     event_type: str,
@@ -526,12 +634,14 @@ async def notify_foreman_chat(
 ) -> None:
     """Mirror a Foreman → user chat line into Discord.
 
-    When *task_id* is given and it resolves (via ``discord_threads``) to a
-    per-task thread already created for that task's linked PR/issue, the
-    line is posted there. In every other case — no *task_id*, or a *task_id*
-    with no linked thread yet — the line is posted directly to the guild's
-    main configured Discord channel; there is no dated/daily fallback
-    thread.
+    When *task_id* is given, its issue-rooted task tree takes priority: if
+    walking ``parent_task_id`` up to the root task finds a
+    ``discord_thread_id``, the line posts there. Otherwise, when *task_id*
+    resolves (via ``discord_threads``) to a per-task thread already created
+    for that task's linked PR/issue, the line is posted there. In every other
+    case — no *task_id*, or a *task_id* with no root or linked thread yet —
+    the line is posted directly to the guild's main configured Discord
+    channel; there is no dated/daily fallback thread.
 
     The message is only ever posted to one destination. Silent no-op when
     the bot token or channel are not configured, or when *content* is
@@ -547,6 +657,11 @@ async def notify_foreman_chat(
         return
 
     if task_id:
+        root_thread_id = await _resolve_root_thread_id(task_id)
+        if root_thread_id:
+            await _post_foreman_chat_line(root_thread_id, content)
+            return
+
         coords = await _lookup_task_issue_coords(task_id)
         if coords:
             issue_repo, issue_number = coords
@@ -622,6 +737,14 @@ async def notify_event(
     ``issue_repo`` and ``issue_number`` are provided.  The thread is lazily
     created on first use and its ID cached in the ``discord_threads`` table.
 
+    When *task_id* is given, resolving its issue-rooted task tree takes
+    priority over everything else: ``_resolve_root_thread_id`` walks
+    ``parent_task_id`` up to the phase='issue' root task and, if that root has
+    a ``discord_thread_id``, posts there directly (*close* is ignored — the
+    root thread outlives any single child task). Falls back to the behaviour
+    below when *task_id* has no root, or its root has no thread yet (legacy
+    tasks predating the issue-rooted tree).
+
     When *linked_issue_repo*/*linked_issue_number* are given (a PR's linked
     GitHub issue, e.g. via ``Closes #N`` or the task's ``issue_number``) and
     that issue already has a Discord thread on record, the message is posted
@@ -647,6 +770,20 @@ async def notify_event(
     operations fail. Silent no-op when the bot token is not configured.
     Never raises.
     """
+    if _bot_token() and task_id:
+        root_thread_id = await _resolve_root_thread_id(task_id)
+        if root_thread_id:
+            await _post_to_thread(
+                root_thread_id,
+                event_type,
+                title,
+                description,
+                url=url,
+                color=color,
+                fields=header_fields,
+            )
+            return
+
     if _bot_token() and not (linked_issue_repo and linked_issue_number is not None) and task_id:
         coords = await _lookup_task_issue_coords(task_id)
         if coords:
@@ -696,6 +833,7 @@ async def notify_existing_thread(
     issue_number: int | None = None,
     url: str | None = None,
     color: int | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Post to an issue/PR's Discord thread only if one already exists.
 
@@ -714,7 +852,20 @@ async def notify_existing_thread(
     persisted in ``discord_threads``; when there isn't one, it falls back to a
     flat embed on the configured channel instead of creating anything. Silent
     no-op / never raises, same guarantees as ``notify_event``.
+
+    When *task_id* is given, its issue-rooted task tree takes priority: if
+    walking ``parent_task_id`` up to the root task finds a
+    ``discord_thread_id``, the message posts there and nothing else runs.
+    Falls back to the ``issue_repo``/``issue_number`` lookup (and its flat-
+    channel fallback) exactly as before when there's no root or the root has
+    no thread yet.
     """
+    if _bot_token() and task_id:
+        root_thread_id = await _resolve_root_thread_id(task_id)
+        if root_thread_id:
+            await _post_to_thread(root_thread_id, event_type, title, description, url=url, color=color)
+            return
+
     if _bot_token() and issue_repo and issue_number is not None:
         thread_id = await _lookup_thread(issue_repo, issue_number)
         if thread_id:

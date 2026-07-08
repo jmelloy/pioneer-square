@@ -214,6 +214,12 @@ class Task(SQLModel, table=True):
     # "powerful". Derived from phase+tool at assign_task time. NULL on legacy
     # tasks created before this column existed.
     model_tier: str | None = None
+    # Discord thread ID for this task's issue-rooted task tree, set only on the
+    # phase="issue" root task at creation time. Child tasks (plan/execute/review/
+    # followup) resolve their Discord thread by walking parent_task_id up to this
+    # root rather than carrying their own thread ID. NULL on every non-root task
+    # and on roots created before Discord routing was configured.
+    discord_thread_id: str | None = None
 
 
 class GithubToken(SQLModel, table=True):
