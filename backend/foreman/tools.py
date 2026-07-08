@@ -1906,6 +1906,18 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         # Discard any queued follow-up events — the task is closed.
                         await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
                         await LockService(db).release(f"task:{task_id}")
+
+                        # phase='issue' root tasks own an entire GitHub issue's worth of
+                        # work — cascade the soft-delete to descendants that already
+                        # finished, but never force-close in-progress/pending ones (a
+                        # human decides whether to cancel in-flight work).
+                        descendants: list[Task] = []
+                        if task.phase == "issue":
+                            descendants = await find_descendant_tasks(db, task_id)
+                            await cascade_soft_delete_terminal_descendants(
+                                db, descendants, deleted_at
+                            )
+
                         await db.commit()
                         await broadcast_msg(
                             guild_id,
@@ -1921,6 +1933,10 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 else None,
                             ),
                         )
+                        if task.phase == "issue" and task.issue_repo and task.issue_number is not None:
+                            await post_issue_close_summary_comment(
+                                guild_id, task.issue_repo, task.issue_number, descendants
+                            )
                         result_text = (
                             f"Task {task_id} finalized as {outcome}; soft-delete at "
                             f"{deleted_at.isoformat() if deleted_at is not None else 'unknown'}."
