@@ -23,6 +23,7 @@ from typing import Any
 import discord_notifier
 from database import get_db
 from events import broadcast, broadcast_msg, emit_terminal_line
+from foreman.constants import _TERMINAL_STATES
 from foreman.llm import get_foreman_model, make_anthropic_client
 from foreman.message_utils import _json_default, truncate_tool_result
 from foreman.tools_schema import (
@@ -40,6 +41,7 @@ from models import (
     TaskEvent,
     TaskLog,
     Worker,
+    live_tasks_filter,
 )
 from sqlalchemy import delete, update
 from sqlmodel import col, select
@@ -159,6 +161,76 @@ def _resolve_finalize_deleted_at(inp: dict) -> tuple[datetime | None, str | None
             return None, "expires_in_seconds must be >= 0"
         return datetime.now(UTC) + timedelta(seconds=secs), None
     return datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS), None
+
+
+async def finalize_issue_root_task(db, guild_pk: int, guild_id: str, task_id: str) -> bool:
+    """Directly finalize a ``phase='issue'`` root task once its GitHub issue closes.
+
+    Shared by the periodic closed-issue sweep (``foreman.runner._sweep_closed_issue_tasks``)
+    and the ``issues`` webhook handler (``routes.webhooks.github_webhook``) so both paths
+    apply the same terminal-state guard and broadcast behaviour. Uses a single conditional
+    UPDATE (rather than SELECT-then-UPDATE) to avoid a TOCTOU race with a concurrent
+    finalize/follow-up on the same task. Does not touch child tasks — callers should warn
+    if any remain non-terminal. Returns True if finalization occurred.
+    """
+    row_result = await db.exec(
+        select(col(Task.id), col(Task.worker_id)).where(
+            col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+        )
+    )
+    task_row = row_result.one_or_none()
+    if task_row is None:
+        return False
+    worker_id = task_row[1]
+
+    deleted_at = datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS)
+    upd = await db.exec(
+        update(Task)
+        .where(
+            col(Task.id) == task_id,
+            col(Task.guild_id) == guild_pk,
+            ~col(Task.state).in_(list(_TERMINAL_STATES)),
+        )
+        .values(state="done", deleted_at=deleted_at)
+    )
+    if (getattr(upd, "rowcount", 0) or 0) == 0:
+        return False
+
+    await LockService(db).release(f"task:{task_id}")
+    await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
+    await db.commit()
+
+    await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
+    await broadcast_msg(
+        guild_id,
+        TaskUpdateMsg(taskId=task_id, state="done", deletedAt=deleted_at.isoformat()),
+    )
+    return True
+
+
+async def warn_if_issue_task_has_open_children(db, guild_id: str, root_task_id: str) -> None:
+    """Log a warning if an issue-root task still has non-terminal child tasks.
+
+    Child tasks (plan/execute/review/followup) are never auto-closed when the parent
+    GitHub issue closes — a human should decide whether to cancel in-flight work.
+    """
+    result = await db.exec(
+        select(col(Task.id)).where(
+            col(Task.parent_task_id) == root_task_id,
+            ~col(Task.state).in_(list(_TERMINAL_STATES)),
+            live_tasks_filter(),
+        )
+    )
+    open_children = [row[0] for row in result.all()]
+    if open_children:
+        logger.warning(
+            "guild=%s task=%s issue closed but %d non-terminal child task(s) remain "
+            "open: %s — leaving them as-is",
+            guild_id,
+            root_task_id,
+            len(open_children),
+            ", ".join(open_children),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +364,16 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
         return (row.access_token, row.github_username) if row else None
     finally:
         await db.close()
+
+
+async def fetch_issue_state(repo: str, issue_number: int, token: str) -> str:
+    """Return the current lifecycle state (``"open"`` or ``"closed"``) of a GitHub issue.
+
+    Used by the periodic closed-issue sweep (foreman.runner._sweep_closed_issue_tasks)
+    to detect issues closed outside the webhook path (e.g. a missed delivery).
+    """
+    issue = await _to_thread(_gh_api, f"/repos/{repo}/issues/{issue_number}", token)
+    return issue.get("state", "open")
 
 
 async def fetch_pr_status(repo: str, pr_number: int, token: str) -> dict:
