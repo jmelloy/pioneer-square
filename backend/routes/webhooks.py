@@ -896,6 +896,43 @@ async def github_webhook(
         )
         await db.commit()
 
+    # Back-fill pr_url onto tasks matched by branch name rather than (repo,
+    # pr_number) — covers the window before the worker's task-update message
+    # sets pr_repo/pr_number, using the branch column set at task-creation
+    # time. Restricted to non-terminal tasks so a stale/reused branch name on
+    # a finished task is never touched.
+    if event_type == "pull_request" and action in {"opened", "synchronize", "reopened"} and pr_url:
+        pr_obj = payload.get("pull_request") or {}
+        head_ref = (pr_obj.get("head") or {}).get("ref")
+        if head_ref:
+            branch_match_result = await db.exec(
+                select(col(Task.id)).where(
+                    col(Task.guild_id) == guild_pk,
+                    col(Task.branch) == head_ref,
+                    col(Task.pr_url).is_(None),
+                    col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
+                )
+            )
+            branch_matched_task_ids = branch_match_result.all()
+            if branch_matched_task_ids:
+                await db.exec(
+                    update(Task)
+                    .where(
+                        col(Task.id).in_(branch_matched_task_ids),
+                        col(Task.pr_url).is_(None),
+                    )
+                    .values(pr_url=pr_url)
+                )
+                await db.commit()
+                logger.info(
+                    "github webhook branch-matched pr_url backfill guild=%s branch=%s "
+                    "pr_url=%s tasks=%s",
+                    guild_id,
+                    head_ref,
+                    pr_url,
+                    branch_matched_task_ids,
+                )
+
     # Keep issue_state and issue_title current on all tasks linked to this issue
     # when GitHub sends an issues event (opened / closed / reopened / edited).
     if event_type == "issues" and action in ("opened", "closed", "reopened", "edited") and repo:
