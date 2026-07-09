@@ -8,7 +8,7 @@ The full payload is retained in ``raw`` for future-proofing.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from models import GithubIssue, GithubPullRequest
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -20,6 +20,11 @@ def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _parse_dt_or_now(value: str | None) -> datetime:
+    """Parse a required timestamp, falling back to now() if GitHub omits it."""
+    return _parse_dt(value) or datetime.now(UTC)
 
 
 def _login(obj: dict | None) -> str | None:
@@ -49,8 +54,8 @@ async def upsert_issue(db: AsyncSession, repo: str, payload: dict) -> GithubIssu
         "labels": _label_names(payload),
         "milestone": milestone.get("title") if isinstance(milestone, dict) else None,
         "author": _login(payload.get("user")),
-        "created_at": _parse_dt(payload.get("created_at")),
-        "updated_at": _parse_dt(payload.get("updated_at")),
+        "created_at": _parse_dt_or_now(payload.get("created_at")),
+        "updated_at": _parse_dt_or_now(payload.get("updated_at")),
         "closed_at": _parse_dt(payload.get("closed_at")),
         "raw": payload,
     }
@@ -91,8 +96,8 @@ async def upsert_pr(db: AsyncSession, repo: str, payload: dict) -> GithubPullReq
         "author": _login(payload.get("user")),
         "assignees": _assignee_logins(payload),
         "labels": _label_names(payload),
-        "created_at": _parse_dt(payload.get("created_at")),
-        "updated_at": _parse_dt(payload.get("updated_at")),
+        "created_at": _parse_dt_or_now(payload.get("created_at")),
+        "updated_at": _parse_dt_or_now(payload.get("updated_at")),
         "closed_at": _parse_dt(payload.get("closed_at")),
         "merged_at": _parse_dt(payload.get("merged_at")),
         "raw": payload,
