@@ -1547,6 +1547,10 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     update_values["issue_number"] = inp["issue_number"]
                                 if inp.get("issue_repo"):
                                     update_values["issue_repo"] = inp["issue_repo"]
+                                if inp.get("pr_number") is not None:
+                                    update_values["pr_number"] = inp["pr_number"]
+                                if inp.get("pr_repo"):
+                                    update_values["pr_repo"] = inp["pr_repo"]
                                 if parent_task_id is not None:
                                     update_values["parent_task_id"] = parent_task_id
                                 await db.exec(
@@ -1587,6 +1591,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         parentTaskId=parent_task_id,
                                         issueNumber=inp.get("issue_number"),
                                         issueRepo=inp.get("issue_repo"),
+                                        prNumber=inp.get("pr_number"),
+                                        prRepo=inp.get("pr_repo"),
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
@@ -1617,6 +1623,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         provider=provider,
                                         issue_number=inp.get("issue_number"),
                                         issue_repo=inp.get("issue_repo"),
+                                        pr_number=inp.get("pr_number"),
+                                        pr_repo=inp.get("pr_repo"),
                                         state="pending",
                                         phase=phase,
                                         parent_task_id=parent_task_id,
@@ -1639,6 +1647,8 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         parentTaskId=parent_task_id,
                                         issueNumber=inp.get("issue_number"),
                                         issueRepo=inp.get("issue_repo"),
+                                        prNumber=inp.get("pr_number"),
+                                        prRepo=inp.get("pr_repo"),
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )

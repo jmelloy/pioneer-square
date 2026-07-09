@@ -266,3 +266,54 @@ async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptur
     assert not any(
         m.args[0].get("branch", "").startswith("claude/") for m in worker._send.await_args_list
     ), "review tasks must never record a generated claude/... branch"
+
+
+async def test_review_prefers_pr_number_over_issue_number():
+    """When pr_number/pr_repo are present they identify the PR to check out —
+    issue_number is the GitHub issue to close, a different number (issue #843)."""
+    import os
+    import tempfile
+    from unittest.mock import patch
+
+    worker = Worker(_make_cfg(repos=["owner/repo"]))
+    worker._joined = True
+    worker._send = AsyncMock()
+    worker.cfg.worker_id = "w-test01"
+
+    task = {
+        "id": "t-revpr",
+        "name": "Review PR #99",
+        "description": "Review PR #99",
+        "phase": "review",
+        "tool": "claude",
+        "issue_number": 42,  # the GitHub issue — must NOT be used as the PR number
+        "issue_repo": "owner/other",
+        "pr_number": 99,
+        "pr_repo": "owner/repo",
+        "repos": ["owner/repo"],
+    }
+    slot = worker.agents[0]
+
+    async def fake_run_claude(desc, *args, **kwargs):
+        return True, "end_turn", "done", None
+
+    with (
+        patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
+        patch(
+            "pioneer_worker.worker.git_ops.get_pr_head_branch", return_value="feature/pr-99"
+        ) as mock_get_branch,
+        patch("pioneer_worker.worker.git_ops.checkout_pr_worktree", return_value=True) as mock_co,
+        patch("pioneer_worker.worker.git_ops.create_worktree") as mock_create_worktree,
+        patch("pioneer_worker.worker.github_pr.push_branch"),
+        patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
+        patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
+        tempfile.TemporaryDirectory() as tmp,
+    ):
+        worker.cfg.work_dir = tmp
+        worker.cfg.repos_dir = tmp
+        await worker._execute_task(task, slot)
+
+    expected_wt_path = os.path.join(tmp, "test-guild", "w-test01", "t-revpr", "repo")
+    mock_get_branch.assert_awaited_once_with("owner/repo", 99)
+    mock_co.assert_awaited_once_with("/tmp/fake-repo", expected_wt_path, 99, "owner/repo")
+    mock_create_worktree.assert_not_called()

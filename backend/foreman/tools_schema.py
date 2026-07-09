@@ -117,6 +117,19 @@ FOREMAN_TOOLS = [
                     "type": "string",
                     "description": "owner/repo for the issue (optional).",
                 },
+                "pr_number": {
+                    "type": "integer",
+                    "description": (
+                        "The pull request number this task acts on. REQUIRED for "
+                        "phase='review' — the worker checks out this PR's branch via "
+                        "`gh pr view <pr_number>`. This is the PR number, NOT the "
+                        "issue number."
+                    ),
+                },
+                "pr_repo": {
+                    "type": "string",
+                    "description": "owner/repo of the PR (for phase='review'; defaults to issue_repo).",
+                },
                 "repos": {
                     "type": "array",
                     "items": {"type": "string"},
