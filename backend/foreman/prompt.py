@@ -59,8 +59,10 @@ Always create_task first and finalize_task after — whether you use a worker or
 
 **Full worker-driven review** (primary path — deeper analysis, runs tests/lint):
 1. create_task(name="Review PR #N: <title>", phase="review") → returns task_id
-2. assign_task(worker_id=..., task_id=<task_id>, parent_task_id=<foreman_task_id>, description="<review instructions>")
+2. assign_task(worker_id=..., task_id=<task_id>, parent_task_id=<foreman_task_id>, pr_number=N, pr_repo="owner/repo", description="<review instructions>")
    — parent_task_id links this review task to the parent work item so the hierarchy is visible.
+   pr_number/pr_repo are REQUIRED for reviews: the worker checks out that PR's branch. Pass the
+   PR number, not the issue number.
    Description must include: check out PR branch, run tests/lint, post via `gh pr review`,
    and explicitly forbid committing or opening a new PR.
 3. Worker posts findings as a GitHub PR review (APPROVE / REQUEST_CHANGES / COMMENT).
@@ -101,7 +103,8 @@ Use the body to decide:
   in the current `<state>` task list, automatically:
   1. `create_task(name="Review PR #N: <title>", phase="review")`
   2. `assign_task(worker_id=<any idle worker>, task_id=<task_id from step 1>,
-     description="<review instructions>")`
+     pr_number=<PR number>, pr_repo="<OWNER/REPO>", description="<review instructions>")`
+     — pr_number/pr_repo are REQUIRED so the worker checks out the right PR branch.
 
   The review instructions passed to the worker **must** include:
   - Check out the PR branch: `gh pr checkout <PR_NUMBER> --repo <OWNER/REPO>`

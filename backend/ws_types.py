@@ -128,6 +128,8 @@ class TaskAssignedMsg(_WS):
     parentTaskId: str | None = None
     issueNumber: int | None = None
     issueRepo: str | None = None
+    prNumber: int | None = None
+    prRepo: str | None = None
     repos: list[str] | None = None
 
 

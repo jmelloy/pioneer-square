@@ -875,6 +875,8 @@ class Worker:
             "phase": body.get("phase", "execute"),
             "issue_number": body.get("issueNumber"),
             "issue_repo": body.get("issueRepo"),
+            "pr_number": body.get("prNumber"),
+            "pr_repo": body.get("prRepo"),
             "repos": body.get("repos") or [],
         }
         if body.get("followupInstructions"):
@@ -1348,6 +1350,8 @@ class Worker:
                         "phase": msg.get("phase", "execute"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
+                        "pr_number": msg.get("prNumber"),
+                        "pr_repo": msg.get("prRepo"),
                         "repos": msg.get("repos") or [],
                     }
                 )
@@ -1434,6 +1438,8 @@ class Worker:
                         "phase": msg.get("phase", "execute"),
                         "issue_number": msg.get("issueNumber"),
                         "issue_repo": msg.get("issueRepo"),
+                        "pr_number": msg.get("prNumber"),
+                        "pr_repo": msg.get("prRepo"),
                         "repos": msg.get("repos") or [],
                         "followup_instructions": instructions,
                         "followup_branch": msg.get("branch", ""),
@@ -1529,6 +1535,8 @@ class Worker:
                                 "phase": msg.get("phase", "execute"),
                                 "issue_number": msg.get("issueNumber"),
                                 "issue_repo": msg.get("issueRepo"),
+                                "pr_number": msg.get("prNumber"),
+                                "pr_repo": msg.get("prRepo"),
                                 "repos": msg.get("repos") or [],
                                 "followup_instructions": instructions,
                                 "followup_branch": msg.get("branch", ""),
@@ -1875,8 +1883,11 @@ class Worker:
         is_followup = bool(followup_instructions) or task.get("phase") == "followup"
         phase = (task.get("phase") or "execute").lower()
         is_review = phase == "review"
-        pr_repo = issue_repo
-        pr_number = task.get("issue_number")
+        # Review tasks act on a PR, identified by the dedicated pr_number/pr_repo
+        # fields. Fall back to issue_number/issue_repo for back-compat with the
+        # deterministic Discord path (which mirrors the PR number into both).
+        pr_repo = task.get("pr_repo") or issue_repo
+        pr_number = task.get("pr_number") or task.get("issue_number")
 
         logger.info(
             "Executing task %s (agent=%s, followup=%s): %s",
