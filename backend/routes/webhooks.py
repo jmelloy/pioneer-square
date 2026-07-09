@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 
 import discord_notifier
 from database import get_db_dep
+from db import github_cache
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from foreman.runner import reset_foreman_poll, run_foreman_ai
@@ -883,6 +884,16 @@ async def github_webhook(
             event_type,
         )
         return Response(status_code=202)
+
+    # Keep the local github_issues/github_pull_requests cache current (#864).
+    if event_type == "issues" and repo:
+        issue_payload = payload.get("issue")
+        if isinstance(issue_payload, dict):
+            await github_cache.upsert_issue(db, repo, issue_payload)
+    elif event_type == "pull_request" and repo:
+        pr_payload = payload.get("pull_request")
+        if isinstance(pr_payload, dict):
+            await github_cache.upsert_pr(db, repo, pr_payload)
 
     # Back-fill pr_url on the task from the webhook payload when a
     # pull_request event arrives and the task doesn't already have it set.
