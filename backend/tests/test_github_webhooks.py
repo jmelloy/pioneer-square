@@ -774,3 +774,102 @@ def test_webhook_does_not_overwrite_existing_pr_url(client):
     with _sync_session(db_url) as session:
         pr_url = session.scalar(select(col(Task.pr_url)).where(col(Task.id) == "t-bf2"))
     assert pr_url == "https://github.com/org/my-repo/pull/77"
+
+
+def _pr_payload_with_head(*, action: str, repo: str, number: int, head_ref: str) -> dict:
+    return {
+        "action": action,
+        "repository": {"full_name": repo},
+        "pull_request": {
+            "number": number,
+            "html_url": f"https://github.com/{repo}/pull/{number}",
+            "head": {"ref": head_ref},
+        },
+        "sender": {"login": "octocat"},
+    }
+
+
+def test_webhook_backfills_task_pr_url_by_branch_match(client):
+    """pull_request/opened sets pr_url on a non-terminal task whose branch matches
+    the PR's head ref, even though the task has no pr_number/pr_repo recorded yet."""
+    test_client, db_url = client
+    insert_guild(db_url, "gbm1")
+    _set_webhook_secret(db_url, "gbm1", "sbm1")
+    insert_worker(db_url, "gbm1", "w-bm1", state="online")
+    insert_task(
+        db_url,
+        "gbm1",
+        "t-bm1",
+        worker_id="w-bm1",
+        state="working",
+        branch="claude/some-feature-t-bm1",
+    )
+    payload = _pr_payload_with_head(
+        action="opened", repo="org/my-repo", number=99, head_ref="claude/some-feature-t-bm1"
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("sbm1", body, event="pull_request", delivery="bm-1")
+    resp = test_client.post("/webhooks/github/gbm1", content=body, headers=headers)
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        pr_url = session.scalar(select(col(Task.pr_url)).where(col(Task.id) == "t-bm1"))
+    assert pr_url == "https://github.com/org/my-repo/pull/99"
+
+
+def test_webhook_branch_match_backfill_ignores_terminal_task(client):
+    """A task already in a terminal state must not have pr_url set via branch match."""
+    test_client, db_url = client
+    insert_guild(db_url, "gbm2")
+    _set_webhook_secret(db_url, "gbm2", "sbm2")
+    insert_worker(db_url, "gbm2", "w-bm2", state="online")
+    insert_task(
+        db_url,
+        "gbm2",
+        "t-bm2",
+        worker_id="w-bm2",
+        state="done",
+        branch="claude/some-feature-t-bm2",
+    )
+    payload = _pr_payload_with_head(
+        action="opened", repo="org/my-repo", number=100, head_ref="claude/some-feature-t-bm2"
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("sbm2", body, event="pull_request", delivery="bm-2")
+    resp = test_client.post("/webhooks/github/gbm2", content=body, headers=headers)
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        pr_url = session.scalar(select(col(Task.pr_url)).where(col(Task.id) == "t-bm2"))
+    assert pr_url is None
+
+
+def test_webhook_branch_match_backfill_does_not_overwrite_existing_pr_url(client):
+    """A task with an existing pr_url must not be clobbered by the branch-match path."""
+    test_client, db_url = client
+    insert_guild(db_url, "gbm3")
+    _set_webhook_secret(db_url, "gbm3", "sbm3")
+    insert_worker(db_url, "gbm3", "w-bm3", state="working")
+    insert_task(
+        db_url,
+        "gbm3",
+        "t-bm3",
+        worker_id="w-bm3",
+        state="working",
+        branch="claude/some-feature-t-bm3",
+        pr_url="https://github.com/org/my-repo/pull/1",
+    )
+    payload = _pr_payload_with_head(
+        action="synchronize",
+        repo="org/my-repo",
+        number=101,
+        head_ref="claude/some-feature-t-bm3",
+    )
+    body = json.dumps(payload).encode()
+    headers = _signed_headers("sbm3", body, event="pull_request", delivery="bm-3")
+    resp = test_client.post("/webhooks/github/gbm3", content=body, headers=headers)
+    assert resp.status_code == 202
+
+    with _sync_session(db_url) as session:
+        pr_url = session.scalar(select(col(Task.pr_url)).where(col(Task.id) == "t-bm3"))
+    assert pr_url == "https://github.com/org/my-repo/pull/1"
