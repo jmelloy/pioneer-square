@@ -90,6 +90,8 @@ class TaskCreate(BaseModel):
     provider: str | None = None
     issue_number: int | None = None
     issue_repo: str | None = None
+    pr_number: int | None = None
+    pr_repo: str | None = None
     repos: list[str] = []
     parent_task_id: str | None = None
     phase: str | None = "execute"
@@ -341,6 +343,8 @@ async def assign_task(
             provider=data.provider,
             issue_number=data.issue_number,
             issue_repo=data.issue_repo,
+            pr_number=data.pr_number,
+            pr_repo=data.pr_repo,
             state="pending",
             phase=data.phase or "execute",
             parent_task_id=data.parent_task_id,
@@ -363,6 +367,8 @@ async def assign_task(
             parentTaskId=data.parent_task_id,
             issueNumber=data.issue_number,
             issueRepo=data.issue_repo,
+            prNumber=data.pr_number,
+            prRepo=data.pr_repo,
             repos=data.repos,
         ),
     )
