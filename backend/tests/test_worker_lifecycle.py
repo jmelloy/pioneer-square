@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from worker_lifecycle import (  # noqa: E402
     SHUTDOWN_FORCE_KILL_TIMEOUT,
     WORKER_DRAIN_TIMEOUT,
+    WORKER_RECONNECT_GRACE,
     drain_stale_workers_on_startup,
     force_kill_worker_if_unresponsive,
     generate_worker_id,
@@ -244,7 +246,7 @@ async def test_drain_sends_shutdown_and_records_timestamp(monkeypatch):
 
 
 def test_drain_timeout_default():
-    assert WORKER_DRAIN_TIMEOUT == 60.0
+    assert WORKER_DRAIN_TIMEOUT == 1800.0
 
 
 def test_drain_timeout_env_override(monkeypatch):
@@ -301,6 +303,7 @@ async def test_spawn_replacement_workers_calls_spawn_for_each():
     fake_worker.id = "w-old1"
     fake_worker.guild_id = 42
     fake_worker.repos = '["owner/repo"]'
+    fake_worker.tools = '["bash"]'
     fake_worker.name = "old-worker"
 
     class FakeDB:
@@ -339,6 +342,9 @@ async def test_spawn_replacement_workers_calls_spawn_for_each():
     assert spawn_calls[0]["guild_id"] == "g-myguild"
     assert spawn_calls[0]["guild_pk"] == 42
     assert spawn_calls[0]["inp"]["repos"] == ["owner/repo"]
+    assert spawn_calls[0]["inp"]["tools"] == ["bash"]
+    # The replacement must get a fresh identity, never the drained worker's name.
+    assert "name" not in spawn_calls[0]["inp"]
 
 
 # ---------------------------------------------------------------------------
@@ -489,12 +495,11 @@ async def test_generate_worker_id_raises_after_max_attempts():
 # ---------------------------------------------------------------------------
 
 
-class _FakeReconcileDB:
-    def __init__(self, reconnected_ids):
-        self._reconnected_ids = reconnected_ids
-        self.exec = AsyncMock(
-            return_value=MagicMock(all=MagicMock(return_value=self._reconnected_ids))
-        )
+class _FakeExecDB:
+    """Fake session whose exec().all() returns a fixed row list."""
+
+    def __init__(self, rows):
+        self.exec = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=rows)))
         self.commit = AsyncMock()
 
     async def __aenter__(self):
@@ -502,6 +507,33 @@ class _FakeReconcileDB:
 
     async def __aexit__(self, *a):
         return False
+
+
+@contextlib.contextmanager
+def _reconcile_patches(sessions, times, mock_kill, mock_spawn, broadcasts):
+    """Common patch set for driving reconcile_stale_workers deterministically.
+
+    ``sessions`` are consumed one AsyncSessionLocal() at a time: the first is the
+    guild-slug lookup, the rest are the per-poll online-worker queries. ``times``
+    feeds loop.time() (one call to seed phase_started, then one per poll). Real
+    sleeps are stubbed out so the loop runs instantly.
+    """
+    session_iter = iter(sessions)
+    fake_loop = MagicMock()
+    fake_loop.time = MagicMock(side_effect=times)
+
+    async def fake_broadcast(slug, msg, *a, **kw):
+        broadcasts.append((slug, msg))
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
+        patch("worker_lifecycle.asyncio.get_event_loop", return_value=fake_loop),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+        patch("worker_lifecycle.spawn_replacement_workers", mock_spawn),
+        patch("worker_lifecycle.broadcast_msg", fake_broadcast),
+    ):
+        yield
 
 
 @pytest.mark.asyncio
@@ -520,35 +552,43 @@ async def test_reconcile_noop_on_empty_ids():
 
 
 @pytest.mark.asyncio
-async def test_reconcile_skips_respawn_when_all_workers_reconnect():
-    """Workers that reconnect on their own during the drain window are not replaced."""
-    session_iter = iter([_FakeReconcileDB(["w-a", "w-b"])])
+async def test_reconcile_drains_then_replaces_reconnected_worker():
+    """A worker that reconnects then drains is soft-killed and replaced, never force-killed."""
+    sessions = [
+        _FakeExecDB([("w-a", "g-guild")]),  # guild-slug lookup
+        _FakeExecDB(["w-a"]),  # poll 1: back online → begin draining
+        _FakeExecDB([]),  # poll 2: gone offline → drained
+    ]
+    mock_kill = AsyncMock()
+    mock_spawn = AsyncMock()
+    broadcasts: list = []
+    # loop.time(): seed + poll1 + poll2. Well under the drain timeout.
+    times = [0.0, 10.0, 20.0]
 
-    with (
-        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.01),
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle._force_kill_containers") as mock_kill,
-        patch("worker_lifecycle.spawn_replacement_workers") as mock_spawn,
-    ):
-        await reconcile_stale_workers(["w-a", "w-b"])
+    with _reconcile_patches(sessions, times, mock_kill, mock_spawn, broadcasts):
+        await reconcile_stale_workers(["w-a"])
 
+    # Soft-kill delivered on reconnect; drained cleanly so no force-kill.
+    assert any(msg.workerId == "w-a" for _, msg in broadcasts)
     mock_kill.assert_not_called()
-    mock_spawn.assert_not_called()
+    mock_spawn.assert_called_once_with(["w-a"])
 
 
 @pytest.mark.asyncio
-async def test_reconcile_force_kills_and_respawns_workers_that_never_reconnect():
-    """Workers still offline once the drain window elapses get killed and replaced."""
-    session_iter = iter([_FakeReconcileDB([])])
+async def test_reconcile_force_kills_and_replaces_worker_that_never_reconnects():
+    """A worker that never comes back within the reconnect grace is killed and replaced."""
+    sessions = [
+        _FakeExecDB([("w-a", "g-guild")]),  # guild-slug lookup
+        _FakeExecDB([]),  # poll 1: still offline, within grace
+        _FakeExecDB([]),  # poll 2: still offline, grace exceeded → dead
+    ]
     mock_kill = AsyncMock()
     mock_spawn = AsyncMock()
+    broadcasts: list = []
+    # Seed at 0; poll1 within grace; poll2 past WORKER_RECONNECT_GRACE.
+    times = [0.0, 10.0, WORKER_RECONNECT_GRACE + 1.0]
 
-    with (
-        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.01),
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle._force_kill_containers", mock_kill),
-        patch("worker_lifecycle.spawn_replacement_workers", mock_spawn),
-    ):
+    with _reconcile_patches(sessions, times, mock_kill, mock_spawn, broadcasts):
         await reconcile_stale_workers(["w-a"])
 
     mock_kill.assert_called_once_with({"w-a"})
@@ -556,22 +596,24 @@ async def test_reconcile_force_kills_and_respawns_workers_that_never_reconnect()
 
 
 @pytest.mark.asyncio
-async def test_reconcile_only_respawns_workers_still_missing():
-    """A partial reconnect only triggers kill/respawn for the workers still missing."""
-    session_iter = iter([_FakeReconcileDB(["w-a"])])
+async def test_reconcile_force_kills_wedged_worker_that_never_drains():
+    """A worker that reconnects but never goes offline is force-killed after the drain timeout."""
+    sessions = [
+        _FakeExecDB([("w-a", "g-guild")]),  # guild-slug lookup
+        _FakeExecDB(["w-a"]),  # poll 1: online → begin draining
+        _FakeExecDB(["w-a"]),  # poll 2: still online past the drain timeout → wedged
+    ]
     mock_kill = AsyncMock()
     mock_spawn = AsyncMock()
+    broadcasts: list = []
+    # Seed=0; poll1 begins drain (phase_started=10); poll2 past drain timeout.
+    times = [0.0, 10.0, 10.0 + WORKER_DRAIN_TIMEOUT + 1.0]
 
-    with (
-        patch("worker_lifecycle.WORKER_DRAIN_TIMEOUT", 0.01),
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle._force_kill_containers", mock_kill),
-        patch("worker_lifecycle.spawn_replacement_workers", mock_spawn),
-    ):
-        await reconcile_stale_workers(["w-a", "w-b"])
+    with _reconcile_patches(sessions, times, mock_kill, mock_spawn, broadcasts):
+        await reconcile_stale_workers(["w-a"])
 
-    mock_kill.assert_called_once_with({"w-b"})
-    mock_spawn.assert_called_once_with(["w-b"])
+    mock_kill.assert_called_once_with({"w-a"})
+    mock_spawn.assert_called_once_with(["w-a"])
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +645,7 @@ class _FakeStateDB:
 
 
 def test_shutdown_force_kill_timeout_default():
-    assert SHUTDOWN_FORCE_KILL_TIMEOUT == 600.0
+    assert SHUTDOWN_FORCE_KILL_TIMEOUT == 1800.0
 
 
 def test_shutdown_force_kill_timeout_env_override(monkeypatch):

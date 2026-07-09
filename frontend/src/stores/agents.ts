@@ -271,6 +271,13 @@ export const useAgentsStore = defineStore('agents', () => {
     })
   }
 
+  async function shutdownWorker(workerId: string) {
+    const guildId = _currentGuildId()
+    return api(`/guilds/${guildId}/workers/${workerId}/shutdown`, {
+      method: 'POST',
+    })
+  }
+
   function firstIdleWorker() {
     const workerAgents = agents.value.filter((a) => a.workerId && a.state !== 'offline')
     const pick =
@@ -384,6 +391,7 @@ export const useAgentsStore = defineStore('agents', () => {
     stopAgent,
     assignTask,
     messageWorker,
+    shutdownWorker,
     firstIdleWorker,
     workerDisplayName,
     clearAgents,

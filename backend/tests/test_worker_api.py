@@ -175,6 +175,63 @@ def test_assign_task_appears_in_list(client):
     assert descriptions == {"Task one", "Task two"}
 
 
+# ---------------------------------------------------------------------------
+# Worker shutdown
+# ---------------------------------------------------------------------------
+
+
+def test_shutdown_worker_signals_and_disables(client, monkeypatch):
+    """The shutdown endpoint broadcasts a worker-shutdown signal and disables the worker."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-shutdown")
+    worker_id = _create_worker(test_client, "guild-shutdown")
+
+    broadcasts: list = []
+
+    async def fake_broadcast(guild_id, msg, *a, **kw):
+        broadcasts.append((guild_id, msg))
+
+    # Don't schedule the real force-kill poll loop during the test — just close
+    # the coroutine so it isn't reported as never-awaited.
+    def fake_spawn(coro, **kw):
+        coro.close()
+        return None
+
+    monkeypatch.setattr("routes.workers.broadcast_msg", fake_broadcast)
+    monkeypatch.setattr("routes.workers.spawn", fake_spawn)
+
+    resp = test_client.post(
+        f"/guilds/guild-shutdown/workers/{worker_id}/shutdown",
+        headers=_auth(db_url),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "shutdown-signalled"
+
+    # A graceful worker-shutdown signal was broadcast to this worker.
+    assert any(
+        getattr(msg, "workerId", None) == worker_id
+        and getattr(msg, "type", None) == "worker-shutdown"
+        for _, msg in broadcasts
+    )
+
+    # The worker is now disabled so it isn't respawned on the next backend restart.
+    with _sync_session(db_url) as session:
+        disabled = session.execute(
+            select(col(Worker.disabled)).where(col(Worker.id) == worker_id)
+        ).scalar_one()
+    assert disabled is True
+
+
+def test_shutdown_unknown_worker_returns_404(client):
+    test_client, db_url = client
+    insert_guild(db_url, "guild-shutdown-404")
+    resp = test_client.post(
+        "/guilds/guild-shutdown-404/workers/w-nope/shutdown",
+        headers=_auth(db_url),
+    )
+    assert resp.status_code == 404
+
+
 def test_spawn_worker_env_forwards_claude_oauth_token():
     """CLAUDE_CODE_OAUTH_TOKEN must reach the spawned container so it skips setup-token."""
     from main import _build_spawn_worker_env

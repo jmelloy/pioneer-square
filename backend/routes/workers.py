@@ -25,15 +25,20 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from util.tasks import spawn
 from utils import (
     build_spawn_worker_env,
     decode_claude_oauth_token,
     row_to_dict,
     worker_display_name,
 )
-from worker_lifecycle import generate_worker_id, record_worker_spawn
+from worker_lifecycle import (
+    force_kill_worker_if_unresponsive,
+    generate_worker_id,
+    record_worker_spawn,
+)
 from ws_handlers import _resolve_user_identifier
-from ws_types import TaskAssignedMsg, WorkerMessageMsg
+from ws_types import TaskAssignedMsg, WorkerMessageMsg, WorkerShutdownMsg
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -512,3 +517,52 @@ async def message_worker(
     await emit_terminal_line(guild_id, worker_id, f"[foreman → worker] {text_msg}")
     await broadcast_msg(guild_id, WorkerMessageMsg(workerId=worker_id, message=text_msg))
     return {"status": "delivered"}
+
+
+@router.post("/guilds/{guild_id}/workers/{worker_id}/shutdown")
+async def shutdown_worker_endpoint(
+    guild_id: str,
+    worker_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Gracefully shut down a worker process (operator-initiated).
+
+    Mirrors the foreman ``shutdown_worker`` tool so the frontend button drives the
+    real shutdown path instead of injecting an English message into a running
+    agent: broadcast the ``worker-shutdown`` signal (which the worker turns into a
+    graceful ``_initiate_shutdown`` — idle agents stop, busy agents finish their
+    current task, then the process exits), mark the worker ``disabled`` so it is
+    not respawned on the next backend restart, and schedule a force-kill backstop
+    in case the worker never goes offline on its own.
+    """
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+
+    worker = (
+        await db.exec(
+            select(col(Worker.id)).where(
+                col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk
+            )
+        )
+    ).one_or_none()
+    if worker is None:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    await broadcast_msg(
+        guild_id,
+        WorkerShutdownMsg(workerId=worker_id, reason="operator-initiated shutdown"),
+    )
+    await db.exec(update(Worker).where(col(Worker.id) == worker_id).values(disabled=True))
+    await db.commit()
+    await emit_terminal_line(
+        guild_id, worker_id, "[operator] graceful shutdown signal sent"
+    )
+    # Force-kill the container only if it's still not offline after the timeout —
+    # see worker_lifecycle.force_kill_worker_if_unresponsive.
+    spawn(
+        force_kill_worker_if_unresponsive(worker_id),
+        name=f"shutdown-escalate:{worker_id}",
+    )
+    return {"status": "shutdown-signalled"}
