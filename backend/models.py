@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, or_, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel, col
 
 # Coding agent runners a worker can be configured with. Single source of
@@ -430,6 +431,75 @@ class GithubEvent(SQLModel, table=True):
     sender_login: str | None = None
     payload_json: str
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class GithubIssue(SQLModel, table=True):
+    """Local cache of a GitHub issue's state, upserted from webhooks and backfill.
+
+    Unique on (repo, number) so upserts are idempotent across both the
+    webhook receiver and scripts/backfill_github_cache.py. ``raw`` retains
+    the full GitHub payload so future fields don't require a migration.
+    """
+
+    __tablename__ = "github_issues"  # type: ignore[assignment]
+    __table_args__ = (Index("uq_github_issues_repo_number", "repo", "number", unique=True),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    repo: str  # "owner/repo"
+    number: int
+    title: str
+    body: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    state: str  # "open" | "closed"
+    assignees: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    labels: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    milestone: str | None = None
+    author: str | None = None
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    closed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    raw: dict = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
+
+
+class GithubPullRequest(SQLModel, table=True):
+    """Local cache of a GitHub pull request's state, upserted from webhooks and backfill.
+
+    Unique on (repo, number) so upserts are idempotent across both the
+    webhook receiver and scripts/backfill_github_cache.py. ``raw`` retains
+    the full GitHub payload so future fields don't require a migration.
+    """
+
+    __tablename__ = "github_pull_requests"  # type: ignore[assignment]
+    __table_args__ = (Index("uq_github_pull_requests_repo_number", "repo", "number", unique=True),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    repo: str  # "owner/repo"
+    number: int
+    title: str
+    body: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    state: str  # "open" | "closed" | "merged"
+    merged: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default=text("false"))
+    )
+    draft: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default=text("false"))
+    )
+    head_sha: str | None = None
+    head_ref: str | None = None
+    base_ref: str | None = None
+    author: str | None = None
+    assignees: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    labels: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    closed_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    merged_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    raw: dict = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
 
 
 class Lock(SQLModel, table=True):
