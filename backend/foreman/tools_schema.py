@@ -27,20 +27,16 @@ FOREMAN_TOOLS = [
                 },
                 "phase": {
                     "type": "string",
-                    "enum": ["issue", "plan", "execute", "review"],
-                    "description": (
-                        "Starting phase. Default: execute. Use 'issue' for the root task "
-                        "of an issue-rooted task tree — never assigned to a worker; has no "
-                        "branch or PR — created once per GitHub issue, with plan/execute "
-                        "tasks pointing at it via parent_task_id."
-                    ),
+                    "enum": ["plan", "execute", "review"],
+                    "description": "Starting phase. Default: execute.",
                 },
                 "issue_number": {
                     "type": "integer",
                     "description": (
                         "GitHub issue this task belongs to. ALWAYS set this (with "
-                        "issue_repo) when the work relates to an issue — required for "
-                        "phase='issue' — so the task groups under the issue in the sidebar."
+                        "issue_repo) when the work relates to an issue — it groups the "
+                        "task under the issue in the sidebar and routes its Discord "
+                        "notifications into the issue's thread."
                     ),
                 },
                 "issue_repo": {

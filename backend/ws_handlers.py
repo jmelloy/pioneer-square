@@ -895,6 +895,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
                 url=pr_url or None,
                 issue_repo=_pr_repo_disc,
                 issue_number=_pr_num_disc,
+                kind="pr",
                 ps_guild_slug=ctx.guild_id,
                 task_id=task_id,
             ),

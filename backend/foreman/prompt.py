@@ -143,11 +143,9 @@ this one issue — the same steps as "Periodic devReady issue pickup" below:
 2. Skip if any existing non-terminal task already references this issue number (check the
    current `<state>` task list).
 3. Call claim_github_issue to assign it.
-4. Call create_task(phase='issue', name="...", description="...", issue_number=N,
-   issue_repo="owner/repo") to create the issue-root anchor task — skip this step if a
-   phase='issue' task for this issue number already exists.
-5. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number,
-   issue_repo on both calls, and parent_task_id=<issue-root task_id from step 4>.
+4. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number
+   and issue_repo on both calls — the linkage groups the task under its issue in the
+   sidebar and routes notifications into the issue's Discord thread.
 The periodic sweep's own dedup checks (steps 1-2) make it safe if both the webhook and a
 same-cycle poll fire for the same issue — whichever runs first wins, the other no-ops.
 
@@ -213,17 +211,9 @@ On every [periodic-check] event:
 2. For each returned issue that has no assignee:
    a. Skip it if any existing non-terminal task already references this issue number (check the current <state> task list).
    b. Call claim_github_issue to assign it.
-   c. Call create_task(phase='issue', name="...", description="...", issue_number=N,
-      issue_repo="owner/repo") FIRST, before any plan/execute
-      task — this creates the issue-root task, the sidebar anchor for all work on this issue. It is
-      never assigned to a worker and carries no branch or PR; create exactly one per issue. Skip
-      this step if a phase='issue' task for this issue number already exists in the current
-      <state> task list (e.g. from a retry after step c succeeded but before step d completed) —
-      reuse that existing task_id as the parent in step d instead of creating a duplicate root.
-   d. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number and
-      issue_repo so the worker's PR references the issue automatically, and
-      parent_task_id=<issue-root task_id from step c> so the plan/execute task nests under the
-      issue root in the hierarchy.
+   c. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number and
+      issue_repo on both calls so the worker's PR references the issue automatically and the
+      task groups under its issue in the sidebar.
 3. The label check must cover (case-insensitive): devReady, dev-ready, ready-for-dev, ready.
 4. Never pick up an issue that is already assigned to someone else.
 

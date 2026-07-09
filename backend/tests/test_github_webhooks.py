@@ -554,9 +554,9 @@ def test_issues_closed_webhook_finalizes_issue_root_task(client):
     assert deleted_at is not None
 
 
-def test_issues_closed_webhook_ignores_already_terminal_root(client):
-    """Must not re-finalize (or error on) a phase='issue' root already in a
-    terminal state — the webhook path should be a no-op there."""
+def test_issues_closed_webhook_sweeps_already_terminal_root(client):
+    """A phase='issue' root already in a terminal state is not re-finalized,
+    but the closed-issue sweep stamps its soft-delete so it ages out."""
     test_client, db_url = client
     insert_guild(db_url, "gissue2")
     _set_webhook_secret(db_url, "gissue2", "sissue2")
@@ -581,8 +581,9 @@ def test_issues_closed_webhook_ignores_already_terminal_root(client):
         deleted_at = session.scalar(
             select(col(Task.deleted_at)).where(col(Task.id) == "t-issue-root2")
         )
-    # Was already 'done' with no expiry set before the webhook — must stay untouched.
-    assert deleted_at is None
+    # Already 'done' before the webhook: state untouched, but the sweep
+    # stamps deleted_at so the finished row ages out of the sidebar.
+    assert deleted_at is not None
 
 
 # ---------------------------------------------------------------------------

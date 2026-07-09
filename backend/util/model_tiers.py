@@ -108,7 +108,7 @@ def select_model_tier(
     """Return the appropriate tier string for a task.
 
     Args:
-        phase: Task phase — ``"issue"``, ``"plan"``, ``"execute"``, or ``"review"``.
+        phase: Task phase — ``"plan"``, ``"execute"``, or ``"review"``.
                Unknown values fall back to ``TIER_STANDARD``.
         tool: Runner name — ``"claude"``, ``"codex"``, or ``"pi"``.
               Unknown values fall back to the phase tier.

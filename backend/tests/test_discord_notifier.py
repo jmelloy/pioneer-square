@@ -16,8 +16,37 @@ import httpx
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
+
+from datetime import UTC, datetime
 
 import discord_notifier
+from helpers import _sync_session, insert_guild, insert_task
+from models import GithubPullRequest
+from sqlalchemy import insert as sa_insert
+
+
+def _insert_gh_pr(db_url: str, repo: str, number: int, *, body: str | None = None) -> None:
+    now = datetime.now(UTC)
+    with _sync_session(db_url) as session:
+        session.execute(
+            sa_insert(GithubPullRequest).values(
+                repo=repo,
+                number=number,
+                title="",
+                state="open",
+                body=body,
+                merged=False,
+                draft=False,
+                assignees=[],
+                labels=[],
+                created_at=now,
+                updated_at=now,
+                raw={},
+            )
+        )
+        session.commit()
+
 
 BOT_TOKEN = "Bot.test.token"
 CHANNEL_ID = "111222333444"
@@ -514,21 +543,26 @@ async def test_notify_event_falls_back_to_channel_when_thread_creation_fails(mon
 
 @pytest.mark.asyncio
 async def test_notify_event_routes_pr_into_linked_issue_thread(monkeypatch):
-    """A PR notification with a linked issue thread posts there, not a new PR thread."""
+    """A PR event whose canonical key resolves to its linked issue posts (and
+    creates, if needed) the ISSUE's thread — named after the issue — never a
+    separate PR-numbered thread."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
     mock_client = _make_mock_client(status_code=204)
     issue_thread_id = "111222333444"
 
-    async def fake_lookup_thread(repo, number):
-        assert (repo, number) == ("org/repo", 7)
-        return issue_thread_id
-
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_lookup_thread", fake_lookup_thread),
-        patch.object(discord_notifier, "_ensure_thread", AsyncMock()) as ensure_mock,
+        patch.object(
+            discord_notifier, "_canonical_coords", AsyncMock(return_value=("org/repo", 7))
+        ),
+        patch.object(
+            discord_notifier, "_issue_thread_name", AsyncMock(return_value="#7: The issue")
+        ),
+        patch.object(
+            discord_notifier, "_ensure_thread", AsyncMock(return_value=issue_thread_id)
+        ) as ensure_mock,
     ):
         await discord_notifier.notify_event(
             "pr-opened",
@@ -536,21 +570,22 @@ async def test_notify_event_routes_pr_into_linked_issue_thread(monkeypatch):
             description="New PR",
             issue_repo="org/repo",
             issue_number=42,
-            linked_issue_repo="org/repo",
-            linked_issue_number=7,
+            kind="pr",
         )
 
-    # Posted straight into the issue's existing thread...
+    # The thread was ensured under the ISSUE's coordinates, named after the issue...
+    ensure_mock.assert_called_once()
+    args = ensure_mock.call_args[0]
+    assert args[:3] == ("org/repo", 7, "#7: The issue")
+    # ...and the message posted into it.
     mock_client.post.assert_called_once()
     call_url = mock_client.post.call_args[0][0]
     assert f"/channels/{issue_thread_id}/messages" in call_url
-    # ...and never created (or looked up) a separate PR-numbered thread.
-    ensure_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_notify_event_falls_back_to_pr_thread_when_no_linked_issue_thread(monkeypatch):
-    """No thread on record for the linked issue: falls back to the PR-keyed thread."""
+async def test_notify_event_falls_back_to_pr_thread_when_no_linked_issue(monkeypatch):
+    """A PR with no resolvable linked issue keys its thread by the PR number."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
@@ -559,8 +594,12 @@ async def test_notify_event_falls_back_to_pr_thread_when_no_linked_issue_thread(
 
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=None)),
-        patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=pr_thread_id)),
+        patch.object(
+            discord_notifier, "_canonical_coords", AsyncMock(return_value=("org/repo", 42))
+        ),
+        patch.object(
+            discord_notifier, "_ensure_thread", AsyncMock(return_value=pr_thread_id)
+        ) as ensure_mock,
     ):
         await discord_notifier.notify_event(
             "pr-opened",
@@ -568,10 +607,11 @@ async def test_notify_event_falls_back_to_pr_thread_when_no_linked_issue_thread(
             description="New PR",
             issue_repo="org/repo",
             issue_number=42,
-            linked_issue_repo="org/repo",
-            linked_issue_number=7,
+            kind="pr",
         )
 
+    ensure_mock.assert_called_once()
+    assert ensure_mock.call_args[0][:2] == ("org/repo", 42)
     mock_client.post.assert_called_once()
     call_url = mock_client.post.call_args[0][0]
     assert f"/channels/{pr_thread_id}/messages" in call_url
@@ -588,7 +628,11 @@ async def test_notify_event_ignores_close_when_routed_to_linked_issue_thread(mon
 
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=issue_thread_id)),
+        patch.object(
+            discord_notifier, "_canonical_coords", AsyncMock(return_value=("org/repo", 7))
+        ),
+        patch.object(discord_notifier, "_issue_thread_name", AsyncMock(return_value=None)),
+        patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=issue_thread_id)),
     ):
         await discord_notifier.notify_event(
             "pr-merged",
@@ -596,9 +640,8 @@ async def test_notify_event_ignores_close_when_routed_to_linked_issue_thread(mon
             description="Merged!",
             issue_repo="org/repo",
             issue_number=42,
+            kind="pr",
             close=True,
-            linked_issue_repo="org/repo",
-            linked_issue_number=7,
         )
 
     mock_client.post.assert_called_once()
@@ -606,63 +649,72 @@ async def test_notify_event_ignores_close_when_routed_to_linked_issue_thread(mon
 
 
 @pytest.mark.asyncio
-async def test_notify_event_resolves_linked_issue_from_task_id(monkeypatch):
-    """When only task_id is given, the linked issue is resolved via Task.issue_repo/number."""
+async def test_notify_event_archives_pr_thread_on_close(monkeypatch):
+    """close=True archives the thread when the subject IS the canonical key
+    (a PR with no linked issue owns its thread)."""
     monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
     monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
 
     mock_client = _make_mock_client(status_code=204)
-    issue_thread_id = "999000111222"
 
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
         patch.object(
-            discord_notifier,
-            "_lookup_task_issue_coords",
-            AsyncMock(return_value=("org/repo", 7)),
+            discord_notifier, "_canonical_coords", AsyncMock(return_value=("org/repo", 42))
         ),
-        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=issue_thread_id)),
-    ):
-        await discord_notifier.notify_event(
-            "task-complete",
-            title="Task complete",
-            description="desc",
-            issue_repo="org/repo",
-            issue_number=42,
-            task_id="t-abc",
-        )
-
-    mock_client.post.assert_called_once()
-    call_url = mock_client.post.call_args[0][0]
-    assert f"/channels/{issue_thread_id}/messages" in call_url
-
-
-@pytest.mark.asyncio
-async def test_notify_event_task_id_skipped_when_linked_issue_explicit(monkeypatch):
-    """Explicit linked_issue_repo/number take precedence — task_id lookup is skipped."""
-    monkeypatch.setenv("DISCORD_BOT_TOKEN", BOT_TOKEN)
-    monkeypatch.setenv("DISCORD_CHANNEL_ID", CHANNEL_ID)
-
-    mock_client = _make_mock_client(status_code=204)
-
-    with (
-        patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_lookup_task_issue_coords", AsyncMock()) as coords_mock,
-        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=None)),
         patch.object(discord_notifier, "_ensure_thread", AsyncMock(return_value=THREAD_ID)),
     ):
         await discord_notifier.notify_event(
-            "pr-opened",
-            title="PR opened",
-            description="desc",
+            "pr-closed",
+            title="PR closed",
+            description="Closed.",
             issue_repo="org/repo",
             issue_number=42,
-            linked_issue_repo="org/repo",
-            linked_issue_number=7,
-            task_id="t-abc",
+            kind="pr",
+            close=True,
         )
 
-    coords_mock.assert_not_called()
+    mock_client.post.assert_called_once()
+    mock_client.patch.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_canonical_coords_prefers_task_issue_linkage(client):
+    """_canonical_coords resolves a task's issue linkage ahead of the PR subject."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-coords1")
+    insert_task(
+        db_url,
+        "g-coords1",
+        "t-coords1",
+        state="working",
+        issue_repo="org/repo",
+        issue_number=7,
+        pr_repo="org/repo",
+        pr_number=42,
+    )
+
+    coords = await discord_notifier._canonical_coords(
+        "org/repo", 42, kind="pr", task_id="t-coords1"
+    )
+    assert coords == ("org/repo", 7)
+
+
+@pytest.mark.asyncio
+async def test_canonical_coords_resolves_issue_from_cached_pr_body(client):
+    """With no task linkage, the cached PR body's Closes-reference wins."""
+    _test_client, db_url = client
+    _insert_gh_pr(db_url, "org/coords-repo", 43, body="Fixes #9")
+
+    coords = await discord_notifier._canonical_coords("org/coords-repo", 43, kind="pr")
+    assert coords == ("org/coords-repo", 9)
+
+
+@pytest.mark.asyncio
+async def test_canonical_coords_issue_subject_passes_through(client):
+    """An issue subject is already canonical — returned as-is."""
+    coords = await discord_notifier._canonical_coords("org/repo", 5, kind="issue")
+    assert coords == ("org/repo", 5)
 
 
 @pytest.mark.asyncio
@@ -1027,7 +1079,7 @@ async def test_notify_foreman_chat_task_scoped_routes_to_task_thread(monkeypatch
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
         patch.object(
             discord_notifier,
-            "_lookup_task_issue_coords",
+            "_canonical_coords",
             AsyncMock(return_value=("org/repo", 42)),
         ),
         patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=task_thread_id)),
@@ -1051,7 +1103,7 @@ async def test_notify_foreman_chat_no_task_id_skips_task_lookup(monkeypatch):
 
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_lookup_task_issue_coords", AsyncMock()) as coords_mock,
+        patch.object(discord_notifier, "_canonical_coords", AsyncMock()) as coords_mock,
     ):
         await discord_notifier.notify_foreman_chat("guild-1", "General update.")
 
@@ -1075,7 +1127,7 @@ async def test_notify_foreman_chat_task_scoped_no_thread_posts_to_main_channel(m
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
         patch.object(
             discord_notifier,
-            "_lookup_task_issue_coords",
+            "_canonical_coords",
             AsyncMock(return_value=("org/repo", 42)),
         ),
         patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=None)),
@@ -1098,7 +1150,7 @@ async def test_notify_foreman_chat_task_with_no_linked_issue_posts_to_main_chann
 
     with (
         patch.object(discord_notifier, "_get_client", return_value=mock_client),
-        patch.object(discord_notifier, "_lookup_task_issue_coords", AsyncMock(return_value=None)),
+        patch.object(discord_notifier, "_canonical_coords", AsyncMock(return_value=None)),
         patch.object(discord_notifier, "_lookup_thread", AsyncMock()) as lookup_thread_mock,
     ):
         await discord_notifier.notify_foreman_chat(
@@ -1154,12 +1206,14 @@ async def test_lookup_discord_user_db_error_returns_none():
 
 
 @pytest.mark.asyncio
-async def test_lookup_task_issue_coords_db_error_returns_none():
-    """_lookup_task_issue_coords swallows DB errors and returns None (never raises)."""
+async def test_canonical_coords_db_error_falls_back_to_subject():
+    """_canonical_coords swallows DB errors: falls back to the given subject
+    coordinates, and to None when it has nothing to fall back to."""
     with patch("database.AsyncSessionLocal", side_effect=RuntimeError("db down")):
-        result = await discord_notifier._lookup_task_issue_coords("t-abc")
-
-    assert result is None
+        assert await discord_notifier._canonical_coords(
+            "org/repo", 42, kind="pr", task_id="t-abc"
+        ) == ("org/repo", 42)
+        assert await discord_notifier._canonical_coords(None, None, task_id="t-abc") is None
 
 
 # ---------------------------------------------------------------------------

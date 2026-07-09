@@ -31,6 +31,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
+from discord_notifier import (  # noqa: E402
+    linked_issue_number_from_body as _linked_issue_number_from_body,
+)
+from discord_notifier import (  # noqa: E402
+    linked_issue_number_from_branch as _linked_issue_number_from_branch,
+)
 from foreman.tools import exec_tools  # noqa: E402
 from helpers import (  # noqa: E402
     _sync_session,
@@ -48,8 +54,6 @@ from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
     _devready_issue_trigger,
     _get_guild_owner_github_login,
-    _linked_issue_number_from_body,
-    _linked_issue_number_from_branch,
     _should_dispatch_to_foreman,
 )
 from sqlalchemy import update  # noqa: E402

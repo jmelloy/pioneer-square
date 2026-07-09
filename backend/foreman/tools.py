@@ -41,7 +41,6 @@ from models import (
     TaskEvent,
     TaskLog,
     Worker,
-    live_tasks_filter,
 )
 from sqlalchemy import delete, literal, update
 from sqlmodel import col, select
@@ -163,76 +162,70 @@ def _resolve_finalize_deleted_at(inp: dict) -> tuple[datetime | None, str | None
     return datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS), None
 
 
-async def finalize_issue_root_task(db, guild_pk: int, guild_id: str, task_id: str) -> bool:
-    """Directly finalize a ``phase='issue'`` root task once its GitHub issue closes.
+async def finalize_closed_issue(
+    db, guild_pk: int, guild_id: str, issue_repo: str, issue_number: int
+) -> list[str]:
+    """Clean up tasks linked to a GitHub issue that just closed.
 
-    Shared by the periodic closed-issue sweep (``foreman.runner._sweep_closed_issue_tasks``)
-    and the ``issues`` webhook handler (``routes.webhooks.github_webhook``) so both paths
-    apply the same terminal-state guard and broadcast behaviour. Uses a single conditional
-    ``UPDATE ... RETURNING`` (rather than SELECT-then-UPDATE) so ``worker_id`` is only ever
-    read off the winning update row — a separate prior SELECT would reopen the same TOCTOU
-    race with a concurrent finalize/follow-up on this task. Cascades ``deleted_at`` to any
-    already-terminal descendant tasks and posts a pre-close verification comment
-    summarising child-PR merge status — see ``cascade_soft_delete_terminal_descendants``
-    and ``post_issue_close_summary_comment``. Returns True if finalization occurred.
+    Shared by the periodic closed-issue sweep (``foreman.runner._sweep_closed_issues``)
+    and the ``issues`` webhook handler (``routes.webhooks.github_webhook``). Legacy
+    ``phase='issue'`` root rows are finalized outright — a single conditional
+    ``UPDATE ... RETURNING`` keeps the terminal-state guard TOCTOU-safe against a
+    concurrent finalize. Every already-terminal task linked to the issue gets its
+    soft-delete stamped; non-terminal linked tasks are never force-closed (a human
+    decides whether to cancel in-flight work) and only logged. Posts one pre-close
+    verification comment summarising linked-PR merge status when anything was
+    finalized. Returns the ids of the tasks that were finalized or swept.
     """
     deleted_at = datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS)
+    issue_filter = (
+        col(Task.guild_id) == guild_pk,
+        col(Task.issue_repo) == issue_repo,
+        col(Task.issue_number) == issue_number,
+    )
+
+    # Legacy phase='issue' roots: synthetic rows owned by the issue itself.
     upd = await db.exec(
         update(Task)
         .where(
-            col(Task.id) == task_id,
-            col(Task.guild_id) == guild_pk,
-            ~col(Task.state).in_(list(_TERMINAL_STATES)),
+            *issue_filter, col(Task.phase) == "issue", ~col(Task.state).in_(list(_TERMINAL_STATES))
         )
         .values(state="done", deleted_at=deleted_at)
-        .returning(col(Task.worker_id), col(Task.issue_repo), col(Task.issue_number))
+        .returning(col(Task.id), col(Task.worker_id))
     )
-    row = upd.one_or_none()
-    if row is None:
-        return False
-    worker_id, issue_repo, issue_number = row
+    roots = list(upd.all())
+    for root_id, _ in roots:
+        await LockService(db).release(f"task:{root_id}")
+        await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == root_id))
 
-    descendants = await find_descendant_tasks(db, task_id)
-    await cascade_soft_delete_terminal_descendants(db, descendants, deleted_at)
-
-    await LockService(db).release(f"task:{task_id}")
-    await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
+    linked_result = await db.exec(select(Task).where(*issue_filter))
+    linked = list(linked_result.all())
+    swept_ids = await cascade_soft_delete_terminal_descendants(db, linked, deleted_at)
     await db.commit()
 
-    await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=task_id))
-    await broadcast_msg(
-        guild_id,
-        TaskUpdateMsg(taskId=task_id, state="done", deletedAt=deleted_at.isoformat()),
-    )
-
-    if issue_repo and issue_number is not None:
-        await post_issue_close_summary_comment(guild_id, issue_repo, issue_number, descendants)
-    return True
-
-
-async def warn_if_issue_task_has_open_children(db, guild_id: str, root_task_id: str) -> None:
-    """Log a warning if an issue-root task still has non-terminal child tasks.
-
-    Child tasks (plan/execute/review/followup) are never auto-closed when the parent
-    GitHub issue closes — a human should decide whether to cancel in-flight work.
-    """
-    result = await db.exec(
-        select(col(Task.id)).where(
-            col(Task.parent_task_id) == root_task_id,
-            ~col(Task.state).in_(list(_TERMINAL_STATES)),
-            live_tasks_filter(),
+    for root_id, worker_id in roots:
+        await broadcast_msg(guild_id, TaskFinalizeMsg(workerId=worker_id, taskId=root_id))
+        await broadcast_msg(
+            guild_id,
+            TaskUpdateMsg(taskId=root_id, state="done", deletedAt=deleted_at.isoformat()),
         )
-    )
-    open_children = [row[0] for row in result.all()]
-    if open_children:
+
+    open_tasks = [t.id for t in linked if t.state not in _TERMINAL_STATES and t.phase != "issue"]
+    if open_tasks:
         logger.warning(
-            "guild=%s task=%s issue closed but %d non-terminal child task(s) remain "
+            "guild=%s issue %s#%s closed but %d non-terminal linked task(s) remain "
             "open: %s — leaving them as-is",
             guild_id,
-            root_task_id,
-            len(open_children),
-            ", ".join(open_children),
+            issue_repo,
+            issue_number,
+            len(open_tasks),
+            ", ".join(open_tasks),
         )
+
+    finalized = [root_id for root_id, _ in roots] + swept_ids
+    if finalized:
+        await post_issue_close_summary_comment(guild_id, issue_repo, issue_number, linked)
+    return finalized
 
 
 # Guards find_descendant_tasks against an (expected-impossible) cyclic
@@ -274,7 +267,7 @@ async def cascade_soft_delete_terminal_descendants(
     Only tasks already in a terminal state (done/failed/cancelled/error — see
     ``_TERMINAL_STATES``) and not yet soft-deleted are touched. In-progress or
     pending descendants are never force-closed here; a human decides whether to
-    cancel in-flight work (see ``warn_if_issue_task_has_open_children``). Returns
+    cancel in-flight work — ``finalize_closed_issue`` logs them instead). Returns
     the ids that were updated.
     """
     terminal_ids = [
@@ -489,7 +482,7 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
 async def fetch_issue_state(repo: str, issue_number: int, token: str) -> str:
     """Return the current lifecycle state (``"open"`` or ``"closed"``) of a GitHub issue.
 
-    Used by the periodic closed-issue sweep (foreman.runner._sweep_closed_issue_tasks)
+    Used by the periodic closed-issue sweep (foreman.runner._sweep_closed_issues)
     to detect issues closed outside the webhook path (e.g. a missed delivery).
     """
     issue = await _to_thread(_gh_api, f"/repos/{repo}/issues/{issue_number}", token)
@@ -695,18 +688,17 @@ async def notify_discord_task_assigned(
     """Notify Discord that a task was assigned, routing to the right thread.
 
     When *issue_repo*/*issue_number* are given, resolves (or creates) the
-    issue's legacy per-issue Discord thread as soon as a task is assigned —
-    this is what moves thread creation earlier in the lifecycle; previously
-    the first per-issue Discord thread only appeared when a PR was opened.
-    This whole coroutine (including the GitHub title lookup) only ever runs
-    via ``spawn``, which schedules it with ``asyncio.create_task`` and never
-    awaits it in the caller's context — so a slow GitHub API call delays this
-    background task, not the tool call that triggered it.
+    issue's Discord thread as soon as a task is assigned — this is what moves
+    thread creation earlier in the lifecycle; previously the first per-issue
+    Discord thread only appeared when a PR was opened. This whole coroutine
+    (including the GitHub title lookup) only ever runs via ``spawn``, which
+    schedules it with ``asyncio.create_task`` and never awaits it in the
+    caller's context — so a slow GitHub API call delays this background task,
+    not the tool call that triggered it.
 
-    When they're omitted — a child task of an issue-rooted tree, linked to
-    its root only via ``parent_task_id`` — the GitHub title lookup is
-    skipped and ``notify_event``'s task_id-based root-thread resolution finds
-    the destination instead (see ``_resolve_root_thread_id``).
+    When they're omitted, the GitHub title lookup is skipped and
+    ``notify_event`` resolves the destination from the task's own linkage
+    (see ``discord_notifier._canonical_coords``).
 
     Skips entirely when Discord notifications aren't configured.
     """
@@ -777,7 +769,9 @@ async def notify_discord_followup(
 
     Uses ``notify_existing_thread`` rather than ``notify_event``: the thread
     should already exist from ``assign_task``, so a missing thread here
-    falls back to the flat channel instead of spawning a new one.
+    falls back to the flat channel instead of spawning a new one. *task_id*
+    lets the notifier resolve the canonical thread even when the task has no
+    issue linkage (PR-only work).
     """
     if not discord_notifier.is_configured():
         return
@@ -787,6 +781,7 @@ async def notify_discord_followup(
         description=f"Follow-up dispatched for task `{task_id}`: {instructions[:500]}",
         issue_repo=issue_repo,
         issue_number=issue_number,
+        task_id=task_id,
     )
 
 
@@ -808,6 +803,7 @@ async def notify_discord_redirect(
         description=f"Redirect sent for task `{task_id}`: {instructions[:500]}",
         issue_repo=issue_repo,
         issue_number=issue_number,
+        task_id=task_id,
     )
 
 
@@ -1365,16 +1361,6 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 result_text = (
                     f"Task {task_id} created: '{name}'. Reference this task_id in assign_task."
                 )
-                if phase == "issue" and discord_notifier.is_configured():
-                    # Create the issue's stable Discord thread now, at root-task
-                    # mint time, rather than lazily on the first child post — see
-                    # discord_notifier.ensure_issue_root_thread.
-                    spawn(
-                        discord_notifier.ensure_issue_root_thread(
-                            task_id, name, ps_guild_slug=guild_id
-                        ),
-                        name=f"discord.issue-root-thread:{task_id}",
-                    )
 
             elif tu.name == "assign_task":
                 wid = inp["worker_id"]
@@ -1867,16 +1853,15 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         issueRepo=task_issue_repo,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
-                                if task_issue_number is not None and task_issue_repo:
-                                    spawn(
-                                        notify_discord_followup(
-                                            task_issue_repo,
-                                            task_issue_number,
-                                            task_id,
-                                            instructions,
-                                        ),
-                                        name=f"discord.followup:{task_id}",
-                                    )
+                                spawn(
+                                    notify_discord_followup(
+                                        task_issue_repo,
+                                        task_issue_number,
+                                        task_id,
+                                        instructions,
+                                    ),
+                                    name=f"discord.followup:{task_id}",
+                                )
                                 if target_worker_id != original_worker_id and original_worker_id:
                                     result_text = (
                                         f"Follow-up reassigned from {original_worker_id} "
