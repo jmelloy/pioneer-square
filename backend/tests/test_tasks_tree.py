@@ -194,6 +194,97 @@ def test_tree_open_and_closed_issues_sorted_correctly(client):
 
 
 # ---------------------------------------------------------------------------
+# Tree endpoint — phase='issue' root nesting (issue #861)
+# ---------------------------------------------------------------------------
+
+
+def test_tree_nests_execute_task_under_issue_root_via_parent_task_id(client):
+    """A phase='issue' root with a child (parent_task_id set) renders one root."""
+    test_client, db_url = client
+    guild_id = "tr-issroot1"
+    _guild_no_owner_token(db_url, guild_id)
+
+    insert_worker(db_url, guild_id, "w-issroot1", state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        "task-issroot1-root",
+        phase="issue",
+        state="pending",
+        issue_number=61,
+        issue_repo="org/repo",
+        issue_state="open",
+    )
+    insert_task(
+        db_url,
+        guild_id,
+        "task-issroot1-exec",
+        worker_id="w-issroot1",
+        phase="execute",
+        state="working",
+        issue_number=61,
+        issue_repo="org/repo",
+        issue_state="open",
+        parent_task_id="task-issroot1-root",
+    )
+
+    headers = _auth(db_url)
+    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()["nodes"]
+    assert len(nodes) == 1
+    tasks = nodes[0]["tasks"]
+    assert len(tasks) == 1, f"expected a single root task, got {len(tasks)}: {tasks}"
+    assert tasks[0]["id"] == "task-issroot1-root"
+    assert tasks[0]["phase"] == "issue"
+    assert len(tasks[0]["children"]) == 1
+    assert tasks[0]["children"][0]["id"] == "task-issroot1-exec"
+
+
+def test_tree_nests_orphan_task_under_issue_root_when_parent_unset(client):
+    """A task in the same issue group without parent_task_id is still nested
+    under the phase='issue' root rather than appearing as a second root."""
+    test_client, db_url = client
+    guild_id = "tr-issroot2"
+    _guild_no_owner_token(db_url, guild_id)
+
+    insert_worker(db_url, guild_id, "w-issroot2", state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        "task-issroot2-root",
+        phase="issue",
+        state="pending",
+        issue_number=62,
+        issue_repo="org/repo",
+        issue_state="open",
+    )
+    # parent_task_id intentionally left unset — this is the bug scenario.
+    insert_task(
+        db_url,
+        guild_id,
+        "task-issroot2-exec",
+        worker_id="w-issroot2",
+        phase="execute",
+        state="working",
+        issue_number=62,
+        issue_repo="org/repo",
+        issue_state="open",
+    )
+
+    headers = _auth(db_url)
+    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()["nodes"]
+    assert len(nodes) == 1
+    tasks = nodes[0]["tasks"]
+    assert len(tasks) == 1, f"expected a single root task, got {len(tasks)}: {tasks}"
+    assert tasks[0]["id"] == "task-issroot2-root"
+    child_ids = {c["id"] for c in tasks[0]["children"]}
+    assert child_ids == {"task-issroot2-exec"}
+
+
+# ---------------------------------------------------------------------------
 # Tree endpoint — GitHub API write-back
 # ---------------------------------------------------------------------------
 

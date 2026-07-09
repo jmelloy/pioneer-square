@@ -410,7 +410,13 @@ def _gh_fetch_pr_body(repo: str, pr_number: int, token: str) -> str | None:
 
 
 def _nest_tasks(tasks: list[dict]) -> list[dict]:
-    """Build a parent/child tree from a flat task list using parent_task_id."""
+    """Build a parent/child tree from a flat task list using parent_task_id.
+
+    A ``phase='issue'`` task is the canonical root of its issue-rooted subtree.
+    If it has no parent itself, any other parentless task in the same list
+    (e.g. a plan/execute task whose parent_task_id wasn't set) is nested under
+    it instead of surfacing as a second top-level root.
+    """
     by_id = {t["id"]: dict(t, children=[]) for t in tasks}
     roots: list[dict] = []
     for t in by_id.values():
@@ -419,6 +425,15 @@ def _nest_tasks(tasks: list[dict]) -> list[dict]:
             by_id[parent_id]["children"].append(t)
         else:
             roots.append(t)
+
+    issue_roots = [t for t in roots if t.get("phase") == "issue"]
+    if len(issue_roots) == 1:
+        issue_root = issue_roots[0]
+        other_roots = [t for t in roots if t is not issue_root]
+        if other_roots:
+            issue_root["children"].extend(other_roots)
+            roots = [issue_root]
+
     return roots
 
 
