@@ -172,12 +172,13 @@ const activeNodes = computed(
   () => treeData.value?.nodes.filter((n) => n.state === 'open' || hasActiveTasks(n.tasks)) ?? [],
 )
 
+// Also true when treeData is null (fetch failed / no guild yet) so the
+// template never reaches the v-else branch without data.
 const isEmpty = computed(
   () =>
     !loading.value &&
-    treeData.value &&
-    activeNodes.value.length === 0 &&
-    treeData.value.ungrouped.length === 0,
+    (!treeData.value ||
+      (activeNodes.value.length === 0 && treeData.value.ungrouped.length === 0)),
 )
 </script>
 
