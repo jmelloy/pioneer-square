@@ -545,29 +545,25 @@ async def _fetch_pr_status_lines(guild_id: str, pr_tasks: list[dict]) -> list[st
     return lines
 
 
-async def _sweep_closed_issue_tasks(guild_id: str, issue_tasks: list[dict]) -> None:
-    """Finalize ``phase='issue'`` root tasks whose linked GitHub issue has closed.
+async def _sweep_closed_issues(guild_id: str, linked_issues: set[tuple[str, int]]) -> None:
+    """Sweep tasks whose linked GitHub issue has closed.
 
-    Called on every periodic-check cycle alongside the PR-status refresh above, for
-    every non-terminal ``phase='issue'`` root task that has both ``issue_repo`` and
-    ``issue_number`` set (backed by the ``ix_tasks_issue_repo_issue_number`` index
-    added in #836). This is a safety net for the ``issues`` webhook handler in
-    ``routes.webhooks`` — it catches issues closed before that handler existed, or
-    where a webhook delivery was missed — so it acts directly (no foreman/LLM
-    round-trip needed) rather than merely nudging the foreman like the PR-status
-    block does. Child tasks (plan/execute/review/followup) are never auto-closed;
-    a warning is logged if any remain non-terminal. Best effort: an individual
-    GitHub fetch failure is logged and skipped rather than aborting the sweep.
+    Called on every periodic-check cycle alongside the PR-status refresh above,
+    for every distinct ``(issue_repo, issue_number)`` linked by a non-terminal
+    task (backed by the ``ix_tasks_issue_repo_issue_number`` index). This is a
+    safety net for the ``issues`` webhook handler in ``routes.webhooks`` — it
+    catches issues closed while a webhook delivery was missed — so it acts
+    directly via ``finalize_closed_issue`` (no foreman/LLM round-trip needed)
+    rather than merely nudging the foreman like the PR-status block does.
+    Non-terminal linked tasks are never auto-closed; only legacy phase='issue'
+    rows are finalized and already-terminal tasks swept. Best effort: an
+    individual GitHub fetch failure is logged and skipped rather than aborting
+    the sweep.
     """
-    if not issue_tasks:
+    if not linked_issues:
         return
 
-    from foreman.tools import (
-        _guild_github_token,
-        fetch_issue_state,
-        finalize_issue_root_task,
-        warn_if_issue_task_has_open_children,
-    )
+    from foreman.tools import _guild_github_token, fetch_issue_state, finalize_closed_issue
 
     creds = await _guild_github_token(guild_id)
     if not creds:
@@ -577,15 +573,13 @@ async def _sweep_closed_issue_tasks(guild_id: str, issue_tasks: list[dict]) -> N
     db = await get_db()
     try:
         guild_pk_val = await get_guild_pk(db, guild_id)
-        for t in issue_tasks:
-            repo, number = t["issue_repo"], t["issue_number"]
+        for repo, number in sorted(linked_issues):
             try:
                 state = await fetch_issue_state(repo, number, token)
             except Exception:
                 logger.warning(
-                    "guild=%s task=%s failed to fetch issue status for %s#%s",
+                    "guild=%s failed to fetch issue status for %s#%s",
                     guild_id,
-                    t["id"],
                     repo,
                     number,
                     exc_info=True,
@@ -595,16 +589,15 @@ async def _sweep_closed_issue_tasks(guild_id: str, issue_tasks: list[dict]) -> N
             if state != "closed":
                 continue
 
-            finalized = await finalize_issue_root_task(db, guild_pk_val, guild_id, t["id"])
+            finalized = await finalize_closed_issue(db, guild_pk_val, guild_id, repo, number)
             if finalized:
                 logger.info(
-                    "guild=%s task=%s finalized (issue %s#%s closed)",
+                    "guild=%s finalized %d task(s) for closed issue %s#%s",
                     guild_id,
-                    t["id"],
+                    len(finalized),
                     repo,
                     number,
                 )
-                await warn_if_issue_task_has_open_children(db, guild_id, t["id"])
     finally:
         await db.close()
 
@@ -682,12 +675,12 @@ async def _poll_loop(guild_id: str) -> None:
                 pr_tasks = [t for t in active_tasks if t.get("pr_url")]
                 pr_status_lines = await _fetch_pr_status_lines(guild_id, pr_tasks)
 
-                issue_tasks = [
-                    t
+                linked_issues = {
+                    (t["issue_repo"], t["issue_number"])
                     for t in active_tasks
-                    if t.get("phase") == "issue" and t.get("issue_repo") and t.get("issue_number")
-                ]
-                await _sweep_closed_issue_tasks(guild_id, issue_tasks)
+                    if t.get("issue_repo") and t.get("issue_number")
+                }
+                await _sweep_closed_issues(guild_id, linked_issues)
 
                 msg = (
                     f"[periodic-check] Automated status poll — {n} non-terminal "

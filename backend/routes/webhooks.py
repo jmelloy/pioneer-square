@@ -20,7 +20,6 @@ import hmac
 import json
 import logging
 import os
-import re
 from datetime import UTC, datetime, timedelta
 
 import discord_notifier
@@ -416,37 +415,6 @@ def _verify_signature(secret: str, body: bytes, signature_header: str | None) ->
     return hmac.compare_digest(expected, provided)
 
 
-# Matches "Closes #123", "Fixes #123", "Resolves #123" (and closed/fixed/
-# resolved variants) in a PR body — GitHub's own auto-close syntax. Used to
-# find the issue a PR is linked to when the task record has no issue_number
-# set (mirrors the same pattern used for task-tree grouping in routes/tasks.py).
-_CLOSES_ISSUE_RE = re.compile(r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE)
-
-
-def _linked_issue_number_from_body(body: str | None) -> int | None:
-    """Return the issue number referenced by a "Closes #N"-style line in *body*."""
-    if not body:
-        return None
-    match = _CLOSES_ISSUE_RE.search(body)
-    return int(match.group(1)) if match else None
-
-
-# Matches the issue number embedded in a task branch name, e.g.
-# "claude/discord-associate-pr-threads-773-t-0jlq" -> 773. The branch is
-# always set by the system when a task is created (unlike a "Closes #N" line,
-# which depends on the PR author remembering to write one), so this is
-# preferred over _linked_issue_number_from_body when both are available.
-_BRANCH_ISSUE_RE = re.compile(r"-(\d+)-t-[a-z0-9]+$")
-
-
-def _linked_issue_number_from_branch(branch: str | None) -> int | None:
-    """Return the issue number embedded in *branch*'s "-<N>-t-<id>" suffix."""
-    if not branch:
-        return None
-    match = _BRANCH_ISSUE_RE.search(branch)
-    return int(match.group(1)) if match else None
-
-
 def _extract_pr_info(payload: dict) -> tuple[int | None, str | None, str | None]:
     """Pull (pr_number, pr_url, repo) out of a webhook payload.
 
@@ -678,10 +646,8 @@ def _build_foreman_summary(
             "This issue is devReady — run the devReady pickup flow now (same as "
             "periodic-check): skip if already assigned to someone else, or if a "
             "non-terminal task already references this issue number in the current "
-            "<state> task list; otherwise claim_github_issue, create the phase='issue' "
-            "root task (skip if one already exists for this issue number), then "
-            "create_task + assign_task as an atomic pair with issue_number, issue_repo, "
-            "and parent_task_id set."
+            "<state> task list; otherwise claim_github_issue, then create_task + "
+            "assign_task as an atomic pair with issue_number and issue_repo set on both."
         )
 
     return f"{header}{sender_line}\n{detail}".strip() if detail else f"{header}{sender_line}"
@@ -811,36 +777,6 @@ async def github_webhook(
     task_row = await _find_task(db, guild_pk, repo, pr_number)
     task_id = task_row.id if task_row else None
     task_user_id = task_row.user_id if task_row else None
-
-    # The issue this PR is linked to, if any — used to route PR Discord
-    # notifications into the issue's existing thread rather than a new one.
-    # Prefer the task's own issue_number (set by the foreman at assign_task
-    # time); then the branch name's "-<N>-t-<id>" suffix (always set by the
-    # system, whether the branch comes from the PR payload itself or the
-    # task record); fall back to a "Closes #N"-style reference in the PR
-    # body last, since that depends on the author remembering to write one.
-    linked_issue_repo: str | None = None
-    linked_issue_number: int | None = None
-    if task_row and task_row.issue_repo and task_row.issue_number is not None:
-        linked_issue_repo, linked_issue_number = task_row.issue_repo, task_row.issue_number
-    elif repo:
-        pr_obj_for_link = payload.get("pull_request")
-        head_ref = (
-            (pr_obj_for_link.get("head") or {}).get("ref")
-            if isinstance(pr_obj_for_link, dict)
-            else None
-        )
-        branch_issue_number = _linked_issue_number_from_branch(
-            head_ref or (task_row.branch if task_row else None)
-        )
-        if branch_issue_number is not None:
-            linked_issue_repo, linked_issue_number = repo, branch_issue_number
-        else:
-            body_issue_number = _linked_issue_number_from_body(
-                pr_obj_for_link.get("body") if isinstance(pr_obj_for_link, dict) else None
-            )
-            if body_issue_number is not None:
-                linked_issue_repo, linked_issue_number = repo, body_issue_number
 
     # Trim the persisted payload so a runaway diff hunk can't balloon the DB.
     body_text = body.decode("utf-8", errors="replace")
@@ -974,36 +910,23 @@ async def github_webhook(
                 guild_id,
             )
 
-            # A closed issue finalizes its phase='issue' root task directly — no
-            # foreman/LLM round-trip needed, since the issue's own state is the
-            # only signal that matters here. The periodic sweep in
-            # foreman.runner._sweep_closed_issue_tasks is a safety net for
-            # missed deliveries; this is the primary (near-instant) path.
+            # A closed issue sweeps its linked tasks directly — no foreman/LLM
+            # round-trip needed, since the issue's own state is the only signal
+            # that matters here. The periodic sweep in
+            # foreman.runner._sweep_closed_issues is a safety net for missed
+            # deliveries; this is the primary (near-instant) path.
             if action == "closed":
-                from foreman.tools import (
-                    finalize_issue_root_task,
-                    warn_if_issue_task_has_open_children,
-                )
+                from foreman.tools import finalize_closed_issue
 
-                root_result = await db.exec(
-                    select(col(Task.id)).where(
-                        col(Task.guild_id) == guild_pk,
-                        col(Task.issue_repo) == repo,
-                        col(Task.issue_number) == issue_num,
-                        col(Task.phase) == "issue",
-                        col(Task.state).notin_(list(_WEBHOOK_TERMINAL_STATES)),
+                finalized_ids = await finalize_closed_issue(db, guild_pk, guild_id, repo, issue_num)
+                if finalized_ids:
+                    logger.info(
+                        "github webhook finalized %d task(s) on issue %s#%s close guild=%s",
+                        len(finalized_ids),
+                        repo,
+                        issue_num,
+                        guild_id,
                     )
-                )
-                for root_task_id in root_result.all():
-                    finalized = await finalize_issue_root_task(db, guild_pk, guild_id, root_task_id)
-                    if finalized:
-                        logger.info(
-                            "github webhook auto-finalized issue-root task=%s on issue "
-                            "close guild=%s",
-                            root_task_id,
-                            guild_id,
-                        )
-                        await warn_if_issue_task_has_open_children(db, guild_id, root_task_id)
 
     # Deterministic lifecycle transitions: finalize on merge, fail on close-without-merge.
     # These happen directly — no AI decision needed for these clear-cut outcomes.
@@ -1062,11 +985,10 @@ async def github_webhook(
                 url=pr_url or None,
                 issue_repo=repo,
                 issue_number=pr_number,
+                kind="pr",
                 thread_name=f"#{pr_number}: {pr_title}" if pr_title else f"#{pr_number}",
                 header_fields={"Assignee": assignee_str, "Labels": labels_str},
                 ps_guild_slug=guild_id,
-                linked_issue_repo=linked_issue_repo,
-                linked_issue_number=linked_issue_number,
                 task_id=task_id,
             ),
             name=f"discord.pr-opened:{_pr_label}",
@@ -1083,10 +1005,9 @@ async def github_webhook(
                     url=pr_url or None,
                     issue_repo=repo,
                     issue_number=pr_number,
+                    kind="pr",
                     close=True,
                     ps_guild_slug=guild_id,
-                    linked_issue_repo=linked_issue_repo,
-                    linked_issue_number=linked_issue_number,
                     task_id=task_id,
                 ),
                 name=f"discord.pr-merged:{_pr_label}",
@@ -1101,10 +1022,9 @@ async def github_webhook(
                     url=pr_url or None,
                     issue_repo=repo,
                     issue_number=pr_number,
+                    kind="pr",
                     close=True,
                     ps_guild_slug=guild_id,
-                    linked_issue_repo=linked_issue_repo,
-                    linked_issue_number=linked_issue_number,
                     task_id=task_id,
                 ),
                 name=f"discord.pr-closed:{_pr_label}",
@@ -1119,9 +1039,8 @@ async def github_webhook(
                 url=pr_url or None,
                 issue_repo=repo,
                 issue_number=pr_number,
+                kind="pr",
                 ps_guild_slug=guild_id,
-                linked_issue_repo=linked_issue_repo,
-                linked_issue_number=linked_issue_number,
                 task_id=task_id,
             ),
             name=f"discord.pr-updated:{_pr_label}",
@@ -1141,9 +1060,8 @@ async def github_webhook(
                 url=(review.get("html_url") or pr_url) or None,
                 issue_repo=repo,
                 issue_number=pr_number,
+                kind="pr",
                 ps_guild_slug=guild_id,
-                linked_issue_repo=linked_issue_repo,
-                linked_issue_number=linked_issue_number,
                 task_id=task_id,
             ),
             name=f"discord.pr-review:{_pr_label}",
@@ -1169,8 +1087,6 @@ async def github_webhook(
                     issue_repo=repo,
                     issue_number=pr_number,
                     ps_guild_slug=guild_id,
-                    linked_issue_repo=linked_issue_repo,
-                    linked_issue_number=linked_issue_number,
                     task_id=task_id,
                 ),
                 name=f"discord.ci-check:{_pr_label}:{check_name}",

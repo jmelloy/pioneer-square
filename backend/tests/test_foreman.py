@@ -249,40 +249,23 @@ class TestBuildSystemPrompt:
 
         assert "parent_task_id" in FOREMAN_SYSTEM
 
-    def test_devready_pickup_creates_issue_root_task_first(self):
-        """Picking up a devReady issue must create a phase='issue' root task before any
-        plan/execute task (#829)."""
+    def test_devready_pickup_has_no_issue_root_step(self):
+        """phase='issue' root tasks are retired — the pickup flow must not instruct
+        the foreman to create one anywhere in the prompt."""
+        from foreman.prompt import FOREMAN_SYSTEM
+
+        assert "phase='issue'" not in FOREMAN_SYSTEM
+        assert 'phase="issue"' not in FOREMAN_SYSTEM
+
+    def test_devready_pickup_passes_issue_linkage(self):
+        """Pickup must instruct create_task + assign_task with issue linkage on both
+        calls — that linkage is what groups the tasks and routes their Discord
+        notifications now that there is no issue-root anchor task."""
         from foreman.prompt import FOREMAN_SYSTEM
 
         section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
         section = FOREMAN_SYSTEM[section_start:]
-        assert "create_task(phase='issue'" in section or 'create_task(phase="issue"' in section
-        # Anchor to the lettered sub-steps rather than a loose substring search — step
-        # 'c' (issue-root creation) must be described before step 'd' (plan/execute pair).
-        step_c_idx = section.index("c. Call create_task(phase='issue'")
-        step_d_idx = section.index("d. Call create_task + assign_task")
-        assert step_c_idx < step_d_idx
-
-    def test_devready_pickup_child_tasks_reference_issue_root(self):
-        """Subsequent plan/execute tasks for a devReady issue must pass parent_task_id
-        pointing at the issue-root task (#829)."""
-        from foreman.prompt import FOREMAN_SYSTEM
-
-        section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
-        section = FOREMAN_SYSTEM[section_start:]
-        # Assert the full phrase, not just the bare "parent_task_id" token, which also
-        # appears in unrelated sections of FOREMAN_SYSTEM (e.g. review dispatch).
-        assert "parent_task_id=<issue-root task_id" in section
-
-    def test_devready_issue_root_never_assigned_to_worker(self):
-        """Prompt must describe the issue-root task as never assigned to a worker and
-        without a branch/PR (#829)."""
-        from foreman.prompt import FOREMAN_SYSTEM
-
-        section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
-        section = FOREMAN_SYSTEM[section_start:]
-        assert "never assigned to a worker" in section
-        assert "no branch or PR" in section or "no branch/PR" in section
+        assert "issue_repo on both calls" in section
 
 
 # ---------------------------------------------------------------------------
@@ -471,9 +454,9 @@ class TestExecToolsDispatching:
             phase = session.scalar(select(col(Task.phase)).where(col(Task.id) == task_id))
         assert phase == "plan"
 
-    async def test_create_task_issue_phase_creates_unassigned_root_task(self, db_session):
-        """create_task(phase='issue') must persist phase='issue' and leave the task
-        unassigned (no worker) — it's a sidebar anchor, never dispatched to a worker (#829)."""
+    async def test_create_task_persists_issue_and_pr_linkage(self, db_session):
+        """create_task must persist issue/PR linkage columns — they group the task
+        under its issue in the sidebar and route its Discord notifications."""
         insert_guild(db_session, "g-issuephase")
         with patch("foreman.tools.broadcast", new_callable=AsyncMock):
             results = await exec_tools(
@@ -482,9 +465,12 @@ class TestExecToolsDispatching:
                     _fake_tool_use(
                         "create_task",
                         {
-                            "name": "Issue: add foo",
-                            "description": "Root task for issue #123",
-                            "phase": "issue",
+                            "name": "Add foo",
+                            "description": "Implement issue #123",
+                            "issue_number": 123,
+                            "issue_repo": "acme/widgets",
+                            "pr_number": 456,
+                            "pr_repo": "acme/widgets",
                         },
                     )
                 ],
@@ -493,10 +479,11 @@ class TestExecToolsDispatching:
 
         with _sync_session(db_session) as session:
             task = session.get(Task, task_id)
-        assert task.phase == "issue"
+        assert task.issue_number == 123
+        assert task.issue_repo == "acme/widgets"
+        assert task.pr_number == 456
+        assert task.pr_repo == "acme/widgets"
         assert task.worker_id is None
-        assert task.pr_url is None
-        assert task.branch is None
 
     async def test_assign_task_unknown_worker(self, db_session):
         insert_guild(db_session, "g-assign-bad")
@@ -1876,18 +1863,19 @@ class TestExecToolsDispatching:
         assert ev is None, "No pending-followup event should be queued — follow-up was dispatched"
 
 
-class TestFinalizeIssueRootTaskAtomicity:
-    """finalize_issue_root_task (backend/foreman/tools.py) guards against a lost-update
+class TestFinalizeClosedIssueAtomicity:
+    """finalize_closed_issue (backend/foreman/tools.py) guards against a lost-update
     race (jmelloy/pioneer-square#851, PR #848 review) by making the terminal-state
-    check and the state='done' write a single conditional UPDATE...RETURNING instead
-    of a SELECT followed by an UPDATE. A prior SELECT would let two concurrent callers
-    (the issues webhook and the periodic closed-issue sweep) both observe the
-    non-terminal state, then both write — double-finalizing the task and racing on
-    which worker_id gets broadcast. With the atomic UPDATE, Postgres serializes the
-    two writers on the row and only the first to commit can win."""
+    check and the state='done' write on legacy phase='issue' rows a single
+    conditional UPDATE...RETURNING instead of a SELECT followed by an UPDATE. A
+    prior SELECT would let two concurrent callers (the issues webhook and the
+    periodic closed-issue sweep) both observe the non-terminal state, then both
+    write — double-finalizing the task and racing on which worker_id gets
+    broadcast. With the atomic UPDATE, Postgres serializes the two writers on the
+    row and only the first to commit can win."""
 
     async def test_concurrent_finalize_only_one_caller_wins(self, db_session):
-        from foreman.tools import finalize_issue_root_task
+        from foreman.tools import finalize_closed_issue
 
         insert_guild(db_session, "g-race")
         _insert_worker(db_session, "g-race", "w-race")
@@ -1908,16 +1896,19 @@ class TestFinalizeIssueRootTaskAtomicity:
             guild_pk = await get_guild_pk(db_a, "g-race")
             with patch("foreman.tools._guild_github_token", return_value=None):
                 results = await asyncio.gather(
-                    finalize_issue_root_task(db_a, guild_pk, "g-race", "t-race-root"),
-                    finalize_issue_root_task(db_b, guild_pk, "g-race", "t-race-root"),
+                    finalize_closed_issue(db_a, guild_pk, "g-race", "o/r", 42),
+                    finalize_closed_issue(db_b, guild_pk, "g-race", "o/r", 42),
                 )
         finally:
             await db_a.close()
             await db_b.close()
 
-        # Exactly one of the two concurrent callers must observe the terminal-state
-        # guard flip and back off — a lost-update bug would let both return True.
-        assert sorted(results) == [False, True]
+        # Exactly one of the two concurrent callers must win the conditional
+        # UPDATE and finalize the legacy root — a lost-update bug would let
+        # both return it.
+        winners = sorted(results, key=len)
+        assert winners[0] == []
+        assert winners[1] == ["t-race-root"]
 
         with _sync_session(db_session) as session:
             state, deleted_at = session.execute(

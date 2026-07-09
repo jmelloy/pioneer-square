@@ -508,8 +508,6 @@ async def _cmd_review(interaction_token: str, guild_slug: str, pr_url: str) -> N
                 tool="claude",
                 state="pending",
                 phase="review",
-                issue_repo=pr_repo,
-                issue_number=pr_number,
                 pr_url=pr_url,
                 pr_number=pr_number,
                 pr_repo=pr_repo,

@@ -47,18 +47,17 @@ Phase 5 — new-member welcome DM
     ``DISCORD_WELCOME_DM_TEXT``. DM failures (e.g. DMs disabled) are logged at
     WARNING and never raised.
 
-Phase 6 — issue-rooted task tree thread routing
+Phase 6 — canonical thread keyspace (#866)
     Every thread-aware entry point (``notify_event``, ``notify_existing_thread``,
-    ``notify_foreman_chat``) accepts a *task_id* and, before anything else,
-    calls ``_resolve_root_thread_id`` to walk ``parent_task_id`` up to that
-    task's root (the phase='issue' task created via ``create_task``). When the
-    root has a ``discord_thread_id`` — set once, immediately, by
-    ``ensure_issue_root_thread`` when the root task is minted — the
-    notification posts there, so every plan/execute/review/followup task
-    parented to the same issue lands in one stable thread for the issue's
-    whole lifetime. Falls back to the legacy ``issue_repo``/``issue_number``
-    routing below when *task_id* has no root, or the root predates this
-    column and has no thread yet.
+    ``notify_foreman_chat``) resolves its subject to ONE canonical
+    ``(repo, number)`` key via ``_canonical_coords`` before touching
+    ``discord_threads``: the linked GitHub *issue* number when one can be
+    determined (task linkage columns, the branch name's ``-<N>-t-<id>``
+    suffix, or a ``Closes #N`` body reference in the ``github_pull_requests``
+    cache), the PR number otherwise. GitHub issues and PRs share a number
+    sequence per repo, so the key never collides across kinds — canonical
+    resolution exists to stop *fragmentation*, where a PR's events and its
+    linked issue's events used to land in two different threads.
 
 Phase 7 — CI check debounce/combine
     ``notify_ci_check`` buffers ``check_run``/``check_suite`` completions per
@@ -105,6 +104,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -410,128 +410,139 @@ async def _ensure_thread(
 
 
 # ---------------------------------------------------------------------------
-# Issue-rooted task tree: stable thread anchored to the phase='issue' root task
+# Canonical thread key: one work item -> one (repo, number) -> one thread
 # ---------------------------------------------------------------------------
 
-# Guards _resolve_root_thread_id against an (expected-impossible) cyclic
-# parent_task_id chain so a bad row can never spin the lookup forever.
-_MAX_PARENT_CHAIN_DEPTH = 20
+# A PR's linked issue, from the branch name's "-<N>-t-<id>" suffix (always
+# set by the system) or a "Closes #N"-style reference in the PR body.
+# routes/webhooks.py imports these for its own linkage bookkeeping.
+CLOSES_ISSUE_RE = re.compile(r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE)
+_BRANCH_ISSUE_RE = re.compile(r"-(\d+)-t-[a-z0-9]+$")
 
 
-async def _resolve_root_thread_id(task_id: str) -> str | None:
-    """Walk ``parent_task_id`` up from *task_id* to its root and return the root's thread.
+def linked_issue_number_from_body(body: str | None) -> int | None:
+    """Return the issue number a PR body closes ("Closes #N" etc.), or None."""
+    if not body:
+        return None
+    match = CLOSES_ISSUE_RE.search(body)
+    return int(match.group(1)) if match else None
 
-    The root is the top of the chain (``parent_task_id IS NULL``), normally the
-    phase='issue' task created via ``create_task``. Fetches the whole ancestor
-    chain (up to ``_MAX_PARENT_CHAIN_DEPTH`` levels) in a single recursive-CTE
-    query rather than one round-trip per level. Returns None when the chain
-    has no root with a ``discord_thread_id`` set — callers should fall back to
-    the legacy issue_repo/issue_number thread lookup (unrooted or
-    pre-migration tasks). Never raises.
+
+def linked_issue_number_from_branch(branch: str | None) -> int | None:
+    """Return the issue number encoded in a system branch name suffix, or None."""
+    if not branch:
+        return None
+    match = _BRANCH_ISSUE_RE.search(branch)
+    return int(match.group(1)) if match else None
+
+
+async def _canonical_coords(
+    repo: str | None,
+    number: int | None,
+    *,
+    kind: str = "issue",
+    task_id: str | None = None,
+) -> tuple[str, int] | None:
+    """Resolve the canonical ``(repo, number)`` thread key for a work item.
+
+    One work item gets one thread, keyed by the GitHub *issue* number when an
+    issue is linked and by the PR number otherwise. GitHub issues and PRs
+    share a single number sequence per repo, so the pair never collides
+    across kinds — the failure mode this prevents is *fragmentation*: the
+    same work item keyed once under its PR number and once under its issue
+    number (#866).
+
+    Resolution order:
+      1. the task's own issue linkage (``Task.issue_repo``/``issue_number``)
+      2. for PRs (``kind='pr'``): any task linked to the PR that knows its
+         issue, then the cached PR's branch-name suffix or ``Closes #N``
+         body reference (``github_pull_requests``, webhook-fed)
+      3. the subject ``(repo, number)`` as given
+
+    Never raises; returns None when no coordinates can be determined at all.
     """
+    pr_repo, pr_number = (repo, number) if kind == "pr" else (None, None)
     try:
-        from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import Task  # noqa: PLC0415
-        from sqlalchemy import literal  # noqa: PLC0415
-        from sqlalchemy import select as sa_select  # noqa: PLC0415
+        from database import AsyncSessionLocal  # noqa: PLC0415 — lazy to avoid circular import
+        from models import GithubPullRequest, Task  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
-            anchor = sa_select(
-                Task.id.label("id"),
-                Task.parent_task_id.label("parent_task_id"),
-                Task.discord_thread_id.label("discord_thread_id"),
-                literal(0).label("depth"),
-            ).where(Task.id == task_id)
-            chain = anchor.cte(name="parent_chain", recursive=True)
-            parent = (
-                sa_select(
-                    Task.id.label("id"),
-                    Task.parent_task_id.label("parent_task_id"),
-                    Task.discord_thread_id.label("discord_thread_id"),
-                    (chain.c.depth + 1).label("depth"),
+            if task_id:
+                result = await db.exec(
+                    select(Task.issue_repo, Task.issue_number, Task.pr_repo, Task.pr_number).where(
+                        col(Task.id) == task_id
+                    )
                 )
-                .join(chain, Task.id == chain.c.parent_task_id)
-                .where(chain.c.depth < _MAX_PARENT_CHAIN_DEPTH - 1)
-            )
-            chain = chain.union_all(parent)
+                row = result.one_or_none()
+                if row:
+                    if row[0] and row[1] is not None:
+                        return row[0], row[1]
+                    if pr_repo is None and row[2] and row[3] is not None:
+                        pr_repo, pr_number = row[2], row[3]
 
-            result = await db.execute(
-                sa_select(chain.c.parent_task_id, chain.c.discord_thread_id).order_by(
-                    chain.c.depth.asc()
+            if pr_repo and pr_number is not None:
+                result = await db.exec(
+                    select(Task.issue_repo, Task.issue_number)
+                    .where(
+                        col(Task.pr_repo) == pr_repo,
+                        col(Task.pr_number) == pr_number,
+                        col(Task.issue_number).is_not(None),
+                    )
+                    .limit(1)
                 )
-            )
-            rows = result.all()
-            if not rows:
-                return None
-            for parent_id, thread_id in rows:
-                if parent_id is None:
-                    return thread_id
-            logger.warning(
-                "discord: parent_task_id chain exceeded depth=%d starting task=%s",
-                _MAX_PARENT_CHAIN_DEPTH,
-                task_id,
-            )
-            return None
+                linked = result.first()
+                if linked and linked[0]:
+                    return linked[0], linked[1]
+
+                result = await db.exec(
+                    select(GithubPullRequest.head_ref, GithubPullRequest.body).where(
+                        col(GithubPullRequest.repo) == pr_repo,
+                        col(GithubPullRequest.number) == pr_number,
+                    )
+                )
+                pr_row = result.one_or_none()
+                if pr_row:
+                    issue_num = linked_issue_number_from_branch(
+                        pr_row[0]
+                    ) or linked_issue_number_from_body(pr_row[1])
+                    if issue_num is not None:
+                        return pr_repo, issue_num
+                return pr_repo, pr_number
     except Exception:
-        logger.warning("discord: root-thread resolution failed task=%s", task_id, exc_info=True)
-        return None
+        logger.warning(
+            "discord: canonical coords resolution failed repo=%s number=%s task=%s",
+            repo,
+            number,
+            task_id,
+            exc_info=True,
+        )
+    return (repo, number) if repo and number is not None else None
 
 
-async def ensure_issue_root_thread(
-    task_id: str, thread_name: str, ps_guild_slug: str | None = None
-) -> str | None:
-    """Create and persist the stable Discord thread for a new issue-root task.
+async def _issue_thread_name(repo: str, number: int) -> str | None:
+    """Return "#N: <title>" from the github_issues cache, or None on a miss.
 
-    Called once, when a phase='issue' root task is minted (see
-    ``create_task`` in ``foreman/tools.py``) — not lazily on first child
-    post — so every task parented to *task_id* via ``parent_task_id``
-    resolves the same thread through ``_resolve_root_thread_id`` for the
-    rest of the issue's lifetime. Returns the new thread_id, or None when
-    Discord isn't configured or thread creation fails. Never raises.
-
-    ``create_task`` can be invoked through two independent paths — the REST
-    endpoint in ``routes/foreman.py`` and the ``create_task`` tool in
-    ``foreman/tools.py`` — that could race each other for the same task_id.
-    To avoid both creating a Discord thread and one silently losing the DB
-    write, this locks the task row (``SELECT ... FOR UPDATE``) and re-checks
-    ``discord_thread_id`` before creating anything: a racing caller blocks on
-    the lock until the winner commits, then observes the already-persisted
-    thread and returns it instead of creating a duplicate.
+    Used when a PR event resolves to its linked issue and has to create that
+    issue's thread — naming it after the issue rather than the transient PR
+    event title.
     """
-    if not _bot_token():
-        return None
-    channel = await _resolve_channel_for_guild(ps_guild_slug)
-    if not channel:
-        return None
-
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import Task  # noqa: PLC0415
-        from sqlalchemy import update  # noqa: PLC0415
+        from models import GithubIssue  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
-                select(Task.discord_thread_id).where(col(Task.id) == task_id).with_for_update()
+                select(GithubIssue.title).where(
+                    col(GithubIssue.repo) == repo, col(GithubIssue.number) == number
+                )
             )
-            existing = result.one_or_none()
-            if existing:
-                return existing
-
-            thread_id = await _create_thread_in_channel(channel, thread_name)
-            if not thread_id:
-                return None
-
-            await db.execute(
-                update(Task).where(col(Task.id) == task_id).values(discord_thread_id=thread_id)
-            )
-            await db.commit()
-            return thread_id
+            title = result.one_or_none()
+            return f"#{number}: {title}" if title else None
     except Exception:
         logger.warning(
-            "discord: ensure_issue_root_thread failed task=%s",
-            task_id,
-            exc_info=True,
+            "discord: issue thread name lookup failed %s#%s", repo, number, exc_info=True
         )
         return None
 
@@ -633,43 +644,6 @@ async def send_welcome_dm(discord_user_id: str, username: str | None = None) -> 
 # ---------------------------------------------------------------------------
 
 
-async def _lookup_task_issue_coords(task_id: str) -> tuple[str, int] | None:
-    """Return the ``(issue_repo, issue_number)`` linked to *task_id*, or None.
-
-    Used to route task-scoped Foreman chat into the same thread as that
-    task's PR/issue notifications (see ``_lookup_thread``), instead of the
-    daily guild thread. None when the task has no linked issue/PR, doesn't
-    exist, or the lookup fails.
-    """
-    try:
-        from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import Task  # noqa: PLC0415
-        from sqlalchemy.exc import NoResultFound  # noqa: PLC0415
-        from sqlmodel import col, select  # noqa: PLC0415
-
-        try:
-            async with AsyncSessionLocal() as db:
-                result = await db.exec(
-                    select(Task.issue_repo, Task.issue_number).where(col(Task.id) == task_id)
-                )
-                row = result.one_or_none()
-                if row and row[0] and row[1] is not None:
-                    return row[0], row[1]
-                return None
-        except NoResultFound:
-            # Expected when the task has no linked issue/PR (or no thread) yet.
-            logger.debug("discord: no issue coords for task=%s", task_id)
-            return None
-    except Exception as exc:
-        logger.warning(
-            "discord: task issue-coords lookup failed task=%s error_type=%s: %s",
-            task_id,
-            type(exc).__name__,
-            exc,
-        )
-        return None
-
-
 # Discord's hard cap on a single message's content length.
 _MAX_MESSAGE_LENGTH = 2000
 
@@ -695,14 +669,11 @@ async def notify_foreman_chat(
 ) -> None:
     """Mirror a Foreman → user chat line into Discord.
 
-    When *task_id* is given, its issue-rooted task tree takes priority: if
-    walking ``parent_task_id`` up to the root task finds a
-    ``discord_thread_id``, the line posts there. Otherwise, when *task_id*
-    resolves (via ``discord_threads``) to a per-task thread already created
-    for that task's linked PR/issue, the line is posted there. In every other
-    case — no *task_id*, or a *task_id* with no root or linked thread yet —
-    the line is posted directly to the guild's main configured Discord
-    channel; there is no dated/daily fallback thread.
+    When *task_id* is given and its canonical issue/PR (see
+    ``_canonical_coords``) already has a thread in ``discord_threads``, the
+    line is posted there. In every other case — no *task_id*, or no linked
+    thread yet — the line is posted directly to the guild's main configured
+    Discord channel; there is no dated/daily fallback thread.
 
     The message is only ever posted to one destination. Silent no-op when
     the bot token or channel are not configured, or when *content* is
@@ -718,15 +689,9 @@ async def notify_foreman_chat(
         return
 
     if task_id:
-        root_thread_id = await _resolve_root_thread_id(task_id)
-        if root_thread_id:
-            await _post_foreman_chat_line(root_thread_id, content)
-            return
-
-        coords = await _lookup_task_issue_coords(task_id)
+        coords = await _canonical_coords(None, None, task_id=task_id)
         if coords:
-            issue_repo, issue_number = coords
-            task_thread_id = await _lookup_thread(issue_repo, issue_number)
+            task_thread_id = await _lookup_thread(coords[0], coords[1])
             if task_thread_id:
                 await _post_foreman_chat_line(task_thread_id, content)
                 return
@@ -784,41 +749,24 @@ async def notify_event(
     color: int | None = None,
     issue_repo: str | None = None,
     issue_number: int | None = None,
+    kind: str = "issue",
     thread_name: str | None = None,
     header_fields: dict[str, str] | None = None,
     close: bool = False,
     ps_guild_slug: str | None = None,
-    linked_issue_repo: str | None = None,
-    linked_issue_number: int | None = None,
     task_id: str | None = None,
     flags: int | None = None,
 ) -> None:
-    """Post a Discord notification, routing to a per-PR/issue thread when possible.
+    """Post a Discord notification, routing to the work item's one thread.
 
-    Thread routing is attempted when ``DISCORD_BOT_TOKEN`` is set **and** both
-    ``issue_repo`` and ``issue_number`` are provided.  The thread is lazily
-    created on first use and its ID cached in the ``discord_threads`` table.
-
-    When *task_id* is given, resolving its issue-rooted task tree takes
-    priority over everything else: ``_resolve_root_thread_id`` walks
-    ``parent_task_id`` up to the phase='issue' root task and, if that root has
-    a ``discord_thread_id``, posts there directly (*close* is ignored — the
-    root thread outlives any single child task). Falls back to the behaviour
-    below when *task_id* has no root, or its root has no thread yet (legacy
-    tasks predating the issue-rooted tree).
-
-    When *linked_issue_repo*/*linked_issue_number* are given (a PR's linked
-    GitHub issue, e.g. via ``Closes #N`` or the task's ``issue_number``) and
-    that issue already has a Discord thread on record, the message is posted
-    there instead — no new PR-numbered thread is created, and *close* is
-    ignored (the issue's thread outlives any single PR closing/merging into
-    it). Falls back to the ``issue_repo``/``issue_number`` (PR-keyed) behaviour
-    below when the linked issue has no thread yet.
-
-    When *linked_issue_repo*/*linked_issue_number* are omitted but *task_id*
-    is given, the linked issue is resolved from ``Task.issue_repo``/
-    ``Task.issue_number`` (same lookup ``notify_foreman_chat`` uses) — a
-    convenience for callers that only have a task_id on hand.
+    ``issue_repo``/``issue_number`` are the event subject's coordinates —
+    pass ``kind="pr"`` when that number is a PR number. The destination is
+    the *canonical* thread key resolved by ``_canonical_coords``: the linked
+    GitHub issue when one can be determined (task linkage, branch suffix, or
+    ``Closes #N``), the PR itself otherwise. The thread is lazily created on
+    first use and its ID cached in the ``discord_threads`` table; when a PR
+    event has to create its linked issue's thread, the thread is named after
+    the issue (``github_issues`` cache) rather than this event's title.
 
     When *ps_guild_slug* is provided, the destination channel is resolved via
     the ``discord_channel_guilds`` binding table (populated by
@@ -826,7 +774,8 @@ async def notify_event(
     env var.
 
     When ``close=True`` the thread is archived after the message is posted
-    (used for PR merge/close events).
+    (used for PR merge/close events) — unless the message landed in a linked
+    issue's thread, which outlives any single PR closing/merging into it.
 
     *flags* is the raw Discord message-flags bitmask (see ``_SILENT_FLAG``),
     passed straight through to whichever destination the message ends up at
@@ -837,59 +786,31 @@ async def notify_event(
     operations fail. Silent no-op when the bot token is not configured.
     Never raises.
     """
-    if _bot_token() and task_id:
-        root_thread_id = await _resolve_root_thread_id(task_id)
-        if root_thread_id:
-            await _post_to_thread(
-                root_thread_id,
-                event_type,
-                title,
-                description,
-                url=url,
-                color=color,
-                fields=header_fields,
-                flags=flags,
-            )
-            return
-
-    if _bot_token() and not (linked_issue_repo and linked_issue_number is not None) and task_id:
-        coords = await _lookup_task_issue_coords(task_id)
+    if _bot_token():
+        coords = await _canonical_coords(issue_repo, issue_number, kind=kind, task_id=task_id)
         if coords:
-            linked_issue_repo, linked_issue_number = coords
-
-    if _bot_token() and linked_issue_repo and linked_issue_number is not None:
-        linked_thread_id = await _lookup_thread(linked_issue_repo, linked_issue_number)
-        if linked_thread_id:
-            await _post_to_thread(
-                linked_thread_id,
-                event_type,
-                title,
-                description,
-                url=url,
-                color=color,
-                fields=header_fields,
-                flags=flags,
-            )
-            return
-
-    if _bot_token() and issue_repo and issue_number is not None:
-        tn = thread_name or f"#{issue_number}: {title}"
-        channel = await _resolve_channel_for_guild(ps_guild_slug)
-        thread_id = await _ensure_thread(issue_repo, issue_number, tn, channel=channel)
-        if thread_id:
-            await _post_to_thread(
-                thread_id,
-                event_type,
-                title,
-                description,
-                url=url,
-                color=color,
-                fields=header_fields,
-                flags=flags,
-            )
-            if close:
-                await archive_thread(thread_id)
-            return
+            repo, number = coords
+            resolved_to_issue = kind == "pr" and (repo, number) != (issue_repo, issue_number)
+            if resolved_to_issue:
+                tn = await _issue_thread_name(repo, number) or f"#{number}"
+            else:
+                tn = thread_name or f"#{number}: {title}"
+            channel = await _resolve_channel_for_guild(ps_guild_slug)
+            thread_id = await _ensure_thread(repo, number, tn, channel=channel)
+            if thread_id:
+                await _post_to_thread(
+                    thread_id,
+                    event_type,
+                    title,
+                    description,
+                    url=url,
+                    color=color,
+                    fields=header_fields,
+                    flags=flags,
+                )
+                if close and not resolved_to_issue:
+                    await archive_thread(thread_id)
+                return
 
     # Fallback: flat embed to the resolved channel
     await notify(
@@ -909,11 +830,12 @@ async def notify_existing_thread(
     description: str,
     issue_repo: str | None = None,
     issue_number: int | None = None,
+    kind: str = "issue",
     url: str | None = None,
     color: int | None = None,
     task_id: str | None = None,
 ) -> None:
-    """Post to an issue/PR's Discord thread only if one already exists.
+    """Post to a work item's Discord thread only if one already exists.
 
     This is deliberately **not** a thin wrapper around ``notify_event``:
     ``notify_event`` always creates a thread when none exists yet, naming it
@@ -927,35 +849,26 @@ async def notify_existing_thread(
     would then be scattered across that wrong thread.
 
     ``notify_existing_thread`` avoids that by only ever looking up the thread
-    persisted in ``discord_threads``; when there isn't one, it falls back to a
-    flat embed on the configured channel instead of creating anything. Silent
+    persisted in ``discord_threads`` — under the same canonical key
+    ``notify_event`` posts to (see ``_canonical_coords``) — and falling back
+    to a flat embed on the configured channel when there isn't one. Silent
     no-op / never raises, same guarantees as ``notify_event``.
-
-    When *task_id* is given, its issue-rooted task tree takes priority: if
-    walking ``parent_task_id`` up to the root task finds a
-    ``discord_thread_id``, the message posts there and nothing else runs.
-    Falls back to the ``issue_repo``/``issue_number`` lookup (and its flat-
-    channel fallback) exactly as before when there's no root or the root has
-    no thread yet.
     """
-    if _bot_token() and task_id:
-        root_thread_id = await _resolve_root_thread_id(task_id)
-        if root_thread_id:
-            await _post_to_thread(
-                root_thread_id, event_type, title, description, url=url, color=color
+    if _bot_token():
+        coords = await _canonical_coords(issue_repo, issue_number, kind=kind, task_id=task_id)
+        if coords:
+            thread_id = await _lookup_thread(coords[0], coords[1])
+            if thread_id:
+                await _post_to_thread(
+                    thread_id, event_type, title, description, url=url, color=color
+                )
+                return
+            logger.debug(
+                "notify_existing_thread: no thread on record for %s#%s, "
+                "falling back to flat channel",
+                coords[0],
+                coords[1],
             )
-            return
-
-    if _bot_token() and issue_repo and issue_number is not None:
-        thread_id = await _lookup_thread(issue_repo, issue_number)
-        if thread_id:
-            await _post_to_thread(thread_id, event_type, title, description, url=url, color=color)
-            return
-        logger.debug(
-            "notify_existing_thread: no thread on record for %s#%s, falling back to flat channel",
-            issue_repo,
-            issue_number,
-        )
     elif not is_configured():
         logger.debug(
             "notify_existing_thread: Discord not configured, skipping event=%s",
@@ -1401,8 +1314,6 @@ async def notify_ci_check(
     issue_repo: str | None = None,
     issue_number: int | None = None,
     ps_guild_slug: str | None = None,
-    linked_issue_repo: str | None = None,
-    linked_issue_number: int | None = None,
     task_id: str | None = None,
 ) -> None:
     """Buffer one CI check completion for *pr_label* and (re)arm a debounced flush.
@@ -1442,9 +1353,8 @@ async def notify_ci_check(
                 "url": url,
                 "issue_repo": issue_repo,
                 "issue_number": issue_number,
+                "kind": "pr",
                 "ps_guild_slug": ps_guild_slug,
-                "linked_issue_repo": linked_issue_repo,
-                "linked_issue_number": linked_issue_number,
                 "task_id": task_id,
             }
         )
