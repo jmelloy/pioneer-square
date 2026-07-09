@@ -5,24 +5,16 @@
 
     <template v-else>
       <!-- Issue / PR nodes -->
-      <div
-        v-for="node in activeNodes"
-        :key="`${node.issue_repo}#${node.issue_number}`"
-        class="tree-group"
-      >
-        <div class="group-header" @click="toggle(`${node.issue_repo}#${node.issue_number}`)">
-          <span class="collapse-icon">{{
-            isExpanded(`${node.issue_repo}#${node.issue_number}`) ? '▾' : '▸'
-          }}</span>
-          <span class="issue-ref">#{{ node.issue_number }}</span>
-          <span class="issue-title">{{ resolveIssueTitle(node) }}</span>
-          <span class="state-badge" :class="'badge-' + resolveIssueState(node)">{{
-            resolveIssueState(node)
-          }}</span>
+      <div v-for="node in activeNodes" :key="nodeKey(node)" class="tree-group">
+        <div class="group-header" @click="toggle(nodeKey(node))">
+          <span class="collapse-icon">{{ isExpanded(nodeKey(node)) ? '▾' : '▸' }}</span>
+          <span class="issue-ref">{{ node.type === 'pr' ? 'PR' : '' }}#{{ node.number }}</span>
+          <span class="issue-title">{{ node.title }}</span>
+          <span class="state-badge" :class="'badge-' + node.state">{{ node.state }}</span>
           <span class="group-count">{{ countTasks(node.tasks) }}</span>
         </div>
 
-        <div v-if="isExpanded(`${node.issue_repo}#${node.issue_number}`)" class="group-tasks">
+        <div v-if="isExpanded(nodeKey(node))" class="group-tasks">
           <TaskTreeRow
             v-for="task in node.tasks"
             :key="task.id"
@@ -60,16 +52,18 @@
 import { computed, ref, watch } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useTasksStore } from '../../stores/tasks'
-import { useGitHubStore } from '../../stores/github'
 import { api } from '../../utils/api'
-import type { IssueTreeNode, TaskTreeData, TaskTreeNode } from '../../types'
+import type { TaskTreeData, TaskTreeNode, TreeGroupNode } from '../../types'
 import TaskTreeRow from './TaskTreeRow.vue'
 
 defineEmits<{ (e: 'open-task', id: string): void }>()
 
 const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
-const ghStore = useGitHubStore()
+
+function nodeKey(node: TreeGroupNode): string {
+  return `${node.type}:${node.repo}#${node.number}`
+}
 
 const treeData = ref<TaskTreeData | null>(null)
 const loading = ref(false)
@@ -168,21 +162,6 @@ function hasActiveTasks(tasks: TaskTreeNode[]): boolean {
   return tasks.some((t) => !TERMINAL_STATES.has(t.state) || hasActiveTasks(t.children))
 }
 
-function resolveIssueTitle(node: IssueTreeNode): string {
-  const gh = ghStore.issues.find(
-    (i) => i.repo === node.issue_repo && i.number === node.issue_number,
-  )
-  return gh?.title || node.title
-}
-
-function resolveIssueState(node: IssueTreeNode): string {
-  const gh = ghStore.issues.find(
-    (i) => i.repo === node.issue_repo && i.number === node.issue_number,
-  )
-  if (gh) return gh.state
-  return node.state
-}
-
 function countTasks(tasks: TaskTreeNode[]): number {
   let n = tasks.length
   for (const t of tasks) n += countTasks(t.children)
@@ -190,19 +169,16 @@ function countTasks(tasks: TaskTreeNode[]): number {
 }
 
 const activeNodes = computed(
-  () =>
-    treeData.value?.nodes.filter((n) => {
-      console.log(n)
-      return n.state === 'open' || hasActiveTasks(n.tasks)
-    }) ?? [],
+  () => treeData.value?.nodes.filter((n) => n.state === 'open' || hasActiveTasks(n.tasks)) ?? [],
 )
 
+// Also true when treeData is null (fetch failed / no guild yet) so the
+// template never reaches the v-else branch without data.
 const isEmpty = computed(
   () =>
     !loading.value &&
-    treeData.value &&
-    activeNodes.value.length === 0 &&
-    treeData.value.ungrouped.length === 0,
+    (!treeData.value ||
+      (activeNodes.value.length === 0 && treeData.value.ungrouped.length === 0)),
 )
 </script>
 

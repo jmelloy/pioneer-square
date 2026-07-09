@@ -1342,6 +1342,10 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         tool="claude",
                         state="pending",
                         phase=phase,
+                        issue_number=inp.get("issue_number"),
+                        issue_repo=inp.get("issue_repo"),
+                        pr_number=inp.get("pr_number"),
+                        pr_repo=inp.get("pr_repo"),
                         created_at=created_at,
                         user_id=user_id,
                     )

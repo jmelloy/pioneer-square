@@ -35,6 +35,29 @@ FOREMAN_TOOLS = [
                         "tasks pointing at it via parent_task_id."
                     ),
                 },
+                "issue_number": {
+                    "type": "integer",
+                    "description": (
+                        "GitHub issue this task belongs to. ALWAYS set this (with "
+                        "issue_repo) when the work relates to an issue — required for "
+                        "phase='issue' — so the task groups under the issue in the sidebar."
+                    ),
+                },
+                "issue_repo": {
+                    "type": "string",
+                    "description": "owner/repo for issue_number.",
+                },
+                "pr_number": {
+                    "type": "integer",
+                    "description": (
+                        "GitHub PR this task targets (e.g. review tasks). Set with pr_repo "
+                        "whenever a PR is known."
+                    ),
+                },
+                "pr_repo": {
+                    "type": "string",
+                    "description": "owner/repo for pr_number.",
+                },
             },
             "required": ["name", "description"],
         },

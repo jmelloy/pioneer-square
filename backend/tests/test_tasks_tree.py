@@ -1,10 +1,15 @@
 """Tests for the GET /guilds/{guild_id}/tasks/tree endpoint.
 
+The tree groups tasks under coalesce(linked issue, issue its PR closes, its PR),
+reading node metadata from the github_issues / github_pull_requests DB caches
+with the denormalized issue_title/issue_state task columns as fallback. No
+GitHub API calls happen in the request path.
+
 Covers:
-- Nodes return the real issue state from the DB cache when no GitHub token.
-- Nodes default to "open" when DB has no cached state.
-- Nodes return the cached issue title from the DB when no GitHub token.
-- Successful GitHub API calls write back issue_state and issue_title to the DB.
+- Node metadata from the github_issues cache, and task-column fallback.
+- PR-only tasks grouping under a PR node (cache metadata + pr_url parse).
+- PR bodies with a closes-reference grouping under the referenced issue.
+- Group-key propagation through parent_task_id links, both directions.
 - GitHub `issues` webhook events keep issue_state and issue_title current on linked tasks.
 """
 
@@ -16,9 +21,6 @@ import json
 import os
 import sys
 from datetime import UTC, datetime
-from unittest import mock
-
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -30,11 +32,10 @@ from helpers import (  # noqa: E402
     insert_task,
     insert_worker,
     make_auth_token,
-    raw_conn,
 )
-from models import Guild, Task
-from sqlalchemy import select, update
-from sqlmodel import col
+from models import GithubIssue, GithubPullRequest, Guild, Task  # noqa: E402
+from sqlalchemy import insert, select, update  # noqa: E402
+from sqlmodel import col  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -46,20 +47,71 @@ def _auth(db_url: str, user_id: str = "gh-user-test") -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _guild_no_owner_token(db_url: str, guild_id: str) -> None:
-    """Insert a guild whose owner has no GitHub token.
-
-    The requesting user (gh-user-test) is added as a member, so the endpoint
-    is accessible but `gh_token` will be None because the owner has no token.
-    """
-    # owner-notokenuser gets created in users + guild_members(owner) but no github_tokens row
+def _make_guild(db_url: str, guild_id: str) -> None:
     insert_guild(db_url, guild_id, owner_user_id="owner-notokenuser")
-    # Add the default test user as a member so they can call the endpoint
     insert_member(db_url, guild_id, "gh-user-test", role="member")
 
 
+def _insert_gh_issue(
+    db_url: str,
+    repo: str,
+    number: int,
+    *,
+    title: str = "",
+    state: str = "open",
+    body: str | None = None,
+) -> None:
+    now = datetime.now(UTC)
+    with _sync_session(db_url) as session:
+        session.execute(
+            insert(GithubIssue).values(
+                repo=repo,
+                number=number,
+                title=title,
+                state=state,
+                body=body,
+                assignees=[],
+                labels=[],
+                created_at=now,
+                updated_at=now,
+                raw={},
+            )
+        )
+        session.commit()
+
+
+def _insert_gh_pr(
+    db_url: str,
+    repo: str,
+    number: int,
+    *,
+    title: str = "",
+    state: str = "open",
+    body: str | None = None,
+    merged: bool = False,
+) -> None:
+    now = datetime.now(UTC)
+    with _sync_session(db_url) as session:
+        session.execute(
+            insert(GithubPullRequest).values(
+                repo=repo,
+                number=number,
+                title=title,
+                state=state,
+                body=body,
+                merged=merged,
+                draft=False,
+                assignees=[],
+                labels=[],
+                created_at=now,
+                updated_at=now,
+                raw={},
+            )
+        )
+        session.commit()
+
+
 def _get_issue_state(db_url: str, task_id: str) -> str | None:
-    """Read issue_state for a task directly from the DB."""
     with _sync_session(db_url) as session:
         row = session.execute(
             select(col(Task.issue_state)).where(col(Task.id) == task_id)
@@ -68,7 +120,6 @@ def _get_issue_state(db_url: str, task_id: str) -> str | None:
 
 
 def _get_issue_title(db_url: str, task_id: str) -> str | None:
-    """Read issue_title for a task directly from the DB."""
     with _sync_session(db_url) as session:
         row = session.execute(
             select(col(Task.issue_title)).where(col(Task.id) == task_id)
@@ -94,16 +145,23 @@ def _set_webhook_secret(db_url: str, guild_id: str, secret: str) -> None:
         session.commit()
 
 
+def _get_tree(test_client, db_url: str, guild_id: str) -> dict:
+    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=_auth(db_url))
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
 # ---------------------------------------------------------------------------
-# Tree endpoint — DB fallback (no GitHub token)
+# Issue node metadata — github_issues cache, then task-column fallback
 # ---------------------------------------------------------------------------
 
 
-def test_tree_returns_closed_state_from_db_when_no_token(client):
-    """A task with issue_state='closed' in the DB returns state='closed' in the tree."""
+def test_tree_issue_metadata_from_cache(client):
+    """Node title/state come from the github_issues cache when a row exists."""
     test_client, db_url = client
-    guild_id = "tr-ntoken1"
-    _guild_no_owner_token(db_url, guild_id)
+    guild_id = "tr-cache1"
+    _make_guild(db_url, guild_id)
+    _insert_gh_issue(db_url, "org/repo", 42, title="Cached title", state="closed")
 
     insert_worker(db_url, guild_id, "w-tr1", state="online")
     insert_task(
@@ -114,44 +172,66 @@ def test_tree_returns_closed_state_from_db_when_no_token(client):
         state="done",
         issue_number=42,
         issue_repo="org/repo",
-        issue_state="closed",
+        # Stale denormalized values must lose to the cache row.
+        issue_state="open",
+        issue_title="Stale title",
     )
 
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    nodes = data["nodes"]
+    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
     assert len(nodes) == 1
     node = nodes[0]
-    assert node["issue_number"] == 42
-    assert node["state"] == "closed", f"expected 'closed', got {node['state']!r}"
+    assert node["type"] == "issue"
+    assert node["number"] == 42
+    assert node["repo"] == "org/repo"
+    assert node["title"] == "Cached title"
+    assert node["state"] == "closed"
 
 
-def test_tree_defaults_to_open_when_no_token_and_no_db_state(client):
-    """A task with no cached issue_state returns state='open' (safe default)."""
+def test_tree_falls_back_to_task_columns_without_cache_row(client):
+    """Without a github_issues row, denormalized task columns supply title/state."""
     test_client, db_url = client
-    guild_id = "tr-ntoken2"
-    _guild_no_owner_token(db_url, guild_id)
+    guild_id = "tr-fall1"
+    _make_guild(db_url, guild_id)
 
-    insert_worker(db_url, guild_id, "w-tr2", state="online")
+    insert_worker(db_url, guild_id, "w-fall1", state="online")
     insert_task(
         db_url,
         guild_id,
-        "task-tr2",
-        worker_id="w-tr2",
-        state="pending",
-        issue_number=99,
+        "task-fall1",
+        worker_id="w-fall1",
+        state="done",
+        issue_number=55,
         issue_repo="org/repo",
-        issue_state=None,  # unknown — no prior fetch
+        issue_state="closed",
+        issue_title="Fix the login bug",
     )
 
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    nodes = data["nodes"]
+    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
     assert len(nodes) == 1
+    assert nodes[0]["title"] == "Fix the login bug"
+    assert nodes[0]["state"] == "closed"
+
+
+def test_tree_defaults_when_nothing_cached(client):
+    """No cache row and no denormalized columns → '#<number>' and 'open'."""
+    test_client, db_url = client
+    guild_id = "tr-fall2"
+    _make_guild(db_url, guild_id)
+
+    insert_worker(db_url, guild_id, "w-fall2", state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        "task-fall2",
+        worker_id="w-fall2",
+        state="pending",
+        issue_number=77,
+        issue_repo="org/repo",
+    )
+
+    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
+    assert len(nodes) == 1
+    assert nodes[0]["title"] == "#77"
     assert nodes[0]["state"] == "open"
 
 
@@ -159,7 +239,7 @@ def test_tree_open_and_closed_issues_sorted_correctly(client):
     """Open issues appear before closed issues in the response."""
     test_client, db_url = client
     guild_id = "tr-sort1"
-    _guild_no_owner_token(db_url, guild_id)
+    _make_guild(db_url, guild_id)
 
     insert_worker(db_url, guild_id, "w-sort1", state="online")
     insert_task(
@@ -183,18 +263,99 @@ def test_tree_open_and_closed_issues_sorted_correctly(client):
         issue_state="closed",
     )
 
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    nodes = resp.json()["nodes"]
+    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
     assert len(nodes) == 2
-    # Open issues should come first
     assert nodes[0]["state"] == "open"
     assert nodes[1]["state"] == "closed"
 
 
 # ---------------------------------------------------------------------------
-# Tree endpoint — phase='issue' root nesting (issue #861)
+# PR grouping — coalesce(issue, issue closed by PR, PR)
+# ---------------------------------------------------------------------------
+
+
+def test_tree_pr_only_task_groups_under_pr_node(client):
+    """A task with only PR linkage groups under a type='pr' node with cache metadata."""
+    test_client, db_url = client
+    guild_id = "tr-pr1"
+    _make_guild(db_url, guild_id)
+    _insert_gh_pr(db_url, "org/repo", 300, title="Add dark mode", state="merged", merged=True)
+
+    insert_worker(db_url, guild_id, "w-pr1", state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        "task-pr1",
+        worker_id="w-pr1",
+        state="done",
+        phase="review",
+        pr_number=300,
+        pr_repo="org/repo",
+    )
+
+    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
+    assert len(nodes) == 1
+    node = nodes[0]
+    assert node["type"] == "pr"
+    assert node["number"] == 300
+    assert node["title"] == "Add dark mode"
+    assert node["state"] == "merged"
+
+
+def test_tree_pr_closes_ref_groups_under_issue(client):
+    """A PR whose cached body closes an issue groups its task under that issue."""
+    test_client, db_url = client
+    guild_id = "tr-pr2"
+    _make_guild(db_url, guild_id)
+    _insert_gh_pr(db_url, "org/repo", 301, title="Fix crash", body="Fixes #12")
+    _insert_gh_issue(db_url, "org/repo", 12, title="Crash on save", state="open")
+
+    insert_worker(db_url, guild_id, "w-pr2", state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        "task-pr2",
+        worker_id="w-pr2",
+        state="working",
+        pr_number=301,
+        pr_repo="org/repo",
+    )
+
+    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
+    assert len(nodes) == 1
+    node = nodes[0]
+    assert node["type"] == "issue"
+    assert node["number"] == 12
+    assert node["title"] == "Crash on save"
+
+
+def test_tree_pr_url_parsed_when_no_pr_columns(client):
+    """pr_url is parsed for the PR key when pr_repo/pr_number are unset."""
+    test_client, db_url = client
+    guild_id = "tr-pr3"
+    _make_guild(db_url, guild_id)
+
+    insert_worker(db_url, guild_id, "w-pr3", state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        "task-pr3",
+        worker_id="w-pr3",
+        state="done",
+        pr_url="https://github.com/org/repo/pull/302",
+    )
+
+    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
+    assert len(nodes) == 1
+    node = nodes[0]
+    assert node["type"] == "pr"
+    assert node["number"] == 302
+    assert node["title"] == "PR #302"  # no cache row → fallback title
+    assert node["state"] == "open"
+
+
+# ---------------------------------------------------------------------------
+# Group-key propagation through parent links (issue #861 lineage)
 # ---------------------------------------------------------------------------
 
 
@@ -202,7 +363,7 @@ def test_tree_nests_execute_task_under_issue_root_via_parent_task_id(client):
     """A phase='issue' root with a child (parent_task_id set) renders one root."""
     test_client, db_url = client
     guild_id = "tr-issroot1"
-    _guild_no_owner_token(db_url, guild_id)
+    _make_guild(db_url, guild_id)
 
     insert_worker(db_url, guild_id, "w-issroot1", state="online")
     insert_task(
@@ -228,10 +389,7 @@ def test_tree_nests_execute_task_under_issue_root_via_parent_task_id(client):
         parent_task_id="task-issroot1-root",
     )
 
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    nodes = resp.json()["nodes"]
+    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
     assert len(nodes) == 1
     tasks = nodes[0]["tasks"]
     assert len(tasks) == 1, f"expected a single root task, got {len(tasks)}: {tasks}"
@@ -246,7 +404,7 @@ def test_tree_nests_orphan_task_under_issue_root_when_parent_unset(client):
     under the phase='issue' root rather than appearing as a second root."""
     test_client, db_url = client
     guild_id = "tr-issroot2"
-    _guild_no_owner_token(db_url, guild_id)
+    _make_guild(db_url, guild_id)
 
     insert_worker(db_url, guild_id, "w-issroot2", state="online")
     insert_task(
@@ -272,10 +430,7 @@ def test_tree_nests_orphan_task_under_issue_root_when_parent_unset(client):
         issue_state="open",
     )
 
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    nodes = resp.json()["nodes"]
+    nodes = _get_tree(test_client, db_url, guild_id)["nodes"]
     assert len(nodes) == 1
     tasks = nodes[0]["tasks"]
     assert len(tasks) == 1, f"expected a single root task, got {len(tasks)}: {tasks}"
@@ -284,73 +439,58 @@ def test_tree_nests_orphan_task_under_issue_root_when_parent_unset(client):
     assert child_ids == {"task-issroot2-exec"}
 
 
-# ---------------------------------------------------------------------------
-# Tree endpoint — GitHub API write-back
-# ---------------------------------------------------------------------------
-
-
-def test_tree_writes_back_api_state_to_db(client, monkeypatch):
-    """When _gh_fetch_issue returns a state, it is persisted to task.issue_state."""
+def test_tree_unlinked_root_joins_childrens_group(client):
+    """A legacy phase='issue' root with NO issue linkage of its own inherits the
+    group key upward from its linked children instead of landing in ungrouped."""
     test_client, db_url = client
-    guild_id = "tr-wb1"
-    # Use default setup: owner IS the test user who has a GitHub token
-    insert_guild(db_url, guild_id)
+    guild_id = "tr-upprop1"
+    _make_guild(db_url, guild_id)
 
-    insert_worker(db_url, guild_id, "w-wb1", state="online")
+    insert_worker(db_url, guild_id, "w-upprop1", state="online")
+    # Legacy root: no issue_number/issue_repo (pre-linkage create_task).
     insert_task(
         db_url,
         guild_id,
-        "task-wb1",
-        worker_id="w-wb1",
-        state="awaiting-review",
-        issue_number=7,
-        issue_repo="org/repo",
-        issue_state=None,  # not yet cached
+        "task-upprop1-root",
+        phase="issue",
+        state="pending",
+        description="Issue root for #63",
     )
-
-    # Patch the GitHub API call to return "closed"
-    monkeypatch.setattr(
-        "routes.tasks._gh_fetch_issue",
-        lambda repo, number, token: {"title": "Fix bug", "state": "closed"},
-    )
-
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    nodes = resp.json()["nodes"]
-    assert nodes[0]["state"] == "closed"
-
-    # DB should now have the state cached
-    cached = _get_issue_state(db_url, "task-wb1")
-    assert cached == "closed", f"expected 'closed' cached in DB, got {cached!r}"
-
-
-def test_tree_api_failure_falls_back_to_db_state(client, monkeypatch):
-    """When _gh_fetch_issue returns None (API error), the DB-cached state is used."""
-    test_client, db_url = client
-    guild_id = "tr-apifail1"
-    insert_guild(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-apifail1", state="online")
     insert_task(
         db_url,
         guild_id,
-        "task-apifail1",
-        worker_id="w-apifail1",
-        state="done",
-        issue_number=55,
+        "task-upprop1-exec",
+        worker_id="w-upprop1",
+        phase="execute",
+        state="working",
+        issue_number=63,
         issue_repo="org/repo",
-        issue_state="closed",
+        parent_task_id="task-upprop1-root",
     )
 
-    # Simulate a GitHub API failure
-    monkeypatch.setattr("routes.tasks._gh_fetch_issue", lambda repo, number, token: None)
+    data = _get_tree(test_client, db_url, guild_id)
+    assert data["ungrouped"] == []
+    nodes = data["nodes"]
+    assert len(nodes) == 1
+    assert nodes[0]["number"] == 63
+    tasks = nodes[0]["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == "task-upprop1-root"
+    assert tasks[0]["children"][0]["id"] == "task-upprop1-exec"
 
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    nodes = resp.json()["nodes"]
-    assert nodes[0]["state"] == "closed"
+
+def test_tree_unlinked_task_stays_ungrouped(client):
+    """A task with no linkage anywhere in its tree lands in ungrouped."""
+    test_client, db_url = client
+    guild_id = "tr-ungr1"
+    _make_guild(db_url, guild_id)
+
+    insert_worker(db_url, guild_id, "w-ungr1", state="online")
+    insert_task(db_url, guild_id, "task-ungr1", worker_id="w-ungr1", state="working")
+
+    data = _get_tree(test_client, db_url, guild_id)
+    assert data["nodes"] == []
+    assert [t["id"] for t in data["ungrouped"]] == ["task-ungr1"]
 
 
 # ---------------------------------------------------------------------------
@@ -475,99 +615,6 @@ def test_webhook_issues_only_updates_matching_repo_and_number(client):
     assert _get_issue_state(db_url, "task-wh-iss3-match") == "closed"
     assert _get_issue_state(db_url, "task-wh-iss3-other-num") == "open"
     assert _get_issue_state(db_url, "task-wh-iss3-other-repo") == "open"
-
-
-# ---------------------------------------------------------------------------
-# Issue title — DB fallback and write-back
-# ---------------------------------------------------------------------------
-
-
-def test_tree_returns_cached_title_from_db_when_no_token(client):
-    """A task with issue_title cached in the DB returns that title in the tree node."""
-    test_client, db_url = client
-    guild_id = "tr-title1"
-    _guild_no_owner_token(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-title1", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-title1",
-        worker_id="w-title1",
-        state="done",
-        issue_number=55,
-        issue_repo="org/repo",
-        issue_state="closed",
-        issue_title="Fix the login bug",
-    )
-
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    nodes = resp.json()["nodes"]
-    assert len(nodes) == 1
-    assert nodes[0]["title"] == "Fix the login bug"
-
-
-def test_tree_falls_back_to_issue_number_when_no_title_cached(client):
-    """When no issue_title is cached, the node title falls back to '#<number>'."""
-    test_client, db_url = client
-    guild_id = "tr-title2"
-    _guild_no_owner_token(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-title2", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-title2",
-        worker_id="w-title2",
-        state="pending",
-        issue_number=77,
-        issue_repo="org/repo",
-        issue_state=None,
-        issue_title=None,
-    )
-
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    nodes = resp.json()["nodes"]
-    assert len(nodes) == 1
-    assert nodes[0]["title"] == "#77"
-
-
-def test_tree_writes_back_api_title_to_db(client, monkeypatch):
-    """When _gh_fetch_issue returns a title, it is persisted to task.issue_title."""
-    test_client, db_url = client
-    guild_id = "tr-wbtitle1"
-    insert_guild(db_url, guild_id)
-
-    insert_worker(db_url, guild_id, "w-wbtitle1", state="online")
-    insert_task(
-        db_url,
-        guild_id,
-        "task-wbtitle1",
-        worker_id="w-wbtitle1",
-        state="awaiting-review",
-        issue_number=8,
-        issue_repo="org/repo",
-        issue_state=None,
-        issue_title=None,
-    )
-
-    monkeypatch.setattr(
-        "routes.tasks._gh_fetch_issue",
-        lambda repo, number, token: {"title": "Add dark mode", "state": "open"},
-    )
-
-    headers = _auth(db_url)
-    resp = test_client.get(f"/guilds/{guild_id}/tasks/tree", headers=headers)
-    assert resp.status_code == 200, resp.text
-    nodes = resp.json()["nodes"]
-    assert nodes[0]["title"] == "Add dark mode"
-
-    cached = _get_issue_title(db_url, "task-wbtitle1")
-    assert cached == "Add dark mode", f"expected title cached in DB, got {cached!r}"
 
 
 def test_webhook_issues_edited_updates_issue_title(client):

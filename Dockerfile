@@ -45,6 +45,8 @@ COPY cli/ ./cli/
 COPY backend/ ./backend/
 COPY foreman/ ./foreman/
 COPY worker/pioneer_worker/ ./worker/pioneer_worker/
+# Operational scripts (backfills etc.) runnable via `docker compose exec`.
+COPY scripts/ ./scripts/
 
 # Installs pioneer_cli + the union of runtime dependencies.
 RUN pip install -e ./cli
