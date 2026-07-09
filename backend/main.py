@@ -345,9 +345,10 @@ async def lifespan(app: FastAPI):
 
     await reset_connection_state()
 
-    # Phase 2: give stale workers the drain window to reconnect on their own
-    # before force-killing and replacing whichever ones don't come back. Runs
-    # in the background so it doesn't block startup or the first request.
+    # Phase 2: drain each stale worker (wait for it to reconnect, soft-kill it,
+    # let it finish its task and go offline) and spawn a fresh replacement once
+    # it's down. Runs in the background so it doesn't block startup or the first
+    # request.
     reconcile_bg = (
         spawn(reconcile_stale_workers(stale_ids), name="stale-worker-reconcile")
         if stale_ids

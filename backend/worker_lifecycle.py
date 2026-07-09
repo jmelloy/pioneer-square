@@ -1,22 +1,37 @@
-"""Worker lifecycle: detect stale workers after a version change and drain/kill them.
+"""Worker lifecycle: detect stale workers after a version change and cycle them.
+
+A version bump means the running worker containers hold old code, so every stale
+worker must be drained (soft-killed, allowed to finish its in-progress task, then
+shut down) and replaced by a fresh container that picks up the new code. A stale
+worker reconnecting after the restart is *expected* (the backend restarts first,
+then the worker's reconnect loop brings its WebSocket back within seconds) — it is
+never a reason to spare the worker from replacement.
 
 Lifecycle steps on backend startup
 ───────────────────────────────────
-1. get_current_version()         — PIONEER_VERSION env var or git short SHA
+1. get_current_version()         — PIONEER_VERSION env var, or "<YYYYMMDD>-<sha>"
+   from the current commit (date is the deterministic committer date, never
+   wall-clock/build time — versions are compared for exact equality, so a
+   nondeterministic date would mark every worker perpetually stale).
 2. drain_stale_workers_on_startup() — find workers whose spawned_version differs
-   from current; send graceful WS shutdown signal; record drain_requested_at.
-   Returns list of stale worker IDs.
+   from current; record drain_requested_at (informational) and best-effort
+   broadcast a shutdown. Returns the list of stale worker IDs.
 3. reset_connection_state()      — called by main.py AFTER step 2, sets all
    workers offline in the DB.
-4. reconcile_stale_workers(ids)  — spawned as a background task AFTER step 3;
-   waits up to PIONEER_WORKER_DRAIN_TIMEOUT seconds, dropping any worker that
-   reconnects on its own from the replacement list (a cold restart drops every
-   WebSocket at once, so the shutdown broadcast in step 2 reaches no one — the
-   worker's own reconnect loop brings it back within seconds and it should
-   count against the desired worker total, not trigger a redundant spawn).
-   Workers that never come back within the window get their container
-   force-killed (via Docker SDK, using the stored container_id — skipped when
-   NULL) and a single replacement spawned via spawn_replacement_workers().
+4. reconcile_stale_workers(ids)  — spawned as a background task AFTER step 3.
+   Per worker, two phases:
+     • Reconnect: reset_connection_state() just marked everyone offline, so
+       "offline" now means "not yet reconnected", not "drained". Wait up to
+       PIONEER_WORKER_RECONNECT_GRACE for the worker to come back online. If it
+       never does, its container died during the deploy — force-kill (best
+       effort) and replace it immediately.
+     • Drain: once it is back online, send the soft-kill and wait for it to
+       finish its task and go offline (its ack), up to PIONEER_WORKER_DRAIN_TIMEOUT.
+       If it never goes offline it is wedged — force-kill its container.
+   Either way, once the worker is down a replacement with a brand-new worker ID
+   and name (never the drained worker's identity) is spawned via
+   spawn_replacement_workers(). Replacing only after the old worker is confirmed
+   down means there is never a moment with two live workers for the same slot.
 """
 
 from __future__ import annotations
@@ -38,33 +53,46 @@ from ws_types import WorkerShutdownMsg
 
 logger = logging.getLogger(__name__)
 
-# How long to wait for stale workers to exit gracefully before force-killing.
-WORKER_DRAIN_TIMEOUT = float(os.environ.get("PIONEER_WORKER_DRAIN_TIMEOUT", "60"))
+# How long to let a stale worker finish its in-progress task and exit gracefully
+# after the soft-kill before force-killing its container. Generous by default (30
+# min) because a busy worker may be mid-task when a deploy lands.
+WORKER_DRAIN_TIMEOUT = float(os.environ.get("PIONEER_WORKER_DRAIN_TIMEOUT", "1800"))
+
+# How long to wait for a stale worker to reconnect after a backend restart before
+# treating it as already dead (its container died during the deploy) and replacing
+# it without waiting for a drain. Workers normally reconnect within seconds.
+WORKER_RECONNECT_GRACE = float(os.environ.get("PIONEER_WORKER_RECONNECT_GRACE", "120"))
 
 # How long to wait after an explicit shutdown_worker request before force-killing
 # an unresponsive worker's container. Separate from WORKER_DRAIN_TIMEOUT (which
-# guards the much rarer startup version-mismatch drain) since this is the window
-# the foreman AI waits on every ordinary "stop this worker" request.
-SHUTDOWN_FORCE_KILL_TIMEOUT = float(os.environ.get("PIONEER_SHUTDOWN_TIMEOUT", "600"))
+# guards the startup version-mismatch drain) since this is the window the foreman
+# AI waits on every ordinary "stop this worker" request.
+SHUTDOWN_FORCE_KILL_TIMEOUT = float(os.environ.get("PIONEER_SHUTDOWN_TIMEOUT", "1800"))
 
 
 def get_current_version() -> str | None:
     """Return the running backend version.
 
-    Prefers the PIONEER_VERSION env var (set at image build time).  Falls back
-    to the short git SHA so local dev environments also get a version string.
-    Returns None if neither is available.
+    Prefers the PIONEER_VERSION env var (set at image build time). Falls back to
+    ``<YYYYMMDD>-<short-sha>`` from the current commit (e.g. ``20260709-1e1ae98``)
+    so local dev environments also get a version string that's easy to date at a
+    glance. Returns None if neither is available.
+
+    The date is the commit's committer date — deterministic per commit — never
+    the wall-clock/build time. Versions are compared for exact equality to decide
+    staleness, so a nondeterministic date would make every worker perpetually
+    version-mismatched and trigger endless recycling.
     """
     v = os.environ.get("PIONEER_VERSION")
     if v:
         return v.strip()
     try:
-        sha = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
+        version = subprocess.check_output(
+            ["git", "show", "-s", "--format=%cd-%h", "--date=format:%Y%m%d", "HEAD"],
             stderr=subprocess.DEVNULL,
             text=True,
         ).strip()
-        return sha or None
+        return version or None
     except Exception:
         return None
 
@@ -102,7 +130,13 @@ async def record_worker_spawn(db, worker_id: str, container_id: str) -> None:
 
 
 async def spawn_replacement_workers(stale_ids: list[str]) -> None:
-    """Spawn one fresh replacement worker for each drained stale worker."""
+    """Spawn one fresh replacement worker for each drained stale worker.
+
+    The replacement carries the same repos and tools but gets a brand-new worker
+    ID and name — spawn_worker() mints a fresh ``w-…`` id and derives the display
+    name from it, so we deliberately omit ``name`` here rather than reuse the
+    drained worker's identity (its name embeds the now-dead worker id).
+    """
     if not stale_ids:
         return
 
@@ -121,7 +155,7 @@ async def spawn_replacement_workers(stale_ids: list[str]) -> None:
         try:
             inp = {
                 "repos": json.loads(worker.repos or "[]"),
-                "name": worker.name,
+                "tools": json.loads(worker.tools or "[]"),
             }
             async with AsyncSessionLocal() as db:
                 result_text, is_error = await _spawn_worker(
@@ -326,32 +360,73 @@ async def force_kill_worker_if_unresponsive(
     await _force_kill_containers({worker_id})
 
 
-async def reconcile_stale_workers(stale_ids: list[str]) -> None:
-    """Give drained workers a chance to reconnect on their own before replacing them.
+async def _guild_slugs_for_workers(worker_ids: set[str]) -> dict[str, str]:
+    """Map each worker id to its guild slug, for broadcasting shutdown messages."""
+    if not worker_ids:
+        return {}
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.exec(
+                select(col(Worker.id), col(Guild.slug).label("guild_slug"))
+                .join(Guild, col(Guild.id) == col(Worker.guild_id))
+                .where(col(Worker.id).in_(worker_ids))
+            )
+        ).all()
+    return {wid: slug for wid, slug in rows}
 
-    Must be spawned as a background task *after* reset_connection_state() has
-    run.  Spawning a replacement immediately for every drained worker (the old
-    behaviour) overshoots the configured worker count on an ordinary restart:
-    the worker process's own reconnect loop brings it back within seconds —
-    it never saw the graceful-shutdown broadcast in the first place, since a
-    cold restart drops every WebSocket before that message can be sent — so
-    counting it as gone and spawning a full replacement leaves two workers
-    running under two different worker_ids. Waiting for the drain window and
-    checking who has already reconnected keeps replacement spawns limited to
-    workers that are actually still missing.
+
+async def reconcile_stale_workers(stale_ids: list[str]) -> None:
+    """Drain every stale worker and replace it with a fresh one.
+
+    Spawned as a background task *after* reset_connection_state() has run. On a
+    version bump every stale worker holds old code and must be cycled, so a
+    reconnect is never a reason to skip replacement — it is exactly what we wait
+    for so the soft-kill can be delivered. Replacing only after the old worker is
+    confirmed offline means there is never a moment with two live workers for the
+    same slot, which is the double-spawn the previous spare-on-reconnect logic was
+    guarding against.
+
+    Per worker, two phases (see module docstring):
+      • "reconnect" — wait up to WORKER_RECONNECT_GRACE for the worker to come
+        back online. reset_connection_state() just marked everyone offline, so
+        "offline" here means "not yet reconnected", not "drained". A worker that
+        never reconnects had its container die during the deploy; force-kill (best
+        effort) and replace it.
+      • "drain" — once online, (re)send the soft-kill and wait up to
+        WORKER_DRAIN_TIMEOUT for the worker to finish its task and go offline. If
+        it never does it is wedged; force-kill its container. Either way, replace
+        it once it is down.
     """
     if not stale_ids:
         return
 
-    # Poll every 5 s, dropping any worker that reconnects from the pending set.
     poll_interval = 5.0
-    elapsed = 0.0
+    guild_slugs = await _guild_slugs_for_workers(set(stale_ids))
+    loop = asyncio.get_event_loop()
+    # Per-worker phase and the monotonic time that phase began (for timeouts).
+    phase = {wid: "reconnect" for wid in stale_ids}
+    phase_started = {wid: loop.time() for wid in stale_ids}
     pending = set(stale_ids)
-    while pending and elapsed < WORKER_DRAIN_TIMEOUT:
-        await asyncio.sleep(min(poll_interval, WORKER_DRAIN_TIMEOUT - elapsed))
-        elapsed += poll_interval
+
+    async def _send_soft_kill(wid: str) -> None:
+        slug = guild_slugs.get(wid)
+        if not slug:
+            return
+        try:
+            await broadcast_msg(
+                slug,
+                WorkerShutdownMsg(workerId=wid, reason="backend restarted: version mismatch"),
+            )
+        except Exception:
+            logger.warning(
+                "worker_lifecycle: could not send soft-kill to worker %s", wid, exc_info=True
+            )
+
+    while pending:
+        await asyncio.sleep(poll_interval)
+        now = loop.time()
         async with AsyncSessionLocal() as db:
-            reconnected = set(
+            online = set(
                 (
                     await db.exec(
                         select(col(Worker.id)).where(
@@ -360,25 +435,44 @@ async def reconcile_stale_workers(stale_ids: list[str]) -> None:
                     )
                 ).all()
             )
-        if reconnected:
-            logger.info(
-                "worker_lifecycle: %d stale worker(s) reconnected on their own — "
-                "no replacement needed: %s",
-                len(reconnected),
-                sorted(reconnected),
+
+        drained: list[str] = []  # went offline after draining → replace
+        dead: list[str] = []  # never reconnected / wedged → force-kill + replace
+        to_signal: list[str] = []  # online & stale → (re)send soft-kill
+
+        for wid in list(pending):
+            if phase[wid] == "reconnect":
+                if wid in online:
+                    # Back online — begin draining and deliver the soft-kill.
+                    phase[wid] = "drain"
+                    phase_started[wid] = now
+                    to_signal.append(wid)
+                elif now - phase_started[wid] >= WORKER_RECONNECT_GRACE:
+                    dead.append(wid)  # container died during the deploy
+            else:  # draining
+                if wid not in online:
+                    drained.append(wid)  # ack: finished its task and exited
+                elif now - phase_started[wid] >= WORKER_DRAIN_TIMEOUT:
+                    dead.append(wid)  # wedged: force-kill below
+                else:
+                    to_signal.append(wid)  # still draining — re-send (idempotent)
+
+        for wid in to_signal:
+            await _send_soft_kill(wid)
+
+        if dead:
+            logger.warning(
+                "worker_lifecycle: %d stale worker(s) did not drain in time — "
+                "force-killing their containers: %s",
+                len(dead),
+                sorted(dead),
             )
-            pending -= reconnected
+            await _force_kill_containers(set(dead))
 
-    if not pending:
-        logger.info("worker_lifecycle: all stale workers reconnected within the drain window")
-        return
+        # Replace every worker now confirmed down (drained cleanly or force-killed).
+        for wid in (*drained, *dead):
+            await spawn_replacement_workers([wid])
+            logger.info("worker_lifecycle: stale worker %s cycled — replacement spawned", wid)
+            pending.discard(wid)
 
-    logger.info(
-        "worker_lifecycle: %d stale worker(s) did not reconnect within %.0fs — "
-        "force-killing and spawning replacements: %s",
-        len(pending),
-        WORKER_DRAIN_TIMEOUT,
-        sorted(pending),
-    )
-    await _force_kill_containers(pending)
-    await spawn_replacement_workers(list(pending))
+    logger.info("worker_lifecycle: all stale workers drained and replaced")

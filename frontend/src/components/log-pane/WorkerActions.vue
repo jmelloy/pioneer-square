@@ -246,10 +246,7 @@ async function handleShutdown() {
   shuttingDown.value = true
   actionError.value = ''
   try {
-    await agentsStore.messageWorker(
-      props.workerId,
-      'Please shut down cleanly: finish any in-flight work and exit the worker process.',
-    )
+    await agentsStore.shutdownWorker(props.workerId)
     _injectChat(`[Foreman] Sent shutdown signal to ${props.workerId} (operator-initiated).`)
   } catch (e: unknown) {
     actionError.value = e instanceof Error ? e.message : String(e)
