@@ -556,9 +556,7 @@ async def shutdown_worker_endpoint(
     )
     await db.exec(update(Worker).where(col(Worker.id) == worker_id).values(disabled=True))
     await db.commit()
-    await emit_terminal_line(
-        guild_id, worker_id, "[operator] graceful shutdown signal sent"
-    )
+    await emit_terminal_line(guild_id, worker_id, "[operator] graceful shutdown signal sent")
     # Force-kill the container only if it's still not offline after the timeout —
     # see worker_lifecycle.force_kill_worker_if_unresponsive.
     spawn(

@@ -472,9 +472,7 @@ async def reconcile_stale_workers(stale_ids: list[str]) -> None:
         # Replace every worker now confirmed down (drained cleanly or force-killed).
         for wid in (*drained, *dead):
             await spawn_replacement_workers([wid])
-            logger.info(
-                "worker_lifecycle: stale worker %s cycled — replacement spawned", wid
-            )
+            logger.info("worker_lifecycle: stale worker %s cycled — replacement spawned", wid)
             pending.discard(wid)
 
     logger.info("worker_lifecycle: all stale workers drained and replaced")
