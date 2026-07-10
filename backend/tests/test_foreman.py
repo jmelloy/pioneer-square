@@ -45,7 +45,7 @@ from foreman.runner import (
 from foreman.tools import exec_tools
 from helpers import _sync_session, create_db, insert_agent, insert_guild, insert_task, insert_worker
 from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog, Worker  # noqa: E402
-from sqlalchemy import func, select  # noqa: E402
+from sqlalchemy import func, select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -540,6 +540,80 @@ class TestExecToolsDispatching:
             )
         assert "assigned" in results[0]["content"].lower()
         assert "t-exist1" in results[0]["content"]
+
+    async def test_assign_task_existing_task_inherits_github_linkage_for_repos(self, db_session):
+        """If create_task has issue linkage, assign_task(task_id=...) must inherit it.
+
+        Otherwise a pasted issue URL can create the correctly linked task row, but an
+        assign_task call that omits issue_repo/repos falls back to the guild primary repo
+        and dispatches the worker against the wrong repository.
+        """
+        insert_guild(db_session, "g-assign-inherit")
+        _insert_worker(
+            db_session,
+            "g-assign-inherit",
+            "w-inherit",
+        )
+        with _sync_session(db_session) as session:
+            guild_pk = session.scalar(
+                select(col(Guild.id)).where(col(Guild.slug) == "g-assign-inherit")
+            )
+            session.execute(
+                update(Guild).where(col(Guild.id) == guild_pk).values(primary_repo="wrong/repo")
+            )
+            session.execute(
+                update(Worker)
+                .where(col(Worker.id) == "w-inherit")
+                .values(repos=json.dumps(["right/repo", "wrong/repo"]))
+            )
+            session.commit()
+
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock) as mock_broadcast:
+            create_results = await exec_tools(
+                "g-assign-inherit",
+                [
+                    _fake_tool_use(
+                        "create_task",
+                        {
+                            "name": "Fix issue",
+                            "description": "Implement https://github.com/right/repo/issues/123",
+                            "issue_number": 123,
+                            "issue_repo": "right/repo",
+                        },
+                    )
+                ],
+            )
+            task_id = _extract_task_id(create_results[0]["content"])
+
+            results = await exec_tools(
+                "g-assign-inherit",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {
+                            "worker_id": "w-inherit",
+                            "description": "Implement the linked issue",
+                            "task_id": task_id,
+                        },
+                    )
+                ],
+            )
+
+        assert "assigned" in results[0]["content"].lower()
+        with _sync_session(db_session) as session:
+            task = session.get(Task, task_id)
+        assert task.issue_number == 123
+        assert task.issue_repo == "right/repo"
+
+        assigned_payloads = [
+            call.args[1]
+            for call in mock_broadcast.await_args_list
+            if call.args[1].get("type") == "task-assigned"
+        ]
+        assert assigned_payloads
+        assert assigned_payloads[-1]["issueRepo"] == "right/repo"
+        assert assigned_payloads[-1]["issueNumber"] == 123
+        assert assigned_payloads[-1]["repos"] == ["right/repo"]
 
     async def test_assign_task_update_path_persists_parent_task_id(self, db_session):
         """create_task -> assign_task(task_id=..., parent_task_id=...) must persist

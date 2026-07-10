@@ -1390,11 +1390,48 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 model = inp.get("model") or None
                 provider = inp.get("provider") or None
                 existing_task_id = inp.get("task_id")
+                existing_linkage: tuple[int | None, str | None, int | None, str | None] | None = (
+                    None
+                )
+                if existing_task_id:
+                    existing_linkage_result = await db.exec(
+                        select(
+                            col(Task.issue_number),
+                            col(Task.issue_repo),
+                            col(Task.pr_number),
+                            col(Task.pr_repo),
+                        ).where(col(Task.id) == existing_task_id, col(Task.guild_id) == guild_pk)
+                    )
+                    existing_linkage = existing_linkage_result.one_or_none()
+
+                effective_issue_number = inp.get("issue_number")
+                effective_issue_repo = inp.get("issue_repo")
+                effective_pr_number = inp.get("pr_number")
+                effective_pr_repo = inp.get("pr_repo")
+                if existing_linkage:
+                    (
+                        existing_issue_number,
+                        existing_issue_repo,
+                        existing_pr_number,
+                        existing_pr_repo,
+                    ) = existing_linkage
+                    if effective_issue_number is None:
+                        effective_issue_number = existing_issue_number
+                    if not effective_issue_repo:
+                        effective_issue_repo = existing_issue_repo
+                    if effective_pr_number is None:
+                        effective_pr_number = existing_pr_number
+                    if not effective_pr_repo:
+                        effective_pr_repo = existing_pr_repo
+
                 guild_result = await db.exec(
                     select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
                 )
                 primary_repo: str | None = guild_result.one_or_none()
-                repos: list[str] = inp.get("repos") or ([primary_repo] if primary_repo else [])
+                target_repo = effective_pr_repo or effective_issue_repo
+                repos: list[str] = inp.get("repos") or ([target_repo] if target_repo else [])
+                if not repos and primary_repo:
+                    repos = [primary_repo]
                 worker_result = await db.exec(
                     select(
                         col(Worker.id),
@@ -1553,14 +1590,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 }
                                 if name_override:
                                     update_values["name"] = name_override
-                                if inp.get("issue_number") is not None:
-                                    update_values["issue_number"] = inp["issue_number"]
-                                if inp.get("issue_repo"):
-                                    update_values["issue_repo"] = inp["issue_repo"]
-                                if inp.get("pr_number") is not None:
-                                    update_values["pr_number"] = inp["pr_number"]
-                                if inp.get("pr_repo"):
-                                    update_values["pr_repo"] = inp["pr_repo"]
+                                if effective_issue_number is not None:
+                                    update_values["issue_number"] = effective_issue_number
+                                if effective_issue_repo:
+                                    update_values["issue_repo"] = effective_issue_repo
+                                if effective_pr_number is not None:
+                                    update_values["pr_number"] = effective_pr_number
+                                if effective_pr_repo:
+                                    update_values["pr_repo"] = effective_pr_repo
                                 if parent_task_id is not None:
                                     update_values["parent_task_id"] = parent_task_id
                                 await db.exec(
@@ -1599,16 +1636,22 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         provider=provider,
                                         phase=phase,
                                         parentTaskId=parent_task_id,
-                                        issueNumber=inp.get("issue_number"),
-                                        issueRepo=inp.get("issue_repo"),
-                                        prNumber=inp.get("pr_number"),
-                                        prRepo=inp.get("pr_repo"),
+                                        issueNumber=effective_issue_number,
+                                        issueRepo=effective_issue_repo,
+                                        prNumber=effective_pr_number,
+                                        prRepo=effective_pr_repo,
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
                                 _spawn_discord_task_assigned(
                                     guild_id,
-                                    inp,
+                                    {
+                                        **inp,
+                                        "issue_number": effective_issue_number,
+                                        "issue_repo": effective_issue_repo,
+                                        "pr_number": effective_pr_number,
+                                        "pr_repo": effective_pr_repo,
+                                    },
                                     task_id,
                                     task_name,
                                     parent_task_id=effective_parent_task_id,
@@ -1631,10 +1674,10 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         model=model,
                                         model_tier=model_tier,
                                         provider=provider,
-                                        issue_number=inp.get("issue_number"),
-                                        issue_repo=inp.get("issue_repo"),
-                                        pr_number=inp.get("pr_number"),
-                                        pr_repo=inp.get("pr_repo"),
+                                        issue_number=effective_issue_number,
+                                        issue_repo=effective_issue_repo,
+                                        pr_number=effective_pr_number,
+                                        pr_repo=effective_pr_repo,
                                         state="pending",
                                         phase=phase,
                                         parent_task_id=parent_task_id,
@@ -1655,14 +1698,25 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         provider=provider,
                                         phase=phase,
                                         parentTaskId=parent_task_id,
-                                        issueNumber=inp.get("issue_number"),
-                                        issueRepo=inp.get("issue_repo"),
-                                        prNumber=inp.get("pr_number"),
-                                        prRepo=inp.get("pr_repo"),
+                                        issueNumber=effective_issue_number,
+                                        issueRepo=effective_issue_repo,
+                                        prNumber=effective_pr_number,
+                                        prRepo=effective_pr_repo,
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
-                                _spawn_discord_task_assigned(guild_id, inp, task_id, name)
+                                _spawn_discord_task_assigned(
+                                    guild_id,
+                                    {
+                                        **inp,
+                                        "issue_number": effective_issue_number,
+                                        "issue_repo": effective_issue_repo,
+                                        "pr_number": effective_pr_number,
+                                        "pr_repo": effective_pr_repo,
+                                    },
+                                    task_id,
+                                    name,
+                                )
                                 result_text = f"Task {task_id} queued for {wid}."
                         finally:
                             await LockService(db).release(assign_lock_key, owner=assign_lock_id)
