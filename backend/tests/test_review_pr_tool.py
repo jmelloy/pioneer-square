@@ -413,6 +413,105 @@ class TestSupersedePriorBotReviews:
         assert len(resolve_calls) == 0
 
 
+class TestReviewPrInternal:
+    """review_pr_internal must use the guild's configured LLM client, not a
+    hardcoded direct-Anthropic client — see issue #874."""
+
+    @staticmethod
+    def _pr_data():
+        return {
+            "title": "Fix the thing",
+            "body": "Fixes a bug.",
+            "base": {"ref": "main"},
+            "head": {"ref": "fix-branch"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_uses_guild_resolved_client_and_model(self, db_session):
+        """The tool resolves the guild's configured client/model instead of
+        always defaulting to the direct Anthropic API."""
+        insert_guild(db_session, "g-revint-provider")
+
+        fake_client = object()
+        resolve_calls = []
+
+        async def fake_resolve(guild_id, guild_cfg):
+            resolve_calls.append((guild_id, guild_cfg))
+            return fake_client, "bedrock", "us.anthropic.claude-sonnet-4-6"
+
+        call_llm_calls = []
+
+        async def fake_call_llm(guild_id, **kwargs):
+            call_llm_calls.append(kwargs)
+            review_text = json.dumps({"summary": "- Looks fine", "comments": []})
+            return SimpleNamespace(
+                response=SimpleNamespace(content=[SimpleNamespace(text=review_text)])
+            )
+
+        with (
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", return_value=self._pr_data()),
+            patch("foreman.tools._gh_api_diff", return_value="diff --git a b"),
+            patch("foreman.tools._gh_api_post", return_value={"id": 1}),
+            patch("foreman.runner._load_foreman_config", return_value={"provider": "bedrock"}),
+            patch("foreman.runner.resolve_foreman_client", side_effect=fake_resolve),
+            patch("foreman.runner._call_llm", side_effect=fake_call_llm),
+        ):
+            results = await exec_tools(
+                "g-revint-provider",
+                [_fake_tu("review_pr_internal", {"pr_url": "https://github.com/org/repo/pull/1"})],
+            )
+
+        assert results[0].get("is_error") is not True
+        assert len(resolve_calls) == 1
+        assert resolve_calls[0][0] == "g-revint-provider"
+        assert len(call_llm_calls) == 1
+        assert call_llm_calls[0]["client"] is fake_client
+        assert call_llm_calls[0]["provider"] == "bedrock"
+        assert call_llm_calls[0]["model"] == "us.anthropic.claude-sonnet-4-6"
+
+        parsed = json.loads(results[0]["content"])
+        assert "Looks fine" in parsed["summary"]
+
+    @pytest.mark.asyncio
+    async def test_ai_failure_surfaces_error_in_summary(self, db_session):
+        """When the LLM call fails, the posted review's summary names the
+        failure instead of a generic, undiagnosable message."""
+        insert_guild(db_session, "g-revint-fail")
+
+        gh_post_calls = []
+
+        def capture_gh_post(path, token, payload, method="POST"):
+            gh_post_calls.append(payload)
+            return {"id": 5}
+
+        async def fake_resolve(guild_id, guild_cfg):
+            return object(), "anthropic", "claude-sonnet-4-6"
+
+        async def fake_call_llm(guild_id, **kwargs):
+            raise RuntimeError("could not resolve credentials from session")
+
+        with (
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", return_value=self._pr_data()),
+            patch("foreman.tools._gh_api_diff", return_value="diff --git a b"),
+            patch("foreman.tools._gh_api_post", side_effect=capture_gh_post),
+            patch("foreman.runner._load_foreman_config", return_value={}),
+            patch("foreman.runner.resolve_foreman_client", side_effect=fake_resolve),
+            patch("foreman.runner._call_llm", side_effect=fake_call_llm),
+        ):
+            results = await exec_tools(
+                "g-revint-fail",
+                [_fake_tu("review_pr_internal", {"pr_url": "https://github.com/org/repo/pull/2"})],
+            )
+
+        assert results[0].get("is_error") is not True
+        assert len(gh_post_calls) == 1
+        assert "could not resolve credentials from session" in gh_post_calls[0]["body"]
+        parsed = json.loads(results[0]["content"])
+        assert "could not resolve credentials from session" in parsed["summary"]
+
+
 class TestReviewPrSupersedePriorReviews:
     """Integration tests: review_pr tool calls _supersede_prior_bot_reviews."""
 
