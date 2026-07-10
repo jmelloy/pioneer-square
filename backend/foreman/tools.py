@@ -457,9 +457,7 @@ def _parse_review_from_claude(text: str) -> dict:
     return {"summary": stripped[:2000], "comments": []}
 
 
-async def _guild_github_token(
-    guild_id: str, user_id: str | None = None
-) -> tuple[str, str] | None:
+async def _guild_github_token(guild_id: str, user_id: str | None = None) -> tuple[str, str] | None:
     """Return (access_token, github_username) to act as for this guild, or None.
 
     When *user_id* is given, prefer that member's own GitHub token so actions
