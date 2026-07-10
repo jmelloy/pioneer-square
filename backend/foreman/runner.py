@@ -21,6 +21,7 @@ from foreman.constants import (
     _TERMINAL_STATES,
     MAX_FOREMAN_ROUNDS,
 )
+from foreman.github_url_parser import annotate_message as _annotate_github_urls
 from foreman.llm import (
     ANTHROPIC_SDK_PROVIDERS,
     HAS_ANTHROPIC,
@@ -1199,6 +1200,10 @@ async def _run_foreman_ai(
         )
         logger.debug("guild=%s workers_block: %s", guild_id, workers_block)
         # logger.debug("guild=%s tasks_block: %s", guild_id, tasks_block)
+
+        # Annotate any GitHub URLs in the human message so the Foreman can
+        # reference owner/repo and issue/PR numbers directly.
+        human_message = _annotate_github_urls(human_message)
 
         # Persist the rendered prompt + human turn for auditing; the API receives
         # `system_blocks` (cacheable) and the state preamble injected at send time.
