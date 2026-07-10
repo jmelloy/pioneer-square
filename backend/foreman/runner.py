@@ -274,6 +274,70 @@ async def _call_llm(
     )
 
 
+async def resolve_foreman_client(guild_id: str, guild_cfg: dict) -> tuple[Any, str, str]:
+    """Resolve the (client, effective_provider, model) triple for one guild's inference calls.
+
+    Shared by every call site that talks to the foreman's configured LLM —
+    the main run_foreman_ai loop and any tool handler (e.g. review_pr_internal)
+    that needs its own one-off completion — so a guild's provider/model/env-var
+    overrides (set via the settings dialogue) are honored everywhere, not just
+    in the main loop. Returns client=None when a connected foreman API proxy
+    will make the call instead (see _call_llm); the proxy owns providers
+    outside ANTHROPIC_SDK_PROVIDERS (e.g. "openai") that this embedded foreman
+    can't reach directly.
+    """
+    cfg_provider: str | None = guild_cfg.get("provider")
+    cfg_model: str | None = guild_cfg.get("model")
+    # Guild-configured env vars (settings dialogue) — these are otherwise only
+    # injected into spawned workers, never the foreman process. They carry the
+    # AI provider credentials configured via the dialogue (AWS_* for Bedrock,
+    # ANTHROPIC_* for the direct API), so pass them to the client factory or the
+    # foreman's own client can't authenticate.
+    cfg_env_vars: dict[str, str] = {
+        e["key"]: e["value"]
+        for e in (guild_cfg.get("env_vars") or [])
+        if e.get("key") and e.get("value") is not None
+    }
+
+    # Use a per-guild client when the config overrides the provider or
+    # supplies its own env vars (e.g. Bedrock AWS credentials/region from
+    # the settings dialogue, which otherwise never reach this process).
+    effective_provider = cfg_provider or os.environ.get("FOREMAN_PROVIDER", "anthropic").lower()
+    # Resolve the model before building the client (and before any task is
+    # dispatched) so a stale guild config — saved before the #817 fix added
+    # save-time validation, with no model or a placeholder ARN — fails here
+    # with a clear error instead of surfacing deep inside the API call.
+    proxy_available = has_foreman_proxy(guild_id)
+    try:
+        model = cfg_model or get_foreman_model(provider=effective_provider)
+    except BedrockModelNotConfiguredError:
+        if not proxy_available:
+            raise
+        model = cfg_model or os.environ.get("FOREMAN_MODEL", "external-proxy")
+
+    client = None
+    if not proxy_available and effective_provider not in ANTHROPIC_SDK_PROVIDERS:
+        # This embedded foreman only calls the Anthropic SDK directly
+        # (ANTHROPIC_SDK_PROVIDERS); any other provider — e.g. an
+        # OpenAI-compatible endpoint — is only reachable through a
+        # connected foreman API proxy, which owns that provider's
+        # request/response translation (foreman.llm.call_openai_compatible).
+        raise RuntimeError(
+            f"FOREMAN_PROVIDER={effective_provider!r} is not an embedded provider "
+            f"({sorted(ANTHROPIC_SDK_PROVIDERS)}) and no foreman API proxy is connected"
+        )
+    if not proxy_available and (cfg_provider or cfg_env_vars):
+        client = make_anthropic_client(
+            provider=effective_provider,
+            extra_env=cfg_env_vars or None,
+            model=cfg_model,
+        )
+    elif not proxy_available:
+        client = _get_anthropic_client()
+
+    return client, effective_provider, model
+
+
 async def _load_foreman_config(guild_id: str) -> dict:
     """Load per-guild foreman config from the DB. Returns {} if unset."""
     async with AsyncSessionLocal() as db:
@@ -1055,20 +1119,8 @@ async def _run_foreman_ai(
 
     # Load per-guild foreman config; fall back to env-var defaults for any unset field.
     guild_cfg = await _load_foreman_config(guild_id)
-    cfg_provider: str | None = guild_cfg.get("provider")
-    cfg_model: str | None = guild_cfg.get("model")
     cfg_system_prompt_suffix: str | None = guild_cfg.get("system_prompt_suffix")
     cfg_max_rounds: int = int(guild_cfg.get("max_rounds", MAX_FOREMAN_ROUNDS))
-    # Guild-configured env vars (settings dialogue) — these are otherwise only
-    # injected into spawned workers, never the foreman process. They carry the
-    # AI provider credentials configured via the dialogue (AWS_* for Bedrock,
-    # ANTHROPIC_* for the direct API), so pass them to the client factory or the
-    # foreman's own client can't authenticate.
-    cfg_env_vars: dict[str, str] = {
-        e["key"]: e["value"]
-        for e in (guild_cfg.get("env_vars") or [])
-        if e.get("key") and e.get("value") is not None
-    }
 
     # Build live context for the system prompt.  The session is kept open until
     # the end of the function so the tool_use / tool_result Message rows and the
@@ -1222,41 +1274,14 @@ async def _run_foreman_ai(
         # with this call only — the DB still holds just the human's literal text.
         _inject_state_preamble(messages, state_preamble)
 
-        # Use a per-guild client when the config overrides the provider or
-        # supplies its own env vars (e.g. Bedrock AWS credentials/region from
-        # the settings dialogue, which otherwise never reach this process).
-        effective_provider = cfg_provider or os.environ.get("FOREMAN_PROVIDER", "anthropic").lower()
-        # Resolve the model before building the client (and before any task is
-        # dispatched) so a stale guild config — saved before the #817 fix added
-        # save-time validation, with no model or a placeholder ARN — fails here
-        # with a clear error instead of surfacing deep inside the API call.
-        proxy_available = has_foreman_proxy(guild_id)
-        try:
-            foreman_model = cfg_model or get_foreman_model(provider=effective_provider)
-        except BedrockModelNotConfiguredError:
-            if not proxy_available:
-                raise
-            foreman_model = cfg_model or os.environ.get("FOREMAN_MODEL", "external-proxy")
-
-        client = None
-        if not proxy_available and effective_provider not in ANTHROPIC_SDK_PROVIDERS:
-            # This embedded foreman only calls the Anthropic SDK directly
-            # (ANTHROPIC_SDK_PROVIDERS); any other provider — e.g. an
-            # OpenAI-compatible endpoint — is only reachable through a
-            # connected foreman API proxy, which owns that provider's
-            # request/response translation (foreman.llm.call_openai_compatible).
-            raise RuntimeError(
-                f"FOREMAN_PROVIDER={effective_provider!r} is not an embedded provider "
-                f"({sorted(ANTHROPIC_SDK_PROVIDERS)}) and no foreman API proxy is connected"
-            )
-        if not proxy_available and (cfg_provider or cfg_env_vars):
-            client = make_anthropic_client(
-                provider=effective_provider,
-                extra_env=cfg_env_vars or None,
-                model=cfg_model,
-            )
-        elif not proxy_available:
-            client = _get_anthropic_client()
+        # Resolve the client/provider/model before building the client (and
+        # before any task is dispatched) so a stale guild config — saved before
+        # the #817 fix added save-time validation, with no model or a
+        # placeholder ARN — fails here with a clear error instead of surfacing
+        # deep inside the API call.
+        client, effective_provider, foreman_model = await resolve_foreman_client(
+            guild_id, guild_cfg
+        )
 
         text_parts = []
         for round_num in range(cfg_max_rounds):
