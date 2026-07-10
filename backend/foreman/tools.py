@@ -457,8 +457,16 @@ def _parse_review_from_claude(text: str) -> dict:
     return {"summary": stripped[:2000], "comments": []}
 
 
-async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
-    """Return (access_token, github_username) for this guild, or None."""
+async def _guild_github_token(
+    guild_id: str, user_id: str | None = None
+) -> tuple[str, str] | None:
+    """Return (access_token, github_username) to act as for this guild, or None.
+
+    When *user_id* is given, prefer that member's own GitHub token so actions
+    (issue claims, PR reviews, etc.) attribute to the acting human rather than
+    the guild owner. Falls back to the guild owner's token when *user_id* is
+    None (background/automated operations) or has no token on file.
+    """
     from auth_deps import get_guild_pk
 
     db = await get_db()
@@ -466,6 +474,21 @@ async def _guild_github_token(guild_id: str) -> tuple[str, str] | None:
         guild_pk = await get_guild_pk(db, guild_id)
         if guild_pk is None:
             return None
+
+        if user_id is not None:
+            result = await db.exec(
+                select(col(GithubToken.access_token), col(GithubToken.github_username))
+                .join(GuildMember, col(GuildMember.user_id) == col(GithubToken.github_user_id))
+                .where(
+                    col(GuildMember.guild_id) == guild_pk,
+                    col(GithubToken.github_user_id) == user_id,
+                )
+                .limit(1)
+            )
+            row = result.first()
+            if row:
+                return (row.access_token, row.github_username)
+
         result = await db.exec(
             select(col(GithubToken.access_token), col(GithubToken.github_username))
             .join(GuildMember, col(GuildMember.user_id) == col(GithubToken.github_user_id))
@@ -2145,7 +2168,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
             "review_pr_internal",
         ):
             logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
-            creds = await _guild_github_token(guild_id)
+            creds = await _guild_github_token(guild_id, user_id)
             if not creds:
                 result_text = (
                     "No GitHub token found for this guild — user must connect GitHub first."
