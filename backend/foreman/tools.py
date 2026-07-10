@@ -2416,9 +2416,11 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 )
 
                                 guild_cfg = await _load_foreman_config(guild_id)
-                                client, effective_provider, review_model = (
-                                    await resolve_foreman_client(guild_id, guild_cfg)
-                                )
+                                (
+                                    client,
+                                    effective_provider,
+                                    review_model,
+                                ) = await resolve_foreman_client(guild_id, guild_cfg)
                                 review_prompt = (
                                     "You are a thorough code reviewer. Review the following "
                                     "GitHub pull request and provide structured feedback.\n\n"
