@@ -336,6 +336,9 @@ def test_task_complete_max_turns_notifies_foreman(client):
                     "workerId": worker_id,
                 }
             )
+            # The task is pre-assigned in "working" state, so the join handler
+            # replays a task-assigned message before the agent-joined broadcast.
+            ws_worker.receive_json()  # task-assigned replay
             ws_worker.receive_json()  # agent-joined broadcast
 
             with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
