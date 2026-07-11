@@ -11,11 +11,19 @@ import json
 import logging
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import TYPE_CHECKING
 
 import websockets
 from websockets.protocol import State
 
+if TYPE_CHECKING:
+    from .sleep_monitor import SystemSleepMonitor
+
 logger = logging.getLogger(__name__)
+
+# How long to sleep between checks of sleep_monitor.is_sleeping while paused.
+# Quiet — no logging — so a laptop asleep overnight doesn't spam the log.
+_SLEEP_POLL_INTERVAL = 1.0
 
 
 def _is_open(ws) -> bool:
@@ -39,11 +47,13 @@ class WSClient:
         max_backoff: float = 2 * 3600.0,
         base_backoff: float = 5.0,
         send_retries: int = 3,
+        sleep_monitor: SystemSleepMonitor | None = None,
     ) -> None:
         self.url = url
         self.max_backoff = max_backoff
         self.base_backoff = base_backoff
         self.send_retries = max(1, send_retries)
+        self.sleep_monitor = sleep_monitor
         self._ws = None
         self._lock = asyncio.Lock()
         # Fired after every successful reconnect (not the initial connect).
@@ -51,6 +61,10 @@ class WSClient:
         # worker as online again.
         self.on_reconnect: Callable[[], Awaitable[None]] | None = None
         self._has_connected_once = False
+
+    @property
+    def _is_system_sleeping(self) -> bool:
+        return self.sleep_monitor is not None and self.sleep_monitor.is_sleeping.is_set()
 
     async def connect(self):
         """Connect (or reconnect) with exponential backoff and jitter.
@@ -64,6 +78,13 @@ class WSClient:
                 return self._ws
             attempt = 0
             while True:
+                if self._is_system_sleeping:
+                    # macOS is asleep — the network link is dead. Skip the
+                    # attempt entirely rather than logging/backing off; the
+                    # sleep monitor's on_wake hook will nudge us once the
+                    # machine and network stack are back.
+                    await asyncio.sleep(_SLEEP_POLL_INTERVAL)
+                    continue
                 try:
                     logger.info("Connecting to %s (attempt %d)", self.url, attempt + 1)
                     self._ws = await websockets.connect(
