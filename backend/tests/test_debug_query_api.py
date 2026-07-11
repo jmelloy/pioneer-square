@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, insert_task  # noqa: E402
-
 from routes import debug_query  # noqa: E402
 
 _TOKEN = "test-debug-token-xyz"
