@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from helpers import _sync_session, insert_guild, insert_member, insert_task, make_auth_token
+from helpers import _sync_session, insert_guild, insert_member, make_auth_token
 from models import ForemanTurn, Guild
 from sqlalchemy import select
 from sqlmodel import col  # noqa: E402
@@ -179,80 +179,3 @@ def test_get_foreman_context_isolates_across_guilds(client):
     )
     assert resp.status_code == 200
     assert resp.json()["count"] == 0
-
-
-# ---------------------------------------------------------------------------
-# task_id propagation
-# ---------------------------------------------------------------------------
-
-
-def test_create_foreman_turn_persists_task_id(client):
-    """POST /guilds/{guild_id}/foreman/history with task_id stores it on the row."""
-    test_client, db_url = client
-    insert_guild(db_url, "g-ftask")
-    token = make_auth_token(db_url)
-    insert_task(db_url, "g-ftask", "t-ftask1")
-
-    resp = test_client.post(
-        "/guilds/g-ftask/foreman/history",
-        json={
-            "user_id": "gh-user-test",
-            "role": "user",
-            "content_json": '"Hello"',
-            "task_id": "t-ftask1",
-        },
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp.status_code == 200
-    turn_id = resp.json()["id"]
-
-    with _sync_session(db_url) as session:
-        turn = session.scalar(select(ForemanTurn).where(col(ForemanTurn.id) == turn_id))
-    assert turn is not None
-    assert turn.task_id == "t-ftask1"
-
-
-def test_create_foreman_turn_null_task_id_by_default(client):
-    """POST /guilds/{guild_id}/foreman/history without task_id stores NULL."""
-    test_client, db_url = client
-    insert_guild(db_url, "g-ftask-null")
-    token = make_auth_token(db_url)
-
-    resp = test_client.post(
-        "/guilds/g-ftask-null/foreman/history",
-        json={
-            "user_id": "gh-user-test",
-            "role": "user",
-            "content_json": '"Hello"',
-        },
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp.status_code == 200
-    turn_id = resp.json()["id"]
-
-    with _sync_session(db_url) as session:
-        turn = session.scalar(select(ForemanTurn).where(col(ForemanTurn.id) == turn_id))
-    assert turn is not None
-    assert turn.task_id is None
-
-
-def test_create_foreman_turn_cross_guild_task_returns_404(client):
-    """task_id that belongs to a different guild must return 404."""
-    test_client, db_url = client
-    insert_guild(db_url, "g-xguild-a")
-    insert_guild(db_url, "g-xguild-b")
-    token = make_auth_token(db_url)
-    insert_task(db_url, "g-xguild-a", "t-xguild1")
-
-    # Reference guild-A's task from guild-B's endpoint — must be rejected.
-    resp = test_client.post(
-        "/guilds/g-xguild-b/foreman/history",
-        json={
-            "user_id": "gh-user-test",
-            "role": "user",
-            "content_json": '"Hello"',
-            "task_id": "t-xguild1",
-        },
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp.status_code == 404

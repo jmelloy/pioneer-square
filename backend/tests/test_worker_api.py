@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
-from models import Agent, User, Worker
+from models import Agent, Guild, User, Worker
 from sqlalchemy import select, update
 from sqlmodel import col  # noqa: E402
 
@@ -15,6 +15,13 @@ from sqlmodel import col  # noqa: E402
 def _auth(db_url: str) -> dict:
     """Helper: return Authorization header for the default test user."""
     return {"Authorization": f"Bearer {make_auth_token(db_url)}"}
+
+
+def _workers_for_guild(db_url: str, guild_id: str) -> list[Worker]:
+    """Query workers for *guild_id* directly (no list-workers REST endpoint exists)."""
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == guild_id))
+        return list(session.scalars(select(Worker).where(col(Worker.guild_id) == guild_pk)).all())
 
 
 # ---------------------------------------------------------------------------
@@ -25,9 +32,7 @@ def _auth(db_url: str) -> dict:
 def test_list_workers_empty(client):
     test_client, db_url = client
     insert_guild(db_url, "guild01")
-    resp = test_client.get("/guilds/guild01/workers", headers=_auth(db_url))
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert _workers_for_guild(db_url, "guild01") == []
 
 
 def test_create_worker_returns_id(client):
@@ -48,11 +53,9 @@ def test_create_worker_appears_in_list(client):
     test_client, db_url = client
     insert_guild(db_url, "guild03")
     test_client.post("/guilds/guild03/workers", json={"repos": ["org/backend"]})
-    resp = test_client.get("/guilds/guild03/workers", headers=_auth(db_url))
-    assert resp.status_code == 200
-    workers = resp.json()
+    workers = _workers_for_guild(db_url, "guild03")
     assert len(workers) == 1
-    assert isinstance(workers[0]["guild_id"], int)
+    assert isinstance(workers[0].guild_id, int)
 
 
 def test_create_worker_does_not_insert_agent_row(client):
@@ -78,8 +81,7 @@ def test_create_multiple_workers(client):
     insert_guild(db_url, "guild04")
     test_client.post("/guilds/guild04/workers", json={"repos": []})
     test_client.post("/guilds/guild04/workers", json={"repos": ["x/y"]})
-    resp = test_client.get("/guilds/guild04/workers", headers=_auth(db_url))
-    assert len(resp.json()) == 2
+    assert len(_workers_for_guild(db_url, "guild04")) == 2
 
 
 def test_create_worker_attributes_to_user(client):

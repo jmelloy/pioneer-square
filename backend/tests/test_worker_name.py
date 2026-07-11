@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils import format_worker_id, worker_display_name
 
 sys.path.insert(0, os.path.dirname(__file__))
-from helpers import _sync_session, insert_guild, make_auth_token
+from helpers import _sync_session, insert_guild
 from models import Worker
 from sqlalchemy import select
 from sqlmodel import col  # noqa: E402
@@ -96,10 +96,6 @@ def test_worker_display_name_with_hostname_format():
 # ---------------------------------------------------------------------------
 
 
-def _auth(db_url: str) -> dict:
-    return {"Authorization": f"Bearer {make_auth_token(db_url)}"}
-
-
 def test_register_worker_name_without_hostname(client):
     """Name is the droid-formatted worker ID even without a hostname."""
     test_client, db_url = client
@@ -137,7 +133,7 @@ def test_register_worker_name_short_hostname(client):
 
 
 def test_list_workers_includes_name(client):
-    """GET /workers response includes a ``name`` field for each worker."""
+    """The worker row persists a ``name`` derived from hostname + worker id."""
     test_client, db_url = client
     insert_guild(db_url, "wname04")
     create_resp = test_client.post(
@@ -147,12 +143,9 @@ def test_list_workers_includes_name(client):
     assert create_resp.status_code == 200
     wid = create_resp.json()["id"]
 
-    list_resp = test_client.get("/guilds/wname04/workers", headers=_auth(db_url))
-    assert list_resp.status_code == 200
-    workers = list_resp.json()
-    assert len(workers) == 1
-    assert "name" in workers[0]
-    assert workers[0]["name"] == f"testhost/{format_worker_id(wid)}"
+    with _sync_session(db_url) as session:
+        name = session.scalar(select(col(Worker.name)).where(col(Worker.id) == wid))
+    assert name == f"testhost/{format_worker_id(wid)}"
 
 
 def test_list_workers_name_persisted_correctly(client):

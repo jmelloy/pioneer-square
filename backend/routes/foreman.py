@@ -12,12 +12,9 @@ Existing (unchanged):
   POST /guilds/{guild_id}/foreman/clear-context  — debug: delete all turns for calling user
 
 State reads:
-  GET  /guilds/{guild_id}/foreman/state          — online workers, active tasks, guild metadata
-  GET  /guilds/{guild_id}/foreman/history        — raw ForemanTurn rows for a given user_id
-  GET  /guilds/{guild_id}/guild-key              — Ed25519 private key PEM for JWT signing
+  GET  /guilds/{guild_id}/foreman/env-vars       — guild foreman env vars (unmasked)
 
 State writes:
-  POST  /guilds/{guild_id}/foreman/history       — persist one ForemanTurn row
   POST  /guilds/{guild_id}/tasks                 — create a foreman-owned task
   PATCH /guilds/{guild_id}/tasks/{task_id}       — update task fields (state, worker, branch, …)
   POST  /guilds/{guild_id}/messages              — persist a chat message
@@ -25,7 +22,6 @@ State writes:
 
 from __future__ import annotations
 
-import json
 import logging
 import random
 import string
@@ -35,16 +31,12 @@ from typing import Literal
 from auth_deps import get_guild_pk, require_member, require_worker_or_member_path
 from database import get_db_dep
 from events import broadcast_msg
-from fastapi import APIRouter, Depends, HTTPException, Query
-from foreman.runner import _fetch_online_workers, clear_foreman_history, get_foreman_history
+from fastapi import APIRouter, Depends, HTTPException
+from foreman.runner import clear_foreman_history, get_foreman_history
 from models import (
-    ForemanTurn,
     Guild,
-    GuildKey,
-    GuildMember,
     Message,
     Task,
-    live_tasks_filter,
 )
 from pydantic import BaseModel
 from sqlalchemy import update
@@ -121,177 +113,6 @@ async def clear_foreman_context(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/guilds/{guild_id}/foreman/state")
-async def get_foreman_state(
-    guild_id: str,
-    _caller: str = Depends(require_worker_or_member_path),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Return a snapshot of guild state for debugging/API clients.
-
-    Response shape::
-
-        {
-          "guild": { "name": str, "primary_repo": str | null },
-          "workers": [
-            {
-              "id": str,
-              "state": str,          # "online" | "offline"
-              "repos": list[str],
-              "org": str | null,
-              "agent_count": int,
-              "agents": str          # "agentId:state,…" summary
-            }
-          ],
-          "tasks": [
-            {
-              "id": str, "worker_id": str, "name": str, "description": str,
-              "state": str, "phase": str, "branch": str | null,
-              "pr_url": str | null, "deleted_at": str | null
-            }
-          ]
-        }
-
-    ``workers`` lists only online workers (state == 'online'). ``tasks``
-    lists all non-terminal, non-soft-deleted tasks, most recent first.
-    Mirrors the state snapshot built by ``run_foreman_ai()``.
-    """
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-
-    # Guild metadata
-    guild_res = await db.exec(
-        select(col(Guild.name), col(Guild.primary_repo)).where(col(Guild.slug) == guild_id)
-    )
-    guild_row = guild_res.one_or_none()
-
-    # Fetch guild owner user_id for the standalone foreman
-    owner_res = await db.exec(
-        select(col(GuildMember.user_id))
-        .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")
-        .limit(1)
-    )
-    owner_user_id = owner_res.one_or_none()
-
-    guild_data = {
-        "name": guild_row.name if guild_row else None,
-        "primary_repo": guild_row.primary_repo if guild_row else None,
-        "owner_user_id": owner_user_id,
-    }
-
-    # Online workers with their active agents
-    worker_rows = await _fetch_online_workers(db, guild_id)
-    workers_data = [
-        {
-            "id": r["id"],
-            "state": r["worker_state"] or "idle",
-            "repos": json.loads(r["repos"] or "[]"),
-            **({"org": r["org"]} if r.get("org") else {}),
-            "agent_count": r["agent_count"] or 0,
-            "agents": r["agents"] or "",
-            "tools": json.loads(r["tools"] or "[]"),
-        }
-        for r in worker_rows
-    ]
-
-    # Active (non-terminal, non-soft-deleted) tasks
-    _TERMINAL = {"done", "failed", "cancelled"}
-    tasks_res = await db.exec(
-        select(
-            col(Task.id),
-            col(Task.worker_id),
-            col(Task.name),
-            col(Task.description),
-            col(Task.state),
-            col(Task.phase),
-            col(Task.branch),
-            col(Task.pr_url),
-            col(Task.deleted_at),
-            col(Task.created_at),
-            col(Task.user_id),
-        )
-        .where(
-            col(Task.guild_id) == guild_pk,
-            ~col(Task.state).in_(list(_TERMINAL)),
-            live_tasks_filter(),
-        )
-        .order_by(col(Task.created_at).desc())
-    )
-    tasks_data = [dict(r._mapping) for r in tasks_res.all()]
-
-    return {"guild": guild_data, "workers": workers_data, "tasks": tasks_data}
-
-
-@router.get("/guilds/{guild_id}/foreman/history")
-async def get_foreman_history_for_user(
-    guild_id: str,
-    user_id: str = Query(..., description="GitHub user_id whose thread to fetch"),
-    limit: int | None = Query(default=None, description="Max rows to return (newest first)"),
-    task_id: str | None = Query(
-        default=None,
-        description="When set, return only turns tagged with this task_id (per-task child context).",
-    ),
-    _caller: str = Depends(require_worker_or_member_path),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Return raw ForemanTurn rows for a given user, ordered oldest→newest.
-
-    Response shape::
-
-        [
-          {
-            "id": int,
-            "role": str,              # "user" | "assistant" | "system"
-            "content_json": str,      # JSON-serialised content blocks
-            "is_tool_response": bool,
-            "parent_id": int | null,
-            "created_at": str
-          }
-        ]
-
-    The standalone foreman applies its own sliding-window logic (equivalent
-    to ``_load_history()``) on top of these raw rows. ``limit`` caps the
-    number of rows returned (applied before the sliding window).
-    """
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-
-    stmt = (
-        select(
-            col(ForemanTurn.id),
-            col(ForemanTurn.role),
-            col(ForemanTurn.content_json),
-            col(ForemanTurn.is_tool_response),
-            col(ForemanTurn.parent_id),
-            col(ForemanTurn.created_at),
-            col(ForemanTurn.api_calls_json),
-        )
-        .where(col(ForemanTurn.guild_id) == guild_pk, col(ForemanTurn.user_id) == user_id)
-        .order_by(col(ForemanTurn.id))
-    )
-    if task_id is not None:
-        stmt = stmt.where(col(ForemanTurn.task_id) == task_id)
-    if limit is not None and limit > 0:
-        stmt = stmt.limit(limit)
-    result = await db.exec(stmt)
-    turns = result.all()
-
-    return [
-        {
-            "id": t.id,
-            "role": t.role,
-            "content_json": t.content_json,
-            "is_tool_response": bool(t.is_tool_response),
-            "parent_id": t.parent_id,
-            "created_at": t.created_at,
-            "api_calls_json": t.api_calls_json,
-        }
-        for t in turns
-    ]
-
-
 @router.get("/guilds/{guild_id}/foreman/env-vars")
 async def get_foreman_env_vars(
     guild_id: str,
@@ -314,87 +135,9 @@ async def get_foreman_env_vars(
     return {"env_vars": config.get("env_vars", [])}
 
 
-@router.get("/guilds/{guild_id}/guild-key")
-async def get_guild_key(
-    guild_id: str,
-    _caller: str = Depends(require_worker_or_member_path),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Return the guild's Ed25519 signing key for JWT operations.
-
-    Response shape::
-
-        { "key_id": str, "private_key_pem": str }
-
-    Used by the standalone foreman's ``dnsid sign`` tool to create JWTs
-    without direct DB access. Returns 404 if no key has been generated yet.
-    """
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-    result = await db.exec(
-        select(col(GuildKey.key_id), col(GuildKey.private_key_pem)).where(
-            col(GuildKey.guild_id) == guild_pk
-        )
-    )
-    row = result.one_or_none()
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="No signing key found for this guild")
-    return {"key_id": row.key_id, "private_key_pem": row.private_key_pem}
-
-
 # ---------------------------------------------------------------------------
 # Phase 1 — State writes
 # ---------------------------------------------------------------------------
-
-
-class ForemanTurnCreate(BaseModel):
-    """Body for POST /guilds/{guild_id}/foreman/history."""
-
-    user_id: str
-    role: str  # "user" | "assistant" | "system"
-    content_json: str  # JSON-serialised content blocks (string, list, …)
-    is_tool_response: bool = False
-    parent_id: int | None = None
-    api_calls: list | None = None  # per-HTTP-call metadata from tool execution
-    task_id: str | None = None
-
-
-@router.post("/guilds/{guild_id}/foreman/history")
-async def create_foreman_turn(
-    guild_id: str,
-    body: ForemanTurnCreate,
-    _caller: str = Depends(require_worker_or_member_path),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Persist one foreman conversation turn to the DB.
-
-    Response: ``{ "id": int, "created_at": str }``
-    """
-    import json as _json
-
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-    if body.task_id is not None:
-        await _require_task_in_guild(db, body.task_id, guild_pk)
-    created_at = datetime.now(UTC)
-    turn = ForemanTurn(
-        guild_id=guild_pk,
-        user_id=body.user_id,
-        role=body.role,
-        content_json=body.content_json,
-        is_tool_response=1 if body.is_tool_response else 0,
-        parent_id=body.parent_id,
-        created_at=created_at,
-        api_calls_json=_json.dumps(body.api_calls) if body.api_calls else None,
-        task_id=body.task_id,
-    )
-    db.add(turn)
-    await db.commit()
-    await db.refresh(turn)
-    return {"id": turn.id, "created_at": created_at}
 
 
 class ForemanTaskCreate(BaseModel):
@@ -612,67 +355,3 @@ async def create_message(
         ),
     )
     return {"message_id": msg_id, "created_at": created_at}
-
-
-# ---------------------------------------------------------------------------
-# Phase 3 — Token counts + tool execution for standalone foreman
-# ---------------------------------------------------------------------------
-
-
-class TurnTokensUpdate(BaseModel):
-    input_tokens: int
-    output_tokens: int
-
-
-@router.patch("/guilds/{guild_id}/foreman/turns/{turn_id}/tokens")
-async def update_turn_tokens(
-    guild_id: str,
-    turn_id: int,
-    body: TurnTokensUpdate,
-    _caller: str = Depends(require_worker_or_member_path),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Update token counts for a saved foreman turn. Used by the standalone foreman."""
-    from sqlalchemy import update as sa_update
-
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-    await db.exec(
-        sa_update(ForemanTurn)
-        .where(col(ForemanTurn.id) == turn_id)
-        .values(input_tokens=body.input_tokens, output_tokens=body.output_tokens)
-    )
-    await db.commit()
-    return {"ok": True}
-
-
-class ToolExecRequest(BaseModel):
-    tool_name: str
-    tool_id: str
-    tool_input: dict
-    user_id: str | None = None
-
-
-@router.post("/guilds/{guild_id}/foreman/exec_tool")
-async def exec_tool(
-    guild_id: str,
-    body: ToolExecRequest,
-    _caller: str = Depends(require_worker_or_member_path),
-):
-    """Execute a single foreman tool call. Used by the standalone foreman process.
-
-    This delegates to _exec_one_tool() in foreman/tools.py, keeping all business
-    logic (locks, worker selection, DB writes, WS broadcasts) in the backend.
-
-    Returns a tool_result block: {"type": "tool_result", "tool_use_id": str, "content": str, "is_error": bool}
-    """
-    from foreman.tools import _exec_one_tool
-
-    class _FakeToolUse:
-        def __init__(self):
-            self.name = body.tool_name
-            self.id = body.tool_id
-            self.input = body.tool_input
-
-    return await _exec_one_tool(guild_id, _FakeToolUse(), body.user_id)

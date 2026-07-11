@@ -320,7 +320,7 @@ async def test_cmd_status_sends_embed(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_status
 
@@ -364,7 +364,7 @@ async def test_cmd_workers_sends_embed(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_workers
 
@@ -401,7 +401,7 @@ async def test_cmd_pickup_creates_task_and_broadcasts(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.broadcast_msg", new=fake_broadcast),
     ):
         from routes.discord import _cmd_pickup
@@ -426,7 +426,7 @@ async def test_cmd_pickup_invalid_url_sends_error(monkeypatch):
     async def fake_patch(path, payload):
         sent.append(payload)
 
-    with patch("routes.discord._discord_patch", new=fake_patch):
+    with patch("discord_notifier.patch", new=fake_patch):
         from routes.discord import _cmd_pickup
 
         await _cmd_pickup("tok-bad", "test-guild", "not-a-url")
@@ -461,7 +461,7 @@ async def test_cmd_review_creates_task(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.broadcast_msg", new=fake_broadcast),
     ):
         from routes.discord import _cmd_review
@@ -508,7 +508,7 @@ async def test_cmd_cancel_cancels_task(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.broadcast_msg", new=fake_broadcast),
     ):
         from routes.discord import _cmd_cancel
@@ -547,7 +547,7 @@ async def test_cmd_cancel_already_done(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_cancel
 
@@ -607,7 +607,7 @@ async def test_cmd_worker_spawn_success(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.spawn_worker", new=fake_spawn_worker),
     ):
         from routes.discord import _cmd_worker_spawn
@@ -659,7 +659,7 @@ async def test_cmd_worker_spawn_reports_queued_status(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.spawn_worker", new=fake_spawn_worker),
     ):
         from routes.discord import _cmd_worker_spawn
@@ -693,7 +693,7 @@ async def test_cmd_worker_spawn_requires_connected_account(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.spawn_worker", new=fake_spawn_worker),
     ):
         from routes.discord import _cmd_worker_spawn
@@ -730,7 +730,7 @@ async def test_cmd_worker_spawn_unknown_guild(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_worker_spawn
 
@@ -771,7 +771,7 @@ async def test_cmd_worker_spawn_reports_tool_error(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.spawn_worker", new=fake_spawn_worker),
     ):
         from routes.discord import _cmd_worker_spawn
@@ -816,7 +816,7 @@ async def test_has_operator_role_matches(monkeypatch):
         {"id": "role-1", "name": "Someone Else"},
         {"id": "role-2", "name": "Pioneer Square Operator"},
     ]
-    with patch("routes.discord._discord_get", new=AsyncMock(return_value=roles)):
+    with patch("discord_notifier.get", new=AsyncMock(return_value=roles)):
         assert await _has_operator_role(interaction) is True
 
 
@@ -827,7 +827,7 @@ async def test_has_operator_role_no_match(monkeypatch):
 
     interaction = {"guild_id": "g1", "member": {"roles": ["role-1"]}}
     roles = [{"id": "role-1", "name": "Someone Else"}]
-    with patch("routes.discord._discord_get", new=AsyncMock(return_value=roles)):
+    with patch("discord_notifier.get", new=AsyncMock(return_value=roles)):
         assert await _has_operator_role(interaction) is False
 
 
@@ -836,7 +836,7 @@ async def test_has_operator_role_no_roles_short_circuits():
     """No member roles at all → deny without calling the Discord API."""
     from routes.discord import _has_operator_role
 
-    with patch("routes.discord._discord_get", new=AsyncMock()) as mock_get:
+    with patch("discord_notifier.get", new=AsyncMock()) as mock_get:
         assert await _has_operator_role({"guild_id": "g1", "member": {"roles": []}}) is False
         mock_get.assert_not_called()
 
@@ -914,7 +914,7 @@ async def test_cmd_join_channel_creates_new_binding(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_join_channel
 
@@ -974,7 +974,7 @@ async def test_cmd_join_channel_updates_existing_binding(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_join_channel
 
@@ -1016,7 +1016,7 @@ async def test_cmd_join_channel_unknown_guild_slug(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_join_channel
 
@@ -1047,7 +1047,7 @@ async def test_cmd_join_channel_denies_without_permission(monkeypatch):
     }
 
     with (
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord._has_operator_role", new=AsyncMock(return_value=False)),
     ):
         from routes.discord import _cmd_join_channel
@@ -1074,7 +1074,7 @@ async def test_cmd_join_channel_requires_guild_context(monkeypatch):
         "member": {"permissions": str(0x10)},
     }
 
-    with patch("routes.discord._discord_patch", new=fake_patch):
+    with patch("discord_notifier.patch", new=fake_patch):
         from routes.discord import _cmd_join_channel
 
         await _cmd_join_channel(interaction)
@@ -1112,7 +1112,7 @@ async def test_cmd_leave_channel_deletes_binding(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_leave_channel
 
@@ -1157,7 +1157,7 @@ async def test_cmd_leave_channel_explicit_channel_option(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_leave_channel
 
@@ -1192,7 +1192,7 @@ async def test_cmd_leave_channel_no_binding_found(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
     ):
         from routes.discord import _cmd_leave_channel
 
@@ -1221,7 +1221,7 @@ async def test_cmd_leave_channel_denies_without_permission(monkeypatch):
     }
 
     with (
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord._has_operator_role", new=AsyncMock(return_value=False)),
     ):
         from routes.discord import _cmd_leave_channel

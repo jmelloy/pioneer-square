@@ -160,7 +160,7 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-def _bot_token() -> str | None:
+def bot_token() -> str | None:
     return os.environ.get("DISCORD_BOT_TOKEN") or None
 
 
@@ -175,7 +175,7 @@ def is_configured() -> bool:
     (e.g. a live GitHub API call to resolve a thread title) when Discord
     notifications are disabled entirely.
     """
-    return bool(_bot_token())
+    return bool(bot_token())
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +200,7 @@ async def notify(
     destination channel are not configured. Never raises — errors are logged
     at WARNING level by the underlying bot request.
     """
-    if not _bot_token():
+    if not bot_token():
         return
 
     channel = await _resolve_channel_for_guild(ps_guild_slug)
@@ -221,15 +221,15 @@ async def _bot_request_raw(
     method: str,
     path: str,
     json_body: dict | None = None,
-) -> dict:
+) -> dict | list:
     """Make an authenticated Discord bot API request, raising on failure.
 
-    Returns the parsed JSON response dict, or an empty dict for 204/empty
-    bodies. Unlike ``_bot_request``, this does not swallow errors — callers
+    Returns the parsed JSON response (dict or list), or an empty dict for
+    204/empty bodies. Unlike ``_bot_request``, this does not swallow errors — callers
     that need to distinguish an expected API failure (``httpx.HTTPError``)
     from a genuine bug use this directly (see ``send_welcome_dm``).
     """
-    token = _bot_token()
+    token = bot_token()
     headers = {
         "Authorization": f"Bot {token}",
         "Content-Type": "application/json",
@@ -248,13 +248,13 @@ async def _bot_request(
     method: str,
     path: str,
     json_body: dict | None = None,
-) -> dict | None:
+) -> dict | list | None:
     """Make an authenticated Discord bot API request.
 
-    Returns the parsed JSON response dict, an empty dict for 204/empty bodies,
-    or None on error.  Never raises.
+    Returns the parsed JSON response (dict or list), an empty dict for
+    204/empty bodies, or None on error.  Never raises.
     """
-    if not _bot_token():
+    if not bot_token():
         return None
     try:
         return await _bot_request_raw(method, path, json_body)
@@ -263,6 +263,21 @@ async def _bot_request(
             "Discord bot API request failed method=%s path=%s", method, path, exc_info=True
         )
         return None
+
+
+async def get(path: str) -> dict | list | None:
+    """GET a Discord bot API endpoint. Returns parsed JSON, or None on error/no token."""
+    return await _bot_request("get", path)
+
+
+async def post(path: str, payload: dict | None = None) -> dict | list | None:
+    """POST to a Discord bot API endpoint. Returns parsed JSON, or None on error/no token."""
+    return await _bot_request("post", path, payload)
+
+
+async def patch(path: str, payload: dict) -> dict | list | None:
+    """PATCH a Discord bot API endpoint. Returns parsed JSON, or None on error/no token."""
+    return await _bot_request("patch", path, payload)
 
 
 async def _resolve_channel_for_guild(ps_guild_slug: str | None) -> str | None:
@@ -662,7 +677,7 @@ async def send_welcome_dm(discord_user_id: str, username: str | None = None) -> 
     message in that case, which is caught and logged at WARNING. Silent
     no-op when the bot token is not configured. Never raises.
     """
-    if not _bot_token():
+    if not bot_token():
         return
     try:
         dm_channel = await _bot_request_raw(
@@ -725,7 +740,7 @@ async def notify_foreman_chat(
     """
     if not content or not content.strip():
         return
-    if not _bot_token():
+    if not bot_token():
         return
 
     channel = await _resolve_channel_for_guild(guild_id)
@@ -830,7 +845,7 @@ async def notify_event(
     operations fail. Silent no-op when the bot token is not configured.
     Never raises.
     """
-    if _bot_token():
+    if bot_token():
         coords = await _canonical_coords(issue_repo, issue_number, kind=kind, task_id=task_id)
         if coords:
             repo, number = coords
@@ -898,7 +913,7 @@ async def notify_existing_thread(
     the configured channel when there isn't one. Silent no-op / never raises,
     same guarantees as ``notify_event``.
     """
-    if _bot_token():
+    if bot_token():
         coords = await _canonical_coords(issue_repo, issue_number, kind=kind, task_id=task_id)
         if coords:
             thread_id = await _lookup_thread(_SUBJECT_ISSUE, _issue_subject_key(*coords))
@@ -944,7 +959,7 @@ def _stream_enabled() -> bool:
     always routed into a per-task thread (never a flat channel post).
     """
     flag = os.environ.get("DISCORD_STREAM_TASKS", "").strip().lower()
-    return bool(_bot_token()) and flag in ("1", "true", "yes", "on")
+    return bool(bot_token()) and flag in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -1343,7 +1358,7 @@ async def notify_ci_check(
     *key* and treating it as freshly created (forcing a new flush task) keeps
     it from being silently dropped.
     """
-    if not _bot_token():
+    if not bot_token():
         return
 
     key = f"{issue_repo}#{issue_number}" if issue_repo and issue_number is not None else pr_label
