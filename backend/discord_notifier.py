@@ -1034,7 +1034,10 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
     Mirrors the frontend's turn grouping (see LogList.vue): a run of consecutive
     tool_use/tool_result entries between non-tool lines (assistant text, thinking,
     turn-completion markers) becomes one ``▶ Turn N: edit × 2, bash × 1`` line
-    instead of dumping every raw tool call and result into the thread. Non-tool
+    instead of dumping every raw tool call and result into the thread. A run with
+    at most one tool call carries no useful grouping information, so — like the
+    frontend — it passes through as its raw lines (e.g. ``▶ bash: pytest``)
+    instead of collapsing into a generic ``bash × 1`` turn summary. Non-tool
     lines pass through unchanged. Returns the formatted text and the turn count
     to carry into the next batch, so numbering stays sequential across flushes.
     """
@@ -1045,6 +1048,13 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
     def flush_group() -> None:
         nonlocal turn_number, group
         if not group:
+            return
+        tool_use_count = sum(
+            1 for entry in group if (entry.detail or {}).get("toolType") == "tool_use"
+        )
+        if tool_use_count <= 1:
+            output.extend(entry.line for entry in group)
+            group = []
             return
         turn_number += 1
         counts: dict[str, int] = {}

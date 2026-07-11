@@ -1395,14 +1395,57 @@ def test_format_stream_entries_passes_through_non_tool_lines():
 
 def test_format_stream_entries_numbers_turns_across_flushes():
     """Turn numbers keep incrementing when starting from a prior batch's count."""
-    first_batch = [_entry("▶ bash: ls", "tool_use", "Bash")]
+    first_batch = [
+        _entry("▶ edit: foo.py", "tool_use", "Edit"),
+        _entry("  → ok", "tool_result"),
+        _entry("▶ bash: pytest", "tool_use", "Bash"),
+        _entry("  → 3 passed", "tool_result"),
+    ]
     _, turn_count = discord_notifier._format_stream_entries(first_batch, 0)
 
-    second_batch = [_entry("▶ edit: foo.py", "tool_use", "Edit")]
+    second_batch = [
+        _entry("▶ edit: foo.py", "tool_use", "Edit"),
+        _entry("  → ok", "tool_result"),
+        _entry("▶ bash: pytest", "tool_use", "Bash"),
+        _entry("  → 3 passed", "tool_result"),
+    ]
     content, turn_count = discord_notifier._format_stream_entries(second_batch, turn_count)
 
-    assert content == "▶ Turn 2: edit × 1"
+    assert content == "▶ Turn 2: edit × 1, bash × 1"
     assert turn_count == 2
+
+
+def test_format_stream_entries_single_tool_call_shows_actual_tool_name():
+    """A single tool call passes through its raw line instead of 'bash × 1' (issue #886)."""
+    entries = [
+        _entry("▶ bash: pytest -k test_foo", "tool_use", "Bash"),
+        _entry("  → 3 passed", "tool_result"),
+    ]
+
+    content, turn_count = discord_notifier._format_stream_entries(entries, 0)
+
+    assert content == "▶ bash: pytest -k test_foo\n  → 3 passed"
+    assert turn_count == 0
+
+
+def test_format_stream_entries_single_tool_call_with_no_result():
+    """A lone tool_use with no trailing tool_result still passes through raw."""
+    entries = [_entry("▶ write_file: notes.md", "tool_use", "Write")]
+
+    content, turn_count = discord_notifier._format_stream_entries(entries, 0)
+
+    assert content == "▶ write_file: notes.md"
+    assert turn_count == 0
+
+
+def test_format_stream_entries_zero_tool_calls_passes_through():
+    """A run of only tool_result entries (no tool_use) also passes through raw."""
+    entries = [_entry("  → stray result", "tool_result")]
+
+    content, turn_count = discord_notifier._format_stream_entries(entries, 0)
+
+    assert content == "  → stray result"
+    assert turn_count == 0
 
 
 @pytest.mark.asyncio
