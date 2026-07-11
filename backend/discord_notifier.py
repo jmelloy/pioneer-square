@@ -1049,22 +1049,25 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
         nonlocal turn_number, group
         if not group:
             return
-        tool_use_count = sum(
-            1 for entry in group if (entry.detail or {}).get("toolType") == "tool_use"
-        )
-        if tool_use_count <= 1:
-            output.extend(entry.line for entry in group)
-            group = []
-            return
-        turn_number += 1
+        tool_use_count = 0
         counts: dict[str, int] = {}
         for entry in group:
             detail = entry.detail or {}
             if detail.get("toolType") == "tool_use":
+                tool_use_count += 1
                 # Lowercase intentionally, to match the frontend's formatTurnCounts
                 # (LogList.vue) so tool names group consistently regardless of case.
                 name = str(detail.get("name") or "tool").lower()
                 counts[name] = counts.get(name, 0) + 1
+        if tool_use_count <= 1:
+            # Turn counter is intentionally NOT incremented for single-tool-call
+            # groups (matching the frontend, which also skips grouping these), so
+            # turn numbering may skip a number when a single-tool group sits
+            # between multi-tool groups.
+            output.extend(entry.line for entry in group)
+            group = []
+            return
+        turn_number += 1
         parts = ", ".join(f"{name} × {count}" for name, count in counts.items())
         output.append(f"▶ Turn {turn_number}: {parts or 'tool activity'}")
         group = []

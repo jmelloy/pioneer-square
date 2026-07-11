@@ -1429,7 +1429,12 @@ def test_format_stream_entries_single_tool_call_shows_actual_tool_name():
 
 
 def test_format_stream_entries_single_tool_call_with_no_result():
-    """A lone tool_use with no trailing tool_result still passes through raw."""
+    """A lone tool_use with no trailing tool_result still passes through raw.
+
+    This is an expected production scenario, not just a defensive edge case: a
+    batch can be flushed mid-turn (e.g. on a timer) before the matching
+    tool_result has streamed in yet.
+    """
     entries = [_entry("▶ write_file: notes.md", "tool_use", "Write")]
 
     content, turn_count = discord_notifier._format_stream_entries(entries, 0)
