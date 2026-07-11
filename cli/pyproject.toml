@@ -40,6 +40,11 @@ test = [
     "anyio[trio]>=4.0",
     "ruff",
 ]
+# Enables worker awareness of macOS sleep/wake (see worker/pioneer_worker/sleep_monitor.py).
+# Not required: the worker falls back to a no-op stub when this isn't installed.
+macos = [
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
+]
 
 [project.scripts]
 pioneer = "pioneer_cli.main:main"
