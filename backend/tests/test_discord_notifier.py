@@ -1429,7 +1429,7 @@ async def test_notify_task_stream_carries_detail_into_buffer(monkeypatch):
 async def test_ensure_task_thread_reuses_existing():
     """_ensure_task_thread returns a persisted thread without hitting the Discord API."""
     with (
-        patch.object(discord_notifier, "_lookup_task_thread", AsyncMock(return_value=THREAD_ID)),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(return_value=THREAD_ID)),
         patch.object(discord_notifier, "_create_thread_in_channel", AsyncMock()) as create_mock,
     ):
         result = await discord_notifier._ensure_task_thread("t-1", CHANNEL_ID)
@@ -1443,7 +1443,7 @@ async def test_ensure_task_thread_creates_and_names_from_description():
     """_ensure_task_thread creates a thread named from the task description when absent."""
     with (
         patch.object(
-            discord_notifier, "_lookup_task_thread", AsyncMock(side_effect=[None, THREAD_ID])
+            discord_notifier, "_lookup_thread", AsyncMock(side_effect=[None, THREAD_ID])
         ),
         patch.object(
             discord_notifier, "_lookup_task_description", AsyncMock(return_value="Fix the bug")
@@ -1451,7 +1451,7 @@ async def test_ensure_task_thread_creates_and_names_from_description():
         patch.object(
             discord_notifier, "_create_thread_in_channel", AsyncMock(return_value=THREAD_ID)
         ) as create_mock,
-        patch.object(discord_notifier, "_save_task_thread", AsyncMock()) as save_mock,
+        patch.object(discord_notifier, "_save_thread", AsyncMock()) as save_mock,
     ):
         result = await discord_notifier._ensure_task_thread("t-1", CHANNEL_ID)
 
@@ -1460,7 +1460,7 @@ async def test_ensure_task_thread_creates_and_names_from_description():
     thread_name = create_mock.call_args[0][1]
     assert "t-1" in thread_name
     assert "Fix the bug" in thread_name
-    save_mock.assert_awaited_once_with("t-1", THREAD_ID)
+    save_mock.assert_awaited_once_with(discord_notifier._SUBJECT_TASK_STREAM, "t-1", THREAD_ID)
 
 
 def test_chunk_content_hard_splits_without_newlines():
