@@ -625,77 +625,42 @@ class PushToken(SQLModel, table=True):
     last_seen_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
-class DiscordThread(SQLModel, table=True):
-    """Persisted mapping from a GitHub issue/PR to a Discord thread channel ID.
+class DiscordThreadBinding(SQLModel, table=True):
+    """Persisted mapping from a Pioneer Square subject to a Discord thread channel ID.
 
-    Created the first time a Discord thread-aware notification fires for a PR
-    or issue.  The unique index on (issue_repo, issue_number) prevents duplicate
-    threads across restarts.
+    Unifies what used to be three separate tables — ``discord_threads``
+    (per-PR/issue), ``discord_task_threads`` (per-task live-stream), and
+    ``discord_foreman_threads`` (legacy per-guild-per-day Foreman chat) — into
+    one lookup/create path, keyed on ``(subject_type, subject_key)``:
+
+    - ``"issue"``         ``"owner/repo#123"``       one thread per GitHub issue/PR
+    - ``"task_stream"``   a bare ``task_id``          one thread per task's live output stream
+    - ``"foreman_daily"``  ``"<guild-slug>:<date>"``  legacy per-guild-per-day Foreman chat (read-only; no longer created)
+
+    ``thread_id`` is also unique: a Discord thread ID Pioneer Square created or
+    read always resolves to exactly one subject, which lets inbound routing
+    (``discord/router.py``, ``discord/gateway.py``) do a single lookup by
+    thread ID regardless of what kind of subject it is bound to.
     """
 
-    __tablename__ = "discord_threads"  # type: ignore[assignment]
+    __tablename__ = "discord_thread_bindings"  # type: ignore[assignment]
     __table_args__ = (
         Index(
-            "uq_discord_threads_repo_number",
-            "issue_repo",
-            "issue_number",
+            "uq_discord_thread_bindings_subject",
+            "subject_type",
+            "subject_key",
+            unique=True,
+        ),
+        Index(
+            "uq_discord_thread_bindings_thread_id",
+            "thread_id",
             unique=True,
         ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    issue_repo: str  # "owner/repo"
-    issue_number: int
-    thread_id: str  # Discord channel ID of the thread
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-
-
-class DiscordForemanThread(SQLModel, table=True):
-    """Persisted mapping from a Foreman chat session to a Discord thread channel ID.
-
-    One thread per guild per calendar day (UTC) keeps a whole day's Foreman
-    conversation together in the notification channel without spawning a new
-    thread on every turn.
-    """
-
-    __tablename__ = "discord_foreman_threads"  # type: ignore[assignment]
-    __table_args__ = (
-        Index(
-            "uq_discord_foreman_threads_guild_session",
-            "guild_id",
-            "session_key",
-            unique=True,
-        ),
-    )
-
-    id: int | None = Field(default=None, primary_key=True)
-    guild_id: str  # guild slug
-    session_key: str  # e.g. "2026-07-04"
-    thread_id: str  # Discord channel ID of the thread
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-
-
-class DiscordTaskThread(SQLModel, table=True):
-    """Persisted mapping from a task to a Discord thread carrying its live stream.
-
-    A worker task's streaming terminal output (Claude's assistant/thinking
-    text) is mirrored into a dedicated per-task Discord thread while the task
-    is working — before any PR/issue thread exists. Keyed on ``task_id`` (unique)
-    so the thread is created once and reused across the task's whole lifetime
-    and across backend restarts.
-    """
-
-    __tablename__ = "discord_task_threads"  # type: ignore[assignment]
-    __table_args__ = (
-        Index(
-            "uq_discord_task_threads_task_id",
-            "task_id",
-            unique=True,
-        ),
-    )
-
-    id: int | None = Field(default=None, primary_key=True)
-    task_id: str  # tasks.id (e.g. "t-abc")
+    subject_type: str
+    subject_key: str
     thread_id: str  # Discord channel ID of the thread
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 

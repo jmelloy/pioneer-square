@@ -33,13 +33,14 @@ Filtering applied to ``MESSAGE_CREATE`` before anything is queued:
 
 A channel or thread counts as "wired" if it is either a channel bound via
 ``/join-channel`` (``discord_channel_guilds``), or a thread Pioneer Square
-itself created — a per-PR/issue thread (``discord_threads``) or a legacy,
-no-longer-created dated Foreman thread (``discord_foreman_threads``, kept
-only so previously existing threads keep routing). The latter two are child
+itself created or knows how to route — any row in the unified
+``discord_thread_bindings`` table (#885): a per-PR/issue thread, a per-task
+live-stream thread, or a legacy, no-longer-created dated Foreman thread (kept
+only so previously existing threads keep routing). Bound threads are child
 threads of a wired channel but carry their own ``channel_id`` in Discord's
-model, so they need their own lookup; the routing/reply layer (#744) does
-its own, more specific, reverse-lookup against those same two tables to
-decide *which* Foreman session a message belongs to.
+model, so they need their own lookup; the routing/reply layer (#744) does its
+own, more specific, reverse-lookup against that same table to decide *which*
+Foreman session a message belongs to.
 """
 
 from __future__ import annotations
@@ -111,11 +112,11 @@ _channel_wired_cache: dict[str, tuple[bool, float]] = {}
 async def _is_channel_wired(channel_id: str) -> bool:
     """Return True if *channel_id* (a channel or thread) has somewhere to route to.
 
-    Backed by ``discord_channel_guilds`` (bound via ``/join-channel``),
-    ``discord_threads`` (per-PR/issue threads), and ``discord_foreman_threads``
-    (legacy, no-longer-created dated Foreman threads) — through a short TTL
-    cache so repeated messages in the same channel/thread don't each pay for
-    a DB round-trip.
+    Backed by ``discord_channel_guilds`` (bound via ``/join-channel``) and the
+    unified ``discord_thread_bindings`` table (every thread Pioneer Square
+    created or reads, regardless of kind) — through a short TTL cache so
+    repeated messages in the same channel/thread don't each pay for a DB
+    round-trip.
     """
     now = time.monotonic()
     cached = _channel_wired_cache.get(channel_id)
@@ -131,14 +132,15 @@ async def _query_channel_wired(channel_id: str) -> bool:
     """Query for a routable binding, bypassing the cache.
 
     Checks the plain channel binding table first (cheapest/most common case),
-    then falls back to the two thread-mapping tables — a message posted
-    inside a per-task or per-guild-daily thread carries that thread's own ID
-    as ``channel_id``, not its parent channel's. Never raises — DB errors are
-    treated as "not wired".
+    then the single ``discord_thread_bindings`` table — a message posted
+    inside any thread Pioneer Square created (per-PR/issue, per-task stream,
+    or legacy per-guild-daily) carries that thread's own ID as ``channel_id``,
+    not its parent channel's. Never raises — DB errors are treated as "not
+    wired".
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordChannelGuild, DiscordForemanThread, DiscordThread  # noqa: PLC0415
+        from models import DiscordChannelGuild, DiscordThreadBinding  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
@@ -151,14 +153,8 @@ async def _query_channel_wired(channel_id: str) -> bool:
                 return True
 
             result = await db.exec(
-                select(DiscordThread.id).where(col(DiscordThread.thread_id) == channel_id)
-            )
-            if result.first() is not None:
-                return True
-
-            result = await db.exec(
-                select(DiscordForemanThread.id).where(
-                    col(DiscordForemanThread.thread_id) == channel_id
+                select(DiscordThreadBinding.id).where(
+                    col(DiscordThreadBinding.thread_id) == channel_id
                 )
             )
             return result.first() is not None

@@ -4,8 +4,11 @@ task-stream mirroring.
 
 Everything requires the bot. Set ``DISCORD_BOT_TOKEN`` **and** ``DISCORD_CHANNEL_ID``
 to post embeds to the configured channel and to create/reuse one Discord thread per
-GitHub PR or issue. The thread mapping is persisted in the ``discord_threads`` DB table
-so restarts never duplicate threads.
+GitHub PR or issue. Every thread this module creates or reads is a row in the single
+``discord_thread_bindings`` table (see ``models.DiscordThreadBinding``), keyed on
+``(subject_type, subject_key)`` — ``"issue"`` for PR/issue threads, ``"task_stream"``
+for per-task live-output threads (Phase 4 below) — so restarts never duplicate
+threads and both kinds share one lookup/create path (``_get_or_create_thread``).
 
     When a thread-aware call has no ``(issue_repo, issue_number)`` — or thread
     creation fails — it falls back to a flat embed posted to the resolved channel
@@ -16,7 +19,7 @@ Phase 3 — Foreman chat threads + user mentions
     ``notify_foreman_chat`` mirrors Foreman → user chat narration into Discord.
 
     When a chat line is scoped to a task (``task_id`` passed through) and that
-    task's linked GitHub issue/PR already has a thread in ``discord_threads``,
+    task's linked GitHub issue/PR already has an ``"issue"`` thread binding,
     the line is posted there. In every other case — no task context, or a
     task with no linked thread yet — the line is posted directly to the
     guild's main configured Discord channel. There is no dated/daily
@@ -36,7 +39,12 @@ Phase 4 — live task-stream mirroring
     mentions parsed) so a firehose of build output never pings anyone — a
     genuinely low-priority feed. Opt-in via ``DISCORD_STREAM_TASKS`` (requires a
     bot token, since the feed always routes into a thread — never a flat channel
-    post). The per-task thread mapping persists in ``discord_task_threads``.
+    post). The per-task thread binding is a ``"task_stream"`` row in
+    ``discord_thread_bindings``, deliberately separate from that task's
+    ``"issue"`` thread (if any) — the stream is a verbose working feed, the
+    issue/PR thread holds the tidy embed summary — but both are now routable
+    inbound (``discord/gateway.py``, ``discord/router.py``) through the same
+    table.
 
 Phase 5 — new-member welcome DM
     ``send_welcome_dm`` is called by the Gateway client (``discord.gateway``)
@@ -105,6 +113,7 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -289,45 +298,53 @@ async def _resolve_channel_for_guild(ps_guild_slug: str | None) -> str | None:
     return _channel_id()
 
 
-async def _lookup_thread(issue_repo: str, issue_number: int) -> str | None:
-    """Return the persisted Discord thread_id for a PR/issue, or None."""
+_SUBJECT_ISSUE = "issue"
+_SUBJECT_TASK_STREAM = "task_stream"
+
+
+def _issue_subject_key(issue_repo: str, issue_number: int) -> str:
+    return f"{issue_repo}#{issue_number}"
+
+
+async def _lookup_thread(subject_type: str, subject_key: str) -> str | None:
+    """Return the persisted Discord thread_id bound to *subject_type*/*subject_key*, or None."""
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415 — lazy to avoid circular import
-        from models import DiscordThread  # noqa: PLC0415
+        from models import DiscordThreadBinding  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
-                select(DiscordThread).where(
-                    col(DiscordThread.issue_repo) == issue_repo,
-                    col(DiscordThread.issue_number) == issue_number,
+                select(DiscordThreadBinding).where(
+                    col(DiscordThreadBinding.subject_type) == subject_type,
+                    col(DiscordThreadBinding.subject_key) == subject_key,
                 )
             )
             row = result.one_or_none()
             return row.thread_id if row else None
     except Exception:
         logger.warning(
-            "discord: thread DB lookup failed repo=%s number=%s",
-            issue_repo,
-            issue_number,
+            "discord: thread DB lookup failed subject=%s:%s",
+            subject_type,
+            subject_key,
             exc_info=True,
         )
         return None
 
 
-async def _save_thread(issue_repo: str, issue_number: int, thread_id: str) -> None:
-    """Persist a new Discord thread mapping using an atomic upsert (ignore duplicates)."""
+async def _save_thread(subject_type: str, subject_key: str, thread_id: str) -> None:
+    """Persist a new subject -> Discord thread binding using an atomic upsert (ignore duplicates)."""
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordThread  # noqa: PLC0415
+        from models import DiscordThreadBinding  # noqa: PLC0415
         from sqlalchemy.dialects.postgresql import insert  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             stmt = (
-                insert(DiscordThread)
+                insert(DiscordThreadBinding)
                 .values(
-                    issue_repo=issue_repo,
-                    issue_number=issue_number,
+                    subject_type=subject_type,
+                    subject_key=subject_key,
                     thread_id=thread_id,
                     created_at=datetime.now(UTC),
                 )
@@ -337,12 +354,51 @@ async def _save_thread(issue_repo: str, issue_number: int, thread_id: str) -> No
             await db.commit()
     except Exception:
         logger.warning(
-            "discord: thread DB save failed repo=%s number=%s thread=%s",
-            issue_repo,
-            issue_number,
+            "discord: thread DB save failed subject=%s:%s thread=%s",
+            subject_type,
+            subject_key,
             thread_id,
             exc_info=True,
         )
+
+
+async def _get_or_create_thread(
+    subject_type: str,
+    subject_key: str,
+    channel: str | None,
+    thread_name: str | Callable[[], Awaitable[str]],
+) -> str | None:
+    """Return the Discord thread_id bound to *subject_type*/*subject_key*, creating it if needed.
+
+    Shared by every thread-aware path — PR/issue narration (``_ensure_thread``)
+    and task live-stream mirroring (``_ensure_task_thread``) both used to carry
+    their own copy-pasted lookup/create/save trio against separate tables; this
+    is the one lookup-or-create the whole module now goes through.
+
+    *thread_name* may be a plain string or a zero-arg async callable — the
+    callable form lets a caller defer expensive name-building (e.g. a DB
+    lookup for a task's description) until it's known the thread doesn't
+    already exist.
+
+    Returns None when *channel* is not resolved (and no thread exists yet), or
+    on Discord API error. Never raises.
+    """
+    existing = await _lookup_thread(subject_type, subject_key)
+    if existing:
+        return existing
+
+    if not channel:
+        return None
+
+    name = await thread_name() if callable(thread_name) else thread_name
+    new_thread_id = await _create_thread_in_channel(channel, name)
+    if not new_thread_id:
+        return None
+
+    await _save_thread(subject_type, subject_key, new_thread_id)
+    # Re-fetch after save: on_conflict_do_nothing means a concurrent creator wins;
+    # re-fetching ensures both callers converge on the same persisted thread_id.
+    return await _lookup_thread(subject_type, subject_key) or new_thread_id
 
 
 async def _create_thread_in_channel(channel: str, thread_name: str) -> str | None:
@@ -391,22 +447,10 @@ async def _ensure_thread(
 
     Returns None when bot token or channel ID are not configured, or on API error.
     """
-    existing = await _lookup_thread(issue_repo, issue_number)
-    if existing:
-        return existing
-
     channel = channel or _channel_id()
-    if not channel:
-        return None
-
-    new_thread_id = await _create_thread_in_channel(channel, thread_name)
-    if not new_thread_id:
-        return None
-
-    await _save_thread(issue_repo, issue_number, new_thread_id)
-    # Re-fetch after save: on_conflict_do_nothing means a concurrent creator wins;
-    # re-fetching ensures both callers use the same persisted thread_id.
-    return await _lookup_thread(issue_repo, issue_number) or new_thread_id
+    return await _get_or_create_thread(
+        _SUBJECT_ISSUE, _issue_subject_key(issue_repo, issue_number), channel, thread_name
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -691,7 +735,7 @@ async def notify_foreman_chat(
     if task_id:
         coords = await _canonical_coords(None, None, task_id=task_id)
         if coords:
-            task_thread_id = await _lookup_thread(coords[0], coords[1])
+            task_thread_id = await _lookup_thread(_SUBJECT_ISSUE, _issue_subject_key(*coords))
             if task_thread_id:
                 await _post_foreman_chat_line(task_thread_id, content)
                 return
@@ -848,16 +892,16 @@ async def notify_existing_thread(
     the follow-up itself rather than the issue, and every later notification
     would then be scattered across that wrong thread.
 
-    ``notify_existing_thread`` avoids that by only ever looking up the thread
-    persisted in ``discord_threads`` — under the same canonical key
-    ``notify_event`` posts to (see ``_canonical_coords``) — and falling back
-    to a flat embed on the configured channel when there isn't one. Silent
-    no-op / never raises, same guarantees as ``notify_event``.
+    ``notify_existing_thread`` avoids that by only ever looking up the
+    ``"issue"`` thread binding — under the same canonical key ``notify_event``
+    posts to (see ``_canonical_coords``) — and falling back to a flat embed on
+    the configured channel when there isn't one. Silent no-op / never raises,
+    same guarantees as ``notify_event``.
     """
     if _bot_token():
         coords = await _canonical_coords(issue_repo, issue_number, kind=kind, task_id=task_id)
         if coords:
-            thread_id = await _lookup_thread(coords[0], coords[1])
+            thread_id = await _lookup_thread(_SUBJECT_ISSUE, _issue_subject_key(*coords))
             if thread_id:
                 await _post_to_thread(
                     thread_id, event_type, title, description, url=url, color=color
@@ -930,52 +974,6 @@ class _StreamBuffer:
 _stream_buffers: dict[str, _StreamBuffer] = {}
 
 
-async def _lookup_task_thread(task_id: str) -> str | None:
-    """Return the persisted Discord thread_id for a task's stream, or None."""
-    try:
-        from database import AsyncSessionLocal  # noqa: PLC0415 — lazy to avoid circular import
-        from models import DiscordTaskThread  # noqa: PLC0415
-        from sqlmodel import col, select  # noqa: PLC0415
-
-        async with AsyncSessionLocal() as db:
-            result = await db.exec(
-                select(DiscordTaskThread).where(col(DiscordTaskThread.task_id) == task_id)
-            )
-            row = result.one_or_none()
-            return row.thread_id if row else None
-    except Exception:
-        logger.warning("discord: task thread DB lookup failed task=%s", task_id, exc_info=True)
-        return None
-
-
-async def _save_task_thread(task_id: str, thread_id: str) -> None:
-    """Persist a task→thread mapping using an atomic upsert (ignore duplicates)."""
-    try:
-        from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordTaskThread  # noqa: PLC0415
-        from sqlalchemy.dialects.postgresql import insert  # noqa: PLC0415
-
-        async with AsyncSessionLocal() as db:
-            stmt = (
-                insert(DiscordTaskThread)
-                .values(
-                    task_id=task_id,
-                    thread_id=thread_id,
-                    created_at=datetime.now(UTC),
-                )
-                .on_conflict_do_nothing()
-            )
-            await db.execute(stmt)
-            await db.commit()
-    except Exception:
-        logger.warning(
-            "discord: task thread DB save failed task=%s thread=%s",
-            task_id,
-            thread_id,
-            exc_info=True,
-        )
-
-
 async def _lookup_task_description(task_id: str) -> str | None:
     """Return *task_id*'s description (for naming its thread), or None."""
     try:
@@ -996,21 +994,12 @@ async def _ensure_task_thread(task_id: str, channel: str) -> str | None:
 
     Returns None on Discord API error. Never raises.
     """
-    existing = await _lookup_task_thread(task_id)
-    if existing:
-        return existing
 
-    description = await _lookup_task_description(task_id)
-    thread_name = f"⚙ {task_id}: {description}" if description else f"⚙ {task_id}"
+    async def _thread_name() -> str:
+        description = await _lookup_task_description(task_id)
+        return f"⚙ {task_id}: {description}" if description else f"⚙ {task_id}"
 
-    new_thread_id = await _create_thread_in_channel(channel, thread_name)
-    if not new_thread_id:
-        return None
-
-    await _save_task_thread(task_id, new_thread_id)
-    # Re-fetch after save: on_conflict_do_nothing means a concurrent creator wins;
-    # re-fetching ensures both callers converge on the same persisted thread_id.
-    return await _lookup_task_thread(task_id) or new_thread_id
+    return await _get_or_create_thread(_SUBJECT_TASK_STREAM, task_id, channel, _thread_name)
 
 
 def _chunk_content(text: str, size: int) -> list[str]:
