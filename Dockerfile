@@ -8,7 +8,7 @@
 #   docker build --target worker  -t pioneer-square-worker  .
 #
 # The `base` stage installs the CLI and the source trees it imports from at
-# runtime (backend/, foreman/, worker/pioneer_worker/). PIONEER_ROOT=/app tells
+# runtime (backend/, foreman-proxy/, worker/pioneer_worker/). PIONEER_ROOT=/app tells
 # the launcher where those trees live.
 
 # ---- frontend build stage (for the backend target) ----
@@ -43,7 +43,7 @@ WORKDIR /app
 # Source trees the launcher puts on sys.path at runtime.
 COPY cli/ ./cli/
 COPY backend/ ./backend/
-COPY foreman/ ./foreman/
+COPY foreman-proxy/ ./foreman-proxy/
 COPY worker/pioneer_worker/ ./worker/pioneer_worker/
 # Operational scripts (backfills etc.) runnable via `docker compose exec`.
 COPY scripts/ ./scripts/

@@ -140,9 +140,9 @@ coordination. The standalone process is only an optional LLM API proxy for calli
 Bedrock, or an OpenAI-compatible endpoint from a different network environment.
 
 ```bash
-cp foreman/pioneer-foreman.toml.example foreman/pioneer-foreman.toml
+cp foreman-proxy/pioneer-foreman.toml.example foreman-proxy/pioneer-foreman.toml
 # edit pioneer-foreman.toml: backend_url, guild_id, [llm] provider/model/base_url/api_key
-pioneer foreman --config foreman/pioneer-foreman.toml
+pioneer foreman --config foreman-proxy/pioneer-foreman.toml
 ```
 
 Or with environment variables only (no config file):

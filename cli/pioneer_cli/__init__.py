@@ -8,7 +8,7 @@ runtimes:
 * ``pioneer worker``  — a worker agent (was ``pioneer-worker``)
 
 The three runtimes still live in their own source trees (``backend/``,
-``foreman/``, ``worker/``); this launcher just puts the right directory on
+``foreman-proxy/``, ``worker/``); this launcher just puts the right directory on
 ``sys.path`` for the selected mode and hands off to the existing entry point.
 """
 
