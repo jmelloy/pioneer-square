@@ -31,6 +31,7 @@ from events import (
 )
 from fastapi import WebSocket
 from foreman.classify import is_human_event
+from foreman.github_url_parser import parse_github_urls
 from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
 from foreman.runner import reset_foreman_poll, run_foreman_ai
 from foreman.tools import maybe_post_plan_comment
@@ -86,23 +87,25 @@ _DISCORD_STREAM_LEVELS = frozenset({None, "info", "thinking"})
 def _parse_pr_url(pr_url: str | None) -> tuple[int | None, str | None]:
     """Extract ``(pr_number, "owner/repo")`` from a GitHub PR URL.
 
-    Accepts both web URLs (``https://github.com/o/r/pull/42``) and API URLs
-    (``https://api.github.com/repos/o/r/pulls/42``). Returns ``(None, None)``
-    on anything that doesn't look like a PR URL — the caller stamps both
-    columns to NULL in that case so we don't link a stale (number, repo) to
-    a task whose PR was retracted.
+    Delegates to the canonical parser (``foreman.github_url_parser``) for the
+    standard web URL form (``https://github.com/o/r/pull/42``). Also accepts
+    API URLs (``https://api.github.com/repos/o/r/pulls/42``), which the
+    canonical parser doesn't cover. Returns ``(None, None)`` on anything that
+    doesn't look like a PR URL — the caller stamps both columns to NULL in
+    that case so we don't link a stale (number, repo) to a task whose PR was
+    retracted.
     """
     if not pr_url or not isinstance(pr_url, str):
         return None, None
+
+    refs = [ref for ref in parse_github_urls(pr_url) if ref.ref_type == "pull"]
+    if refs:
+        return refs[0].number, refs[0].slug
+
     parts = pr_url.rstrip("/").split("/")
     try:
-        # ``…/{owner}/{repo}/pull/{n}`` or ``…/repos/{owner}/{repo}/pulls/{n}``
-        if "pull" in parts:
-            idx = parts.index("pull")
-        elif "pulls" in parts:
-            idx = parts.index("pulls")
-        else:
-            return None, None
+        # ``…/repos/{owner}/{repo}/pulls/{n}`` (API form; not handled above)
+        idx = parts.index("pulls")
         owner = parts[idx - 2]
         repo = parts[idx - 1]
         number = int(parts[idx + 1])

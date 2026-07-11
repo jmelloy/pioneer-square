@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,6 +18,7 @@ import httpx
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
+from foreman.github_url_parser import parse_github_urls
 from models import GithubEvent, GithubToken, LlmUsage, Task, TaskLog
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -37,10 +37,8 @@ _GITHUB_API = "https://api.github.com"
 
 def _parse_pr_url(pr_url: str) -> tuple[str, str, int] | None:
     """Return (owner, repo, pr_number) from a GitHub PR URL, or None."""
-    m = re.match(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
-    if not m:
-        return None
-    return m.group(1), m.group(2), int(m.group(3))
+    refs = [ref for ref in parse_github_urls(pr_url) if ref.ref_type == "pull"]
+    return (refs[0].owner, refs[0].repo, refs[0].number) if refs else None
 
 
 def _iso(dt: datetime | None) -> str | None:

@@ -82,7 +82,7 @@ async def test_cmd_connect_account_mints_token_and_sends_link(monkeypatch):
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
-        patch("routes.discord._discord_patch", new=fake_patch),
+        patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.FRONTEND_URL", "https://pioneer-square.example"),
     ):
         from routes.discord import _cmd_connect_account
@@ -112,7 +112,7 @@ async def test_cmd_connect_account_unknown_user_sends_error(monkeypatch):
     async def fake_patch(path, payload):
         sent.append(payload)
 
-    with patch("routes.discord._discord_patch", new=fake_patch):
+    with patch("discord_notifier.patch", new=fake_patch):
         from routes.discord import _cmd_connect_account
 
         await _cmd_connect_account({"token": "tok-noone"})

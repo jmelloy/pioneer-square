@@ -32,16 +32,16 @@ import json
 import logging
 import os
 import random
-import re
 import string
 import uuid
 from datetime import UTC, datetime, timedelta
 
-import httpx
+import discord_notifier
 from database import AsyncSessionLocal
 from discord.auth import is_member_authorized
 from events import broadcast_msg
 from fastapi import APIRouter, BackgroundTasks, Request, Response
+from foreman.github_url_parser import parse_github_urls
 from foreman.tools import spawn_worker
 from models import (
     Agent,
@@ -61,8 +61,6 @@ from ws_types import TaskCancelMsg, TaskCreatedMsg, TaskUpdateMsg
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-_DISCORD_API_BASE = "https://discord.com/api/v10"
 
 # Discord interaction types
 _PING = 1
@@ -99,10 +97,6 @@ def _public_key() -> str | None:
 
 def _application_id() -> str | None:
     return os.environ.get("DISCORD_APPLICATION_ID") or None
-
-
-def _bot_token() -> str | None:
-    return os.environ.get("DISCORD_BOT_TOKEN") or None
 
 
 def _pioneer_guild_slug() -> str | None:
@@ -165,7 +159,7 @@ async def _has_operator_role(interaction: dict) -> bool:
     if not discord_guild_id or not user_role_ids:
         return False
 
-    roles = await _discord_get(f"/guilds/{discord_guild_id}/roles")
+    roles = await discord_notifier.get(f"/guilds/{discord_guild_id}/roles")
     if not roles:
         return False
     role_name = _operator_role_name()
@@ -186,41 +180,6 @@ async def _can_manage_channel_bindings(interaction: dict) -> bool:
     return await _has_operator_role(interaction)
 
 
-# ---------------------------------------------------------------------------
-# Discord API helper
-# ---------------------------------------------------------------------------
-
-
-async def _discord_get(path: str) -> list | dict | None:
-    """GET a Discord REST endpoint. Returns parsed JSON, or None on error/no token."""
-    token = _bot_token()
-    if not token:
-        return None
-    headers = {"Authorization": f"Bot {token}"}
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{_DISCORD_API_BASE}{path}", headers=headers)
-            resp.raise_for_status()
-            return resp.json()
-    except Exception:
-        logger.warning("discord: GET %s failed", path, exc_info=True)
-        return None
-
-
-async def _discord_patch(path: str, payload: dict) -> None:
-    """PATCH a Discord REST endpoint. Errors are logged and swallowed."""
-    token = _bot_token()
-    if not token:
-        return
-    headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.patch(f"{_DISCORD_API_BASE}{path}", json=payload, headers=headers)
-            resp.raise_for_status()
-    except Exception:
-        logger.warning("discord: PATCH %s failed", path, exc_info=True)
-
-
 async def _send_followup(
     interaction_token: str, content: str | None = None, embeds: list | None = None
 ) -> None:
@@ -233,29 +192,24 @@ async def _send_followup(
         payload["content"] = content
     if embeds is not None:
         payload["embeds"] = embeds
-    await _discord_patch(f"/webhooks/{app_id}/{interaction_token}/messages/@original", payload)
+    await discord_notifier.patch(
+        f"/webhooks/{app_id}/{interaction_token}/messages/@original", payload
+    )
 
 
 # ---------------------------------------------------------------------------
 # GitHub URL parsers
 # ---------------------------------------------------------------------------
 
-_GH_ISSUE_RE = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/issues/(\d+)", re.IGNORECASE)
-_GH_PR_RE = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)", re.IGNORECASE)
-
 
 def _parse_issue_url(url: str) -> tuple[str, int] | None:
-    m = _GH_ISSUE_RE.search(url)
-    if not m:
-        return None
-    return m.group(1), int(m.group(2))
+    refs = [ref for ref in parse_github_urls(url) if ref.ref_type == "issues"]
+    return (refs[0].slug, refs[0].number) if refs else None
 
 
 def _parse_pr_url(url: str) -> tuple[str, int] | None:
-    m = _GH_PR_RE.search(url)
-    if not m:
-        return None
-    return m.group(1), int(m.group(2))
+    refs = [ref for ref in parse_github_urls(url) if ref.ref_type == "pull"]
+    return (refs[0].slug, refs[0].number) if refs else None
 
 
 def _new_task_id() -> str:

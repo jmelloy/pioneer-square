@@ -24,14 +24,6 @@ declare global {
   }
 }
 
-export function isNative(): boolean {
-  return typeof window !== 'undefined' && !!window.pioneerSquareNative
-}
-
-export function nativePlatform(): 'ios' | 'web' {
-  return window.pioneerSquareNative?.platform ?? 'web'
-}
-
 export function requestPushPermission(): void {
   window.pioneerSquareNative?.send({ type: 'requestPushPermission' })
 }

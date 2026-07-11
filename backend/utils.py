@@ -172,7 +172,6 @@ def decode_claude_oauth_token(blob: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 _FOREMAN_JWT_SUB = "pioneer-foreman"
-_FOREMAN_JWT_TTL = 3600  # seconds; foreman refreshes before expiry
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -184,29 +183,6 @@ def _b64url_decode(s: str) -> bytes:
     if padding != 4:
         s += "=" * padding
     return base64.urlsafe_b64decode(s)
-
-
-def make_foreman_jwt(guild_id: str, secret: str, ttl: int = _FOREMAN_JWT_TTL) -> str:
-    """Create a short-lived HS256 JWT for Foreman REST helper endpoints.
-
-    The signer and backend (via ``PIONEER_FOREMAN_KEY`` env var) must share the
-    same *secret*. The token is valid for *ttl* seconds (default 1 hour).
-    """
-    header = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
-    now = int(time.time())
-    payload = _b64url_encode(
-        json.dumps(
-            {
-                "sub": _FOREMAN_JWT_SUB,
-                "slug": guild_id,
-                "iat": now,
-                "exp": now + ttl,
-            }
-        ).encode()
-    )
-    signing_input = f"{header}.{payload}"
-    sig = _b64url_encode(hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).digest())
-    return f"{signing_input}.{sig}"
 
 
 def verify_foreman_jwt(token: str, secret: str, guild_id: str) -> bool:

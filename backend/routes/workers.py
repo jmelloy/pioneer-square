@@ -298,23 +298,6 @@ async def get_pending_auth(
     return [{"workerId": wid, "url": url} for wid, url in pending.items()]
 
 
-@router.get("/guilds/{guild_id}/workers")
-async def list_workers(
-    guild_id: str,
-    github_user_id: str = Depends(require_member()),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-    result = await db.exec(
-        select(Worker)
-        .where(col(Worker.guild_id) == guild_pk)
-        .order_by(col(Worker.created_at).desc())
-    )
-    return [row_to_dict(w) for w in result.all()]
-
-
 @router.post("/guilds/{guild_id}/workers/{worker_id}/tasks")
 async def assign_task(
     guild_id: str,
