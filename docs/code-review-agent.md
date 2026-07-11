@@ -26,9 +26,11 @@ different deployment, set in `backend/.env` (or the root `.env` used by
 REVIEWER_AGENT_URL=https://your-code-review-agent.example.com
 ```
 
-No other configuration is required — the guild's existing Ed25519 identity
-(the same key served at `/.well-known/jwks.json`) is used automatically if
-the agent's card declares DNSid auth.
+No other configuration is required — the guild's Ed25519 identity (the same
+key served at `/.well-known/jwks.json`) is used automatically if the agent's
+card declares DNSid auth. If a guild has no key yet, one is generated lazily
+on first request (see `backend/routes/wellknown.py`), so there's nothing to
+provision ahead of time.
 
 ## How it works
 

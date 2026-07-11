@@ -198,8 +198,9 @@ backend restarts.
 
 After a worker sends `task-complete`, the backend triggers the Foreman AI. The foreman either
 calls `send_followup` (worker re-runs Claude in the same worktree on the same branch) or
-`finalize_task` (marks done). Independently, a GitHub webhook auto-finalizes a task to `done`
-when its PR is merged, without waiting on the foreman.
+`finalize_task` (marks done). A 300-second timeout auto-finalizes if the foreman doesn't respond.
+Independently, a GitHub webhook auto-finalizes a task to `done` when its PR is merged, without
+waiting on the foreman.
 
 ### Foreman AI
 
