@@ -21,9 +21,7 @@ def _workers_for_guild(db_url: str, guild_id: str) -> list[Worker]:
     """Query workers for *guild_id* directly (no list-workers REST endpoint exists)."""
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == guild_id))
-        return list(
-            session.scalars(select(Worker).where(col(Worker.guild_id) == guild_pk)).all()
-        )
+        return list(session.scalars(select(Worker).where(col(Worker.guild_id) == guild_pk)).all())
 
 
 # ---------------------------------------------------------------------------
