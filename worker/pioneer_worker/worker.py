@@ -923,13 +923,18 @@ class Worker:
     # directly.
     def _on_system_sleep(self) -> None:
         if self._loop is not None:
-            asyncio.run_coroutine_threadsafe(self.ws.close(), self._loop)
+            fut = asyncio.run_coroutine_threadsafe(self.ws.close(), self._loop)
+            fut.add_done_callback(
+                lambda f: f.exception() and logger.error("sleep-hook error: %s", f.exception())
+            )
 
     def _on_system_wake(self) -> None:
-        # SystemSleepMonitor already waited out its wake grace period before
-        # firing this, so a single reconnect here is safe.
-        if self._loop is not None:
-            asyncio.run_coroutine_threadsafe(self.ws.connect(), self._loop)
+        # SystemSleepMonitor already cleared its own sleeping flag (after
+        # waiting out the wake grace period) before firing this callback, so
+        # WSClient's reconnect loop — paused on sleep_monitor.is_sleeping —
+        # resumes on its own. No explicit reconnect needed here; that would
+        # leave the worker stuck disconnected if the one-off attempt failed.
+        pass
 
     async def _fetch_pending_tasks(self) -> list[dict]:
         async with await self._http() as client:

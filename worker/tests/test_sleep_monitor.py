@@ -3,12 +3,13 @@
 pyobjc isn't installed in this test environment (this suite doesn't run on
 macOS), so these tests exercise the no-op stub path plus the WSClient
 integration using a fake sleep_monitor stand-in — the same shape the real
-monitor exposes (an ``is_sleeping`` property).
+monitor exposes (an ``is_sleeping`` ``threading.Event``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock
 
 from pioneer_worker import ws_client as ws_client_mod
@@ -19,22 +20,24 @@ from pioneer_worker.ws_client import WSClient
 def test_stub_is_sleeping_always_false_without_pyobjc():
     """Without pyobjc (the case in this test environment), the monitor must
     be a fully inert no-op: start()/stop() do nothing and is_sleeping stays
-    False forever."""
+    unset forever."""
     monitor = SystemSleepMonitor()
-    assert monitor.is_sleeping is False
+    assert monitor.is_sleeping.is_set() is False
 
     monitor.start()
-    assert monitor.is_sleeping is False
+    assert monitor.is_sleeping.is_set() is False
 
     monitor.stop()
-    assert monitor.is_sleeping is False
+    assert monitor.is_sleeping.is_set() is False
 
 
 class _FakeSleepMonitor:
     """Minimal stand-in exposing the same surface WSClient depends on."""
 
     def __init__(self, *, is_sleeping: bool = False) -> None:
-        self.is_sleeping = is_sleeping
+        self.is_sleeping = threading.Event()
+        if is_sleeping:
+            self.is_sleeping.set()
 
 
 async def test_ws_client_skips_connect_attempts_while_sleeping(monkeypatch):
@@ -54,7 +57,7 @@ async def test_ws_client_skips_connect_attempts_while_sleeping(monkeypatch):
     await asyncio.sleep(0.05)
     assert connect_mock.await_count == 0, "must not dial while is_sleeping is True"
 
-    monitor.is_sleeping = False
+    monitor.is_sleeping.clear()
     ws = await asyncio.wait_for(connect_task, timeout=2.0)
 
     assert ws is fake_ws

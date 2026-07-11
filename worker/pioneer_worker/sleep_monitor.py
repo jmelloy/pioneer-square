@@ -4,8 +4,7 @@ Wraps ``NSWorkspace`` sleep/wake notifications so the WS reconnect loop can
 avoid hammering a dead network link while the laptop is asleep, and give the
 network stack a couple of seconds to come back up after wake before the first
 post-wake retry. No-op stub everywhere else (non-macOS, or ``pyobjc`` not
-installed): ``start()``/``stop()`` do nothing and ``is_sleeping`` is always
-False.
+installed): ``start()``/``stop()`` do nothing and ``is_sleeping`` stays unset.
 """
 
 from __future__ import annotations
@@ -47,11 +46,11 @@ if _HAS_APPKIT:
 class SystemSleepMonitor:
     """Tracks macOS sleep/wake state on a background thread.
 
-    ``is_sleeping`` flips True on ``NSWorkspaceWillSleepNotification`` and
-    stays True through a short grace period after
-    ``NSWorkspaceDidWakeNotification`` fires, so a caller polling
-    ``is_sleeping`` won't race a reconnect attempt against a network
-    interface that hasn't come back up yet.
+    ``is_sleeping`` is set on ``NSWorkspaceWillSleepNotification`` and stays
+    set through a short grace period after ``NSWorkspaceDidWakeNotification``
+    fires, so a caller checking ``is_sleeping.is_set()`` won't race a
+    reconnect attempt against a network interface that hasn't come back up
+    yet.
 
     ``on_sleep``/``on_wake`` callbacks run on the monitor's background
     thread — callers driving an asyncio loop must hop back onto it
@@ -68,14 +67,13 @@ class SystemSleepMonitor:
         self.on_sleep = on_sleep
         self.on_wake = on_wake
         self._wake_grace_seconds = wake_grace_seconds
-        self._is_sleeping = False
+        # threading.Event rather than a bare bool: it's set on the monitor's
+        # background thread and read from the asyncio event loop thread, so
+        # the flag needs to be an explicit, thread-safe cross-thread signal.
+        self.is_sleeping = threading.Event()
         self._thread: threading.Thread | None = None
         self._observer = None
         self._stop_event = threading.Event()
-
-    @property
-    def is_sleeping(self) -> bool:
-        return self._is_sleeping
 
     def start(self) -> None:
         if not _HAS_APPKIT:
@@ -88,6 +86,13 @@ class SystemSleepMonitor:
         if self._thread is None:
             return
         self._stop_event.set()
+        if self._observer is not None:
+            try:
+                AppKit.NSWorkspace.sharedWorkspace().notificationCenter().removeObserver_(
+                    self._observer
+                )
+            except Exception:
+                logger.debug("removeObserver_ during stop() raised (ignored)", exc_info=True)
         self._thread.join(timeout=2.0)
         self._thread = None
         self._observer = None
@@ -113,7 +118,7 @@ class SystemSleepMonitor:
             center.removeObserver_(observer)
 
     def _handle_will_sleep(self) -> None:
-        self._is_sleeping = True
+        self.is_sleeping.set()
         logger.info("System sleep detected — pausing WS reconnects")
         if self.on_sleep is not None:
             try:
@@ -128,7 +133,7 @@ class SystemSleepMonitor:
 
     def _finish_wake(self) -> None:
         time.sleep(self._wake_grace_seconds)
-        self._is_sleeping = False
+        self.is_sleeping.clear()
         logger.info("System wake detected — resuming WS reconnects")
         if self.on_wake is not None:
             try:

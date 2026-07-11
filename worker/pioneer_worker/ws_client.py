@@ -64,7 +64,7 @@ class WSClient:
 
     @property
     def _is_system_sleeping(self) -> bool:
-        return self.sleep_monitor is not None and self.sleep_monitor.is_sleeping
+        return self.sleep_monitor is not None and self.sleep_monitor.is_sleeping.is_set()
 
     async def connect(self):
         """Connect (or reconnect) with exponential backoff and jitter.
