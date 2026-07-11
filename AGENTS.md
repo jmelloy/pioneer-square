@@ -19,8 +19,8 @@ SQLite/Alembic schema, WebSocket handlers, and Foreman logic under `backend/fore
 standalone Python worker package in `worker/pioneer_worker/` and its tests in `worker/tests/`.
 The opt-in standalone foreman lives in `foreman-proxy/`. `cli/` holds the unified `pioneer` launcher
 (`cli/pioneer_cli/`) and the single `cli/pyproject.toml` that installs and serves all three
-runtimes — there are no longer separate per-runtime `pyproject.toml` files. Shared operational docs
-are in `docs/`, prompt text in `prompts/`, and helper scripts in `scripts/`.
+runtimes. Shared operational docs are in `docs/`, prompt text in `prompts/`, and helper scripts in
+`scripts/`.
 
 ## Build, Test, and Development Commands
 
@@ -35,9 +35,9 @@ uv venv && source .venv/bin/activate
 uv pip install -e "cli[test]"      # one install serves all modes
 ```
 
-The launcher keeps the existing source trees in place (`backend/`, `foreman-proxy/`, `worker/`) and puts
-the right directory on `sys.path` for the selected mode (resolving the repo root from `cli/`'s
-parent, overridable via `PIONEER_ROOT`). It does not move source or rewrite imports.
+The launcher keeps the existing source trees in place (`backend/`, `foreman-proxy/`, `worker/`) and
+puts the right directory on `sys.path` for the selected mode, without moving source or rewriting
+imports (repo root resolved from `cli/`'s parent, overridable via `PIONEER_ROOT`).
 
 ### Backend (HTTP server)
 ```bash
@@ -119,7 +119,7 @@ npm run format      # prettier --write (run from frontend/)
 ```
 
 Config lives at `ruff.toml` (root) and `frontend/eslint.config.js` + `frontend/.prettierrc.json`.
-There is no CI wired up yet — these are local guards.
+`.github/workflows/ci.yml` runs ruff lint plus backend, worker, and frontend tests on push/PR.
 
 ## Testing Guidelines
 
@@ -132,8 +132,8 @@ lifecycle changes, and store updates when touching those paths.
 ```bash
 # Backend tests require the postgres-test container (localhost:5433):
 docker compose up -d postgres-test
-cd backend && python -m pytest         # 119 tests
-cd worker && python -m pytest          # 49 tests
+cd backend && python -m pytest         # currently ~1000 tests
+cd worker && python -m pytest          # currently ~250 tests
 cd frontend && npm test && npm run type-check
 ```
 
@@ -160,12 +160,13 @@ Browser ──WebSocket──► Backend (FastAPI/SQLite)
 Worker ──WebSocket──────────┘
 ```
 
-**Backend** (`backend/main.py`) is a FastAPI app — still mostly one large file (~1700 lines:
-routes, WS handlers, OAuth) plus the `backend/foreman/` package (`runner.py`, `tools.py`,
-`prompt.py`, `state.py`) and `backend/events.py` for WS broadcast helpers. Persists all state in
-`pioneer_square.db` (SQLite via aiosqlite, schema managed by Alembic in
-`backend/alembic/versions/`), holds in-memory WebSocket connections per guild, and runs the
-Foreman AI inline as `asyncio.create_task` calls.
+**Backend** (`backend/main.py`) is a FastAPI app. `main.py` is currently a thin ~570-line wiring
+module: routes live under `backend/routes/`, OAuth helpers in `backend/oauth.py`, WS message
+handling in `backend/ws_handlers.py`/`ws_types.py`, and the Foreman AI in the `backend/foreman/`
+package. Persists all state in `pioneer_square.db` (SQLite via aiosqlite, schema managed by
+Alembic in `backend/alembic/versions/`), holds in-memory WebSocket connections per guild, and runs
+the Foreman AI as background tasks via the `spawn()` helper in `backend/util/tasks.py` (a tracked
+wrapper around `asyncio.create_task`).
 
 **Frontend** (`frontend/src/`) is Vue 3 + Pinia + Vite + TypeScript. It connects to the backend
 WebSocket for real-time events and uses REST to fetch initial state. Stores in `src/stores/`
@@ -184,9 +185,9 @@ backend restarts.
   appears in URLs and `pioneer-worker.toml` as `guild_id`).
 - **Worker**: a registered worker entity in the DB (`workers` table, id prefix `w-`). Persisted
   across restarts.
-- **Agent**: a WebSocket participant (`agents` table, id prefix `a-`). A worker process creates
-  one `agent_id` per process lifetime (stable within a run, not across restarts). The `worker_id`
-  is for DB routing; `agent_id` is the live WebSocket identity.
+- **Agent**: a WebSocket participant (`agents` table, id prefix `a-`). A worker process runs
+  `max_agents` concurrent agent slots, each with its own `agent_id` (stable within a run, not
+  across restarts). The `worker_id` is for DB routing; `agent_id` is the live WebSocket identity.
 - **Task**: a unit of work (`tasks` table, id prefix `t-`). Foreman-created tasks have
   `worker_id=NULL` (unassigned) until the foreman's `assign_task` tool sets a real worker; worker
   tasks are owned by a real worker.
@@ -197,14 +198,17 @@ backend restarts.
 
 After a worker sends `task-complete`, the backend triggers the Foreman AI. The foreman either
 calls `send_followup` (worker re-runs Claude in the same worktree on the same branch) or
-`finalize_task` (marks done). A 300-second timeout auto-finalizes if the foreman doesn't respond.
+`finalize_task` (marks done). Independently, a GitHub webhook auto-finalizes a task to `done`
+when its PR is merged, without waiting on the foreman.
 
 ### Foreman AI
 
-Lives in `backend/foreman/` (`runner.py` for the Claude SDK loop, `tools.py` for tool
-definitions, `prompt.py` for the system prompt, `state.py` for in-memory conversation history).
-Uses `claude-sonnet-4-6`. Conversation history is kept in-memory (trimmed to 40 messages). The
-foreman is triggered by:
+Lives in `backend/foreman/` — key modules are `runner.py` (the Claude SDK loop), `tools.py` (tool
+definitions), and `prompt.py` (system prompt); the package has grown to include auth, proxy, and
+LLM-provider helpers too. Currently uses `claude-sonnet-4-6` (`FOREMAN_MODEL` env var). Conversation
+history is DB-backed (loaded per guild/user from the `messages`/`foreman_turns` tables), windowed
+to the last few human turns and capped at `MAX_HISTORY_MESSAGES` (currently 20) before each call.
+The foreman is triggered by:
 1. Human chat messages addressed to `foreman`
 2. `task-complete` WS messages from workers
 3. `task-followup-done` WS messages
@@ -241,20 +245,24 @@ All real-time communication is JSON over `ws://localhost:8000/ws/{guild_id}`. Ke
 
 ### Database schema
 
-Tables: `guilds`, `agents`, `workers`, `tasks`, `task_logs`, `messages`, `github_tokens`,
-`claude_credentials`, `user_sessions`. Schema is defined in `backend/models.py` (SQLAlchemy ORM)
-and migrated by Alembic — see `backend/alembic/versions/`. `init_db()` runs `alembic upgrade head`
+Core tables include `guilds`, `agents`, `workers`, `tasks`, `task_logs`, `messages`,
+`github_tokens`, `claude_credentials`, `user_sessions`; the schema has grown well beyond this list
+(Discord integration, GitHub issue/PR caching, usage tracking, etc.) — `backend/models.py`
+(SQLModel ORM) is the authoritative source. Migrated by Alembic — see
+`backend/alembic/versions/`. `init_db()` runs `alembic upgrade head`
 on startup; pre-Alembic databases are stamped to `head` so the upgrade is a no-op. On every
 backend startup, all workers and worker agents are reset to `offline`.
 
 ### Worker internals
 
-`worker/pioneer_worker/worker.py` has three concurrent asyncio tasks:
+`worker/pioneer_worker/worker.py` runs several concurrent asyncio tasks:
 - `_listen()` — processes incoming WS messages (task assignments, follow-ups, finalize signals,
   mid-task stdin injections via `worker-message`)
-- `_task_runner()` — serial task execution loop (one task at a time per worker process)
+- `_agent_loop(slot)` — one instance per agent slot (`max_agents` config, default 4), so a single
+  worker process can run that many tasks concurrently rather than strictly serially
 - `_idle_puller()` — polls REST every `pull_interval` seconds to pick up tasks missed during
   downtime; also runs `git pull` on repos while idle
+- `_worktree_sweeper()` and (when configured) `_s3_syncer()` — background maintenance tasks
 
 Runners: `claude_runner.py` (primary), `codex_runner.py`, `pi_runner.py`. All return
 `(success: bool, stop_reason: str, last_text: str)`. The claude runner uses a 16 MiB stdout line
@@ -262,11 +270,14 @@ limit to handle large `tool_result` payloads.
 
 ### Auth
 
-GitHub OAuth flow: frontend triggers `/auth/github/login` → GitHub redirects to
-`/auth/github/callback` → backend stores token in `github_tokens`, issues a `login_token`,
-redirects to frontend with params in query string. Frontend stores the token in `localStorage`;
-sends it as `Authorization: Bearer <token>` on REST calls. Workers fetch the OAuth token from
-`/auth/github/token?guild_id=...` if no token is in their config.
+GitHub OAuth flow: frontend calls `/auth/github/login` (gets an authorize URL) → GitHub redirects
+back with `code`+`state`. By default `GITHUB_REDIRECT_URI` points at the frontend, which POSTs
+`code`+`state` to `/auth/github/exchange`; the backend stores the token in `github_tokens` and
+returns a `login_token` + GitHub profile fields as JSON. (`/auth/github/callback` is a legacy path
+for setups where GitHub redirects to the backend instead — same exchange, then a redirect to the
+frontend with the same fields in the query string.) Frontend stores the token in `localStorage`
+and sends it as `Authorization: Bearer <token>` on REST calls. Workers fetch the OAuth token from
+`/auth/github/token?guild_id=...` if none is in their config.
 
 ### Frontend stores
 

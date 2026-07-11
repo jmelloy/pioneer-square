@@ -1,108 +1,68 @@
 # Automated PR Reviews via code-review-agent
 
-Pioneer Square's Foreman AI can request automated code reviews through the
-[code-review-agent](https://github.com/Identity-Digital/code-review-agent) MCP
-server. When enabled, the Foreman can call `review_pr` to get a structured
-review posted directly to a GitHub pull request.
+Pioneer Square's Foreman AI can request automated code reviews from the
+external [code-review-agent](https://github.com/Identity-Digital/code-review-agent),
+an A2A-protocol agent. The Foreman calls its `review_pr` tool to get a
+structured review posted directly to a GitHub pull request.
 
 ## Architecture
 
 ```
-Foreman AI ──► MCPClient ──stdio──► crv-mcp ──HTTPS──► crv harness ──► Claude worker
-                                   (MCP server)        (HTTP service)   (does the review)
+Foreman AI ──► A2AClient ──HTTPS (JSON-RPC/SSE)──► code-review-agent ──► Claude worker
+        (backend/foreman/a2a_client.py)         (agent.meyers.life)   (does the review)
 ```
 
-The integration involves two components from the code-review-agent repository:
-
-- **crv harness** (`crv start`): long-running HTTP service that spawns Claude
-  review workers. Runs on its own host/port.
-- **crv-mcp** (`bin/crv-mcp`): stdio MCP server that the Foreman backend
-  launches as a subprocess. It proxies JSON-RPC calls to the harness.
+`review_pr` uses a dedicated `A2AClient` (not the generic `call_agent` tool)
+to fetch the agent's card, negotiate DNSid auth if the card requires it, and
+dispatch the `pr-review` skill over the `message/stream` JSON-RPC method.
 
 ## Setup
 
-### 1. Install code-review-agent
-
-Follow the [code-review-agent README](https://github.com/Identity-Digital/code-review-agent)
-to install and start the harness. You will need:
-- A running `crv start` harness process
-- The `crv-mcp` binary accessible in the backend container's `PATH` (or at an
-  absolute path you configure)
-
-### 2. Configure the backend
-
-Add the following to your `backend/.env` (or the root `.env` used by
+By default the Foreman targets `https://agent.meyers.life`. To point at a
+different deployment, set in `backend/.env` (or the root `.env` used by
 `docker-compose`):
 
 ```env
-# Shell command to launch the crv-mcp stdio MCP server.
-# Must be reachable from inside the backend container.
-REVIEWER_MCP_CMD=/opt/code-review-agent/bin/crv-mcp
-
-# Alternatively, point at an MCP-over-HTTP endpoint:
-# REVIEWER_MCP_URL=http://crv-mcp:9000/mcp
-
-# URL of the code-review-agent harness (the crv start process).
-REVIEWER_AGENT_URL=https://crv.example.com
+REVIEWER_AGENT_URL=https://your-code-review-agent.example.com
 ```
 
-Only one of `REVIEWER_MCP_CMD` or `REVIEWER_MCP_URL` is required.
-`REVIEWER_AGENT_URL` is always required (it is passed to the MCP server so it
-knows which harness to call).
-
-### 3. Restart the backend
-
-```bash
-docker compose restart backend
-# or
-uvicorn main:app --reload --port 8000
-```
+No other configuration is required — the guild's existing Ed25519 identity
+(the same key served at `/.well-known/jwks.json`) is used automatically if
+the agent's card declares DNSid auth.
 
 ## How it works
 
 When the Foreman calls `review_pr(pr_url)`:
 
-1. **MCPClient** (`backend/foreman/mcp_client.py`) launches `crv-mcp` as a
-   subprocess (or POSTs to `REVIEWER_MCP_URL`) and performs the MCP
-   initialization handshake.
-2. The Foreman calls the MCP tool `start_conversation` with:
-   - `agent_url`: the harness URL from `REVIEWER_AGENT_URL`
-   - `capability`: `"review_pr"`
-   - `initial_text`: the GitHub PR URL
-3. `crv-mcp` forwards the request to the harness via HTTPS, which spawns a
-   Claude worker that fetches the PR diff and produces a structured JSON review
-   report.
-4. The report is returned to the MCPClient as a tool result. Pioneer Square
-   extracts the verdict (`approved` / `changes-requested` / `comment`) and the
-   Markdown review body.
-5. The Foreman posts the review to GitHub via the Pull Request Reviews API
-   (`POST /repos/{owner}/{repo}/pulls/{number}/reviews`) using the guild's
-   OAuth token.
+1. `A2AClient` fetches the agent's `/.well-known/agent.json` card and, if it
+   declares DNSid auth, runs a challenge-response using the guild's key.
+2. It POSTs a `message/stream` JSON-RPC request for the `pr-review` skill with
+   the PR URL, and collects the resulting SSE artifact/status events.
+3. The Foreman extracts the verdict (`APPROVE` / `REQUEST_CHANGES` / `COMMENT`)
+   and review body from the result, then posts it to GitHub via
+   `POST /repos/{owner}/{repo}/pulls/{number}/reviews` using the guild's OAuth
+   token.
+
+If the external agent is unavailable, `review_pr_internal` performs a
+self-contained review (Foreman AI directly analyses the diff) as a fallback.
 
 ## Feedback loop
 
-When the code-review-agent posts a `REQUEST_CHANGES` review, GitHub emits a
-`pull_request_review` webhook event with `action: "submitted"` and
-`review.state: "changes_requested"`. Pioneer Square receives this as a
-`[github-event]` message, which triggers the Foreman AI. The Foreman
-recognises the `changes_requested` state and calls `send_followup` to dispatch
-the relevant worker to address the review comments — closing the loop
-automatically.
-
-This path is handled entirely by the existing Foreman webhook integration and
-requires no additional configuration.
+When code-review-agent posts a review requesting changes, GitHub emits a
+`pull_request_review` webhook (`action: "submitted"`,
+`review.state: "changes_requested"`). Pioneer Square routes this to the
+Foreman AI, which can call `send_followup` to dispatch a worker to address the
+comments — closing the loop automatically, with no extra configuration.
 
 ## Env vars reference
 
 | Variable | Required | Description |
 |---|---|---|
-| `REVIEWER_MCP_CMD` | one of these two | Shell command to launch `crv-mcp` |
-| `REVIEWER_MCP_URL` | one of these two | HTTP endpoint of an MCP-over-HTTP server |
-| `REVIEWER_AGENT_URL` | yes | Base URL of the `crv start` harness |
+| `REVIEWER_AGENT_URL` | no | Base URL of the code-review-agent; defaults to `https://agent.meyers.life` |
 
 ## Timeouts
 
-The `crv-mcp` MCP server blocks while the harness runs the review (default
-timeout 120 s, set via `CRV_MCP_TURN_TIMEOUT_SECONDS`). Pioneer Square's
-`MCPClient` uses a 180 s timeout, so the review has time to complete. Reviews
-of large PRs (many files, high diff size) may need a longer `CRV_MCP_TURN_TIMEOUT_SECONDS`.
+`A2AClient` uses a 180 s timeout for both the agent-card fetch and the
+review request (reviews of large PRs can take a couple of minutes). This is
+currently a fixed constant in `backend/foreman/a2a_client.py`, not
+configurable via env var.
