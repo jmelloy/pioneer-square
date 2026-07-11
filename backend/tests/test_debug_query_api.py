@@ -1,7 +1,7 @@
-"""Tests for the DEBUG_TOKEN-gated /debug/... endpoints (issue #879 follow-up).
+"""Tests for the DEBUG_TOKEN-gated ``/debug/query`` endpoint (issue #879 follow-up).
 
 ``main.py`` only mounts ``routes.debug_query.router`` when the ``DEBUG_TOKEN``
-env var is set — the routes don't exist at all otherwise. The real ``main``
+env var is set — the route doesn't exist at all otherwise. The real ``main``
 module is imported once per test session (see conftest.py), so it can't be
 reloaded per test to exercise that gating. Instead, these tests build a small
 throwaway FastAPI app around the same router using the identical condition
@@ -48,7 +48,7 @@ def _debug_app_client(monkeypatch, *, token: str | None = _TOKEN) -> TestClient:
 def test_debug_routes_absent_when_debug_token_unset(client, monkeypatch):
     _, _ = client
     dc = _debug_app_client(monkeypatch, token=None)
-    resp = dc.get("/debug/tasks")
+    resp = dc.post("/debug/query", json={"sql": "SELECT * FROM tasks"})
     assert resp.status_code == 404
 
 
@@ -56,7 +56,7 @@ def test_debug_routes_present_when_debug_token_set(client, monkeypatch):
     _, _ = client
     dc = _debug_app_client(monkeypatch)
     # Route exists (not 404) even without auth — auth failure is 401, not 404.
-    resp = dc.get("/debug/tasks")
+    resp = dc.post("/debug/query", json={"sql": "SELECT * FROM tasks"})
     assert resp.status_code == 401
 
 
@@ -68,14 +68,18 @@ def test_debug_routes_present_when_debug_token_set(client, monkeypatch):
 def test_debug_endpoint_missing_token_401(client, monkeypatch):
     _, _ = client
     dc = _debug_app_client(monkeypatch)
-    resp = dc.get("/debug/tasks")
+    resp = dc.post("/debug/query", json={"sql": "SELECT * FROM tasks"})
     assert resp.status_code == 401
 
 
 def test_debug_endpoint_wrong_token_403(client, monkeypatch):
     _, _ = client
     dc = _debug_app_client(monkeypatch)
-    resp = dc.get("/debug/tasks", headers={"Authorization": "Bearer not-the-token"})
+    resp = dc.post(
+        "/debug/query",
+        json={"sql": "SELECT * FROM tasks"},
+        headers={"Authorization": "Bearer not-the-token"},
+    )
     assert resp.status_code == 403
 
 
@@ -84,7 +88,11 @@ def test_debug_endpoint_correct_bearer_token_200(client, monkeypatch):
     dc = _debug_app_client(monkeypatch)
     insert_guild(db_url, "g-dbg1")
     insert_task(db_url, "g-dbg1", "t-dbg1", state="working")
-    resp = dc.get("/debug/tasks", headers={"Authorization": f"Bearer {_TOKEN}"})
+    resp = dc.post(
+        "/debug/query",
+        json={"sql": "SELECT * FROM tasks WHERE id = 't-dbg1'"},
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+    )
     assert resp.status_code == 200
     ids = {r["id"] for r in resp.json()}
     assert "t-dbg1" in ids
@@ -95,46 +103,14 @@ def test_debug_endpoint_correct_x_debug_token_header_200(client, monkeypatch):
     dc = _debug_app_client(monkeypatch)
     insert_guild(db_url, "g-dbg2")
     insert_task(db_url, "g-dbg2", "t-dbg2")
-    resp = dc.get("/debug/tasks", headers={"X-Debug-Token": _TOKEN})
+    resp = dc.post(
+        "/debug/query",
+        json={"sql": "SELECT * FROM tasks WHERE id = 't-dbg2'"},
+        headers={"X-Debug-Token": _TOKEN},
+    )
     assert resp.status_code == 200
     ids = {r["id"] for r in resp.json()}
     assert "t-dbg2" in ids
-
-
-# ---------------------------------------------------------------------------
-# GET /debug/tasks — full dump, cross-guild, includes soft-deleted
-# ---------------------------------------------------------------------------
-
-
-def test_debug_tasks_filters_by_guild(client, monkeypatch):
-    _, db_url = client
-    dc = _debug_app_client(monkeypatch)
-    insert_guild(db_url, "g-dbg3-a")
-    insert_guild(db_url, "g-dbg3-b")
-    insert_task(db_url, "g-dbg3-a", "t-dbg3-a")
-    insert_task(db_url, "g-dbg3-b", "t-dbg3-b")
-
-    resp = dc.get(
-        "/debug/tasks",
-        params={"guild_id": "g-dbg3-a"},
-        headers={"Authorization": f"Bearer {_TOKEN}"},
-    )
-    assert resp.status_code == 200
-    ids = {r["id"] for r in resp.json()}
-    assert ids == {"t-dbg3-a"}
-
-
-def test_debug_tasks_logs_endpoint(client, monkeypatch):
-    _, db_url = client
-    dc = _debug_app_client(monkeypatch)
-    insert_guild(db_url, "g-dbg4")
-    insert_task(db_url, "g-dbg4", "t-dbg4")
-    resp = dc.get(
-        "/debug/tasks/t-dbg4/logs",
-        headers={"Authorization": f"Bearer {_TOKEN}"},
-    )
-    assert resp.status_code == 200
-    assert resp.json() == []
 
 
 # ---------------------------------------------------------------------------

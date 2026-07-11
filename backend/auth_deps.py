@@ -12,11 +12,6 @@ Three flavours:
 - ``require_worker_or_member`` — accepts either a worker auth_token (issued
   at registration) or a member login_token; used by query-string endpoints
   that fetch guild secrets so workers can self-serve their credentials.
-- ``require_any_worker_or_member_path`` — like ``require_worker_or_member_path``
-  but does not require the token belong to the ``guild_id`` in the path; any
-  authenticated worker/member/foreman token is accepted. Used for read-only
-  task-state lookups (see #879) where guild membership isn't a meaningful
-  restriction.
 - ``require_debug_token`` — validates the ``DEBUG_TOKEN`` env var against an
   ``Authorization: Bearer`` or ``X-Debug-Token`` header. Used to gate the
   ``/debug/...`` routes, which are only registered when ``DEBUG_TOKEN`` is set.
@@ -190,48 +185,6 @@ async def require_worker_or_member_path(
     """
     token = credentials.credentials if credentials else None
     return await authorize_worker_or_member(guild_id, token)
-
-
-async def authorize_any_worker_or_member(token: str | None) -> str:
-    """Validate *token* as a worker auth_token or member login_token from
-    *any* guild — no guild-membership check.
-
-    Used for read-only task-state lookups where the caller only needs to be
-    a known worker or member somewhere, not specifically of the guild being
-    queried (see #879: the tasks-table read endpoints intentionally dropped
-    the guild-only restriction). Returns ``"worker:<worker_id>"`` or
-    ``"user:<github_user_id>"``. Raises 401 on an unrecognised token.
-    """
-    if not token:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    db = await get_db()
-    try:
-        worker_res = await db.exec(select(col(Worker.id)).where(col(Worker.auth_token) == token))
-        worker_id = worker_res.one_or_none()
-        if worker_id:
-            return f"worker:{worker_id}"
-
-        user_res = await db.exec(
-            select(col(UserSession.github_user_id)).where(col(UserSession.token) == token)
-        )
-        github_user_id = user_res.one_or_none()
-        if github_user_id:
-            return f"user:{github_user_id}"
-
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    finally:
-        await db.close()
-
-
-async def require_any_worker_or_member_path(
-    credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
-) -> str:
-    """Dependency for read-only task-state endpoints: any valid worker or
-    member token authenticates the caller, without requiring the token be
-    scoped to the ``guild_id`` in the path."""
-    token = credentials.credentials if credentials else None
-    return await authorize_any_worker_or_member(token)
 
 
 def require_debug_token(
