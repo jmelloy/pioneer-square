@@ -12,6 +12,9 @@ Three flavours:
 - ``require_worker_or_member`` — accepts either a worker auth_token (issued
   at registration) or a member login_token; used by query-string endpoints
   that fetch guild secrets so workers can self-serve their credentials.
+- ``require_debug_token`` — validates the ``DEBUG_TOKEN`` env var against an
+  ``Authorization: Bearer`` or ``X-Debug-Token`` header. Used to gate the
+  ``/debug/...`` routes, which are only registered when ``DEBUG_TOKEN`` is set.
 
 Helper:
 
@@ -21,8 +24,10 @@ Helper:
 
 from __future__ import annotations
 
+import os
+
 from database import get_db
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from models import Guild, GuildMember, UserSession, Worker
 from sqlmodel import col, select
@@ -180,3 +185,27 @@ async def require_worker_or_member_path(
     """
     token = credentials.credentials if credentials else None
     return await authorize_worker_or_member(guild_id, token)
+
+
+def require_debug_token(
+    authorization: str | None = Header(default=None),
+    x_debug_token: str | None = Header(default=None),
+) -> None:
+    """Validate the caller against the ``DEBUG_TOKEN`` env var.
+
+    Accepts either ``Authorization: Bearer <token>`` or ``X-Debug-Token:
+    <token>``. Raises 401 if no token was supplied, 403 if it doesn't match.
+    Routes depending on this should only be registered when ``DEBUG_TOKEN``
+    is set — see ``routes/debug_query.py`` and its conditional mount in
+    ``main.py``.
+    """
+    expected = os.environ.get("DEBUG_TOKEN", "")
+    token = x_debug_token
+    if not token and authorization:
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() == "bearer" and value:
+            token = value
+    if not token:
+        raise HTTPException(status_code=401, detail="Debug token required")
+    if not expected or token != expected:
+        raise HTTPException(status_code=403, detail="Invalid debug token")
