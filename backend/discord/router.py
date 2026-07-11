@@ -4,17 +4,25 @@ message belongs to, forwards it, and lets the existing Foreman chat mirror
 (``discord_notifier.notify_foreman_chat``) post the reply back into the same
 thread.
 
-Thread routing model:
-    - a message in a thread mapped in ``discord_threads`` is chat about that
-      task — routed with ``task_id`` set, so the reply lands in that task's
-      thread (see ``discord_notifier.notify_foreman_chat``).
-    - a message in a thread mapped in ``discord_foreman_threads`` (a legacy,
-      no-longer-created dated Foreman thread — kept only so previously
-      existing threads keep routing), or in any other wired channel with no
-      task binding, is general/ad-hoc chat for that Pioneer Square guild —
-      routed with ``task_id=None``, so the reply is posted directly to the
-      guild's main configured channel. ``notify_foreman_chat`` never creates
-      a new dated thread; that fallback has been removed.
+Thread routing model (#885 — unified via the single ``discord_thread_bindings``
+table, keyed on ``(subject_type, subject_key)``):
+    - a message in an ``"issue"`` thread (a per-PR/issue thread) is chat about
+      whichever task is linked to that issue/PR — routed with ``task_id`` set,
+      so the reply lands back in the same thread (see
+      ``discord_notifier.notify_foreman_chat``).
+    - a message in a ``"task_stream"`` thread (a task's live terminal-output
+      feed) is chat about that task directly — routed with ``task_id`` set to
+      the task the thread streams for. Before this table unification, these
+      threads carried no inbound binding at all, so a reply here was silently
+      dropped before ever reaching this router (see
+      ``discord/gateway.py:_query_channel_wired``, which now also covers them).
+    - a message in a ``"foreman_daily"`` thread (a legacy, no-longer-created
+      dated Foreman thread — kept only so previously existing threads keep
+      routing), or in any other wired channel with no thread binding, is
+      general/ad-hoc chat for that Pioneer Square guild — routed with
+      ``task_id=None``, so the reply is posted directly to the guild's main
+      configured channel. ``notify_foreman_chat`` never creates a new dated
+      thread; that fallback has been removed.
     - anything else has nowhere to route to and is silently ignored.
 
 Consumes ``discord.gateway.gateway_message_queue``. Enable with the same
@@ -33,31 +41,50 @@ from discord.gateway import gateway_message_queue
 logger = logging.getLogger(__name__)
 
 
-async def _resolve_task_session(thread_id: str) -> tuple[str, str] | None:
-    """Return ``(ps_guild_slug, task_id)`` if *thread_id* is a known per-PR/issue thread.
+async def _lookup_binding(thread_id: str) -> tuple[str, str] | None:
+    """Return ``(subject_type, subject_key)`` for a bound Discord thread, or None."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import DiscordThreadBinding  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(DiscordThreadBinding.subject_type, DiscordThreadBinding.subject_key).where(
+                    col(DiscordThreadBinding.thread_id) == thread_id
+                )
+            )
+            return result.first()
+    except Exception:
+        logger.warning(
+            "discord router: thread binding lookup failed thread=%s", thread_id, exc_info=True
+        )
+        return None
+
+
+async def _resolve_issue_session(subject_key: str) -> tuple[str, str] | None:
+    """Return ``(ps_guild_slug, task_id)`` for an ``"issue"`` subject_key ``"repo#number"``.
 
     Picks the most recently created task for that (issue_repo, issue_number)
     pair when more than one exists (e.g. an execute task and a follow-up
-    review task both linked to the same PR). A single joined query — rather
-    than three sequential round-trips — since ``DiscordThread`` and ``Task``
-    share the (issue_repo, issue_number) pair and ``Task.guild_id`` is a real
-    FK into ``Guild``. Never raises.
+    review task both linked to the same PR). Never raises.
     """
+    repo, _, number_str = subject_key.rpartition("#")
+    if not repo or not number_str.isdigit():
+        return None
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordThread, Guild, Task  # noqa: PLC0415
+        from models import Guild, Task  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
                 select(Task.id, Guild.slug)
-                .join(
-                    DiscordThread,
-                    (col(DiscordThread.issue_repo) == col(Task.issue_repo))
-                    & (col(DiscordThread.issue_number) == col(Task.issue_number)),
-                )
                 .join(Guild, col(Guild.id) == col(Task.guild_id))
-                .where(col(DiscordThread.thread_id) == thread_id)
+                .where(
+                    col(Task.issue_repo) == repo,
+                    col(Task.issue_number) == int(number_str),
+                )
                 .order_by(col(Task.created_at).desc())
                 .limit(1)
             )
@@ -68,33 +95,56 @@ async def _resolve_task_session(thread_id: str) -> tuple[str, str] | None:
             return (slug, task_id) if slug else None
     except Exception:
         logger.warning(
-            "discord router: task session lookup failed thread=%s", thread_id, exc_info=True
+            "discord router: issue session lookup failed key=%s", subject_key, exc_info=True
         )
         return None
 
 
-async def _resolve_general_session(channel_id: str) -> str | None:
-    """Return the Pioneer Square guild slug for a general-chat *channel_id*.
+async def _resolve_task_stream_session(task_id: str) -> tuple[str, str] | None:
+    """Return ``(ps_guild_slug, task_id)`` for a ``"task_stream"`` subject_key (a bare task_id).
 
-    Checks the per-guild daily Foreman thread mapping first, then the plain
-    ``/join-channel`` binding (for messages posted directly in a wired
-    channel, outside of any thread). Never raises.
+    No issue/PR linkage required — a task's stream thread exists from the
+    moment the task starts running, long before (if ever) it gains a PR.
+    Never raises.
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordChannelGuild, DiscordForemanThread  # noqa: PLC0415
+        from models import Guild, Task  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
-                select(DiscordForemanThread.guild_id).where(
-                    col(DiscordForemanThread.thread_id) == channel_id
-                )
+                select(Guild.slug)
+                .join(Task, col(Task.guild_id) == col(Guild.id))
+                .where(col(Task.id) == task_id)
             )
             slug = result.first()
-            if slug:
-                return slug
+            return (slug, task_id) if slug else None
+    except Exception:
+        logger.warning(
+            "discord router: task-stream session lookup failed task=%s", task_id, exc_info=True
+        )
+        return None
 
+
+def _resolve_foreman_daily_session(subject_key: str) -> str | None:
+    """Return the guild slug encoded in a ``"foreman_daily"`` subject_key ``"slug:session_key"``."""
+    slug, _, _session_key = subject_key.partition(":")
+    return slug or None
+
+
+async def _resolve_channel_guild(channel_id: str) -> str | None:
+    """Return the Pioneer Square guild slug bound to *channel_id* via ``/join-channel``.
+
+    Used for messages posted directly in a wired channel, outside of any
+    thread. Never raises.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import DiscordChannelGuild  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
             result = await db.exec(
                 select(DiscordChannelGuild.ps_guild_id).where(
                     col(DiscordChannelGuild.discord_channel_id) == channel_id
@@ -103,7 +153,7 @@ async def _resolve_general_session(channel_id: str) -> str | None:
             return result.first()
     except Exception:
         logger.warning(
-            "discord router: general session lookup failed channel=%s", channel_id, exc_info=True
+            "discord router: channel binding lookup failed channel=%s", channel_id, exc_info=True
         )
         return None
 
@@ -111,13 +161,29 @@ async def _resolve_general_session(channel_id: str) -> str | None:
 async def resolve_session(channel_id: str) -> tuple[str, str | None] | None:
     """Return ``(ps_guild_slug, task_id)`` for *channel_id*, or None if unresolvable.
 
-    ``task_id`` is None for general/ad-hoc chat. Checks task threads first,
-    then general-chat threads/channels, per the routing model above.
+    ``task_id`` is None for general/ad-hoc chat. Looks up the single
+    ``discord_thread_bindings`` row for *channel_id* and dispatches on its
+    ``subject_type`` — see the routing model in the module docstring. Falls
+    back to the plain ``/join-channel`` binding when *channel_id* isn't a
+    known thread at all.
     """
-    task_session = await _resolve_task_session(channel_id)
-    if task_session:
-        return task_session
-    guild_slug = await _resolve_general_session(channel_id)
+    binding = await _lookup_binding(channel_id)
+    if binding:
+        subject_type, subject_key = binding
+        if subject_type == "issue":
+            session = await _resolve_issue_session(subject_key)
+            if session:
+                return session
+        elif subject_type == "task_stream":
+            session = await _resolve_task_stream_session(subject_key)
+            if session:
+                return session
+        elif subject_type == "foreman_daily":
+            slug = _resolve_foreman_daily_session(subject_key)
+            if slug:
+                return (slug, None)
+
+    guild_slug = await _resolve_channel_guild(channel_id)
     return (guild_slug, None) if guild_slug else None
 
 

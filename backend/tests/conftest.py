@@ -31,6 +31,7 @@ os.environ.setdefault("DATABASE_URL", TEST_DATABASE_URL)
 
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
+import util.models_dev as models_dev_module  # noqa: E402
 from helpers import create_db as _create_db  # noqa: E402
 from routes.webhooks import shutdown_debouncer  # noqa: E402
 
@@ -69,6 +70,21 @@ def client(monkeypatch, _setup_schema):
 
     monkeypatch.setattr(main_module, "reset_connection_state", _stubbed_reset_connection_state)
     monkeypatch.setenv("DATABASE_URL", db_url)
+
+    # Stub refresh_model_catalog_if_stale: the real implementation hits the live
+    # models.dev API and (when Bedrock models are present) the real AWS Bedrock
+    # API via boto3. Every test session truncates model_catalog on startup (see
+    # _setup_schema below), so the first client-fixture use in a run always
+    # forced a live network fetch — flaky and slow in sandboxes with degraded
+    # network access, occasionally hanging past pytest's 30s per-test timeout.
+    # models.dev/bedrock behavior itself is covered directly by
+    # test_models_dev.py and test_bedrock_enricher.py.
+    async def _stubbed_refresh_catalog(db, *, max_age_hours: int = 24) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        models_dev_module, "refresh_model_catalog_if_stale", _stubbed_refresh_catalog
+    )
 
     # Stub drain_stale_workers_on_startup: it uses its own AsyncSessionLocal import
     # (not patched above) and would fail with "Future attached to a different loop".
