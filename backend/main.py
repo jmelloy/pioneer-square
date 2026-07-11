@@ -446,6 +446,7 @@ app.add_middleware(
 from routes import agents as _agents_routes  # noqa: E402
 from routes import auth as _auth_routes  # noqa: E402
 from routes import cost as _cost_routes  # noqa: E402
+from routes import db_query as _db_query_routes  # noqa: E402
 from routes import debug as _debug_routes  # noqa: E402
 from routes import discord as _discord_routes  # noqa: E402
 from routes import discord_connect as _discord_connect_routes  # noqa: E402
@@ -481,6 +482,7 @@ app.include_router(_cost_routes.router)
 app.include_router(_discord_routes.router)
 app.include_router(_discord_connect_routes.router)
 app.include_router(_discord_users_routes.router)
+app.include_router(_db_query_routes.router)
 
 
 # ---------------------------------------------------------------------------
