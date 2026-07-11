@@ -9,15 +9,15 @@ shell exists to add the things a browser can't:
 - **Persistent auth.** Store the GitHub OAuth token in the iOS Keychain
   via `WKWebsiteDataStore` cookies that survive backgrounding.
 - **Safe-area aware viewport.** Render edge-to-edge under the iPhone
-  home indicator and notch, with the existing mobile breakpoint at
-  `AppView.vue:195` providing the layout.
+  home indicator and notch, using the frontend's existing mobile breakpoint
+  (`AppView.vue`) for layout.
 - **Deep links.** Tap an APNs notification → land directly on the task.
 
 ## Layout
 
 ```
 ios/
-├── PioneerSquare/
+├── PioneerSquare/PioneerSquare/
 │   ├── PioneerSquareApp.swift   # SwiftUI App entry + AppDelegate
 │   ├── WebViewContainer.swift   # UIViewRepresentable around WKWebView
 │   ├── NativeBridge.swift       # WKScriptMessageHandler — JS↔native
@@ -32,18 +32,17 @@ The frontend side of the bridge lives at
 
 ## First-time setup
 
-This branch ships **source files only** — generate the Xcode project
-yourself so it isn't checked in as binary `project.pbxproj`:
+This repo ships **source files only** — the Xcode project file is gitignored, so
+generate it locally:
 
-1. Xcode → **File → New → Project → iOS → App**.
-2. Product Name: `PioneerSquare`. Interface: **SwiftUI**. Language: **Swift**.
-3. Save the project at `ios/` (so the generated `PioneerSquare/` folder
-   lines up with the source files in this directory). Replace the
-   generated `*.swift` files with the ones already here.
-4. In the target's **Signing & Capabilities**:
-   - Add **Push Notifications** capability.
-   - Add **Background Modes** → check **Remote notifications**.
-5. In `Info.plist`, set `PIONEER_BACKEND_URL` to your backend (e.g.
+1. Xcode → **File → New → Project → iOS → App**. Product Name:
+   `PioneerSquare`. Interface: **SwiftUI**. Language: **Swift**.
+2. Save the project at `ios/` (so the generated `PioneerSquare/` folder lines
+   up with the source files in this directory), then replace the generated
+   `*.swift` files with the ones already here.
+3. In the target's **Signing & Capabilities**, add **Push Notifications** and
+   **Background Modes → Remote notifications**.
+4. In `Info.plist`, set `PIONEER_BACKEND_URL` to your backend (e.g.
    `https://pioneer-square.example.com`). For local dev see the ATS
    exception note in [`Info.plist`](PioneerSquare/Info.plist).
 
@@ -66,9 +65,9 @@ Messages sent native → web come back on `window.pioneerSquareNative.*`
 callbacks (set by `nativeBridge.ts`). See `NativeBridge.swift` for the
 full message catalog.
 
-## Out of scope for this branch
+## Out of scope
 
-- `/api/push/register` endpoint on the FastAPI backend (separate branch).
-- APNs cert/key setup with Apple — that's per-deployment.
-- `ASWebAuthenticationSession` for GitHub OAuth. The current redirect
-  flow works in-WebView; we can revisit if SSO/keychain sharing is needed.
+- APNs cert/key setup with Apple — that's per-deployment (see `backend/push.py`
+  for the required `APNS_*` env vars).
+- `ASWebAuthenticationSession` for GitHub OAuth. The current redirect flow
+  works in-WebView; revisit if SSO/keychain sharing is needed later.

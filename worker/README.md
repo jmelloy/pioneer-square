@@ -1,7 +1,7 @@
 # Pioneer Square Worker
 
 Standalone worker agent for [Pioneer Square](../README.md). Connects to a backend
-session over WebSocket, listens for task assignments, runs
+guild over WebSocket, listens for task assignments, runs
 `claude --dangerously-skip-permissions` against a fresh git worktree, then
 pushes the result and opens a GitHub PR.
 
@@ -20,50 +20,28 @@ uv pip install -e cli
 ```
 
 This provides the `pioneer` command; run a worker with `pioneer worker`. The
-`pioneer-worker` console script remains available as a backward-compatible alias.
+`pioneer-worker` console script is a backward-compatible alias used below for
+brevity.
 
 ## Expected toolchain
 
-A worker shells out to a coding agent (`claude`, `codex`, or `pi`), which in
-turn runs whatever the task needs — installing dependencies, running tests,
-linting, building, opening PRs. To keep agents from having to bootstrap a
-language runtime mid-task, every worker host should have the following
+A worker shells out to a coding agent (`claude`, `codex`, or `pi`), which runs
+whatever the task needs. Every worker host should have the following
 pre-installed and on `PATH`:
 
-**Core**
+- **Core**: `git`, `curl`, `jq`, `make`, `unzip`, `openssh-client`, `ripgrep`, a
+  C/C++ toolchain (`build-essential` on Debian), [`gh`](https://cli.github.com/)
+- **Python 3.11+**: `python3`, `pip`, `venv`, [`ruff`](https://docs.astral.sh/ruff/),
+  [`pytest`](https://docs.pytest.org/), [`uv`](https://docs.astral.sh/uv/), [`pipx`](https://pipx.pypa.io/)
+- **Node.js 24+**: `node`, `npm`, `npx`, `corepack` enabled, plus the agent
+  CLIs (`@anthropic-ai/claude-code`, `@openai/codex`, `@mariozechner/pi-coding-agent`)
+- **Go 1.23+**: `go` on `PATH`, with `GOPATH` writable by the worker user
 
-- `git`, `curl`, `jq`, `make`, `unzip`, `openssh-client`, `ripgrep`
-- A C/C++ toolchain (`build-essential` on Debian — needed to compile native
-  Python wheels and Node addons)
-- [`gh`](https://cli.github.com/) — used by agents to inspect issues and PRs
-
-**Python 3.11+**
-
-- `python3`, `pip`, `venv`
-- [`ruff`](https://docs.astral.sh/ruff/) (lint + format)
-- [`pytest`](https://docs.pytest.org/)
-- [`uv`](https://docs.astral.sh/uv/) (fast resolver/installer used by some repos)
-- [`pipx`](https://pipx.pypa.io/) (sandboxed CLI installs)
-
-**Node.js 24+**
-
-- `node`, `npm`, `npx`
-- `corepack` enabled, so repos pinned to `pnpm`/`yarn` via `packageManager` work
-- The agent CLIs themselves: `@anthropic-ai/claude-code`, `@openai/codex`,
-  `@mariozechner/pi-coding-agent`
-
-**Go 1.23+**
-
-- `go` on `PATH`, with `GOPATH` writable by the worker user
-
-The `worker` target in the root `Dockerfile` provisions exactly this set, so anything `docker
-compose --profile worker up` builds is already correct. If you run the worker
-directly on a host, install the equivalents through your package manager
-(`apt`, `brew`, etc.) before launching it.
-
-Anything outside this baseline (Rust, Java, Ruby, .NET, Terraform, etc.) is
-expected to be installed on demand by the task itself, or added to the
-Dockerfile in a follow-up PR if it becomes a recurring need.
+The `worker` target in the root `Dockerfile` currently provisions this set, so
+`docker compose --profile worker up` needs no extra setup. Running the worker
+directly on a host requires installing the equivalents yourself. Anything
+outside this baseline (Rust, Java, Ruby, .NET, Terraform, etc.) is expected to
+be installed on demand by the task itself.
 
 ## Configure
 
@@ -78,7 +56,7 @@ Required keys:
 
 - `backend_url` — `http://host:port` (or `ws://...`); the worker derives the
   WebSocket URL automatically.
-- `session_id` — the 6-char session id from the Pioneer Square UI.
+- `guild_id` — the 6-char guild id from the Pioneer Square UI.
 - `[github] repos` — list of `owner/repo` strings the worker may operate on.
 - `[github] org` — GitHub organisation name (e.g. `"jmelloy"`). When set, the
   worker accepts tasks targeting *any* repo under that org and clones repos
@@ -106,7 +84,7 @@ The worker stays running, reconnecting if the backend restarts.
 ## How it works
 
 1. On startup, registers (or claims) a worker id with the backend.
-2. Opens a WebSocket to `/ws/{session_id}` and announces itself with `join`
+2. Opens a WebSocket to `/ws/{guild_id}` and announces itself with `join`
    and `worker-register` messages.
 3. Fetches any pending tasks via REST so it can resume work across restarts.
 4. Listens for `task-assigned` messages whose `workerId` matches its own id.
@@ -118,12 +96,9 @@ The worker stays running, reconnecting if the backend restarts.
 
 ## Control API (drive a live worker without a frontend)
 
-A real worker only acts on tasks the backend/foreman assigns over WebSocket,
-which makes it awkward to test in isolation. Enable the optional HTTP control
-API to inject tasks straight into the worker's queue and inspect its state —
-the full execution path (clone, worktree, claude/codex/pi, push, PR) still
-runs, so it's a faithful smoke test against a real backend without driving the
-UI.
+Enable the optional HTTP control API to inject tasks straight into the
+worker's queue and inspect its state without driving the UI — the full
+execution path (clone, worktree, claude/codex/pi, push, PR) still runs.
 
 ```bash
 pioneer-worker --api-port 9200             # enable on 127.0.0.1:9200
@@ -163,7 +138,7 @@ curl -s localhost:9200/ | jq .
 
 ## Multiple workers
 
-Run more than one worker against the same session by giving each its own
+Run more than one worker against the same guild by giving each its own
 config directory (so the sidecar state file doesn't collide):
 
 ```bash

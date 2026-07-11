@@ -1,20 +1,21 @@
 # Discord Integration
 
 Pioneer Square can mirror activity into a Discord server: event notifications, per-PR/issue
-discussion threads, a live Foreman chat feed, and `/ps` slash commands that let you drive
-the factory floor from Discord. Everything is optional and additive — with no Discord env
-vars set, the integration is a silent no-op.
+discussion threads, a live Foreman chat feed, and `/ps` slash commands that let you drive the
+factory floor from Discord — all optional and additive, driven by a single bot, layering up as
+you add credentials.
 
-Everything is driven by the Discord bot (the "gateway app"). The feature set layers up as you
-add credentials:
+**Silent no-op by design:** with no Discord env vars set — or whenever a specific feature's
+required vars are missing — the relevant code path does nothing and logs nothing as an error.
+HTTP and DB failures are logged at WARNING and swallowed, never raised. This applies
+throughout the doc below and isn't repeated per-section.
 
 | Layer | What it adds | Needs |
 |---|---|---|
 | Notifications | Flat-channel embeds, per-PR/issue threads, thread archiving | `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` |
 | Slash commands | `/ps` commands, Foreman chat mirror, @-mentions | `DISCORD_APPLICATION_ID` + `DISCORD_PUBLIC_KEY` (+ the bot vars) |
 
-You can stop after the notification layer — set the bot token and channel for embeds and
-threads without ever setting up slash commands.
+You can stop after the notification layer without ever setting up slash commands.
 
 ## Setup guide
 
@@ -27,19 +28,11 @@ In the [Discord Developer Portal](https://discord.com/developers/applications):
    Keep it out of version control.
 3. Under **General Information**, copy the **Application ID** (`DISCORD_APPLICATION_ID`) and
    **Public Key** (`DISCORD_PUBLIC_KEY`).
-4. If you plan to use slash commands, set **Interactions Endpoint URL** on the same
-   page to `https://<your-domain>/discord/interactions` (e.g.
-   `https://pioneer-square.melloy.life/discord/interactions`) — the backend serves both the
-   SPA and the API from a single public origin, so this is the same host users open in a
-   browser, not a separate backend-only address. Discord will send a PING to this URL and
-   expects a signed PONG back — it won't save the URL until the backend is reachable and
-   `DISCORD_PUBLIC_KEY` is configured, so deploy the backend first.
-
-   > **Ordering matters:** `DISCORD_PUBLIC_KEY` (see [step 3](#3-environment-variables)) must
-   > already be set on the *running* backend before you try to save the Interactions Endpoint
-   > URL here — Discord's verification PING is signature-checked against that key, and the
-   > save fails if the backend doesn't have it yet. Set the env var, (re)deploy, confirm the
-   > backend is reachable, then come back and save the URL.
+4. For slash commands, set **Interactions Endpoint URL** to
+   `https://<your-domain>/discord/interactions` (the same public origin the SPA and API use).
+   Discord verifies it with a signed PING/PONG, so `DISCORD_PUBLIC_KEY`
+   ([step 3](#3-environment-variables)) must already be live on the backend first — set the env
+   var, deploy, confirm reachability, *then* save the URL.
 
 ### 2. Bot permissions and invite
 
@@ -49,38 +42,32 @@ In the [Discord Developer Portal](https://discord.com/developers/applications):
 | `CREATE_PUBLIC_THREADS` | Creating per-PR/issue threads |
 | `MANAGE_THREADS` | Archiving threads on PR merge/close |
 
-Build an invite URL with the **OAuth2 URL Generator** (OAuth2 → URL Generator):
-- Scopes: `bot` (and `applications.commands` if you want slash commands)
-- Bot permissions: the three above
-
-Open the generated URL and invite the bot to your server before setting any env vars — the
-bot must already be a member of the guild that owns `DISCORD_CHANNEL_ID`.
+Build an invite URL with the **OAuth2 URL Generator** (scopes: `bot`, plus
+`applications.commands` for slash commands; bot permissions: the three above), then invite the
+bot to your server before setting any env vars — it must already be a member of the guild that
+owns `DISCORD_CHANNEL_ID`.
 
 ### 3. Environment variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `DISCORD_BOT_TOKEN` | For any notifications | Bot token from the Developer Portal. Drives flat-channel embeds, thread routing, slash commands, and the Foreman chat mirror. |
-| `DISCORD_CHANNEL_ID` | With `DISCORD_BOT_TOKEN` | ID of the text channel where flat embeds are posted and new threads are created. Enable Developer Mode in Discord settings, then right-click the channel → *Copy Channel ID*. |
-| `DISCORD_APPLICATION_ID` | For slash commands | Application ID, used to build the followup-message URL when editing a deferred slash command reply. |
-| `DISCORD_PUBLIC_KEY` | For slash commands | Ed25519 public key (hex) used to verify `POST /discord/interactions` requests. Without it, the endpoint refuses all requests with 401. |
-| `DISCORD_ALLOWED_ROLE_IDS` | No | Comma-separated Discord role IDs allowed to run `/ps` commands. Empty/unset = everyone allowed. DM interactions are always denied when this is set (no role info is available outside a guild). |
-| `DISCORD_PIONEER_GUILD_SLUG` | For slash commands | The Pioneer Square guild (workspace) slug that `/ps` commands operate against. Not a Discord ID — see [Terminology note](#terminology-note-guild-vs-guild) below. |
-| `DISCORD_OPERATOR_ROLE_NAME` | No | Discord role name (in addition to the Manage Channels permission) allowed to run `/join-channel` and `/leave-channel`. Default `Pioneer Square Operator`. |
-| `DISCORD_DEV_GUILD_ID` | No (registration only) | Discord server ID. When set, `scripts/register_discord_commands.py` registers commands to that one server (near-instant) instead of globally (up to 1 hour to propagate). |
-| `DISCORD_STREAM_TASKS` | No | When truthy (`1`/`true`/`yes`/`on`), mirror each working task's live terminal output into a dedicated per-task Discord thread as silent, low-priority messages. Off by default (high-volume). Requires `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` — the feed always routes into a thread, never a flat channel post. |
-| `DISCORD_PR_DEBOUNCE_SECONDS` | No | Seconds to buffer `check_run`/`check_suite` completions for the same PR before flushing them as one combined, silent Discord message. Default `15`. |
+| `DISCORD_BOT_TOKEN` | For any notifications | Bot token from the Developer Portal; backs embeds, thread routing, slash commands, and the Foreman chat mirror. |
+| `DISCORD_CHANNEL_ID` | With `DISCORD_BOT_TOKEN` | Text channel where flat embeds post and threads are created (Developer Mode → right-click channel → *Copy Channel ID*). |
+| `DISCORD_APPLICATION_ID` | For slash commands | Used to build the followup-message URL when editing a deferred slash-command reply. |
+| `DISCORD_PUBLIC_KEY` | For slash commands | Ed25519 public key (hex) verifying `POST /discord/interactions` requests; missing it → all requests refused with 401. |
+| `DISCORD_ALLOWED_ROLE_IDS` | No | Comma-separated role IDs allowed to run `/ps` commands. Empty/unset = everyone. DMs are always denied once this is set (no role info outside a guild). |
+| `DISCORD_PIONEER_GUILD_SLUG` | For slash commands | The Pioneer Square guild (workspace) slug `/ps` commands operate against — not a Discord ID (see terminology note below). |
+| `DISCORD_OPERATOR_ROLE_NAME` | No | Role name (besides Manage Channels) allowed to run `/join-channel`/`/leave-channel`. Default `Pioneer Square Operator`. |
+| `DISCORD_DEV_GUILD_ID` | No (registration only) | Scopes `scripts/register_discord_commands.py` registration to one server (near-instant) instead of globally (up to 1 hour). |
+| `DISCORD_STREAM_TASKS` | No | When truthy (`1`/`true`/`yes`/`on`), mirror each working task's live terminal output into a dedicated per-task Discord thread as silent, low-priority messages. Currently off by default (high-volume). Requires `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` — the feed always routes into a thread, never a flat channel post. |
+| `DISCORD_PR_DEBOUNCE_SECONDS` | No | Seconds to buffer `check_run`/`check_suite` completions for the same PR before flushing them as one combined, silent Discord message. Currently defaults to `15`. |
 
 `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` must be set **together** — the bot needs both
 the credential and a destination channel to create threads.
 
-#### Terminology note: guild vs. guild
-
-Discord calls a server a "guild." Pioneer Square independently calls a workspace a "guild"
-(the 6-character ID used in URLs and `pioneer-worker.toml`). `DISCORD_PIONEER_GUILD_SLUG` is
-a **Pioneer Square** guild slug, not a Discord server ID — it tells the `/ps` command handler
-which Pioneer Square workspace to query and mutate. The Discord server your bot lives in is
-identified only implicitly, via `DISCORD_CHANNEL_ID`.
+**Terminology note:** Discord calls a server a "guild." Pioneer Square independently calls a
+workspace a "guild" (the 6-character ID used in URLs and `pioneer-worker.toml`).
+`DISCORD_PIONEER_GUILD_SLUG` is the latter, not a Discord server ID.
 
 ### 4. Register slash commands (slash commands only)
 
@@ -91,48 +78,24 @@ whenever `scripts/register_discord_commands.py` changes:
 DISCORD_APPLICATION_ID=<id> DISCORD_BOT_TOKEN=<token> python scripts/register_discord_commands.py
 ```
 
-For faster iteration during development, scope registration to one server instead of waiting
-up to an hour for a global rollout:
+Add `DISCORD_DEV_GUILD_ID=<guild_id>` to the same command to scope registration to one server
+instead — near-instant, versus up to an hour to propagate globally — handy while iterating.
 
-```bash
-DISCORD_APPLICATION_ID=<id> DISCORD_BOT_TOKEN=<token> \
-    DISCORD_DEV_GUILD_ID=<guild_id> python scripts/register_discord_commands.py
-```
-
-### docker-compose
-
-`docker-compose.yml` already forwards all Discord variables to the `backend` service; set
-them in your `.env` (copy from `.env.example`):
-
-```dotenv
-# Bot-based flat-channel embeds and per-PR/issue thread notifications.
-# Both required together.
-DISCORD_BOT_TOKEN=MTxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-DISCORD_CHANNEL_ID=1234567890123456789
-
-# Slash commands & bidirectional control.
-DISCORD_APPLICATION_ID=1234567890123456789
-DISCORD_PUBLIC_KEY=<hex public key>
-DISCORD_ALLOWED_ROLE_IDS=1111111111111111,2222222222222222
-DISCORD_PIONEER_GUILD_SLUG=abc123
-```
-
-```bash
-docker compose up --build backend
-```
+**docker-compose:** `docker-compose.yml` already forwards all Discord variables above to the
+`backend` service — set them in your `.env` (copy from `.env.example`), then
+`docker compose up --build backend`.
 
 ## Feature reference
 
 ### Flat-channel notifications
 
 With `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` set, events that don't map to a per-PR/issue
-thread post colour-coded embeds directly to the configured channel via the bot. Delivery is
-fire-and-forget: notifications run as detached background tasks and never block the caller;
-HTTP failures are logged at WARNING and swallowed, never raised.
+thread post colour-coded embeds to the configured channel via the bot, fire-and-forget (never
+blocks the caller).
 
-Colour palette (sidebar colour of the embed):
+Colour palette (sidebar colour of the embed) as of this writing:
 
-| Event | Colour |
+| Event(s) | Colour |
 |---|---|
 | `task-complete`, `ci-pass` | green |
 | `task-failed`, `task-cancelled`, `ci-fail` | red |
@@ -143,115 +106,88 @@ Colour palette (sidebar colour of the embed):
 | `worker-offline` | orange |
 | anything else | blurple (default) |
 
-`task-failed` and `task-cancelled` have colours reserved but are not currently emitted by any
-call site — only the events listed below actually fire notifications today:
-
-- `pr-opened`, `pr-merged`, `pr-closed` — fired from the GitHub webhook handler.
-- `ci-pass`, `ci-fail` — fired from GitHub `check_run`/`check_suite` webhook events.
-- `task-complete` — fired when a worker reports a task finished.
+`task-failed` and `task-cancelled` have colours reserved but currently have no call site that
+emits them — only `pr-opened`/`pr-merged`/`pr-closed` (GitHub webhook handler),
+`ci-pass`/`ci-fail` (check_run/check_suite events), and `task-complete` (worker report) fire
+notifications today.
 
 **CI check debounce/combine** — `check_run`/`check_suite` completions for the same PR are
-buffered per PR and flushed as a single combined message (e.g. `✅ 3 checks passed: lint, test,
-build`) after `DISCORD_PR_DEBOUNCE_SECONDS` (default 15) of silence on that PR, instead of one
-Discord message per check — a CI matrix routinely completes several checks within seconds of
-each other. The combined message always carries Discord's `SUPPRESS_NOTIFICATIONS` flag so CI
-results don't trigger a push notification. Non-CI events (PR opened/merged/closed, reviews) are
-unaffected — they post immediately, at normal notification priority.
-
-`DISCORD_PR_DEBOUNCE_SECONDS` is a **fixed-start** window, not a sliding one: the timer arms on
-the first buffered check for a PR and is not reset by later checks arriving in the same window.
-A CI matrix with checks completing at t=0s, t=14s, and t=14.5s will flush at t=15s and catch all
-three, but one completing at t=16s misses the window and gets its own follow-up message instead
-of joining the summary. Set the value comfortably above the longest expected gap between checks
-in your CI matrix to avoid fragmenting a single CI run across two Discord messages.
+currently buffered and flushed as one combined, silent message after
+`DISCORD_PR_DEBOUNCE_SECONDS` (default 15s) of quiet, instead of one message per check; non-CI
+events post immediately. Currently a **fixed-start** window (arms on the first buffered check,
+not reset by later ones) — set it above the longest expected gap between checks, or a late one
+gets its own follow-up message instead of joining the summary.
 
 ### Per-PR/issue threads
 
 Add `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` to route PR/issue-related events into one
-Discord thread per `(issue_repo, issue_number)` pair instead of a flat channel.
-
-**Thread lifecycle:**
+Discord thread per `(issue_repo, issue_number)` pair instead of a flat channel. Lifecycle:
 
 1. **Lazy creation** — the first thread-aware event for a given PR/issue posts a starter
    message in `DISCORD_CHANNEL_ID`, then creates a public thread off that message named
    `#<number>: <title>` (truncated to 100 chars).
-2. **Persistence** — the mapping is written to the `discord_threads` table
-   (`issue_repo`, `issue_number`, `thread_id`), unique on `(issue_repo, issue_number)`, so a
-   backend restart reuses the existing thread instead of creating a duplicate.
+2. **Persistence** — the mapping is stored in `discord_thread_bindings`, keyed
+   `subject_type="issue"`, `subject_key="<issue_repo>#<issue_number>"`, unique on
+   `(subject_type, subject_key)`. This table is shared with the other thread-aware features
+   below via one lookup/create path, so a backend restart always reuses the existing thread.
 3. **Reuse** — every subsequent event for the same PR/issue (CI results, task-complete) is
    posted as an embed inside the existing thread.
 4. **Archive** — on `pr-merged` or `pr-closed`, a closing summary is posted and the thread is
    archived (`PATCH` with `archived: true`).
 
-**Fallback behaviour** — thread routing is attempted only when the event carries
-`issue_repo`/`issue_number`. When it doesn't, or when thread creation fails (missing channel,
-Discord API error, DB error), the event falls back to a flat embed posted to the configured
-channel via the bot.
-
-If `DISCORD_BOT_TOKEN` is not set, notifications are a silent no-op — nothing is sent and
-nothing is logged as an error.
+Thread routing only kicks in when the event carries `issue_repo`/`issue_number`; when it
+doesn't, or thread creation fails (missing channel, Discord API error, DB error), the event
+falls back to a flat embed in the configured channel.
 
 ### Slash commands & bidirectional control
 
 Adds `POST /discord/interactions`, a signed webhook endpoint Discord calls for every
 interaction (health-check pings and slash-command invocations).
 
-- **Signature verification** — every request must carry valid `X-Signature-Ed25519` and
-  `X-Signature-Timestamp` headers, verified against `DISCORD_PUBLIC_KEY` over the raw request
-  body. Missing/invalid signatures get a `401`. Requests are rejected outright if
-  `DISCORD_PUBLIC_KEY` isn't configured.
-- **PING** — Discord's endpoint health-check; answered immediately with `PONG`.
-- **Authorization** — checked against `DISCORD_ALLOWED_ROLE_IDS` before anything else runs.
-  No roles configured = everyone allowed. DMs are always denied once a role restriction is
-  configured, since Discord doesn't include member/role data on DM interactions.
-- **Deferred replies** — Discord requires a response within 3 seconds. The endpoint
-  immediately acknowledges with a deferred *ephemeral* (only visible to the invoking user)
-  response, then runs the actual command in a background task and edits the reply in place
-  once it finishes.
+- **Signature verification** — every request must carry valid `X-Signature-Ed25519` /
+  `X-Signature-Timestamp` headers, verified against `DISCORD_PUBLIC_KEY`; missing/invalid
+  signatures (or a missing key) get a `401`. Discord's health-check `PING` gets an immediate
+  `PONG`.
+- **Authorization** — checked against `DISCORD_ALLOWED_ROLE_IDS` first; no roles configured
+  means everyone is allowed. DMs are always denied once set (Discord omits member/role data on
+  DM interactions).
+- **Deferred replies** — Discord requires a response within 3 seconds, so the endpoint
+  acknowledges immediately with a deferred *ephemeral* reply, then runs the command in the
+  background and edits the reply in place once done.
 
-See [Slash command reference](#slash-command-reference) below for the full command list.
+See [Slash command reference](#slash-command-reference) for `/ps` and channel-routing commands;
+a couple more (account linking, worker management) are covered under
+[User identity linking](#user-identity-linking).
 
 ### Foreman chat mirror
 
 When `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` are set, every plain-text line the Foreman AI
-sends to a user (not tool-call traces) is mirrored into Discord via
-`notify_foreman_chat(guild_id, content)`.
-
-- One thread is created per `(guild_id, session_key)` pair, where `session_key` defaults to
-  the current UTC date (`YYYY-MM-DD`) — so a whole day's Foreman conversation for a given
-  Pioneer Square guild lands in one thread, named `Foreman session <date> (<guild_id>)`.
-- The mapping persists in the `discord_foreman_threads` table, unique on
-  `(guild_id, session_key)`.
-- Silent no-op if the bot token/channel aren't configured, or if the content is blank.
+sends to a user (not tool-call traces) is mirrored into Discord. If the line is scoped to a task
+whose PR/issue already has a Discord thread, it posts there; otherwise it posts to the guild's
+main channel — currently there's no separate daily/dated fallback thread. No-op if blank.
 
 ### Live task-stream mirroring
 
-Set `DISCORD_STREAM_TASKS` (plus `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID`) to
-mirror a worker task's **live terminal output** into Discord while it runs — a low-priority
-feed of what each agent is actually doing, without leaving the app.
+Set `DISCORD_STREAM_TASKS` (plus `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID`) to mirror a
+worker task's **live terminal output** into Discord while it runs. Currently off by default,
+since the volume is high.
 
-- **Per-task thread** — the streamed output for a task lands in its own thread (created lazily
-  off a starter message in the configured channel, named `⚙ <task-id>: <description>`). The
-  mapping persists in the `discord_task_threads` table, unique on `task_id`, so restarts reuse
-  the same thread. This is intentionally separate from the PR/issue thread: the stream is a
-  verbose working feed, created while the task runs (before any PR exists), whereas the PR
-  thread holds the tidy embed summary.
-- **What's mirrored** — only actual agent/Claude output (terminal-output frames at `info` or
-  `thinking` level). Worker lifecycle, auth, and Claude-runner framing lines are filtered out
-  as noise.
-- **Low priority** — every message is posted with Discord's `SUPPRESS_NOTIFICATIONS`
-  ("silent") flag and with mention parsing disabled, so the feed never pings anyone or fires a
-  push notification.
-- **Batched** — lines are buffered and flushed roughly every few seconds (or sooner once the
-  buffer fills), rather than one HTTP POST per line, to stay well under Discord's rate limits.
-  The buffer is drained and freed when the task reaches a terminal state.
-- **Off by default** — because the volume is high, the whole feature is opt-in via
-  `DISCORD_STREAM_TASKS`. Silent no-op when the flag is unset or the bot token is missing.
+- **Per-task thread** — created lazily off a starter message, currently named
+  `⚙ <task-id>: <description>`, persisted in `discord_thread_bindings`
+  (`subject_type="task_stream"`, keyed by task ID). Kept deliberately separate from the
+  PR/issue thread: this is the verbose working feed, while that one holds the tidy summary.
+- **What's mirrored** — only actual agent/Claude output (`info`/`thinking`-level frames); worker
+  lifecycle, auth, and runner framing lines are filtered out.
+- **Low priority, batched** — messages currently carry `SUPPRESS_NOTIFICATIONS` and disabled
+  mention parsing, and lines are flushed every few seconds (or sooner once buffered) rather than
+  one POST per line, to stay under Discord's rate limits.
 
 ## Slash command reference
 
-The `/ps` subcommands are scoped to the guild in `DISCORD_PIONEER_GUILD_SLUG`. Every reply is
-ephemeral. Requires a role in `DISCORD_ALLOWED_ROLE_IDS` (or no restriction configured).
+The `/ps` subcommands are scoped to the guild in `DISCORD_PIONEER_GUILD_SLUG`, require a role in
+`DISCORD_ALLOWED_ROLE_IDS` (or no restriction), and always reply ephemerally. Commands are
+defined in `scripts/register_discord_commands.py` and must be re-registered (step 4 above)
+whenever that file changes.
 
 | Command | Description | Notes |
 |---|---|---|
@@ -263,21 +199,14 @@ ephemeral. Requires a role in `DISCORD_ALLOWED_ROLE_IDS` (or no restriction conf
 | `/join-channel <channel> [guild]` | Wires a Discord channel to a Pioneer Square guild so its events post there | Requires **Manage Channels** or the `DISCORD_OPERATOR_ROLE_NAME` role. `guild` is optional if exactly one Pioneer Square guild is configured. Re-running on an already-wired channel updates the binding. |
 | `/leave-channel [channel]` | Removes a channel's Pioneer Square guild binding (defaults to the current channel) | Same permission check as `/join-channel`. Replies "No binding found" if the channel isn't wired. |
 
-Commands are defined in `scripts/register_discord_commands.py` and must be re-registered
-(see [Setup guide](#4-register-slash-commands-phase-3-only)) whenever that file changes.
-
 ### Per-channel guild routing (`/join-channel` / `/leave-channel`)
 
-By default, all Discord notifications go to the single channel in `DISCORD_CHANNEL_ID`. The
-`discord_channel_guilds` table lets you fan events for a specific Pioneer Square guild out to
-additional channels — e.g. one channel per team, each wired to its own guild:
-
-- `/join-channel channel:#my-team-updates guild:my-guild-slug` upserts a
-  `(discord_guild_id, discord_channel_id) → ps_guild_id` row.
-- `notify_event(...)` and `notify_foreman_chat(...)` resolve the destination channel by looking
-  up the event's Pioneer Square guild in `discord_channel_guilds` first, falling back to
-  `DISCORD_CHANNEL_ID` when no binding exists.
-- `/leave-channel` deletes the row; events for that guild then fall back to `DISCORD_CHANNEL_ID`.
+By default, all notifications go to the single channel in `DISCORD_CHANNEL_ID`. The
+`discord_channel_guilds` table lets you fan a specific Pioneer Square guild's events out to
+additional channels — e.g. one channel per team. `/join-channel channel:#my-team-updates
+guild:my-guild-slug` upserts a `(discord_guild_id, discord_channel_id) → ps_guild_id` row;
+`notify_event(...)`/`notify_foreman_chat(...)` look up the event's guild here first, falling
+back to `DISCORD_CHANNEL_ID`. `/leave-channel` deletes the row, restoring that fallback.
 
 ## User identity linking
 
@@ -290,8 +219,10 @@ notifications can @-mention the right person instead of printing a plain `@login
 | `discord_user_id` | Discord snowflake ID |
 | `created_at` / `updated_at` | Timestamps |
 
-There is no automated discovery and no in-Discord `/link-account` command — a user links
-their own account via the REST API:
+No automated discovery, and no in-Discord command populates this mapping directly — link via
+the REST API below. (A separate `/connect-account` command links a Discord identity to a
+Pioneer Square *account* for command authorization like `/worker-spawn`, via a different table,
+`discord_account_links` — unrelated to @-mentions.)
 
 | Endpoint | Auth | Behaviour |
 |---|---|---|
@@ -300,15 +231,14 @@ their own account via the REST API:
 | `PUT /api/discord-users/{github_login}` | Must be authenticated **as** `github_login` | Upsert `{"discord_user_id": "..."}`; `403` if you try to set someone else's mapping |
 | `DELETE /api/discord-users/{github_login}` | Must be authenticated **as** `github_login` | Remove your own mapping |
 
-To find your own Discord user ID: enable **Developer Mode** in Discord (User Settings →
-Advanced), then right-click your username anywhere → **Copy User ID**.
+To find your own Discord user ID: enable **Developer Mode** (User Settings → Advanced), then
+right-click your username → **Copy User ID**.
 
 **@-mention behaviour** — `mention_or_login(github_login)` is used wherever a GitHub actor is
-rendered in a notification (currently: PR-opened assignees). It:
-- Returns a real `<@discord_user_id>` mention when a mapping exists.
-- Falls back to a plain `@github_login` string when no mapping exists.
-- Returns `""` for an empty/missing login.
-- Never raises — a DB error during lookup degrades to the plain-text fallback.
+rendered in a notification (currently: PR-opened assignees). It returns a real
+`<@discord_user_id>` mention when a mapping exists, otherwise falls back to a plain
+`@github_login` string (or `""` for an empty login) — never raises, so a DB error during
+lookup just degrades to the plain-text fallback.
 
 ## Troubleshooting
 
@@ -322,4 +252,4 @@ rendered in a notification (currently: PR-opened assignees). It:
 | "You are not authorized to use Pioneer Square commands" | `DISCORD_ALLOWED_ROLE_IDS` is set and the invoking user has none of the listed roles. Note DMs are always denied once this restriction is configured. |
 | `/ps` commands reply "Pioneer guild `` not found" | `DISCORD_PIONEER_GUILD_SLUG` is unset or doesn't match an existing Pioneer Square guild slug. |
 | @-mentions show as plain `@login` instead of a real mention | No `discord_users` row for that GitHub login yet — the user needs to `PUT /api/discord-users/{their_login}` with their Discord user ID. |
-| Duplicate threads for the same PR/issue | Shouldn't happen — `discord_threads` has a unique index on `(issue_repo, issue_number)`. If seen, confirm the `add_discord_threads` Alembic migration has actually been applied. |
+| Duplicate threads for the same PR/issue | Shouldn't happen — `discord_thread_bindings` has a unique index on `(subject_type, subject_key)`. If seen, confirm all Discord-related Alembic migrations have actually been applied. |

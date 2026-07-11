@@ -3,6 +3,10 @@
 **Status:** Current architecture. The backend owns the Foreman loop; the optional
 standalone process is a thin LLM API proxy.
 
+For how the embedded Foreman splits parent-guild vs. per-task child turns, see
+[foreman-per-task-context.md](foreman-per-task-context.md) — that split is
+internal to the backend and orthogonal to the proxy boundary described here.
+
 ---
 
 ## Architecture
@@ -25,19 +29,21 @@ backend embedded Foreman
                                       Anthropic / Bedrock / OpenAI-compatible
 ```
 
-The proxy does not read the database, persist history, execute tools, route
-triggers, or broadcast to frontend/worker sockets. That keeps all product logic
-in the backend and lets operators run only the provider call across a
-network/firewall boundary or against a local endpoint such as Ollama.
+The proxy never reads the database, persists history, executes tools, routes
+triggers, or broadcasts to frontend/worker sockets, so operators can run just
+the provider call across a network/firewall boundary, or against a local
+endpoint such as Ollama.
 
-Periodic task-health polling is scheduled entirely by the backend
-(`backend/foreman/runner.py`'s `_poll_loop`) for every guild. Poll ticks call
-`ws_handlers._trigger_foreman()`, which always dispatches into the embedded
-runner; the runner delegates API calls to a connected proxy only when needed.
+Periodic task-health polling also runs entirely in the backend (`_poll_loop`
+in `backend/foreman/runner.py`), calling `ws_handlers._trigger_foreman()` on
+each tick; a connected proxy only ever handles the API call.
 
 ---
 
 ## Packages and files
+
+Files relevant to the proxy boundary; `backend/foreman/` also has unrelated
+modules (A2A, OIDC, URL parsing, constants) not shown here.
 
 ### Standalone proxy — `foreman-proxy/`
 
@@ -54,17 +60,14 @@ foreman-proxy/
 ### Backend Foreman — `backend/foreman/`
 
 ```
-backend/foreman/
-  runner.py          – Foreman conversation loop; uses proxy at the LLM boundary
-  proxy.py           – pending foreman-api-request registry
-  tools.py           – canonical backend-side tool execution
-  prompt.py          – system prompt and prompt builders
-  tools_schema.py    – Foreman tool JSON schema
-  message_utils.py   – Anthropic message/history helpers
-  llm.py             – provider/model selection and Anthropic/Bedrock client factory
+runner.py          – Foreman conversation loop; uses proxy at the LLM boundary
+proxy.py           – pending foreman-api-request registry
+tools.py           – canonical backend-side tool execution
+prompt.py          – system prompt and prompt builders
+tools_schema.py    – Foreman tool JSON schema
+message_utils.py   – Anthropic message/history helpers
+llm.py             – provider/model selection and Anthropic/Bedrock client factory
 ```
-
-Shared Foreman helpers live in the backend Foreman package with the runner that owns them.
 
 ---
 
@@ -87,8 +90,8 @@ Shared Foreman helpers live in the backend Foreman package with the runner that 
 | `foreman-disconnect` | `{ guildId? }` | Graceful shutdown notice |
 
 The `response` payload is Anthropic Messages shaped even when the proxy calls an
-OpenAI-compatible endpoint. This lets the backend keep one message/history/tool
-pipeline.
+OpenAI-compatible endpoint, so the backend can keep one message/history/tool
+pipeline regardless of provider.
 
 ---
 
@@ -108,8 +111,8 @@ base_url = "http://localhost:11434/v1"
 api_key = "ollama"                  # optional for local unauthenticated servers
 ```
 
-`[claude]` is still accepted as a backward-compatible alias for `[llm]`, but new
-configs should use `[llm]`.
+`[claude]` is accepted as a backward-compatible alias for `[llm]`; new configs
+should use `[llm]`.
 
 **Environment variables:**
 
@@ -139,30 +142,21 @@ pioneer foreman [--config PATH] [--backend-url URL] [--guild-id ID]
 
 ## Design decisions
 
-### Backend-owned Foreman loop
+**Backend-owned loop.** No message crosses the process boundary to trigger a
+run — `ws_handlers._trigger_foreman()` always spawns the embedded
+`backend.foreman.runner.run_foreman_ai()` path, and a connected proxy is only
+ever asked to execute a single LLM API call. Accordingly, the standalone
+process holds no REST client, JWT helper, tool executor, message-history
+loader, task locks, or child-context supervisor of its own.
 
-`foreman-trigger` was removed. Triggers no longer cross the process boundary.
-`ws_handlers._trigger_foreman()` always spawns the embedded
-`backend.foreman.runner.run_foreman_ai()` path.
+**Provider normalization.** Request/response translation for each provider —
+the Anthropic SDK client factory/call and the OpenAI-compatible
+`POST /chat/completions` translation — lives in `backend/foreman/llm.py`,
+shared by the embedded foreman and this proxy (issue #826). The proxy's config
+only picks the client/credentials; it forwards `llm.py`'s already
+Anthropic-shaped response back to the backend. Anthropic, Bedrock, and
+OpenAI-compatible endpoints are the providers supported today.
 
-### API proxy only
-
-The standalone process no longer has a REST client, JWT helper, tool executor,
-message-history loader, task locks, or child-context supervisor. It executes one
-provider call per `foreman-api-request`.
-
-### Provider normalization
-
-All provider request/response translation — the Anthropic SDK client factory
-and call, and OpenAI-compatible `POST /chat/completions` translation — lives in
-`backend/foreman/llm.py`, shared by the embedded foreman and this proxy (issue
-#826). The proxy holds no provider-specific logic of its own: it only decides
-*which machine* makes the call (its own config selects the client/credentials)
-and forwards the shared module's already Anthropic-shaped response back to the
-backend.
-
-### Single-proxy enforcement
-
-The backend tracks one active external proxy per guild. A second `join` evicts
-the first via `foreman-evicted`. Any pending API requests owned by a disconnecting
-proxy socket fail immediately.
+**Single-proxy enforcement.** The backend tracks one active external proxy per
+guild; a second `join` evicts the first via `foreman-evicted`, and any pending
+requests owned by a disconnecting proxy socket fail immediately.

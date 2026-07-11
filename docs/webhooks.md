@@ -17,7 +17,7 @@ _build_chat_line()        ──→  DB persist + WS broadcast  [filtered from c
 
 Two parallel paths are created for each actionable event:
 
-1. **Foreman summary** (`_build_foreman_summary`) — a structured message fed directly to the Foreman AI via `run_foreman_ai()`. This contains event-specific guidance (e.g. "PR merged — call `finalize_task`") and is part of the AI's internal reasoning context.
+1. **Foreman summary** (`_build_foreman_summary`) — a structured message fed to the Foreman AI via `run_foreman_ai()`. It contains event-specific guidance (e.g. "PR merged — call `finalize_task`") and is part of the AI's internal reasoning context.
 
 2. **Chat line** (`_build_chat_line`) — a human-readable `[github-event]` line stored in the `messages` table and broadcast as `type: "chat"` with `from: "github"`.
 
@@ -36,9 +36,9 @@ Only events that pass `_should_dispatch_to_foreman()` wake the Foreman AI:
 
 | Event | Condition |
 |-------|-----------|
-| `pull_request` | Matching task found; skip bot senders unless CI-related |
-| `pull_request_review` | Review submitted with `changes_requested` or `approved` |
-| `check_run` / `check_suite` | `completed` conclusion (failure, success, etc.) |
-| `status` | Terminal state (failure, error, success) |
+| `pull_request` | Matching task found; bot senders skipped unless CI-related |
+| `pull_request_review` | Matching task found |
+| `check_run` / `check_suite` | Matching task found; `completed` status with conclusion other than `neutral`/`skipped` |
+| `status` | Matching task found |
 
 Pending, neutral, or skipped check states are silently ignored.
