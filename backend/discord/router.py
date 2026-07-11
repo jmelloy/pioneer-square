@@ -50,9 +50,9 @@ async def _lookup_binding(thread_id: str) -> tuple[str, str] | None:
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
-                select(
-                    DiscordThreadBinding.subject_type, DiscordThreadBinding.subject_key
-                ).where(col(DiscordThreadBinding.thread_id) == thread_id)
+                select(DiscordThreadBinding.subject_type, DiscordThreadBinding.subject_key).where(
+                    col(DiscordThreadBinding.thread_id) == thread_id
+                )
             )
             return result.first()
     except Exception:

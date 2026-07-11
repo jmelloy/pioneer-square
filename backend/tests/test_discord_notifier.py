@@ -1442,9 +1442,7 @@ async def test_ensure_task_thread_reuses_existing():
 async def test_ensure_task_thread_creates_and_names_from_description():
     """_ensure_task_thread creates a thread named from the task description when absent."""
     with (
-        patch.object(
-            discord_notifier, "_lookup_thread", AsyncMock(side_effect=[None, THREAD_ID])
-        ),
+        patch.object(discord_notifier, "_lookup_thread", AsyncMock(side_effect=[None, THREAD_ID])),
         patch.object(
             discord_notifier, "_lookup_task_description", AsyncMock(return_value="Fix the bug")
         ),
