@@ -17,7 +17,7 @@ SQLite/Alembic schema, WebSocket handlers, and Foreman logic under `backend/fore
 `frontend/` is a Vue 3 + Pinia + Vite app; source lives in `frontend/src/`, static files in
 `frontend/public/`, and end-to-end tests in `frontend/tests/e2e/`. `worker/` contains the
 standalone Python worker package in `worker/pioneer_worker/` and its tests in `worker/tests/`.
-The opt-in standalone foreman lives in `foreman/`. `cli/` holds the unified `pioneer` launcher
+The opt-in standalone foreman lives in `foreman-proxy/`. `cli/` holds the unified `pioneer` launcher
 (`cli/pioneer_cli/`) and the single `cli/pyproject.toml` that installs and serves all three
 runtimes — there are no longer separate per-runtime `pyproject.toml` files. Shared operational docs
 are in `docs/`, prompt text in `prompts/`, and helper scripts in `scripts/`.
@@ -35,7 +35,7 @@ uv venv && source .venv/bin/activate
 uv pip install -e "cli[test]"      # one install serves all modes
 ```
 
-The launcher keeps the existing source trees in place (`backend/`, `foreman/`, `worker/`) and puts
+The launcher keeps the existing source trees in place (`backend/`, `foreman-proxy/`, `worker/`) and puts
 the right directory on `sys.path` for the selected mode (resolving the repo root from `cli/`'s
 parent, overridable via `PIONEER_ROOT`). It does not move source or rewrite imports.
 
@@ -69,10 +69,10 @@ messages, calls the configured provider (Anthropic, Bedrock, or an OpenAI-compat
 such as Ollama), and returns `foreman-api-response`.
 
 ```bash
-cp foreman/pioneer-foreman.toml.example foreman/pioneer-foreman.toml
+cp foreman-proxy/pioneer-foreman.toml.example foreman-proxy/pioneer-foreman.toml
 # Edit: backend_url, guild_id, [llm] provider/model/base_url/api_key
-pioneer foreman --config foreman/pioneer-foreman.toml
-pioneer foreman --config foreman/pioneer-foreman.toml --log-level DEBUG   # verbose
+pioneer foreman --config foreman-proxy/pioneer-foreman.toml
+pioneer foreman --config foreman-proxy/pioneer-foreman.toml --log-level DEBUG   # verbose
 
 # Or via environment variables (no config file needed):
 PIONEER_BACKEND_URL=ws://localhost:8000 \
@@ -210,7 +210,7 @@ foreman is triggered by:
 3. `task-followup-done` WS messages
 4. `needs-input` worker escalations
 
-**Standalone Foreman API proxy**: `foreman/pioneer_foreman/` (run via `pioneer foreman`) is an
+**Standalone Foreman API proxy**: `foreman-proxy/pioneer_foreman/` (run via `pioneer foreman`) is an
 opt-in external LLM API proxy. It connects to the backend WS with `agentType="foreman"` and
 `external=true`; the backend still runs the embedded Foreman loop and sends only
 `foreman-api-request` calls to the proxy. See the `foreman` build target in the root

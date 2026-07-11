@@ -39,10 +39,10 @@ runner; the runner delegates API calls to a connected proxy only when needed.
 
 ## Packages and files
 
-### Standalone proxy — `foreman/`
+### Standalone proxy — `foreman-proxy/`
 
 ```
-foreman/
+foreman-proxy/
   pioneer_foreman/
     cli.py           – argument parser + entry point
     config.py        – provider/model/base-url config from TOML/env/CLI

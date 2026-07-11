@@ -7,7 +7,7 @@ Usage::
     pioneer worker  [...worker args...]
 
 Each subcommand resolves the repository root (so the sibling ``backend/``,
-``foreman/`` and ``worker/`` source trees can be imported), wires up
+``foreman-proxy/`` and ``worker/`` source trees can be imported), wires up
 ``sys.path`` for that mode, and delegates to the runtime's existing entry
 point. The repo root is ``cli/``'s parent, overridable with ``PIONEER_ROOT``
 (set in the Docker images).
@@ -22,7 +22,7 @@ from pathlib import Path
 
 
 def _resolve_root() -> Path:
-    """Return the repository root that holds backend/, foreman/, worker/, cli/."""
+    """Return the repository root that holds backend/, foreman-proxy/, worker/, cli/."""
     env = os.environ.get("PIONEER_ROOT")
     if env:
         return Path(env).resolve()
@@ -95,9 +95,9 @@ def _run_worker(argv: list[str]) -> int:
 def _run_foreman(argv: list[str]) -> int:
     """Launch the standalone Foreman API proxy (delegates to pioneer_foreman.cli.main)."""
     root = _resolve_root()
-    # foreman/ holds the pioneer_foreman package; root makes ``backend.foreman.llm``
+    # foreman-proxy/ holds the pioneer_foreman package; root makes ``backend.foreman.llm``
     # importable from source without importing the backend runtime.
-    _prepend_path(root / "foreman")
+    _prepend_path(root / "foreman-proxy")
     _prepend_path(root)
     from pioneer_foreman.cli import main as foreman_main  # noqa: PLC0415
 
