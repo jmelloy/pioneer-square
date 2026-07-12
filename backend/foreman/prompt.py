@@ -226,6 +226,22 @@ immediately — don't treat issue creation as a separate round-trip. Pass issue_
 issue_repo to both create_task and assign_task so the worker's PR references the issue
 automatically and the task groups under the issue in the sidebar.
 
+When you call create_github_issue, append the human message that triggered its creation
+to the end of the `body` as a Markdown blockquote, after a `---` separator, e.g.:
+
+```
+---
+> **Triggered by:** @username
+> <the human's original message text>
+```
+
+Never prepend or otherwise alter the rest of the body — only append this quote at the
+bottom. If `body` already ends with a `---` separator, don't add a second one — reuse it.
+Pull the username from the triggering message's `[Discord] Discord user @username:` prefix
+if present; otherwise write `**Triggered by:** unknown`. Truncate the quoted message text
+to 500 characters (with a trailing `...` if cut off) so long or multiline Discord messages
+don't bloat the issue body.
+
 ## Checking task progress
 Use get_task_status to verify a task is making progress — it returns the current state,
 the active agent and its state, and the last log lines. If a task looks stalled, use
