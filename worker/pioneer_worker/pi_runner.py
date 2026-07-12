@@ -105,6 +105,7 @@ async def run_pi_auto(
     pi_path: str = "pi",
     model: str | None = None,
     provider: str | None = None,
+    resume_session_id: str | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run pi on *description* in *cwd*.
 
@@ -115,6 +116,12 @@ async def run_pi_auto(
     ``session`` event); the value is extracted and returned so callers can
     resume or reference the session.
 
+    If *resume_session_id* is given, passes ``--session <id>`` so pi continues
+    the previous session with full context. Pi exits non-zero when the session
+    no longer exists on this machine (e.g. a different worker ran the prior
+    turn); in that case this falls back to a fresh session silently and
+    retries once.
+
     If *on_usage* is provided it is called with usage-record dicts following
     the same shape used by claude_runner:
       - ``{"kind": "api_call", "model": ..., "input_tokens": ..., ...}`` for
@@ -122,7 +129,52 @@ async def run_pi_auto(
       - ``{"kind": "result", "model": ..., "cost_usd": ..., ...}`` for the
         final summary emitted in ``agent_end``.
     """
-    cmd = [pi_path, "--mode", "rpc"]
+    success, stop_reason, last_text, session_id = await _run_pi_once(
+        description,
+        cwd,
+        emit=emit,
+        on_usage=on_usage,
+        pi_path=pi_path,
+        model=model,
+        provider=provider,
+        resume_session_id=resume_session_id,
+    )
+    if resume_session_id and not success:
+        logger.warning(
+            "pi resume of session %s failed (stop_reason=%s) — falling back to a fresh session",
+            resume_session_id,
+            stop_reason,
+        )
+        await emit("[pi] Resume failed — starting a fresh session.")
+        success, stop_reason, last_text, session_id = await _run_pi_once(
+            description,
+            cwd,
+            emit=emit,
+            on_usage=on_usage,
+            pi_path=pi_path,
+            model=model,
+            provider=provider,
+            resume_session_id=None,
+        )
+    return success, stop_reason, last_text, session_id
+
+
+async def _run_pi_once(
+    description: str,
+    cwd: str,
+    *,
+    emit: EmitFn,
+    on_usage: UsageFn | None,
+    pi_path: str,
+    model: str | None,
+    provider: str | None,
+    resume_session_id: str | None,
+) -> tuple[bool, str, str, str | None]:
+    """Single pi invocation. See run_pi_auto for the retrying wrapper."""
+    cmd = [pi_path]
+    if resume_session_id:
+        cmd += ["--session", resume_session_id]
+    cmd += ["--mode", "rpc"]
     if provider:
         cmd += ["--provider", provider]
     if model:
@@ -136,7 +188,7 @@ async def run_pi_auto(
     stop_reason = "no_events"
     event_count = 0
     agent_ended_ok = False
-    session_id: str | None = None
+    session_id: str | None = resume_session_id
     proc: asyncio.subprocess.Process | None = None
     stderr_task: asyncio.Task[None] | None = None
     try:

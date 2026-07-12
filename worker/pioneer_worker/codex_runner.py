@@ -82,8 +82,9 @@ async def run_codex_auto(
     codex_args: list[str] | None = None,
     openai_api_key: str | None = None,
     model: str | None = None,
-) -> tuple[bool, str, str]:
-    """Run codex on *description* in *cwd*. Returns (success, stop_reason, last_text).
+    resume_session_id: str | None = None,
+) -> tuple[bool, str, str, str | None]:
+    """Run codex on *description* in *cwd*. Returns (success, stop_reason, last_text, session_id).
 
     *openai_api_key* is injected as OPENAI_API_KEY into the subprocess environment
     when provided, overriding whatever is in the current process env. This lets
@@ -91,7 +92,55 @@ async def run_codex_auto(
     import time.
 
     If *model* is given, passes ``--model <model>`` to select a specific model.
+
+    If *resume_session_id* is given, runs ``codex exec resume <id>`` so codex
+    continues the previous thread with full context. Codex exits non-zero when
+    the session no longer exists on this machine (e.g. a different worker ran
+    the prior turn); in that case this falls back to a fresh session silently
+    and retries once.
     """
+    success, stop_reason, last_text, session_id = await _run_codex_once(
+        description,
+        cwd,
+        emit=emit,
+        codex_path=codex_path,
+        codex_args=codex_args,
+        openai_api_key=openai_api_key,
+        model=model,
+        resume_session_id=resume_session_id,
+    )
+    if resume_session_id and not success:
+        logger.warning(
+            "codex resume of session %s failed (stop_reason=%s) — falling back to a fresh session",
+            resume_session_id,
+            stop_reason,
+        )
+        await emit("[codex] Resume failed — starting a fresh session.")
+        success, stop_reason, last_text, session_id = await _run_codex_once(
+            description,
+            cwd,
+            emit=emit,
+            codex_path=codex_path,
+            codex_args=codex_args,
+            openai_api_key=openai_api_key,
+            model=model,
+            resume_session_id=None,
+        )
+    return success, stop_reason, last_text, session_id
+
+
+async def _run_codex_once(
+    description: str,
+    cwd: str,
+    *,
+    emit: EmitFn,
+    codex_path: str,
+    codex_args: list[str] | None,
+    openai_api_key: str | None,
+    model: str | None,
+    resume_session_id: str | None,
+) -> tuple[bool, str, str, str | None]:
+    """Single codex invocation. See run_codex_auto for the retrying wrapper."""
     last_message_file = tempfile.NamedTemporaryFile(
         prefix="pioneer-codex-last-", suffix=".txt", delete=False
     )
@@ -100,9 +149,10 @@ async def run_codex_auto(
     cmd = [
         codex_path,
         "exec",
-        "--json",
         "-C",
         cwd,
+        *(["resume", resume_session_id] if resume_session_id else []),
+        "--json",
         "--output-last-message",
         last_message_path,
         *(["--model", model] if model and "--model" not in (codex_args or []) else []),
@@ -115,6 +165,7 @@ async def run_codex_auto(
     last_text = ""
     stop_reason = "no_events"
     event_count = 0
+    session_id = resume_session_id
     master_fd: int | None = None
     slave_fd: int | None = None
     try:
@@ -158,6 +209,11 @@ async def run_codex_auto(
                 await emit(line_str)
                 continue
             etype = event.get("type")
+            if etype == "thread.started":
+                tid = event.get("thread_id")
+                if tid:
+                    session_id = tid
+                    logger.info("codex[%d] thread_id=%s", proc.pid, session_id)
             if etype == "turn.completed":
                 stop_reason = "success"
             elif etype == "error" or (
@@ -180,15 +236,15 @@ async def run_codex_auto(
         captured_last = Path(last_message_path).read_text(encoding="utf-8").strip()
         if captured_last:
             last_text = captured_last
-        return exit_code == 0, stop_reason, last_text
+        return exit_code == 0, stop_reason, last_text, session_id
     except FileNotFoundError:
         logger.error("`codex` CLI not found on PATH")
         await emit("[codex] ✗ `codex` CLI not found on PATH")
-        return False, "no_events", last_text
+        return False, "no_events", last_text, session_id
     except Exception as exc:  # pragma: no cover
         logger.exception("codex subprocess crashed: %s", exc)
         await emit(f"[codex] ✗ {exc}")
-        return False, "error_during_execution", last_text
+        return False, "error_during_execution", last_text, session_id
     finally:
         for fd in (slave_fd, master_fd):
             if fd is not None:

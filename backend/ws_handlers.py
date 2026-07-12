@@ -857,10 +857,17 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
     pr_url = data.get("prUrl", "")
     last_text = data.get("lastText", "")
     stop_reason = data.get("stopReason", "success")
+    session_id = data.get("sessionId") or None
     if task_id:
-        # Persist pr_url regardless of current state — the prior task-update may
-        # have already moved the task to awaiting-review, so the state guard below
-        # would be a no-op, but pr_url still needs to be written.
+        # Persist pr_url and session_id regardless of current state — the prior
+        # task-update may have already moved the task to awaiting-review, so
+        # the state guard below would be a no-op, but these still need writing.
+        if session_id:
+            await ctx.db.exec(
+                update(Task)
+                .where(col(Task.id) == task_id)
+                .values(claude_session_id=session_id)
+            )
         if pr_url:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url)
             await ctx.db.exec(
@@ -964,7 +971,14 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     worker_id_msg = data.get("workerId", "")
     stop_reason = data.get("stopReason", "success")
     last_text_fud = data.get("lastText", "")
+    session_id_fud = data.get("sessionId") or None
     if task_id:
+        if session_id_fud:
+            await ctx.db.exec(
+                update(Task)
+                .where(col(Task.id) == task_id)
+                .values(claude_session_id=session_id_fud)
+            )
         pr_url_fud = data.get("prUrl", "")
         pr_update: dict = {}
         if pr_url_fud:

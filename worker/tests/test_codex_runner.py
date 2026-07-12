@@ -82,7 +82,7 @@ print(json.dumps({{"type": "turn.completed", "usage": {{}}}}), flush=True)
     async def emit(line: str, detail: dict | None = None) -> None:
         emitted.append(line)
 
-    success, stop_reason, last_text = await run_codex_auto(
+    success, stop_reason, last_text, session_id = await run_codex_auto(
         "do the work",
         str(tmp_path),
         emit=emit,
@@ -93,5 +93,6 @@ print(json.dumps({{"type": "turn.completed", "usage": {{}}}}), flush=True)
     assert success is True
     assert stop_reason == "success"
     assert last_text == "captured final"
+    assert session_id is None
     assert "finished" in emitted
     assert not any("Reading additional input from stdin" in line for line in emitted)
