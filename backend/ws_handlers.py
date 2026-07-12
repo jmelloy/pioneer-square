@@ -864,9 +864,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
         # the state guard below would be a no-op, but these still need writing.
         if session_id:
             await ctx.db.exec(
-                update(Task)
-                .where(col(Task.id) == task_id)
-                .values(claude_session_id=session_id)
+                update(Task).where(col(Task.id) == task_id).values(claude_session_id=session_id)
             )
         if pr_url:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url)
@@ -975,9 +973,7 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     if task_id:
         if session_id_fud:
             await ctx.db.exec(
-                update(Task)
-                .where(col(Task.id) == task_id)
-                .values(claude_session_id=session_id_fud)
+                update(Task).where(col(Task.id) == task_id).values(claude_session_id=session_id_fud)
             )
         pr_url_fud = data.get("prUrl", "")
         pr_update: dict = {}
