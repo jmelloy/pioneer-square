@@ -594,7 +594,12 @@ def _build_foreman_summary(
         body = (review.get("body") or "")[:400]
         detail = f"Review state: {state}." + (f"\nReview body:\n{body}" if body else "")
         if state == "changes_requested":
-            detail += "\nCall send_followup with the requested changes."
+            detail += (
+                "\nCall send_followup with the requested changes — but first check them "
+                "against the linked issue (source of truth for intent) and decline, "
+                "assertively and citing the issue number, anything that contradicts it. "
+                "Minor nits can still be accepted."
+            )
         elif state == "approved":
             detail += (
                 "\nReview is approved — wait for merge before finalizing, "
@@ -604,13 +609,20 @@ def _build_foreman_summary(
         comment = payload.get("comment") or {}
         path = comment.get("path", "")
         body = (comment.get("body") or "")[:400]
-        detail = f"Inline comment on `{path}`:\n{body}\nDecide whether send_followup is warranted."
+        detail = (
+            f"Inline comment on `{path}`:\n{body}\n"
+            "Decide whether send_followup is warranted. If so, check the comment against "
+            "the linked issue first and decline (assertively, citing the issue number) "
+            "anything that contradicts its stated intent; minor nits can still be accepted."
+        )
     elif event_type == "issue_comment" and action == "created":
         comment = payload.get("comment") or {}
         body = (comment.get("body") or "")[:400]
         detail = (
             f"PR comment:\n{body}\n"
-            "If this is a request for changes, send_followup; otherwise no action."
+            "If this is a request for changes, send_followup — but first check it against "
+            "the linked issue (source of truth for intent) and decline, assertively and "
+            "citing the issue number, anything that contradicts it; otherwise no action."
         )
     elif event_type in {"check_run", "check_suite"}:
         node = payload.get(event_type) or {}
