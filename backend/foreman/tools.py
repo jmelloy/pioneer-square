@@ -1741,6 +1741,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         col(Task.provider),
                         col(Task.issue_number),
                         col(Task.issue_repo),
+                        col(Task.claude_session_id),
                     ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
                 )
                 row = result.one_or_none()
@@ -1758,6 +1759,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                         task_provider,
                         task_issue_number,
                         task_issue_repo,
+                        task_session_id,
                     ) = row
                     target_worker_id = await _select_followup_worker(
                         db,
@@ -1911,6 +1913,14 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         deletedAt=None,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
+                                # Only resume the prior agent session when the follow-up
+                                # stays on the same worker — a different machine won't
+                                # have the session data on disk (see _select_followup_worker).
+                                followup_session_id = (
+                                    task_session_id
+                                    if target_worker_id == original_worker_id
+                                    else None
+                                )
                                 await broadcast(
                                     guild_id,
                                     TaskFollowupMsg(
@@ -1925,6 +1935,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                         instructions=instructions,
                                         issueNumber=task_issue_number,
                                         issueRepo=task_issue_repo,
+                                        sessionId=followup_session_id,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
                                 spawn(

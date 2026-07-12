@@ -168,6 +168,7 @@ class TaskCompleteMsg(_WS):
     prUrl: str | None = None
     lastText: str | None = None
     stopReason: str = "success"
+    sessionId: str | None = None
 
 
 class TaskFollowupMsg(_WS):
@@ -185,6 +186,9 @@ class TaskFollowupMsg(_WS):
     instructions: str
     issueNumber: int | None = None
     issueRepo: str | None = None
+    # Prior agent session ID, only set when this follow-up is dispatched back
+    # to the same worker that ran the task (see send_followup in foreman/tools.py).
+    sessionId: str | None = None
 
 
 class TaskFollowupDoneMsg(_WS):
@@ -196,6 +200,7 @@ class TaskFollowupDoneMsg(_WS):
     stopReason: str = "success"
     lastText: str | None = None
     prUrl: str | None = None
+    sessionId: str | None = None
 
 
 class TaskFinalizeMsg(_WS):

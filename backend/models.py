@@ -220,6 +220,10 @@ class Task(SQLModel, table=True):
     # "powerful". Derived from phase+tool at assign_task time. NULL on legacy
     # tasks created before this column existed.
     model_tier: str | None = None
+    # Coding agent session/conversation ID reported at task completion
+    # (Claude, codex, or pi). Lets send_followup resume the same session when
+    # redispatched to the original worker. NULL if the agent didn't report one.
+    claude_session_id: str | None = None
 
 
 class GithubToken(SQLModel, table=True):

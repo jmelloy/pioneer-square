@@ -1469,6 +1469,7 @@ class Worker:
                         "repos": msg.get("repos") or [],
                         "followup_instructions": instructions,
                         "followup_branch": msg.get("branch", ""),
+                        "session_id": msg.get("sessionId"),
                     }
                 )
 
@@ -2106,8 +2107,10 @@ class Worker:
         # finally so the timestamp reflects the most recent activity.
         self._register_worktrees(task_id, worktree_entries)
 
-        # Tracks the last claude session ID so redirects can --resume with full context
-        resume_session_id: str | None = None
+        # Tracks the last agent session ID so redirects and same-worker follow-ups
+        # can resume with full context. Seeded from the task's saved session_id
+        # when this is a follow-up dispatched back to the worker that ran it.
+        resume_session_id: str | None = task.get("session_id") if is_followup else None
 
         # Queue for redirect instructions; listener puts new instructions here after SIGTERM
         redirect_q: asyncio.Queue = asyncio.Queue()
@@ -2217,12 +2220,18 @@ class Worker:
                 if tool == "codex":
                     _codex_model = task.get("model") or None
                     logger.info(
-                        "Task %s: launching codex in %s (model=%s)",
+                        "Task %s: launching codex in %s (model=%s, resume=%s)",
                         task_id,
                         primary_wt,
                         _codex_model,
+                        resume_session_id,
                     )
-                    success, stop_reason, last_msg = await codex_runner.run_codex_auto(
+                    (
+                        success,
+                        stop_reason,
+                        last_msg,
+                        resume_session_id,
+                    ) = await codex_runner.run_codex_auto(
                         current_desc,
                         primary_wt,
                         emit=emit,
@@ -2230,19 +2239,26 @@ class Worker:
                         codex_args=self.cfg.codex_args,
                         openai_api_key=self.cfg.openai_api_key,
                         model=_codex_model,
+                        resume_session_id=resume_session_id,
                     )
                 elif tool == "pi":
                     _pi_model = task.get("model") or self.cfg.pi_model
                     _pi_provider = task.get("provider") or self.cfg.pi_provider
 
                     logger.info(
-                        "Task %s: launching pi in %s (model=%s provider=%s)",
+                        "Task %s: launching pi in %s (model=%s provider=%s resume=%s)",
                         task_id,
                         primary_wt,
                         _pi_model,
                         _pi_provider,
+                        resume_session_id,
                     )
-                    success, stop_reason, last_msg, _pi_session_id = await pi_runner.run_pi_auto(
+                    (
+                        success,
+                        stop_reason,
+                        last_msg,
+                        resume_session_id,
+                    ) = await pi_runner.run_pi_auto(
                         current_desc,
                         primary_wt,
                         emit=emit,
@@ -2250,8 +2266,8 @@ class Worker:
                         model=_pi_model,
                         provider=_pi_provider,
                         on_usage=_collect_usage,
+                        resume_session_id=resume_session_id,
                     )
-                    resume_session_id = _pi_session_id
                 else:
                     _claude_model = task.get("model") or None
                     logger.info(

@@ -315,6 +315,7 @@ def insert_task(
     issue_title: str | None = None,
     user_id: str | None = None,
     parent_task_id: str | None = None,
+    claude_session_id: str | None = None,
 ) -> None:
     """Insert a task row for a guild."""
     now = datetime.now(UTC)
@@ -348,6 +349,7 @@ def insert_task(
                 issue_title=issue_title,
                 user_id=user_id,
                 parent_task_id=parent_task_id,
+                claude_session_id=claude_session_id,
                 created_at=now,
             )
             .on_conflict_do_nothing(index_elements=["id"])
