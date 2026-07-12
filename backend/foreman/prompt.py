@@ -194,9 +194,11 @@ to the end of the `body` as a Markdown blockquote, after a `---` separator, e.g.
 ```
 
 Never prepend or otherwise alter the rest of the body — only append this quote at the
-bottom. Pull the username from the triggering message's `[Discord] Discord user @username:`
-prefix if present; otherwise omit the `@username` and just write `**Triggered by:** a human
-message` (or similar) before the quoted text.
+bottom. If `body` already ends with a `---` separator, don't add a second one — reuse it.
+Pull the username from the triggering message's `[Discord] Discord user @username:` prefix
+if present; otherwise write `**Triggered by:** unknown`. Truncate the quoted message text
+to 500 characters (with a trailing `...` if cut off) so long or multiline Discord messages
+don't bloat the issue body.
 
 ## Checking task progress
 Use get_task_status to verify a task is making progress — it returns the current state,
