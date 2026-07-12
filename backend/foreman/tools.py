@@ -2442,16 +2442,27 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             )
 
                     elif tu.name == "review_pr_internal":
+                        # Review action policy (mirrors the worker-driven `gh pr review` path):
+                        #   APPROVE           - functionally correct; issues are minor nits
+                        #                       (style, naming, formatting). Note nits inline.
+                        #   COMMENT           - moderate concerns (performance, clarity) that
+                        #                       don't block merging.
+                        #   REQUEST_CHANGES   - genuine bugs, security issues, or logic errors
+                        #                       only. Be specific and firm about what breaks and
+                        #                       why it must be fixed before merge. Never for
+                        #                       style preferences.
+                        # Tone: polite but firm. Never apologetic about calling out a real bug.
+                        # Never blocking a merge over style.
+                        #
+                        # An explicit `action` input overrides the tool's own judgement; when
+                        # omitted, the verdict comes from the diff analysis below and is biased
+                        # toward APPROVE per the policy above.
                         pr_url = inp["pr_url"]
-                        action = (inp.get("action") or "COMMENT").upper()
-                        if action not in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):
-                            action = "COMMENT"
-                        logger.info(
-                            "guild=%s review_pr_internal: pr_url=%s action=%s",
-                            guild_id,
-                            pr_url,
-                            action,
-                        )
+                        explicit_action = inp.get("action")
+                        if explicit_action:
+                            explicit_action = explicit_action.upper()
+                            if explicit_action not in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):
+                                explicit_action = None
                         pr_match = _PR_URL_RE.match(pr_url.rstrip("/"))
                         if not pr_match:
                             result_text = (
@@ -2497,19 +2508,34 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     review_model,
                                 ) = await resolve_foreman_client(guild_id, guild_cfg)
                                 review_prompt = (
-                                    "You are a thorough code reviewer. Review the following "
-                                    "GitHub pull request and provide structured feedback.\n\n"
+                                    "You are a thorough but fair code reviewer. Review the "
+                                    "following GitHub pull request and provide structured "
+                                    "feedback.\n\n"
                                     f"PR: {pr_title}\n"
                                     f"Base: {base_ref} ← Head: {head_ref}\n"
                                     f"Description: {pr_body_text[:1000]}\n\n"
                                     f"Diff (up to 40 000 chars):\n{diff_text[:40000]}\n\n"
                                     "Respond with a JSON object only (no markdown fences) "
                                     "with exactly these fields:\n"
-                                    '{"summary": "3-5 markdown bullet points (use - prefix)", '
+                                    '{"verdict": "APPROVE|REQUEST_CHANGES|COMMENT", '
+                                    '"summary": "3-5 markdown bullet points (use - prefix)", '
                                     '"comments": [{"path": "file.py", "line": 42, '
                                     '"side": "RIGHT", "body": "concise comment"}]}\n\n'
+                                    "Verdict policy — bias toward APPROVE:\n"
+                                    "- APPROVE: the code is functionally correct and any issues "
+                                    "are minor nits (style, naming, formatting). Note the nits as "
+                                    "inline comments but still approve.\n"
+                                    "- COMMENT: moderate concerns (performance, clarity) that "
+                                    "don't block merging.\n"
+                                    "- REQUEST_CHANGES: reserved for genuine bugs, security "
+                                    "issues, or logic errors that must be fixed before merge. "
+                                    "Never use this for style preferences alone.\n\n"
                                     "Rules:\n"
-                                    "- summary: 3-5 bullet points covering key findings\n"
+                                    "- summary: 3-5 bullet points covering key findings, written "
+                                    "in a polite, constructive tone. Be firm and specific when "
+                                    "flagging a real bug (explain what breaks and why it must be "
+                                    "fixed before merge) — never apologetic about it. Don't be "
+                                    "pedantic or block merging over style.\n"
                                     "- comments: 0-5 objects for the most important issues\n"
                                     "- line: line number in the NEW file version (RIGHT side)\n"
                                     "- Only comment on lines present in the diff\n"
@@ -2537,6 +2563,7 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                     exc_info=True,
                                 )
                                 review_json = {
+                                    "verdict": "COMMENT",
                                     "summary": (
                                         "Review could not be generated by the AI agent "
                                         f"({type(exc).__name__}: {exc})."
@@ -2556,6 +2583,26 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 for c in raw_comments
                                 if c.get("path") and c.get("line") and c.get("body")
                             ]
+
+                            recommended_verdict = str(
+                                review_json.get("verdict") or "COMMENT"
+                            ).upper()
+                            if recommended_verdict not in (
+                                "APPROVE",
+                                "REQUEST_CHANGES",
+                                "COMMENT",
+                            ):
+                                recommended_verdict = "COMMENT"
+                            action = explicit_action or recommended_verdict
+                            logger.info(
+                                "guild=%s review_pr_internal: pr_url=%s action=%s"
+                                " (explicit=%s recommended=%s)",
+                                guild_id,
+                                pr_url,
+                                action,
+                                bool(explicit_action),
+                                recommended_verdict,
+                            )
 
                             try:
                                 threads_resolved = await _supersede_prior_bot_reviews(

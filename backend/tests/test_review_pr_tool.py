@@ -511,6 +511,102 @@ class TestReviewPrInternal:
         parsed = json.loads(results[0]["content"])
         assert "could not resolve credentials from session" in parsed["summary"]
 
+    @pytest.mark.asyncio
+    async def test_verdict_from_analysis_biases_toward_approve(self, db_session):
+        """When no explicit action is passed, the tool submits whatever verdict
+        its own diff analysis recommends — see issue #899."""
+        insert_guild(db_session, "g-revint-approve")
+
+        gh_post_calls = []
+
+        def capture_gh_post(path, token, payload, method="POST"):
+            gh_post_calls.append(payload)
+            return {"id": 7}
+
+        async def fake_resolve(guild_id, guild_cfg):
+            return object(), "anthropic", "claude-sonnet-4-6"
+
+        async def fake_call_llm(guild_id, **kwargs):
+            review_text = json.dumps(
+                {
+                    "verdict": "APPROVE",
+                    "summary": "- Minor naming nit only, otherwise correct",
+                    "comments": [],
+                }
+            )
+            return SimpleNamespace(
+                response=SimpleNamespace(content=[SimpleNamespace(text=review_text)])
+            )
+
+        with (
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", return_value=self._pr_data()),
+            patch("foreman.tools._gh_api_diff", return_value="diff --git a b"),
+            patch("foreman.tools._gh_api_post", side_effect=capture_gh_post),
+            patch("foreman.runner._load_foreman_config", return_value={}),
+            patch("foreman.runner.resolve_foreman_client", side_effect=fake_resolve),
+            patch("foreman.runner._call_llm", side_effect=fake_call_llm),
+        ):
+            results = await exec_tools(
+                "g-revint-approve",
+                [_fake_tu("review_pr_internal", {"pr_url": "https://github.com/org/repo/pull/3"})],
+            )
+
+        assert results[0].get("is_error") is not True
+        assert gh_post_calls[0]["event"] == "APPROVE"
+        parsed = json.loads(results[0]["content"])
+        assert parsed["verdict"] == "APPROVE"
+
+    @pytest.mark.asyncio
+    async def test_explicit_action_overrides_recommended_verdict(self, db_session):
+        """An explicit `action` input takes precedence over the tool's own
+        analysis-derived recommendation."""
+        insert_guild(db_session, "g-revint-override")
+
+        gh_post_calls = []
+
+        def capture_gh_post(path, token, payload, method="POST"):
+            gh_post_calls.append(payload)
+            return {"id": 8}
+
+        async def fake_resolve(guild_id, guild_cfg):
+            return object(), "anthropic", "claude-sonnet-4-6"
+
+        async def fake_call_llm(guild_id, **kwargs):
+            review_text = json.dumps(
+                {"verdict": "APPROVE", "summary": "- Looks fine", "comments": []}
+            )
+            return SimpleNamespace(
+                response=SimpleNamespace(content=[SimpleNamespace(text=review_text)])
+            )
+
+        with (
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", return_value=self._pr_data()),
+            patch("foreman.tools._gh_api_diff", return_value="diff --git a b"),
+            patch("foreman.tools._gh_api_post", side_effect=capture_gh_post),
+            patch("foreman.runner._load_foreman_config", return_value={}),
+            patch("foreman.runner.resolve_foreman_client", side_effect=fake_resolve),
+            patch("foreman.runner._call_llm", side_effect=fake_call_llm),
+        ):
+            results = await exec_tools(
+                "g-revint-override",
+                [
+                    _fake_tu(
+                        "review_pr_internal",
+                        {
+                            "pr_url": "https://github.com/org/repo/pull/4",
+                            "action": "REQUEST_CHANGES",
+                        },
+                    )
+                ],
+            )
+
+        assert results[0].get("is_error") is not True
+        assert gh_post_calls[0]["event"] == "REQUEST_CHANGES"
+        parsed = json.loads(results[0]["content"])
+        assert parsed["verdict"] == "REQUEST_CHANGES"
+
 
 class TestReviewPrSupersedePriorReviews:
     """Integration tests: review_pr tool calls _supersede_prior_bot_reviews."""
