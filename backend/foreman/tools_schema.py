@@ -528,7 +528,9 @@ FOREMAN_TOOLS = [
             "Fetches the PR diff directly from the GitHub API, uses the Foreman AI to "
             "analyse it, then posts a GitHub PR review with a 3–5 bullet-point summary "
             "and up to 5 inline comments on specific lines. "
-            "Supports action values APPROVE, REQUEST_CHANGES, or COMMENT (default COMMENT). "
+            "Supports action values APPROVE, REQUEST_CHANGES, or COMMENT. If action is omitted, "
+            "the tool analyses the diff itself and picks a verdict biased toward APPROVE — see "
+            "the action parameter for the exact policy. "
             "Findings are posted as review comments on the original PR via the GitHub Reviews "
             "API, never as a new PR. "
             "Use this for a quick diff-only review when no worker is available, or when "
@@ -546,9 +548,14 @@ FOREMAN_TOOLS = [
                     "type": "string",
                     "enum": ["APPROVE", "REQUEST_CHANGES", "COMMENT"],
                     "description": (
-                        "Review verdict to submit to GitHub. "
-                        "APPROVE — looks good; REQUEST_CHANGES — must fix before merge; "
-                        "COMMENT — neutral feedback (default)."
+                        "Review verdict to submit to GitHub. Omit to let the tool decide from its "
+                        "own analysis of the diff — biased toward APPROVE. Policy: "
+                        "APPROVE — the code is functionally correct and any issues are minor nits "
+                        "(style, naming, formatting); note the nits as inline comments but approve. "
+                        "COMMENT — moderate concerns (performance, clarity) that don't block "
+                        "merging. REQUEST_CHANGES — reserved for genuine bugs, security issues, or "
+                        "logic errors that must be fixed before merge; never for style preferences. "
+                        "Only pass this explicitly to override the tool's own judgement."
                     ),
                 },
             },
