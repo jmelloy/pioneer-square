@@ -2162,16 +2162,16 @@ class Worker:
                         "Before acting on any reviewer comment above:\n"
                         f"1. Re-read {issue_ref} — it is the source of truth for this work's intent.\n"
                         "2. If a comment contradicts the issue's stated goal, do NOT implement it. "
-                        "Instead post a reply on the PR: \"Declining this suggestion — it contradicts "
+                        'Instead post a reply on the PR: "Declining this suggestion — it contradicts '
                         "the intent of issue #NNN which requires [quote the relevant part]. The "
-                        "current implementation is correct.\" Resolve/dismiss the review comment via "
+                        'current implementation is correct." Resolve/dismiss the review comment via '
                         "the GitHub API if it allows it.\n"
                         "3. A minor nit unrelated to intent (style, naming, whitespace) may be accepted "
                         "at your discretion, but you are not obligated to.\n"
                         "4. Never silently invert this feature's behaviour because a reviewer asked for "
                         "it without checking the issue first. Use assertive language in commit messages "
-                        "and PR replies (\"Keeping X as required by issue #NNN\"), not apologetic "
-                        "language (\"I've decided not to change this\").\n\n"
+                        'and PR replies ("Keeping X as required by issue #NNN"), not apologetic '
+                        'language ("I\'ve decided not to change this").\n\n'
                         "Make the requested changes, then commit and push:\n"
                         f'  git add -A && git commit -m "<concise commit message>"\n'
                         f"  git push origin {branch}\n"
