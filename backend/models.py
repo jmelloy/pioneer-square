@@ -311,8 +311,8 @@ class TaskLog(SQLModel, table=True):
     task_id: str | None = Field(default=None, foreign_key="tasks.id", index=True)
     timestamp: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     line: str
-    worker_id: str | None = None
-    agent_id: str | None = None
+    worker_id: str | None = Field(default=None, index=True)
+    agent_id: str | None = Field(default=None, index=True)
     data: str | None = None  # JSON: full tool input/output for click-to-expand
     # Semantic line type (worker/auth/claude/thinking/…) so the frontend can
     # style logs without parsing text prefixes. NULL = default agent output.
@@ -408,6 +408,10 @@ class ForemanTurn(SQLModel, table=True):
     request_id: int | None = Field(default=None, foreign_key="api_request_log.id")
     # Task this turn was produced for (mirrors api_request_log.task_id for convenience).
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
+
+    # History fetch filters on (guild_id, user_id) and orders by id DESC; the
+    # trailing id lets Postgres satisfy the ORDER BY via a backward index scan.
+    __table_args__ = (Index("ix_foreman_turns_guild_id_user_id_id", "guild_id", "user_id", "id"),)
 
 
 class GithubEvent(SQLModel, table=True):

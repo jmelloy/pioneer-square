@@ -80,7 +80,7 @@ WORKER_SWEEP_INTERVAL_SECONDS = float(os.environ.get("WORKER_SWEEP_INTERVAL_SECO
 async def reset_connection_state() -> None:
     # On every startup, no worker processes are connected yet.
     async with AsyncSessionLocal() as db:
-        await db.exec(update(Worker).values(state="offline"))
+        await db.exec(update(Worker).where(col(Worker.state) != "offline").values(state="offline"))
         await db.exec(
             update(Agent)
             .where(
