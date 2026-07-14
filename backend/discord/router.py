@@ -279,7 +279,13 @@ async def _route_inbound_message(message: dict) -> None:
 
     author = message.get("author") or {}
     ps_user_id, label = await _resolve_identity(author.get("id"), author.get("username"))
-    human_message = f"[Discord] {label}: {content}"
+    discord_line = f"[Discord] {label}: {content}"
+    # A resolved task_id means this message landed in a thread already bound to a task
+    # (an "issue" or "task_stream" subject binding) — tag it so the Foreman can route
+    # straight to redirect_task/send_followup without a lookup, mirroring [github-event].
+    human_message = (
+        f"[discord-thread-reply] task_id={task_id}\n{discord_line}" if task_id else discord_line
+    )
 
     try:
         await _persist_inbound_message(guild_slug, content, user_id=ps_user_id, task_id=task_id)

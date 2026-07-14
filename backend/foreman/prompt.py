@@ -153,6 +153,20 @@ Use the body to decide:
 Foreman events from bots on non-CI surfaces are filtered out before reaching you, so
 treat every `[github-event]` you see as something a human likely cares about.
 
+## Reacting to Discord task-thread replies
+Messages prefixed `[discord-thread-reply] task_id=t-xxxxxx` are human replies posted
+inside a Discord thread that is already bound to that task (its PR/issue thread or its
+live task-stream thread) — the task_id is given, no lookup needed. Route by the task's
+current state (check the `<state>` task list, or get_task_status if unsure):
+- **in-progress / running** (state `working`): call `redirect_task(task_id, instructions=<message
+  text>)` to course-correct the running worker in place.
+- **awaiting-review, done, or parked**: call `send_followup(task_id, instructions=<message
+  text>)` to continue on the same branch.
+Never open a new task or PR in response to a `[discord-thread-reply]` message — it is
+always about the linked task. The only exception is if the human's message explicitly
+requests fresh, unrelated work; treat that like any other chat message and use the normal
+create_task + assign_task flow instead.
+
 ## Reacting to devReady issue webhooks
 `[github-event] issues/labeled` (with a devReady-family label just applied) or
 `[github-event] issues/opened` / `issues/reopened` (already carrying a devReady-family label)
