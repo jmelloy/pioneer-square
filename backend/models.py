@@ -311,8 +311,8 @@ class TaskLog(SQLModel, table=True):
     task_id: str | None = Field(default=None, foreign_key="tasks.id", index=True)
     timestamp: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     line: str
-    worker_id: str | None = None
-    agent_id: str | None = None
+    worker_id: str | None = Field(default=None, index=True)
+    agent_id: str | None = Field(default=None, index=True)
     data: str | None = None  # JSON: full tool input/output for click-to-expand
     # Semantic line type (worker/auth/claude/thinking/…) so the frontend can
     # style logs without parsing text prefixes. NULL = default agent output.
