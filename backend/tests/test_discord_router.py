@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -120,3 +121,59 @@ async def test_resolve_session_unresolvable_channel_returns_none(client):
     session = await router.resolve_session("channel-unknown-1")
 
     assert session is None
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_tags_task_thread_reply(client):
+    """A reply in a thread bound to a task is tagged [discord-thread-reply] task_id=... (#906)."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router5")
+    insert_task(db_url, "g-router5", "t-router5", state="working")
+    _insert_binding(db_url, "task_stream", "t-router5", "thread-stream-5")
+
+    with (
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "please rename the variable",
+                "channel_id": "thread-stream-5",
+                "author": {"id": "d-user-1", "username": "alice"},
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    _args, kwargs = mock_trigger.await_args
+    assert kwargs["task_id"] == "t-router5"
+    human_message = _args[2]
+    assert human_message.startswith("[discord-thread-reply] task_id=t-router5\n")
+    assert "please rename the variable" in human_message
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_no_tag_for_general_chat(client):
+    """General chat with no task binding keeps the plain [Discord] prefix, untagged."""
+    _test_client, db_url = client
+    _insert_channel_guild(db_url, "channel-plain-2", "g-router6")
+
+    with (
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "what's the status?",
+                "channel_id": "channel-plain-2",
+                "author": {"id": "d-user-2", "username": "bob"},
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    _args, kwargs = mock_trigger.await_args
+    assert kwargs["task_id"] is None
+    human_message = _args[2]
+    assert not human_message.startswith("[discord-thread-reply]")
+    assert human_message.startswith("[Discord]")
