@@ -30,7 +30,15 @@ def upgrade() -> None:
     # task_logs: agent-scoped log fetch (agent_id = ?)
     op.create_index("ix_task_logs_agent_id", "task_logs", ["agent_id"])
 
+    # foreman_turns: history fetch filters on (guild_id, user_id) and orders by
+    # id DESC. Without this it seq-scans the whole table (~90k rows) then sorts;
+    # the trailing id column lets it use a backward index scan and skip the sort.
+    op.create_index(
+        "ix_foreman_turns_guild_id_user_id_id", "foreman_turns", ["guild_id", "user_id", "id"]
+    )
+
 
 def downgrade() -> None:
+    op.drop_index("ix_foreman_turns_guild_id_user_id_id", table_name="foreman_turns")
     op.drop_index("ix_task_logs_agent_id", table_name="task_logs")
     op.drop_index("ix_task_logs_worker_id", table_name="task_logs")
