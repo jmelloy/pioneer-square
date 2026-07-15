@@ -37,9 +37,11 @@ if _HAS_APPKIT:
             return self
 
         def willSleep_(self, notification) -> None:
+            logger.debug("NSWorkspaceWillSleepNotification received: %r", notification)
             self._monitor._handle_will_sleep()
 
         def didWake_(self, notification) -> None:
+            logger.debug("NSWorkspaceDidWakeNotification received: %r", notification)
             self._monitor._handle_did_wake()
 
 
@@ -77,14 +79,21 @@ class SystemSleepMonitor:
 
     def start(self) -> None:
         if not _HAS_APPKIT:
+            logger.info("Sleep monitor start() no-op: AppKit/pyobjc unavailable (non-macOS?)")
             return
+        if self._thread is not None:
+            logger.warning("Sleep monitor start() called but thread already running; ignoring")
+            return
+        logger.info("Starting sleep monitor (wake_grace_seconds=%s)", self._wake_grace_seconds)
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name="sleep-monitor", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         if self._thread is None:
+            logger.debug("Sleep monitor stop() no-op: not running")
             return
+        logger.info("Stopping sleep monitor")
         self._stop_event.set()
         if self._observer is not None:
             try:
@@ -94,10 +103,15 @@ class SystemSleepMonitor:
             except Exception:
                 logger.debug("removeObserver_ during stop() raised (ignored)", exc_info=True)
         self._thread.join(timeout=2.0)
+        if self._thread.is_alive():
+            logger.warning("Sleep monitor thread did not exit within 2s join timeout")
+        else:
+            logger.info("Sleep monitor stopped cleanly")
         self._thread = None
         self._observer = None
 
     def _run(self) -> None:
+        logger.debug("Sleep monitor run loop thread started")
         workspace = AppKit.NSWorkspace.sharedWorkspace()
         center = workspace.notificationCenter()
         observer = _SleepWakeObserver.alloc().initWithMonitor_(self)
@@ -108,35 +122,56 @@ class SystemSleepMonitor:
             observer, "didWake:", AppKit.NSWorkspaceDidWakeNotification, None
         )
         self._observer = observer
+        logger.info("Registered NSWorkspace sleep/wake observers; entering run loop")
         run_loop = AppKit.NSRunLoop.currentRunLoop()
         try:
             # Pump the run loop in short slices so the notification center can
             # deliver, while still checking _stop_event for clean shutdown.
             while not self._stop_event.is_set():
                 run_loop.runUntilDate_(AppKit.NSDate.dateWithTimeIntervalSinceNow_(1.0))
+        except Exception:
+            logger.exception("Sleep monitor run loop crashed")
+            raise
         finally:
+            logger.debug("Sleep monitor run loop exiting; removing observers")
             center.removeObserver_(observer)
 
     def _handle_will_sleep(self) -> None:
+        already = self.is_sleeping.is_set()
         self.is_sleeping.set()
-        logger.info("System sleep detected — pausing WS reconnects")
+        logger.info(
+            "System sleep detected — pausing WS reconnects (was_already_sleeping=%s, "
+            "on_sleep_callback=%s)",
+            already,
+            self.on_sleep is not None,
+        )
         if self.on_sleep is not None:
             try:
                 self.on_sleep()
+                logger.debug("on_sleep callback completed")
             except Exception:
                 logger.exception("on_sleep callback raised")
 
     def _handle_did_wake(self) -> None:
         # Debounce on a throwaway thread so the run loop thread stays free to
         # keep pumping notifications during the grace period.
+        logger.info(
+            "System wake detected — starting %ss grace period before resuming WS reconnects",
+            self._wake_grace_seconds,
+        )
         threading.Thread(target=self._finish_wake, name="sleep-monitor-wake", daemon=True).start()
 
     def _finish_wake(self) -> None:
+        logger.debug("Wake grace period started (%ss)", self._wake_grace_seconds)
         time.sleep(self._wake_grace_seconds)
         self.is_sleeping.clear()
-        logger.info("System wake detected — resuming WS reconnects")
+        logger.info(
+            "Wake grace period elapsed — resuming WS reconnects (on_wake_callback=%s)",
+            self.on_wake is not None,
+        )
         if self.on_wake is not None:
             try:
                 self.on_wake()
+                logger.debug("on_wake callback completed")
             except Exception:
                 logger.exception("on_wake callback raised")
