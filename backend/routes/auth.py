@@ -21,6 +21,7 @@ from auth_deps import (
 )
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from github_app_auth import get_app_installation_token
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from models import (
@@ -88,10 +89,19 @@ async def get_github_token(
     _principal: str = Depends(require_worker_or_member),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Return the stored OAuth token for the guild's linked GitHub user. Used by workers.
+    """Return a GitHub token for the guild, for workers to use.
+
+    Prefers the GitHub App installation token when configured (so worker
+    actions like ``gh pr comment`` are attributed to the App identity);
+    otherwise falls back to the stored OAuth token for the guild's linked
+    GitHub user.
 
     Requires a worker auth_token (from registration) or a member login_token.
     Without auth, anyone knowing a guild_id could exfiltrate the GitHub token."""
+    app_token = get_app_installation_token()
+    if app_token:
+        return {"access_token": app_token, "username": "github-app[bot]"}
+
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")

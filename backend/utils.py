@@ -16,6 +16,8 @@ import string
 import time
 import unicodedata
 
+from github_app_auth import get_github_token
+
 _VOWELS = frozenset("aeiou")
 _MIN_LEN = 5
 _TARGET_LEN = 8
@@ -264,10 +266,11 @@ def build_spawn_worker_env(
     public_url = source_env.get("FRONTEND_URL", "").rstrip("/")
     if public_url:
         env["PIONEER_FRONTEND_URL"] = public_url
-    gh_token = source_env.get("GITHUB_TOKEN", "")
+    gh_token = get_github_token(fallback=source_env.get("GITHUB_TOKEN", ""))
     if gh_token:
         # PIONEER_GITHUB_TOKEN feeds the worker config loader; GITHUB_TOKEN is
-        # what gh CLI inside the worker reads when opening PRs.
+        # what gh CLI inside the worker reads when opening PRs. Prefers a
+        # GitHub App installation token when the App env vars are configured.
         env["PIONEER_GITHUB_TOKEN"] = gh_token
         env["GITHUB_TOKEN"] = gh_token
     # ANTHROPIC_API_KEY is intentionally NOT forwarded — that's the foreman's
