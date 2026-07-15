@@ -21,9 +21,9 @@ from auth_deps import (
 )
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from github_app_auth import get_app_installation_token
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
+from github_app_auth import get_app_installation_token
 from models import (
     ClaudeCredentials,
     GithubToken,
