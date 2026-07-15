@@ -17,8 +17,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import github_app_auth  # noqa: E402
 from github_app_auth import (  # noqa: E402
+    DEFAULT_APP_SLUG,
     generate_jwt,
     get_app_installation_token,
+    get_app_slug,
     get_github_token,
     get_installation_token,
 )
@@ -47,6 +49,7 @@ def _reset_token_cache(monkeypatch):
     monkeypatch.delenv("GITHUB_APP_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("GITHUB_APP_PRIVATE_KEY_PATH", raising=False)
     monkeypatch.delenv("GITHUB_APP_INSTALLATION_ID", raising=False)
+    monkeypatch.delenv("GITHUB_APP_SLUG", raising=False)
     github_app_auth._token_cache["token"] = None
     github_app_auth._token_cache["expires_at"] = None
     yield
@@ -209,3 +212,25 @@ def test_app_credentials_supports_private_key_path(monkeypatch, rsa_keypair, tmp
     monkeypatch.setattr(github_app_auth.httpx, "post", lambda *a, **kw: FakeResponse())
 
     assert get_app_installation_token() == "ghs_from_path"
+
+
+def test_get_github_token_returns_none_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert get_github_token() is None
+
+
+def test_app_credentials_returns_none_when_private_key_file_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_APP_ID", "123456")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY_PATH", str(tmp_path / "does-not-exist.pem"))
+    monkeypatch.setenv("GITHUB_APP_INSTALLATION_ID", "789")
+
+    assert get_app_installation_token() is None
+
+
+def test_get_app_slug_defaults_when_unset():
+    assert get_app_slug() == DEFAULT_APP_SLUG
+
+
+def test_get_app_slug_uses_env_var_when_set(monkeypatch):
+    monkeypatch.setenv("GITHUB_APP_SLUG", "pioneer-square-melloy[bot]")
+    assert get_app_slug() == "pioneer-square-melloy[bot]"

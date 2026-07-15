@@ -28,7 +28,7 @@ from foreman.message_utils import _json_default, truncate_tool_result
 from foreman.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
-from github_app_auth import get_app_installation_token
+from github_app_auth import get_app_installation_token, get_app_slug
 from lock_service import LockService
 from models import (
     Agent,
@@ -493,7 +493,7 @@ async def _guild_github_token(guild_id: str, user_id: str | None = None) -> tupl
         else:
             app_token = get_app_installation_token()
             if app_token:
-                return (app_token, "github-app[bot]")
+                return (app_token, get_app_slug())
 
         result = await db.exec(
             select(col(GithubToken.access_token), col(GithubToken.github_username))

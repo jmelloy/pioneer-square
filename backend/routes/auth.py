@@ -23,7 +23,7 @@ from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from github_app_auth import get_app_installation_token
+from github_app_auth import get_app_installation_token, get_app_slug
 from models import (
     ClaudeCredentials,
     GithubToken,
@@ -100,7 +100,7 @@ async def get_github_token(
     Without auth, anyone knowing a guild_id could exfiltrate the GitHub token."""
     app_token = get_app_installation_token()
     if app_token:
-        return {"access_token": app_token, "username": "github-app[bot]"}
+        return {"access_token": app_token, "username": get_app_slug()}
 
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:

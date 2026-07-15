@@ -490,7 +490,7 @@ async def get_task_debug_timeline(
     # Collect all sensitive credential strings now so we can scrub them from
     # the response regardless of which code path set them.
     _sensitive: list[str] = []
-    _env_gh_token: str | None = get_github_token() or None
+    _env_gh_token: str | None = get_github_token()
     if _env_gh_token:
         _sensitive.append(_env_gh_token)
 
