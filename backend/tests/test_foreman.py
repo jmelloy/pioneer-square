@@ -2635,13 +2635,13 @@ class TestTruncateToolResult:
         result = truncate_tool_result(content)
         assert len(result) > MAX_TOOL_RESULT_CHARS  # includes the suffix
         assert result.startswith("x" * MAX_TOOL_RESULT_CHARS)
-        assert "[truncated:" in result
+        assert "[TRUNCATED" in result
         assert "500 chars omitted" in result
 
     def test_truncation_marker_format(self):
         content = "a" * (MAX_TOOL_RESULT_CHARS + 1)
         result = truncate_tool_result(content)
-        assert result.endswith("\n… [truncated: 1 chars omitted]")
+        assert result.endswith("\n\n[TRUNCATED — 1 chars omitted]")
 
     def test_empty_string_unchanged(self):
         assert truncate_tool_result("") == ""
@@ -2649,11 +2649,19 @@ class TestTruncateToolResult:
     def test_custom_max_chars(self):
         content = "y" * 200
         result = truncate_tool_result(content, max_chars=100)
-        assert result == "y" * 100 + "\n… [truncated: 100 chars omitted]"
+        assert result == "y" * 100 + "\n\n[TRUNCATED — 100 chars omitted]"
 
     def test_just_under_limit_unchanged(self):
         content = "z" * (MAX_TOOL_RESULT_CHARS - 1)
         assert truncate_tool_result(content) == content
+
+    def test_truncated_result_ends_with_correct_marker(self):
+        """Issue #780: truncated results must end with a marker stating exactly
+        how many characters were omitted, so the Foreman AI knows the data is partial."""
+        extra = 1234
+        content = "q" * (MAX_TOOL_RESULT_CHARS + extra)
+        result = truncate_tool_result(content)
+        assert result.endswith(f"[TRUNCATED — {extra} chars omitted]")
 
 
 # ---------------------------------------------------------------------------

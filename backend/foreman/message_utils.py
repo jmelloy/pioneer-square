@@ -26,7 +26,8 @@ def truncate_tool_result(content: str, max_chars: int = MAX_TOOL_RESULT_CHARS) -
     """Cap a tool result string; append a truncation notice when trimmed."""
     if len(content) <= max_chars:
         return content
-    return content[:max_chars] + f"\n… [truncated: {len(content) - max_chars} chars omitted]"
+    omitted = len(content) - max_chars
+    return content[:max_chars] + f"\n\n[TRUNCATED — {omitted} chars omitted]"
 
 
 def prune_history(messages: list, max_messages: int = MAX_HISTORY_MESSAGES) -> list:
