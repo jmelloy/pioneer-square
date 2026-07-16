@@ -10,11 +10,16 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import random
 import re
 import string
 import time
 import unicodedata
+
+from github_app_auth import get_github_token
+
+logger = logging.getLogger(__name__)
 
 _VOWELS = frozenset("aeiou")
 _MIN_LEN = 5
@@ -264,10 +269,18 @@ def build_spawn_worker_env(
     public_url = source_env.get("FRONTEND_URL", "").rstrip("/")
     if public_url:
         env["PIONEER_FRONTEND_URL"] = public_url
-    gh_token = source_env.get("GITHUB_TOKEN", "")
+    try:
+        gh_token = get_github_token(fallback=source_env.get("GITHUB_TOKEN", ""))
+    except Exception:
+        logger.warning(
+            "Failed to obtain GitHub App installation token; falling back to GITHUB_TOKEN",
+            exc_info=True,
+        )
+        gh_token = source_env.get("GITHUB_TOKEN", "")
     if gh_token:
         # PIONEER_GITHUB_TOKEN feeds the worker config loader; GITHUB_TOKEN is
-        # what gh CLI inside the worker reads when opening PRs.
+        # what gh CLI inside the worker reads when opening PRs. Prefers a
+        # GitHub App installation token when the App env vars are configured.
         env["PIONEER_GITHUB_TOKEN"] = gh_token
         env["GITHUB_TOKEN"] = gh_token
     # ANTHROPIC_API_KEY is intentionally NOT forwarded — that's the foreman's

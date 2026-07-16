@@ -28,6 +28,7 @@ from foreman.message_utils import _json_default, truncate_tool_result
 from foreman.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
+from github_app_auth import get_app_installation_token, get_app_slug
 from lock_service import LockService
 from models import (
     Agent,
@@ -462,8 +463,11 @@ async def _guild_github_token(guild_id: str, user_id: str | None = None) -> tupl
 
     When *user_id* is given, prefer that member's own GitHub token so actions
     (issue claims, PR reviews, etc.) attribute to the acting human rather than
-    the guild owner. Falls back to the guild owner's token when *user_id* is
-    None (background/automated operations) or has no token on file.
+    the guild owner. For background/automated operations (*user_id* is None),
+    prefer the GitHub App installation token when configured — so automated
+    comments/reviews are attributed to the App identity — and fall back to
+    the guild owner's token when the App isn't configured or has no token on
+    file.
     """
     from auth_deps import get_guild_pk
 
@@ -486,6 +490,10 @@ async def _guild_github_token(guild_id: str, user_id: str | None = None) -> tupl
             row = result.first()
             if row:
                 return (row.access_token, row.github_username)
+        else:
+            app_token = get_app_installation_token()
+            if app_token:
+                return (app_token, get_app_slug())
 
         result = await db.exec(
             select(col(GithubToken.access_token), col(GithubToken.github_username))
@@ -821,6 +829,37 @@ async def notify_discord_redirect(
         "task-redirect",
         title=f"Task redirected: {task_id}",
         description=f"Redirect sent for task `{task_id}`: {instructions[:500]}",
+        issue_repo=issue_repo,
+        issue_number=issue_number,
+        task_id=task_id,
+    )
+
+
+async def notify_discord_task_finalized(
+    issue_repo: str | None,
+    issue_number: int | None,
+    task_id: str,
+    state: str,
+    reason: str | None = None,
+) -> None:
+    """Post a task-closed notification into the task's existing Discord thread.
+
+    Covers the outcomes that never trigger a notification anywhere else:
+    ``finalize_task(outcome="failed")`` and ``cancel_task`` both closed a task
+    out silently before this — unlike a successful finish, which is already
+    covered by ``handle_task_complete``'s ``task-complete`` notification (#920).
+    See ``notify_discord_followup`` — same existing-thread-only routing.
+    """
+    if not discord_notifier.is_configured():
+        return
+    verb = "cancelled" if state == "cancelled" else "failed"
+    description = f"Task `{task_id}` was {verb}."
+    if reason:
+        description += f" Reason: {reason[:400]}"
+    await discord_notifier.notify_existing_thread(
+        f"task-{verb}",
+        title=f"Task {verb}: {task_id}",
+        description=description,
         issue_repo=issue_repo,
         issue_number=issue_number,
         task_id=task_id,
@@ -2026,6 +2065,13 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             await post_issue_close_summary_comment(
                                 guild_id, task.issue_repo, task.issue_number, descendants
                             )
+                        if outcome == "failed":
+                            spawn(
+                                notify_discord_task_finalized(
+                                    task.issue_repo, task.issue_number, task_id, "failed"
+                                ),
+                                name=f"discord.finalize:{task_id}",
+                            )
                         result_text = (
                             f"Task {task_id} finalized as {outcome}; soft-delete at "
                             f"{deleted_at.isoformat() if deleted_at is not None else 'unknown'}."
@@ -2086,15 +2132,18 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 task_id = inp["task_id"]
                 reason = inp.get("reason", "")
                 result = await db.exec(
-                    select(col(Task.worker_id), col(Task.state)).where(
-                        col(Task.id) == task_id, col(Task.guild_id) == guild_pk
-                    )
+                    select(
+                        col(Task.worker_id),
+                        col(Task.state),
+                        col(Task.issue_repo),
+                        col(Task.issue_number),
+                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
                 )
                 row = result.one_or_none()
                 if not row:
                     result_text = f"Task {task_id} not found."
                 else:
-                    worker_id_val, state = row
+                    worker_id_val, state, cancel_issue_repo, cancel_issue_number = row
                     if state in ("done", "failed", "cancelled"):
                         result_text = f"Task {task_id} is already {state}."
                     else:
@@ -2122,6 +2171,16 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 state="cancelled",
                                 deletedAt=deleted_at.isoformat(),
                             ),
+                        )
+                        spawn(
+                            notify_discord_task_finalized(
+                                cancel_issue_repo,
+                                cancel_issue_number,
+                                task_id,
+                                "cancelled",
+                                reason=reason or None,
+                            ),
+                            name=f"discord.cancel:{task_id}",
                         )
                         result_text = f"Task {task_id} cancelled." + (
                             f" Reason: {reason}" if reason else ""

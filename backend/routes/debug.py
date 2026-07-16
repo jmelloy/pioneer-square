@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,6 +18,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
 from foreman.github_url_parser import parse_github_urls
+from github_app_auth import get_github_token
 from models import GithubEvent, GithubToken, LlmUsage, Task, TaskLog
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -490,17 +490,18 @@ async def get_task_debug_timeline(
     # Collect all sensitive credential strings now so we can scrub them from
     # the response regardless of which code path set them.
     _sensitive: list[str] = []
-    _env_gh_token: str | None = os.getenv("GITHUB_TOKEN")
+    _env_gh_token: str | None = get_github_token()
     if _env_gh_token:
         _sensitive.append(_env_gh_token)
 
     # ── 5. Live GitHub API ────────────────────────────────────────────────────
     if task.pr_url:
-        # GITHUB_TOKEN is a shared server credential with broad read access to
-        # all repos the server account can see.  This endpoint is intentionally
-        # server-side: it is an internal debug view gated by guild membership,
-        # not a per-user GitHub proxy.  If per-user visibility scoping is ever
-        # required, replace this with a per-user OAuth token lookup.
+        # This is a shared server credential (GitHub App installation token or
+        # GITHUB_TOKEN) with broad read access to all repos the server account
+        # can see.  This endpoint is intentionally server-side: it is an
+        # internal debug view gated by guild membership, not a per-user GitHub
+        # proxy.  If per-user visibility scoping is ever required, replace
+        # this with a per-user OAuth token lookup.
         github_token: str | None = _env_gh_token
         if not github_token:
             tok_result = await db.exec(
