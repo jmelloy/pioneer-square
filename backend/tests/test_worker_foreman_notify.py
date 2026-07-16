@@ -609,6 +609,144 @@ def test_followup_done_max_turns_caps_last_text_at_4000_chars(client):
 # ---------------------------------------------------------------------------
 
 
+def test_task_update_failed_notifies_discord(client):
+    """A worker-reported task-update with state=failed must post a Discord
+    notification (#920) — this path (bad tool config, unresolvable PR branch,
+    push errors) bypasses finalize_task/cancel_task entirely, and previously
+    notified nobody."""
+    test_client, db_url = client
+    guild_id = "nfy020"
+    worker_id = "w-nfy020"
+    task_id = "t-nfy020"
+    agent_id = "a-nfy020"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="working")
+
+    with patch.object(
+        discord_notifier, "notify_existing_thread", new=AsyncMock()
+    ) as mock_notify:
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # task-assigned replay
+            ws.receive_json()  # agent-joined broadcast
+
+            ws.send_json(
+                {
+                    "type": "task-update",
+                    "taskId": task_id,
+                    "workerId": worker_id,
+                    "state": "failed",
+                }
+            )
+            ws.receive_json()  # task-update broadcast
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong — ensures handler is done
+
+    mock_notify.assert_called_once()
+    args, kwargs = mock_notify.call_args
+    assert args[0] == "task-failed"
+    assert kwargs["task_id"] == task_id
+
+
+def test_task_update_cancelled_notifies_discord(client):
+    """A worker-reported task-update with state=cancelled must post a Discord notification."""
+    test_client, db_url = client
+    guild_id = "nfy021"
+    worker_id = "w-nfy021"
+    task_id = "t-nfy021"
+    agent_id = "a-nfy021"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="working")
+
+    with patch.object(
+        discord_notifier, "notify_existing_thread", new=AsyncMock()
+    ) as mock_notify:
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # task-assigned replay
+            ws.receive_json()  # agent-joined broadcast
+
+            ws.send_json(
+                {
+                    "type": "task-update",
+                    "taskId": task_id,
+                    "workerId": worker_id,
+                    "state": "cancelled",
+                }
+            )
+            ws.receive_json()  # task-update broadcast
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong — ensures handler is done
+
+    mock_notify.assert_called_once()
+    args, kwargs = mock_notify.call_args
+    assert args[0] == "task-cancelled"
+    assert kwargs["task_id"] == task_id
+
+
+def test_task_update_working_does_not_notify_discord(client):
+    """A non-terminal task-update (e.g. state=working) must not post a Discord notification."""
+    test_client, db_url = client
+    guild_id = "nfy022"
+    worker_id = "w-nfy022"
+    task_id = "t-nfy022"
+    agent_id = "a-nfy022"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="pending")
+
+    with patch.object(
+        discord_notifier, "notify_existing_thread", new=AsyncMock()
+    ) as mock_notify:
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # task-assigned replay
+            ws.receive_json()  # agent-joined broadcast
+
+            ws.send_json(
+                {
+                    "type": "task-update",
+                    "taskId": task_id,
+                    "workerId": worker_id,
+                    "state": "working",
+                }
+            )
+            ws.receive_json()  # task-update broadcast
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong — ensures handler is done
+
+    mock_notify.assert_not_called()
+
+
 def test_worker_online_not_sent_to_foreign_guild(client):
     """worker-register from a worker that belongs to guild_A must NOT trigger
     a worker-online event in guild_B, even when the worker connects to guild_B's

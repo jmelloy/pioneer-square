@@ -1189,6 +1189,50 @@ class TestExecToolsDispatching:
             state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-fin-fail"))
         assert state == "failed"
 
+    async def test_finalize_task_failed_notifies_discord(self, db_session):
+        """finalize_task(outcome='failed') must fire a Discord notification (#920) —
+        unlike a successful finalize, a failed one has no other notification path."""
+        insert_guild(db_session, "g-finalize-fail-notify")
+        _insert_worker(db_session, "g-finalize-fail-notify", "w-fin-fail-notify")
+        _insert_task(
+            db_session, "t-fin-fail-notify", "g-finalize-fail-notify", "w-fin-fail-notify"
+        )
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch(
+                "foreman.tools.notify_discord_task_finalized", new_callable=AsyncMock
+            ) as notify_mock,
+        ):
+            await exec_tools(
+                "g-finalize-fail-notify",
+                [
+                    _fake_tool_use(
+                        "finalize_task", {"task_id": "t-fin-fail-notify", "outcome": "failed"}
+                    )
+                ],
+            )
+        notify_mock.assert_called_once()
+        assert notify_mock.call_args[0][2:] == ("t-fin-fail-notify", "failed")
+
+    async def test_finalize_task_done_does_not_notify_discord(self, db_session):
+        """A successful finalize must not duplicate the task-complete notification."""
+        insert_guild(db_session, "g-finalize-done-notify")
+        _insert_worker(db_session, "g-finalize-done-notify", "w-fin-done-notify")
+        _insert_task(
+            db_session, "t-fin-done-notify", "g-finalize-done-notify", "w-fin-done-notify"
+        )
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch(
+                "foreman.tools.notify_discord_task_finalized", new_callable=AsyncMock
+            ) as notify_mock,
+        ):
+            await exec_tools(
+                "g-finalize-done-notify",
+                [_fake_tool_use("finalize_task", {"task_id": "t-fin-done-notify"})],
+            )
+        notify_mock.assert_not_called()
+
     async def test_finalize_task_invalid_outcome_defaults_to_done(self, db_session):
         """An unrecognised outcome value must not break finalize_task — it falls back to 'done'."""
         insert_guild(db_session, "g-finalize-inv")
@@ -1458,6 +1502,26 @@ class TestExecToolsDispatching:
             )
         assert "cancelled" in results[0]["content"].lower()
         assert "No longer needed" in results[0]["content"]
+
+    async def test_cancel_task_notifies_discord(self, db_session):
+        """cancel_task must fire a Discord notification — cancelling a task closed
+        it out silently before, with no notification anywhere (#920)."""
+        insert_guild(db_session, "g-cancel-notify")
+        _insert_worker(db_session, "g-cancel-notify", "w-cancel-notify")
+        _insert_task(db_session, "t-cnotify", "g-cancel-notify", "w-cancel-notify", state="pending")
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch(
+                "foreman.tools.notify_discord_task_finalized", new_callable=AsyncMock
+            ) as notify_mock,
+        ):
+            await exec_tools(
+                "g-cancel-notify",
+                [_fake_tool_use("cancel_task", {"task_id": "t-cnotify", "reason": "stale"})],
+            )
+        notify_mock.assert_called_once()
+        assert notify_mock.call_args[0][2:] == ("t-cnotify", "cancelled")
+        assert notify_mock.call_args.kwargs.get("reason") == "stale"
 
         with _sync_session(db_session) as session:
             state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-cpend"))

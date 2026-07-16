@@ -803,6 +803,29 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
             discord_notifier.flush_task_stream(task_id),
             name=f"discord.stream-flush:{task_id}",
         )
+    # Worker-reported terminal failures (bad tool config, unresolvable PR
+    # branch, push errors, etc.) bypass the foreman's finalize_task/cancel_task
+    # tools entirely — the worker sets state directly via this task-update
+    # message. Unlike the success path (handle_task_complete's "task-complete"
+    # notification below), nothing else notifies Discord for these, so they
+    # were silently dropped (#920). Mirrors task-complete's routing: post into
+    # the task's existing thread when one exists, else the flat channel.
+    if update_values.get("state") in ("failed", "cancelled"):
+        state_label = update_values["state"]
+        worker_id_msg = data.get("workerId", "")
+        spawn(
+            discord_notifier.notify_existing_thread(
+                f"task-{state_label}",
+                title=f"Task {state_label}: {task_id}",
+                description=(
+                    f"Worker `{worker_id_msg}` reported task `{task_id}` as {state_label}."
+                    if worker_id_msg
+                    else f"Task `{task_id}` was marked {state_label}."
+                ),
+                task_id=task_id,
+            ),
+            name=f"discord.task-{state_label}:{task_id}",
+        )
     # Drain any pending-followup events queued while the task was locked, and
     # notify the foreman so it can decide how to handle them.
     if update_values.get("state") == "error" and task_id:
