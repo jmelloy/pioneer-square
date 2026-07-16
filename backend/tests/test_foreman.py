@@ -1194,9 +1194,7 @@ class TestExecToolsDispatching:
         unlike a successful finalize, a failed one has no other notification path."""
         insert_guild(db_session, "g-finalize-fail-notify")
         _insert_worker(db_session, "g-finalize-fail-notify", "w-fin-fail-notify")
-        _insert_task(
-            db_session, "t-fin-fail-notify", "g-finalize-fail-notify", "w-fin-fail-notify"
-        )
+        _insert_task(db_session, "t-fin-fail-notify", "g-finalize-fail-notify", "w-fin-fail-notify")
         with (
             patch("foreman.tools.broadcast", new_callable=AsyncMock),
             patch(
@@ -1218,9 +1216,7 @@ class TestExecToolsDispatching:
         """A successful finalize must not duplicate the task-complete notification."""
         insert_guild(db_session, "g-finalize-done-notify")
         _insert_worker(db_session, "g-finalize-done-notify", "w-fin-done-notify")
-        _insert_task(
-            db_session, "t-fin-done-notify", "g-finalize-done-notify", "w-fin-done-notify"
-        )
+        _insert_task(db_session, "t-fin-done-notify", "g-finalize-done-notify", "w-fin-done-notify")
         with (
             patch("foreman.tools.broadcast", new_callable=AsyncMock),
             patch(
