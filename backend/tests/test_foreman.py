@@ -1520,7 +1520,7 @@ class TestExecToolsDispatching:
         assert notify_mock.call_args.kwargs.get("reason") == "stale"
 
         with _sync_session(db_session) as session:
-            state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-cpend"))
+            state = session.scalar(select(col(Task.state)).where(col(Task.id) == "t-cnotify"))
         assert state == "cancelled"
 
     async def test_shutdown_worker_not_found(self, db_session):
