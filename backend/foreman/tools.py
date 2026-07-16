@@ -835,6 +835,37 @@ async def notify_discord_redirect(
     )
 
 
+async def notify_discord_task_finalized(
+    issue_repo: str | None,
+    issue_number: int | None,
+    task_id: str,
+    state: str,
+    reason: str | None = None,
+) -> None:
+    """Post a task-closed notification into the task's existing Discord thread.
+
+    Covers the outcomes that never trigger a notification anywhere else:
+    ``finalize_task(outcome="failed")`` and ``cancel_task`` both closed a task
+    out silently before this — unlike a successful finish, which is already
+    covered by ``handle_task_complete``'s ``task-complete`` notification (#920).
+    See ``notify_discord_followup`` — same existing-thread-only routing.
+    """
+    if not discord_notifier.is_configured():
+        return
+    verb = "cancelled" if state == "cancelled" else "failed"
+    description = f"Task `{task_id}` was {verb}."
+    if reason:
+        description += f" Reason: {reason[:400]}"
+    await discord_notifier.notify_existing_thread(
+        f"task-{verb}",
+        title=f"Task {verb}: {task_id}",
+        description=description,
+        issue_repo=issue_repo,
+        issue_number=issue_number,
+        task_id=task_id,
+    )
+
+
 # ---------------------------------------------------------------------------
 # code-review-agent helpers
 # ---------------------------------------------------------------------------
@@ -2034,6 +2065,13 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                             await post_issue_close_summary_comment(
                                 guild_id, task.issue_repo, task.issue_number, descendants
                             )
+                        if outcome == "failed":
+                            spawn(
+                                notify_discord_task_finalized(
+                                    task.issue_repo, task.issue_number, task_id, "failed"
+                                ),
+                                name=f"discord.finalize:{task_id}",
+                            )
                         result_text = (
                             f"Task {task_id} finalized as {outcome}; soft-delete at "
                             f"{deleted_at.isoformat() if deleted_at is not None else 'unknown'}."
@@ -2094,15 +2132,18 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                 task_id = inp["task_id"]
                 reason = inp.get("reason", "")
                 result = await db.exec(
-                    select(col(Task.worker_id), col(Task.state)).where(
-                        col(Task.id) == task_id, col(Task.guild_id) == guild_pk
-                    )
+                    select(
+                        col(Task.worker_id),
+                        col(Task.state),
+                        col(Task.issue_repo),
+                        col(Task.issue_number),
+                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
                 )
                 row = result.one_or_none()
                 if not row:
                     result_text = f"Task {task_id} not found."
                 else:
-                    worker_id_val, state = row
+                    worker_id_val, state, cancel_issue_repo, cancel_issue_number = row
                     if state in ("done", "failed", "cancelled"):
                         result_text = f"Task {task_id} is already {state}."
                     else:
@@ -2130,6 +2171,16 @@ async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
                                 state="cancelled",
                                 deletedAt=deleted_at.isoformat(),
                             ),
+                        )
+                        spawn(
+                            notify_discord_task_finalized(
+                                cancel_issue_repo,
+                                cancel_issue_number,
+                                task_id,
+                                "cancelled",
+                                reason=reason or None,
+                            ),
+                            name=f"discord.cancel:{task_id}",
                         )
                         result_text = f"Task {task_id} cancelled." + (
                             f" Reason: {reason}" if reason else ""
