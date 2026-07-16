@@ -6,6 +6,8 @@ import base64
 import json
 import os
 import sys
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -225,6 +227,56 @@ def test_app_credentials_returns_none_when_private_key_file_missing(monkeypatch,
     monkeypatch.setenv("GITHUB_APP_INSTALLATION_ID", "789")
 
     assert get_app_installation_token() is None
+
+
+def test_concurrent_get_github_token_is_race_free(monkeypatch, rsa_keypair):
+    """Two threads racing on an empty cache must not both hit the network.
+
+    Regression test for the module-level ``_token_cache`` dict being mutated
+    without a lock (jmelloy's PR #912 review comment): without
+    ``_cache_lock`` serializing the check-then-fetch-then-store sequence,
+    both threads would see no cached token and both would call the
+    installation-token endpoint.
+    """
+    _private_key, pem = rsa_keypair
+    monkeypatch.setenv("GITHUB_APP_ID", "123456")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", pem)
+    monkeypatch.setenv("GITHUB_APP_INSTALLATION_ID", "789")
+
+    call_count = {"n": 0}
+    call_lock = threading.Lock()
+    far_future = (datetime.now(UTC) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"token": "ghs_racey_token", "expires_at": far_future}
+
+    def fake_post(url, headers=None, timeout=None):
+        with call_lock:
+            call_count["n"] += 1
+        # Widen the race window so an unlocked cache would very likely fetch twice.
+        time.sleep(0.05)
+        return FakeResponse()
+
+    monkeypatch.setattr(github_app_auth.httpx, "post", fake_post)
+
+    results = [None, None]
+
+    def worker(idx):
+        results[idx] = get_github_token()
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert results == ["ghs_racey_token", "ghs_racey_token"]
+    assert call_count["n"] == 1
+    assert github_app_auth._token_cache["token"] == "ghs_racey_token"
 
 
 def test_get_app_slug_defaults_when_unset():
