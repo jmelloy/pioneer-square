@@ -311,9 +311,16 @@ def make_anthropic_client(
 
         if is_native_bedrock_model(resolved_model):
             logger.info(
-                "Foreman using Amazon Bedrock Converse API (region=%s, profile=%s, model=%s)",
+                "Foreman using Amazon Bedrock Converse API (region=%s, profile=%s, auth=%s, model=%s)",
                 resolved_region,
                 resolved_profile,
+                "bearer-token"
+                if env.get("AWS_BEARER_TOKEN_BEDROCK")
+                else (
+                    "explicit-keys"
+                    if (env.get("AWS_ACCESS_KEY_ID") and env.get("AWS_SECRET_ACCESS_KEY"))
+                    else "sigv4"
+                ),
                 resolved_model,
             )
             return BedrockNativeClient(
