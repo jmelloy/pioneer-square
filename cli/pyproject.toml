@@ -4,9 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pioneer-square"
-# Placeholder: the real version is set at release time by the CalVer release
-# workflow (.github/workflows/release.yml), which tags each merge to main as
-# YYYY.MM.DD-<short-sha> and is not derived from this field.
+# Placeholder, rewritten in CI: the release workflow
+# (.github/workflows/release.yml) sed-replaces this line with the CalVer
+# version (YYYY.MM.DD-<short-sha>) before building the wheel/sdist it attaches
+# to each GitHub release, so the built package's reported version always
+# matches its release tag.
 version = "0.0.0"
 description = "Pioneer Square unified CLI: one `pioneer` binary serving the HTTP backend, foreman, and worker."
 requires-python = ">=3.11"
