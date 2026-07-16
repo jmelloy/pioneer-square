@@ -624,7 +624,12 @@ def test_task_update_failed_notifies_discord(client):
     insert_worker(db_url, guild_id, worker_id, state="online")
     insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="working")
 
-    with patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify:
+    _triggered, fake_trigger = _make_trigger_spy()
+
+    with (
+        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify,
+    ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
             ws.send_json(
                 {
@@ -668,7 +673,12 @@ def test_task_update_cancelled_notifies_discord(client):
     insert_worker(db_url, guild_id, worker_id, state="online")
     insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="working")
 
-    with patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify:
+    _triggered, fake_trigger = _make_trigger_spy()
+
+    with (
+        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify,
+    ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
             ws.send_json(
                 {
@@ -712,7 +722,12 @@ def test_task_update_working_does_not_notify_discord(client):
     insert_worker(db_url, guild_id, worker_id, state="online")
     insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="pending")
 
-    with patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify:
+    _triggered, fake_trigger = _make_trigger_spy()
+
+    with (
+        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify,
+    ):
         with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
             ws.send_json(
                 {
