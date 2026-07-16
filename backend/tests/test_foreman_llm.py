@@ -435,6 +435,35 @@ class TestMakeAnthropicClientDynamicEnv:
             mock_mod.AsyncAnthropicBedrock.assert_not_called()
 
 
+class TestMakeAnthropicClientNativeBedrockModel:
+    """Amazon Nova / Kimi K2 have their own wire format and must dispatch to
+    BedrockNativeClient (Converse API), not AsyncAnthropicBedrock (Messages API)."""
+
+    def test_nova_model_returns_bedrock_native_client(self, monkeypatch):
+        monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
+        import foreman.llm as llm_mod
+        from foreman.providers.bedrock import BedrockNativeClient
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        client = llm_mod.make_anthropic_client(model="amazon.nova-pro-v1:0")
+        assert isinstance(client, BedrockNativeClient)
+        mock_mod.AsyncAnthropicBedrock.assert_not_called()
+
+    def test_claude_on_bedrock_model_still_uses_anthropic_sdk(self, monkeypatch):
+        """Sanity check: a Claude model ID on Bedrock must still take the
+        existing AsyncAnthropicBedrock path, not the native Converse path."""
+        monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
+        import foreman.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(model="anthropic.claude-sonnet-4-6-20251001-v1:0")
+        mock_mod.AsyncAnthropicBedrock.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # OpenAI-compatible translation (issue #826: shared with the standalone proxy,
 # which has no translation logic of its own — see foreman/tests/test_runner.py)
