@@ -858,6 +858,9 @@ function goHome() {
   top: calc(100% + 4px);
   right: 12px;
   width: 320px;
+  max-height: calc(100dvh - 60px - env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   background: var(--color-bg-secondary);
   border: 2px solid var(--color-brass);
   box-shadow:
