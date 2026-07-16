@@ -651,7 +651,10 @@ def test_task_update_failed_notifies_discord(client):
                     "state": "failed",
                 }
             )
-            ws.receive_json()  # task-update broadcast
+            # No receive here: handle_task_update's broadcast excludes the
+            # sender's own connection (it's the worker reporting its own
+            # state), so this single-connection test never gets it back.
+            # The ping/pong round-trip below is what proves the handler ran.
             ws.send_json({"type": "ping"})
             ws.receive_json()  # pong — ensures handler is done
 
@@ -700,7 +703,10 @@ def test_task_update_cancelled_notifies_discord(client):
                     "state": "cancelled",
                 }
             )
-            ws.receive_json()  # task-update broadcast
+            # No receive here: handle_task_update's broadcast excludes the
+            # sender's own connection (it's the worker reporting its own
+            # state), so this single-connection test never gets it back.
+            # The ping/pong round-trip below is what proves the handler ran.
             ws.send_json({"type": "ping"})
             ws.receive_json()  # pong — ensures handler is done
 
@@ -749,7 +755,10 @@ def test_task_update_working_does_not_notify_discord(client):
                     "state": "working",
                 }
             )
-            ws.receive_json()  # task-update broadcast
+            # No receive here: handle_task_update's broadcast excludes the
+            # sender's own connection (it's the worker reporting its own
+            # state), so this single-connection test never gets it back.
+            # The ping/pong round-trip below is what proves the handler ran.
             ws.send_json({"type": "ping"})
             ws.receive_json()  # pong — ensures handler is done
 
