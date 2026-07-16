@@ -22,6 +22,14 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Bump pyproject version
+        run: |
+          sed -i -E 's/^version = ".*"/version = "${{ steps.version.outputs.version }}"/' cli/pyproject.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: release ${{ steps.version.outputs.tag }} [skip ci]"
+          git push origin HEAD:main
+
       - name: Create and push tag
         run: |
           if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
