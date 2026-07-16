@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pioneer-square"
-version = "0.1.0"
+# Placeholder: the real version is set at release time by the CalVer release
+# workflow (.github/workflows/release.yml), which tags each merge to main as
+# YYYY.MM.DD-<short-sha> and is not derived from this field.
+version = "0.0.0"
 description = "Pioneer Square unified CLI: one `pioneer` binary serving the HTTP backend, foreman, and worker."
 requires-python = ">=3.11"
 dependencies = [
