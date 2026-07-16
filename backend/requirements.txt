@@ -10,6 +10,7 @@ sqlmodel
 alembic
 python-multipart
 anthropic[bedrock]
+boto3
 python-dotenv
 docker
 httpx

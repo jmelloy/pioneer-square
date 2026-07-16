@@ -30,6 +30,16 @@ from uuid import uuid4
 import httpx
 
 try:
+    # Absolute import works when backend/ itself is on sys.path (embedded
+    # backend, worker). The standalone foreman proxy only prepends the repo
+    # root (see foreman-proxy/pioneer_foreman/config.py), under which this
+    # module is reachable as backend.foreman.llm and util/ has no top-level
+    # name of its own — fall back to the fully-qualified path there.
+    from util.api_latency import track_api_call
+except ImportError:  # pragma: no cover - exercised under the proxy's import layout
+    from backend.util.api_latency import track_api_call
+
+try:
     import anthropic as _anthropic_mod
 
     HAS_ANTHROPIC = True
@@ -283,6 +293,33 @@ def make_anthropic_client(
             region or env.get("AWS_DEFAULT_REGION") or env.get("AWS_REGION") or _BEDROCK_REGION
         )
         resolved_profile = aws_profile or env.get("AWS_PROFILE") or None
+
+        # Bedrock also hosts foundation models with their own wire format —
+        # Amazon Nova, Kimi K2, ... — that the Anthropic SDK's Messages API
+        # cannot reach. Those go through the Bedrock Runtime Converse API
+        # instead (see providers/bedrock.py); everything else on this path
+        # is Claude-on-Bedrock via AsyncAnthropicBedrock, unchanged.
+        try:
+            # See the util.api_latency import fallback above for why both
+            # layouts are needed here.
+            from foreman.providers.bedrock import BedrockNativeClient, is_native_bedrock_model
+        except ImportError:  # pragma: no cover - exercised under the proxy's import layout
+            from backend.foreman.providers.bedrock import (
+                BedrockNativeClient,
+                is_native_bedrock_model,
+            )
+
+        if is_native_bedrock_model(resolved_model):
+            logger.info(
+                "Foreman using Amazon Bedrock Converse API (region=%s, profile=%s, model=%s)",
+                resolved_region,
+                resolved_profile,
+                resolved_model,
+            )
+            return BedrockNativeClient(
+                region=resolved_region, profile=resolved_profile, extra_env=env
+            )
+
         access_key = env.get("AWS_ACCESS_KEY_ID")
         secret_key = env.get("AWS_SECRET_ACCESS_KEY")
         session_token = env.get("AWS_SESSION_TOKEN")
@@ -414,8 +451,17 @@ async def call_anthropic(
         kwargs["tools"] = tools
     if _has_payload(tool_choice):
         kwargs["tool_choice"] = tool_choice
-    raw = await client.messages.with_raw_response.create(**kwargs)
-    return raw.parse(), raw.headers.get("request-id")
+
+    provider = "bedrock" if "Bedrock" in type(client).__name__ else "anthropic"
+    with track_api_call(provider, model, method="messages.create") as call:
+        raw = await client.messages.with_raw_response.create(**kwargs)
+        parsed = raw.parse()
+        call.status_code = 200
+        usage = getattr(parsed, "usage", None)
+        if usage is not None:
+            call.input_tokens = getattr(usage, "input_tokens", None)
+            call.output_tokens = getattr(usage, "output_tokens", None)
+    return parsed, raw.headers.get("request-id")
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +676,13 @@ async def call_openai_compatible(
         headers["Authorization"] = f"Bearer {api_key}"
 
     url = f"{base_url.rstrip('/')}/chat/completions"
-    response = await client.post(url, json=body, headers=headers)
-    response.raise_for_status()
+    with track_api_call("openai", url, method="POST") as call:
+        response = await client.post(url, json=body, headers=headers)
+        call.status_code = response.status_code
+        response.raise_for_status()
+        response_json = response.json()
+        usage = response_json.get("usage") or {}
+        call.input_tokens = usage.get("prompt_tokens")
+        call.output_tokens = usage.get("completion_tokens")
     request_id = response.headers.get("x-request-id") or response.headers.get("request-id")
-    return openai_response_to_anthropic(response.json(), model), request_id
+    return openai_response_to_anthropic(response_json, model), request_id
