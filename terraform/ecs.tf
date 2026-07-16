@@ -1,0 +1,274 @@
+# ECS Fargate cluster, task definitions mirroring each docker-compose
+# service, and the long-running services (backend, foreman). The worker
+# task definition is registered but not run as a service — see the comment
+# above var.worker_cpu in variables.tf.
+
+resource "aws_ecs_cluster" "main" {
+  name = "${local.name_prefix}-cluster"
+
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-cluster"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "service" {
+  for_each = toset(local.ecr_services)
+
+  name              = "/ecs/${local.name_prefix}/${each.key}"
+  retention_in_days = var.log_retention_days
+
+  tags = {
+    Name    = "${local.name_prefix}-${each.key}-logs"
+    Service = each.key
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Backend — HTTP API + SPA, the only service fronted by the ALB.
+# -----------------------------------------------------------------------------
+
+resource "aws_ecs_task_definition" "backend" {
+  family                   = "${local.name_prefix}-backend"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.backend_cpu
+  memory                   = var.backend_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "backend"
+      image     = "${aws_ecr_repository.service["backend"].repository_url}:${var.container_image_tag}"
+      essential = true
+
+      portMappings = [
+        {
+          containerPort = var.backend_container_port
+          protocol      = "tcp"
+        }
+      ]
+
+      command = ["sh", "-c", "cd backend && alembic upgrade head && cd .. && pioneer serve"]
+
+      environment = [
+        { name = "GITHUB_REDIRECT_URI", value = var.frontend_url != "" ? "${var.frontend_url}/auth/github/callback" : "" },
+        { name = "FRONTEND_URL", value = var.frontend_url },
+        { name = "WORKER_BACKEND_URL", value = "http://localhost:${var.backend_container_port}" },
+        { name = "LOG_LEVEL", value = var.log_level },
+        { name = "PIONEER_S3_BUCKET", value = aws_s3_bucket.assets.bucket },
+        { name = "PIONEER_S3_PREFIX", value = "worker-sessions" },
+        { name = "AWS_DEFAULT_REGION", value = local.region },
+        { name = "ECS_CLUSTER_NAME", value = aws_ecs_cluster.main.name },
+        { name = "ECS_WORKER_TASK_DEFINITION", value = "${local.name_prefix}-worker" },
+      ]
+
+      secrets = [
+        for key, param in {
+          DATABASE_URL            = aws_ssm_parameter.database_url
+          GITHUB_CLIENT_ID        = aws_ssm_parameter.secret["github_client_id"]
+          GITHUB_CLIENT_SECRET    = aws_ssm_parameter.secret["github_client_secret"]
+          GITHUB_TOKEN            = aws_ssm_parameter.secret["github_token"]
+          ANTHROPIC_API_KEY       = aws_ssm_parameter.secret["anthropic_api_key"]
+          CLAUDE_CODE_OAUTH_TOKEN = aws_ssm_parameter.secret["claude_code_oauth_token"]
+          PIONEER_FOREMAN_KEY     = aws_ssm_parameter.secret["pioneer_foreman_key"]
+          DISCORD_BOT_TOKEN       = aws_ssm_parameter.secret["discord_bot_token"]
+        } : { name = key, valueFrom = param.arn }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.service["backend"].name
+          "awslogs-region"        = local.region
+          "awslogs-stream-prefix" = "backend"
+        }
+      }
+    }
+  ])
+
+  tags = {
+    Name    = "${local.name_prefix}-backend"
+    Service = "backend"
+  }
+}
+
+resource "aws_ecs_service" "backend" {
+  name            = "${local.name_prefix}-backend"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.backend.arn
+  desired_count   = var.backend_desired_count
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.backend.arn
+    container_name   = "backend"
+    container_port   = var.backend_container_port
+  }
+
+  depends_on = [aws_lb_listener.http]
+
+  lifecycle {
+    ignore_changes = [task_definition] # CI updates this via amazon-ecs-deploy-task-definition.
+  }
+
+  tags = {
+    Name    = "${local.name_prefix}-backend"
+    Service = "backend"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Foreman — background AI loop (WebSocket client to the backend), no
+# inbound networking. Matches the `profiles: ["foreman"]` compose service:
+# desired_count defaults to 0 until var.guild_id is configured.
+# -----------------------------------------------------------------------------
+
+resource "aws_ecs_task_definition" "foreman" {
+  family                   = "${local.name_prefix}-foreman"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.foreman_cpu
+  memory                   = var.foreman_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "foreman"
+      image     = "${aws_ecr_repository.service["foreman"].repository_url}:${var.container_image_tag}"
+      essential = true
+      command   = ["pioneer", "foreman"]
+
+      environment = [
+        # wss:// when an HTTPS listener exists: the HTTP listener 301-redirects
+        # everything to HTTPS in that case (see alb.tf), and a plain ws://
+        # upgrade request cannot follow an HTTP redirect.
+        { name = "BACKEND_WS_URL", value = "${local.has_certificate ? "wss" : "ws"}://${aws_lb.main.dns_name}" },
+        { name = "GUILD_ID", value = var.guild_id },
+        { name = "LOG_LEVEL", value = var.log_level },
+        { name = "FOREMAN_MODEL", value = var.foreman_model },
+        { name = "FOREMAN_PROVIDER", value = var.foreman_provider },
+        { name = "FOREMAN_BEDROCK_MODEL", value = var.foreman_bedrock_model },
+        { name = "AWS_DEFAULT_REGION", value = local.region },
+      ]
+
+      secrets = [
+        for key, param in {
+          ANTHROPIC_API_KEY        = aws_ssm_parameter.secret["anthropic_api_key"]
+          OPENAI_API_KEY           = aws_ssm_parameter.secret["openai_api_key"]
+          AWS_BEARER_TOKEN_BEDROCK = aws_ssm_parameter.secret["aws_bearer_token_bedrock"]
+        } : { name = key, valueFrom = param.arn }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.service["foreman"].name
+          "awslogs-region"        = local.region
+          "awslogs-stream-prefix" = "foreman"
+        }
+      }
+    }
+  ])
+
+  tags = {
+    Name    = "${local.name_prefix}-foreman"
+    Service = "foreman"
+  }
+}
+
+resource "aws_ecs_service" "foreman" {
+  name            = "${local.name_prefix}-foreman"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.foreman.arn
+  desired_count   = var.foreman_desired_count
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
+  }
+
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
+
+  tags = {
+    Name    = "${local.name_prefix}-foreman"
+    Service = "foreman"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Worker — registered task definition only (no aws_ecs_service). Launched
+# on demand by the backend via ecs:RunTask against this family, replacing
+# the docker.from_env()/containers.run() calls in
+# backend/foreman/tools.py and backend/routes/workers.py.
+# -----------------------------------------------------------------------------
+
+resource "aws_ecs_task_definition" "worker" {
+  family                   = "${local.name_prefix}-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.worker_cpu
+  memory                   = var.worker_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  # Above the 20 GiB Fargate default: cloned repos + git worktrees
+  # (/work/repos, /work/worktrees in docker-compose) share this with the
+  # worker image itself (Node/Go/build-essential toolchains).
+  ephemeral_storage {
+    size_in_gib = var.worker_ephemeral_storage_gib
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "worker"
+      image     = "${aws_ecr_repository.service["worker"].repository_url}:${var.container_image_tag}"
+      essential = true
+
+      environment = [
+        { name = "WORKER_LOG_LEVEL", value = var.log_level },
+        { name = "PIONEER_S3_BUCKET", value = aws_s3_bucket.assets.bucket },
+        { name = "PIONEER_S3_PREFIX", value = "worker-sessions" },
+        { name = "AWS_DEFAULT_REGION", value = local.region },
+      ]
+
+      secrets = [
+        for key, param in {
+          GITHUB_TOKEN            = aws_ssm_parameter.secret["github_token"]
+          CLAUDE_CODE_OAUTH_TOKEN = aws_ssm_parameter.secret["claude_code_oauth_token"]
+          OPENAI_API_KEY          = aws_ssm_parameter.secret["openai_api_key"]
+        } : { name = key, valueFrom = param.arn }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.service["worker"].name
+          "awslogs-region"        = local.region
+          "awslogs-stream-prefix" = "worker"
+        }
+      }
+    }
+  ])
+
+  tags = {
+    Name    = "${local.name_prefix}-worker"
+    Service = "worker"
+  }
+}

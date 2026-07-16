@@ -1,0 +1,131 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        required: true
+        default: staging
+        options:
+          - staging
+          - prod
+
+permissions:
+  id-token: write # required for OIDC (aws-actions/configure-aws-credentials)
+  contents: read
+
+env:
+  PROJECT_NAME: pioneer-square
+
+jobs:
+  resolve-environment:
+    name: Resolve environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+    steps:
+      - name: Resolve environment from trigger
+        id: resolve
+        run: |
+          if [ -n "${{ inputs.environment }}" ]; then
+            echo "environment=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref }}" == refs/heads/release/* ]]; then
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=staging" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-deploy:
+    name: Build & deploy ${{ matrix.service }}
+    needs: resolve-environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-environment.outputs.environment }}
+    strategy:
+      matrix:
+        service: [backend, foreman, worker]
+    env:
+      ENVIRONMENT: ${{ needs.resolve-environment.outputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build-image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.service }}
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}/${{ matrix.service }}:${{ github.sha }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}/${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          build-args: |
+            PIONEER_VERSION=${{ github.sha }}
+
+      # The worker has no long-running ECS service (see terraform/README.md
+      # "Worker dispatch") — it's launched on demand via ecs:RunTask against
+      # the task definition family this step keeps up to date, so there's no
+      # service to redeploy here.
+      - name: Fetch current task definition
+        if: matrix.service != 'worker'
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}-${{ matrix.service }}" \
+            --query taskDefinition > task-definition.json
+
+      - name: Render new image into task definition
+        if: matrix.service != 'worker'
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ matrix.service }}
+          image: ${{ steps.ecr-login.outputs.registry }}/${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}/${{ matrix.service }}:${{ github.sha }}
+
+      - name: Deploy to ECS
+        if: matrix.service != 'worker'
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          cluster: ${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}-cluster
+          service: ${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}-${{ matrix.service }}
+          wait-for-service-stability: true
+
+      - name: Register worker task definition revision
+        if: matrix.service == 'worker'
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}-worker" \
+            --query taskDefinition > task-definition.json
+          python3 - <<'PY'
+          import json
+          with open("task-definition.json") as f:
+              task_def = json.load(f)
+          for field in ("taskDefinitionArn", "revision", "status", "requiresAttributes",
+                        "compatibilities", "registeredAt", "registeredBy"):
+              task_def.pop(field, None)
+          task_def["containerDefinitions"][0]["image"] = (
+              "${{ steps.ecr-login.outputs.registry }}/${{ env.PROJECT_NAME }}-${{ env.ENVIRONMENT }}/worker:${{ github.sha }}"
+          )
+          with open("task-definition.json", "w") as f:
+              json.dump(task_def, f)
+          PY
+          aws ecs register-task-definition --cli-input-json file://task-definition.json

@@ -1,0 +1,400 @@
+# -----------------------------------------------------------------------------
+# Core
+# -----------------------------------------------------------------------------
+
+variable "aws_region" {
+  description = "AWS region to deploy into."
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "project_name" {
+  description = "Short name used to prefix/tag all resources."
+  type        = string
+  default     = "pioneer-square"
+}
+
+variable "environment" {
+  description = "Deployment environment name (e.g. staging, prod). Used in resource names and tags."
+  type        = string
+  default     = "staging"
+}
+
+# -----------------------------------------------------------------------------
+# Networking
+# -----------------------------------------------------------------------------
+
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC."
+  type        = string
+  default     = "10.20.0.0/16"
+}
+
+variable "az_count" {
+  description = "Number of availability zones to span (public + private subnet pair each)."
+  type        = number
+  default     = 2
+}
+
+variable "single_nat_gateway" {
+  description = "Use a single shared NAT Gateway instead of one per AZ, to cut cost in non-prod environments."
+  type        = bool
+  default     = true
+}
+
+# -----------------------------------------------------------------------------
+# ALB / TLS
+# -----------------------------------------------------------------------------
+
+variable "domain_name" {
+  description = "Public hostname the ALB serves (e.g. pioneer-square.example.com). Used only for output/reference; DNS record creation is out of scope."
+  type        = string
+  default     = ""
+}
+
+variable "acm_certificate_arn" {
+  description = <<-EOT
+    ARN of an existing ACM certificate for the ALB's HTTPS listener.
+    Leave empty to have Terraform provision one via aws_acm_certificate for
+    `var.domain_name` (validation still requires manual/external DNS records
+    unless `var.route53_zone_id` is set). Must be non-empty for the HTTPS
+    listener to be created.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "route53_zone_id" {
+  description = "Optional Route53 hosted zone ID for ACM DNS validation records. Leave empty to skip automatic validation."
+  type        = string
+  default     = ""
+}
+
+# -----------------------------------------------------------------------------
+# ECS — shared
+# -----------------------------------------------------------------------------
+
+variable "container_image_tag" {
+  description = "Default image tag deployed for all services on first apply (CI overrides this per-service on later deploys)."
+  type        = string
+  default     = "latest"
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch Logs retention for ECS task logs."
+  type        = number
+  default     = 30
+}
+
+# -----------------------------------------------------------------------------
+# ECS — backend service (HTTP API + SPA, exposed via ALB)
+# -----------------------------------------------------------------------------
+
+variable "backend_container_port" {
+  description = "Port the backend container listens on (matches `EXPOSE 8000` / `pioneer serve` in the Dockerfile)."
+  type        = number
+  default     = 8000
+}
+
+variable "backend_cpu" {
+  description = "Fargate task CPU units for the backend service."
+  type        = number
+  default     = 512
+}
+
+variable "backend_memory" {
+  description = "Fargate task memory (MiB) for the backend service."
+  type        = number
+  default     = 1024
+}
+
+variable "backend_desired_count" {
+  description = "Desired task count for the backend ECS service."
+  type        = number
+  default     = 1
+}
+
+# -----------------------------------------------------------------------------
+# ECS — foreman service (background AI loop, no inbound HTTP; profiles:[foreman] in compose)
+# -----------------------------------------------------------------------------
+
+variable "foreman_cpu" {
+  description = "Fargate task CPU units for the foreman service."
+  type        = number
+  default     = 256
+}
+
+variable "foreman_memory" {
+  description = "Fargate task memory (MiB) for the foreman service."
+  type        = number
+  default     = 512
+}
+
+variable "foreman_desired_count" {
+  description = "Desired task count for the foreman ECS service. Set to 0 to disable (no GUILD_ID configured)."
+  type        = number
+  default     = 0
+}
+
+variable "foreman_model" {
+  description = "Claude model ID used by the foreman when FOREMAN_PROVIDER=anthropic."
+  type        = string
+  default     = "claude-sonnet-4-6"
+}
+
+variable "foreman_provider" {
+  description = "Foreman LLM provider: anthropic, openai, or bedrock."
+  type        = string
+  default     = "anthropic"
+}
+
+variable "foreman_bedrock_model" {
+  description = "Cross-region Bedrock inference profile ARN for the foreman when foreman_provider=bedrock (account-scoped, no safe default)."
+  type        = string
+  default     = ""
+}
+
+# -----------------------------------------------------------------------------
+# ECS — worker task definition
+# -----------------------------------------------------------------------------
+# The worker is NOT deployed as a long-running ECS service: in docker-compose
+# the backend spawns one worker container per task via the Docker socket
+# (backend/foreman/tools.py, backend/routes/workers.py). Fargate tasks have no
+# shared Docker socket, so this task definition is provided for the backend
+# to launch on demand via the ECS RunTask API (ecs:RunTask — see iam.tf)
+# instead of `docker.from_env()`. Wiring that call up is an application change
+# tracked separately; this module only provides the infrastructure side.
+
+variable "worker_cpu" {
+  description = "Fargate task CPU units for on-demand worker tasks."
+  type        = number
+  default     = 1024
+}
+
+variable "worker_memory" {
+  description = "Fargate task memory (MiB) for on-demand worker tasks."
+  type        = number
+  default     = 2048
+}
+
+variable "worker_ephemeral_storage_gib" {
+  description = "Ephemeral storage (GiB) for worker tasks — holds cloned repos and git worktrees (docker-compose's worker-repos/worker-worktrees volumes), which can exceed the 20 GiB Fargate default."
+  type        = number
+  default     = 40
+}
+
+# -----------------------------------------------------------------------------
+# RDS (replaces the docker-compose `postgres` service)
+# -----------------------------------------------------------------------------
+
+variable "db_name" {
+  description = "Postgres database name."
+  type        = string
+  default     = "pioneer_square"
+}
+
+variable "db_username" {
+  description = "Postgres master username."
+  type        = string
+  default     = "pioneer"
+}
+
+variable "db_engine_version" {
+  description = "Postgres engine version."
+  type        = string
+  default     = "16.4"
+}
+
+variable "db_instance_class" {
+  description = "RDS instance class."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "db_allocated_storage" {
+  description = "RDS allocated storage in GiB."
+  type        = number
+  default     = 20
+}
+
+variable "db_max_allocated_storage" {
+  description = "RDS storage autoscaling ceiling in GiB."
+  type        = number
+  default     = 100
+}
+
+variable "db_multi_az" {
+  description = "Enable RDS Multi-AZ (recommended for prod)."
+  type        = bool
+  default     = false
+}
+
+variable "db_backup_retention_days" {
+  description = "RDS automated backup retention period in days."
+  type        = number
+  default     = 7
+}
+
+variable "db_deletion_protection" {
+  description = "Enable RDS deletion protection."
+  type        = bool
+  default     = false
+}
+
+variable "db_skip_final_snapshot" {
+  description = "Skip the final RDS snapshot on destroy (set false for prod)."
+  type        = bool
+  default     = true
+}
+
+# -----------------------------------------------------------------------------
+# S3
+# -----------------------------------------------------------------------------
+
+variable "s3_bucket_name" {
+  description = "Optional explicit name for the assets/uploads/session-log bucket. Leave empty to derive a unique name from project/environment/account ID."
+  type        = string
+  default     = ""
+}
+
+variable "s3_force_destroy" {
+  description = "Allow `terraform destroy` to delete the S3 bucket even if it still contains objects. Keep false in prod."
+  type        = bool
+  default     = false
+}
+
+# -----------------------------------------------------------------------------
+# GitHub OIDC (for the deploy.yml / terraform.yml Actions workflows)
+# -----------------------------------------------------------------------------
+
+variable "github_oidc_provider_arn" {
+  description = <<-EOT
+    ARN of an existing `token.actions.githubusercontent.com` IAM OIDC
+    provider in this account. Leave empty to have Terraform create one
+    (only one such provider can exist per account — if your account already
+    has one from another stack, set this instead of creating a duplicate).
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "github_repository" {
+  description = "GitHub repository allowed to assume the CI deploy role, as `org/repo` (e.g. jmelloy/pioneer-square)."
+  type        = string
+  default     = "jmelloy/pioneer-square"
+}
+
+variable "github_oidc_allowed_refs" {
+  description = "Git ref patterns (in GitHub OIDC subject-claim form) allowed to assume the CI role."
+  type        = list(string)
+  default = [
+    "ref:refs/heads/main",
+    "ref:refs/heads/release/*",
+  ]
+}
+
+# -----------------------------------------------------------------------------
+# Secrets (values). Defaults are placeholders — see README "Secrets" section.
+# Terraform writes these into SSM as the *initial* value only; the parameters
+# are created with lifecycle.ignore_changes on value so rotating them via the
+# console/CLI afterward doesn't cause drift on the next `terraform apply`.
+# -----------------------------------------------------------------------------
+
+variable "db_password" {
+  description = "Initial Postgres master password (rotate via SSM/RDS afterward, not by re-applying)."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
+variable "github_client_id" {
+  description = "GitHub OAuth App client ID (backend auth flow)."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
+variable "github_client_secret" {
+  description = "GitHub OAuth App client secret (backend auth flow)."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
+variable "github_token" {
+  description = "GitHub token used by the backend/worker to clone private repos and open PRs."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
+variable "anthropic_api_key" {
+  description = "Anthropic API key for the backend foreman (Claude SDK)."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
+variable "claude_code_oauth_token" {
+  description = "Claude Code OAuth token forwarded to worker tasks (from `claude setup-token`)."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
+variable "openai_api_key" {
+  description = "OpenAI API key, used when FOREMAN_PROVIDER=openai (Ollama/vLLM/LM Studio compatible endpoints)."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
+variable "pioneer_foreman_key" {
+  description = "Shared secret the foreman uses to authenticate to the backend."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
+variable "pioneer_ci_key" {
+  description = "Shared secret for GitHub Actions CI-completion notifications to /guilds/{guild_id}/foreman/ci-notify."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
+variable "discord_bot_token" {
+  description = "Discord bot token for notifications, slash commands, and the Gateway websocket. Empty disables Discord integration."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "aws_bearer_token_bedrock" {
+  description = "Optional Bedrock bearer token for the foreman, used instead of IAM credentials when set."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+# -----------------------------------------------------------------------------
+# Non-secret application configuration
+# -----------------------------------------------------------------------------
+
+variable "frontend_url" {
+  description = "Externally-reachable base URL of the app (GitHub OAuth redirect + webhook base). E.g. https://pioneer-square.example.com."
+  type        = string
+  default     = ""
+}
+
+variable "guild_id" {
+  description = "6-char guild ID the foreman instance manages. Required for the foreman service to do anything useful."
+  type        = string
+  default     = ""
+}
+
+variable "log_level" {
+  description = "Backend/foreman log level."
+  type        = string
+  default     = "INFO"
+}
