@@ -149,7 +149,15 @@ data "aws_iam_policy_document" "ecs_task_worker_dispatch" {
       "ecs:StopTask",
       "ecs:DescribeTasks",
     ]
-    resources = ["*"]
+    resources = [
+      aws_ecs_cluster.main.arn,
+      # RunTask is authorized against the task definition family (any
+      # revision) it launches — scoped to the worker family only.
+      "arn:${local.partition}:ecs:${local.region}:${local.account_id}:task-definition/${local.name_prefix}-worker:*",
+      # StopTask/DescribeTasks are authorized against the running task ARN,
+      # scoped to tasks within this cluster.
+      "arn:${local.partition}:ecs:${local.region}:${local.account_id}:task/${aws_ecs_cluster.main.name}/*",
+    ]
 
     condition {
       test     = "ArnEquals"
