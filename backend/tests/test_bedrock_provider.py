@@ -143,9 +143,7 @@ def test_converse_response_to_anthropic_tool_use():
     response = {
         "output": {
             "message": {
-                "content": [
-                    {"toolUse": {"toolUseId": "t1", "name": "search", "input": {"q": "x"}}}
-                ]
+                "content": [{"toolUse": {"toolUseId": "t1", "name": "search", "input": {"q": "x"}}}]
             }
         },
         "stopReason": "tool_use",
@@ -208,8 +206,9 @@ async def test_bedrock_native_client_create_success(monkeypatch):
 
 
 async def test_bedrock_native_client_create_without_boto3_raises():
-    with patch("foreman.providers.bedrock.HAS_BOTO3", False), patch(
-        "foreman.providers.bedrock.boto3", None
+    with (
+        patch("foreman.providers.bedrock.HAS_BOTO3", False),
+        patch("foreman.providers.bedrock.boto3", None),
     ):
         client = BedrockNativeClient(region="us-east-1", extra_env={})
         with pytest.raises(ImportError):
