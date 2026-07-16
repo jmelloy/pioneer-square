@@ -8,7 +8,7 @@ name = "pioneer-square"
 # (.github/workflows/release.yml) sed-replaces this line with the CalVer
 # version (YYYY.MM.DD-<short-sha>) before building the wheel/sdist it attaches
 # to each GitHub release, so the built package's reported version always
-# matches its release tag.
+# matches its release tag. See issue #924 and PR #925 for the full mechanism.
 version = "0.0.0"
 description = "Pioneer Square unified CLI: one `pioneer` binary serving the HTTP backend, foreman, and worker."
 requires-python = ">=3.11"
