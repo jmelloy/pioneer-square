@@ -218,7 +218,6 @@ def test_exec_tools_partial_failure_still_returns_all():
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # Cross-context task lock tests (issue #927)
 #
@@ -234,7 +233,7 @@ def test_exec_tools_partial_failure_still_returns_all():
 def test_is_child_task_run_active_reflects_guild_locks_state():
     """is_child_task_run_active must track the same (guild, "task:<id>") lock
     entries run_foreman_ai uses to serialise per-task child runs."""
-    from foreman.runner import _GuildRunLock, _guild_locks, is_child_task_run_active
+    from foreman.runner import _guild_locks, _GuildRunLock, is_child_task_run_active
 
     guild_id = "g-lockcheck"
     task_id = "t-lockcheck1"
@@ -256,7 +255,7 @@ def _with_child_lock_busy(guild_id: str, task_id: str):
     mimicking an in-flight per-task child Foreman run."""
     from contextlib import contextmanager
 
-    from foreman.runner import _GuildRunLock, _guild_locks
+    from foreman.runner import _guild_locks, _GuildRunLock
 
     @contextmanager
     def _cm():

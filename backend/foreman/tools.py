@@ -1899,7 +1899,11 @@ async def _exec_one_tool(
                                 effective_tool = (
                                     requested_tool
                                     or task_tool
-                                    or (followup_worker_tools[0] if followup_worker_tools else "claude")
+                                    or (
+                                        followup_worker_tools[0]
+                                        if followup_worker_tools
+                                        else "claude"
+                                    )
                                 )
                                 if requested_model is not None:
                                     effective_model = requested_model
@@ -2031,7 +2035,10 @@ async def _exec_one_tool(
                                         ),
                                         name=f"discord.followup:{task_id}",
                                     )
-                                    if target_worker_id != original_worker_id and original_worker_id:
+                                    if (
+                                        target_worker_id != original_worker_id
+                                        and original_worker_id
+                                    ):
                                         result_text = (
                                             f"Follow-up reassigned from {original_worker_id} "
                                             f"to {target_worker_id} (task {task_id} on branch {branch})."
@@ -2078,7 +2085,9 @@ async def _exec_one_tool(
                                 )
                             )
                             # Discard any queued follow-up events — the task is closed.
-                            await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
+                            await db.exec(
+                                delete(TaskEvent).where(col(TaskEvent.task_id) == task_id)
+                            )
                             await LockService(db).release(f"task:{task_id}")
 
                             # phase='issue' root tasks own an entire GitHub issue's worth of
@@ -2165,7 +2174,9 @@ async def _exec_one_tool(
                             await broadcast_msg(
                                 guild_id,
                                 TaskRedirectMsg(
-                                    workerId=worker_id_val, taskId=task_id, instructions=instructions
+                                    workerId=worker_id_val,
+                                    taskId=task_id,
+                                    instructions=instructions,
                                 ),
                             )
                             await broadcast_msg(

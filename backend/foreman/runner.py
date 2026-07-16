@@ -129,6 +129,7 @@ def is_child_task_run_active(guild_id: str, task_id: str) -> bool:
     state = _guild_locks.get((guild_id, f"task:{task_id}"))
     return bool(state and state.busy)
 
+
 # Max number of queued human messages per (guild, user)/(guild, task) key.
 # Bounded so a guild nobody is watching can't grow this without limit; the
 # oldest entry is dropped (with a warning) once the cap is hit.
