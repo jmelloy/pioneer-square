@@ -28,6 +28,7 @@ from foreman.message_utils import _json_default, truncate_tool_result
 from foreman.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
+from github_app_auth import get_app_installation_token, get_app_slug
 from lock_service import LockService
 from models import (
     Agent,
@@ -462,8 +463,11 @@ async def _guild_github_token(guild_id: str, user_id: str | None = None) -> tupl
 
     When *user_id* is given, prefer that member's own GitHub token so actions
     (issue claims, PR reviews, etc.) attribute to the acting human rather than
-    the guild owner. Falls back to the guild owner's token when *user_id* is
-    None (background/automated operations) or has no token on file.
+    the guild owner. For background/automated operations (*user_id* is None),
+    prefer the GitHub App installation token when configured — so automated
+    comments/reviews are attributed to the App identity — and fall back to
+    the guild owner's token when the App isn't configured or has no token on
+    file.
     """
     from auth_deps import get_guild_pk
 
@@ -486,6 +490,10 @@ async def _guild_github_token(guild_id: str, user_id: str | None = None) -> tupl
             row = result.first()
             if row:
                 return (row.access_token, row.github_username)
+        else:
+            app_token = get_app_installation_token()
+            if app_token:
+                return (app_token, get_app_slug())
 
         result = await db.exec(
             select(col(GithubToken.access_token), col(GithubToken.github_username))
