@@ -1,15 +1,16 @@
 """Task-type → model tier mapping.
 
 Defines three tiers (cheap, standard, powerful) and the rules that map a
-task's ``phase`` and ``tool`` fields to the appropriate tier.  A concrete
-model ID can then be resolved from the persisted models.dev catalog via
-``get_model_for_tier()``.
+task's ``phase`` to the appropriate tier.  A concrete model ID can then be
+resolved from the persisted models.dev catalog via ``get_model_for_tier()``.
+
+Tier selection is deliberately **agent-agnostic**: it never depends on which
+coding tool (claude/codex/pi) runs the task, so no single agent is pinned to a
+fixed capability class.
 
 Priority order for ``select_model_tier()``:
   1. ``complexity_hint`` — explicit caller override, highest priority.
-  2. Tool hard tier — tools like ``codex`` always require a specific tier
-     regardless of phase.
-  3. Phase tier — plan/execute → standard, issue/review → cheap.
+  2. Phase tier — plan/execute → standard, issue/review → cheap.
 """
 
 from __future__ import annotations
@@ -41,23 +42,6 @@ _PHASE_TIERS: dict[str, str] = {
     "plan": TIER_STANDARD,
     "execute": TIER_STANDARD,
     "review": TIER_CHEAP,
-}
-
-# ---------------------------------------------------------------------------
-# Tool tier config
-# ---------------------------------------------------------------------------
-
-# Tools listed here have a hard tier requirement that overrides the phase tier.
-# All other tools fall back to the phase-based tier.
-_TOOL_HARD_TIERS: dict[str, str] = {
-    "codex": TIER_POWERFUL,
-}
-
-# Default tier for tools without a hard requirement (used in documentation /
-# edge-case fallbacks — actual dispatch goes through the phase-tier path).
-_TOOL_DEFAULT_TIERS: dict[str, str] = {
-    "claude": TIER_STANDARD,
-    "pi": TIER_STANDARD,  # configurable; complexity_hint can override
 }
 
 # ---------------------------------------------------------------------------
@@ -102,19 +86,19 @@ _TIER_MODEL_PREFERENCES: dict[str, dict[str, list[str]]] = {
 
 def select_model_tier(
     phase: str | None,
-    tool: str | None,
     complexity_hint: str | None = None,
 ) -> str:
     """Return the appropriate tier string for a task.
 
+    Agent-agnostic: the result depends only on *phase* and *complexity_hint*,
+    never on which coding tool runs the task.
+
     Args:
-        phase: Task phase — ``"plan"``, ``"execute"``, or ``"review"``.
-               Unknown values fall back to ``TIER_STANDARD``.
-        tool: Runner name — ``"claude"``, ``"codex"``, or ``"pi"``.
-              Unknown values fall back to the phase tier.
+        phase: Task phase — ``"issue"``, ``"plan"``, ``"execute"``, or
+               ``"review"``. Unknown/None values fall back to ``TIER_STANDARD``.
         complexity_hint: Explicit tier override supplied by the caller
                          (``"cheap"``, ``"standard"``, or ``"powerful"``).
-                         Invalid values are silently ignored.
+                         Highest priority; invalid values are silently ignored.
 
     Returns:
         One of ``TIER_CHEAP``, ``TIER_STANDARD``, or ``TIER_POWERFUL``.
@@ -122,11 +106,6 @@ def select_model_tier(
     if complexity_hint in _VALID_TIERS:
         return complexity_hint
 
-    # Tools with hard tier requirements ignore phase.
-    if tool in _TOOL_HARD_TIERS:
-        return _TOOL_HARD_TIERS[tool]
-
-    # All other tools: let the phase drive the tier.
     return _PHASE_TIERS.get(phase or "", TIER_STANDARD)
 
 

@@ -107,10 +107,11 @@ FOREMAN_TOOLS = [
                         "REQUIRED. Model capability tier to dispatch this task at — the "
                         "foreman always picks the capability class; the backend resolves it "
                         "to the best available model in the worker's provider catalog. "
-                        "Guidance: 'cheap' for trivial/mechanical work (issue triage, "
-                        "simple reviews, lint/doc fixes); 'standard' for normal plan/execute "
-                        "work (the safe default when unsure); 'powerful' for gnarly or "
-                        "high-stakes work, and for any 'codex' task. The resolved tier is "
+                        "Choose by the difficulty of the work itself, NOT by which tool "
+                        "runs it (tier is agent-agnostic): 'cheap' for trivial/mechanical "
+                        "work (issue triage, simple reviews, lint/doc fixes); 'standard' "
+                        "for normal plan/execute work (the safe default when unsure); "
+                        "'powerful' for gnarly or high-stakes work. The resolved tier is "
                         "recorded on the task."
                     ),
                 },
@@ -222,9 +223,10 @@ FOREMAN_TOOLS = [
                         "'standard', or 'powerful'. Pass the task's existing tier to keep "
                         "the same capability class, or change it to escalate a stuck task "
                         "(e.g. bump a repeatedly-failing follow-up to 'powerful') or "
-                        "de-escalate a trivial one. The backend re-resolves this to a "
-                        "concrete model from the worker's provider catalog on every "
-                        "follow-up; use 'powerful' for any 'codex' follow-up."
+                        "de-escalate a trivial one. Choose by the difficulty of the "
+                        "follow-up itself, not by which tool runs it (tier is "
+                        "agent-agnostic). The backend re-resolves this to a concrete model "
+                        "from the worker's provider catalog on every follow-up."
                     ),
                 },
                 "provider": {

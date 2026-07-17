@@ -1580,7 +1580,7 @@ async def _exec_one_tool(
 
                     from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
 
-                    model_tier = _select_tier(phase, tool, complexity_hint=requested_tier)
+                    model_tier = _select_tier(phase, complexity_hint=requested_tier)
 
                     # Filter model selection to only provider-compatible models.
                     if worker_provider and not is_error:
@@ -1949,14 +1949,12 @@ async def _exec_one_tool(
 
                                 if requested_tier:
                                     effective_tier = _select_tier(
-                                        "followup", effective_tool, complexity_hint=requested_tier
+                                        "followup", complexity_hint=requested_tier
                                     )
                                 elif requested_tool and requested_tool != task_tool:
-                                    effective_tier = _select_tier("followup", effective_tool)
+                                    effective_tier = _select_tier("followup")
                                 else:
-                                    effective_tier = task_model_tier or _select_tier(
-                                        "followup", effective_tool
-                                    )
+                                    effective_tier = task_model_tier or _select_tier("followup")
 
                                 if (
                                     requested_tier
