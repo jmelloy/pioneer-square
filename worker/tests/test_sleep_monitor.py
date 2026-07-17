@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from unittest.mock import AsyncMock
 
 from pioneer_worker import ws_client as ws_client_mod
@@ -29,6 +30,27 @@ def test_stub_is_sleeping_always_false_without_pyobjc():
 
     monitor.stop()
     assert monitor.is_sleeping.is_set() is False
+
+
+def test_resleep_during_grace_period_keeps_is_sleeping_set():
+    """A wake that doesn't outlast the grace period (Power Nap / notification
+    wake) must not clear is_sleeping — otherwise the worker flaps
+    online/offline on every brief wake cycle."""
+    monitor = SystemSleepMonitor(wake_grace_seconds=0.05)
+
+    monitor._handle_will_sleep()
+    assert monitor.is_sleeping.is_set()
+
+    # Brief wake, then re-sleep before the grace period elapses.
+    monitor._handle_did_wake()
+    monitor._handle_will_sleep()
+    time.sleep(0.2)
+    assert monitor.is_sleeping.is_set(), "re-sleep during grace must keep reconnects paused"
+
+    # A wake that lasts the full grace period does resume.
+    monitor._handle_did_wake()
+    time.sleep(0.2)
+    assert not monitor.is_sleeping.is_set()
 
 
 class _FakeSleepMonitor:
