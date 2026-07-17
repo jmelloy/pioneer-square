@@ -1402,6 +1402,36 @@ def _task_mutation_blocked(guild_id: str, task_id: str, own_task_id: str | None)
     return None
 
 
+async def _resolve_bedrock_model_id(db, provider: str | None, model: str | None) -> str | None:
+    """For Bedrock workers, swap a short models.dev model ID for the canonical
+    inference-profile ARN stored in the catalog.
+
+    The Claude CLI on Bedrock requires the full ARN; short IDs are rejected by
+    the InvokeModel API. No-op for non-Bedrock providers or when *model* is
+    unset. Falls back to the short ID (with a warning) when no ARN is on file.
+    """
+    if provider != "bedrock" or not model:
+        return model
+    from models import ModelCatalog  # noqa: PLC0415
+
+    bedrock_id_result = await db.exec(
+        select(col(ModelCatalog.bedrock_model_id)).where(
+            col(ModelCatalog.provider) == "bedrock",
+            col(ModelCatalog.model_id) == model,
+        )
+    )
+    resolved = bedrock_id_result.one_or_none()
+    if resolved:
+        return resolved
+    logger.warning(
+        "no Bedrock ARN for model %r "
+        "(catalog may need a refresh with AWS credentials configured) "
+        "— using short ID as fallback; worker may fail at inference time",
+        model,
+    )
+    return model
+
+
 async def _exec_one_tool(
     guild_id: str, tu, user_id: str | None = None, *, own_task_id: str | None = None
 ) -> dict:
@@ -1578,28 +1608,9 @@ async def _exec_one_tool(
                             catalog = await get_providers_from_db(db)
                             model = get_model_for_tier(model_tier, worker_provider, catalog)
                     # For Bedrock workers, resolve the short model ID to the
-                    # canonical inference-profile ARN stored in the catalog.
-                    # The Claude CLI on Bedrock requires the full ARN; short IDs
-                    # from models.dev are rejected by the InvokeModel API.
-                    if worker_provider == "bedrock" and model and not is_error:
-                        from models import ModelCatalog  # noqa: PLC0415
-
-                        bedrock_id_result = await db.exec(
-                            select(col(ModelCatalog.bedrock_model_id)).where(
-                                col(ModelCatalog.provider) == "bedrock",
-                                col(ModelCatalog.model_id) == model,
-                            )
-                        )
-                        resolved = bedrock_id_result.one_or_none()
-                        if resolved:
-                            model = resolved
-                        else:
-                            logger.warning(
-                                "assign_task: no Bedrock ARN for model %r "
-                                "(catalog may need a refresh with AWS credentials configured) "
-                                "— using short ID as fallback; worker may fail at inference time",
-                                model,
-                            )
+                    # canonical inference-profile ARN the Claude CLI requires.
+                    if not is_error:
+                        model = await _resolve_bedrock_model_id(db, worker_provider, model)
                     if not is_error and repos:
                         worker_repos: list[str] = json.loads(worker_row.repos or "[]")
                         worker_org: str | None = worker_row.org
@@ -1980,6 +1991,13 @@ async def _exec_one_tool(
                                             "/api/models to see available models for each provider."
                                         )
                                         is_error = True
+                                # Validation matches on the short models.dev ID, so
+                                # swap to the Bedrock inference-profile ARN only after
+                                # it passes (no-op for non-Bedrock providers).
+                                if not is_error:
+                                    effective_model = await _resolve_bedrock_model_id(
+                                        db, effective_provider, effective_model
+                                    )
 
                             if not is_error:
                                 # Atomically acquire the follow-up lock to prevent two
