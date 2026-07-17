@@ -338,6 +338,27 @@ async def lifespan(app: FastAPI):
     _log_format = os.environ.get("LOG_FORMAT", "colored")
     logging.config.dictConfig(_get_logging_config(_log_level, _log_format))
 
+    # A configured public guild identity is a startup invariant. Failing here
+    # prevents Pioneer from advertising or accepting work under an identity it
+    # cannot verify through DNS, status, and the configured lifecycle log.
+    from foreman.dnsid_identity import get_dnsid_runtime  # noqa: PLC0415
+
+    dnsid_runtime = get_dnsid_runtime()
+    if dnsid_runtime is not None:
+        verified_self = await asyncio.to_thread(
+            dnsid_runtime.manager.verify_domain, dnsid_runtime.domain
+        )
+        if verified_self.cached_state() != "ACTIVE":
+            raise RuntimeError(
+                f"configured DNSid identity {dnsid_runtime.domain} is "
+                f"{verified_self.cached_state()}, not ACTIVE"
+            )
+        logger.info(
+            "Verified Pioneer DNSid identity %s for guild %s",
+            dnsid_runtime.domain,
+            dnsid_runtime.guild_slug,
+        )
+
     # Phase 1: detect stale workers and send graceful-shutdown signals.
     # Must be awaited directly before reset_connection_state() so the DB still
     # holds the non-offline state that identifies which workers were stale.
@@ -443,6 +464,7 @@ app.add_middleware(
 # Mount routers
 # ---------------------------------------------------------------------------
 
+from routes import a2a as _a2a_routes  # noqa: E402
 from routes import agents as _agents_routes  # noqa: E402
 from routes import auth as _auth_routes  # noqa: E402
 from routes import cost as _cost_routes  # noqa: E402
@@ -465,6 +487,7 @@ from routes import workers as _workers_routes  # noqa: E402
 from routes.webhooks import shutdown_debouncer as _shutdown_webhook_debouncer  # noqa: E402
 
 app.include_router(_wellknown_routes.router)
+app.include_router(_a2a_routes.router)
 app.include_router(_auth_routes.router)
 app.include_router(_guilds_routes.router)
 app.include_router(_agents_routes.router)

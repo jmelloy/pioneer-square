@@ -1653,6 +1653,8 @@ async def _run_foreman_ai(
                     message_type="chat",
                     created_at=now,
                     task_id=_task_id,
+                    user_id=user_id,
+                    source="a2a" if user_id and "." in user_id else "web",
                 )
             )
             await db.commit()

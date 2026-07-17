@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from models import Guild, GuildKey, Worker
 from pydantic import BaseModel, ConfigDict
+from pydantic import Field as PydanticField
 from pydantic.alias_generators import to_camel
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -39,6 +40,11 @@ router = APIRouter()
 
 def _extract_guild_from_host(host: str) -> str | None:
     hostname = host.split(":")[0]
+    from foreman.dnsid_identity import get_dnsid_runtime
+
+    runtime = get_dnsid_runtime()
+    if runtime is not None and hostname.rstrip(".").lower() == runtime.domain:
+        return runtime.guild_slug
     for base in ("pioneer-square.melloy.life", "localhost"):
         suffix = f".{base}"
         if hostname.endswith(suffix):
@@ -118,6 +124,14 @@ async def jwks(
     request: Request,
     db: AsyncSession = Depends(get_db_dep),
 ) -> JSONResponse:
+    from foreman.dnsid_identity import get_dnsid_runtime
+
+    runtime = get_dnsid_runtime()
+    hostname = request.headers.get("host", "").split(":")[0].rstrip(".").lower()
+    if runtime is not None and hostname == runtime.domain:
+        key_set = runtime.manager.get_key_set()
+        return JSONResponse({"keys": [key._raw for key in key_set.keys]})
+
     guild_id = _extract_guild_from_host(request.headers.get("host", ""))
     if not guild_id:
         return JSONResponse({"keys": []})
@@ -179,6 +193,7 @@ class AgentCapabilities(_CamelModel):
     streaming: bool = False
     push_notifications: bool = False
     state_transition_history: bool = False
+    extensions: list[dict] = PydanticField(default_factory=list)
 
 
 class AgentSkill(_CamelModel):
@@ -211,34 +226,8 @@ class AgentCard(_CamelModel):
     # Excluded from serialisation when None (exclude_none=True in model_dump).
     security_schemes: dict | None = None
     security: list[dict] | None = None
-
-
-def _worker_to_skill(worker: Worker) -> AgentSkill:
-    repos: list[str] = []
-    try:
-        repos = json.loads(worker.repos or "[]")
-    except (ValueError, TypeError):
-        pass
-
-    if worker.org:
-        name = f"Worker ({worker.org})"
-        description = f"Handles coding tasks for GitHub org {worker.org}"
-        tags = ["coding", "github", worker.org]
-    elif repos:
-        name = f"Worker ({', '.join(repos[:2])}{'…' if len(repos) > 2 else ''})"
-        description = f"Handles coding tasks for: {', '.join(repos)}"
-        tags = ["coding", "github"] + repos[:5]
-    else:
-        name = f"Worker ({worker.id})"
-        description = "Handles coding tasks"
-        tags = ["coding"]
-
-    return AgentSkill(
-        id=worker.id,
-        name=name,
-        description=description,
-        tags=tags,
-    )
+    supported_interfaces: list[dict] | None = None
+    security_requirements: list[dict] | None = None
 
 
 def _oidc_security_schemes(base_url: str) -> tuple[dict | None, list[dict] | None]:
@@ -279,10 +268,8 @@ def _build_agent_card(
     guild_url = (guild.url if guild and guild.url else base_url) or base_url
     guild_version = (guild.version if guild and guild.version else "1.0.0") or "1.0.0"
 
-    online_workers = [w for w in workers if w.state not in ("offline",)]
-    skills = [_worker_to_skill(w) for w in online_workers]
-
-    # Always include the foreman as a skill
+    # External callers invoke narrow guild capabilities. Workers remain an
+    # internal implementation detail under Foreman assignment authority.
     foreman_skill = AgentSkill(
         id="foreman",
         name="Foreman",
@@ -297,16 +284,67 @@ def _build_agent_card(
             "Refactor the database layer to use async queries",
         ],
     )
-    skills.insert(0, foreman_skill)
+    pr_review_skill = AgentSkill(
+        id="pr-review",
+        name="Pull request review",
+        description="Review a GitHub pull request under the guild's repository policy.",
+        tags=["github", "pull-request", "review"],
+        examples=["Review https://github.com/org/repo/pull/42 for authorization issues"],
+        input_modes=["text/plain", "application/vnd.pioneer.github-pr+json"],
+        output_modes=["text/markdown", "application/vnd.pioneer.review-report+json"],
+    )
+    skills = [foreman_skill, pr_review_skill]
 
-    security_schemes, security = _oidc_security_schemes(base_url)
+    from foreman.dnsid_identity import (
+        A2A_VERSION,
+        DNSID_A2A_EXTENSION_URI,
+        DNSID_A2A_SIGNATURE_TAG,
+        REQUIRED_SIGNATURE_COMPONENTS,
+        get_dnsid_runtime,
+    )
+
+    runtime = get_dnsid_runtime()
+    extensions: list[dict] = []
+    supported_interfaces = None
+    if runtime is not None:
+        guild_url = runtime.public_origin
+        extensions = [
+            {
+                "uri": DNSID_A2A_EXTENSION_URI,
+                "description": "DNSid-bound RFC 9421 HTTP Message Signatures.",
+                "required": True,
+                "params": {
+                    "requiredSignatureTag": DNSID_A2A_SIGNATURE_TAG,
+                    "requiredCoveredComponents": REQUIRED_SIGNATURE_COMPONENTS,
+                    "keyidSyntax": "<caller-dnsid-subject>#<jwks-kid>",
+                },
+            }
+        ]
+        security_schemes = {
+            "dnsidHttpSignatures": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "Signature",
+                "description": "DNSid-bound RFC 9421 HTTP Message Signature",
+            }
+        }
+        security = [{"dnsidHttpSignatures": []}]
+        supported_interfaces = [
+            {
+                "url": guild_url,
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": A2A_VERSION,
+            }
+        ]
+    else:
+        security_schemes, security = _oidc_security_schemes(base_url)
 
     return AgentCard(
         name=guild_name,
         description=guild_description,
         url=guild_url,
         version=guild_version,
-        capabilities=AgentCapabilities(streaming=True),
+        capabilities=AgentCapabilities(streaming=False, extensions=extensions),
         default_input_modes=["text/plain"],
         default_output_modes=["text/plain"],
         skills=skills,
@@ -317,6 +355,8 @@ def _build_agent_card(
         documentation_url="https://github.com/jmelloy/pioneer-square#readme",
         security_schemes=security_schemes,
         security=security,
+        supported_interfaces=supported_interfaces,
+        security_requirements=security,
     )
 
 
@@ -345,6 +385,28 @@ async def agent_card(
         content=card.model_dump(by_alias=True, exclude_none=True),
         headers={"Content-Type": "application/json"},
     )
+
+
+@router.get("/.well-known/agent-card.json")
+async def standard_agent_card(
+    request: Request,
+    db: AsyncSession = Depends(get_db_dep),
+) -> JSONResponse:
+    """A2A 1.0 standard AgentCard route; the legacy route remains available."""
+    return await agent_card(request, db)
+
+
+@router.get("/.well-known/status.json")
+async def dnsid_status(request: Request) -> JSONResponse:
+    from foreman.dnsid_identity import get_dnsid_runtime
+
+    runtime = get_dnsid_runtime()
+    hostname = request.headers.get("host", "").split(":")[0].rstrip(".").lower()
+    if runtime is None or hostname != runtime.domain:
+        raise HTTPException(status_code=404, detail="DNSid identity not configured for this host")
+    from dnsid import active_status_document
+
+    return JSONResponse(active_status_document())
 
 
 @router.get("/guilds/{guild_id}/agent-card")

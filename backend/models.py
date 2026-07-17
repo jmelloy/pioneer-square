@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, or_, text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, UniqueConstraint, or_, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel, col
 
@@ -103,6 +103,34 @@ class Message(SQLModel, table=True):
     # via discord/router.py), or "api" (posted directly through the REST
     # messages endpoint). Lets the frontend show where a message came from.
     source: str | None = Field(default="web")
+
+
+class ExternalA2ARequest(SQLModel, table=True):
+    """Replay guard and authentication audit for accepted DNSid A2A requests."""
+
+    __tablename__ = "external_a2a_requests"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint(
+            "guild_id",
+            "sender_fqdn",
+            "external_message_id",
+            name="uq_external_a2a_sender_message",
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: int = Field(foreign_key="guilds.id", index=True)
+    replay_key: str = Field(unique=True, index=True)
+    external_message_id: str
+    sender_fqdn: str = Field(index=True)
+    governance_id: str
+    dnssec_state: str
+    dnsid_status: str
+    verified_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    skill: str
+    state: str = Field(default="accepted", sa_column_kwargs={"server_default": "'accepted'"})
+    message_id: int | None = Field(default=None, foreign_key="messages.id")
+    task_id: str | None = Field(default=None, foreign_key="tasks.id", index=True)
 
 
 class Worker(SQLModel, table=True):
