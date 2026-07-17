@@ -6,4 +6,9 @@ runs `claude --dangerously-skip-permissions` on each task, and pushes the
 result as a GitHub pull request.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("pioneer-square")
+except PackageNotFoundError:
+    __version__ = "0.0.0.dev0"
