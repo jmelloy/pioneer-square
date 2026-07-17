@@ -18,9 +18,12 @@ jobs:
       - name: Compute version
         id: version
         run: |
-          VERSION="$(date -u +%Y.%m.%d)-$(git rev-parse --short HEAD)"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          DATE="$(date -u +%Y.%m.%d)"
+          SHA="$(git rev-parse --short HEAD)"
+          # PEP 440-compliant version for the Python package (local version after '+').
+          echo "version=${DATE}+${SHA}" >> "$GITHUB_OUTPUT"
+          # Human-readable tag/release name (git tags don't require PEP 440).
+          echo "tag=v${DATE}-${SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Bump pyproject version
         run: |
