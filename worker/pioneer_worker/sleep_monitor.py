@@ -1,9 +1,10 @@
 """macOS sleep/wake awareness for the worker's WebSocket reconnect loop.
 
 Wraps ``NSWorkspace`` sleep/wake notifications so the WS reconnect loop can
-avoid hammering a dead network link while the laptop is asleep, and give the
-network stack a couple of seconds to come back up after wake before the first
-post-wake retry. No-op stub everywhere else (non-macOS, or ``pyobjc`` not
+avoid hammering a dead network link while the laptop is asleep, and only
+resume after the system stays awake for a full grace period — brief Power
+Nap / notification wakes are debounced away so the worker doesn't flap
+online/offline on the backend. No-op stub everywhere else (non-macOS, or ``pyobjc`` not
 installed): ``start()``/``stop()`` do nothing and ``is_sleeping`` stays unset.
 """
 
@@ -48,11 +49,13 @@ if _HAS_APPKIT:
 class SystemSleepMonitor:
     """Tracks macOS sleep/wake state on a background thread.
 
-    ``is_sleeping`` is set on ``NSWorkspaceWillSleepNotification`` and stays
-    set through a short grace period after ``NSWorkspaceDidWakeNotification``
-    fires, so a caller checking ``is_sleeping.is_set()`` won't race a
-    reconnect attempt against a network interface that hasn't come back up
-    yet.
+    ``is_sleeping`` is set on ``NSWorkspaceWillSleepNotification`` and only
+    clears after the system stays awake for ``wake_grace_seconds`` of
+    continuous wall-clock time. The grace period is both a network-settle
+    delay and a debounce: Power Nap / notification wakes light the machine
+    up for a few seconds every couple of minutes, and reconnecting on each
+    one makes the worker flap online/offline on the backend. A wake that
+    doesn't outlast the grace period never resumes reconnects.
 
     ``on_sleep``/``on_wake`` callbacks run on the monitor's background
     thread — callers driving an asyncio loop must hop back onto it
@@ -64,7 +67,7 @@ class SystemSleepMonitor:
         *,
         on_sleep: Callable[[], None] | None = None,
         on_wake: Callable[[], None] | None = None,
-        wake_grace_seconds: float = 2.0,
+        wake_grace_seconds: float = 30.0,
     ) -> None:
         self.on_sleep = on_sleep
         self.on_wake = on_wake
@@ -73,6 +76,10 @@ class SystemSleepMonitor:
         # background thread and read from the asyncio event loop thread, so
         # the flag needs to be an explicit, thread-safe cross-thread signal.
         self.is_sleeping = threading.Event()
+        # Bumped on every willSleep; a pending _finish_wake compares its
+        # captured value and aborts if the system re-slept during the grace
+        # period. Int read/write is atomic under the GIL — no lock needed.
+        self._sleep_generation = 0
         self._thread: threading.Thread | None = None
         self._observer = None
         self._stop_event = threading.Event()
@@ -139,6 +146,7 @@ class SystemSleepMonitor:
     def _handle_will_sleep(self) -> None:
         already = self.is_sleeping.is_set()
         self.is_sleeping.set()
+        self._sleep_generation += 1
         logger.info(
             "System sleep detected — pausing WS reconnects (was_already_sleeping=%s, "
             "on_sleep_callback=%s)",
@@ -159,11 +167,21 @@ class SystemSleepMonitor:
             "System wake detected — starting %ss grace period before resuming WS reconnects",
             self._wake_grace_seconds,
         )
-        threading.Thread(target=self._finish_wake, name="sleep-monitor-wake", daemon=True).start()
+        generation = self._sleep_generation
+        threading.Thread(
+            target=self._finish_wake, args=(generation,), name="sleep-monitor-wake", daemon=True
+        ).start()
 
-    def _finish_wake(self) -> None:
+    def _finish_wake(self, generation: int) -> None:
         logger.debug("Wake grace period started (%ss)", self._wake_grace_seconds)
         time.sleep(self._wake_grace_seconds)
+        if generation != self._sleep_generation:
+            logger.info(
+                "Wake grace period aborted — system re-entered sleep before %ss elapsed "
+                "(likely a Power Nap / notification wake); reconnects stay paused",
+                self._wake_grace_seconds,
+            )
+            return
         self.is_sleeping.clear()
         logger.info(
             "Wake grace period elapsed — resuming WS reconnects (on_wake_callback=%s)",
