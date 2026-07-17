@@ -111,6 +111,25 @@ class _GuildRunLock:
 
 _guild_locks: dict[tuple[str, str | None], _GuildRunLock] = {}
 
+
+def is_child_task_run_active(guild_id: str, task_id: str) -> bool:
+    """Return True if a per-task child Foreman run is currently in-flight for *task_id*.
+
+    Checks the same ``_guild_locks`` map used to serialise ``run_foreman_ai``
+    invocations, keyed on ``(guild_id, "task:<task_id>")`` — the lock key a
+    per-task child context claims for the duration of its run (see
+    ``run_foreman_ai``). A *parent* run's task-mutating tool handlers
+    (send_followup, redirect_task, cancel_task, finalize_task) call this
+    before acting on a specific task_id so they can detect that task's own
+    child context is mid-flight and skip rather than race it — closing the
+    cross-context lock gap from issue #927 (parent and child runs otherwise
+    key on different (guild_id, key) pairs and never serialise against each
+    other for the same task).
+    """
+    state = _guild_locks.get((guild_id, f"task:{task_id}"))
+    return bool(state and state.busy)
+
+
 # Max number of queued human messages per (guild, user)/(guild, task) key.
 # Bounded so a guild nobody is watching can't grow this without limit; the
 # oldest entry is dropped (with a warning) once the cap is hit.
@@ -1407,7 +1426,9 @@ async def _run_foreman_ai(
 
             _tool_use_ts = _now  # capture before exec_tools may raise
 
-            tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
+            tool_results = await exec_tools(
+                guild_id, tool_uses, user_id=user_id, own_task_id=_task_id
+            )
             # Truncate verbose results; filter to only IDs in the current batch so
             # stale results that survived history trimming are never persisted.
             current_tool_use_ids = {tu.id for tu in tool_uses}
