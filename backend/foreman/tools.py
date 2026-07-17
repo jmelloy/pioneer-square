@@ -1467,6 +1467,7 @@ async def _exec_one_tool(
                 phase = inp.get("phase", "execute")
                 requested_tool: str | None = inp.get("tool")
                 model = inp.get("model") or None
+                requested_tier: str | None = inp.get("tier") or None
                 provider = inp.get("provider") or None
                 existing_task_id = inp.get("task_id")
                 existing_linkage: tuple[int | None, str | None, int | None, str | None] | None = (
@@ -1549,7 +1550,7 @@ async def _exec_one_tool(
 
                     from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
 
-                    model_tier = _select_tier(phase, tool)
+                    model_tier = _select_tier(phase, tool, complexity_hint=requested_tier)
 
                     # Filter model selection to only provider-compatible models.
                     if worker_provider and not is_error:
@@ -1712,6 +1713,7 @@ async def _exec_one_tool(
                                         description=desc,
                                         tool=tool,
                                         model=model,
+                                        modelTier=model_tier,
                                         provider=provider,
                                         phase=phase,
                                         parentTaskId=parent_task_id,
@@ -1774,6 +1776,7 @@ async def _exec_one_tool(
                                         description=desc,
                                         tool=tool,
                                         model=model,
+                                        modelTier=model_tier,
                                         provider=provider,
                                         phase=phase,
                                         parentTaskId=parent_task_id,
@@ -1807,6 +1810,7 @@ async def _exec_one_tool(
                 preferred_worker_id = inp.get("preferred_worker_id")
                 requested_tool: str | None = inp.get("tool")
                 requested_model: str | None = inp.get("model") or None
+                requested_tier: str | None = inp.get("tier") or None
                 requested_provider: str | None = inp.get("provider") or None
                 _blocked = _task_mutation_blocked(guild_id, task_id, own_task_id)
                 if _blocked:
@@ -1822,6 +1826,7 @@ async def _exec_one_tool(
                             col(Task.name),
                             col(Task.tool),
                             col(Task.model),
+                            col(Task.model_tier),
                             col(Task.provider),
                             col(Task.issue_number),
                             col(Task.issue_repo),
@@ -1840,6 +1845,7 @@ async def _exec_one_tool(
                             task_name,
                             task_tool,
                             task_model,
+                            task_model_tier,
                             task_provider,
                             task_issue_number,
                             task_issue_repo,
@@ -1907,6 +1913,10 @@ async def _exec_one_tool(
                                 )
                                 if requested_model is not None:
                                     effective_model = requested_model
+                                elif requested_tier:
+                                    # Explicit tier bump/de-escalation — drop the pinned
+                                    # model so it's re-resolved from the new tier below.
+                                    effective_model = None
                                 elif requested_tool and requested_tool != task_tool:
                                     # Switching tools invalidates the previous model choice
                                     # (e.g. a claude model id is meaningless to codex/pi) —
@@ -1921,6 +1931,39 @@ async def _exec_one_tool(
                                     if task_provider is not None
                                     else followup_worker_provider
                                 )
+
+                                from util.model_tiers import (  # noqa: PLC0415
+                                    select_model_tier as _select_tier,
+                                )
+
+                                if requested_tier:
+                                    effective_tier = _select_tier(
+                                        "followup", effective_tool, complexity_hint=requested_tier
+                                    )
+                                elif requested_tool and requested_tool != task_tool:
+                                    effective_tier = _select_tier("followup", effective_tool)
+                                else:
+                                    effective_tier = task_model_tier or _select_tier(
+                                        "followup", effective_tool
+                                    )
+
+                                if (
+                                    requested_tier
+                                    and requested_model is None
+                                    and effective_provider
+                                    and not is_error
+                                ):
+                                    from util.model_tiers import (  # noqa: PLC0415
+                                        get_model_for_tier as _get_model_for_tier,
+                                    )
+                                    from util.models_dev import (  # noqa: PLC0415
+                                        get_providers_from_db as _get_providers_from_db,
+                                    )
+
+                                    _catalog = await _get_providers_from_db(db)
+                                    effective_model = _get_model_for_tier(
+                                        effective_tier, effective_provider, _catalog
+                                    )
                                 if effective_model and effective_provider:
                                     from models import ModelCatalog  # noqa: PLC0415
 
@@ -1961,6 +2004,7 @@ async def _exec_one_tool(
                                                     "preferred_worker_id": preferred_worker_id,
                                                     "tool": requested_tool,
                                                     "model": requested_model,
+                                                    "tier": requested_tier,
                                                     "provider": requested_provider,
                                                 }
                                             ),
@@ -1980,6 +2024,7 @@ async def _exec_one_tool(
                                         "worker_id": target_worker_id,
                                         "tool": effective_tool,
                                         "model": effective_model,
+                                        "model_tier": effective_tier,
                                         "provider": effective_provider,
                                     }
                                     if prior_state in ("done", "failed", "cancelled"):
@@ -2018,6 +2063,7 @@ async def _exec_one_tool(
                                             description=task_desc or "",
                                             tool=effective_tool,
                                             model=effective_model,
+                                            modelTier=effective_tier,
                                             provider=effective_provider,
                                             branch=branch,
                                             instructions=instructions,

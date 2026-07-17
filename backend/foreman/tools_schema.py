@@ -104,9 +104,22 @@ FOREMAN_TOOLS = [
                     "type": "string",
                     "description": (
                         "Model override for the chosen tool (e.g. 'claude-opus-4-8', 'o4-mini', 'gpt-4o'). "
-                        "Omit to auto-select: the foreman maps the task phase and tool to a tier "
-                        "(cheap/standard/powerful) and picks the best available model from the "
-                        "worker's provider catalog. Explicit values are validated against the catalog."
+                        "Takes precedence over tier — set this only when you need a specific model, "
+                        "not just a capability class. Explicit values are validated against the catalog."
+                    ),
+                },
+                "tier": {
+                    "type": "string",
+                    "enum": ["cheap", "standard", "powerful"],
+                    "description": (
+                        "Model capability tier to dispatch this task at. Omit to auto-select: the "
+                        "foreman maps the task phase and tool to a tier (cheap/standard/powerful) "
+                        "on its own — issue/review lean cheap, plan/execute lean standard, codex is "
+                        "always powerful. Pass this explicitly to override that default, e.g. "
+                        "'powerful' for an unusually gnarly execute task or 'cheap' for a trivial "
+                        "one. Ignored when model is also set (model wins), but still recorded on "
+                        "the task. The resolved tier picks the best available model from the "
+                        "worker's provider catalog."
                     ),
                 },
                 "provider": {
@@ -216,7 +229,20 @@ FOREMAN_TOOLS = [
                         "'claude-opus-4-8', 'o4-mini'). Defaults to the task's current "
                         "model; if tool is changed without an explicit model, the prior "
                         "model is dropped and the worker picks its own default for the "
-                        "new tool. Explicit values are validated against the catalog."
+                        "new tool. Takes precedence over tier. Explicit values are "
+                        "validated against the catalog."
+                    ),
+                },
+                "tier": {
+                    "type": "string",
+                    "enum": ["cheap", "standard", "powerful"],
+                    "description": (
+                        "Optional: model capability tier for this follow-up — 'cheap', "
+                        "'standard', or 'powerful'. Use this to escalate a stuck task "
+                        "(e.g. bump a repeatedly-failing claude follow-up to 'powerful') "
+                        "or de-escalate a trivial one, without naming a specific model. "
+                        "Ignored when model is also set (model wins). Defaults to the "
+                        "task's current tier when omitted."
                     ),
                 },
                 "provider": {
