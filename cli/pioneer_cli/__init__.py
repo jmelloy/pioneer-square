@@ -12,4 +12,9 @@ The three runtimes still live in their own source trees (``backend/``,
 ``sys.path`` for the selected mode and hands off to the existing entry point.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("pioneer-square")
+except PackageNotFoundError:
+    __version__ = "0.0.0.dev0"
