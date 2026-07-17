@@ -74,7 +74,7 @@ def is_native_bedrock_model(model: str) -> bool:
 # boto3 client cache
 # ---------------------------------------------------------------------------
 
-_clients: dict[tuple[str, str | None, str | None, str | None], Any] = {}
+_clients: dict[tuple[str, str | None, str | None, str | None, str | None], Any] = {}
 
 
 def _get_client(region: str, profile: str | None, extra_env: Mapping[str, str] | None):
@@ -85,9 +85,30 @@ def _get_client(region: str, profile: str | None, extra_env: Mapping[str, str] |
     access_key = env.get("AWS_ACCESS_KEY_ID")
     secret_key = env.get("AWS_SECRET_ACCESS_KEY")
     session_token = env.get("AWS_SESSION_TOKEN")
+    # Bedrock API-key (bearer-token) auth. Mirrors the AsyncAnthropicBedrock
+    # path in foreman.llm, which feeds AWS_BEARER_TOKEN_BEDROCK to the SDK's
+    # `api_key`. boto3 can only pick a bearer token up from os.environ (its
+    # token provider ignores any per-client env overlay), but the guild's token
+    # arrives here in `extra_env`, not the process env — so we can't rely on
+    # boto3's automatic resolution. Instead we force the bearer signer and hand
+    # it the token directly, keeping the token per-guild rather than leaking it
+    # into the shared process environment.
+    bearer_token = env.get("AWS_BEARER_TOKEN_BEDROCK")
 
-    cache_key = (region, profile, access_key, secret_key)
+    cache_key = (region, profile, access_key, secret_key, bearer_token)
     if cache_key not in _clients:
+        if bearer_token:
+            from botocore.config import Config
+            from botocore.tokens import FrozenAuthToken
+
+            session = boto3.Session(region_name=region)
+            client = session.client(
+                "bedrock-runtime", config=Config(signature_version="bearer")
+            )
+            client._request_signer._auth_token = FrozenAuthToken(bearer_token)
+            _clients[cache_key] = client
+            return _clients[cache_key]
+
         session_kwargs: dict[str, Any] = {"region_name": region}
         if access_key and secret_key:
             session_kwargs["aws_access_key_id"] = access_key

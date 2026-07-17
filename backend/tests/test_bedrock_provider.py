@@ -205,6 +205,39 @@ async def test_bedrock_native_client_create_success(monkeypatch):
     assert call_kwargs["inferenceConfig"] == {"maxTokens": 100}
 
 
+async def test_bedrock_native_client_uses_bearer_token(monkeypatch):
+    """A bearer token in extra_env forces the bearer signer and is handed to
+    the client directly — boto3's own token provider only reads os.environ,
+    which never carries the guild-supplied token."""
+    fake_boto_client = MagicMock()
+    fake_boto_client.converse.return_value = {
+        "output": {"message": {"content": [{"text": "ok"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 1, "outputTokens": 1},
+        "ResponseMetadata": {"HTTPStatusCode": 200, "RequestId": "req-1"},
+    }
+    fake_session = MagicMock()
+    fake_session.client.return_value = fake_boto_client
+
+    with patch("foreman.providers.bedrock.boto3") as fake_boto3:
+        fake_boto3.Session.return_value = fake_session
+        client = BedrockNativeClient(
+            region="us-east-1", extra_env={"AWS_BEARER_TOKEN_BEDROCK": "tok-abc"}
+        )
+        await client.messages.with_raw_response.create(
+            model="moonshotai.kimi-k2.5",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    # Client built with the bearer signature version, and the token injected.
+    config = fake_session.client.call_args.kwargs["config"]
+    assert config.signature_version == "bearer"
+    assert fake_boto_client._request_signer._auth_token.token == "tok-abc"
+    # No AWS keys/profile passed on the session when using a bearer token.
+    assert fake_boto3.Session.call_args.kwargs == {"region_name": "us-east-1"}
+
+
 async def test_bedrock_native_client_create_without_boto3_raises():
     with (
         patch("foreman.providers.bedrock.HAS_BOTO3", False),
