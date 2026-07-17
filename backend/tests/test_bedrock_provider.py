@@ -156,6 +156,51 @@ def test_converse_response_to_anthropic_tool_use():
     assert result["stop_reason"] == "tool_use"
 
 
+def test_response_namespace_blocks_serialize_losslessly():
+    """Regression: content blocks from the Converse path must survive
+    ``_serialize_content`` with their fields intact. Before, they were bare
+    SimpleNamespaces with no ``model_dump()``, so a tool_use block collapsed to
+    ``{"type": "tool_use", "raw": "namespace(...)"}`` — losing id/name/input.
+    ``strip_orphaned_tool_results`` then dropped the tool_use (id=None) and its
+    tool_result, so Kimi/Nova never saw the result and looped forever.
+    """
+    import json
+
+    from foreman.message_utils import _serialize_content, strip_orphaned_tool_results
+    from foreman.providers.bedrock import _response_dict_to_namespace
+
+    adict = converse_response_to_anthropic(
+        {
+            "output": {
+                "message": {
+                    "content": [
+                        {"text": " Let me check the task."},
+                        {"toolUse": {"toolUseId": "tu-1", "name": "get_task_status", "input": {"task_id": "t-1"}}},
+                    ]
+                }
+            },
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 10, "outputTokens": 2},
+        },
+        "moonshotai.kimi-k2.5",
+    )
+    ns = _response_dict_to_namespace(adict)
+
+    blocks = json.loads(_serialize_content(ns.content))
+    assert blocks == [
+        {"type": "text", "text": " Let me check the task."},
+        {"type": "tool_use", "id": "tu-1", "name": "get_task_status", "input": {"task_id": "t-1"}},
+    ]
+
+    # The tool_result must survive orphan-stripping (i.e. its tool_use is intact).
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "state"}]},
+        {"role": "assistant", "content": blocks},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-1", "content": "pending"}]},
+    ]
+    assert len(strip_orphaned_tool_results(messages)) == 3
+
+
 # ---------------------------------------------------------------------------
 # BedrockNativeClient.create — mocked boto3
 # ---------------------------------------------------------------------------
