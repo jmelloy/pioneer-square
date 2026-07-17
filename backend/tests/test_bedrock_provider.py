@@ -175,7 +175,13 @@ def test_response_namespace_blocks_serialize_losslessly():
                 "message": {
                     "content": [
                         {"text": " Let me check the task."},
-                        {"toolUse": {"toolUseId": "tu-1", "name": "get_task_status", "input": {"task_id": "t-1"}}},
+                        {
+                            "toolUse": {
+                                "toolUseId": "tu-1",
+                                "name": "get_task_status",
+                                "input": {"task_id": "t-1"},
+                            }
+                        },
                     ]
                 }
             },
@@ -196,7 +202,10 @@ def test_response_namespace_blocks_serialize_losslessly():
     messages = [
         {"role": "user", "content": [{"type": "text", "text": "state"}]},
         {"role": "assistant", "content": blocks},
-        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu-1", "content": "pending"}]},
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu-1", "content": "pending"}],
+        },
     ]
     assert len(strip_orphaned_tool_results(messages)) == 3
 

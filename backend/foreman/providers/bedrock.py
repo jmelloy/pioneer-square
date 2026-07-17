@@ -102,9 +102,7 @@ def _get_client(region: str, profile: str | None, extra_env: Mapping[str, str] |
             from botocore.tokens import FrozenAuthToken
 
             session = boto3.Session(region_name=region)
-            client = session.client(
-                "bedrock-runtime", config=Config(signature_version="bearer")
-            )
+            client = session.client("bedrock-runtime", config=Config(signature_version="bearer"))
             client._request_signer._auth_token = FrozenAuthToken(bearer_token)
             _clients[cache_key] = client
             return _clients[cache_key]
