@@ -1402,6 +1402,36 @@ def _task_mutation_blocked(guild_id: str, task_id: str, own_task_id: str | None)
     return None
 
 
+async def _resolve_bedrock_model_id(db, provider: str | None, model: str | None) -> str | None:
+    """For Bedrock workers, swap a short models.dev model ID for the canonical
+    inference-profile ARN stored in the catalog.
+
+    The Claude CLI on Bedrock requires the full ARN; short IDs are rejected by
+    the InvokeModel API. No-op for non-Bedrock providers or when *model* is
+    unset. Falls back to the short ID (with a warning) when no ARN is on file.
+    """
+    if provider != "bedrock" or not model:
+        return model
+    from models import ModelCatalog  # noqa: PLC0415
+
+    bedrock_id_result = await db.exec(
+        select(col(ModelCatalog.bedrock_model_id)).where(
+            col(ModelCatalog.provider) == "bedrock",
+            col(ModelCatalog.model_id) == model,
+        )
+    )
+    resolved = bedrock_id_result.one_or_none()
+    if resolved:
+        return resolved
+    logger.warning(
+        "no Bedrock ARN for model %r "
+        "(catalog may need a refresh with AWS credentials configured) "
+        "— using short ID as fallback; worker may fail at inference time",
+        model,
+    )
+    return model
+
+
 async def _exec_one_tool(
     guild_id: str, tu, user_id: str | None = None, *, own_task_id: str | None = None
 ) -> dict:
@@ -1467,6 +1497,7 @@ async def _exec_one_tool(
                 phase = inp.get("phase", "execute")
                 requested_tool: str | None = inp.get("tool")
                 model = inp.get("model") or None
+                requested_tier: str | None = inp.get("tier") or None
                 provider = inp.get("provider") or None
                 existing_task_id = inp.get("task_id")
                 existing_linkage: tuple[int | None, str | None, int | None, str | None] | None = (
@@ -1549,7 +1580,7 @@ async def _exec_one_tool(
 
                     from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
 
-                    model_tier = _select_tier(phase, tool)
+                    model_tier = _select_tier(phase, complexity_hint=requested_tier)
 
                     # Filter model selection to only provider-compatible models.
                     if worker_provider and not is_error:
@@ -1577,28 +1608,9 @@ async def _exec_one_tool(
                             catalog = await get_providers_from_db(db)
                             model = get_model_for_tier(model_tier, worker_provider, catalog)
                     # For Bedrock workers, resolve the short model ID to the
-                    # canonical inference-profile ARN stored in the catalog.
-                    # The Claude CLI on Bedrock requires the full ARN; short IDs
-                    # from models.dev are rejected by the InvokeModel API.
-                    if worker_provider == "bedrock" and model and not is_error:
-                        from models import ModelCatalog  # noqa: PLC0415
-
-                        bedrock_id_result = await db.exec(
-                            select(col(ModelCatalog.bedrock_model_id)).where(
-                                col(ModelCatalog.provider) == "bedrock",
-                                col(ModelCatalog.model_id) == model,
-                            )
-                        )
-                        resolved = bedrock_id_result.one_or_none()
-                        if resolved:
-                            model = resolved
-                        else:
-                            logger.warning(
-                                "assign_task: no Bedrock ARN for model %r "
-                                "(catalog may need a refresh with AWS credentials configured) "
-                                "— using short ID as fallback; worker may fail at inference time",
-                                model,
-                            )
+                    # canonical inference-profile ARN the Claude CLI requires.
+                    if not is_error:
+                        model = await _resolve_bedrock_model_id(db, worker_provider, model)
                     if not is_error and repos:
                         worker_repos: list[str] = json.loads(worker_row.repos or "[]")
                         worker_org: str | None = worker_row.org
@@ -1712,6 +1724,7 @@ async def _exec_one_tool(
                                         description=desc,
                                         tool=tool,
                                         model=model,
+                                        modelTier=model_tier,
                                         provider=provider,
                                         phase=phase,
                                         parentTaskId=parent_task_id,
@@ -1774,6 +1787,7 @@ async def _exec_one_tool(
                                         description=desc,
                                         tool=tool,
                                         model=model,
+                                        modelTier=model_tier,
                                         provider=provider,
                                         phase=phase,
                                         parentTaskId=parent_task_id,
@@ -1807,6 +1821,7 @@ async def _exec_one_tool(
                 preferred_worker_id = inp.get("preferred_worker_id")
                 requested_tool: str | None = inp.get("tool")
                 requested_model: str | None = inp.get("model") or None
+                requested_tier: str | None = inp.get("tier") or None
                 requested_provider: str | None = inp.get("provider") or None
                 _blocked = _task_mutation_blocked(guild_id, task_id, own_task_id)
                 if _blocked:
@@ -1822,6 +1837,7 @@ async def _exec_one_tool(
                             col(Task.name),
                             col(Task.tool),
                             col(Task.model),
+                            col(Task.model_tier),
                             col(Task.provider),
                             col(Task.issue_number),
                             col(Task.issue_repo),
@@ -1840,6 +1856,7 @@ async def _exec_one_tool(
                             task_name,
                             task_tool,
                             task_model,
+                            task_model_tier,
                             task_provider,
                             task_issue_number,
                             task_issue_repo,
@@ -1907,6 +1924,10 @@ async def _exec_one_tool(
                                 )
                                 if requested_model is not None:
                                     effective_model = requested_model
+                                elif requested_tier:
+                                    # Explicit tier bump/de-escalation — drop the pinned
+                                    # model so it's re-resolved from the new tier below.
+                                    effective_model = None
                                 elif requested_tool and requested_tool != task_tool:
                                     # Switching tools invalidates the previous model choice
                                     # (e.g. a claude model id is meaningless to codex/pi) —
@@ -1921,6 +1942,37 @@ async def _exec_one_tool(
                                     if task_provider is not None
                                     else followup_worker_provider
                                 )
+
+                                from util.model_tiers import (  # noqa: PLC0415
+                                    select_model_tier as _select_tier,
+                                )
+
+                                if requested_tier:
+                                    effective_tier = _select_tier(
+                                        "followup", complexity_hint=requested_tier
+                                    )
+                                elif requested_tool and requested_tool != task_tool:
+                                    effective_tier = _select_tier("followup")
+                                else:
+                                    effective_tier = task_model_tier or _select_tier("followup")
+
+                                if (
+                                    requested_tier
+                                    and requested_model is None
+                                    and effective_provider
+                                    and not is_error
+                                ):
+                                    from util.model_tiers import (  # noqa: PLC0415
+                                        get_model_for_tier as _get_model_for_tier,
+                                    )
+                                    from util.models_dev import (  # noqa: PLC0415
+                                        get_providers_from_db as _get_providers_from_db,
+                                    )
+
+                                    _catalog = await _get_providers_from_db(db)
+                                    effective_model = _get_model_for_tier(
+                                        effective_tier, effective_provider, _catalog
+                                    )
                                 if effective_model and effective_provider:
                                     from models import ModelCatalog  # noqa: PLC0415
 
@@ -1937,6 +1989,13 @@ async def _exec_one_tool(
                                             "/api/models to see available models for each provider."
                                         )
                                         is_error = True
+                                # Validation matches on the short models.dev ID, so
+                                # swap to the Bedrock inference-profile ARN only after
+                                # it passes (no-op for non-Bedrock providers).
+                                if not is_error:
+                                    effective_model = await _resolve_bedrock_model_id(
+                                        db, effective_provider, effective_model
+                                    )
 
                             if not is_error:
                                 # Atomically acquire the follow-up lock to prevent two
@@ -1961,6 +2020,7 @@ async def _exec_one_tool(
                                                     "preferred_worker_id": preferred_worker_id,
                                                     "tool": requested_tool,
                                                     "model": requested_model,
+                                                    "tier": requested_tier,
                                                     "provider": requested_provider,
                                                 }
                                             ),
@@ -1980,6 +2040,7 @@ async def _exec_one_tool(
                                         "worker_id": target_worker_id,
                                         "tool": effective_tool,
                                         "model": effective_model,
+                                        "model_tier": effective_tier,
                                         "provider": effective_provider,
                                     }
                                     if prior_state in ("done", "failed", "cancelled"):
@@ -2018,6 +2079,7 @@ async def _exec_one_tool(
                                             description=task_desc or "",
                                             tool=effective_tool,
                                             model=effective_model,
+                                            modelTier=effective_tier,
                                             provider=effective_provider,
                                             branch=branch,
                                             instructions=instructions,

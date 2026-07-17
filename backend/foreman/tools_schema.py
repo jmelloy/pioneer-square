@@ -100,13 +100,19 @@ FOREMAN_TOOLS = [
                     "enum": ["claude", "codex", "pi"],
                     "description": "Coding agent to use. Default: claude.",
                 },
-                "model": {
+                "tier": {
                     "type": "string",
+                    "enum": ["cheap", "standard", "powerful"],
                     "description": (
-                        "Model override for the chosen tool (e.g. 'claude-opus-4-8', 'o4-mini', 'gpt-4o'). "
-                        "Omit to auto-select: the foreman maps the task phase and tool to a tier "
-                        "(cheap/standard/powerful) and picks the best available model from the "
-                        "worker's provider catalog. Explicit values are validated against the catalog."
+                        "REQUIRED. Model capability tier to dispatch this task at — the "
+                        "foreman always picks the capability class; the backend resolves it "
+                        "to the best available model in the worker's provider catalog. "
+                        "Choose by the difficulty of the work itself, NOT by which tool "
+                        "runs it (tier is agent-agnostic): 'cheap' for trivial/mechanical "
+                        "work (issue triage, simple reviews, lint/doc fixes); 'standard' "
+                        "for normal plan/execute work (the safe default when unsure); "
+                        "'powerful' for gnarly or high-stakes work. The resolved tier is "
+                        "recorded on the task."
                     ),
                 },
                 "provider": {
@@ -160,7 +166,7 @@ FOREMAN_TOOLS = [
                     ),
                 },
             },
-            "required": ["worker_id", "description"],
+            "required": ["worker_id", "description", "tier"],
         },
     },
     {
@@ -181,9 +187,9 @@ FOREMAN_TOOLS = [
             "linked GitHub issue (the source of truth for intent) and decline — "
             "assertively, citing the issue number, not apologetically — anything that "
             "contradicts it; minor nits (style, naming) can still be accepted. "
-            "Optionally pass tool/model/provider to switch coding agent for "
-            "the follow-up (e.g. escalate a stuck claude task to codex); "
-            "omit all three to keep using whatever the task already ran with."
+            "Pass tier every call (required); optionally pass tool/provider to "
+            "switch coding agent for the follow-up (e.g. escalate a stuck claude "
+            "task to codex), or omit them to keep the task's current tool/provider."
         ),
         "input_schema": {
             "type": "object",
@@ -209,14 +215,18 @@ FOREMAN_TOOLS = [
                         "current tool."
                     ),
                 },
-                "model": {
+                "tier": {
                     "type": "string",
+                    "enum": ["cheap", "standard", "powerful"],
                     "description": (
-                        "Optional: model override for this follow-up (e.g. "
-                        "'claude-opus-4-8', 'o4-mini'). Defaults to the task's current "
-                        "model; if tool is changed without an explicit model, the prior "
-                        "model is dropped and the worker picks its own default for the "
-                        "new tool. Explicit values are validated against the catalog."
+                        "REQUIRED. Model capability tier for this follow-up — 'cheap', "
+                        "'standard', or 'powerful'. Pass the task's existing tier to keep "
+                        "the same capability class, or change it to escalate a stuck task "
+                        "(e.g. bump a repeatedly-failing follow-up to 'powerful') or "
+                        "de-escalate a trivial one. Choose by the difficulty of the "
+                        "follow-up itself, not by which tool runs it (tier is "
+                        "agent-agnostic). The backend re-resolves this to a concrete model "
+                        "from the worker's provider catalog on every follow-up."
                     ),
                 },
                 "provider": {
@@ -228,7 +238,7 @@ FOREMAN_TOOLS = [
                     ),
                 },
             },
-            "required": ["task_id", "instructions"],
+            "required": ["task_id", "instructions", "tier"],
         },
     },
     {

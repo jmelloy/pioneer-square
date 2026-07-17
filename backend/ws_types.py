@@ -123,6 +123,7 @@ class TaskAssignedMsg(_WS):
     description: str = ""
     tool: str = "claude"
     model: str | None = None
+    modelTier: str | None = None
     provider: str | None = None
     phase: str | None = None
     parentTaskId: str | None = None
@@ -181,6 +182,7 @@ class TaskFollowupMsg(_WS):
     description: str = ""
     tool: str = "claude"
     model: str | None = None
+    modelTier: str | None = None
     provider: str | None = None
     branch: str
     instructions: str

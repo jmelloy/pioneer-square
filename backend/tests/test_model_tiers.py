@@ -47,41 +47,31 @@ _SAMPLE_CATALOG = [
 
 
 def test_select_plan_phase_is_standard():
-    assert select_model_tier("plan", "claude") == TIER_STANDARD
+    assert select_model_tier("plan") == TIER_STANDARD
 
 
 def test_select_execute_phase_is_standard():
-    assert select_model_tier("execute", "claude") == TIER_STANDARD
+    assert select_model_tier("execute") == TIER_STANDARD
 
 
 def test_select_review_phase_is_cheap():
-    assert select_model_tier("review", "claude") == TIER_CHEAP
+    assert select_model_tier("review") == TIER_CHEAP
 
 
-def test_select_review_phase_pi_is_cheap():
-    assert select_model_tier("review", "pi") == TIER_CHEAP
-
-
-def test_select_execute_phase_pi_is_standard():
-    assert select_model_tier("execute", "pi") == TIER_STANDARD
+def test_select_issue_phase_is_cheap():
+    assert select_model_tier("issue") == TIER_CHEAP
 
 
 # ---------------------------------------------------------------------------
-# select_model_tier — tool hard-tier overrides
+# select_model_tier — agent-agnostic (tier never depends on the tool)
 # ---------------------------------------------------------------------------
 
 
-def test_select_codex_tool_is_powerful_in_execute():
-    assert select_model_tier("execute", "codex") == TIER_POWERFUL
-
-
-def test_select_codex_tool_is_powerful_in_plan():
-    assert select_model_tier("plan", "codex") == TIER_POWERFUL
-
-
-def test_select_codex_tool_overrides_review_phase():
-    # codex always requires powerful, even in review phase
-    assert select_model_tier("review", "codex") == TIER_POWERFUL
+def test_select_is_agent_agnostic():
+    # No tool argument exists; the same phase yields the same tier regardless
+    # of which coding agent will run the task. codex is NOT pinned to powerful.
+    assert select_model_tier("execute") == TIER_STANDARD
+    assert select_model_tier("review") == TIER_CHEAP
 
 
 # ---------------------------------------------------------------------------
@@ -89,25 +79,25 @@ def test_select_codex_tool_overrides_review_phase():
 # ---------------------------------------------------------------------------
 
 
-def test_select_complexity_hint_cheap_overrides_codex():
-    assert select_model_tier("execute", "codex", complexity_hint=TIER_CHEAP) == TIER_CHEAP
+def test_select_complexity_hint_cheap_overrides_phase():
+    assert select_model_tier("execute", complexity_hint=TIER_CHEAP) == TIER_CHEAP
 
 
 def test_select_complexity_hint_powerful_overrides_review():
-    assert select_model_tier("review", "claude", complexity_hint=TIER_POWERFUL) == TIER_POWERFUL
+    assert select_model_tier("review", complexity_hint=TIER_POWERFUL) == TIER_POWERFUL
 
 
 def test_select_complexity_hint_standard():
-    assert select_model_tier("plan", "claude", complexity_hint=TIER_STANDARD) == TIER_STANDARD
+    assert select_model_tier("plan", complexity_hint=TIER_STANDARD) == TIER_STANDARD
 
 
 def test_select_invalid_complexity_hint_is_ignored():
-    # Invalid hint → falls through to normal resolution
-    assert select_model_tier("review", "claude", complexity_hint="ultra") == TIER_CHEAP
+    # Invalid hint → falls through to phase resolution
+    assert select_model_tier("review", complexity_hint="ultra") == TIER_CHEAP
 
 
 def test_select_none_complexity_hint_ignored():
-    assert select_model_tier("review", "claude", complexity_hint=None) == TIER_CHEAP
+    assert select_model_tier("review", complexity_hint=None) == TIER_CHEAP
 
 
 # ---------------------------------------------------------------------------
@@ -116,20 +106,11 @@ def test_select_none_complexity_hint_ignored():
 
 
 def test_select_unknown_phase_defaults_to_standard():
-    assert select_model_tier("unknown_phase", "claude") == TIER_STANDARD
+    assert select_model_tier("unknown_phase") == TIER_STANDARD
 
 
 def test_select_none_phase_defaults_to_standard():
-    assert select_model_tier(None, "claude") == TIER_STANDARD
-
-
-def test_select_unknown_tool_uses_phase_tier():
-    assert select_model_tier("review", "unknown_tool") == TIER_CHEAP
-    assert select_model_tier("execute", "unknown_tool") == TIER_STANDARD
-
-
-def test_select_none_tool_uses_phase_tier():
-    assert select_model_tier("review", None) == TIER_CHEAP
+    assert select_model_tier(None) == TIER_STANDARD
 
 
 # ---------------------------------------------------------------------------
