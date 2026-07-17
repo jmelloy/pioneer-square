@@ -284,7 +284,16 @@ class _RawConverseResponse:
 
 
 def _response_dict_to_namespace(raw: dict[str, Any]) -> SimpleNamespace:
-    content = [SimpleNamespace(**block) for block in raw.get("content") or []]
+    # Each content block carries its own ``model_dump()`` returning the original
+    # dict, so ``message_utils._serialize_content`` round-trips it losslessly.
+    # Without it, that helper falls back to ``{"type": ..., "raw": str(block)}``,
+    # dropping ``id``/``name``/``input`` from tool_use blocks — which then get
+    # stripped as orphans and the model never sees its tool results (infinite
+    # tool loop for Kimi/Nova on the Converse path).
+    content = [
+        SimpleNamespace(**block, model_dump=lambda block=block: block)
+        for block in raw.get("content") or []
+    ]
     usage = SimpleNamespace(**(raw.get("usage") or {}))
     return SimpleNamespace(
         id=raw.get("id"),
