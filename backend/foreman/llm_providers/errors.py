@@ -119,7 +119,11 @@ def normalize_error(exc: Exception, *, provider: str) -> ProviderError:
             return ProviderRateLimitError(
                 str(exc), provider=provider, status_code=status, retryable=True, original=exc
             )
-        if code in ("AccessDeniedException", "UnrecognizedClientException", "UnauthorizedException"):
+        if code in (
+            "AccessDeniedException",
+            "UnrecognizedClientException",
+            "UnauthorizedException",
+        ):
             return ProviderAuthError(str(exc), provider=provider, status_code=status, original=exc)
         return ProviderAPIError(
             str(exc),

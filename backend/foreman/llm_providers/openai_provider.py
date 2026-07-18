@@ -158,7 +158,9 @@ class OpenAIProvider(LLMProvider):
                     try:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
-                        logger.warning("OpenAI-compatible stream sent invalid JSON chunk: %.200r", payload)
+                        logger.warning(
+                            "OpenAI-compatible stream sent invalid JSON chunk: %.200r", payload
+                        )
                         continue
                     delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
                     text = delta.get("content")
