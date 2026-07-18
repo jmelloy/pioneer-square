@@ -131,6 +131,13 @@ RUN useradd --create-home --shell /bin/bash worker \
     && mkdir -p /work/repos /work/worktrees /config /home/worker/go \
     && chown -R worker:worker /work /config /home/worker
 
+# Pi extension for delegating tasks to subagents (#938), giving pi-coding-agent
+# a subagent/delegation tool. Installed as the `worker` user (not root) since
+# `pi install` writes into $HOME/.pi, and the container runs as `worker`.
+USER worker
+RUN pi install npm:pi-subagents
+USER root
+
 # PGDATA gives the coding agent a sensible default cluster location to
 # initialise with `initdb`/`pg_ctl` when a repo's tests need a real Postgres.
 # TEST_DATABASE_URL is picked up by backend/tests/_test_config.py with zero
