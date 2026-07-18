@@ -16,6 +16,17 @@ Anthropic SDK can reach itself (`ANTHROPIC_SDK_PROVIDERS`); for anything else
 (currently just `"openai"`) it requires a connected foreman API proxy rather
 than calling `call_openai_compatible` locally — see the FOREMAN_PROVIDER check
 in `backend/foreman/runner.py`.
+
+Unified provider shim (see issue #940): `backend/foreman/llm_providers/`
+formalizes the provider-string dispatch below into a class per provider
+(`AnthropicProvider`/`BedrockProvider`/`OpenAIProvider`, all implementing the
+common `LLMProvider` interface — create a client, run a chat completion,
+stream one, raise a normalized error). `make_anthropic_client` below now
+builds its client by calling into that package instead of branching inline;
+`call_anthropic`/`call_openai_compatible` remain the shared request/response
+translation both the adapters and the two runners call, unchanged. New code
+should prefer `foreman.llm_providers.get_provider(...)` over the free
+functions in this module.
 """
 
 from __future__ import annotations
@@ -271,136 +282,43 @@ def make_anthropic_client(
     # Explicit args still win over both.
     env: Mapping[str, str] = {**os.environ, **(extra_env or {})}
 
+    # Client construction is delegated to the formal provider shim (see the
+    # module docstring, issue #940) — this function now only resolves the
+    # provider name and forwards this module's own patchable module-level
+    # state (`_anthropic_mod`, `_BEDROCK_REGION`, `_log_bedrock_credentials`)
+    # into the adapter, rather than importing/reading any of that itself, so
+    # tests that monkeypatch those names on this module keep working
+    # unchanged.
+    try:
+        from foreman.llm_providers import AnthropicProvider, BedrockProvider
+        from foreman.llm_providers.errors import ProviderConfigError
+    except ImportError:  # pragma: no cover - exercised under the proxy's import layout
+        from backend.foreman.llm_providers import AnthropicProvider, BedrockProvider
+        from backend.foreman.llm_providers.errors import ProviderConfigError
+
     if resolved_provider == "bedrock":
-        # Fail fast: a Bedrock client with no model would only surface this
-        # deep inside the first API call. Check it here, before the client
-        # (and any of its credential resolution) is even built — consistent
-        # with the same check in get_foreman_model().
-        resolved_model = model or env.get("FOREMAN_BEDROCK_MODEL")
-        if not resolved_model:
-            raise BedrockModelNotConfiguredError(
-                "Bedrock provider selected but no model is configured. Unlike AWS "
-                "credentials, which boto3 can resolve on its own (IAM role, profile, "
-                "env vars) and report clearly if missing, there is no discoverable "
-                "default model or inference profile — the Bedrock API call itself "
-                "requires one to be passed explicitly, and an account-scoped ARN "
-                "guessed here could silently send requests to the wrong AWS account. "
-                "Set a model (inference-profile ARN or model ID) in the guild's "
-                "foreman settings, or set the FOREMAN_BEDROCK_MODEL environment "
-                "variable."
-            )
-        resolved_region = (
-            region or env.get("AWS_DEFAULT_REGION") or env.get("AWS_REGION") or _BEDROCK_REGION
-        )
-        resolved_profile = aws_profile or env.get("AWS_PROFILE") or None
-
-        # Bedrock also hosts foundation models with their own wire format —
-        # Amazon Nova, Kimi K2, ... — that the Anthropic SDK's Messages API
-        # cannot reach. Those go through the Bedrock Runtime Converse API
-        # instead (see providers/bedrock.py); everything else on this path
-        # is Claude-on-Bedrock via AsyncAnthropicBedrock, unchanged.
         try:
-            # See the util.api_latency import fallback above for why both
-            # layouts are needed here.
-            from foreman.providers.bedrock import BedrockNativeClient, is_native_bedrock_model
-        except ImportError:  # pragma: no cover - exercised under the proxy's import layout
-            from backend.foreman.providers.bedrock import (
-                BedrockNativeClient,
-                is_native_bedrock_model,
-            )
-
-        if is_native_bedrock_model(resolved_model):
-            logger.info(
-                "Foreman using Amazon Bedrock Converse API (region=%s, profile=%s, auth=%s, model=%s)",
-                resolved_region,
-                resolved_profile,
-                "bearer-token"
-                if env.get("AWS_BEARER_TOKEN_BEDROCK")
-                else (
-                    "explicit-keys"
-                    if (env.get("AWS_ACCESS_KEY_ID") and env.get("AWS_SECRET_ACCESS_KEY"))
-                    else "sigv4"
-                ),
-                resolved_model,
-            )
-            return BedrockNativeClient(
-                region=resolved_region, profile=resolved_profile, extra_env=env
-            )
-
-        access_key = env.get("AWS_ACCESS_KEY_ID")
-        secret_key = env.get("AWS_SECRET_ACCESS_KEY")
-        session_token = env.get("AWS_SESSION_TOKEN")
-        # Bearer-token auth (AWS_BEARER_TOKEN_BEDROCK) bypasses SigV4/boto3
-        # entirely. The SDK reads it into `api_key` and *raises* if you also
-        # pass any AWS credential (aws_profile/keys), so when a token is present
-        # we must not pass any AWS credential and we skip the boto3 probe.
-        bearer_token = env.get("AWS_BEARER_TOKEN_BEDROCK")
-        logger.info(
-            "Foreman using Amazon Bedrock (region=%s, profile=%s, auth=%s, model=%s)",
-            resolved_region,
-            resolved_profile,
-            "bearer-token"
-            if bearer_token
-            else ("explicit-keys" if (access_key and secret_key) else "sigv4"),
-            resolved_model,
-        )
-        bedrock_kwargs: dict = {"aws_region": resolved_region}
-        if bearer_token:
-            logger.info(
-                "Bedrock credential probe: AWS_BEARER_TOKEN_BEDROCK is set "
-                "(len=%d); using bearer-token auth, skipping boto3 SigV4 "
-                "resolution.",
-                len(bearer_token),
-            )
-            bedrock_kwargs["api_key"] = bearer_token
-        else:
-            # Probe up front so a missing/expired credential shows up in the
-            # logs with a clear reason rather than the SDK's opaque
-            # RuntimeError later.
-            _log_bedrock_credentials(
-                resolved_region,
-                resolved_profile,
-                access_key=access_key,
-                secret_key=secret_key,
-                session_token=session_token,
+            return BedrockProvider().create_client(
                 env=env,
+                model=model,
+                anthropic_module=_anthropic_mod,
+                region=region,
+                aws_profile=aws_profile,
+                default_region=_BEDROCK_REGION,
+                credential_logger=_log_bedrock_credentials,
             )
-            # Pass credentials explicitly so resolution is deterministic and
-            # matches what the probe validated. Only safe when there's no
-            # bearer token. Explicit keys (from guild env_vars) take priority
-            # over a profile, mirroring boto3's own precedence.
-            if access_key and secret_key:
-                bedrock_kwargs["aws_access_key"] = access_key
-                bedrock_kwargs["aws_secret_key"] = secret_key
-                if session_token:
-                    bedrock_kwargs["aws_session_token"] = session_token
-            elif resolved_profile:
-                bedrock_kwargs["aws_profile"] = resolved_profile
-        return _anthropic_mod.AsyncAnthropicBedrock(**bedrock_kwargs)
+        except ProviderConfigError as exc:
+            # Preserve the historical exception type (and its ValueError
+            # ancestry) for existing callers/tests -- see
+            # BedrockModelNotConfiguredError's docstring above.
+            raise BedrockModelNotConfiguredError(str(exc)) from exc
 
-    # Direct Anthropic API. The SDK reads ANTHROPIC_* from os.environ on its own,
-    # but guild-configured env_vars never reach this process, so resolve them
-    # from the merged `env` and pass explicitly.
-    # api_key and auth_token are mutually exclusive; auth_token takes precedence
-    # so a guild-configured ANTHROPIC_AUTH_TOKEN overrides a process-level
-    # ANTHROPIC_API_KEY rather than causing an SDK ValueError.
-    kwargs: dict = {}
-    if env.get("ANTHROPIC_AUTH_TOKEN"):
-        kwargs["auth_token"] = env["ANTHROPIC_AUTH_TOKEN"]
-    else:
-        resolved_api_key = api_key or env.get("ANTHROPIC_API_KEY")
-        if resolved_api_key:
-            kwargs["api_key"] = resolved_api_key
-    if env.get("ANTHROPIC_BASE_URL"):
-        kwargs["base_url"] = env["ANTHROPIC_BASE_URL"]
-    logger.info(
-        "Foreman using Anthropic API (auth=%s, base_url=%s)",
-        "auth-token"
-        if kwargs.get("auth_token")
-        else ("api-key" if kwargs.get("api_key") else "default"),
-        kwargs.get("base_url", "default"),
+    # Any provider value other than "bedrock" (including an unrecognized one)
+    # falls through to the direct Anthropic API, matching this function's
+    # historical behavior.
+    return AnthropicProvider().create_client(
+        env=env, model=model, anthropic_module=_anthropic_mod, api_key=api_key
     )
-    return _anthropic_mod.AsyncAnthropic(**kwargs)
 
 
 # ---------------------------------------------------------------------------
