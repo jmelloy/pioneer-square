@@ -221,6 +221,25 @@ _STOP_REASON_MAP = {
     "stop_sequence": "stop_sequence",
 }
 
+# Kimi K2 emits its chain-of-thought inline in the text output as a
+# <think>...</think> block ahead of the actual response, rather than in a
+# separate reasoning field the Converse API could surface on its own. Left
+# in place, that reasoning leaks into task history, worker prompts, and chat
+# display. Other Bedrock models (Nova, Titan, Claude) don't emit this tag, so
+# stripping is scoped to Kimi models only via `_is_kimi_model`.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def _is_kimi_model(model: str) -> bool:
+    return "kimi" in model.lower()
+
+
+def _strip_think_block(text: str, model: str) -> str:
+    """Strip a leading <think>...</think> reasoning block from Kimi output."""
+    if not text or not _is_kimi_model(model):
+        return text
+    return _THINK_BLOCK_RE.sub("", text)
+
 
 def converse_response_to_anthropic(response: dict[str, Any], model: str) -> dict[str, Any]:
     """Convert a Bedrock Converse API response into an Anthropic Messages API
@@ -229,7 +248,9 @@ def converse_response_to_anthropic(response: dict[str, Any], model: str) -> dict
     content_blocks: list[dict[str, Any]] = []
     for block in output_message.get("content") or []:
         if "text" in block:
-            content_blocks.append({"type": "text", "text": block["text"]})
+            content_blocks.append(
+                {"type": "text", "text": _strip_think_block(block["text"], model)}
+            )
         elif "toolUse" in block:
             tool_use = block["toolUse"]
             content_blocks.append(

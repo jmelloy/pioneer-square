@@ -139,6 +139,62 @@ def test_converse_response_to_anthropic_text():
     }
 
 
+def test_converse_response_to_anthropic_strips_kimi_think_block():
+    response = {
+        "output": {
+            "message": {
+                "content": [
+                    {
+                        "text": "<think>\nSome reasoning here...\n</think>\nActual generated content here"
+                    }
+                ]
+            }
+        },
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 10, "outputTokens": 5},
+    }
+    result = converse_response_to_anthropic(response, "moonshotai.kimi-k2-instruct")
+    assert result["content"] == [{"type": "text", "text": "Actual generated content here"}]
+
+
+def test_converse_response_to_anthropic_strips_multiple_kimi_think_blocks():
+    response = {
+        "output": {
+            "message": {
+                "content": [
+                    {"text": "<think>first</think>middle<think>second</think>end"},
+                ]
+            }
+        },
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 1, "outputTokens": 1},
+    }
+    result = converse_response_to_anthropic(response, "moonshot.kimi-k2-instruct")
+    assert result["content"] == [{"type": "text", "text": "middleend"}]
+
+
+def test_converse_response_to_anthropic_leaves_non_kimi_text_untouched():
+    """A <think> tag literally present in a non-Kimi model's own output must
+    survive untouched — the strip is scoped to Kimi models only."""
+    response = {
+        "output": {"message": {"content": [{"text": "<think>not reasoning</think>real text"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 1, "outputTokens": 1},
+    }
+    result = converse_response_to_anthropic(response, "amazon.nova-pro-v1:0")
+    assert result["content"] == [{"type": "text", "text": "<think>not reasoning</think>real text"}]
+
+
+def test_converse_response_to_anthropic_kimi_no_think_block_untouched():
+    response = {
+        "output": {"message": {"content": [{"text": "plain answer, no reasoning tag"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 1, "outputTokens": 1},
+    }
+    result = converse_response_to_anthropic(response, "moonshotai.kimi-k2-instruct")
+    assert result["content"] == [{"type": "text", "text": "plain answer, no reasoning tag"}]
+
+
 def test_converse_response_to_anthropic_tool_use():
     response = {
         "output": {
