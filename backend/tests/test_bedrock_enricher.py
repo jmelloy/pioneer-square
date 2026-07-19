@@ -157,6 +157,36 @@ def test_build_bedrock_model_map_inference_profiles_fail_gracefully():
     assert result["claude-sonnet-4-6"] == "anthropic.claude-sonnet-4-6-20251001-v1:0"
 
 
+# ---------------------------------------------------------------------------
+# build_bedrock_model_map — AWS_BEARER_TOKEN_BEDROCK (issue #943)
+# ---------------------------------------------------------------------------
+
+
+def test_build_bedrock_model_map_uses_bearer_token(monkeypatch):
+    """When AWS_BEARER_TOKEN_BEDROCK is set, the client must be built with the
+    bearer signature version and the token injected directly — a plain
+    boto3.client("bedrock") does not auto-negotiate bearer auth and would
+    otherwise raise NoCredentialsError and log the "no AWS credentials
+    configured" warning even though a valid token is configured.
+    """
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "tok-abc")
+
+    client = _make_client(
+        foundation_models=[
+            {"modelId": "anthropic.claude-sonnet-4-6-20251001-v1:0"},
+        ]
+    )
+
+    with patch("boto3.client", return_value=client) as mock_client_ctor:
+        result = build_bedrock_model_map()
+
+    assert result["claude-sonnet-4-6"] == "anthropic.claude-sonnet-4-6-20251001-v1:0"
+
+    _, kwargs = mock_client_ctor.call_args
+    assert kwargs["config"].signature_version == "bearer"
+    assert client._request_signer._auth_token.token == "tok-abc"
+
+
 def test_build_bedrock_model_map_boto3_import_error():
     """ImportError for boto3 must return an empty dict."""
     import builtins
