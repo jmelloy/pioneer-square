@@ -20,6 +20,7 @@ as a fallback (which may fail at inference time).
 from __future__ import annotations
 
 import logging
+import os
 import re
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,28 @@ def _extract_short_id(model_id: str) -> str | None:
     if m:
         return m.group(1)
     return None
+
+
+def _make_bedrock_client(boto3_mod):
+    """Build the boto3 ``bedrock`` (control-plane) client used to list models.
+
+    Mirrors ``foreman.providers.bedrock._get_client``'s bearer-token handling:
+    a plain ``boto3.client("bedrock")`` does not auto-negotiate the
+    ``httpBearerAuth`` scheme just because ``AWS_BEARER_TOKEN_BEDROCK`` is set
+    in the environment — it still resolves SigV4 credentials and fails with
+    ``NoCredentialsError`` when none are configured. The signature version
+    must be forced to ``"bearer"`` and the token injected directly.
+    """
+    bearer_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+    if not bearer_token:
+        return boto3_mod.client("bedrock")
+
+    from botocore.config import Config
+    from botocore.tokens import FrozenAuthToken
+
+    client = boto3_mod.client("bedrock", config=Config(signature_version="bearer"))
+    client._request_signer._auth_token = FrozenAuthToken(bearer_token)
+    return client
 
 
 def build_bedrock_model_map() -> dict[str, str]:
@@ -71,7 +94,7 @@ def build_bedrock_model_map() -> dict[str, str]:
         return {}
 
     try:
-        client = boto3.client("bedrock")
+        client = _make_bedrock_client(boto3)
     except Exception as exc:
         logger.warning("bedrock_enricher: failed to create Bedrock client (%s) — skipping", exc)
         return {}
