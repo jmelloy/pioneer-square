@@ -29,6 +29,12 @@ updates:
       frontend-dependencies:
         patterns:
           - "*"
+    ignore:
+      - dependency-name: typescript
+        # TypeScript 7 is a peer-dependency conflict with typescript-eslint (<6.1.0)
+        # and @vue/eslint-config-typescript. Re-enable once those packages support TS 7.
+        # See: https://github.com/jmelloy/pioneer-square/issues/950
+        versions: [">=7.0.0"]
 
   - package-ecosystem: github-actions
     directory: /
