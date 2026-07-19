@@ -22,6 +22,7 @@ from typing import Any
 
 import discord_notifier
 from database import get_db
+from db import github_cache
 from events import broadcast, broadcast_msg, emit_terminal_line
 from foreman.constants import _TERMINAL_STATES
 from foreman.message_utils import _json_default, truncate_tool_result
@@ -507,24 +508,34 @@ async def _guild_github_token(guild_id: str, user_id: str | None = None) -> tupl
         await db.close()
 
 
-async def fetch_issue_state(repo: str, issue_number: int, token: str) -> str:
+async def fetch_issue_state(repo: str, issue_number: int, token: str, db: Any | None = None) -> str:
     """Return the current lifecycle state (``"open"`` or ``"closed"``) of a GitHub issue.
 
     Used by the periodic closed-issue sweep (foreman.runner._sweep_closed_issues)
     to detect issues closed outside the webhook path (e.g. a missed delivery).
+    When *db* is given, also upserts the fetched payload into the ``github_issues``
+    cache so the tasks/tree UI stays in sync even when the webhook delivery
+    that would normally do this was missed.
     """
     issue = await _to_thread(_gh_api, f"/repos/{repo}/issues/{issue_number}", token)
+    if db is not None:
+        await github_cache.upsert_issue(db, repo, issue)
     return issue.get("state", "open")
 
 
-async def fetch_pr_status(repo: str, pr_number: int, token: str) -> dict:
+async def fetch_pr_status(repo: str, pr_number: int, token: str, db: Any | None = None) -> dict:
     """Fetch merge state, reviews, and check-runs for one PR.
 
     Shared by the ``get_pr_status`` tool and the periodic-check poll loop
     (foreman.runner._poll_loop), which proactively refreshes PR status for
-    every non-terminal task with an open PR on each poll cycle.
+    every non-terminal task with an open PR on each poll cycle. When *db* is
+    given, also upserts the fetched payload into the ``github_pull_requests``
+    cache so the tasks/tree UI stays in sync even when the webhook delivery
+    that would normally do this was missed.
     """
     pr = await _to_thread(_gh_api, f"/repos/{repo}/pulls/{pr_number}", token)
+    if db is not None:
+        await github_cache.upsert_pr(db, repo, pr)
     reviews_raw = await _to_thread(
         _gh_api,
         f"/repos/{repo}/pulls/{pr_number}/reviews?per_page=20",

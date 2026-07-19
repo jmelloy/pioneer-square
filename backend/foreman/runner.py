@@ -578,6 +578,9 @@ async def _fetch_pr_status_lines(guild_id: str, pr_tasks: list[dict]) -> list[st
     failures, and review decisions without relying on webhook delivery. Best
     effort: an individual PR fetch failure (rate limit, deleted PR, missing
     token, etc.) is logged and skipped rather than aborting the whole poll.
+    Also upserts each fetched PR into the ``github_pull_requests`` cache (see
+    ``fetch_pr_status``) so a missed webhook doesn't leave the tasks/tree UI
+    stale indefinitely.
     """
     if not pr_tasks:
         return []
@@ -590,42 +593,46 @@ async def _fetch_pr_status_lines(guild_id: str, pr_tasks: list[dict]) -> list[st
     token, _username = creds
 
     lines: list[str] = []
-    for t in pr_tasks:
-        pr_repo, pr_number = t.get("pr_repo"), t.get("pr_number")
-        if not pr_repo or not pr_number:
-            m = _PR_URL_RE.match((t.get("pr_url") or "").rstrip("/"))
-            if not m:
+    db = await get_db()
+    try:
+        for t in pr_tasks:
+            pr_repo, pr_number = t.get("pr_repo"), t.get("pr_number")
+            if not pr_repo or not pr_number:
+                m = _PR_URL_RE.match((t.get("pr_url") or "").rstrip("/"))
+                if not m:
+                    continue
+                pr_repo, pr_number = m.group(1), int(m.group(2))
+
+            try:
+                status = await fetch_pr_status(pr_repo, pr_number, token, db=db)
+            except Exception:
+                logger.warning(
+                    "guild=%s task=%s failed to fetch PR status for %s#%s",
+                    guild_id,
+                    t["id"],
+                    pr_repo,
+                    pr_number,
+                    exc_info=True,
+                )
                 continue
-            pr_repo, pr_number = m.group(1), int(m.group(2))
 
-        try:
-            status = await fetch_pr_status(pr_repo, pr_number, token)
-        except Exception:
-            logger.warning(
-                "guild=%s task=%s failed to fetch PR status for %s#%s",
-                guild_id,
-                t["id"],
-                pr_repo,
-                pr_number,
-                exc_info=True,
+            checks = status.get("checks") or []
+            check_summary = (
+                ", ".join(f"{c['name']}={c['conclusion'] or c['status']}" for c in checks)
+                if checks
+                else "none"
             )
-            continue
-
-        checks = status.get("checks") or []
-        check_summary = (
-            ", ".join(f"{c['name']}={c['conclusion'] or c['status']}" for c in checks)
-            if checks
-            else "none"
-        )
-        reviews = status.get("reviews") or []
-        review_summary = (
-            ", ".join(f"{r['user']}={r['state']}" for r in reviews) if reviews else "none"
-        )
-        lines.append(
-            f"- task {t['id']} PR {pr_repo}#{pr_number} ({t['pr_url']}): "
-            f"state={status['state']} merged={status['merged']} "
-            f"checks=[{check_summary}] reviews=[{review_summary}]"
-        )
+            reviews = status.get("reviews") or []
+            review_summary = (
+                ", ".join(f"{r['user']}={r['state']}" for r in reviews) if reviews else "none"
+            )
+            lines.append(
+                f"- task {t['id']} PR {pr_repo}#{pr_number} ({t['pr_url']}): "
+                f"state={status['state']} merged={status['merged']} "
+                f"checks=[{check_summary}] reviews=[{review_summary}]"
+            )
+    finally:
+        await db.close()
     return lines
 
 
@@ -642,7 +649,9 @@ async def _sweep_closed_issues(guild_id: str, linked_issues: set[tuple[str, int]
     Non-terminal linked tasks are never auto-closed; only legacy phase='issue'
     rows are finalized and already-terminal tasks swept. Best effort: an
     individual GitHub fetch failure is logged and skipped rather than aborting
-    the sweep.
+    the sweep. Also upserts each fetched issue into the ``github_issues`` cache
+    (see ``fetch_issue_state``) so a missed webhook doesn't leave the
+    tasks/tree UI stale indefinitely.
     """
     if not linked_issues:
         return
@@ -659,7 +668,7 @@ async def _sweep_closed_issues(guild_id: str, linked_issues: set[tuple[str, int]
         guild_pk_val = await get_guild_pk(db, guild_id)
         for repo, number in sorted(linked_issues):
             try:
-                state = await fetch_issue_state(repo, number, token)
+                state = await fetch_issue_state(repo, number, token, db=db)
             except Exception:
                 logger.warning(
                     "guild=%s failed to fetch issue status for %s#%s",
