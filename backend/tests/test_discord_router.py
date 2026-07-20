@@ -21,7 +21,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from discord import router  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_task  # noqa: E402
-from models import DiscordChannelGuild, DiscordThreadBinding  # noqa: E402
+from models import DiscordChannelGuild, DiscordThreadBinding, User  # noqa: E402
+from sqlmodel import col, select  # noqa: E402
 
 
 def _insert_binding(db_url: str, subject_type: str, subject_key: str, thread_id: str) -> None:
@@ -270,3 +271,71 @@ async def test_mention_channel_ignores_when_application_id_unset(client):
         )
 
     assert mock_trigger.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Bot auto-provisioning (parent_user_id)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_auto_provisions_bot_author(client):
+    """An unmapped bot author gets its own users row, parented to the guild owner,
+    instead of resolving to no ps_user_id at all."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router-bot1", owner_user_id="gh-owner-bot1")
+    _insert_channel_guild(db_url, "channel-bot-1", "g-router-bot1")
+
+    with (
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "build finished",
+                "channel_id": "channel-bot-1",
+                "author": {"id": "d-bot-1", "username": "ci-bot", "bot": True},
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    _args, kwargs = mock_trigger.await_args
+    ps_user_id = kwargs["user_id"]
+    assert ps_user_id == "discordbot:d-bot-1"
+
+    with _sync_session(db_url) as session:
+        bot_user = session.execute(select(User).where(col(User.id) == ps_user_id)).scalars().one()
+        assert bot_user.is_bot is True
+        assert bot_user.parent_user_id == "gh-owner-bot1"
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_reuses_existing_bot_user(client):
+    """A second message from the same bot reuses its already-provisioned row."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router-bot2", owner_user_id="gh-owner-bot2")
+    _insert_channel_guild(db_url, "channel-bot-2", "g-router-bot2")
+
+    async def _send():
+        with (
+            patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+            patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+            patch("foreman.runner.reset_foreman_poll"),
+        ):
+            await router._route_inbound_message(
+                {
+                    "content": "status update",
+                    "channel_id": "channel-bot-2",
+                    "author": {"id": "d-bot-2", "username": "ci-bot", "bot": True},
+                }
+            )
+            return mock_trigger.await_args[1]["user_id"]
+
+    first_id = await _send()
+    second_id = await _send()
+    assert first_id == second_id == "discordbot:d-bot-2"
+
+    with _sync_session(db_url) as session:
+        count = len(session.execute(select(User).where(col(User.id) == first_id)).scalars().all())
+        assert count == 1

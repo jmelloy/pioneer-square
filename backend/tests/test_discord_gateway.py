@@ -302,6 +302,39 @@ async def test_message_create_filters_bot_author():
 
 
 @pytest.mark.asyncio
+async def test_message_create_allows_other_bot_when_application_id_configured(monkeypatch):
+    """A different application's bot message passes through once
+    DISCORD_APPLICATION_ID is set, so it can be auto-provisioned/routed
+    instead of being dropped outright."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "own-bot-id")
+    client = gateway.GatewayClient("token", queue=asyncio.Queue())
+    message = {
+        "author": {"bot": True, "id": "other-bot-id"},
+        "guild_id": "g1",
+        "channel_id": "c1",
+    }
+    with patch("discord.gateway._is_channel_wired", new=AsyncMock(return_value=True)):
+        await client._handle_message_create(message)
+    assert client._queue.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_message_create_still_filters_own_bot_when_application_id_configured(monkeypatch):
+    """Even with DISCORD_APPLICATION_ID configured, our own bot's messages are
+    still dropped to avoid echoing discord_notifier."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "own-bot-id")
+    client = gateway.GatewayClient("token", queue=asyncio.Queue())
+    message = {
+        "author": {"bot": True, "id": "own-bot-id"},
+        "guild_id": "g1",
+        "channel_id": "c1",
+    }
+    with patch("discord.gateway._is_channel_wired", new=AsyncMock(return_value=True)):
+        await client._handle_message_create(message)
+    assert client._queue.empty()
+
+
+@pytest.mark.asyncio
 async def test_message_create_filters_dm_with_no_guild_id():
     client = gateway.GatewayClient("token", queue=asyncio.Queue())
     message = {"author": {"bot": False}, "channel_id": "c1"}
