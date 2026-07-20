@@ -37,11 +37,13 @@ def _insert_binding(db_url: str, subject_type: str, subject_key: str, thread_id:
         session.commit()
 
 
-def _insert_channel_guild(db_url: str, channel_id: str, guild_id: str) -> None:
+def _insert_channel_guild(
+    db_url: str, channel_id: str, guild_id: str, discord_guild_id: str = "discord-guild-1"
+) -> None:
     with _sync_session(db_url) as session:
         session.add(
             DiscordChannelGuild(
-                discord_guild_id="discord-guild-1",
+                discord_guild_id=discord_guild_id,
                 discord_channel_id=channel_id,
                 ps_guild_id=guild_id,
                 created_at=datetime.now(UTC),
@@ -188,7 +190,9 @@ async def test_route_inbound_message_no_tag_for_general_chat(client):
 async def test_mention_channel_ignores_message_without_mention(client):
     """A plain message (no @mention) in the mention-only channel is ignored."""
     _test_client, db_url = client
-    _insert_channel_guild(db_url, "1528707144227225631", "g-router7")
+    _insert_channel_guild(
+        db_url, "1528707144227225631", "g-router7", discord_guild_id="discord-guild-mention-1"
+    )
 
     with (
         patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
@@ -213,7 +217,9 @@ async def test_mention_channel_responds_when_bot_mentioned(client):
     """A message that @mentions the bot in the mention-only channel is forwarded,
     with the mention token stripped from the content (#962)."""
     _test_client, db_url = client
-    _insert_channel_guild(db_url, "1528707144227225631", "g-router8")
+    _insert_channel_guild(
+        db_url, "1528707144227225631", "g-router8", discord_guild_id="discord-guild-mention-2"
+    )
 
     with (
         patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
@@ -243,7 +249,9 @@ async def test_mention_channel_ignores_when_application_id_unset(client):
     """With DISCORD_APPLICATION_ID unset, the bot can't identify its own mentions
     and safely ignores messages in the mention-only channel rather than guessing."""
     _test_client, db_url = client
-    _insert_channel_guild(db_url, "1528707144227225631", "g-router9")
+    _insert_channel_guild(
+        db_url, "1528707144227225631", "g-router9", discord_guild_id="discord-guild-mention-3"
+    )
 
     with (
         patch.dict(os.environ, {}, clear=False),
