@@ -34,6 +34,7 @@ from foreman.message_utils import (
     _serialize_content,
     _summarize_task,
     prune_history,
+    strip_think_blocks_json,
     truncate_tool_result,
 )
 from foreman.prompt import FOREMAN_SYSTEM, build_state_preamble, build_system_prompt
@@ -359,6 +360,46 @@ class TestSerializeContent:
     def test_empty_list(self):
         result = _serialize_content([])
         assert json.loads(result) == []
+
+
+# ---------------------------------------------------------------------------
+# 2b. strip_think_blocks_json (runner helper)
+# ---------------------------------------------------------------------------
+
+
+class TestStripThinkBlocksJson:
+    def test_strips_think_block_from_bare_string(self):
+        content = _serialize_content("<think>reasoning here</think>Hello there")
+        result = strip_think_blocks_json(content)
+        assert json.loads(result) == "Hello there"
+
+    def test_strips_think_block_from_text_block(self):
+        content = _serialize_content(
+            [{"type": "text", "text": "<think>secret plan</think>Final answer"}]
+        )
+        result = strip_think_blocks_json(content)
+        assert json.loads(result) == [{"type": "text", "text": "Final answer"}]
+
+    def test_leaves_tool_use_blocks_untouched(self):
+        blocks = [
+            {"type": "text", "text": "<think>hmm</think>Doing it now."},
+            {"type": "tool_use", "id": "tu-1", "name": "create_task", "input": {"name": "T"}},
+        ]
+        content = _serialize_content(blocks)
+        result = strip_think_blocks_json(content)
+        parsed = json.loads(result)
+        assert parsed[0] == {"type": "text", "text": "Doing it now."}
+        assert parsed[1] == blocks[1]
+
+    def test_no_think_block_is_unaffected(self):
+        content = _serialize_content("Nothing to strip here")
+        result = strip_think_blocks_json(content)
+        assert json.loads(result) == "Nothing to strip here"
+
+    def test_multiple_think_blocks_all_stripped(self):
+        content = _serialize_content("<think>a</think>Text one<think>b</think>Text two")
+        result = strip_think_blocks_json(content)
+        assert json.loads(result) == "Text oneText two"
 
 
 # ---------------------------------------------------------------------------
@@ -2538,6 +2579,45 @@ class TestForemanHistory:
             turn = session.scalar(select(ForemanTurn).order_by(col(ForemanTurn.id).desc()).limit(1))
         assert turn is not None
         assert turn.task_id is None
+
+    async def test_save_turn_strips_think_block_from_string_content(self, db_session):
+        """A leaked <think>...</think> block in a plain-string assistant turn
+        must never reach the foreman_turns row — regression test for the bug
+        where unstripped reasoning was persisted verbatim (see row 122861)."""
+        insert_guild(db_session, "g-hist-think-str")
+        await _save_turn(
+            "g-hist-think-str",
+            "u-1",
+            "assistant",
+            "<think>internal reasoning the user should never see</think>Here's the answer.",
+        )
+        with _sync_session(db_session) as session:
+            turn = session.scalar(select(ForemanTurn).order_by(col(ForemanTurn.id).desc()).limit(1))
+        assert turn is not None
+        assert "<think>" not in turn.content_json
+        assert json.loads(turn.content_json) == "Here's the answer."
+
+    async def test_save_turn_strips_think_block_from_text_blocks(self, db_session):
+        """A leaked <think>...</think> block inside a text content block must
+        be stripped before persistence, while sibling tool_use blocks are
+        left untouched."""
+        insert_guild(db_session, "g-hist-think-blocks")
+        await _save_turn(
+            "g-hist-think-blocks",
+            "u-1",
+            "assistant",
+            [
+                {"type": "text", "text": "<think>plan the task creation</think>Creating it now."},
+                {"type": "tool_use", "id": "tu-1", "name": "create_task", "input": {"name": "T"}},
+            ],
+        )
+        with _sync_session(db_session) as session:
+            turn = session.scalar(select(ForemanTurn).order_by(col(ForemanTurn.id).desc()).limit(1))
+        assert turn is not None
+        assert "<think>" not in turn.content_json
+        parsed = json.loads(turn.content_json)
+        assert parsed[0] == {"type": "text", "text": "Creating it now."}
+        assert parsed[1] == {"type": "tool_use", "id": "tu-1", "name": "create_task", "input": {"name": "T"}}
 
 
 # ---------------------------------------------------------------------------

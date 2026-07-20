@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from datetime import date, datetime
 from typing import Any
 
@@ -13,6 +14,16 @@ from .constants import (
     MAX_HISTORY_MESSAGES,
     MAX_TOOL_RESULT_CHARS,
 )
+
+# Some providers (e.g. Kimi K2, reached either directly via Bedrock or through
+# the foreman API proxy) emit their chain-of-thought inline in the response
+# text as a <think>...</think> block instead of a separate reasoning field.
+# foreman.providers.bedrock strips this for direct Bedrock calls, but that
+# module is never in the path for proxied providers, so any leftover block
+# would otherwise be persisted verbatim to foreman_turns. Strip again here,
+# right before assistant content is persisted, as a provider-agnostic last
+# line of defense.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 
 
 def _json_default(obj: Any) -> Any:
@@ -220,3 +231,20 @@ def _serialize_content(content) -> str:
                     blocks.append({"type": str(getattr(b, "type", "unknown")), "raw": str(b)})
         return json.dumps(blocks)
     return json.dumps(str(content))
+
+
+def strip_think_blocks_json(content_json: str) -> str:
+    """Strip <think>...</think> reasoning blocks from `_serialize_content` output.
+
+    Operates on the already-serialized JSON string so it works uniformly on
+    both shapes `_serialize_content` can produce: a bare string, or a list of
+    content-block dicts (only "text" blocks can carry a think block).
+    """
+    parsed = json.loads(content_json)
+    if isinstance(parsed, str):
+        parsed = _THINK_BLOCK_RE.sub("", parsed)
+    elif isinstance(parsed, list):
+        for block in parsed:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                block["text"] = _THINK_BLOCK_RE.sub("", block["text"])
+    return json.dumps(parsed)

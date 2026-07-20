@@ -38,6 +38,7 @@ from foreman.message_utils import (
     _summarize_task,
     prune_history,
     strip_orphaned_tool_results,
+    strip_think_blocks_json,
     truncate_tool_result,
 )
 from foreman.prompt import (
@@ -489,7 +490,7 @@ async def _save_turn(
             guild_id=guild_pk_val or 0,
             user_id=user_id,
             role=role,
-            content_json=_serialize_content(content),
+            content_json=strip_think_blocks_json(_serialize_content(content)),
             is_tool_response=1 if is_tool_response else 0,
             parent_id=parent_id,
             created_at=datetime.now(UTC),
