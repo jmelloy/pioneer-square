@@ -68,6 +68,10 @@ services:
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-}
       TEST_MODE: ${TEST_MODE:-}
       PIONEER_FOREMAN_KEY: ${PIONEER_FOREMAN_KEY:-}
+      # Gates the /debug/query read-only SQL endpoint (see backend/routes/debug_query.py)
+      # and, when set, is forwarded into worker containers this backend spawns
+      # (build_spawn_worker_env) so the worker's debug-query skill can use it too.
+      DEBUG_TOKEN: ${DEBUG_TOKEN:-}
       # S3 session-log sync — forwarded to spawned worker containers.
       PIONEER_S3_BUCKET: ${PIONEER_S3_BUCKET:-}
       PIONEER_S3_PREFIX: ${PIONEER_S3_PREFIX:-}
@@ -156,6 +160,12 @@ services:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       WORKER_LOG_LEVEL: ${WORKER_LOG_LEVEL:-INFO}
+      # Backend URL the debug-query skill posts to (see worker/skills/debug-query).
+      PIONEER_BACKEND_URL: ${WORKER_BACKEND_URL:-http://backend:8000}
+      # Same operator credential as the backend's DEBUG_TOKEN (see above) — set
+      # this to the same value so the worker's debug-query skill can call
+      # /debug/query. Leave unset to disable the skill.
+      DEBUG_TOKEN: ${DEBUG_TOKEN:-}
       PIONEER_S3_BUCKET: ${PIONEER_S3_BUCKET:-}
       PIONEER_S3_PREFIX: ${PIONEER_S3_PREFIX:-}
       PIONEER_S3_SYNC_INTERVAL: ${PIONEER_S3_SYNC_INTERVAL:-}

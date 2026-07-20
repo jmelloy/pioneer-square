@@ -1217,6 +1217,12 @@ class Worker:
         await self._register()
         assert self.cfg.worker_id, "worker_id must be set after registration"
 
+        # Guarantee PIONEER_BACKEND_URL is in the environment even when
+        # backend_url came from the config file rather than the env var —
+        # skills (e.g. worker/skills/debug-query) rely on it being set for
+        # every spawned claude subprocess.
+        os.environ.setdefault("PIONEER_BACKEND_URL", self.cfg.backend_url)
+
         await self._fetch_github_token_if_needed()
         await self._fetch_guild_env_vars()
         await self._refresh_github_repos()
