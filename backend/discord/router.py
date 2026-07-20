@@ -28,6 +28,13 @@ table, keyed on ``(subject_type, subject_key)``):
       @mentions the bot — every other message posted there is ignored. The
       mention token is stripped before the content is forwarded as ad-hoc
       chat (``task_id=None``), same as any other wired channel.
+    - a second, higher-priority exception: a message that @-mentions the
+      foreman role (``discord.auth.mentions_foreman_role``) is routed by
+      *author*, not by channel — see ``_route_foreman_mention``. It is
+      checked first, before any of the channel-scoped logic above, so it
+      always gets a response in any channel or DM the Gateway forwards it
+      from (see ``discord/gateway.py``), independent of whether that channel
+      is wired to any particular guild.
     - anything else has nowhere to route to and is silently ignored.
 
 Consumes ``discord.gateway.gateway_message_queue``. Enable with the same
@@ -42,7 +49,7 @@ import os
 import re
 from datetime import UTC, datetime
 
-from discord.auth import is_member_authorized
+from discord.auth import is_member_authorized, mentions_foreman_role, strip_foreman_role_mention
 from discord.gateway import gateway_message_queue
 
 logger = logging.getLogger(__name__)
@@ -269,6 +276,108 @@ def _is_authorized(message: dict) -> bool:
     return is_member_authorized(message.get("member"))
 
 
+async def _resolve_user_guild_slugs(ps_user_id: str) -> list[str]:
+    """Return every Pioneer Square guild slug *ps_user_id* is a member of.
+
+    Ordered most-recently-created first — the closest available proxy for
+    "most relevant," since there is no per-user "last active project" field
+    to prefer instead (see ``routes/guilds.py:list_guilds``, which orders the
+    same way for the same reason). Never raises.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Guild, GuildMember  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(Guild.slug)
+                .join(GuildMember, col(GuildMember.guild_id) == col(Guild.id))
+                .where(col(GuildMember.user_id) == ps_user_id)
+                .order_by(col(Guild.created_at).desc())
+            )
+            return [slug for slug in result.all() if slug]
+    except Exception:
+        logger.warning(
+            "discord router: accessible-guilds lookup failed user=%s", ps_user_id, exc_info=True
+        )
+        return []
+
+
+async def _route_foreman_mention(message: dict, content: str) -> None:
+    """Route a foreman-role @-mention to the Foreman, scoped by *author*
+    rather than by the channel the message landed in.
+
+    Every other inbound path resolves a Foreman session from the *channel*
+    a message landed in (see ``resolve_session``) — this path ignores that
+    entirely, so a foreman-role mention always gets a response in any
+    channel or DM the bot can see, regardless of which (if any) guild
+    project that channel happens to be wired to. The author still has to be
+    role-authorized (``_is_authorized``) and resolve to a linked Pioneer
+    Square user (``_resolve_identity``) with at least one accessible
+    project (``_resolve_user_guild_slugs``) — an author that fails any of
+    those checks has nowhere well-defined to route to and is silently
+    ignored, same as an unresolvable channel elsewhere in this module.
+
+    When the author has more than one accessible project, the most recently
+    created one is used as the trigger target (a single Foreman trigger is
+    inherently scoped to one project — see ``_trigger_foreman``), with the
+    rest listed in the forwarded message so the Foreman can answer with
+    context spanning all of the author's projects rather than just the one
+    it's replying from. Never raises.
+    """
+    if not content:
+        return
+    if not _is_authorized(message):
+        logger.info("discord router: unauthorized author — ignoring foreman-role mention")
+        return
+
+    author = message.get("author") or {}
+    ps_user_id, label = await _resolve_identity(author.get("id"), author.get("username"))
+    if not ps_user_id:
+        logger.info(
+            "discord router: foreman-role mention from unlinked discord_user=%s — ignoring",
+            author.get("id"),
+        )
+        return
+
+    guild_slugs = await _resolve_user_guild_slugs(ps_user_id)
+    if not guild_slugs:
+        logger.info(
+            "discord router: foreman-role mention from user=%s with no accessible projects "
+            "— ignoring",
+            ps_user_id,
+        )
+        return
+
+    guild_slug, *other_projects = guild_slugs
+    context_note = f" (also has access to: {', '.join(other_projects)})" if other_projects else ""
+    human_message = f"[discord-foreman-mention] project={guild_slug}{context_note}\n[Discord] {label}: {content}"
+
+    try:
+        await _persist_inbound_message(guild_slug, content, user_id=ps_user_id, task_id=None)
+    except Exception:
+        logger.warning(
+            "discord router: failed to persist foreman-role mention guild=%s — forwarding to "
+            "Foreman anyway",
+            guild_slug,
+            exc_info=True,
+        )
+
+    from foreman.runner import reset_foreman_poll  # noqa: PLC0415
+    from ws_handlers import _trigger_foreman  # noqa: PLC0415
+
+    await _trigger_foreman(
+        guild_slug,
+        "chat",
+        human_message,
+        user_id=ps_user_id,
+        task_id=None,
+        task_name=f"foreman.discord-mention:{guild_slug}",
+    )
+    reset_foreman_poll(guild_slug)
+
+
 async def route_inbound_message(message: dict) -> bool:
     """Route one inbound Discord ``MESSAGE_CREATE`` payload to the Foreman AI.
 
@@ -290,6 +399,10 @@ async def _route_inbound_message(message: dict) -> None:
         return
     channel_id = message.get("channel_id")
     if not channel_id:
+        return
+
+    if mentions_foreman_role(message):
+        await _route_foreman_mention(message, strip_foreman_role_mention(content))
         return
 
     if channel_id == _MENTION_ONLY_CHANNEL_ID:
