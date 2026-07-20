@@ -210,35 +210,32 @@ back to `DISCORD_CHANNEL_ID`. `/leave-channel` deletes the row, restoring that f
 
 ## User identity linking
 
-The `discord_users` table maps a lowercased GitHub login to a Discord user ID, so
-notifications can @-mention the right person instead of printing a plain `@login` string.
+`discord_account_links` is the single source of truth for "which Discord account is which
+Pioneer Square user." It drives both directions: inbound command authorization (`/worker-spawn`,
+foreman @-mentions) and outbound @-mentions in notifications.
 
 | Column | Description |
 |---|---|
-| `github_login` | Primary key, stored lowercase |
-| `discord_user_id` | Discord snowflake ID |
-| `created_at` / `updated_at` | Timestamps |
+| `ps_user_id` | Pioneer Square user id (FK to `users.id`) |
+| `discord_user_id` | Discord snowflake ID, unique — one Discord account links to at most one PS user |
+| `discord_username` | Discord username at link time, for display |
+| `created_at` | Timestamp |
 
-No automated discovery, and no in-Discord command populates this mapping directly — link via
-the REST API below. (A separate `/connect-account` command links a Discord identity to a
-Pioneer Square *account* for command authorization like `/worker-spawn`, via a different table,
-`discord_account_links` — unrelated to @-mentions.)
+Users link themselves by running `/connect-account` in Discord and following the returned
+one-time link while logged in to Pioneer Square. That command mints a row in
+`discord_pending_connects` — short-lived, single-use handshake state, not a mapping —
+which `POST /api/discord/connect` redeems to create the durable link above.
 
-| Endpoint | Auth | Behaviour |
-|---|---|---|
-| `GET /api/discord-users` | Any authenticated user | List all mappings |
-| `GET /api/discord-users/{github_login}` | Any authenticated user | Get one mapping, `404` if none |
-| `PUT /api/discord-users/{github_login}` | Must be authenticated **as** `github_login` | Upsert `{"discord_user_id": "..."}`; `403` if you try to set someone else's mapping |
-| `DELETE /api/discord-users/{github_login}` | Must be authenticated **as** `github_login` | Remove your own mapping |
-
-To find your own Discord user ID: enable **Developer Mode** (User Settings → Advanced), then
-right-click your username → **Copy User ID**.
+There is no REST CRUD for this mapping and no automated discovery; `/connect-account` is the
+only path, which keeps the link self-asserted rather than something one user can set for
+another.
 
 **@-mention behaviour** — `mention_or_login(github_login)` is used wherever a GitHub actor is
-rendered in a notification (currently: PR-opened assignees). It returns a real
-`<@discord_user_id>` mention when a mapping exists, otherwise falls back to a plain
-`@github_login` string (or `""` for an empty login) — never raises, so a DB error during
-lookup just degrades to the plain-text fallback.
+rendered in a notification (currently: PR-opened assignees). It joins `discord_account_links`
+to `users.github_login` (case-insensitively — `users.github_login` keeps GitHub's own casing)
+and returns a real `<@discord_user_id>` mention when the user has linked an account, otherwise
+falls back to a plain `@github_login` string (or `""` for an empty login) — never raises, so a
+DB error during lookup just degrades to the plain-text fallback.
 
 ## Troubleshooting
 
@@ -251,5 +248,6 @@ lookup just degrades to the plain-text fallback.
 | `POST /discord/interactions` returns `401 Invalid signature` | `DISCORD_PUBLIC_KEY` is unset or doesn't match the application, or a reverse proxy is rewriting/re-encoding the raw request body (the signature is computed over the exact bytes Discord sent). |
 | "You are not authorized to use Pioneer Square commands" | `DISCORD_ALLOWED_ROLE_IDS` is set and the invoking user has none of the listed roles. Note DMs are always denied once this restriction is configured. |
 | `/ps` commands reply "Pioneer guild `` not found" | `DISCORD_PIONEER_GUILD_SLUG` is unset or doesn't match an existing Pioneer Square guild slug. |
-| @-mentions show as plain `@login` instead of a real mention | No `discord_users` row for that GitHub login yet — the user needs to `PUT /api/discord-users/{their_login}` with their Discord user ID. |
+| @-mentions show as plain `@login` instead of a real mention | That user hasn't linked a Discord account — they need to run `/connect-account` in Discord and redeem the link. Also check `users.github_login` is populated for them; the join goes through it. |
+| Foreman ignores an @-mention with `mention from unlinked discord_user=...` in the logs | Same cause, other direction: that Discord account has no `discord_account_links` row. Run `/connect-account`. |
 | Duplicate threads for the same PR/issue | Shouldn't happen — `discord_thread_bindings` has a unique index on `(subject_type, subject_key)`. If seen, confirm all Discord-related Alembic migrations have actually been applied. |

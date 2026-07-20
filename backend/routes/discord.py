@@ -47,7 +47,7 @@ from models import (
     Agent,
     DiscordAccountLink,
     DiscordChannelGuild,
-    DiscordConnectToken,
+    DiscordPendingConnect,
     Guild,
     Task,
     Worker,
@@ -591,7 +591,7 @@ async def _cmd_connect_account(interaction: dict) -> None:
     try:
         async with AsyncSessionLocal() as db:
             db.add(
-                DiscordConnectToken(
+                DiscordPendingConnect(
                     token=connect_token,
                     discord_user_id=discord_user_id,
                     discord_username=discord_username,

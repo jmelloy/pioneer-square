@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from auth_deps import require_user
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
-from models import DiscordAccountLink, DiscordConnectToken
+from models import DiscordAccountLink, DiscordPendingConnect
 from pydantic import BaseModel, Field
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
@@ -35,7 +35,7 @@ async def connect_discord_account(
     """Redeem a one-time /connect-account token and link the Discord account
     to the currently authenticated Pioneer Square user."""
     result = await db.exec(
-        select(DiscordConnectToken).where(col(DiscordConnectToken.token) == data.token)
+        select(DiscordPendingConnect).where(col(DiscordPendingConnect.token) == data.token)
     )
     token_row = result.one_or_none()
     if not token_row:

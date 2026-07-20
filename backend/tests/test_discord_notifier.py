@@ -1,7 +1,8 @@
 """Unit tests for discord_notifier.
 
 No real HTTP requests are made — the httpx client is mocked throughout.
-No real DB sessions are made — _lookup_thread and _save_thread are patched.
+DB access is patched out (_lookup_thread / _save_thread) except in the few
+tests that take the ``client`` fixture to exercise a real query.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from datetime import UTC, datetime
 
 import discord_notifier
-from helpers import _sync_session, insert_guild, insert_task
+from helpers import _sync_session, insert_guild, insert_task, make_auth_token
 from models import GithubPullRequest
 from sqlalchemy import insert as sa_insert
 
@@ -1203,6 +1204,50 @@ async def test_lookup_discord_user_db_error_returns_none():
         result = await discord_notifier._lookup_discord_user("carol")
 
     assert result is None
+
+
+def _link_discord_account(db_url: str, ps_user_id: str, discord_user_id: str) -> None:
+    from models import DiscordAccountLink
+
+    with _sync_session(db_url) as session:
+        session.add(
+            DiscordAccountLink(
+                ps_user_id=ps_user_id,
+                discord_user_id=discord_user_id,
+                discord_username=f"dc-{discord_user_id}",
+                created_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+
+
+@pytest.mark.asyncio
+async def test_lookup_discord_user_resolves_through_account_link(client):
+    """A /connect-account link is reachable from the user's GitHub login."""
+    _, db_url = client
+    make_auth_token(db_url, user_id="gh-mention-1", username="mentionee")
+    _link_discord_account(db_url, "gh-mention-1", "dc-mention-1")
+
+    assert await discord_notifier._lookup_discord_user("mentionee") == "dc-mention-1"
+
+
+@pytest.mark.asyncio
+async def test_lookup_discord_user_is_case_insensitive(client):
+    """users.github_login keeps GitHub's casing, so lookups must not depend on it."""
+    _, db_url = client
+    make_auth_token(db_url, user_id="gh-mention-2", username="MixedCase")
+    _link_discord_account(db_url, "gh-mention-2", "dc-mention-2")
+
+    assert await discord_notifier._lookup_discord_user("mixedcase") == "dc-mention-2"
+
+
+@pytest.mark.asyncio
+async def test_lookup_discord_user_none_when_unlinked(client):
+    """A known user who never ran /connect-account has no Discord ID to mention."""
+    _, db_url = client
+    make_auth_token(db_url, user_id="gh-mention-3", username="unlinked")
+
+    assert await discord_notifier._lookup_discord_user("unlinked") is None
 
 
 @pytest.mark.asyncio
