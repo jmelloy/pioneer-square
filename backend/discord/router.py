@@ -352,9 +352,7 @@ async def _route_foreman_mention(message: dict, content: str) -> None:
 
     guild_slug, *other_projects = guild_slugs
     context_note = f" (also has access to: {', '.join(other_projects)})" if other_projects else ""
-    human_message = (
-        f"[discord-foreman-mention] project={guild_slug}{context_note}\n[Discord] {label}: {content}"
-    )
+    human_message = f"[discord-foreman-mention] project={guild_slug}{context_note}\n[Discord] {label}: {content}"
 
     try:
         await _persist_inbound_message(guild_slug, content, user_id=ps_user_id, task_id=None)

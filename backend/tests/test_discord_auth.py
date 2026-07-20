@@ -13,7 +13,10 @@ from discord import auth  # noqa: E402
 
 def test_mentions_foreman_role_via_mention_roles_array():
     """Guild messages carry a structured mention_roles array — the primary signal."""
-    message = {"content": "hey <@&1522965022836396178> got a sec?", "mention_roles": ["1522965022836396178"]}
+    message = {
+        "content": "hey <@&1522965022836396178> got a sec?",
+        "mention_roles": ["1522965022836396178"],
+    }
     assert auth.mentions_foreman_role(message) is True
 
 
@@ -29,7 +32,10 @@ def test_mentions_foreman_role_false_when_absent():
 
 
 def test_mentions_foreman_role_ignores_unrelated_role_mentions():
-    message = {"content": "<@&999999999999999999> different role", "mention_roles": ["999999999999999999"]}
+    message = {
+        "content": "<@&999999999999999999> different role",
+        "mention_roles": ["999999999999999999"],
+    }
     assert auth.mentions_foreman_role(message) is False
 
 
@@ -44,9 +50,12 @@ def test_foreman_role_id_overridable_via_env(monkeypatch):
     reloaded = importlib.reload(auth)
     try:
         assert reloaded.mentions_foreman_role({"content": "<@&42> hi", "mention_roles": []}) is True
-        assert reloaded.mentions_foreman_role(
-            {"content": "<@&1522965022836396178> hi", "mention_roles": []}
-        ) is False
+        assert (
+            reloaded.mentions_foreman_role(
+                {"content": "<@&1522965022836396178> hi", "mention_roles": []}
+            )
+            is False
+        )
     finally:
         monkeypatch.delenv("DISCORD_FOREMAN_ROLE_ID", raising=False)
         importlib.reload(auth)
