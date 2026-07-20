@@ -2617,7 +2617,12 @@ class TestForemanHistory:
         assert "<think>" not in turn.content_json
         parsed = json.loads(turn.content_json)
         assert parsed[0] == {"type": "text", "text": "Creating it now."}
-        assert parsed[1] == {"type": "tool_use", "id": "tu-1", "name": "create_task", "input": {"name": "T"}}
+        assert parsed[1] == {
+            "type": "tool_use",
+            "id": "tu-1",
+            "name": "create_task",
+            "input": {"name": "T"},
+        }
 
 
 # ---------------------------------------------------------------------------
