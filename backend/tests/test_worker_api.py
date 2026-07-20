@@ -369,6 +369,26 @@ def test_spawn_worker_env_falls_back_to_host_env_when_db_empty():
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "host-token"
 
 
+def test_spawn_worker_env_forwards_debug_token():
+    """DEBUG_TOKEN lets the worker's debug-query skill call /debug/query."""
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=[],
+        worker_name=None,
+        source_env={"DEBUG_TOKEN": "operator-secret"},
+    )
+    assert env["DEBUG_TOKEN"] == "operator-secret"
+
+
+def test_spawn_worker_env_omits_debug_token_when_unset():
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(guild_id="g1", repos=[], worker_name=None, source_env={})
+    assert "DEBUG_TOKEN" not in env
+
+
 def test_decode_claude_oauth_token_modern_format():
     """base64(json({'oauth_token': '...'})) is the format setup-token writes."""
     import base64

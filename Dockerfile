@@ -131,6 +131,16 @@ RUN useradd --create-home --shell /bin/bash worker \
     && mkdir -p /work/repos /work/worktrees /config /home/worker/go \
     && chown -R worker:worker /work /config /home/worker
 
+# Personal skills (~/.claude/skills) are discovered by the claude CLI regardless
+# of which target repo's worktree it's run in as cwd, so this is where
+# worker-wide skills belong. debug-query lets a task's Claude session inspect
+# backend operational tables via /debug/query when DEBUG_TOKEN is set (see
+# worker/skills/debug-query/SKILL.md and docker-compose.yml).
+COPY worker/skills/ /home/worker/.claude/skills/
+RUN chmod +x /home/worker/.claude/skills/*/scripts/*.sh \
+    && chown -R worker:worker /home/worker/.claude
+ENV PIONEER_SKILL_DIR=/home/worker/.claude/skills/debug-query
+
 # Pi extension for delegating tasks to subagents (#938), giving pi-coding-agent
 # a subagent/delegation tool. Installed as the `worker` user (not root) since
 # `pi install` writes into $HOME/.pi, and the container runs as `worker`.

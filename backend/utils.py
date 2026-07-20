@@ -301,6 +301,12 @@ def build_spawn_worker_env(
         env["PIONEER_MAX_AGENTS"] = str(agent_count)
     if tools:
         env["PIONEER_TOOLS"] = ",".join(tools)
+    # Forwarded so the worker's debug-query skill (worker/skills/debug-query)
+    # can call the backend's DEBUG_TOKEN-gated /debug/query endpoint. Absent
+    # unless the backend itself has DEBUG_TOKEN set.
+    debug_token = source_env.get("DEBUG_TOKEN", "")
+    if debug_token:
+        env["DEBUG_TOKEN"] = debug_token
     # S3 session-log sync — forward bucket, prefix, interval, and AWS creds so
     # spawned workers can upload without needing their own config file entries.
     for _key in (
