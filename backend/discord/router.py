@@ -192,6 +192,19 @@ async def _resolve_channel_guild(channel_id: str) -> str | None:
         return None
 
 
+async def _guild_pk_for_slug(guild_slug: str) -> int | None:
+    """Return the integer ``guilds.id`` for *guild_slug*, or None. Never raises."""
+    try:
+        from auth_deps import get_guild_pk  # noqa: PLC0415
+        from database import AsyncSessionLocal  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            return await get_guild_pk(db, guild_slug)
+    except Exception:
+        logger.warning("discord router: guild pk lookup failed slug=%s", guild_slug, exc_info=True)
+        return None
+
+
 async def resolve_session(channel_id: str) -> tuple[str, str | None] | None:
     """Return ``(ps_guild_slug, task_id)`` for *channel_id*, or None if unresolvable.
 
@@ -222,7 +235,11 @@ async def resolve_session(channel_id: str) -> tuple[str, str | None] | None:
 
 
 async def _resolve_identity(
-    discord_user_id: str | None, username: str | None
+    discord_user_id: str | None,
+    username: str | None,
+    *,
+    is_bot: bool = False,
+    guild_pk: int | None = None,
 ) -> tuple[str | None, str]:
     """Return ``(ps_user_id, label)`` for a Discord author.
 
@@ -230,7 +247,11 @@ async def _resolve_identity(
     the older ``discord_users`` mapping (also used by ``mention_or_login``,
     reversed here: Discord user ID -> GitHub login -> Pioneer Square user).
     Falls back to ``(None, "a Discord user")`` — or the Discord username, if
-    known — when neither mapping exists. Never raises.
+    known — when neither mapping exists, *unless* ``is_bot`` is set: an
+    unmapped bot author is auto-provisioned its own ``users`` row (see
+    ``discord.bot_users.ensure_bot_user``) so its actions get an audit trail
+    and inherited guild permissions instead of resolving to nobody. Never
+    raises.
     """
     generic = f"Discord user @{username}" if username else "a Discord user"
     if not discord_user_id:
@@ -268,6 +289,20 @@ async def _resolve_identity(
         logger.warning(
             "discord router: identity lookup failed discord_user=%s", discord_user_id, exc_info=True
         )
+        return None, generic
+
+    if is_bot:
+        try:
+            from discord.bot_users import ensure_bot_user  # noqa: PLC0415
+
+            ps_user_id = await ensure_bot_user(discord_user_id, username, guild_pk)
+            return ps_user_id, f"🤖 {username}" if username else f"🤖 {discord_user_id}"
+        except Exception:
+            logger.warning(
+                "discord router: bot auto-provisioning failed discord_user=%s",
+                discord_user_id,
+                exc_info=True,
+            )
 
     return None, generic
 
@@ -429,7 +464,13 @@ async def _route_inbound_message(message: dict) -> None:
         return
 
     author = message.get("author") or {}
-    ps_user_id, label = await _resolve_identity(author.get("id"), author.get("username"))
+    guild_pk = await _guild_pk_for_slug(guild_slug)
+    ps_user_id, label = await _resolve_identity(
+        author.get("id"),
+        author.get("username"),
+        is_bot=bool(author.get("bot")),
+        guild_pk=guild_pk,
+    )
     discord_line = f"[Discord] {label}: {content}"
     # A resolved task_id means this message landed in a thread already bound to a task
     # (an "issue" or "task_stream" subject binding) — tag it so the Foreman can route

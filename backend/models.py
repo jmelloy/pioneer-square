@@ -262,6 +262,16 @@ class User(SQLModel, table=True):
     avatar_url: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    # True for auto-provisioned Discord bot accounts (see discord/bot_users.py).
+    # False for real GitHub-authenticated humans.
+    is_bot: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    # For a bot user (is_bot=True), the real human user it is provisioned under —
+    # typically the guild's owner at the time the bot first interacted. NULL for
+    # human users. Self-referential FK; never chains bot -> bot.
+    parent_user_id: str | None = Field(default=None, foreign_key="users.id", index=True)
 
 
 class GuildMember(SQLModel, table=True):
