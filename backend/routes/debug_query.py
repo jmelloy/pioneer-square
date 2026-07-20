@@ -25,11 +25,17 @@ from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 router = APIRouter(prefix="/debug", dependencies=[Depends(require_debug_token)])
 
 _MAX_LIMIT = 500
+
+# Bounds how long a caller-supplied query can run — set via SET LOCAL
+# statement_timeout below, so it's transaction-scoped and doesn't affect other
+# sessions.
+_STATEMENT_TIMEOUT_MS = 30_000
 
 # Tables safe to expose to a raw SELECT: operational/state tables only — no
 # credential-bearing tables (github_tokens, user_sessions, claude_credentials,
@@ -67,18 +73,18 @@ class DebugRawQueryRequest(BaseModel):
 def _validate_readonly_query(sql: str) -> str:
     """Return the validated, semicolon-stripped query, or raise HTTPException(400).
 
-    Requires a single ``SELECT ...`` statement, no comments, no bind-marker-
-    colliding colons, no forbidden keywords, and no reference to any table
-    outside ``_ALLOWED_TABLES`` anywhere in the statement (including in
-    subqueries).
+    Requires a single ``SELECT ...`` statement, no comments, no forbidden
+    keywords, and no reference to any table outside ``_ALLOWED_TABLES``
+    anywhere in the statement (including in subqueries). Colons are allowed —
+    they're needed for ``::type`` casts and ISO timestamp literals — but a
+    bare ``:name`` token that ``text()`` mistakes for a bind parameter will
+    surface as a clear 400 from the execute call, not a silent misfire.
     """
     stripped = sql.strip()
     if not stripped:
         raise HTTPException(status_code=400, detail="sql must not be empty")
     if "--" in stripped or "/*" in stripped:
         raise HTTPException(status_code=400, detail="SQL comments are not allowed")
-    if ":" in stripped:
-        raise HTTPException(status_code=400, detail="':' is not allowed in the query text")
     # Allow one optional trailing semicolon, but not a second statement.
     body = stripped[:-1].strip() if stripped.endswith(";") else stripped
     if ";" in body:
@@ -108,7 +114,17 @@ async def debug_raw_query(
     validated = _validate_readonly_query(data.sql)
     # SET LOCAL is transaction-scoped — bounds how long a caller-supplied
     # query can run without affecting other sessions.
-    await db.exec(text("SET LOCAL statement_timeout = '2000ms'"))
+    await db.exec(text(f"SET LOCAL statement_timeout = '{_STATEMENT_TIMEOUT_MS}ms'"))
     wrapped = text(f"SELECT * FROM ({validated}) AS debug_query LIMIT :limit")
-    result = await db.exec(wrapped, params={"limit": _MAX_LIMIT})
-    return [dict(r._mapping) for r in result.all()]
+    try:
+        result = await db.exec(wrapped, params={"limit": _MAX_LIMIT})
+        return [dict(r._mapping) for r in result.all()]
+    except DBAPIError as exc:
+        if "canceling statement due to statement timeout" in str(exc.orig):
+            raise HTTPException(
+                status_code=504,
+                detail=f"Query exceeded the {_STATEMENT_TIMEOUT_MS // 1000}s statement timeout",
+            ) from exc
+        raise HTTPException(status_code=400, detail=f"Query failed: {exc.orig}") from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=400, detail=f"Query failed: {exc}") from exc
