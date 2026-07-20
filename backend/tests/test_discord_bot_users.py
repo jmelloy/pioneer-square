@@ -45,12 +45,16 @@ async def test_ensure_bot_user_creates_row_parented_to_guild_owner(client):
         assert user.parent_user_id == "gh-owner-1"
 
         # Permission inheritance: the bot inherits the parent's guild role.
-        member = session.execute(
-            select(GuildMember).where(
-                col(GuildMember.guild_id) == guild_pk,
-                col(GuildMember.user_id) == ps_user_id,
+        member = (
+            session.execute(
+                select(GuildMember).where(
+                    col(GuildMember.guild_id) == guild_pk,
+                    col(GuildMember.user_id) == ps_user_id,
+                )
             )
-        ).scalars().one()
+            .scalars()
+            .one()
+        )
         assert member.role == "owner"
 
 
@@ -103,12 +107,16 @@ async def test_ensure_bot_user_inherits_non_owner_role(client):
     ps_user_id = await ensure_bot_user("discord-bot-4", "CIBot", guild_pk)
 
     with _sync_session(db_url) as session:
-        member = session.execute(
-            select(GuildMember).where(
-                col(GuildMember.guild_id) == guild_pk,
-                col(GuildMember.user_id) == ps_user_id,
+        member = (
+            session.execute(
+                select(GuildMember).where(
+                    col(GuildMember.guild_id) == guild_pk,
+                    col(GuildMember.user_id) == ps_user_id,
+                )
             )
-        ).scalars().one()
+            .scalars()
+            .one()
+        )
         # Parent is still the owner (gh-owner-4) since that's who owns the guild.
         assert member.role == "owner"
 
