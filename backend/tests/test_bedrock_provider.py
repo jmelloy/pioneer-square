@@ -185,6 +185,30 @@ def test_converse_response_to_anthropic_leaves_non_kimi_text_untouched():
     assert result["content"] == [{"type": "text", "text": "<think>not reasoning</think>real text"}]
 
 
+def test_converse_response_to_anthropic_strips_unpaired_kimi_think_close():
+    """Real Bedrock responses sometimes omit the opening <think> tag while
+    still emitting the closing </think> — everything before it is reasoning
+    text that must still be stripped."""
+    response = {
+        "output": {
+            "message": {
+                "content": [
+                    {
+                        "text": "Let me claim the issue and assign it to w-d04281.  </think>"
+                        "            Claiming the issue and assigning **w-d04281**"
+                    }
+                ]
+            }
+        },
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 10, "outputTokens": 5},
+    }
+    result = converse_response_to_anthropic(response, "moonshotai.kimi-k2-instruct")
+    assert result["content"] == [
+        {"type": "text", "text": "Claiming the issue and assigning **w-d04281**"}
+    ]
+
+
 def test_converse_response_to_anthropic_kimi_no_think_block_untouched():
     response = {
         "output": {"message": {"content": [{"text": "plain answer, no reasoning tag"}]}},
