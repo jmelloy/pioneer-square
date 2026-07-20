@@ -31,9 +31,10 @@ updates:
           - "*"
     ignore:
       - dependency-name: typescript
-        # TypeScript 7 is a peer-dependency conflict with typescript-eslint (<6.1.0)
-        # and @vue/eslint-config-typescript. Re-enable once those packages support TS 7.
-        # See: https://github.com/jmelloy/pioneer-square/issues/950
+        # TypeScript 7 also crashes typescript-eslint (typescript-estree touches removed
+        # ts internals) and vue-tsc (requires a "lib/tsc" export TS7 no longer provides) at
+        # runtime, not just a peer-dependency version mismatch. Re-enable once both packages
+        # ship TS7-compatible releases. See docs/typescript-7-upgrade.md and issue #950.
         versions: [">=7.0.0"]
 
   - package-ecosystem: github-actions
