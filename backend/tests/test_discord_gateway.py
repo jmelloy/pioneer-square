@@ -94,7 +94,7 @@ async def test_identify_sent_after_hello_with_no_prior_session():
     identify = [m for m in ws.sent if m["op"] == gateway._OP_IDENTIFY]
     assert len(identify) == 1
     assert identify[0]["d"]["token"] == "test-token"
-    assert identify[0]["d"]["intents"] == 33283
+    assert identify[0]["d"]["intents"] == gateway._INTENTS
 
 
 @pytest.mark.asyncio
