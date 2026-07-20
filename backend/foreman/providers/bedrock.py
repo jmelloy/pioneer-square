@@ -227,7 +227,15 @@ _STOP_REASON_MAP = {
 # in place, that reasoning leaks into task history, worker prompts, and chat
 # display. Other Bedrock models (Nova, Titan, Claude) don't emit this tag, so
 # stripping is scoped to Kimi models only via `_is_kimi_model`.
+#
+# In practice the opening <think> tag is frequently missing from the actual
+# Converse response even though the closing </think> is present — observed
+# live via DEBUG_TOKEN task_logs, e.g. a response body of "...assign it to
+# w-d04281.  </think>            Claiming the issue and assigning...". Only
+# matching the paired form left that leading reasoning text in the stored
+# completion, so an unpaired closing tag must also strip everything before it.
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+_UNPAIRED_THINK_CLOSE_RE = re.compile(r"^.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 
 
 def _is_kimi_model(model: str) -> bool:
@@ -235,10 +243,12 @@ def _is_kimi_model(model: str) -> bool:
 
 
 def _strip_think_block(text: str, model: str) -> str:
-    """Strip a leading <think>...</think> reasoning block from Kimi output."""
+    """Strip <think>...</think> reasoning block(s) from Kimi output, including
+    a bare closing </think> with no matching opening tag."""
     if not text or not _is_kimi_model(model):
         return text
-    return _THINK_BLOCK_RE.sub("", text)
+    stripped = _THINK_BLOCK_RE.sub("", text)
+    return _UNPAIRED_THINK_CLOSE_RE.sub("", stripped)
 
 
 def converse_response_to_anthropic(response: dict[str, Any], model: str) -> dict[str, Any]:
