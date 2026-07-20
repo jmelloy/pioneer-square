@@ -23,6 +23,11 @@ table, keyed on ``(subject_type, subject_key)``):
       ``task_id=None``, so the reply is posted directly to the guild's main
       configured channel. ``notify_foreman_chat`` never creates a new dated
       thread; that fallback has been removed.
+    - one exception to the above: ``_MENTION_ONLY_CHANNEL_ID`` (#962) is a
+      wired channel that only forwards a message when it explicitly
+      @mentions the bot — every other message posted there is ignored. The
+      mention token is stripped before the content is forwarded as ad-hoc
+      chat (``task_id=None``), same as any other wired channel.
     - anything else has nowhere to route to and is silently ignored.
 
 Consumes ``discord.gateway.gateway_message_queue``. Enable with the same
@@ -33,12 +38,34 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 from datetime import UTC, datetime
 
 from discord.auth import is_member_authorized
 from discord.gateway import gateway_message_queue
 
 logger = logging.getLogger(__name__)
+
+# #962 — see the routing-model exception in the module docstring above.
+# Override via env for testing/ops without a code change.
+_MENTION_ONLY_CHANNEL_ID = os.environ.get("DISCORD_MENTION_CHANNEL_ID") or "1528707144227225631"
+
+
+def _bot_user_id() -> str | None:
+    return os.environ.get("DISCORD_APPLICATION_ID") or None
+
+
+def _is_bot_mentioned(message: dict, bot_id: str) -> bool:
+    """Return True if *bot_id* appears in the message's ``mentions`` array."""
+    mentions = message.get("mentions") or []
+    return any(str(user.get("id")) == bot_id for user in mentions if isinstance(user, dict))
+
+
+def _strip_mention(content: str, bot_id: str) -> str:
+    """Remove every ``<@bot_id>``/``<@!bot_id>`` mention token from *content*."""
+    pattern = re.compile(rf"<@!?{re.escape(bot_id)}>")
+    return pattern.sub("", content).strip()
 
 
 async def _lookup_binding(thread_id: str) -> tuple[str, str] | None:
@@ -264,6 +291,17 @@ async def _route_inbound_message(message: dict) -> None:
     channel_id = message.get("channel_id")
     if not channel_id:
         return
+
+    if channel_id == _MENTION_ONLY_CHANNEL_ID:
+        bot_id = _bot_user_id()
+        if not bot_id or not _is_bot_mentioned(message, bot_id):
+            logger.debug(
+                "discord router: channel=%s only responds to @mentions — ignoring", channel_id
+            )
+            return
+        content = _strip_mention(content, bot_id)
+        if not content:
+            return
 
     session = await resolve_session(channel_id)
     if session is None:
