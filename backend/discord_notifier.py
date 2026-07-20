@@ -26,9 +26,10 @@ Phase 3 — Foreman chat threads + user mentions
     fallback thread.
 
     ``mention_or_login`` resolves a GitHub login to a real ``<@id>`` Discord
-    mention via the ``discord_users`` table (populated through the
-    ``/api/discord-users`` REST endpoints). Falls back to a plain ``@login``
-    string when no mapping exists — never raises, never blocks a notification.
+    mention by joining ``discord_account_links`` (populated by the
+    ``/connect-account`` slash command) to ``users.github_login``. Falls back
+    to a plain ``@login`` string when the user has not linked a Discord
+    account — never raises, never blocks a notification.
 
 Phase 4 — live task-stream mirroring
     ``notify_task_stream`` mirrors a worker task's streaming terminal output
@@ -764,19 +765,27 @@ async def notify_foreman_chat(
 
 
 async def _lookup_discord_user(github_login: str) -> str | None:
-    """Return the Discord user ID mapped to *github_login*, or None."""
+    """Return the Discord user ID linked to *github_login*, or None.
+
+    Resolves through ``users`` rather than a dedicated login -> Discord table:
+    ``/connect-account`` links a Discord account to a Pioneer Square user id,
+    and ``users.github_login`` is the only bridge from there back to a GitHub
+    login. Compared case-insensitively — ``users.github_login`` is stored as
+    GitHub returns it, so casing is not guaranteed to match the caller's.
+    """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordUser  # noqa: PLC0415
+        from models import DiscordAccountLink, User  # noqa: PLC0415
+        from sqlalchemy import func  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
-                select(DiscordUser.discord_user_id).where(
-                    col(DiscordUser.github_login) == github_login.lower()
-                )
+                select(DiscordAccountLink.discord_user_id)
+                .join(User, col(User.id) == col(DiscordAccountLink.ps_user_id))
+                .where(func.lower(col(User.github_login)) == github_login.lower())
             )
-            return result.one_or_none()
+            return result.first()
     except Exception:
         logger.warning("discord: user mapping lookup failed login=%s", github_login, exc_info=True)
         return None

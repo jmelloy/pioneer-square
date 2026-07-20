@@ -243,12 +243,11 @@ async def _resolve_identity(
 ) -> tuple[str | None, str]:
     """Return ``(ps_user_id, label)`` for a Discord author.
 
-    Tries the ``/connect-account`` link first (direct, authoritative), then
-    the older ``discord_users`` mapping (also used by ``mention_or_login``,
-    reversed here: Discord user ID -> GitHub login -> Pioneer Square user).
-    Falls back to ``(None, "a Discord user")`` — or the Discord username, if
-    known — when neither mapping exists, *unless* ``is_bot`` is set: an
-    unmapped bot author is auto-provisioned its own ``users`` row (see
+    Resolves through the ``/connect-account`` link, the single source of
+    truth for Discord -> Pioneer Square identity. Falls back to
+    ``(None, "a Discord user")`` — or the Discord username, if known — when
+    the author has not linked an account, *unless* ``is_bot`` is set: an
+    unlinked bot author is auto-provisioned its own ``users`` row (see
     ``discord.bot_users.ensure_bot_user``) so its actions get an audit trail
     and inherited guild permissions instead of resolving to nobody. Never
     raises.
@@ -259,7 +258,7 @@ async def _resolve_identity(
 
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordAccountLink, DiscordUser, User  # noqa: PLC0415
+        from models import DiscordAccountLink, User  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
@@ -273,18 +272,6 @@ async def _resolve_identity(
                 result = await db.exec(select(User.github_login).where(col(User.id) == ps_user_id))
                 login = result.first()
                 return ps_user_id, f"@{login}" if login else ps_user_id
-
-            result = await db.exec(
-                select(DiscordUser.github_login).where(
-                    col(DiscordUser.discord_user_id) == discord_user_id
-                )
-            )
-            login = result.first()
-            if login:
-                result = await db.exec(select(User.id).where(col(User.github_login) == login))
-                ps_user_id = result.first()
-                if ps_user_id:
-                    return ps_user_id, f"@{login}"
     except Exception:
         logger.warning(
             "discord router: identity lookup failed discord_user=%s", discord_user_id, exc_info=True
