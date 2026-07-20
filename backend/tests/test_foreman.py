@@ -401,6 +401,30 @@ class TestStripThinkBlocksJson:
         result = strip_think_blocks_json(content)
         assert json.loads(result) == "Text oneText two"
 
+    def test_strips_orphaned_closing_tag_with_no_opening_tag(self):
+        # The pattern actually observed in foreman_turns (t-fgcgq4): Kimi's
+        # chat template pre-fills <think>, so only the closing tag survives
+        # in the completion text.
+        content = _serialize_content(
+            "I should check the task status first. </think> Task is on track."
+        )
+        result = strip_think_blocks_json(content)
+        assert json.loads(result) == "Task is on track."
+
+    def test_orphaned_closing_tag_in_text_block(self):
+        content = _serialize_content(
+            [{"type": "text", "text": "Let me plan this out. </think> Here's the plan."}]
+        )
+        result = strip_think_blocks_json(content)
+        assert json.loads(result) == [{"type": "text", "text": "Here's the plan."}]
+
+    def test_orphaned_closing_tag_with_nothing_after_is_left_alone(self):
+        # No real content follows the tag — leave the text untouched rather
+        # than collapsing a response down to nothing.
+        content = _serialize_content("Just reasoning, no answer yet </think>")
+        result = strip_think_blocks_json(content)
+        assert json.loads(result) == "Just reasoning, no answer yet </think>"
+
 
 # ---------------------------------------------------------------------------
 # 3. Tool dispatching — correct handler invoked, result format

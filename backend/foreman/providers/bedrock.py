@@ -229,16 +229,33 @@ _STOP_REASON_MAP = {
 # stripping is scoped to Kimi models only via `_is_kimi_model`.
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 
+# In practice Kimi K2's chat template pre-fills the <think> opening tag as
+# part of the prompt, so the completion text itself usually contains only
+# the closing </think> with no opening tag (confirmed via a foreman_turns DB
+# investigation, t-fgcgq4: 206 bare "</think>" closes vs. only 11 real
+# "<think>...</think>" pairs). `_THINK_BLOCK_RE` alone never matches that
+# shape, so it silently strips nothing for the common case. Treat a lone
+# </think> as closing an implicit reasoning span that began at the very
+# start of the text — but only when real content follows the tag, so a
+# response that never reaches a real answer isn't reduced to nothing.
+_ORPHANED_THINK_CLOSE_RE = re.compile(r"\A.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
 
 def _is_kimi_model(model: str) -> bool:
     return "kimi" in model.lower()
 
 
 def _strip_think_block(text: str, model: str) -> str:
-    """Strip a leading <think>...</think> reasoning block from Kimi output."""
+    """Strip a <think>...</think> reasoning block — including the common
+    bare-</think> shape where the opening tag was swallowed by the chat
+    template — from Kimi output."""
     if not text or not _is_kimi_model(model):
         return text
-    return _THINK_BLOCK_RE.sub("", text)
+    text = _THINK_BLOCK_RE.sub("", text)
+    match = _ORPHANED_THINK_CLOSE_RE.match(text)
+    if match and text[match.end() :].strip():
+        text = text[match.end() :]
+    return text
 
 
 def converse_response_to_anthropic(response: dict[str, Any], model: str) -> dict[str, Any]:

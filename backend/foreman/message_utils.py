@@ -25,6 +25,29 @@ from .constants import (
 # line of defense.
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 
+# Kimi K2's chat template pre-fills the <think> opening tag as part of the
+# prompt, so the model's own completion text often contains only the closing
+# </think> with no opening tag at all — confirmed via a foreman_turns DB
+# investigation (t-fgcgq4): production rows had 206 bare "</think>" closes
+# vs. only 11 real "<think>...</think>" pairs. Treat a lone </think> as
+# closing an implicit reasoning span that began at the very start of the
+# text. Only strip it when real content follows the tag, so a message that
+# merely *mentions* "</think>" in prose (no reasoning ahead of it) can't have
+# its entire body wiped out.
+_ORPHANED_THINK_CLOSE_RE = re.compile(r"\A.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think_text(text: str) -> str:
+    """Strip both think-block shapes seen in production: a matched
+    <think>...</think> pair, and Kimi's common bare-</think> shape where the
+    opening tag was swallowed by the model's chat template.
+    """
+    text = _THINK_BLOCK_RE.sub("", text)
+    match = _ORPHANED_THINK_CLOSE_RE.match(text)
+    if match and text[match.end() :].strip():
+        text = text[match.end() :]
+    return text
+
 
 def _json_default(obj: Any) -> Any:
     """JSON encoder fallback: serialize datetime/date objects as ISO strings."""
@@ -242,9 +265,9 @@ def strip_think_blocks_json(content_json: str) -> str:
     """
     parsed = json.loads(content_json)
     if isinstance(parsed, str):
-        parsed = _THINK_BLOCK_RE.sub("", parsed)
+        parsed = _strip_think_text(parsed)
     elif isinstance(parsed, list):
         for block in parsed:
             if isinstance(block, dict) and isinstance(block.get("text"), str):
-                block["text"] = _THINK_BLOCK_RE.sub("", block["text"])
+                block["text"] = _strip_think_text(block["text"])
     return json.dumps(parsed)

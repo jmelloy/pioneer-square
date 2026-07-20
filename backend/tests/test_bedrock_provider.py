@@ -195,6 +195,25 @@ def test_converse_response_to_anthropic_kimi_no_think_block_untouched():
     assert result["content"] == [{"type": "text", "text": "plain answer, no reasoning tag"}]
 
 
+def test_converse_response_to_anthropic_strips_kimi_orphaned_closing_tag():
+    """Real production shape (confirmed via foreman_turns DB investigation,
+    t-fgcgq4): Kimi's chat template pre-fills the <think> opening tag, so the
+    completion text contains only the closing </think> with no opener."""
+    response = {
+        "output": {
+            "message": {
+                "content": [
+                    {"text": "I should check the task status first. </think> Task is on track."}
+                ]
+            }
+        },
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 10, "outputTokens": 5},
+    }
+    result = converse_response_to_anthropic(response, "moonshotai.kimi-k2-instruct")
+    assert result["content"] == [{"type": "text", "text": "Task is on track."}]
+
+
 def test_converse_response_to_anthropic_tool_use():
     response = {
         "output": {
