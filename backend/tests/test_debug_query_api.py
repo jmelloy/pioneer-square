@@ -13,12 +13,14 @@ fixture patches ``database.AsyncSessionLocal`` at the module level.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import DBAPIError
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import insert_guild, insert_task  # noqa: E402
@@ -188,3 +190,104 @@ def test_debug_raw_query_allows_operational_tables(client, monkeypatch):
         headers={"Authorization": f"Bearer {_TOKEN}"},
     )
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Colons: casts and ISO timestamps must be allowed, not blanket-rejected
+# ---------------------------------------------------------------------------
+
+
+def test_debug_raw_query_allows_double_colon_cast(client, monkeypatch):
+    _, db_url = client
+    dc = _debug_app_client(monkeypatch)
+    insert_guild(db_url, "g-dbg7")
+    insert_task(db_url, "g-dbg7", "t-dbg7")
+
+    resp = dc.post(
+        "/debug/query",
+        json={"sql": "SELECT id, state::text FROM tasks WHERE id = 't-dbg7'"},
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+    )
+    assert resp.status_code == 200
+    ids = {r["id"] for r in resp.json()}
+    assert "t-dbg7" in ids
+
+
+def test_debug_raw_query_allows_cast_function(client, monkeypatch):
+    _, db_url = client
+    dc = _debug_app_client(monkeypatch)
+    insert_guild(db_url, "g-dbg8")
+    insert_task(db_url, "g-dbg8", "t-dbg8")
+
+    resp = dc.post(
+        "/debug/query",
+        json={"sql": "SELECT CAST(state AS TEXT) FROM tasks WHERE id = 't-dbg8'"},
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+    )
+    assert resp.status_code == 200
+
+
+def test_debug_raw_query_allows_iso_timestamp_literal(client, monkeypatch):
+    _, db_url = client
+    dc = _debug_app_client(monkeypatch)
+    insert_guild(db_url, "g-dbg9")
+    insert_task(db_url, "g-dbg9", "t-dbg9")
+
+    resp = dc.post(
+        "/debug/query",
+        json={
+            "sql": "SELECT id FROM tasks WHERE created_at > '2020-01-01T00:00:00' AND id = 't-dbg9'"
+        },
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+    )
+    assert resp.status_code == 200
+    ids = {r["id"] for r in resp.json()}
+    assert "t-dbg9" in ids
+
+
+# ---------------------------------------------------------------------------
+# Statement timeout
+#
+# Triggering a real 30s Postgres statement-timeout cancellation from an
+# integration test would be slow and flaky (the endpoint's own keyword/table
+# allowlist rules out the obvious ways to force a slow query, e.g. PG_SLEEP is
+# explicitly forbidden). Instead, exercise the error-mapping branch directly:
+# a fake session whose second `exec()` raises the same asyncpg
+# QueryCanceledError shape Postgres raises on a real timeout.
+# ---------------------------------------------------------------------------
+
+
+class _FakeQueryCanceledError(Exception):
+    def __str__(self):
+        return "canceling statement due to statement timeout"
+
+
+class _FakeTimeoutSession:
+    """Mimics AsyncSession.exec: the SET LOCAL call succeeds, the real query doesn't."""
+
+    async def exec(self, stmt, params=None):
+        if params is None:
+            return None
+        raise DBAPIError("SELECT ...", {}, _FakeQueryCanceledError())
+
+
+def test_debug_raw_query_times_out_gracefully():
+    req = debug_query.DebugRawQueryRequest(sql="SELECT id FROM tasks")
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(debug_query.debug_raw_query(req, db=_FakeTimeoutSession()))
+    assert exc_info.value.status_code == 504
+    assert "timeout" in exc_info.value.detail.lower()
+
+
+class _FakeOtherDbErrorSession:
+    async def exec(self, stmt, params=None):
+        if params is None:
+            return None
+        raise DBAPIError("SELECT ...", {}, RuntimeError("some other db failure"))
+
+
+def test_debug_raw_query_other_db_errors_return_400_not_500():
+    req = debug_query.DebugRawQueryRequest(sql="SELECT id FROM tasks")
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(debug_query.debug_raw_query(req, db=_FakeOtherDbErrorSession()))
+    assert exc_info.value.status_code == 400

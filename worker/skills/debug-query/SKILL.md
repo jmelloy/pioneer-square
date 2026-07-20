@@ -40,7 +40,9 @@ non-zero exit code) on failure.
 - Only these tables: `tasks`, `task_logs`, `task_events`, `workers`, `agents`,
   `github_events`, `llm_usage`, `foreman_turns`. No credential-bearing tables
   (`github_tokens`, `user_sessions`, etc.) are exposed.
-- Results are capped at 500 rows and the query is capped at 2 seconds.
+- Results are capped at 500 rows and the query is capped at 30 seconds (a
+  query that runs past that returns a 504 with a clear timeout message rather
+  than hanging).
 - Not guild-scoped — a query can return rows across every guild.
 
 ## Example
