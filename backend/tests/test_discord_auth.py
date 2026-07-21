@@ -45,6 +45,35 @@ def test_strip_foreman_role_mention_removes_token():
     assert "1522965022836396178" not in content
 
 
+def test_mentions_bot_user_via_mentions_array(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "bot-9")
+    assert auth.mentions_bot_user({"mentions": [{"id": "bot-9"}], "content": "hi"}) is True
+
+
+def test_mentions_bot_user_via_raw_content_fallback(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "bot-9")
+    assert auth.mentions_bot_user({"content": "<@!bot-9> hi", "mentions": []}) is True
+
+
+def test_mentions_bot_user_false_for_other_users(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "bot-9")
+    assert auth.mentions_bot_user({"content": "<@someone-else> hi", "mentions": []}) is False
+
+
+def test_mentions_bot_user_false_without_application_id(monkeypatch):
+    """With no id configured there is nothing to compare against, so the bot
+    cannot recognise mentions of itself rather than guessing."""
+    monkeypatch.delenv("DISCORD_APPLICATION_ID", raising=False)
+    assert (
+        auth.mentions_bot_user({"content": "<@bot-9> hi", "mentions": [{"id": "bot-9"}]}) is False
+    )
+
+
+def test_strip_bot_user_mention_removes_both_token_forms(monkeypatch):
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "bot-9")
+    assert auth.strip_bot_user_mention("<@bot-9> what's up <@!bot-9>") == "what's up"
+
+
 def test_foreman_role_id_overridable_via_env(monkeypatch):
     monkeypatch.setenv("DISCORD_FOREMAN_ROLE_ID", "42")
     reloaded = importlib.reload(auth)

@@ -183,43 +183,17 @@ async def test_route_inbound_message_no_tag_for_general_chat(client):
 
 
 # ---------------------------------------------------------------------------
-# #962 — mention-only channel
+# Bot-user @mentions — respond anywhere, channel-scoped when the channel binds
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_mention_channel_ignores_message_without_mention(client):
-    """A plain message (no @mention) in the mention-only channel is ignored."""
+async def test_bot_mention_in_bound_channel_scopes_to_that_guild(client):
+    """A bot @mention in a bound channel routes to that channel's guild, with
+    the mention token stripped and the reply pinned back to the channel."""
     _test_client, db_url = client
     _insert_channel_guild(
-        db_url, "1528707144227225631", "g-router7", discord_guild_id="discord-guild-mention-1"
-    )
-
-    with (
-        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
-        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
-        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
-        patch("foreman.runner.reset_foreman_poll"),
-    ):
-        await router._route_inbound_message(
-            {
-                "content": "just chatting, not pinging anyone",
-                "channel_id": "1528707144227225631",
-                "author": {"id": "d-user-3", "username": "carol"},
-                "mentions": [],
-            }
-        )
-
-    assert mock_trigger.await_count == 0
-
-
-@pytest.mark.asyncio
-async def test_mention_channel_responds_when_bot_mentioned(client):
-    """A message that @mentions the bot in the mention-only channel is forwarded,
-    with the mention token stripped from the content (#962)."""
-    _test_client, db_url = client
-    _insert_channel_guild(
-        db_url, "1528707144227225631", "g-router8", discord_guild_id="discord-guild-mention-2"
+        db_url, "channel-mention-1", "g-router8", discord_guild_id="discord-guild-mention-2"
     )
 
     with (
@@ -231,32 +205,149 @@ async def test_mention_channel_responds_when_bot_mentioned(client):
         await router._route_inbound_message(
             {
                 "content": "<@bot-id-1> what's the status of the release?",
-                "channel_id": "1528707144227225631",
+                "channel_id": "channel-mention-1",
                 "author": {"id": "d-user-4", "username": "dave"},
                 "mentions": [{"id": "bot-id-1", "username": "pioneer-bot"}],
             }
         )
 
     assert mock_trigger.await_count == 1
-    _args, kwargs = mock_trigger.await_args
+    args, kwargs = mock_trigger.await_args
+    assert args[0] == "g-router8"
     assert kwargs["task_id"] is None
-    human_message = _args[2]
+    assert kwargs["reply_channel_id"] == "channel-mention-1"
+    human_message = args[2]
     assert "<@bot-id-1>" not in human_message
     assert "what's the status of the release?" in human_message
 
 
 @pytest.mark.asyncio
-async def test_mention_channel_ignores_when_application_id_unset(client):
-    """With DISCORD_APPLICATION_ID unset, the bot can't identify its own mentions
-    and safely ignores messages in the mention-only channel rather than guessing."""
+async def test_bot_mention_in_unbound_channel_falls_back_to_author_projects(client):
+    """A bot @mention in a channel bound to nothing (or a DM) routes by author:
+    their most recently created project, with the rest listed as context."""
+    _test_client, _db_url = client
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
+        patch.object(
+            router, "_resolve_identity", new=AsyncMock(return_value=("ps-user-1", "@frankie"))
+        ),
+        patch.object(
+            router,
+            "_resolve_user_guild_slugs",
+            new=AsyncMock(return_value=["g-newest", "g-older"]),
+        ),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "<@bot-id-1> how's it going?",
+                "channel_id": "dm-channel-1",
+                "author": {"id": "d-user-6", "username": "frankie"},
+                "mentions": [{"id": "bot-id-1"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    args, kwargs = mock_trigger.await_args
+    assert args[0] == "g-newest"
+    assert kwargs["user_id"] == "ps-user-1"
+    assert kwargs["task_id"] is None
+    assert kwargs["reply_channel_id"] == "dm-channel-1"
+    human_message = args[2]
+    assert human_message.startswith("[discord-mention] project=g-newest")
+    assert "also has access to: g-older" in human_message
+    assert "how's it going?" in human_message
+
+
+@pytest.mark.asyncio
+async def test_bot_mention_prefers_projects_bound_to_the_same_discord_server(client):
+    """A mention in an unbound channel of a server whose *other* channels are
+    wired prefers those projects over the author's newest unrelated one."""
     _test_client, db_url = client
+    insert_guild(db_url, "g-server-1")
     _insert_channel_guild(
-        db_url, "1528707144227225631", "g-router9", discord_guild_id="discord-guild-mention-3"
+        db_url, "channel-bound-elsewhere", "g-server-1", discord_guild_id="discord-server-1"
     )
 
     with (
-        patch.dict(os.environ, {}, clear=False),
-        patch.object(router, "_bot_user_id", return_value=None),
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
+        patch.object(
+            router, "_resolve_identity", new=AsyncMock(return_value=("ps-user-1", "@frankie"))
+        ),
+        # Author's newest project (g-unrelated) is *not* bound to this server.
+        patch.object(
+            router,
+            "_resolve_user_guild_slugs",
+            new=AsyncMock(return_value=["g-unrelated", "g-server-1"]),
+        ),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "<@bot-id-1> what's up?",
+                "channel_id": "channel-unbound-same-server",
+                "guild_id": "discord-server-1",
+                "author": {"id": "d-user-9", "username": "frankie"},
+                "mentions": [{"id": "bot-id-1"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    args, _kwargs = mock_trigger.await_args
+    assert args[0] == "g-server-1"
+
+
+@pytest.mark.asyncio
+async def test_bot_mention_ignores_server_binding_author_cannot_access(client):
+    """Server bindings only narrow the author's own list — a project the author
+    isn't a member of is never routed to, even when bound to this server."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-private")
+    _insert_channel_guild(
+        db_url, "channel-bound-private", "g-private", discord_guild_id="discord-server-2"
+    )
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
+        patch.object(
+            router, "_resolve_identity", new=AsyncMock(return_value=("ps-user-2", "@gale"))
+        ),
+        patch.object(router, "_resolve_user_guild_slugs", new=AsyncMock(return_value=["g-mine"])),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "<@bot-id-1> hello",
+                "channel_id": "channel-unbound-server-2",
+                "guild_id": "discord-server-2",
+                "author": {"id": "d-user-10", "username": "gale"},
+                "mentions": [{"id": "bot-id-1"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    args, _kwargs = mock_trigger.await_args
+    assert args[0] == "g-mine"
+
+
+@pytest.mark.asyncio
+async def test_bot_mention_from_unlinked_author_in_unbound_channel_ignored(client):
+    """The author-scoped fallback needs a linked Pioneer Square user — without
+    one there is no project to route to, so the mention is dropped."""
+    _test_client, _db_url = client
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
+        patch.object(
+            router, "_resolve_identity", new=AsyncMock(return_value=(None, "a Discord user"))
+        ),
         patch.object(router, "_persist_inbound_message", new=AsyncMock()),
         patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
         patch("foreman.runner.reset_foreman_poll"),
@@ -264,9 +355,34 @@ async def test_mention_channel_ignores_when_application_id_unset(client):
         await router._route_inbound_message(
             {
                 "content": "<@bot-id-1> hello?",
-                "channel_id": "1528707144227225631",
-                "author": {"id": "d-user-5", "username": "erin"},
+                "channel_id": "dm-channel-2",
+                "author": {"id": "d-user-7", "username": "gale"},
                 "mentions": [{"id": "bot-id-1"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_unbound_channel_without_mention_still_ignored(client):
+    """The author-scoped fallback is a mention-only path — a plain message in
+    an unbound channel still has nowhere to route to."""
+    _test_client, _db_url = client
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
+        patch.object(router, "_resolve_user_guild_slugs", new=AsyncMock(return_value=["g-newest"])),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "just chatting, not pinging anyone",
+                "channel_id": "unbound-channel-1",
+                "author": {"id": "d-user-8", "username": "harper"},
+                "mentions": [],
             }
         )
 

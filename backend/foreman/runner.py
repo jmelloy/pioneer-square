@@ -151,6 +151,7 @@ class _QueuedHumanTurn:
     task_id: str | None
     child: bool
     queued_at: str
+    reply_channel_id: str | None = None
 
 
 # Monotonic timestamp (time.monotonic()) of the last foreman run that made at
@@ -883,6 +884,7 @@ async def _emit_foreman_chat(
     *,
     child_task_id: str | None = None,
     discord_task_id: str | None = None,
+    discord_channel_id: str | None = None,
 ) -> None:
     """Broadcast a Foreman -> user narration line and mirror it into Discord.
 
@@ -900,6 +902,11 @@ async def _emit_foreman_chat(
       set whenever the run concerns a task — including the parent-context reply
       to a message posted in a task thread — so the reply always lands back in
       the thread the human is talking in rather than the guild's main channel.
+
+    ``discord_channel_id`` pins the Discord mirror to one channel outright,
+    overriding both of the above. Set only for a run triggered by an @-mention
+    (see ``discord/router.py``), so the answer goes back to the channel or DM
+    the mention came from.
     """
     await broadcast_msg(
         guild_id,
@@ -912,7 +919,9 @@ async def _emit_foreman_chat(
         ),
     )
     spawn(
-        discord_notifier.notify_foreman_chat(guild_id, content, task_id=discord_task_id),
+        discord_notifier.notify_foreman_chat(
+            guild_id, content, task_id=discord_task_id, channel_id=discord_channel_id
+        ),
         name=f"discord.foreman-chat:{guild_id}",
     )
 
@@ -926,6 +935,7 @@ async def run_foreman_ai(
     *,
     child: bool = False,
     is_human: bool = False,
+    reply_channel_id: str | None = None,
 ) -> None:
     """Serialise per-context and delegate to ``_run_foreman_ai``.
 
@@ -959,7 +969,14 @@ async def run_foreman_ai(
     if state.busy:
         if is_human:
             _enqueue_human_turn(
-                lock_key, guild_id, human_message, extra_context, user_id, task_id, use_child
+                lock_key,
+                guild_id,
+                human_message,
+                extra_context,
+                user_id,
+                task_id,
+                use_child,
+                reply_channel_id,
             )
         else:
             logger.info(
@@ -971,7 +988,13 @@ async def run_foreman_ai(
     state.busy = True
     try:
         await _run_foreman_ai(
-            guild_id, human_message, extra_context, user_id, task_id=task_id, child=use_child
+            guild_id,
+            human_message,
+            extra_context,
+            user_id,
+            task_id=task_id,
+            child=use_child,
+            reply_channel_id=reply_channel_id,
         )
         # Drain any human messages that queued up while this turn ran, before
         # going idle — each drained turn can itself queue further messages, so
@@ -990,6 +1013,7 @@ def _enqueue_human_turn(
     user_id: str | None,
     task_id: str | None,
     child: bool,
+    reply_channel_id: str | None = None,
 ) -> None:
     """Append a human message to the busy queue for *lock_key*, bounded and FIFO.
 
@@ -1017,6 +1041,7 @@ def _enqueue_human_turn(
             task_id=task_id,
             child=child,
             queued_at=datetime.now(UTC).isoformat(),
+            reply_channel_id=reply_channel_id,
         )
     )
     logger.info(
@@ -1067,6 +1092,7 @@ async def _drain_human_queue(lock_key: tuple[str, str | None]) -> None:
                     turn.user_id,
                     task_id=turn.task_id,
                     child=turn.child,
+                    reply_channel_id=turn.reply_channel_id,
                 )
             except Exception as exc:
                 logger.exception(
@@ -1099,6 +1125,7 @@ async def _notify_queued_turn_failure(
             datetime.now(UTC).isoformat(),
             child_task_id=turn.task_id if turn.child else None,
             discord_task_id=turn.task_id,
+            discord_channel_id=turn.reply_channel_id,
         )
     except Exception:
         logger.exception(
@@ -1116,6 +1143,7 @@ async def _run_foreman_ai(
     task_id: str | None = None,
     *,
     child: bool = False,
+    reply_channel_id: str | None = None,
 ):
     """Process a human message (or system escalation) through the Claude foreman AI.
 
@@ -1408,6 +1436,7 @@ async def _run_foreman_ai(
                         _now.isoformat(),
                         child_task_id=_task_id,
                         discord_task_id=_discord_task_id,
+                        discord_channel_id=reply_channel_id,
                     )
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
@@ -1630,6 +1659,7 @@ async def _run_foreman_ai(
                         _now,
                         child_task_id=_task_id,
                         discord_task_id=_discord_task_id,
+                        discord_channel_id=reply_channel_id,
                     )
             cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
@@ -1639,6 +1669,7 @@ async def _run_foreman_ai(
                 _now,
                 child_task_id=_task_id,
                 discord_task_id=_discord_task_id,
+                discord_channel_id=reply_channel_id,
             )
 
         response_text = "\n".join(text_parts).strip()
