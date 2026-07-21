@@ -208,6 +208,33 @@ guild:my-guild-slug` upserts a `(discord_guild_id, discord_channel_id) → ps_gu
 `notify_event(...)`/`notify_foreman_chat(...)` look up the event's guild here first, falling
 back to `DISCORD_CHANNEL_ID`. `/leave-channel` deletes the row, restoring that fallback.
 
+### Inbound @-mentions
+
+With the Gateway running (`DISCORD_GATEWAY_ENABLED=true`), `@pioneer-square` gets a response
+from **anywhere the bot can see it** — a bound channel, an unbound one, or a DM. Mentioning the
+foreman role (`DISCORD_FOREMAN_ROLE_ID`) behaves identically. Everything else still requires a
+wired channel or thread, as described above.
+
+How a mention is scoped:
+
+| Where it was posted | Scoped to | Notes |
+|---|---|---|
+| A channel/thread with a binding | That channel's guild (and task, in a task thread) | Same routing as any other message there; the author does not need a linked account |
+| An unbound channel of a server that has bindings elsewhere | The most recently created project bound to that server **that the author can access** | Server bindings only narrow the author's own project list — a mention never routes into a project the author isn't a member of |
+| An unbound channel of a server with no reachable bindings, or a DM | The author's most recently created project | Requires a linked account (`/connect-account`) with at least one project |
+
+In every author-scoped case the remaining candidate projects are listed in the forwarded message
+as context, so the Foreman can answer across them rather than only the one it replies from.
+
+Replies to a mention are posted **back into the channel or DM the mention came from**, not the
+guild's configured channel — otherwise a mention from an unbound channel would be answered
+somewhere the asker isn't looking. Mention tokens are stripped before the text reaches the
+Foreman.
+
+Detecting a mention of the bot requires `DISCORD_APPLICATION_ID`: it is the id the bot compares
+against to recognise mentions of *itself*. Without it, bot mentions are invisible and only the
+foreman-role path works.
+
 ## User identity linking
 
 `discord_account_links` is the single source of truth for "which Discord account is which
@@ -249,5 +276,7 @@ DB error during lookup just degrades to the plain-text fallback.
 | "You are not authorized to use Pioneer Square commands" | `DISCORD_ALLOWED_ROLE_IDS` is set and the invoking user has none of the listed roles. Note DMs are always denied once this restriction is configured. |
 | `/ps` commands reply "Pioneer guild `` not found" | `DISCORD_PIONEER_GUILD_SLUG` is unset or doesn't match an existing Pioneer Square guild slug. |
 | @-mentions show as plain `@login` instead of a real mention | That user hasn't linked a Discord account — they need to run `/connect-account` in Discord and redeem the link. Also check `users.github_login` is populated for them; the join goes through it. |
-| Foreman ignores an @-mention with `mention from unlinked discord_user=...` in the logs | Same cause, other direction: that Discord account has no `discord_account_links` row. Run `/connect-account`. |
+| Foreman ignores an @-mention with `mention from unlinked discord_user=...` in the logs | Same cause, other direction: that Discord account has no `discord_account_links` row. Run `/connect-account`. Only affects mentions in *unbound* channels and DMs — a bound channel routes by channel and needs no link. |
+| @-mentioning the bot does nothing, and nothing appears in the logs | `DISCORD_APPLICATION_ID` is unset, so the bot can't recognise mentions of itself (see "Inbound @-mentions"). Confirm the Gateway is running too — look for `discord gateway: READY` at startup. With both set, a queued mention logs `discord gateway: queueing @-mention channel=...`. |
+| @-mention from a DM is ignored | `DISCORD_ALLOWED_ROLE_IDS` is set: DMs carry no member/role data, so they are always denied once that allowlist is configured. |
 | Duplicate threads for the same PR/issue | Shouldn't happen — `discord_thread_bindings` has a unique index on `(subject_type, subject_key)`. If seen, confirm all Discord-related Alembic migrations have actually been applied. |

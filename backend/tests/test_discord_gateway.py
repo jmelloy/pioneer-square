@@ -293,7 +293,11 @@ async def test_ready_captures_identify_reset_window():
 
 
 @pytest.mark.asyncio
-async def test_message_create_filters_bot_author():
+async def test_message_create_filters_bot_author(monkeypatch):
+    # Explicitly unset rather than assumed-unset: conftest imports main, which
+    # load_dotenv()s the repo .env, so a developer with DISCORD_APPLICATION_ID
+    # configured locally would otherwise exercise the wrong branch here.
+    monkeypatch.delenv("DISCORD_APPLICATION_ID", raising=False)
     client = gateway.GatewayClient("token", queue=asyncio.Queue())
     message = {"author": {"bot": True}, "guild_id": "g1", "channel_id": "c1"}
     with patch("discord.gateway._is_channel_wired", new=AsyncMock(return_value=True)):
@@ -349,6 +353,57 @@ async def test_message_create_filters_unwired_channel():
     message = {"author": {"bot": False}, "guild_id": "g1", "channel_id": "c-unwired"}
     with patch("discord.gateway._is_channel_wired", new=AsyncMock(return_value=False)):
         await client._handle_message_create(message)
+    assert client._queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_message_create_queues_bot_mention_in_dm(monkeypatch):
+    """An @mention of the bot user bypasses the DM filter — it is mention-scoped,
+    not channel-scoped, so the router decides where it belongs."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "own-bot-id")
+    q: asyncio.Queue = asyncio.Queue()
+    client = gateway.GatewayClient("token", queue=q)
+    message = {
+        "author": {"bot": False, "id": "d-user-1"},
+        "channel_id": "dm-1",
+        "content": "<@own-bot-id> you there?",
+        "mentions": [{"id": "own-bot-id"}],
+    }
+    await client._handle_message_create(message)
+    assert q.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_message_create_queues_bot_mention_in_unwired_channel(monkeypatch):
+    """Same bypass for a guild channel that was never wired via /join-channel."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "own-bot-id")
+    q: asyncio.Queue = asyncio.Queue()
+    client = gateway.GatewayClient("token", queue=q)
+    message = {
+        "author": {"bot": False, "id": "d-user-1"},
+        "guild_id": "g1",
+        "channel_id": "c-unwired",
+        "content": "<@own-bot-id> status?",
+        "mentions": [{"id": "own-bot-id"}],
+    }
+    with patch("discord.gateway._is_channel_wired", new=AsyncMock(return_value=False)):
+        await client._handle_message_create(message)
+    assert q.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_message_create_still_drops_own_bot_mentioning_itself(monkeypatch):
+    """The own-bot filter runs before the mention bypass, so the bot quoting its
+    own mention token can't feed itself in a loop."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "own-bot-id")
+    client = gateway.GatewayClient("token", queue=asyncio.Queue())
+    message = {
+        "author": {"bot": True, "id": "own-bot-id"},
+        "channel_id": "dm-1",
+        "content": "<@own-bot-id> echo",
+        "mentions": [{"id": "own-bot-id"}],
+    }
+    await client._handle_message_create(message)
     assert client._queue.empty()
 
 

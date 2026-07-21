@@ -18,7 +18,9 @@ async def _run_foreman_ai_patched(guild_id: str, impl_event: asyncio.Event | Non
     """
     import foreman.runner as runner
 
-    async def _slow_impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+    async def _slow_impl(
+        gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+    ):
         if impl_event is not None:
             await impl_event.wait()
 
@@ -47,7 +49,9 @@ def test_concurrent_same_guild_drops_second():
         call_count = 0
         hold = asyncio.Event()
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+        ):
             nonlocal call_count
             call_count += 1
             await hold.wait()
@@ -81,7 +85,9 @@ def test_concurrent_different_guilds_both_run():
         call_log: list[str] = []
         hold = asyncio.Event()
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+        ):
             call_log.append(gid)
             await hold.wait()
 
@@ -107,7 +113,9 @@ def test_lock_released_after_completion():
 
         call_count = 0
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+        ):
             nonlocal call_count
             call_count += 1
 
@@ -130,7 +138,9 @@ def test_lock_released_after_impl_exception():
 
         call_count = 0
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -161,7 +171,9 @@ def test_human_message_queued_when_busy_then_drained():
         call_log: list[str] = []
         hold = asyncio.Event()
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+        ):
             call_log.append(msg)
             if len(call_log) == 1:
                 await hold.wait()
@@ -198,7 +210,9 @@ def test_automated_still_drops_while_human_queue_exists():
         call_log: list[str] = []
         hold = asyncio.Event()
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+        ):
             call_log.append(msg)
             if len(call_log) == 1:
                 await hold.wait()
@@ -231,7 +245,9 @@ def test_human_queue_bounded_drops_oldest():
 
         hold = asyncio.Event()
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+        ):
             await hold.wait()
 
         with patch.object(runner, "_run_foreman_ai", side_effect=_impl):
@@ -279,7 +295,9 @@ def test_drain_snapshots_queue_before_processing():
         hold_second = asyncio.Event()
         key = ("g7", None)
 
-        async def _impl(gid, msg, extra="", uid=None, task_id=None, child=False):
+        async def _impl(
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+        ):
             call_log.append(msg)
             if msg == "first":
                 await hold_first.wait()

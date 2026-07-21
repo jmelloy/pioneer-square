@@ -33,7 +33,7 @@ Filtering applied to ``MESSAGE_CREATE`` before anything is queued:
       Other bots' messages pass through once ``DISCORD_APPLICATION_ID`` is
       configured, and get their own auto-provisioned ``users`` row on first
       contact (``discord/bot_users.py``) instead of being dropped outright.
-    - foreman role @-mentioned    -> queued unconditionally (see below)
+    - bot user or foreman role @-mentioned -> queued unconditionally (see below)
     - no ``guild_id`` (a DM)      -> discarded
     - channel/thread not "wired"  -> discarded (see ``_is_channel_wired``)
 
@@ -48,13 +48,18 @@ model, so they need their own lookup; the routing/reply layer (#744) does its
 own, more specific, reverse-lookup against that same table to decide *which*
 Foreman session a message belongs to.
 
-One exception to the "wired" requirement: a message that @-mentions the
-foreman role (``discord.auth.mentions_foreman_role``) is queued regardless of
-guild/DM/wiring — this is a *user*-scoped path, not a channel-scoped one, so
-the router (not this transport layer) is what decides which Foreman session
+One exception to the "wired" requirement: a message that @-mentions the bot
+user (``discord.auth.mentions_bot_user``) or the foreman role
+(``discord.auth.mentions_foreman_role``) is queued regardless of
+guild/DM/wiring — this is a *mention*-scoped path, not a channel-scoped one,
+so the router (not this transport layer) is what decides which Foreman session
 it belongs to (see ``discord/router.py``'s module docstring). The Gateway
 must carry the ``DIRECT_MESSAGES`` intent (folded into ``_INTENTS`` below) for
 a DM's ``MESSAGE_CREATE`` to reach this handler at all.
+
+Note that bot-user mention detection needs ``DISCORD_APPLICATION_ID`` set —
+the same var that gates ``_is_own_bot_or_unconfigured`` below. Without it the
+bot cannot recognise mentions of itself and this bypass never fires.
 """
 
 from __future__ import annotations
@@ -67,7 +72,7 @@ import random
 import time
 
 import websockets
-from discord.auth import mentions_foreman_role
+from discord.auth import mentions_bot_user, mentions_foreman_role
 from discord_notifier import send_welcome_dm
 
 logger = logging.getLogger(__name__)
@@ -428,17 +433,26 @@ class GatewayClient:
 
     async def _handle_message_create(self, message: dict) -> None:
         author = message.get("author") or {}
+        channel_id = message.get("channel_id")
         if author.get("bot") and _is_own_bot_or_unconfigured(author.get("id")):
             return
-        if mentions_foreman_role(message):
-            # User-scoped, not channel-scoped — bypass the DM/wiring filters
+        if mentions_foreman_role(message) or mentions_bot_user(message):
+            # Mention-scoped, not channel-scoped — bypass the DM/wiring filters
             # below entirely; the router decides how to handle it from here.
+            logger.info(
+                "discord gateway: queueing @-mention channel=%s guild=%s author=%s",
+                channel_id,
+                message.get("guild_id"),
+                author.get("id"),
+            )
             await self._queue.put(message)
             return
         if not message.get("guild_id"):
-            return  # DM — no guild_id on the message
-        channel_id = message.get("channel_id")
+            # DM (no guild_id) that didn't @-mention us — nothing to route to.
+            logger.debug("discord gateway: dropping non-mention DM author=%s", author.get("id"))
+            return
         if not channel_id or not await _is_channel_wired(channel_id):
+            logger.debug("discord gateway: dropping message in unwired channel=%s", channel_id)
             return
         await self._queue.put(message)
 

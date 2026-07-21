@@ -257,7 +257,7 @@ def _patch_emit(monkeypatch):
     async def fake_broadcast(guild_id, msg):
         sent_msgs.append(msg)
 
-    async def fake_notify(guild_id, content, task_id=None):
+    async def fake_notify(guild_id, content, task_id=None, channel_id=None):
         discord_calls.append((content, task_id))
 
     def fake_spawn(coro, name=None):
