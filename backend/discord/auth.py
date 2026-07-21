@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+from functools import lru_cache
 
 
 def allowed_role_ids() -> set[str]:
@@ -63,3 +64,45 @@ def mentions_foreman_role(message: dict) -> bool:
 def strip_foreman_role_mention(content: str) -> str:
     """Remove every ``<@&role_id>`` foreman-role mention token from *content*."""
     return _FOREMAN_ROLE_MENTION_RE.sub("", content).strip()
+
+
+# The bot user itself: @pioneer-square. Mentioning it is the ordinary way to
+# ask for a response, and gets the same "always answer, anywhere" treatment as
+# the foreman role above. Read from the environment per call (rather than
+# captured at import like FOREMAN_ROLE_ID) because the Gateway's own-bot filter
+# reads the same var and tests toggle it.
+def bot_user_id() -> str | None:
+    return os.environ.get("DISCORD_APPLICATION_ID") or None
+
+
+@lru_cache(maxsize=4)
+def _bot_mention_re(bot_id: str) -> re.Pattern[str]:
+    """``<@id>``/``<@!id>`` — Discord emits the ``!`` form for nickname mentions."""
+    return re.compile(rf"<@!?{re.escape(bot_id)}>")
+
+
+def mentions_bot_user(message: dict) -> bool:
+    """Return True if *message* @-mentions this application's bot user.
+
+    Checks Discord's structured ``mentions`` array first, then falls back to a
+    literal scan of the raw content, for the same reason
+    ``mentions_foreman_role`` does — the structured array is not guaranteed to
+    be populated on every message shape, and a pasted raw mention token should
+    still count. Always False when ``DISCORD_APPLICATION_ID`` is unset, since
+    there is then no id to compare against.
+    """
+    bot_id = bot_user_id()
+    if not bot_id:
+        return False
+    mentions = message.get("mentions") or []
+    if any(str(user.get("id")) == bot_id for user in mentions if isinstance(user, dict)):
+        return True
+    return bool(_bot_mention_re(bot_id).search(message.get("content") or ""))
+
+
+def strip_bot_user_mention(content: str) -> str:
+    """Remove every ``<@bot_id>``/``<@!bot_id>`` mention token from *content*."""
+    bot_id = bot_user_id()
+    if not bot_id:
+        return content.strip()
+    return _bot_mention_re(bot_id).sub("", content).strip()

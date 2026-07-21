@@ -726,10 +726,17 @@ async def notify_foreman_chat(
     guild_id: str,
     content: str,
     task_id: str | None = None,
+    channel_id: str | None = None,
 ) -> None:
     """Mirror a Foreman → user chat line into Discord.
 
-    When *task_id* is given and its canonical issue/PR (see
+    When *channel_id* is given it wins outright: the line goes there and
+    nothing else is consulted. That is the @-mention reply path (see
+    ``discord/router.py``), where the answer belongs in the channel or DM the
+    mention arrived in — which may not be wired to *guild_id* at all, so the
+    guild's configured channel is not a meaningful fallback for it.
+
+    Otherwise, when *task_id* is given and its canonical issue/PR (see
     ``_canonical_coords``) already has a thread in ``discord_threads``, the
     line is posted there. In every other case — no *task_id*, or no linked
     thread yet — the line is posted directly to the guild's main configured
@@ -742,6 +749,10 @@ async def notify_foreman_chat(
     if not content or not content.strip():
         return
     if not bot_token():
+        return
+
+    if channel_id:
+        await _post_foreman_chat_line(channel_id, content)
         return
 
     channel = await _resolve_channel_for_guild(guild_id)
