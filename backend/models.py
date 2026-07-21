@@ -262,6 +262,16 @@ class User(SQLModel, table=True):
     avatar_url: str | None = None
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    # True for auto-provisioned Discord bot accounts (see discord/bot_users.py).
+    # False for real GitHub-authenticated humans.
+    is_bot: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    # For a bot user (is_bot=True), the real human user it is provisioned under —
+    # typically the guild's owner at the time the bot first interacted. NULL for
+    # human users. Self-referential FK; never chains bot -> bot.
+    parent_user_id: str | None = Field(default=None, foreign_key="users.id", index=True)
 
 
 class GuildMember(SQLModel, table=True):
@@ -673,24 +683,6 @@ class DiscordThreadBinding(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
-class DiscordUser(SQLModel, table=True):
-    """Maps a GitHub login to a Discord user ID for @-mentions in notifications.
-
-    Populated via the ``/api/discord-users`` REST endpoints (no automated
-    discovery — a human links the two accounts). Lookups are graceful: a
-    missing mapping just means notifications fall back to a plain ``@login``
-    string instead of a real Discord mention.
-    """
-
-    __tablename__ = "discord_users"  # type: ignore[assignment]
-
-    id: int | None = Field(default=None, primary_key=True)
-    github_login: str = Field(unique=True)  # stored lowercase
-    discord_user_id: str
-    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-
-
 class DiscordChannelGuild(SQLModel, table=True):
     """Binds a Discord channel to a Pioneer Square guild for event routing.
 
@@ -717,15 +709,17 @@ class DiscordChannelGuild(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
-class DiscordConnectToken(SQLModel, table=True):
-    """One-time token minted by the ``/connect-account`` slash command.
+class DiscordPendingConnect(SQLModel, table=True):
+    """An in-flight account link awaiting redemption — *not* a durable mapping.
 
-    Redeemed by ``POST /api/discord/connect`` once the user is logged in to
-    Pioneer Square. Tokens expire 15 minutes after creation and can only be
-    redeemed once (``used_at`` is set on redemption).
+    The ``/connect-account`` slash command mints a row here; redeeming it via
+    ``POST /api/discord/connect`` (while logged in to Pioneer Square) is what
+    creates the lasting ``DiscordAccountLink``. Rows are single-use
+    (``used_at`` is stamped on redemption) and expire 15 minutes after
+    creation, so anything still here is either pending or spent.
     """
 
-    __tablename__ = "discord_connect_tokens"  # type: ignore[assignment]
+    __tablename__ = "discord_pending_connects"  # type: ignore[assignment]
 
     id: int | None = Field(default=None, primary_key=True)
     token: str = Field(unique=True)  # UUID4 string

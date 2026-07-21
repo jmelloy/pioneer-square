@@ -21,7 +21,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from discord import router  # noqa: E402
 from helpers import _sync_session, insert_guild, insert_task  # noqa: E402
-from models import DiscordChannelGuild, DiscordThreadBinding  # noqa: E402
+from models import DiscordChannelGuild, DiscordThreadBinding, User  # noqa: E402
+from sqlmodel import col, select  # noqa: E402
 
 
 def _insert_binding(db_url: str, subject_type: str, subject_key: str, thread_id: str) -> None:
@@ -37,11 +38,13 @@ def _insert_binding(db_url: str, subject_type: str, subject_key: str, thread_id:
         session.commit()
 
 
-def _insert_channel_guild(db_url: str, channel_id: str, guild_id: str) -> None:
+def _insert_channel_guild(
+    db_url: str, channel_id: str, guild_id: str, discord_guild_id: str = "discord-guild-1"
+) -> None:
     with _sync_session(db_url) as session:
         session.add(
             DiscordChannelGuild(
-                discord_guild_id="discord-guild-1",
+                discord_guild_id=discord_guild_id,
                 discord_channel_id=channel_id,
                 ps_guild_id=guild_id,
                 created_at=datetime.now(UTC),
@@ -286,3 +289,162 @@ async def test_route_inbound_message_falls_back_for_non_routable_state(client):
 
     assert mock_exec.await_count == 0
     assert mock_trigger.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# #962 — mention-only channel
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mention_channel_ignores_message_without_mention(client):
+    """A plain message (no @mention) in the mention-only channel is ignored."""
+    _test_client, db_url = client
+    _insert_channel_guild(
+        db_url, "1528707144227225631", "g-router10", discord_guild_id="discord-guild-mention-1"
+    )
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "just chatting, not pinging anyone",
+                "channel_id": "1528707144227225631",
+                "author": {"id": "d-user-3", "username": "carol"},
+                "mentions": [],
+            }
+        )
+
+    assert mock_trigger.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_mention_channel_responds_when_bot_mentioned(client):
+    """A message that @mentions the bot in the mention-only channel is forwarded,
+    with the mention token stripped from the content (#962)."""
+    _test_client, db_url = client
+    _insert_channel_guild(
+        db_url, "1528707144227225631", "g-router11", discord_guild_id="discord-guild-mention-2"
+    )
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "<@bot-id-1> what's the status of the release?",
+                "channel_id": "1528707144227225631",
+                "author": {"id": "d-user-4", "username": "dave"},
+                "mentions": [{"id": "bot-id-1", "username": "pioneer-bot"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    _args, kwargs = mock_trigger.await_args
+    assert kwargs["task_id"] is None
+    human_message = _args[2]
+    assert "<@bot-id-1>" not in human_message
+    assert "what's the status of the release?" in human_message
+
+
+@pytest.mark.asyncio
+async def test_mention_channel_ignores_when_application_id_unset(client):
+    """With DISCORD_APPLICATION_ID unset, the bot can't identify its own mentions
+    and safely ignores messages in the mention-only channel rather than guessing."""
+    _test_client, db_url = client
+    _insert_channel_guild(
+        db_url, "1528707144227225631", "g-router12", discord_guild_id="discord-guild-mention-3"
+    )
+
+    with (
+        patch.dict(os.environ, {}, clear=False),
+        patch.object(router, "_bot_user_id", return_value=None),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "<@bot-id-1> hello?",
+                "channel_id": "1528707144227225631",
+                "author": {"id": "d-user-5", "username": "erin"},
+                "mentions": [{"id": "bot-id-1"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Bot auto-provisioning (parent_user_id)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_auto_provisions_bot_author(client):
+    """An unmapped bot author gets its own users row, parented to the guild owner,
+    instead of resolving to no ps_user_id at all."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router-bot1", owner_user_id="gh-owner-bot1")
+    _insert_channel_guild(db_url, "channel-bot-1", "g-router-bot1")
+
+    with (
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "build finished",
+                "channel_id": "channel-bot-1",
+                "author": {"id": "d-bot-1", "username": "ci-bot", "bot": True},
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    _args, kwargs = mock_trigger.await_args
+    ps_user_id = kwargs["user_id"]
+    assert ps_user_id == "discordbot:d-bot-1"
+
+    with _sync_session(db_url) as session:
+        bot_user = session.execute(select(User).where(col(User.id) == ps_user_id)).scalars().one()
+        assert bot_user.is_bot is True
+        assert bot_user.parent_user_id == "gh-owner-bot1"
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_reuses_existing_bot_user(client):
+    """A second message from the same bot reuses its already-provisioned row."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router-bot2", owner_user_id="gh-owner-bot2")
+    _insert_channel_guild(db_url, "channel-bot-2", "g-router-bot2")
+
+    async def _send():
+        with (
+            patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+            patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+            patch("foreman.runner.reset_foreman_poll"),
+        ):
+            await router._route_inbound_message(
+                {
+                    "content": "status update",
+                    "channel_id": "channel-bot-2",
+                    "author": {"id": "d-bot-2", "username": "ci-bot", "bot": True},
+                }
+            )
+            return mock_trigger.await_args[1]["user_id"]
+
+    first_id = await _send()
+    second_id = await _send()
+    assert first_id == second_id == "discordbot:d-bot-2"
+
+    with _sync_session(db_url) as session:
+        count = len(session.execute(select(User).where(col(User.id) == first_id)).scalars().all())
+        assert count == 1

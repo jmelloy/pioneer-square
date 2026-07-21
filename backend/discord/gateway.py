@@ -27,7 +27,13 @@ Protocol handled, per https://discord.com/developers/docs/topics/gateway:
     INVALID_SESSION (op 9)   -> RESUME if resumable, otherwise fresh IDENTIFY
 
 Filtering applied to ``MESSAGE_CREATE`` before anything is queued:
-    - ``author.bot is True``      -> discarded (avoids echoing discord_notifier)
+    - ``author.bot is True`` and either this is our own application's bot user
+      (``DISCORD_APPLICATION_ID``) or that env var isn't set at all -> discarded
+      (avoids echoing discord_notifier; see ``_is_own_bot_or_unconfigured``).
+      Other bots' messages pass through once ``DISCORD_APPLICATION_ID`` is
+      configured, and get their own auto-provisioned ``users`` row on first
+      contact (``discord/bot_users.py``) instead of being dropped outright.
+    - foreman role @-mentioned    -> queued unconditionally (see below)
     - no ``guild_id`` (a DM)      -> discarded
     - channel/thread not "wired"  -> discarded (see ``_is_channel_wired``)
 
@@ -41,6 +47,14 @@ threads of a wired channel but carry their own ``channel_id`` in Discord's
 model, so they need their own lookup; the routing/reply layer (#744) does its
 own, more specific, reverse-lookup against that same table to decide *which*
 Foreman session a message belongs to.
+
+One exception to the "wired" requirement: a message that @-mentions the
+foreman role (``discord.auth.mentions_foreman_role``) is queued regardless of
+guild/DM/wiring — this is a *user*-scoped path, not a channel-scoped one, so
+the router (not this transport layer) is what decides which Foreman session
+it belongs to (see ``discord/router.py``'s module docstring). The Gateway
+must carry the ``DIRECT_MESSAGES`` intent (folded into ``_INTENTS`` below) for
+a DM's ``MESSAGE_CREATE`` to reach this handler at all.
 """
 
 from __future__ import annotations
@@ -53,6 +67,7 @@ import random
 import time
 
 import websockets
+from discord.auth import mentions_foreman_role
 from discord_notifier import send_welcome_dm
 
 logger = logging.getLogger(__name__)
@@ -60,8 +75,10 @@ logger = logging.getLogger(__name__)
 _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 
 # GUILDS (1 << 0) | GUILD_MEMBERS (1 << 1) | GUILD_MESSAGES (1 << 9)
-# | MESSAGE_CONTENT (1 << 15)
-_INTENTS = 33283
+# | DIRECT_MESSAGES (1 << 12) | MESSAGE_CONTENT (1 << 15)
+# DIRECT_MESSAGES is required so a DM's MESSAGE_CREATE reaches the bot at
+# all — otherwise a foreman-role mention typed into a DM would never arrive.
+_INTENTS = 33283 | 4096
 
 # Gateway opcodes.
 _OP_DISPATCH = 0
@@ -83,6 +100,20 @@ def _bot_token() -> str | None:
 
 def _gateway_enabled() -> bool:
     return os.environ.get("DISCORD_GATEWAY_ENABLED", "false").strip().lower() == "true"
+
+
+def _is_own_bot_or_unconfigured(author_id: str | None) -> bool:
+    """Return True if *author_id* is this application's own bot user, or if
+    ``DISCORD_APPLICATION_ID`` isn't set (in which case we can't tell, so we
+    conservatively treat every bot as "our own" to preserve the pre-existing,
+    echo-safe default of dropping all bot messages).
+
+    Set ``DISCORD_APPLICATION_ID`` to opt in to processing *other* bots'
+    messages (auto-provisioned as their own ``users`` row — see
+    ``discord/bot_users.py``) while still never reacting to our own messages.
+    """
+    own_id = os.environ.get("DISCORD_APPLICATION_ID")
+    return not own_id or str(author_id) == own_id
 
 
 def _backoff_delay(attempt: int, base: float = 2.0, cap: float = 60.0) -> float:
@@ -397,7 +428,12 @@ class GatewayClient:
 
     async def _handle_message_create(self, message: dict) -> None:
         author = message.get("author") or {}
-        if author.get("bot"):
+        if author.get("bot") and _is_own_bot_or_unconfigured(author.get("id")):
+            return
+        if mentions_foreman_role(message):
+            # User-scoped, not channel-scoped — bypass the DM/wiring filters
+            # below entirely; the router decides how to handle it from here.
+            await self._queue.put(message)
             return
         if not message.get("guild_id"):
             return  # DM — no guild_id on the message
