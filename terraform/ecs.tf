@@ -81,6 +81,8 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "DISCORD_PIONEER_GUILD_SLUG", value = var.discord_pioneer_guild_slug },
         { name = "DISCORD_STREAM_TASKS", value = var.discord_stream_tasks },
         { name = "DISCORD_GATEWAY_ENABLED", value = var.discord_gateway_enabled },
+        { name = "DISCORD_DEV_GUILD_ID", value = var.discord_dev_guild_id },
+        { name = "DISCORD_PR_DEBOUNCE_SECONDS", value = var.discord_pr_debounce_seconds },
       ]
 
       secrets = [

@@ -443,3 +443,15 @@ variable "discord_gateway_enabled" {
   type        = string
   default     = "true"
 }
+
+variable "discord_dev_guild_id" {
+  description = "Discord guild (server) ID for instant slash-command registration during development. Empty registers commands globally."
+  type        = string
+  default     = ""
+}
+
+variable "discord_pr_debounce_seconds" {
+  description = "Seconds to debounce PR-event Discord notifications."
+  type        = string
+  default     = ""
+}
