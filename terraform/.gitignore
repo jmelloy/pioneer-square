@@ -10,10 +10,13 @@
 crash.log
 crash.*.log
 
-# Variable files likely to contain real secrets.
+# Variable files likely to contain real secrets. terraform.tfvars is the
+# exception: secrets live in SSM (seeded from .env), so it holds only
+# non-secret environment config and is committed. Keep secrets out of it.
 *.tfvars
 *.tfvars.json
 !example.tfvars
+!terraform.tfvars
 
 # Override files, used only for local overrides.
 override.tf
