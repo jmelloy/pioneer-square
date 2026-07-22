@@ -300,6 +300,11 @@ class User(SQLModel, table=True):
     # typically the guild's owner at the time the bot first interacted. NULL for
     # human users. Self-referential FK; never chains bot -> bot.
     parent_user_id: str | None = Field(default=None, foreign_key="users.id", index=True)
+    # Bot delivery config, populated by discord/bot_users.py at auto-provisioning
+    # time (see message_discord_bot in foreman/tools.py). NULL for human users.
+    bot_provider: str | None = None  # e.g. "discord"
+    discord_channel_id: str | None = None  # preferred channel for bot messages
+    bot_metadata: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
 
 class GuildMember(SQLModel, table=True):

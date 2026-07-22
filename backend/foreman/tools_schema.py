@@ -73,7 +73,7 @@ FOREMAN_TOOLS = [
             "worker to post findings via 'gh pr review' and NOT to commit or open a new PR — "
             "the worker runtime injects standard review guardrails automatically. "
             "For shallow/fallback reviews without dispatching a worker, use review_pr_internal "
-            "or review_pr instead."
+            "instead."
         ),
         "input_schema": {
             "type": "object",
@@ -508,34 +508,6 @@ FOREMAN_TOOLS = [
         },
     },
     {
-        "name": "review_pr",
-        "description": (
-            "Request a shallow automated code review via the EXTERNAL code-review-agent MCP server "
-            "at agent.meyers.life (override with REVIEWER_AGENT_URL env var). "
-            "The remote agent fetches the PR diff, runs a Claude-powered review, and posts "
-            "the result as a GitHub PR review (APPROVE / REQUEST_CHANGES / COMMENT with "
-            "inline comments). Findings are posted as review comments on the original PR, never "
-            "as a new PR. "
-            "Use this for a quick external review when no worker is available, or as a fallback. "
-            "For a full review that checks out the branch and runs tests/lint, use "
-            "create_task(phase='review') + assign_task instead. "
-            "For a self-contained internal review without any external dependency, "
-            "use review_pr_internal instead."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "pr_url": {
-                    "type": "string",
-                    "description": (
-                        "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/123"
-                    ),
-                },
-            },
-            "required": ["pr_url"],
-        },
-    },
-    {
         "name": "review_pr_internal",
         "description": (
             "Perform a shallow internal code review of a GitHub pull request without calling "
@@ -548,9 +520,9 @@ FOREMAN_TOOLS = [
             "the action parameter for the exact policy. "
             "Findings are posted as review comments on the original PR via the GitHub Reviews "
             "API, never as a new PR. "
-            "Use this for a quick diff-only review when no worker is available, or when "
-            "agent.meyers.life is unavailable. For a full review that checks out the branch "
-            "and runs tests/lint, use create_task(phase='review') + assign_task instead."
+            "Use this for a quick diff-only review when no worker is available. For a full "
+            "review that checks out the branch and runs tests/lint, use "
+            "create_task(phase='review') + assign_task instead."
         ),
         "input_schema": {
             "type": "object",
@@ -642,6 +614,39 @@ FOREMAN_TOOLS = [
                 },
             },
             "required": ["agent_url", "skill"],
+        },
+    },
+    {
+        "name": "message_discord_bot",
+        "description": (
+            "Send a message to a bot user over Discord. Looks up the bot's user row "
+            "(auto-provisioned the first time it posted — see discord/bot_users.py) for its "
+            "preferred channel and Discord identity, then delivers via the bot API. "
+            "Fails if bot_user_id does not identify a Discord bot (is_bot=True, "
+            "bot_provider='discord')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bot_user_id": {
+                    "type": "string",
+                    "description": "Pioneer Square user id of the target bot (e.g. 'discordbot:123').",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Message content to send.",
+                },
+                "delivery_method": {
+                    "type": "string",
+                    "enum": ["channel", "mention"],
+                    "description": (
+                        "'channel' (default) posts to the bot's preferred discord_channel_id. "
+                        "'mention' posts an @mention of the bot into that same channel — use "
+                        "when a plain channel post might not get the bot's attention."
+                    ),
+                },
+            },
+            "required": ["bot_user_id", "message"],
         },
     },
     # spawn_worker intentionally disabled — see issues #551, #564, #566, #567

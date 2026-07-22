@@ -250,6 +250,7 @@ async def _resolve_identity(
     *,
     is_bot: bool = False,
     guild_pk: int | None = None,
+    channel_id: str | None = None,
 ) -> tuple[str | None, str]:
     """Return ``(ps_user_id, label)`` for a Discord author.
 
@@ -259,8 +260,10 @@ async def _resolve_identity(
     the author has not linked an account, *unless* ``is_bot`` is set: an
     unlinked bot author is auto-provisioned its own ``users`` row (see
     ``discord.bot_users.ensure_bot_user``) so its actions get an audit trail
-    and inherited guild permissions instead of resolving to nobody. Never
-    raises.
+    and inherited guild permissions instead of resolving to nobody.
+    ``channel_id``, when given, is the channel the bot's message landed in —
+    passed through to ``ensure_bot_user`` as the bot's preferred channel for
+    ``message_discord_bot``. Never raises.
     """
     generic = f"Discord user @{username}" if username else "a Discord user"
     if not discord_user_id:
@@ -292,7 +295,7 @@ async def _resolve_identity(
         try:
             from discord.bot_users import ensure_bot_user  # noqa: PLC0415
 
-            ps_user_id = await ensure_bot_user(discord_user_id, username, guild_pk)
+            ps_user_id = await ensure_bot_user(discord_user_id, username, guild_pk, channel_id)
             return ps_user_id, f"🤖 {username}" if username else f"🤖 {discord_user_id}"
         except Exception:
             logger.warning(
@@ -537,6 +540,7 @@ async def _dispatch_author_scoped(message: dict, content: str, reply_channel_id:
         author.get("username"),
         is_bot=bool(author.get("bot")),
         guild_pk=await _guild_pk_for_slug(provision_slug) if provision_slug else None,
+        channel_id=reply_channel_id,
     )
     if not ps_user_id:
         logger.info(
@@ -604,6 +608,7 @@ async def _dispatch_channel_scoped(
         author.get("username"),
         is_bot=bool(author.get("bot")),
         guild_pk=guild_pk,
+        channel_id=reply_channel_id,
     )
     discord_line = f"[Discord] {label}: {content}"
     # A resolved task_id means this message landed in a thread already bound to a task

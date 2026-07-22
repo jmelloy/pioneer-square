@@ -41,6 +41,7 @@ from models import (
     Task,
     TaskEvent,
     TaskLog,
+    User,
     Worker,
 )
 from sqlalchemy import delete, literal, update
@@ -878,51 +879,10 @@ async def notify_discord_task_finalized(
 
 
 # ---------------------------------------------------------------------------
-# code-review-agent helpers
+# review_pr_internal helpers
 # ---------------------------------------------------------------------------
 
 _PR_URL_RE = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?$")
-
-_VERDICT_TO_GH_EVENT = {
-    "approved": "APPROVE",
-    "changes-requested": "REQUEST_CHANGES",
-    "comment": "COMMENT",
-}
-
-_REVIEW_REPORT_MIME = "application/vnd.code-review-agent.report+json"
-
-
-def _extract_review_data(a2a_result: dict) -> tuple[str, str]:
-    """Parse an A2A tasks/send result from the code-review-agent.
-
-    Returns ``(github_event, review_body)`` where ``github_event`` is one of
-    ``"APPROVE"``, ``"REQUEST_CHANGES"``, or ``"COMMENT"``.
-
-    Inspects ``artifacts[*].parts[*]``: text parts supply the review body,
-    a part with type ``application/vnd.code-review-agent.report+json`` supplies
-    the structured verdict.
-    """
-    review_body = ""
-    verdict = "comment"
-
-    for artifact in a2a_result.get("artifacts", []):
-        for part in artifact.get("parts", []):
-            part_type = part.get("type", "")
-            if part_type == "text" and not review_body:
-                review_body = part.get("text", "")
-            elif part_type == _REVIEW_REPORT_MIME:
-                try:
-                    report = json.loads(part.get("text", "{}"))
-                    verdict = report.get("verdict") or report.get("summary", {}).get(
-                        "verdict", "comment"
-                    )
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-
-    github_event = _VERDICT_TO_GH_EVENT.get(str(verdict).lower(), "COMMENT")
-    review_body = review_body or f"Automated code review completed (verdict: {verdict})."
-    return github_event, review_body
-
 
 _GQL_PR_THREADS = """
 query GetPRThreads($owner: String!, $repo: String!, $number: Int!) {
@@ -1092,6 +1052,58 @@ async def _run_dnsid(command: str, inp: dict) -> dict:
         return await _to_thread(_dnsid_verify, jwt_token, expected_aud, inp.get("expected_nonce"))
     else:
         raise ValueError(f"Unknown dnsid command: {command!r}")
+
+
+async def _message_discord_bot(inp: dict, db) -> tuple[str, bool]:
+    """Send a message to a Discord bot user (see ``message_discord_bot`` in
+    ``foreman/tools_schema.py``). Returns ``(result_text, is_error)``."""
+    bot_user_id = inp.get("bot_user_id") or ""
+    message = inp.get("message") or ""
+    delivery_method = inp.get("delivery_method") or "channel"
+
+    if not bot_user_id:
+        return "message_discord_bot requires bot_user_id", True
+    if not message:
+        return "message_discord_bot requires message", True
+
+    result = await db.exec(select(User).where(col(User.id) == bot_user_id))
+    user = result.one_or_none()
+    if user is None:
+        return f"No user found with id {bot_user_id!r}.", True
+    if not user.is_bot or user.bot_provider != "discord":
+        return (
+            f"User {bot_user_id!r} is not a Discord bot "
+            f"(is_bot={user.is_bot}, bot_provider={user.bot_provider!r})."
+        ), True
+    if not user.discord_channel_id:
+        return f"Bot {bot_user_id!r} has no discord_channel_id configured.", True
+
+    content = message
+    if delivery_method == "mention":
+        discord_user_id = (user.bot_metadata or {}).get("discord_user_id")
+        if not discord_user_id:
+            return (
+                f"Bot {bot_user_id!r} has no discord_user_id in bot_metadata for mention delivery."
+            ), True
+        content = f"<@{discord_user_id}> {message}"
+
+    response = await discord_notifier.post(
+        f"/channels/{user.discord_channel_id}/messages", {"content": content}
+    )
+    if response is None:
+        return f"Failed to send Discord message to bot {bot_user_id!r}.", True
+
+    return (
+        json.dumps(
+            {
+                "bot_user_id": bot_user_id,
+                "channel_id": user.discord_channel_id,
+                "delivery_method": delivery_method,
+                "message_id": response.get("id") if isinstance(response, dict) else None,
+            }
+        ),
+        False,
+    )
 
 
 def _fetch_agent_card(card_url: str) -> dict:
@@ -2362,6 +2374,9 @@ async def _exec_one_tool(
                         },
                         default=_json_default,
                     )
+
+            elif tu.name == "message_discord_bot":
+                result_text, is_error = await _message_discord_bot(inp, db)
         finally:
             await db.close()
 
@@ -2374,7 +2389,6 @@ async def _exec_one_tool(
             "create_github_issue",
             "search_github_issues",
             "get_pr_status",
-            "review_pr",
             "review_pr_internal",
         ):
             logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
@@ -2509,95 +2523,6 @@ async def _exec_one_tool(
                                 for i in items
                             ]
                         )
-
-                    elif tu.name == "review_pr":
-                        pr_url = inp["pr_url"]
-                        logger.info("guild=%s review_pr: pr_url=%s", guild_id, pr_url)
-                        pr_match = _PR_URL_RE.match(pr_url.rstrip("/"))
-                        if not pr_match:
-                            result_text = (
-                                f"Invalid GitHub PR URL: {pr_url!r}. "
-                                "Expected https://github.com/owner/repo/pull/N"
-                            )
-                            is_error = True
-                        else:
-                            pr_repo = pr_match.group(1)
-                            pr_number = int(pr_match.group(2))
-                            from foreman.a2a_client import A2AClient, _guild_caller_domain
-
-                            review_agent = os.environ.get(
-                                "REVIEWER_AGENT_URL", "https://agent.meyers.life"
-                            )
-                            client = A2AClient(f"{review_agent.rstrip('/')}/.well-known/agent.json")
-                            try:
-                                a2a_result = await client.review_pr(
-                                    pr_url,
-                                    caller_domain=_guild_caller_domain(guild_id),
-                                    private_key_pem=await _guild_private_key_pem(guild_id),
-                                )
-                            except urllib.error.HTTPError as exc:
-                                try:
-                                    err_body = exc.read().decode(errors="replace")
-                                except Exception:
-                                    err_body = ""
-                                logger.error(
-                                    "guild=%s review_pr: mcp_request_failed pr_url=%s status=%d err_body=%.500s",
-                                    guild_id,
-                                    pr_url,
-                                    exc.code,
-                                    err_body,
-                                    exc_info=True,
-                                )
-                                raise
-                            except Exception:
-                                logger.error(
-                                    "guild=%s review_pr: mcp_request_failed pr_url=%s",
-                                    guild_id,
-                                    pr_url,
-                                    exc_info=True,
-                                )
-                                raise
-                            github_event, review_body = _extract_review_data(a2a_result)
-                            logger.info(
-                                "guild=%s review_pr: verdict=%s summary_preview=%.200s",
-                                guild_id,
-                                github_event,
-                                review_body,
-                            )
-                            try:
-                                threads_resolved = await _supersede_prior_bot_reviews(
-                                    pr_repo, pr_number, username, token
-                                )
-                                if threads_resolved:
-                                    logger.info(
-                                        "guild=%s review_pr: resolved %d thread(s) from"
-                                        " prior review(s) on %s#%d",
-                                        guild_id,
-                                        threads_resolved,
-                                        pr_repo,
-                                        pr_number,
-                                    )
-                            except Exception as _sup_exc:
-                                logger.warning(
-                                    "guild=%s review_pr: thread resolution step failed (non-fatal): %s",
-                                    guild_id,
-                                    _sup_exc,
-                                )
-                            review_data = await _to_thread(
-                                _gh_api_post,
-                                f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
-                                token,
-                                {"body": review_body, "event": github_event},
-                            )
-                            result_text = json.dumps(
-                                {
-                                    "pr_url": pr_url,
-                                    "verdict": github_event,
-                                    "review_id": review_data.get("id"),
-                                    "review_posted": True,
-                                    "summary": review_body[:400],
-                                }
-                            )
 
                     elif tu.name == "review_pr_internal":
                         # Review action policy (mirrors the worker-driven `gh pr review` path):
