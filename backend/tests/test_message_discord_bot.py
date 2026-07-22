@@ -150,7 +150,11 @@ class TestMessageDiscordBotValidation:
         _insert_bot_user(db_session, "discordbot:nochan", discord_channel_id=None)
         results = await exec_tools(
             "g-mdb-nochannel",
-            [_fake_tu("message_discord_bot", {"bot_user_id": "discordbot:nochan", "message": "hi"})],
+            [
+                _fake_tu(
+                    "message_discord_bot", {"bot_user_id": "discordbot:nochan", "message": "hi"}
+                )
+            ],
         )
         assert results[0].get("is_error") is True
         assert "discord_channel_id" in results[0]["content"]
@@ -181,9 +185,7 @@ class TestMessageDiscordBotHappyPath:
             )
 
         assert results[0].get("is_error") is not True
-        mock_post.assert_awaited_once_with(
-            "/channels/chan-abc/messages", {"content": "hello bot"}
-        )
+        mock_post.assert_awaited_once_with("/channels/chan-abc/messages", {"content": "hello bot"})
         parsed = json.loads(results[0]["content"])
         assert parsed["channel_id"] == "chan-abc"
         assert parsed["delivery_method"] == "channel"

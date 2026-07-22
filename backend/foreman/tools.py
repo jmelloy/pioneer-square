@@ -1083,8 +1083,7 @@ async def _message_discord_bot(inp: dict, db) -> tuple[str, bool]:
         discord_user_id = (user.bot_metadata or {}).get("discord_user_id")
         if not discord_user_id:
             return (
-                f"Bot {bot_user_id!r} has no discord_user_id in bot_metadata "
-                "for mention delivery."
+                f"Bot {bot_user_id!r} has no discord_user_id in bot_metadata for mention delivery."
             ), True
         content = f"<@{discord_user_id}> {message}"
 
