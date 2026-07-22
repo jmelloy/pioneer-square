@@ -1,7 +1,7 @@
 """Add replay-protected external A2A request audit records.
 
 Revision ID: 20260717_000000_add_external_a2a_requests
-Revises: 20260714_000000_add_task_logs_worker_agent_indexes
+Revises: 20260720_000000_drop_discord_users
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260717_000000_add_external_a2a_requests"
-down_revision: str | Sequence[str] | None = "20260714_000000_add_task_logs_worker_agent_indexes"
+down_revision: str | Sequence[str] | None = "20260720_000000_drop_discord_users"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
