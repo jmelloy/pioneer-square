@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import UTC, datetime
 
 from discord.auth import (
@@ -316,6 +317,51 @@ async def _resolve_user_guild_slugs(ps_user_id: str) -> list[str]:
         return []
 
 
+def _default_guild_slug() -> str | None:
+    """Return this instance's default guild slug (``GUILD_ID``), or None.
+
+    A last resort, not a preference: it applies only where an inbound event
+    carries no project of its own to resolve from — a bot @-mention in a DM,
+    or in a Discord server wired to nothing. Anywhere a channel or server
+    binding exists, that binding wins, so a multi-project server is never
+    funnelled into the instance default.
+
+    Shared with the ``foreman`` service, which reads the same var to pick the
+    single guild it manages; the backend must be passed it explicitly in
+    ``docker-compose.yml`` (it is not inherited).
+    """
+    return os.environ.get("GUILD_ID") or None
+
+
+async def resolve_guild_slug(
+    channel_id: str | None, discord_guild_id: str | None = None
+) -> str | None:
+    """Return the Pioneer Square guild a Discord interaction targets, or None.
+
+    The same narrowing the inbound chat path applies, in the same order —
+    most specific context first, instance default last:
+
+        1. the channel/thread it came from, if bound (``resolve_session``)
+        2. any project the Discord *server* is wired to, newest first
+        3. this instance's default guild (``GUILD_ID``)
+
+    Exists so slash commands resolve their target the way a bot @-mention
+    does, instead of being pinned to a single env var: ``/ps status`` typed in
+    a channel wired to a project should report on *that* project. Never raises
+    — each step is individually fault-tolerant, so a lookup failure degrades
+    to the next step rather than failing the command.
+    """
+    if channel_id:
+        session = await resolve_session(str(channel_id))
+        if session:
+            return session[0]
+    if discord_guild_id:
+        bound = await _resolve_discord_guild_slugs(str(discord_guild_id))
+        if bound:
+            return bound[0]
+    return _default_guild_slug()
+
+
 async def _resolve_discord_guild_slugs(discord_guild_id: str) -> list[str]:
     """Return every Pioneer Square guild slug bound to *any* channel of the
     Discord server *discord_guild_id*, most-recently-created first.
@@ -364,10 +410,17 @@ async def _dispatch_author_scoped(message: dict, content: str, reply_channel_id:
     Every other inbound path resolves a Foreman session from the *channel*
     a message landed in (see ``resolve_session``). This one can't, so it
     falls back to the author's own projects. The author has to resolve to a
-    linked Pioneer Square user (``_resolve_identity``) with at least one
-    accessible project (``_resolve_user_guild_slugs``) — an author that
-    fails either check has nowhere well-defined to route to and is silently
-    ignored, same as an unresolvable channel elsewhere in this module.
+    Pioneer Square user (``_resolve_identity``) with at least one accessible
+    project (``_resolve_user_guild_slugs``) — an author that fails either
+    check has nowhere well-defined to route to and is silently ignored, same
+    as an unresolvable channel elsewhere in this module.
+
+    A *bot* author resolves by being auto-provisioned rather than by having
+    linked an account, exactly as on the channel-scoped path — see the
+    ``guild_pk`` note below for where its parent comes from. Dropping the
+    ``is_bot`` flag here is what made bot @-mentions from unwired channels
+    resolve to nobody and get ignored (they reach this path at all only since
+    the bot-mention bypass in #969).
 
     Candidates are the author's accessible projects, but ones bound to the
     Discord server the mention came from are preferred: a mention typed in an
@@ -385,7 +438,22 @@ async def _dispatch_author_scoped(message: dict, content: str, reply_channel_id:
     rather than just the one it's replying from. Never raises.
     """
     author = message.get("author") or {}
-    ps_user_id, label = await _resolve_identity(author.get("id"), author.get("username"))
+    discord_guild_id = message.get("guild_id")
+    # Resolved before the identity lookup, not after, because an unlinked *bot*
+    # author gets provisioned during that lookup and needs a guild to parent
+    # into. Unlike the channel-scoped path there is no binding to read it from,
+    # so the server's own bindings stand in: the most-recently-created project
+    # the mention's Discord server is wired to, falling back to the instance
+    # default only when the server is wired to nothing (or it's a DM). Humans
+    # are unaffected either way — guild_pk is read only when provisioning a bot.
+    bound = await _resolve_discord_guild_slugs(str(discord_guild_id)) if discord_guild_id else []
+    provision_slug = bound[0] if bound else _default_guild_slug()
+    ps_user_id, label = await _resolve_identity(
+        author.get("id"),
+        author.get("username"),
+        is_bot=bool(author.get("bot")),
+        guild_pk=await _guild_pk_for_slug(provision_slug) if provision_slug else None,
+    )
     if not ps_user_id:
         logger.info(
             "discord router: mention from unlinked discord_user=%s — ignoring",
@@ -401,9 +469,7 @@ async def _dispatch_author_scoped(message: dict, content: str, reply_channel_id:
         )
         return
 
-    discord_guild_id = message.get("guild_id")
     if discord_guild_id:
-        bound = await _resolve_discord_guild_slugs(str(discord_guild_id))
         # Intersect rather than replace: server bindings narrow the choice,
         # but must never route someone into a project they aren't a member of.
         accessible = set(guild_slugs)

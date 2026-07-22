@@ -6,9 +6,14 @@ Required env vars:
     DISCORD_PUBLIC_KEY          Ed25519 public key (hex) from Discord developer portal
     DISCORD_APPLICATION_ID      Discord application/bot ID (used for followup URLs)
     DISCORD_BOT_TOKEN           Discord bot token (reuses Phase 2 var)
-    DISCORD_PIONEER_GUILD_SLUG  Pioneer Square guild slug to target for /ps commands
 
 Optional env vars:
+    DISCORD_PIONEER_GUILD_SLUG  Pins every /ps command to one Pioneer Square guild.
+                                Deprecated: when unset, a command resolves its own
+                                target the way an inbound bot @-mention does —
+                                channel binding, then Discord-server binding, then
+                                GUILD_ID (see discord.router.resolve_guild_slug).
+    GUILD_ID                    Instance default guild, used as the last resort above.
     DISCORD_ALLOWED_ROLE_IDS    Comma-separated Discord role IDs; empty = allow all
     DISCORD_OPERATOR_ROLE_NAME  Discord role name allowed to run /join-channel and
                                 /leave-channel (in addition to Manage Channels
@@ -100,7 +105,35 @@ def _application_id() -> str | None:
 
 
 def _pioneer_guild_slug() -> str | None:
+    """Explicit, instance-wide override for the guild ``/ps`` commands target.
+
+    Deprecated in favour of letting the command resolve its own context — see
+    ``_resolve_command_guild_slug``. Kept because it is the documented way to
+    pin an instance to one project, and unsetting it silently would change
+    behaviour for deployments relying on it.
+    """
     return os.environ.get("DISCORD_PIONEER_GUILD_SLUG") or None
+
+
+async def _resolve_command_guild_slug(interaction: dict) -> str:
+    """Return the Pioneer Square guild slug a slash command should operate on.
+
+    Resolves the same way an inbound bot @-mention does — channel binding,
+    then Discord-server binding, then the instance default (``GUILD_ID``) —
+    so ``/ps status`` in a channel wired to a project reports on that project
+    rather than on whatever one env var names. ``DISCORD_PIONEER_GUILD_SLUG``
+    still wins when explicitly set, preserving the pinned-instance setup.
+
+    Returns ``""`` when nothing resolves, matching what the call sites
+    previously produced for an unset env var.
+    """
+    explicit = _pioneer_guild_slug()
+    if explicit:
+        return explicit
+    from discord.router import resolve_guild_slug  # noqa: PLC0415
+
+    slug = await resolve_guild_slug(interaction.get("channel_id"), interaction.get("guild_id"))
+    return slug or ""
 
 
 def _operator_role_name() -> str:
@@ -644,7 +677,7 @@ async def _cmd_worker_spawn(interaction: dict) -> None:
         [t.strip() for t in str(tools_opt["value"]).split(",") if t.strip()] if tools_opt else []
     )
 
-    guild_slug = _pioneer_guild_slug() or ""
+    guild_slug = await _resolve_command_guild_slug(interaction)
 
     try:
         async with AsyncSessionLocal() as db:
@@ -884,7 +917,7 @@ async def _dispatch_command(interaction: dict) -> None:
         await _cmd_worker_spawn(interaction)
         return
 
-    guild_slug = _pioneer_guild_slug() or ""
+    guild_slug = await _resolve_command_guild_slug(interaction)
 
     options: list[dict] = data.get("options", [])
     if not options:
