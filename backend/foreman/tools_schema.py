@@ -73,7 +73,7 @@ FOREMAN_TOOLS = [
             "worker to post findings via 'gh pr review' and NOT to commit or open a new PR — "
             "the worker runtime injects standard review guardrails automatically. "
             "For shallow/fallback reviews without dispatching a worker, use review_pr_internal "
-            "or review_pr instead."
+            "instead."
         ),
         "input_schema": {
             "type": "object",

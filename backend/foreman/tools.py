@@ -879,51 +879,10 @@ async def notify_discord_task_finalized(
 
 
 # ---------------------------------------------------------------------------
-# code-review-agent helpers
+# review_pr_internal helpers
 # ---------------------------------------------------------------------------
 
 _PR_URL_RE = re.compile(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/(\d+)/?$")
-
-_VERDICT_TO_GH_EVENT = {
-    "approved": "APPROVE",
-    "changes-requested": "REQUEST_CHANGES",
-    "comment": "COMMENT",
-}
-
-_REVIEW_REPORT_MIME = "application/vnd.code-review-agent.report+json"
-
-
-def _extract_review_data(a2a_result: dict) -> tuple[str, str]:
-    """Parse an A2A tasks/send result from the code-review-agent.
-
-    Returns ``(github_event, review_body)`` where ``github_event`` is one of
-    ``"APPROVE"``, ``"REQUEST_CHANGES"``, or ``"COMMENT"``.
-
-    Inspects ``artifacts[*].parts[*]``: text parts supply the review body,
-    a part with type ``application/vnd.code-review-agent.report+json`` supplies
-    the structured verdict.
-    """
-    review_body = ""
-    verdict = "comment"
-
-    for artifact in a2a_result.get("artifacts", []):
-        for part in artifact.get("parts", []):
-            part_type = part.get("type", "")
-            if part_type == "text" and not review_body:
-                review_body = part.get("text", "")
-            elif part_type == _REVIEW_REPORT_MIME:
-                try:
-                    report = json.loads(part.get("text", "{}"))
-                    verdict = report.get("verdict") or report.get("summary", {}).get(
-                        "verdict", "comment"
-                    )
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-
-    github_event = _VERDICT_TO_GH_EVENT.get(str(verdict).lower(), "COMMENT")
-    review_body = review_body or f"Automated code review completed (verdict: {verdict})."
-    return github_event, review_body
-
 
 _GQL_PR_THREADS = """
 query GetPRThreads($owner: String!, $repo: String!, $number: Int!) {
