@@ -72,6 +72,12 @@ services:
       # and, when set, is forwarded into worker containers this backend spawns
       # (build_spawn_worker_env) so the worker's debug-query skill can use it too.
       DEBUG_TOKEN: ${DEBUG_TOKEN:-}
+      # Default Pioneer Square guild (6-char slug) for this instance — used
+      # where an inbound event has no project of its own to resolve from, e.g.
+      # a Discord @-mention in an unwired channel (discord/router.py). Shared
+      # with the foreman service below, which reads the same var to pick the
+      # single guild it manages.
+      GUILD_ID: ${GUILD_ID:-}
       # S3 session-log sync — forwarded to spawned worker containers.
       PIONEER_S3_BUCKET: ${PIONEER_S3_BUCKET:-}
       PIONEER_S3_PREFIX: ${PIONEER_S3_PREFIX:-}

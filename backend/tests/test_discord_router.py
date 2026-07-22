@@ -455,3 +455,200 @@ async def test_route_inbound_message_reuses_existing_bot_user(client):
     with _sync_session(db_url) as session:
         count = len(session.execute(select(User).where(col(User.id) == first_id)).scalars().all())
         assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_bot_mention_in_unwired_channel_provisions_via_server_binding(client):
+    """Regression: a *bot* @-mention reaching the author-scoped path was resolved
+    without ``is_bot``, so it never auto-provisioned and was dropped as "unlinked".
+
+    The mention bypass (#969) is what lets a bot reach this path at all, from a
+    channel that is wired to nothing. The parent comes from the Discord
+    *server's* other bindings, since there is no channel binding to read.
+
+    Deliberately does not patch ``_resolve_identity`` — every other mention test
+    stubs it out, which is exactly how the missing flag went unnoticed.
+    """
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router-bot3", owner_user_id="gh-owner-bot3")
+    _insert_channel_guild(
+        db_url, "channel-wired-bot3", "g-router-bot3", discord_guild_id="discord-server-bot3"
+    )
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1"}),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "<@bot-id-1> deploy finished",
+                # Wired to nothing — only the *server* has a binding, elsewhere.
+                "channel_id": "channel-unwired-bot3",
+                "guild_id": "discord-server-bot3",
+                "author": {"id": "d-bot-3", "username": "mecha", "bot": True},
+                "mentions": [{"id": "bot-id-1"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    args, kwargs = mock_trigger.await_args
+    assert args[0] == "g-router-bot3"
+    assert kwargs["user_id"] == "discordbot:d-bot-3"
+
+    with _sync_session(db_url) as session:
+        bot_user = (
+            session.execute(select(User).where(col(User.id) == "discordbot:d-bot-3"))
+            .scalars()
+            .one()
+        )
+        assert bot_user.is_bot is True
+        assert bot_user.parent_user_id == "gh-owner-bot3"
+
+
+@pytest.mark.asyncio
+async def test_bot_mention_with_no_server_binding_falls_back_to_default_guild(client):
+    """With nothing bound to the mention's server (or in a DM), the bot parents
+    into the instance default (``GUILD_ID``) rather than being dropped."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-defalt", owner_user_id="gh-owner-bot4")
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1", "GUILD_ID": "g-defalt"}),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "<@bot-id-1> anyone home?",
+                "channel_id": "dm-channel-bot4",
+                "author": {"id": "d-bot-4", "username": "mecha", "bot": True},
+                "mentions": [{"id": "bot-id-1"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    args, _kwargs = mock_trigger.await_args
+    assert args[0] == "g-defalt"
+
+    with _sync_session(db_url) as session:
+        bot_user = (
+            session.execute(select(User).where(col(User.id) == "discordbot:d-bot-4"))
+            .scalars()
+            .one()
+        )
+        assert bot_user.parent_user_id == "gh-owner-bot4"
+
+
+@pytest.mark.asyncio
+async def test_server_binding_beats_default_guild_for_bot_mention(client):
+    """``GUILD_ID`` is a last resort, not a preference — a server wired to a
+    project parents the bot there even when the default points elsewhere."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-defalt", owner_user_id="gh-owner-default")
+    insert_guild(db_url, "g-wired5", owner_user_id="gh-owner-bot5")
+    _insert_channel_guild(
+        db_url, "channel-wired-bot5", "g-wired5", discord_guild_id="discord-server-bot5"
+    )
+
+    with (
+        patch.dict(os.environ, {"DISCORD_APPLICATION_ID": "bot-id-1", "GUILD_ID": "g-defalt"}),
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "<@bot-id-1> status?",
+                "channel_id": "channel-unwired-bot5",
+                "guild_id": "discord-server-bot5",
+                "author": {"id": "d-bot-5", "username": "mecha", "bot": True},
+                "mentions": [{"id": "bot-id-1"}],
+            }
+        )
+
+    assert mock_trigger.await_count == 1
+    args, _kwargs = mock_trigger.await_args
+    assert args[0] == "g-wired5"
+
+    with _sync_session(db_url) as session:
+        bot_user = (
+            session.execute(select(User).where(col(User.id) == "discordbot:d-bot-5"))
+            .scalars()
+            .one()
+        )
+        assert bot_user.parent_user_id == "gh-owner-bot5"
+
+
+# ---------------------------------------------------------------------------
+# resolve_guild_slug — shared by slash commands (routes/discord.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_guild_slug_prefers_the_channel_binding(client):
+    """The channel a command was typed in wins over the server and the default."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-channel")
+    insert_guild(db_url, "g-server")
+    _insert_channel_guild(db_url, "channel-cmd-1", "g-channel", discord_guild_id="discord-cmd-1")
+    _insert_channel_guild(db_url, "channel-cmd-other", "g-server", discord_guild_id="discord-cmd-1")
+
+    with patch.dict(os.environ, {"GUILD_ID": "g-defalt"}):
+        slug = await router.resolve_guild_slug("channel-cmd-1", "discord-cmd-1")
+
+    assert slug == "g-channel"
+
+
+@pytest.mark.asyncio
+async def test_resolve_guild_slug_falls_back_to_server_binding(client):
+    """An unbound channel falls back to a project the Discord server is wired to."""
+    _test_client, db_url = client
+    # The server-binding lookup joins Guild, so the project row must exist —
+    # unlike the channel-binding lookup, which reads ps_guild_id directly.
+    insert_guild(db_url, "g-server2")
+    _insert_channel_guild(db_url, "channel-cmd-2", "g-server2", discord_guild_id="discord-cmd-2")
+
+    with patch.dict(os.environ, {"GUILD_ID": "g-defalt"}):
+        slug = await router.resolve_guild_slug("channel-cmd-unbound", "discord-cmd-2")
+
+    assert slug == "g-server2"
+
+
+@pytest.mark.asyncio
+async def test_resolve_guild_slug_falls_back_to_instance_default(client):
+    """Nothing bound anywhere — the instance default is the last resort."""
+    _test_client, _db_url = client
+
+    with patch.dict(os.environ, {"GUILD_ID": "g-defalt"}):
+        slug = await router.resolve_guild_slug("channel-cmd-nowhere", "discord-cmd-nowhere")
+
+    assert slug == "g-defalt"
+
+
+@pytest.mark.asyncio
+async def test_resolve_guild_slug_returns_none_when_nothing_resolves(client):
+    """No binding and no GUILD_ID — the caller decides what to do with None."""
+    _test_client, _db_url = client
+
+    with patch.dict(os.environ, {"GUILD_ID": ""}):
+        slug = await router.resolve_guild_slug("channel-cmd-nowhere", "discord-cmd-nowhere")
+
+    assert slug is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_guild_slug_routes_a_thread_to_its_task_guild(client):
+    """A command typed in a task's thread resolves to that task's guild — the
+    thread bindings the chat path uses, not just /join-channel wiring."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-thread")
+    insert_task(db_url, "g-thread", "t-thread-cmd", state="working")
+    _insert_binding(db_url, "task_stream", "t-thread-cmd", "thread-cmd-1")
+
+    with patch.dict(os.environ, {"GUILD_ID": "g-defalt"}):
+        slug = await router.resolve_guild_slug("thread-cmd-1", "discord-cmd-3")
+
+    assert slug == "g-thread"
