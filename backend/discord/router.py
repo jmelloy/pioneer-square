@@ -43,6 +43,17 @@ from (``reply_channel_id``, threaded through to
 configured channel — otherwise a mention from an unbound channel would be
 answered somewhere the asker isn't looking.
 
+A reply in a thread already bound to a task (``task_id`` resolved above) is
+auto-routed (#959) straight to the task-mutating tool, bypassing the Foreman
+AI entirely — see ``_auto_route_task_reply``:
+    - task ``state == "working"`` → ``redirect_task`` (course-correct the
+      running worker in place).
+    - task ``state`` in ``awaiting-review``/``done``/``parked`` → ``send_followup``
+      (continue on the same branch).
+    - any other state (e.g. ``pending``, or the task can't be found) falls
+      back to the normal Foreman-chat path below, tagged
+      ``[discord-thread-reply]`` as before.
+
 Consumes ``discord.gateway.gateway_message_queue``. Enable with the same
 env vars as the Gateway (``DISCORD_GATEWAY_ENABLED`` + ``DISCORD_BOT_TOKEN``).
 """
@@ -53,6 +64,7 @@ import asyncio
 import logging
 import os
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from discord.auth import (
     is_member_authorized,
@@ -64,6 +76,13 @@ from discord.auth import (
 from discord.gateway import gateway_message_queue
 
 logger = logging.getLogger(__name__)
+
+# Task states routed to send_followup by _auto_route_task_reply (#959) — the
+# work is paused and needs a new iteration on the same branch. "working" is
+# handled separately (redirect_task, course-correcting the live worker); any
+# other state (pending, failed, cancelled, ...) falls back to normal Foreman
+# chat routing.
+_FOLLOWUP_STATES = frozenset({"awaiting-review", "done", "parked"})
 
 
 async def _lookup_binding(thread_id: str) -> tuple[str, str] | None:
@@ -287,6 +306,71 @@ async def _resolve_identity(
 
 def _is_authorized(message: dict) -> bool:
     return is_member_authorized(message.get("member"))
+
+
+async def _task_state_row(task_id: str) -> tuple[str, str | None, str | None] | None:
+    """Return ``(state, phase, worker_id)`` for *task_id*, or None if not found. Never raises."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Task  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(col(Task.state), col(Task.phase), col(Task.worker_id)).where(
+                    col(Task.id) == task_id
+                )
+            )
+            return result.first()
+    except Exception:
+        logger.warning("discord router: task state lookup failed task=%s", task_id, exc_info=True)
+        return None
+
+
+async def _auto_route_task_reply(
+    guild_slug: str, task_id: str, instructions: str, *, user_id: str | None
+) -> bool:
+    """Route a task-bound thread reply straight to redirect_task/send_followup (#959),
+    bypassing the Foreman AI — see the module docstring.
+
+    Returns True once the reply has been routed this way (the underlying tool call's
+    own success/failure is logged by ``exec_tools``/``_exec_one_tool`` regardless), or
+    False if *task_id* can't be found or its state isn't one this auto-routes, so the
+    caller should fall back to the normal Foreman-chat path.
+    """
+    row = await _task_state_row(task_id)
+    if row is None:
+        return False
+    state, phase, worker_id = row
+
+    if state == "working":
+        tool_name = "redirect_task"
+    elif state in _FOLLOWUP_STATES:
+        tool_name = "send_followup"
+    else:
+        return False
+
+    from foreman.tools import exec_tools  # noqa: PLC0415
+
+    tool_use = SimpleNamespace(
+        id=f"discord-auto-route:{task_id}",
+        name=tool_name,
+        input={"task_id": task_id, "instructions": instructions},
+    )
+    results = await exec_tools(guild_slug, [tool_use], user_id=user_id)
+    result = results[0] if results else {}
+    logger.info(
+        "discord router: auto-routed thread reply task=%s state=%s phase=%s worker=%s "
+        "action=%s error=%s result=%r",
+        task_id,
+        state,
+        phase,
+        worker_id,
+        tool_name,
+        result.get("is_error", False),
+        result.get("content"),
+    )
+    return True
 
 
 async def _resolve_user_guild_slugs(ps_user_id: str) -> list[str]:
@@ -553,7 +637,10 @@ async def _forward_to_foreman(
     """Persist the inbound message, then trigger the Foreman for *guild_slug*.
 
     Shared tail of both dispatch paths. Persistence is best-effort: a failure
-    there must not stop the message from reaching the Foreman.
+    there must not stop the message from reaching the Foreman. A task-bound
+    reply (``task_id`` set) is first offered to ``_auto_route_task_reply``
+    (#959) — if the task's state auto-routes, the message is handled straight
+    away and never reaches the Foreman at all.
     """
     try:
         await _persist_inbound_message(guild_slug, content, user_id=ps_user_id, task_id=task_id)
@@ -564,6 +651,9 @@ async def _forward_to_foreman(
             guild_slug,
             exc_info=True,
         )
+
+    if task_id and await _auto_route_task_reply(guild_slug, task_id, content, user_id=ps_user_id):
+        return
 
     from foreman.runner import reset_foreman_poll  # noqa: PLC0415
     from ws_handlers import _trigger_foreman  # noqa: PLC0415

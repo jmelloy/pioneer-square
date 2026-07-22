@@ -128,10 +128,14 @@ async def test_resolve_session_unresolvable_channel_returns_none(client):
 
 @pytest.mark.asyncio
 async def test_route_inbound_message_tags_task_thread_reply(client):
-    """A reply in a thread bound to a task is tagged [discord-thread-reply] task_id=... (#906)."""
+    """A reply in a thread bound to a task is tagged [discord-thread-reply] task_id=... (#906).
+
+    Uses state="pending" so the message falls through to Foreman chat instead of
+    being auto-routed (#959) — that behavior is covered separately below.
+    """
     _test_client, db_url = client
     insert_guild(db_url, "g-router5")
-    insert_task(db_url, "g-router5", "t-router5", state="working")
+    insert_task(db_url, "g-router5", "t-router5", state="pending")
     _insert_binding(db_url, "task_stream", "t-router5", "thread-stream-5")
 
     with (
@@ -180,6 +184,111 @@ async def test_route_inbound_message_no_tag_for_general_chat(client):
     human_message = _args[2]
     assert not human_message.startswith("[discord-thread-reply]")
     assert human_message.startswith("[Discord]")
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_auto_redirects_working_task(client):
+    """A reply in a thread bound to a 'working' task calls redirect_task directly (#959),
+    bypassing Foreman chat entirely."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router7")
+    insert_task(db_url, "g-router7", "t-router7", state="working")
+    _insert_binding(db_url, "task_stream", "t-router7", "thread-stream-7")
+
+    with (
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch(
+            "foreman.tools.exec_tools", new=AsyncMock(return_value=[{"content": "ok"}])
+        ) as mock_exec,
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "actually use a different approach",
+                "channel_id": "thread-stream-7",
+                "author": {"id": "d-user-7", "username": "carol"},
+            }
+        )
+
+    assert mock_exec.await_count == 1
+    _args, _kwargs = mock_exec.await_args
+    guild_slug, tool_uses = _args[0], _args[1]
+    assert guild_slug == "g-router7"
+    assert len(tool_uses) == 1
+    assert tool_uses[0].name == "redirect_task"
+    assert tool_uses[0].input == {
+        "task_id": "t-router7",
+        "instructions": "actually use a different approach",
+    }
+    assert mock_trigger.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["awaiting-review", "done", "parked"])
+async def test_route_inbound_message_auto_followups_paused_task(client, state):
+    """A reply in a thread bound to an awaiting-review/done/parked task calls
+    send_followup directly (#959), bypassing Foreman chat entirely."""
+    _test_client, db_url = client
+    guild_id = f"g-router8-{state}"
+    task_id = f"t-router8-{state}"
+    thread_id = f"thread-stream-8-{state}"
+    insert_guild(db_url, guild_id)
+    insert_task(db_url, guild_id, task_id, state=state)
+    _insert_binding(db_url, "task_stream", task_id, thread_id)
+
+    with (
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch(
+            "foreman.tools.exec_tools", new=AsyncMock(return_value=[{"content": "ok"}])
+        ) as mock_exec,
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "keep going with one more pass",
+                "channel_id": thread_id,
+                "author": {"id": "d-user-8", "username": "dave"},
+            }
+        )
+
+    assert mock_exec.await_count == 1
+    _args, _kwargs = mock_exec.await_args
+    tool_uses = _args[1]
+    assert tool_uses[0].name == "send_followup"
+    assert tool_uses[0].input == {
+        "task_id": task_id,
+        "instructions": "keep going with one more pass",
+    }
+    assert mock_trigger.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_route_inbound_message_falls_back_for_non_routable_state(client):
+    """A reply in a thread bound to a task in a state that isn't auto-routed (e.g.
+    'pending') falls back to normal Foreman chat, still tagged [discord-thread-reply]."""
+    _test_client, db_url = client
+    insert_guild(db_url, "g-router9")
+    insert_task(db_url, "g-router9", "t-router9", state="pending")
+    _insert_binding(db_url, "task_stream", "t-router9", "thread-stream-9")
+
+    with (
+        patch.object(router, "_persist_inbound_message", new=AsyncMock()),
+        patch("foreman.tools.exec_tools", new=AsyncMock()) as mock_exec,
+        patch("ws_handlers._trigger_foreman", new=AsyncMock()) as mock_trigger,
+        patch("foreman.runner.reset_foreman_poll"),
+    ):
+        await router._route_inbound_message(
+            {
+                "content": "any update?",
+                "channel_id": "thread-stream-9",
+                "author": {"id": "d-user-9", "username": "erin"},
+            }
+        )
+
+    assert mock_exec.await_count == 0
+    assert mock_trigger.await_count == 1
 
 
 # ---------------------------------------------------------------------------
