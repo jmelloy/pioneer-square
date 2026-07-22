@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from helpers import insert_guild
 
 
@@ -113,6 +114,10 @@ def test_signed_authorized_request_is_accepted_and_replay_rejected(client):
 
 
 def test_real_dnsid_sdk_signature_is_accepted(client):
+    pytest.importorskip(
+        "dnsid",
+        reason="dnsid-py is not published yet; install editable from ../dnsid-py to run this test",
+    )
     from dnsid import JWKS, HttpRequest, LocalKeyProvider
     from dnsid.http_signatures import HttpSignatureProfile
     from dnsid.models import HttpSigningOptions
