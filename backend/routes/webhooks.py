@@ -447,6 +447,29 @@ def _extract_pr_info(payload: dict) -> tuple[int | None, str | None, str | None]
     return None, None, repo
 
 
+def _check_run_head_branch(event_type: str, node: dict) -> str | None:
+    """Return the head branch a ``check_run``/``check_suite`` event ran against.
+
+    ``check_suite`` payloads carry ``head_branch`` directly; ``check_run``
+    payloads nest it under their embedded (minimal) ``check_suite`` object.
+    """
+    if event_type == "check_suite":
+        return node.get("head_branch")
+    return (node.get("check_suite") or {}).get("head_branch")
+
+
+def _should_notify_ci_result(head_branch: str | None, conclusion: str | None) -> bool:
+    """Decide whether a ``check_run``/``check_suite`` conclusion should notify Discord.
+
+    ``main`` has no PR review gate left to act on, so a passing/cancelled/etc.
+    result there is just noise — only failures are worth paging on. PR branches
+    keep the full pass/fail signal since that's what review depends on.
+    """
+    if conclusion not in {"success", "failure", "cancelled", "timed_out", "action_required"}:
+        return False
+    return head_branch != "main" or conclusion == "failure"
+
+
 async def _find_task(db, guild_pk: int, repo: str | None, pr_number: int | None):
     """Match a webhook to one of this guild's tasks by (repo, pr_number).
 
@@ -1086,10 +1109,11 @@ async def github_webhook(
             if isinstance(node, dict)
             else "CI"
         )
+        head_branch = _check_run_head_branch(event_type, node) if isinstance(node, dict) else None
         # Buffered per-PR and combined into one Discord message (see
         # discord_notifier.notify_ci_check) instead of one message per check —
         # a CI matrix can complete several of these within seconds of each other.
-        if conclusion in {"success", "failure", "cancelled", "timed_out", "action_required"}:
+        if _should_notify_ci_result(head_branch, conclusion):
             spawn(
                 discord_notifier.notify_ci_check(
                     check_name,
