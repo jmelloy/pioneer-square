@@ -52,9 +52,11 @@ from models import (
 )
 from routes.webhooks import (  # noqa: E402
     _build_foreman_summary,
+    _check_run_head_branch,
     _devready_issue_trigger,
     _get_guild_owner_github_login,
     _should_dispatch_to_foreman,
+    _should_notify_ci_result,
 )
 from sqlalchemy import update  # noqa: E402
 from sqlmodel import col, select  # noqa: E402
@@ -172,6 +174,47 @@ class TestShouldDispatch:
             "pull_request_review", "submitted", {}, "human-reviewer", "t-1"
         )
         assert ok
+
+
+class TestCheckRunHeadBranch:
+    """``_check_run_head_branch`` pulls the head branch out of either event shape."""
+
+    def test_check_suite_carries_head_branch_directly(self):
+        node = {"head_branch": "main"}
+        assert _check_run_head_branch("check_suite", node) == "main"
+
+    def test_check_run_nests_head_branch_under_check_suite(self):
+        node = {"check_suite": {"head_branch": "feature/x"}}
+        assert _check_run_head_branch("check_run", node) == "feature/x"
+
+    def test_check_run_missing_check_suite_returns_none(self):
+        assert _check_run_head_branch("check_run", {}) is None
+
+
+class TestShouldNotifyCiResult:
+    """Main only notifies on failure; PR branches notify on every conclusion."""
+
+    def test_main_failure_notifies(self):
+        assert _should_notify_ci_result("main", "failure") is True
+
+    def test_main_success_suppressed(self):
+        assert _should_notify_ci_result("main", "success") is False
+
+    def test_main_cancelled_suppressed(self):
+        assert _should_notify_ci_result("main", "cancelled") is False
+
+    def test_pr_branch_success_notifies(self):
+        assert _should_notify_ci_result("feature/x", "success") is True
+
+    def test_pr_branch_failure_notifies(self):
+        assert _should_notify_ci_result("feature/x", "failure") is True
+
+    def test_unknown_branch_defaults_to_notifying(self):
+        assert _should_notify_ci_result(None, "success") is True
+
+    def test_irrelevant_conclusion_is_never_notified(self):
+        assert _should_notify_ci_result("feature/x", "neutral") is False
+        assert _should_notify_ci_result("main", "neutral") is False
 
 
 # ---------------------------------------------------------------------------
