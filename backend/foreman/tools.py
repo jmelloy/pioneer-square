@@ -41,6 +41,7 @@ from models import (
     Task,
     TaskEvent,
     TaskLog,
+    User,
     Worker,
 )
 from sqlalchemy import delete, literal, update
@@ -2374,7 +2375,6 @@ async def _exec_one_tool(
             "create_github_issue",
             "search_github_issues",
             "get_pr_status",
-            "review_pr",
             "review_pr_internal",
         ):
             logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
@@ -2509,95 +2509,6 @@ async def _exec_one_tool(
                                 for i in items
                             ]
                         )
-
-                    elif tu.name == "review_pr":
-                        pr_url = inp["pr_url"]
-                        logger.info("guild=%s review_pr: pr_url=%s", guild_id, pr_url)
-                        pr_match = _PR_URL_RE.match(pr_url.rstrip("/"))
-                        if not pr_match:
-                            result_text = (
-                                f"Invalid GitHub PR URL: {pr_url!r}. "
-                                "Expected https://github.com/owner/repo/pull/N"
-                            )
-                            is_error = True
-                        else:
-                            pr_repo = pr_match.group(1)
-                            pr_number = int(pr_match.group(2))
-                            from foreman.a2a_client import A2AClient, _guild_caller_domain
-
-                            review_agent = os.environ.get(
-                                "REVIEWER_AGENT_URL", "https://agent.meyers.life"
-                            )
-                            client = A2AClient(f"{review_agent.rstrip('/')}/.well-known/agent.json")
-                            try:
-                                a2a_result = await client.review_pr(
-                                    pr_url,
-                                    caller_domain=_guild_caller_domain(guild_id),
-                                    private_key_pem=await _guild_private_key_pem(guild_id),
-                                )
-                            except urllib.error.HTTPError as exc:
-                                try:
-                                    err_body = exc.read().decode(errors="replace")
-                                except Exception:
-                                    err_body = ""
-                                logger.error(
-                                    "guild=%s review_pr: mcp_request_failed pr_url=%s status=%d err_body=%.500s",
-                                    guild_id,
-                                    pr_url,
-                                    exc.code,
-                                    err_body,
-                                    exc_info=True,
-                                )
-                                raise
-                            except Exception:
-                                logger.error(
-                                    "guild=%s review_pr: mcp_request_failed pr_url=%s",
-                                    guild_id,
-                                    pr_url,
-                                    exc_info=True,
-                                )
-                                raise
-                            github_event, review_body = _extract_review_data(a2a_result)
-                            logger.info(
-                                "guild=%s review_pr: verdict=%s summary_preview=%.200s",
-                                guild_id,
-                                github_event,
-                                review_body,
-                            )
-                            try:
-                                threads_resolved = await _supersede_prior_bot_reviews(
-                                    pr_repo, pr_number, username, token
-                                )
-                                if threads_resolved:
-                                    logger.info(
-                                        "guild=%s review_pr: resolved %d thread(s) from"
-                                        " prior review(s) on %s#%d",
-                                        guild_id,
-                                        threads_resolved,
-                                        pr_repo,
-                                        pr_number,
-                                    )
-                            except Exception as _sup_exc:
-                                logger.warning(
-                                    "guild=%s review_pr: thread resolution step failed (non-fatal): %s",
-                                    guild_id,
-                                    _sup_exc,
-                                )
-                            review_data = await _to_thread(
-                                _gh_api_post,
-                                f"/repos/{pr_repo}/pulls/{pr_number}/reviews",
-                                token,
-                                {"body": review_body, "event": github_event},
-                            )
-                            result_text = json.dumps(
-                                {
-                                    "pr_url": pr_url,
-                                    "verdict": github_event,
-                                    "review_id": review_data.get("id"),
-                                    "review_posted": True,
-                                    "summary": review_body[:400],
-                                }
-                            )
 
                     elif tu.name == "review_pr_internal":
                         # Review action policy (mirrors the worker-driven `gh pr review` path):

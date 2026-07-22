@@ -106,6 +106,9 @@ async def ensure_bot_user(
             display_name=label,
             is_bot=True,
             parent_user_id=parent_user_id,
+            bot_provider="discord",
+            discord_channel_id=channel_id,
+            bot_metadata={"discord_user_id": discord_user_id, "discord_username": username},
             created_at=now,
             updated_at=now,
         )
