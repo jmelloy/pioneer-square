@@ -31,9 +31,12 @@ locals {
 resource "aws_ssm_parameter" "secret" {
   for_each = local.ssm_secrets
 
-  name  = "${local.ssm_path_prefix}/${each.key}"
-  type  = "SecureString"
-  value = each.value
+  name = "${local.ssm_path_prefix}/${each.key}"
+  type = "SecureString"
+  # SSM rejects empty values, and ecs.tf references every key in this map, so
+  # optional secrets left "" (discord_bot_token, aws_bearer_token_bedrock) are
+  # seeded with the same placeholder as the required ones.
+  value = coalesce(each.value, "CHANGE_ME_IN_SSM")
 
   tags = {
     Name = "${local.name_prefix}-${replace(each.key, "_", "-")}"
