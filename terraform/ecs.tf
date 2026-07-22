@@ -66,18 +66,34 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "AWS_DEFAULT_REGION", value = local.region },
         { name = "ECS_CLUSTER_NAME", value = aws_ecs_cluster.main.name },
         { name = "ECS_WORKER_TASK_DEFINITION", value = "${local.name_prefix}-worker" },
+        # The embedded foreman (backend/foreman/runner.py) makes LLM calls from
+        # this process whenever no standalone foreman proxy is connected for a
+        # guild — it needs the same provider config as the foreman task below.
+        { name = "FOREMAN_MODEL", value = var.foreman_model },
+        { name = "FOREMAN_PROVIDER", value = var.foreman_provider },
+        { name = "FOREMAN_BEDROCK_MODEL", value = var.foreman_bedrock_model },
+        # Discord integration — mirrors the docker-compose backend service.
+        # DISCORD_BOT_TOKEN rides in `secrets` below.
+        { name = "DISCORD_CHANNEL_ID", value = var.discord_channel_id },
+        { name = "DISCORD_APPLICATION_ID", value = var.discord_application_id },
+        { name = "DISCORD_PUBLIC_KEY", value = var.discord_public_key },
+        { name = "DISCORD_ALLOWED_ROLE_IDS", value = var.discord_allowed_role_ids },
+        { name = "DISCORD_PIONEER_GUILD_SLUG", value = var.discord_pioneer_guild_slug },
+        { name = "DISCORD_STREAM_TASKS", value = var.discord_stream_tasks },
+        { name = "DISCORD_GATEWAY_ENABLED", value = var.discord_gateway_enabled },
       ]
 
       secrets = [
         for key, param in {
-          DATABASE_URL            = aws_ssm_parameter.database_url
-          GITHUB_CLIENT_ID        = aws_ssm_parameter.secret["github_client_id"]
-          GITHUB_CLIENT_SECRET    = aws_ssm_parameter.secret["github_client_secret"]
-          GITHUB_TOKEN            = aws_ssm_parameter.secret["github_token"]
-          ANTHROPIC_API_KEY       = aws_ssm_parameter.secret["anthropic_api_key"]
-          CLAUDE_CODE_OAUTH_TOKEN = aws_ssm_parameter.secret["claude_code_oauth_token"]
-          PIONEER_FOREMAN_KEY     = aws_ssm_parameter.secret["pioneer_foreman_key"]
-          DISCORD_BOT_TOKEN       = aws_ssm_parameter.secret["discord_bot_token"]
+          DATABASE_URL             = aws_ssm_parameter.database_url
+          GITHUB_CLIENT_ID         = aws_ssm_parameter.secret["github_client_id"]
+          GITHUB_CLIENT_SECRET     = aws_ssm_parameter.secret["github_client_secret"]
+          GITHUB_TOKEN             = aws_ssm_parameter.secret["github_token"]
+          ANTHROPIC_API_KEY        = aws_ssm_parameter.secret["anthropic_api_key"]
+          CLAUDE_CODE_OAUTH_TOKEN  = aws_ssm_parameter.secret["claude_code_oauth_token"]
+          PIONEER_FOREMAN_KEY      = aws_ssm_parameter.secret["pioneer_foreman_key"]
+          DISCORD_BOT_TOKEN        = aws_ssm_parameter.secret["discord_bot_token"]
+          AWS_BEARER_TOKEN_BEDROCK = aws_ssm_parameter.secret["aws_bearer_token_bedrock"]
         } : { name = key, valueFrom = param.arn }
       ]
 

@@ -17,8 +17,8 @@ resource "aws_db_subnet_group" "main" {
 }
 
 resource "aws_db_parameter_group" "postgres" {
-  name   = "${local.name_prefix}-pg16"
-  family = "postgres16"
+  name   = "${local.name_prefix}-pg18"
+  family = "postgres18"
 
   parameter {
     name         = "shared_preload_libraries"
@@ -27,8 +27,9 @@ resource "aws_db_parameter_group" "postgres" {
   }
 
   parameter {
-    name  = "pg_stat_statements.max"
-    value = "10000"
+    name         = "pg_stat_statements.max"
+    value        = "10000"
+    apply_method = "pending-reboot" # static parameter — immediate apply is rejected
   }
 
   parameter {
@@ -37,8 +38,9 @@ resource "aws_db_parameter_group" "postgres" {
   }
 
   parameter {
-    name  = "track_io_timing"
-    value = "1"
+    name         = "track_io_timing"
+    value        = "1"
+    apply_method = "pending-reboot" # matches what AWS records; avoids a perpetual plan diff
   }
 }
 

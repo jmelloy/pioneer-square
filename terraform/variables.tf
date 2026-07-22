@@ -202,7 +202,7 @@ variable "db_username" {
 variable "db_engine_version" {
   description = "Postgres engine version."
   type        = string
-  default     = "16.4"
+  default     = "18.4"
 }
 
 variable "db_instance_class" {
@@ -397,4 +397,49 @@ variable "log_level" {
   description = "Backend/foreman log level."
   type        = string
   default     = "INFO"
+}
+
+# Discord integration (see docs/discord.md). All optional — empty disables the
+# corresponding feature, matching the docker-compose defaults.
+
+variable "discord_channel_id" {
+  description = "Discord channel ID for flat-channel notification embeds. Required together with discord_bot_token for notifications."
+  type        = string
+  default     = ""
+}
+
+variable "discord_application_id" {
+  description = "Discord application ID — slash-command registration and the bot's own user ID for @mention detection."
+  type        = string
+  default     = ""
+}
+
+variable "discord_public_key" {
+  description = "Discord application public key for interaction signature verification."
+  type        = string
+  default     = ""
+}
+
+variable "discord_allowed_role_ids" {
+  description = "Comma-separated Discord role IDs authorized to control the bot."
+  type        = string
+  default     = ""
+}
+
+variable "discord_pioneer_guild_slug" {
+  description = "Pioneer Square guild slug the Discord integration is bound to."
+  type        = string
+  default     = ""
+}
+
+variable "discord_stream_tasks" {
+  description = "Mirror live task terminal output into per-task Discord threads (high volume)."
+  type        = string
+  default     = "false"
+}
+
+variable "discord_gateway_enabled" {
+  description = "Run the persistent Discord Gateway websocket for inbound messages (requires the Message Content Intent). No-op while discord_bot_token is unset."
+  type        = string
+  default     = "true"
 }
