@@ -23,7 +23,36 @@ table, keyed on ``(subject_type, subject_key)``):
       ``task_id=None``, so the reply is posted directly to the guild's main
       configured channel. ``notify_foreman_chat`` never creates a new dated
       thread; that fallback has been removed.
+    - one exception to the above: a message that @-mentions the bot user
+      (``discord.auth.mentions_bot_user``) or the foreman role
+      (``discord.auth.mentions_foreman_role``) always gets a response, in any
+      channel or DM the Gateway forwards it from (see ``discord/gateway.py``).
+      Channel scoping still applies first — a mention in a channel that *is*
+      bound resolves to that channel's guild/task exactly as above. Only when
+      the channel resolves to nothing does the mention fall back to routing by
+      *author* (``_dispatch_author_scoped``) — preferring, among the projects
+      that author can access, ones bound to the Discord server the mention came
+      from — so a mention from a DM or an unbound channel still lands
+      somewhere sensible. Mention tokens are stripped before the content is
+      forwarded.
     - anything else has nowhere to route to and is silently ignored.
+
+Replies to a mention are posted back into the channel or DM the mention came
+from (``reply_channel_id``, threaded through to
+``discord_notifier.notify_foreman_chat``) rather than the guild's main
+configured channel — otherwise a mention from an unbound channel would be
+answered somewhere the asker isn't looking.
+
+A reply in a thread already bound to a task (``task_id`` resolved above) is
+auto-routed (#959) straight to the task-mutating tool, bypassing the Foreman
+AI entirely — see ``_auto_route_task_reply``:
+    - task ``state == "working"`` → ``redirect_task`` (course-correct the
+      running worker in place).
+    - task ``state`` in ``awaiting-review``/``done``/``parked`` → ``send_followup``
+      (continue on the same branch).
+    - any other state (e.g. ``pending``, or the task can't be found) falls
+      back to the normal Foreman-chat path below, tagged
+      ``[discord-thread-reply]`` as before.
 
 Consumes ``discord.gateway.gateway_message_queue``. Enable with the same
 env vars as the Gateway (``DISCORD_GATEWAY_ENABLED`` + ``DISCORD_BOT_TOKEN``).
@@ -33,12 +62,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
-from discord.auth import is_member_authorized
+from discord.auth import (
+    is_member_authorized,
+    mentions_bot_user,
+    mentions_foreman_role,
+    strip_bot_user_mention,
+    strip_foreman_role_mention,
+)
 from discord.gateway import gateway_message_queue
 
 logger = logging.getLogger(__name__)
+
+# Task states routed to send_followup by _auto_route_task_reply (#959) — the
+# work is paused and needs a new iteration on the same branch. "working" is
+# handled separately (redirect_task, course-correcting the live worker); any
+# other state (pending, failed, cancelled, ...) falls back to normal Foreman
+# chat routing.
+_FOLLOWUP_STATES = frozenset({"awaiting-review", "done", "parked"})
 
 
 async def _lookup_binding(thread_id: str) -> tuple[str, str] | None:
@@ -158,6 +202,19 @@ async def _resolve_channel_guild(channel_id: str) -> str | None:
         return None
 
 
+async def _guild_pk_for_slug(guild_slug: str) -> int | None:
+    """Return the integer ``guilds.id`` for *guild_slug*, or None. Never raises."""
+    try:
+        from auth_deps import get_guild_pk  # noqa: PLC0415
+        from database import AsyncSessionLocal  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            return await get_guild_pk(db, guild_slug)
+    except Exception:
+        logger.warning("discord router: guild pk lookup failed slug=%s", guild_slug, exc_info=True)
+        return None
+
+
 async def resolve_session(channel_id: str) -> tuple[str, str | None] | None:
     """Return ``(ps_guild_slug, task_id)`` for *channel_id*, or None if unresolvable.
 
@@ -188,15 +245,22 @@ async def resolve_session(channel_id: str) -> tuple[str, str | None] | None:
 
 
 async def _resolve_identity(
-    discord_user_id: str | None, username: str | None
+    discord_user_id: str | None,
+    username: str | None,
+    *,
+    is_bot: bool = False,
+    guild_pk: int | None = None,
 ) -> tuple[str | None, str]:
     """Return ``(ps_user_id, label)`` for a Discord author.
 
-    Tries the ``/connect-account`` link first (direct, authoritative), then
-    the older ``discord_users`` mapping (also used by ``mention_or_login``,
-    reversed here: Discord user ID -> GitHub login -> Pioneer Square user).
-    Falls back to ``(None, "a Discord user")`` — or the Discord username, if
-    known — when neither mapping exists. Never raises.
+    Resolves through the ``/connect-account`` link, the single source of
+    truth for Discord -> Pioneer Square identity. Falls back to
+    ``(None, "a Discord user")`` — or the Discord username, if known — when
+    the author has not linked an account, *unless* ``is_bot`` is set: an
+    unlinked bot author is auto-provisioned its own ``users`` row (see
+    ``discord.bot_users.ensure_bot_user``) so its actions get an audit trail
+    and inherited guild permissions instead of resolving to nobody. Never
+    raises.
     """
     generic = f"Discord user @{username}" if username else "a Discord user"
     if not discord_user_id:
@@ -204,7 +268,7 @@ async def _resolve_identity(
 
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordAccountLink, DiscordUser, User  # noqa: PLC0415
+        from models import DiscordAccountLink, User  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
@@ -218,28 +282,392 @@ async def _resolve_identity(
                 result = await db.exec(select(User.github_login).where(col(User.id) == ps_user_id))
                 login = result.first()
                 return ps_user_id, f"@{login}" if login else ps_user_id
-
-            result = await db.exec(
-                select(DiscordUser.github_login).where(
-                    col(DiscordUser.discord_user_id) == discord_user_id
-                )
-            )
-            login = result.first()
-            if login:
-                result = await db.exec(select(User.id).where(col(User.github_login) == login))
-                ps_user_id = result.first()
-                if ps_user_id:
-                    return ps_user_id, f"@{login}"
     except Exception:
         logger.warning(
             "discord router: identity lookup failed discord_user=%s", discord_user_id, exc_info=True
         )
+        return None, generic
+
+    if is_bot:
+        try:
+            from discord.bot_users import ensure_bot_user  # noqa: PLC0415
+
+            ps_user_id = await ensure_bot_user(discord_user_id, username, guild_pk)
+            return ps_user_id, f"🤖 {username}" if username else f"🤖 {discord_user_id}"
+        except Exception:
+            logger.warning(
+                "discord router: bot auto-provisioning failed discord_user=%s",
+                discord_user_id,
+                exc_info=True,
+            )
 
     return None, generic
 
 
 def _is_authorized(message: dict) -> bool:
     return is_member_authorized(message.get("member"))
+
+
+async def _task_state_row(task_id: str) -> tuple[str, str | None, str | None] | None:
+    """Return ``(state, phase, worker_id)`` for *task_id*, or None if not found. Never raises."""
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Task  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(col(Task.state), col(Task.phase), col(Task.worker_id)).where(
+                    col(Task.id) == task_id
+                )
+            )
+            return result.first()
+    except Exception:
+        logger.warning("discord router: task state lookup failed task=%s", task_id, exc_info=True)
+        return None
+
+
+async def _auto_route_task_reply(
+    guild_slug: str, task_id: str, instructions: str, *, user_id: str | None
+) -> bool:
+    """Route a task-bound thread reply straight to redirect_task/send_followup (#959),
+    bypassing the Foreman AI — see the module docstring.
+
+    Returns True once the reply has been routed this way (the underlying tool call's
+    own success/failure is logged by ``exec_tools``/``_exec_one_tool`` regardless), or
+    False if *task_id* can't be found or its state isn't one this auto-routes, so the
+    caller should fall back to the normal Foreman-chat path.
+    """
+    row = await _task_state_row(task_id)
+    if row is None:
+        return False
+    state, phase, worker_id = row
+
+    if state == "working":
+        tool_name = "redirect_task"
+    elif state in _FOLLOWUP_STATES:
+        tool_name = "send_followup"
+    else:
+        return False
+
+    from foreman.tools import exec_tools  # noqa: PLC0415
+
+    tool_use = SimpleNamespace(
+        id=f"discord-auto-route:{task_id}",
+        name=tool_name,
+        input={"task_id": task_id, "instructions": instructions},
+    )
+    results = await exec_tools(guild_slug, [tool_use], user_id=user_id)
+    result = results[0] if results else {}
+    logger.info(
+        "discord router: auto-routed thread reply task=%s state=%s phase=%s worker=%s "
+        "action=%s error=%s result=%r",
+        task_id,
+        state,
+        phase,
+        worker_id,
+        tool_name,
+        result.get("is_error", False),
+        result.get("content"),
+    )
+    return True
+
+
+async def _resolve_user_guild_slugs(ps_user_id: str) -> list[str]:
+    """Return every Pioneer Square guild slug *ps_user_id* is a member of.
+
+    Ordered most-recently-created first — the closest available proxy for
+    "most relevant," since there is no per-user "last active project" field
+    to prefer instead (see ``routes/guilds.py:list_guilds``, which orders the
+    same way for the same reason). Never raises.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Guild, GuildMember  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(Guild.slug)
+                .join(GuildMember, col(GuildMember.guild_id) == col(Guild.id))
+                .where(col(GuildMember.user_id) == ps_user_id)
+                .order_by(col(Guild.created_at).desc())
+            )
+            return [slug for slug in result.all() if slug]
+    except Exception:
+        logger.warning(
+            "discord router: accessible-guilds lookup failed user=%s", ps_user_id, exc_info=True
+        )
+        return []
+
+
+def _default_guild_slug() -> str | None:
+    """Return this instance's default guild slug (``GUILD_ID``), or None.
+
+    A last resort, not a preference: it applies only where an inbound event
+    carries no project of its own to resolve from — a bot @-mention in a DM,
+    or in a Discord server wired to nothing. Anywhere a channel or server
+    binding exists, that binding wins, so a multi-project server is never
+    funnelled into the instance default.
+
+    Shared with the ``foreman`` service, which reads the same var to pick the
+    single guild it manages; the backend must be passed it explicitly in
+    ``docker-compose.yml`` (it is not inherited).
+    """
+    return os.environ.get("GUILD_ID") or None
+
+
+async def resolve_guild_slug(
+    channel_id: str | None, discord_guild_id: str | None = None
+) -> str | None:
+    """Return the Pioneer Square guild a Discord interaction targets, or None.
+
+    The same narrowing the inbound chat path applies, in the same order —
+    most specific context first, instance default last:
+
+        1. the channel/thread it came from, if bound (``resolve_session``)
+        2. any project the Discord *server* is wired to, newest first
+        3. this instance's default guild (``GUILD_ID``)
+
+    Exists so slash commands resolve their target the way a bot @-mention
+    does, instead of being pinned to a single env var: ``/ps status`` typed in
+    a channel wired to a project should report on *that* project. Never raises
+    — each step is individually fault-tolerant, so a lookup failure degrades
+    to the next step rather than failing the command.
+    """
+    if channel_id:
+        session = await resolve_session(str(channel_id))
+        if session:
+            return session[0]
+    if discord_guild_id:
+        bound = await _resolve_discord_guild_slugs(str(discord_guild_id))
+        if bound:
+            return bound[0]
+    return _default_guild_slug()
+
+
+async def _resolve_discord_guild_slugs(discord_guild_id: str) -> list[str]:
+    """Return every Pioneer Square guild slug bound to *any* channel of the
+    Discord server *discord_guild_id*, most-recently-created first.
+
+    A Discord server can bind different channels to different projects (that
+    is the whole point of ``/join-channel``), so this is a list rather than a
+    single answer. It exists to give the author-scoped fallback some local
+    context: a mention typed in an unbound channel of a server that clearly
+    belongs to one or two projects should prefer those over whatever the
+    author happened to create most recently. Never raises.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import DiscordChannelGuild, Guild  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(Guild.slug)
+                .join(DiscordChannelGuild, col(DiscordChannelGuild.ps_guild_id) == col(Guild.slug))
+                .where(col(DiscordChannelGuild.discord_guild_id) == discord_guild_id)
+                .order_by(col(Guild.created_at).desc())
+            )
+            # A server can bind several channels to the same project, so dedupe
+            # here rather than with SELECT DISTINCT — Postgres would then demand
+            # the ORDER BY column in the select list.
+            slugs: list[str] = []
+            for slug in result.all():
+                if slug and slug not in slugs:
+                    slugs.append(slug)
+            return slugs
+    except Exception:
+        logger.warning(
+            "discord router: server-bound guild lookup failed discord_guild=%s",
+            discord_guild_id,
+            exc_info=True,
+        )
+        return []
+
+
+async def _dispatch_author_scoped(message: dict, content: str, reply_channel_id: str) -> None:
+    """Route an @-mention that landed somewhere with no channel binding —
+    a DM, or a channel never wired via ``/join-channel`` — by *author*
+    rather than by channel.
+
+    Every other inbound path resolves a Foreman session from the *channel*
+    a message landed in (see ``resolve_session``). This one can't, so it
+    falls back to the author's own projects. The author has to resolve to a
+    Pioneer Square user (``_resolve_identity``) with at least one accessible
+    project (``_resolve_user_guild_slugs``) — an author that fails either
+    check has nowhere well-defined to route to and is silently ignored, same
+    as an unresolvable channel elsewhere in this module.
+
+    A *bot* author resolves by being auto-provisioned rather than by having
+    linked an account, exactly as on the channel-scoped path — see the
+    ``guild_pk`` note below for where its parent comes from. Dropping the
+    ``is_bot`` flag here is what made bot @-mentions from unwired channels
+    resolve to nobody and get ignored (they reach this path at all only since
+    the bot-mention bypass in #969).
+
+    Candidates are the author's accessible projects, but ones bound to the
+    Discord server the mention came from are preferred: a mention typed in an
+    unbound channel of a server whose other channels are wired to a project
+    almost certainly concerns that project, not whatever the author created
+    most recently elsewhere. Projects the author cannot access are never
+    considered, even when bound to this server, so this can only narrow the
+    author's own list — never widen it. A DM (no ``guild_id``), or a server
+    with no bindings the author can reach, keeps the plain author ordering.
+
+    Whichever list survives, the most recently created project is used as the
+    trigger target (a single Foreman trigger is inherently scoped to one
+    project — see ``_trigger_foreman``), with the rest listed in the forwarded
+    message so the Foreman can answer with context spanning all of them
+    rather than just the one it's replying from. Never raises.
+    """
+    author = message.get("author") or {}
+    discord_guild_id = message.get("guild_id")
+    # Resolved before the identity lookup, not after, because an unlinked *bot*
+    # author gets provisioned during that lookup and needs a guild to parent
+    # into. Unlike the channel-scoped path there is no binding to read it from,
+    # so the server's own bindings stand in: the most-recently-created project
+    # the mention's Discord server is wired to, falling back to the instance
+    # default only when the server is wired to nothing (or it's a DM). Humans
+    # are unaffected either way — guild_pk is read only when provisioning a bot.
+    bound = await _resolve_discord_guild_slugs(str(discord_guild_id)) if discord_guild_id else []
+    provision_slug = bound[0] if bound else _default_guild_slug()
+    ps_user_id, label = await _resolve_identity(
+        author.get("id"),
+        author.get("username"),
+        is_bot=bool(author.get("bot")),
+        guild_pk=await _guild_pk_for_slug(provision_slug) if provision_slug else None,
+    )
+    if not ps_user_id:
+        logger.info(
+            "discord router: mention from unlinked discord_user=%s — ignoring",
+            author.get("id"),
+        )
+        return
+
+    guild_slugs = await _resolve_user_guild_slugs(ps_user_id)
+    if not guild_slugs:
+        logger.info(
+            "discord router: mention from user=%s with no accessible projects — ignoring",
+            ps_user_id,
+        )
+        return
+
+    if discord_guild_id:
+        # Intersect rather than replace: server bindings narrow the choice,
+        # but must never route someone into a project they aren't a member of.
+        accessible = set(guild_slugs)
+        preferred = [slug for slug in bound if slug in accessible]
+        if preferred:
+            logger.info(
+                "discord router: scoping mention to discord_guild=%s projects=%s "
+                "(author also has: %s)",
+                discord_guild_id,
+                ",".join(preferred),
+                ",".join(s for s in guild_slugs if s not in set(preferred)) or "none",
+            )
+            guild_slugs = preferred
+
+    guild_slug, *other_projects = guild_slugs
+    context_note = f" (also has access to: {', '.join(other_projects)})" if other_projects else ""
+    human_message = (
+        f"[discord-mention] project={guild_slug}{context_note}\n[Discord] {label}: {content}"
+    )
+
+    await _forward_to_foreman(
+        guild_slug,
+        content,
+        human_message,
+        ps_user_id=ps_user_id,
+        task_id=None,
+        reply_channel_id=reply_channel_id,
+        task_name=f"foreman.discord-mention:{guild_slug}",
+    )
+
+
+async def _dispatch_channel_scoped(
+    message: dict, content: str, session: tuple[str, str | None], reply_channel_id: str
+) -> None:
+    """Route a message whose channel/thread resolved to a Foreman session.
+
+    Unlike ``_dispatch_author_scoped`` this does not require the author to
+    have linked an account — the channel binding already establishes which
+    project the message belongs to, so an unlinked human is forwarded as a
+    generic "a Discord user" and a bot author is auto-provisioned its own
+    ``users`` row. Never raises.
+    """
+    guild_slug, task_id = session
+    author = message.get("author") or {}
+    guild_pk = await _guild_pk_for_slug(guild_slug)
+    ps_user_id, label = await _resolve_identity(
+        author.get("id"),
+        author.get("username"),
+        is_bot=bool(author.get("bot")),
+        guild_pk=guild_pk,
+    )
+    discord_line = f"[Discord] {label}: {content}"
+    # A resolved task_id means this message landed in a thread already bound to a task
+    # (an "issue" or "task_stream" subject binding) — tag it so the Foreman can route
+    # straight to redirect_task/send_followup without a lookup, mirroring [github-event].
+    human_message = (
+        f"[discord-thread-reply] task_id={task_id}\n{discord_line}" if task_id else discord_line
+    )
+
+    await _forward_to_foreman(
+        guild_slug,
+        content,
+        human_message,
+        ps_user_id=ps_user_id,
+        task_id=task_id,
+        reply_channel_id=reply_channel_id,
+        task_name=f"foreman.discord-chat:{guild_slug}",
+    )
+
+
+async def _forward_to_foreman(
+    guild_slug: str,
+    content: str,
+    human_message: str,
+    *,
+    ps_user_id: str | None,
+    task_id: str | None,
+    reply_channel_id: str,
+    task_name: str,
+) -> None:
+    """Persist the inbound message, then trigger the Foreman for *guild_slug*.
+
+    Shared tail of both dispatch paths. Persistence is best-effort: a failure
+    there must not stop the message from reaching the Foreman. A task-bound
+    reply (``task_id`` set) is first offered to ``_auto_route_task_reply``
+    (#959) — if the task's state auto-routes, the message is handled straight
+    away and never reaches the Foreman at all.
+    """
+    try:
+        await _persist_inbound_message(guild_slug, content, user_id=ps_user_id, task_id=task_id)
+    except Exception:
+        logger.warning(
+            "discord router: failed to persist inbound message guild=%s — forwarding to "
+            "Foreman anyway",
+            guild_slug,
+            exc_info=True,
+        )
+
+    if task_id and await _auto_route_task_reply(guild_slug, task_id, content, user_id=ps_user_id):
+        return
+
+    from foreman.runner import reset_foreman_poll  # noqa: PLC0415
+    from ws_handlers import _trigger_foreman  # noqa: PLC0415
+
+    await _trigger_foreman(
+        guild_slug,
+        "chat",
+        human_message,
+        user_id=ps_user_id,
+        task_id=task_id,
+        task_name=task_name,
+        reply_channel_id=reply_channel_id,
+    )
+    reset_foreman_poll(guild_slug)
 
 
 async def route_inbound_message(message: dict) -> bool:
@@ -265,50 +693,31 @@ async def _route_inbound_message(message: dict) -> None:
     if not channel_id:
         return
 
-    session = await resolve_session(channel_id)
-    if session is None:
-        logger.debug("discord router: no resolvable session for channel=%s — ignoring", channel_id)
-        return
-    guild_slug, task_id = session
+    # An @-mention of the bot user or the foreman role always gets a response;
+    # strip both tokens so the Foreman sees only what was actually asked.
+    mentioned = mentions_bot_user(message) or mentions_foreman_role(message)
+    if mentioned:
+        content = strip_bot_user_mention(strip_foreman_role_mention(content))
+        if not content:
+            return
 
     if not _is_authorized(message):
         logger.info(
-            "discord router: unauthorized author — ignoring message for guild=%s", guild_slug
+            "discord router: unauthorized author — ignoring message in channel=%s", channel_id
         )
         return
 
-    author = message.get("author") or {}
-    ps_user_id, label = await _resolve_identity(author.get("id"), author.get("username"))
-    discord_line = f"[Discord] {label}: {content}"
-    # A resolved task_id means this message landed in a thread already bound to a task
-    # (an "issue" or "task_stream" subject binding) — tag it so the Foreman can route
-    # straight to redirect_task/send_followup without a lookup, mirroring [github-event].
-    human_message = (
-        f"[discord-thread-reply] task_id={task_id}\n{discord_line}" if task_id else discord_line
-    )
-
-    try:
-        await _persist_inbound_message(guild_slug, content, user_id=ps_user_id, task_id=task_id)
-    except Exception:
-        logger.warning(
-            "discord router: failed to persist inbound message guild=%s — forwarding to "
-            "Foreman anyway",
-            guild_slug,
-            exc_info=True,
-        )
-
-    from foreman.runner import reset_foreman_poll  # noqa: PLC0415
-    from ws_handlers import _trigger_foreman  # noqa: PLC0415
-
-    await _trigger_foreman(
-        guild_slug,
-        "chat",
-        human_message,
-        user_id=ps_user_id,
-        task_id=task_id,
-        task_name=f"foreman.discord-chat:{guild_slug}",
-    )
-    reset_foreman_poll(guild_slug)
+    # Channel scoping wins when it resolves: a mention in a bound channel or
+    # task thread is chat about *that* project/task. Only an unresolvable
+    # channel (a DM, or one never wired) falls back to the author's projects,
+    # and only for an explicit mention.
+    session = await resolve_session(channel_id)
+    if session is not None:
+        await _dispatch_channel_scoped(message, content, session, channel_id)
+    elif mentioned:
+        await _dispatch_author_scoped(message, content, channel_id)
+    else:
+        logger.debug("discord router: no resolvable session for channel=%s — ignoring", channel_id)
 
 
 async def _persist_inbound_message(

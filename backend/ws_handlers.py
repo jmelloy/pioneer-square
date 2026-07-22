@@ -189,6 +189,7 @@ async def _trigger_foreman(
     user_id: str | None = None,
     task_id: str | None = None,
     task_name: str = "foreman.unknown",
+    reply_channel_id: str | None = None,
 ) -> None:
     """Dispatch a trigger into the embedded Foreman runner.
 
@@ -199,6 +200,11 @@ async def _trigger_foreman(
     ``chat``, ``task-complete``, ``followup-done``, ``needs-input``,
     ``claude-auth``, ``periodic-check``, ``worker-online``,
     ``worker-offline``.
+
+    ``reply_channel_id`` pins the Discord destination for this run's narration
+    to a specific channel — set by ``discord/router.py`` so a reply to an
+    @-mention lands back where it was asked. None (every other caller) keeps
+    the default routing in ``discord_notifier.notify_foreman_chat``.
     """
     # Task-specific review events run in an isolated per-task child context
     # (see docs/foreman-per-task-context.md); cross-cutting events (chat, worker
@@ -216,6 +222,7 @@ async def _trigger_foreman(
             task_id=task_id,
             child=child,
             is_human=is_human,
+            reply_channel_id=reply_channel_id,
         ),
         name=task_name,
     )

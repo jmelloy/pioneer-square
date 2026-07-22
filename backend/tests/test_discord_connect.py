@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from helpers import _sync_session, make_auth_token
-from models import DiscordAccountLink, DiscordConnectToken
+from models import DiscordAccountLink, DiscordPendingConnect
 
 # ---------------------------------------------------------------------------
 # _interaction_user (pure unit)
@@ -138,7 +138,7 @@ def _insert_connect_token(
     now = datetime.now(UTC)
     with _sync_session(db_url) as session:
         session.add(
-            DiscordConnectToken(
+            DiscordPendingConnect(
                 token=token,
                 discord_user_id=discord_user_id,
                 discord_username=discord_username,
@@ -186,7 +186,7 @@ def test_connect_valid_token_links_account(client):
         assert link is not None
         assert link.ps_user_id == "gh-conn-2"
 
-        used_row = session.query(DiscordConnectToken).filter_by(token=connect_token).one_or_none()
+        used_row = session.query(DiscordPendingConnect).filter_by(token=connect_token).one_or_none()
         assert used_row.used_at is not None
 
 

@@ -26,9 +26,10 @@ Phase 3 — Foreman chat threads + user mentions
     fallback thread.
 
     ``mention_or_login`` resolves a GitHub login to a real ``<@id>`` Discord
-    mention via the ``discord_users`` table (populated through the
-    ``/api/discord-users`` REST endpoints). Falls back to a plain ``@login``
-    string when no mapping exists — never raises, never blocks a notification.
+    mention by joining ``discord_account_links`` (populated by the
+    ``/connect-account`` slash command) to ``users.github_login``. Falls back
+    to a plain ``@login`` string when the user has not linked a Discord
+    account — never raises, never blocks a notification.
 
 Phase 4 — live task-stream mirroring
     ``notify_task_stream`` mirrors a worker task's streaming terminal output
@@ -725,10 +726,17 @@ async def notify_foreman_chat(
     guild_id: str,
     content: str,
     task_id: str | None = None,
+    channel_id: str | None = None,
 ) -> None:
     """Mirror a Foreman → user chat line into Discord.
 
-    When *task_id* is given and its canonical issue/PR (see
+    When *channel_id* is given it wins outright: the line goes there and
+    nothing else is consulted. That is the @-mention reply path (see
+    ``discord/router.py``), where the answer belongs in the channel or DM the
+    mention arrived in — which may not be wired to *guild_id* at all, so the
+    guild's configured channel is not a meaningful fallback for it.
+
+    Otherwise, when *task_id* is given and its canonical issue/PR (see
     ``_canonical_coords``) already has a thread in ``discord_threads``, the
     line is posted there. In every other case — no *task_id*, or no linked
     thread yet — the line is posted directly to the guild's main configured
@@ -741,6 +749,10 @@ async def notify_foreman_chat(
     if not content or not content.strip():
         return
     if not bot_token():
+        return
+
+    if channel_id:
+        await _post_foreman_chat_line(channel_id, content)
         return
 
     channel = await _resolve_channel_for_guild(guild_id)
@@ -764,19 +776,27 @@ async def notify_foreman_chat(
 
 
 async def _lookup_discord_user(github_login: str) -> str | None:
-    """Return the Discord user ID mapped to *github_login*, or None."""
+    """Return the Discord user ID linked to *github_login*, or None.
+
+    Resolves through ``users`` rather than a dedicated login -> Discord table:
+    ``/connect-account`` links a Discord account to a Pioneer Square user id,
+    and ``users.github_login`` is the only bridge from there back to a GitHub
+    login. Compared case-insensitively — ``users.github_login`` is stored as
+    GitHub returns it, so casing is not guaranteed to match the caller's.
+    """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
-        from models import DiscordUser  # noqa: PLC0415
+        from models import DiscordAccountLink, User  # noqa: PLC0415
+        from sqlalchemy import func  # noqa: PLC0415
         from sqlmodel import col, select  # noqa: PLC0415
 
         async with AsyncSessionLocal() as db:
             result = await db.exec(
-                select(DiscordUser.discord_user_id).where(
-                    col(DiscordUser.github_login) == github_login.lower()
-                )
+                select(DiscordAccountLink.discord_user_id)
+                .join(User, col(User.id) == col(DiscordAccountLink.ps_user_id))
+                .where(func.lower(col(User.github_login)) == github_login.lower())
             )
-            return result.one_or_none()
+            return result.first()
     except Exception:
         logger.warning("discord: user mapping lookup failed login=%s", github_login, exc_info=True)
         return None

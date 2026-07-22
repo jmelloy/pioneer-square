@@ -1230,3 +1230,58 @@ async def test_cmd_leave_channel_denies_without_permission(monkeypatch):
 
     assert sent
     assert "Manage Channels" in sent[0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Slash-command guild resolution (shares discord.router.resolve_guild_slug)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_command_guild_slug_env_override_wins(monkeypatch):
+    """An explicitly set DISCORD_PIONEER_GUILD_SLUG still pins the instance,
+    without consulting the channel/server bindings at all."""
+    monkeypatch.setenv("DISCORD_PIONEER_GUILD_SLUG", "pinned-guild")
+
+    from routes.discord import _resolve_command_guild_slug
+
+    resolver = AsyncMock(return_value="context-guild")
+    with patch("discord.router.resolve_guild_slug", new=resolver):
+        slug = await _resolve_command_guild_slug(
+            {"channel_id": "chan-1", "guild_id": "dg-1", "data": {}}
+        )
+
+    assert slug == "pinned-guild"
+    assert resolver.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_command_guild_slug_resolves_from_context_when_unset(monkeypatch):
+    """With the env var unset the command resolves its own target from the
+    channel/server it was invoked in, like an inbound bot @-mention."""
+    monkeypatch.delenv("DISCORD_PIONEER_GUILD_SLUG", raising=False)
+
+    from routes.discord import _resolve_command_guild_slug
+
+    resolver = AsyncMock(return_value="context-guild")
+    with patch("discord.router.resolve_guild_slug", new=resolver):
+        slug = await _resolve_command_guild_slug(
+            {"channel_id": "chan-1", "guild_id": "dg-1", "data": {}}
+        )
+
+    assert slug == "context-guild"
+    resolver.assert_awaited_once_with("chan-1", "dg-1")
+
+
+@pytest.mark.asyncio
+async def test_command_guild_slug_empty_when_nothing_resolves(monkeypatch):
+    """Nothing bound and no default — callers get "" exactly as they did for an
+    unset env var before, so downstream handling is unchanged."""
+    monkeypatch.delenv("DISCORD_PIONEER_GUILD_SLUG", raising=False)
+
+    from routes.discord import _resolve_command_guild_slug
+
+    with patch("discord.router.resolve_guild_slug", new=AsyncMock(return_value=None)):
+        slug = await _resolve_command_guild_slug({"channel_id": None, "data": {}})
+
+    assert slug == ""

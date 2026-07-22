@@ -39,7 +39,7 @@ _STATEMENT_TIMEOUT_MS = 30_000
 
 # Tables safe to expose to a raw SELECT: operational/state tables only — no
 # credential-bearing tables (github_tokens, user_sessions, claude_credentials,
-# guild_keys, discord_connect_tokens, discord_account_links, push_tokens).
+# guild_keys, discord_pending_connects, discord_account_links, push_tokens).
 _ALLOWED_TABLES = frozenset(
     {
         "tasks",
