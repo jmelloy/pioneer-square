@@ -22,6 +22,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+import uuid
 from typing import Any
 from urllib.parse import urlparse
 
@@ -109,6 +110,14 @@ class A2AClient:
 
     async def fetch_agent_card(self) -> dict:
         if self._card is None:
+            from foreman.dnsid_identity import get_dnsid_runtime
+
+            runtime = get_dnsid_runtime()
+            hostname = urlparse(self._card_url).hostname
+            if runtime is not None and hostname:
+                verified = await asyncio.to_thread(runtime.manager.verify_domain, hostname)
+                if verified.cached_state() != "ACTIVE":
+                    raise RuntimeError(f"target DNSid {hostname} is not ACTIVE")
             self._card = await asyncio.to_thread(_fetch_json, self._card_url)
         return self._card
 
@@ -116,6 +125,9 @@ class A2AClient:
         """Derive the operational base URL, falling back to the card URL's origin
         if the declared url is loopback or missing."""
         declared = card.get("url", "")
+        interfaces = card.get("supportedInterfaces", [])
+        if not declared and interfaces and isinstance(interfaces[0], dict):
+            declared = interfaces[0].get("url", "")
         if declared and "127.0.0.1" not in declared and "localhost" not in declared:
             return declared.rstrip("/")
         parsed = urlparse(self._card_url)
@@ -165,13 +177,17 @@ class A2AClient:
         card = await self.fetch_agent_card()
         base_url = self._agent_base_url(card)
 
+        from foreman.dnsid_identity import get_dnsid_runtime
+
+        dnsid_runtime = get_dnsid_runtime()
+
         logger.debug(
             "a2a send_task: fetched agent card from %s base_url=%s",
             self._card_url,
             base_url,
         )
         auth = self._auth_scheme
-        if auth is None and caller_domain:
+        if dnsid_runtime is None and auth is None and caller_domain:
             auth = self._resolve_auth_scheme(card, caller_domain, private_key_pem)
 
         # Resolve auth token — challenge-response runs here.
@@ -181,9 +197,15 @@ class A2AClient:
             raw = auth_headers.get("Authorization", "")
             auth_token = raw  # e.g. "DNSid <jwt>"
 
+        message_id = str(uuid.uuid4())
         params: dict[str, Any] = {
             "skill": skill_id,
-            "parts": message.get("parts", []),
+            "message": {
+                "messageId": message_id,
+                "role": "ROLE_USER",
+                "parts": message.get("parts", []),
+                "metadata": {"skill": skill_id},
+            },
         }
         if auth_token:
             params["authorization"] = auth_token
@@ -191,13 +213,13 @@ class A2AClient:
         body = json.dumps(
             {
                 "jsonrpc": _JSONRPC_VERSION,
-                "method": "message/stream",
+                "method": "message/send" if dnsid_runtime is not None else "message/stream",
                 "params": params,
                 "id": 1,
             }
         ).encode()
 
-        task_url = f"{base_url}/jsonrpc"
+        task_url = base_url + ("/" if dnsid_runtime is not None else "/jsonrpc")
         logger.debug(
             "a2a send_task: url=%s method=POST skill_id=%s payload=%.500s",
             task_url,
@@ -207,11 +229,42 @@ class A2AClient:
 
         headers = {
             "Content-Type": "application/json",
-            "Accept": "text/event-stream",
+            "Accept": "application/json" if dnsid_runtime is not None else "text/event-stream",
         }
+
+        if dnsid_runtime is not None:
+            from dnsid.models import HttpRequest, HttpSigningOptions
+            from foreman.dnsid_identity import (
+                A2A_VERSION,
+                DNSID_A2A_EXTENSION_URI,
+                DNSID_A2A_SIGNATURE_TAG,
+            )
+
+            headers["a2a-version"] = A2A_VERSION
+            headers["a2a-extensions"] = DNSID_A2A_EXTENSION_URI
+            signed = await asyncio.to_thread(
+                dnsid_runtime.http_signatures.create_signed_http_request,
+                HttpRequest(method="POST", url=task_url, headers=headers, body=body),
+                HttpSigningOptions(
+                    additional_components=[
+                        "content-type",
+                        "a2a-version",
+                        "a2a-extensions",
+                    ],
+                    tag=DNSID_A2A_SIGNATURE_TAG,
+                ),
+            )
+            headers = signed.headers
 
         t0 = time.monotonic()
         try:
+            if dnsid_runtime is not None:
+                response = await asyncio.to_thread(
+                    _fetch_json, task_url, data=body, headers=headers
+                )
+                if "error" in response:
+                    raise RuntimeError(response["error"])
+                return response.get("result", response)
             events = await asyncio.to_thread(_read_sse_events, task_url, data=body, headers=headers)
         except urllib.error.HTTPError as exc:
             elapsed_ms = int((time.monotonic() - t0) * 1000)

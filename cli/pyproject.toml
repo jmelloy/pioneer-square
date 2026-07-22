@@ -20,7 +20,8 @@ dependencies = [
     "python-multipart",
     "python-dotenv",
     "docker",
-    # DNSid operations (resolve TXT records, sign/verify JWTs)
+    # DNS resolver also used outside the optional local dnsid-py integration.
+    # dnsid-py 0.7.0 is installed editable from ../dnsid-py until it is published.
     "dnspython>=2.4",
     # Shared across all three runtimes
     "websockets>=12.0",

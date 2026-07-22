@@ -580,28 +580,20 @@ FOREMAN_TOOLS = [
     {
         "name": "dnsid",
         "description": (
-            "Run a DNSid operation via the dnsid-py library. "
-            "Three commands: "
-            "'resolve' — look up an FQDN's _dnsid TXT record and JWKS (param: fqdn); "
-            "'sign' — sign a JWT with the agent's configured Ed25519 identity (param: claims object); "
-            "'verify' — verify a JWT against its DNSid record (params: jwt, expected_aud, optional expected_nonce). "
-            "Returns a JSON result on success; raises on failure."
+            "Verify a DNSid principal or a DNSid-signed JWT through the configured "
+            "dnsid-py IdentityManager. Signing is intentionally not exposed to the model."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "enum": ["resolve", "sign", "verify"],
+                    "enum": ["resolve", "verify"],
                     "description": "Subcommand to run.",
                 },
                 "fqdn": {
                     "type": "string",
                     "description": "resolve: FQDN to look up, e.g. 'example.com'.",
-                },
-                "claims": {
-                    "type": "object",
-                    "description": "sign: JSON object of JWT claims (iss, sub, exp, nonce, …).",
                 },
                 "jwt": {
                     "type": "string",
