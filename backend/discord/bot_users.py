@@ -60,13 +60,21 @@ async def _find_parent_owner(db, guild_pk: int) -> tuple[str | None, str]:
     return row[0], row[1]
 
 
-async def ensure_bot_user(discord_user_id: str, username: str | None, guild_pk: int | None) -> str:
+async def ensure_bot_user(
+    discord_user_id: str,
+    username: str | None,
+    guild_pk: int | None,
+    channel_id: str | None = None,
+) -> str:
     """Find-or-create the Pioneer Square user row for a Discord bot account.
 
     Idempotent — safe to call for a bot that already has a row (returns the
     existing id without writing anything). ``guild_pk`` is used only to pick a
     parent/inherited role for a *new* row; pass ``None`` when unknown (the bot
-    row is still created, just with no parent).
+    row is still created, just with no parent). ``channel_id`` is the Discord
+    channel the bot was first seen in — persisted as its preferred channel for
+    ``message_discord_bot`` (see ``foreman/tools.py``); pass ``None`` when
+    unknown (e.g. a DM).
     """
     from database import AsyncSessionLocal  # noqa: PLC0415
 
