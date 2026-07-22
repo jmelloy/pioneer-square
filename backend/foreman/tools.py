@@ -1054,6 +1054,59 @@ async def _run_dnsid(command: str, inp: dict) -> dict:
         raise ValueError(f"Unknown dnsid command: {command!r}")
 
 
+async def _message_discord_bot(inp: dict, db) -> tuple[str, bool]:
+    """Send a message to a Discord bot user (see ``message_discord_bot`` in
+    ``foreman/tools_schema.py``). Returns ``(result_text, is_error)``."""
+    bot_user_id = inp.get("bot_user_id") or ""
+    message = inp.get("message") or ""
+    delivery_method = inp.get("delivery_method") or "channel"
+
+    if not bot_user_id:
+        return "message_discord_bot requires bot_user_id", True
+    if not message:
+        return "message_discord_bot requires message", True
+
+    result = await db.exec(select(User).where(col(User.id) == bot_user_id))
+    user = result.one_or_none()
+    if user is None:
+        return f"No user found with id {bot_user_id!r}.", True
+    if not user.is_bot or user.bot_provider != "discord":
+        return (
+            f"User {bot_user_id!r} is not a Discord bot "
+            f"(is_bot={user.is_bot}, bot_provider={user.bot_provider!r})."
+        ), True
+    if not user.discord_channel_id:
+        return f"Bot {bot_user_id!r} has no discord_channel_id configured.", True
+
+    content = message
+    if delivery_method == "mention":
+        discord_user_id = (user.bot_metadata or {}).get("discord_user_id")
+        if not discord_user_id:
+            return (
+                f"Bot {bot_user_id!r} has no discord_user_id in bot_metadata "
+                "for mention delivery."
+            ), True
+        content = f"<@{discord_user_id}> {message}"
+
+    response = await discord_notifier.post(
+        f"/channels/{user.discord_channel_id}/messages", {"content": content}
+    )
+    if response is None:
+        return f"Failed to send Discord message to bot {bot_user_id!r}.", True
+
+    return (
+        json.dumps(
+            {
+                "bot_user_id": bot_user_id,
+                "channel_id": user.discord_channel_id,
+                "delivery_method": delivery_method,
+                "message_id": response.get("id") if isinstance(response, dict) else None,
+            }
+        ),
+        False,
+    )
+
+
 def _fetch_agent_card(card_url: str) -> dict:
     """Fetch and parse an A2A agent card from a well-known URL."""
     req = urllib.request.Request(
@@ -2322,6 +2375,9 @@ async def _exec_one_tool(
                         },
                         default=_json_default,
                     )
+
+            elif tu.name == "message_discord_bot":
+                result_text, is_error = await _message_discord_bot(inp, db)
         finally:
             await db.close()
 
