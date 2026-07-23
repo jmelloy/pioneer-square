@@ -56,6 +56,11 @@ def _slug(text: str, max_len: int = 60) -> str:
 _CANCEL_SENTINEL = object()  # placed in redirect queue to signal task cancellation
 _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during shutdown
 
+# How long a dispatched Claude task waits for a background login to finish
+# before failing. Matches the 300s setup-token code-entry window in
+# _run_claude_login — no point waiting past when the login itself gives up.
+CLAUDE_AUTH_WAIT_SECONDS = float(os.environ.get("PIONEER_CLAUDE_AUTH_WAIT", "300"))
+
 _PR_PHASES = frozenset({"execute", "followup"})
 
 
@@ -125,6 +130,16 @@ class Worker:
         )
         self.ws = WSClient(cfg.ws_url, sleep_monitor=self.sleep_monitor)
         self._shutdown_event = asyncio.Event()
+        # "Claude is ready to run tasks." Starts set (the common case: creds in
+        # env or restored, or a tool that isn't claude) and is CLEARED only when
+        # _check_claude_auth kicks off a background login, then set again when the
+        # login completes. Claude tasks wait on it; pi/codex tasks ignore it.
+        # Startup never blocks on it — the worker joins first and auths in the
+        # background (see _check_claude_auth).
+        self._claude_authed = asyncio.Event()
+        self._claude_authed.set()
+        # Handle to the background login coroutine so it isn't GC'd mid-flight.
+        self._claude_login_task: asyncio.Task | None = None
         self._worker_name: str = ""
         # Captured at run() start so the optional control API's handler thread
         # can schedule coroutines onto the worker's loop. Stays None when no
@@ -510,7 +525,21 @@ class Worker:
         return logged_in
 
     async def _check_claude_auth(self) -> None:
-        """Ensure Claude is authenticated. Restores stored credentials or runs login flow."""
+        """Make Claude credentials usable without blocking the worker's startup.
+
+        The synchronous part is cheap: check the env, check an existing local
+        login, and try to restore a stored blob from the backend. Any of those
+        succeeding sets ``_claude_authed`` and returns.
+
+        If none do, we do NOT run the interactive ``claude setup-token`` login
+        inline — that blocks up to 300s waiting for a human to paste an OAuth
+        code, which on an unattended ECS worker means the worker never joins the
+        guild (and pi/codex workers that don't even use Claude get stuck too).
+        Instead the login runs in the background: the worker joins immediately,
+        emits ``claude-auth-required`` so the UI can drive the OAuth flow, and
+        Claude tasks wait on ``_claude_authed`` only when one is actually
+        dispatched.
+        """
         import base64
         import io
         import json
@@ -519,14 +548,17 @@ class Worker:
 
         if os.environ.get("ANTHROPIC_API_KEY"):
             logger.info("ANTHROPIC_API_KEY set — skipping Claude login flow")
+            self._claude_authed.set()
             return
 
         if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
             logger.info("CLAUDE_CODE_OAUTH_TOKEN already in env — skipping login")
+            self._claude_authed.set()
             return
 
         if await self._claude_is_authenticated():
             logger.info("Claude credentials already present")
+            self._claude_authed.set()
             return
 
         # Try restoring credentials stored in the backend. Two formats are
@@ -555,6 +587,7 @@ class Worker:
                             # The env var is inherited by every spawned claude;
                             # no need to re-verify with `claude auth status`,
                             # which can spuriously fail on macOS keychain hosts.
+                            self._claude_authed.set()
                             return
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass  # fall through to legacy tarball path
@@ -564,13 +597,23 @@ class Worker:
                         tar.extractall(path=Path.home())
                     logger.info("Restored Claude credentials tarball from backend (legacy)")
                     if await self._claude_is_authenticated():
+                        self._claude_authed.set()
                         return
                     logger.warning("Restored credentials blob but auth status still fails")
         except Exception as exc:
             logger.warning("Could not fetch Claude credentials from backend: %s", exc)
 
-        await self._emit("No Claude credentials found — starting login...", level=LEVEL_AUTH)
-        await self._run_claude_login()
+        # No usable credentials. Claude tasks must now wait, so clear the ready
+        # flag, then run the interactive login in the BACKGROUND — the worker
+        # still joins the guild immediately; _run_claude_login emits
+        # claude-auth-required and re-sets _claude_authed if a human completes it.
+        self._claude_authed.clear()
+        logger.info("No Claude credentials found — starting login in background (non-blocking)")
+        await self._emit(
+            "No Claude credentials found — starting login (worker stays online)...",
+            level=LEVEL_AUTH,
+        )
+        self._claude_login_task = asyncio.create_task(self._run_claude_login())
 
     async def _run_claude_login(self) -> None:
         """Drive `claude setup-token` to completion and persist the resulting OAuth token.
@@ -764,6 +807,7 @@ class Worker:
             return
 
         os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        self._claude_authed.set()
         logger.info("Captured CLAUDE_CODE_OAUTH_TOKEN (len=%d) and set in env", len(token))
         await self._emit(
             "Token captured — saving to backend so future workers can reuse it",
@@ -1235,8 +1279,11 @@ class Worker:
         await self.ws.connect()
 
         # Start listener before auth so it can relay auth codes from the UI.
-        # _join() is intentionally delayed until after auth — agents must not
-        # be visible to the foreman until Claude is ready to accept tasks.
+        # _check_claude_auth is non-blocking: it restores stored creds if it can
+        # and otherwise kicks off the login in the background. The worker joins
+        # right away — Claude tasks wait on _claude_authed when dispatched (see
+        # _execute_task); pi/codex workers never need it. Blocking the join on an
+        # interactive login stalled every unattended worker for 300s.
         listener = asyncio.create_task(self._listen())
         await self._check_claude_auth()
         self._detect_available_tools()
@@ -2221,6 +2268,22 @@ class Worker:
             success = False
             stop_reason = "no_events"
             last_msg = ""
+
+            # Claude tasks need credentials; startup no longer blocks the join on
+            # them (see _check_claude_auth), so a claude task dispatched before
+            # login completes waits here instead of launching un-authed. pi/codex
+            # tasks skip this entirely. Bounded so a slot can't hang forever.
+            if tool == "claude" and not self._claude_authed.is_set():
+                logger.info("Task %s: waiting for Claude auth before launch", task_id)
+                await emit("Waiting for Claude authentication to complete...")
+                try:
+                    await asyncio.wait_for(
+                        self._claude_authed.wait(), timeout=CLAUDE_AUTH_WAIT_SECONDS
+                    )
+                except TimeoutError:
+                    raise RuntimeError(
+                        "Claude is not authenticated — complete the login in the UI, then retry"
+                    ) from None
 
             while True:
                 if tool == "codex":
