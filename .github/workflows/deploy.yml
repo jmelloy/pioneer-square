@@ -2,14 +2,8 @@ name: Deploy
 
 on:
   push:
-    branches: [main, "release/**"]
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      environment:
-        description: "Environment to deploy"
-        type: choice
-        options: [staging, prod]
-        default: staging
 
 permissions:
   id-token: write # OIDC — assumes the terraform-created deploy role, no static keys
@@ -17,16 +11,19 @@ permissions:
 
 concurrency:
   group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ENVIRONMENT: staging # single tfstate today; wire a workspace/backend-key per env before adding prod.
 
 jobs:
-  deploy:
+  # Build + push all three images at the commit SHA. Terraform (below) then
+  # points every task definition at ${IMAGE_REPO}:${github.sha}.
+  build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         service: [backend, foreman, worker]
-    env:
-      # main -> staging, release/** -> prod, manual dispatch -> input
-      ENVIRONMENT: ${{ inputs.environment || (startsWith(github.ref, 'refs/heads/release/') && 'prod' || 'staging') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,33 +36,40 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push image
-        id: image
         run: |
           IMAGE="${{ steps.ecr.outputs.registry }}/pioneer-square-${ENVIRONMENT}/${{ matrix.service }}:${{ github.sha }}"
-          docker build --target "${{ matrix.service }}" -t "$IMAGE" .
+          docker build --target "${{ matrix.service }}" --build-arg "PIONEER_VERSION=${{ github.sha }}" -t "$IMAGE" .
           docker push "$IMAGE"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch current task definition
+  # terraform apply is the single source of truth for the running task
+  # definitions: it renders env (subnets, SGs, config) AND the image tag in one
+  # revision and rolls the services. Replaces the old per-service
+  # render/deploy-task-definition steps + the services' ignore_changes.
+  apply:
+    needs: build
+    runs-on: ubuntu-latest
+    # No `environment:` gate — that would change the OIDC subject to
+    # environment:<name>, which var.github_oidc_allowed_refs (ref:refs/heads/*)
+    # doesn't permit. To add an approval gate, also add
+    # "environment:terraform-apply" to that allow-list in variables.tf.
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
         run: |
-          aws ecs describe-task-definition \
-            --task-definition "pioneer-square-${ENVIRONMENT}-${{ matrix.service }}" \
-            --query taskDefinition > taskdef.json
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
 
-      - name: Render task definition with new image
-        id: render
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: taskdef.json
-          container-name: ${{ matrix.service }}
-          image: ${{ steps.image.outputs.image }}
-
-      # The worker has no ECS service (launched on demand via RunTask), so this
-      # step only registers a new task definition revision for it.
-      - name: Deploy
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.render.outputs.task-definition }}
-          cluster: pioneer-square-${{ env.ENVIRONMENT }}-cluster
-          service: ${{ matrix.service != 'worker' && format('pioneer-square-{0}-{1}', env.ENVIRONMENT, matrix.service) || '' }}
-          wait-for-service-stability: ${{ matrix.service == 'backend' }}
+      - name: Terraform apply
+        run: terraform apply -auto-approve -var="container_image_tag=${{ github.sha }}"

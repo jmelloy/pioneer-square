@@ -144,10 +144,6 @@ resource "aws_ecs_service" "backend" {
 
   depends_on = [aws_lb_listener.http]
 
-  lifecycle {
-    ignore_changes = [task_definition] # CI updates this via amazon-ecs-deploy-task-definition.
-  }
-
   tags = {
     Name    = "${local.name_prefix}-backend"
     Service = "backend"
@@ -225,10 +221,6 @@ resource "aws_ecs_service" "foreman" {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]
     assign_public_ip = false
-  }
-
-  lifecycle {
-    ignore_changes = [task_definition]
   }
 
   tags = {
