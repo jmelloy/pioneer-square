@@ -16,6 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from worker_lifecycle import (  # noqa: E402
     SHUTDOWN_FORCE_KILL_TIMEOUT,
+    WORKER_SPAWN_COOLDOWN,
+    check_worker_spawn_cooldown,
     drain_stale_workers_on_startup,
     force_kill_worker_if_unresponsive,
     generate_worker_id,
@@ -296,6 +298,49 @@ async def test_record_worker_spawn_skips_defaults_without_repos():
 
     mock_db.exec.assert_called_once()
     mock_db.commit.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# check_worker_spawn_cooldown
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_worker_spawn_cooldown_no_prior_spawn():
+    """A guild with no recorded spawn defaults is never in cooldown."""
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=None)))
+
+    remaining = await check_worker_spawn_cooldown(mock_db, 42)
+
+    assert remaining is None
+
+
+@pytest.mark.asyncio
+async def test_check_worker_spawn_cooldown_recent_spawn_still_active():
+    """A spawn 1 minute ago is still within the 5-minute cooldown."""
+    defaults = MagicMock(updated_at=datetime.now(UTC) - timedelta(minutes=1))
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=defaults)))
+
+    remaining = await check_worker_spawn_cooldown(mock_db, 42)
+
+    assert remaining is not None
+    assert timedelta(minutes=3) < remaining <= timedelta(minutes=4)
+
+
+@pytest.mark.asyncio
+async def test_check_worker_spawn_cooldown_expired():
+    """A spawn from longer ago than the cooldown window is not in cooldown."""
+    defaults = MagicMock(
+        updated_at=datetime.now(UTC) - WORKER_SPAWN_COOLDOWN - timedelta(seconds=1)
+    )
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=defaults)))
+
+    remaining = await check_worker_spawn_cooldown(mock_db, 42)
+
+    assert remaining is None
 
 
 # ---------------------------------------------------------------------------
