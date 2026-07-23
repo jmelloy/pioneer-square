@@ -181,11 +181,13 @@ resource "aws_security_group" "rds" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "Postgres from ECS tasks"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.ecs_tasks.id]
+    description = "Postgres from ECS tasks (and the dump loader while enabled)"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    # dump_loader is count-gated (see dump_loader.tf); concat adds it only
+    # while var.dump_loader_enabled is true.
+    security_groups = concat([aws_security_group.ecs_tasks.id], aws_security_group.dump_loader[*].id)
   }
 
   egress {
