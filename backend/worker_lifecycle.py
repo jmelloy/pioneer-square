@@ -62,6 +62,16 @@ WORKER_IDLE_SWEEP_INTERVAL = float(os.environ.get("PIONEER_WORKER_IDLE_SWEEP_INT
 # there is no in-progress task to wait for.
 IDLE_REAP_FORCE_KILL_TIMEOUT = float(os.environ.get("PIONEER_IDLE_REAP_KILL_TIMEOUT", "300"))
 
+# Grace period before a version-stale worker is drained. A worker spawned by the
+# *previous* backend during a rolling deploy is still cold-starting on Fargate
+# (image pull + per-guild credential fetch) when the new backend takes over; its
+# version legitimately differs but it is a healthy newborn, not a zombie. Without
+# this, every worker that boots slower than the gap between deploys is killed the
+# instant it connects and reaped 30 min later having done zero work. Genuinely
+# old zombies are older than this and still get reaped by the idle reaper.
+# ponytail: 5 min covers Fargate cold-start; bump via env if boots run longer.
+STALE_DRAIN_MIN_AGE = timedelta(seconds=float(os.environ.get("PIONEER_STALE_DRAIN_MIN_AGE", "300")))
+
 # Task states that hold a worker alive: queued or actively-running work.
 # "awaiting-review" deliberately does NOT hold a worker alive — a PR can sit in
 # review for days, and send_followup routes to any idle worker (which pulls the
@@ -175,7 +185,10 @@ async def get_guild_spawn_defaults(db, guild_pk: int) -> GuildSpawnDefaults | No
 
 
 async def signal_stale_worker_on_join(
-    guild_slug: str, worker_id: str, spawned_version: str | None
+    guild_slug: str,
+    worker_id: str,
+    spawned_version: str | None,
+    started_at: datetime | None = None,
 ) -> bool:
     """Tell a version-stale backend-spawned worker to shut down as it (re)connects.
 
@@ -186,12 +199,26 @@ async def signal_stale_worker_on_join(
     on demand from the guild's spawn defaults, and the idle reaper force-kills
     the container if the worker never acts on the signal.
 
+    A worker spawned within STALE_DRAIN_MIN_AGE is spared: during a rolling
+    deploy it was spawned by the previous backend and is only now finishing its
+    cold-start, so its version differs but it is a healthy newborn, not a zombie.
+
     Returns True when a shutdown signal was sent.
     """
     if not spawned_version:
         return False
     current = get_current_version()
     if current is None or spawned_version == current:
+        return False
+    if started_at is not None and datetime.now(UTC) - started_at < STALE_DRAIN_MIN_AGE:
+        logger.info(
+            "worker_lifecycle: worker %s joined with stale version %s (current %s) but was "
+            "spawned %ds ago — sparing it (deploy overlap, not a zombie)",
+            worker_id,
+            spawned_version,
+            current,
+            int((datetime.now(UTC) - started_at).total_seconds()),
+        )
         return False
     logger.info(
         "worker_lifecycle: worker %s joined with stale version %s (current %s) — "
@@ -242,6 +269,12 @@ async def drain_stale_workers_on_startup() -> list[str]:
             # with NULL spawned_version (pre-migration rows from before version tracking
             # was introduced). NULL means we cannot confirm they match the current version,
             # so we conservatively treat them as stale.
+            #
+            # But spare workers spawned within STALE_DRAIN_MIN_AGE: during a rolling deploy
+            # the previous backend just spawned them and they are still cold-starting, so
+            # their version differs yet they are healthy newborns. NULL started_at (never
+            # recorded a spawn time) is treated as old and still drained.
+            spawn_cutoff = datetime.now(UTC) - STALE_DRAIN_MIN_AGE
             rows = (
                 await db.exec(
                     select(Worker, col(Guild.slug).label("guild_slug"))
@@ -250,6 +283,8 @@ async def drain_stale_workers_on_startup() -> list[str]:
                         col(Worker.spawned_version) != current_version,
                         col(Worker.state) != "offline",
                         col(Worker.disabled).is_(False),
+                        (col(Worker.started_at).is_(None))
+                        | (col(Worker.started_at) < spawn_cutoff),
                     )
                 )
             ).all()

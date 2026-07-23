@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -364,6 +364,40 @@ async def test_signal_stale_worker_on_join_skips_when_version_unknown():
 
     assert signalled is False
     broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_signal_stale_worker_on_join_spares_freshly_spawned():
+    """A stale-version worker spawned seconds ago (deploy overlap) is not killed."""
+    broadcast = AsyncMock()
+    just_now = datetime.now(UTC) - timedelta(seconds=5)
+    with (
+        patch("worker_lifecycle.get_current_version", return_value="v-new"),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+    ):
+        signalled = await signal_stale_worker_on_join("g-guild", "w-newborn", "v-old", just_now)
+
+    assert signalled is False
+    broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_signal_stale_worker_on_join_kills_old_stale_worker():
+    """A stale-version worker spawned long ago (real zombie) is still signalled."""
+    broadcasts = []
+
+    async def fake_broadcast(guild_slug, msg, *a, **kw):
+        broadcasts.append((guild_slug, msg))
+
+    long_ago = datetime.now(UTC) - timedelta(hours=1)
+    with (
+        patch("worker_lifecycle.get_current_version", return_value="v-new"),
+        patch("worker_lifecycle.broadcast_msg", fake_broadcast),
+    ):
+        signalled = await signal_stale_worker_on_join("g-guild", "w-zombie", "v-old", long_ago)
+
+    assert signalled is True
+    assert len(broadcasts) == 1
 
 
 # ---------------------------------------------------------------------------
