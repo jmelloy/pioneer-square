@@ -238,11 +238,13 @@ async def _start_worker_ecs(*, env: dict[str, str], guild_id: str) -> SpawnedWor
             "containerOverrides": [
                 {
                     "name": container_name,
-                    # NOTE: the RunTask overrides payload is limited to 8 KiB.
-                    # Static secrets (GITHUB_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, …)
-                    # already ride in the task definition's `secrets` block, so
-                    # this override only needs the per-spawn PIONEER_* vars,
-                    # but a huge extra_env from the UI could still exceed it.
+                    # Carries the worker's bootstrap wiring (PIONEER_* vars) plus
+                    # any user-supplied spawn env vars. Credentials are NOT here:
+                    # the worker fetches its per-guild GitHub/Claude/provider
+                    # credentials from the backend on startup (see
+                    # build_spawn_worker_env). NOTE: the RunTask overrides payload
+                    # is capped at 8 KiB, so a very large extra_env from the UI
+                    # could still exceed it.
                     "environment": [{"name": k, "value": v} for k, v in env.items()],
                 }
             ]

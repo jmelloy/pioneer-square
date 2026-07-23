@@ -21,7 +21,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeCredentials, Guild, Task, UserSpawnSettings, Worker, live_tasks_filter
+from models import Guild, Task, UserSpawnSettings, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -29,7 +29,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
 from utils import (
     build_spawn_worker_env,
-    decode_claude_oauth_token,
     row_to_dict,
     worker_display_name,
 )
@@ -175,12 +174,6 @@ async def spawn_worker_container(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    result = await db.exec(
-        select(col(ClaudeCredentials.credentials_blob)).where(
-            col(ClaudeCredentials.guild_id) == guild_pk
-        )
-    )
-    stored_blob = result.one_or_none()
 
     # Merge guild-level foreman env vars (base) with user-supplied env vars (override).
     guild_cfg_res = await db.exec(
@@ -222,7 +215,6 @@ async def spawn_worker_container(
         repos=data.repos,
         worker_name=worker_name,
         source_env=dict(os.environ),
-        claude_oauth_token=decode_claude_oauth_token(stored_blob),
         worker_id=worker_id,
         auth_token=auth_token,
         agent_count=data.agent_count,

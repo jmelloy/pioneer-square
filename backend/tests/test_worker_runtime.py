@@ -103,6 +103,26 @@ async def test_start_worker_ecs(ecs_env):
     assert {"name": "PIONEER_GUILD_ID", "value": "g1"} in override["environment"]
 
 
+async def test_start_worker_ecs_forwards_every_env_key(ecs_env):
+    """The override carries every key in the env dict verbatim — including
+    arbitrary user-supplied spawn vars of any name — so nothing is filtered."""
+    fake_ecs = MagicMock()
+    fake_ecs.run_task.return_value = {"tasks": [{"taskArn": TASK_ARN}], "failures": []}
+
+    env = {
+        "PIONEER_GUILD_ID": "g1",
+        "PIONEER_AUTH_TOKEN": "tok",
+        "MY_CUSTOM_VAR": "anything-goes",
+        "SOME_TEAM_API_KEY": "xyz789",
+    }
+    with patch("worker_runtime._get_ecs_client", return_value=fake_ecs):
+        await worker_runtime.start_worker_container(env=env, guild_id="g1")
+
+    override = fake_ecs.run_task.call_args.kwargs["overrides"]["containerOverrides"][0]
+    passed = {item["name"]: item["value"] for item in override["environment"]}
+    assert passed == env
+
+
 async def test_start_worker_ecs_public_ip_opt_in(ecs_env, monkeypatch):
     monkeypatch.setenv("ECS_WORKER_ASSIGN_PUBLIC_IP", "true")
     fake_ecs = MagicMock()

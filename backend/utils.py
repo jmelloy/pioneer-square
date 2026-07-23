@@ -17,8 +17,6 @@ import string
 import time
 import unicodedata
 
-from github_app_auth import get_github_token
-
 logger = logging.getLogger(__name__)
 
 _VOWELS = frozenset("aeiou")
@@ -226,7 +224,6 @@ def build_spawn_worker_env(
     repos: list[str],
     worker_name: str | None,
     source_env: dict[str, str],
-    claude_oauth_token: str | None = None,
     worker_id: str | None = None,
     auth_token: str | None = None,
     agent_count: int | None = None,
@@ -235,10 +232,16 @@ def build_spawn_worker_env(
 ) -> dict[str, str]:
     """Build the env dict for a spawned worker container.
 
-    *claude_oauth_token* (e.g. fetched from the DB) wins over
-    ``CLAUDE_CODE_OAUTH_TOKEN`` in *source_env* — the DB blob is the source
-    of truth, refreshed every time a worker completes setup-token, while the
-    host env var can drift stale.
+    The worker's own credentials — GitHub token, Claude OAuth token, and any
+    provider API keys (OpenAI, etc.) — are deliberately NOT injected here. The
+    worker fetches them from the backend on startup over its authenticated
+    connection: ``/auth/github/token``, ``/auth/claude/credentials``, and the
+    per-guild ``/guilds/{id}/foreman/env-vars`` (see the worker's
+    ``_fetch_github_token_if_needed`` / ``_check_claude_auth`` /
+    ``_fetch_guild_env_vars``). Injecting them here would be redundant and, on
+    ECS, actively harmful: the worker skips those fetches when the variable is
+    already present in its environment, so a baked-in deploy-wide value would
+    shadow the per-guild credential the worker would otherwise pull.
 
     *worker_id* and *auth_token* — when provided (pre-registered by the
     foreman), the worker process skips its own self-registration and uses
@@ -269,25 +272,6 @@ def build_spawn_worker_env(
     public_url = source_env.get("FRONTEND_URL", "").rstrip("/")
     if public_url:
         env["PIONEER_FRONTEND_URL"] = public_url
-    try:
-        gh_token = get_github_token(fallback=source_env.get("GITHUB_TOKEN", ""))
-    except Exception:
-        logger.warning(
-            "Failed to obtain GitHub App installation token; falling back to GITHUB_TOKEN",
-            exc_info=True,
-        )
-        gh_token = source_env.get("GITHUB_TOKEN", "")
-    if gh_token:
-        # PIONEER_GITHUB_TOKEN feeds the worker config loader; GITHUB_TOKEN is
-        # what gh CLI inside the worker reads when opening PRs. Prefers a
-        # GitHub App installation token when the App env vars are configured.
-        env["PIONEER_GITHUB_TOKEN"] = gh_token
-        env["GITHUB_TOKEN"] = gh_token
-    # ANTHROPIC_API_KEY is intentionally NOT forwarded — that's the foreman's
-    # API auth. Workers run the claude CLI under the user's OAuth subscription.
-    oauth = claude_oauth_token or source_env.get("CLAUDE_CODE_OAUTH_TOKEN") or ""
-    if oauth:
-        env["CLAUDE_CODE_OAUTH_TOKEN"] = oauth
     if worker_name:
         env["PIONEER_WORKER_NAME"] = worker_name
     log_level = source_env.get("WORKER_LOG_LEVEL")
