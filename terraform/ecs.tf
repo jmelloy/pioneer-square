@@ -66,6 +66,9 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "AWS_DEFAULT_REGION", value = local.region },
         { name = "ECS_CLUSTER_NAME", value = aws_ecs_cluster.main.name },
         { name = "ECS_WORKER_TASK_DEFINITION", value = "${local.name_prefix}-worker" },
+        # ecs:RunTask awsvpc network config for on-demand worker tasks.
+        { name = "ECS_WORKER_SUBNETS", value = join(",", aws_subnet.private[*].id) },
+        { name = "ECS_WORKER_SECURITY_GROUP", value = aws_security_group.ecs_tasks.id },
         # The embedded foreman (backend/foreman/runner.py) makes LLM calls from
         # this process whenever no standalone foreman proxy is connected for a
         # guild — it needs the same provider config as the foreman task below.
