@@ -3,7 +3,7 @@ frontend_url = "https://pioneer-square.melloy.life"
 
 guild_id              = "dnsid"
 foreman_provider      = "bedrock"
-foreman_bedrock_model = "arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6"
+foreman_bedrock_model = "moonshotai.kimi-k2.5"
 
 # Discord (bot token lives in SSM). channel_id / allowed_role_ids are not in
 # .env — defaults ("") leave those features off.
