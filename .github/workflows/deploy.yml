@@ -66,10 +66,7 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
 
       - name: Terraform init
-        run: |
-          terraform init \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="region=${{ secrets.AWS_REGION }}"
+        run: terraform init # bucket/region are hardcoded in main.tf's backend block
 
       - name: Terraform apply
         run: terraform apply -auto-approve -var="container_image_tag=${{ github.sha }}"
