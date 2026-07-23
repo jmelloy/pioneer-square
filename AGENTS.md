@@ -250,9 +250,11 @@ Core tables include `guilds`, `agents`, `workers`, `tasks`, `task_logs`, `messag
 `github_tokens`, `claude_credentials`, `user_sessions`; the schema has grown well beyond this list
 (Discord integration, GitHub issue/PR caching, usage tracking, etc.) — `backend/models.py`
 (SQLModel ORM) is the authoritative source. Migrated by Alembic — see
-`backend/alembic/versions/`. `init_db()` runs `alembic upgrade head`
-on startup; pre-Alembic databases are stamped to `head` so the upgrade is a no-op. On every
-backend startup, all workers and worker agents are reset to `offline`.
+`backend/alembic/versions/`. In docker-compose the backend container command runs
+`alembic upgrade head` before `pioneer serve`; on ECS, migrations run as a dedicated
+one-off `migrate` task during deploy (before the services roll — see `terraform/ecs.tf`
+and `.github/workflows/deploy.yml`), so backend startup itself never runs migrations. On
+every backend startup, all workers and worker agents are reset to `offline`.
 
 ### Worker internals
 
