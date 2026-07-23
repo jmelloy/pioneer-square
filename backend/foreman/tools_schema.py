@@ -659,7 +659,8 @@ FOREMAN_TOOLS = [
             "a duplicate if a worker for the same repos is already online or currently starting. "
             "Spawned workers are automatically shut down after a period of inactivity, so there "
             "is no need to clean up idle workers yourself (shutdown_worker still works for an "
-            "immediate stop)."
+            "immediate stop). Parameters you omit default to the guild's last successful spawn "
+            "configuration; a guild that has never spawned a worker requires explicit repos."
         ),
         "input_schema": {
             "type": "object",
@@ -667,14 +668,18 @@ FOREMAN_TOOLS = [
                 "repos": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Repos the worker should serve, as 'owner/repo'. At least one.",
+                    "description": (
+                        "Repos the worker should serve, as 'owner/repo'. Optional: defaults to "
+                        "the repos of the guild's last successful spawn."
+                    ),
                 },
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
                         "Optional tool runners to enable on the worker "
-                        "(e.g. ['claude', 'codex']). Default: claude only."
+                        "(e.g. ['claude', 'codex']). Defaults to the guild's last spawn, "
+                        "else claude only."
                     ),
                 },
                 "agent_count": {
@@ -686,7 +691,7 @@ FOREMAN_TOOLS = [
                     "description": "Optional human-readable worker name.",
                 },
             },
-            "required": ["repos"],
+            "required": [],
         },
     },
 ]

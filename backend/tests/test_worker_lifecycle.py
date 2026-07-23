@@ -16,15 +16,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from worker_lifecycle import (  # noqa: E402
     SHUTDOWN_FORCE_KILL_TIMEOUT,
-    WORKER_DRAIN_TIMEOUT,
-    WORKER_RECONNECT_GRACE,
     drain_stale_workers_on_startup,
     force_kill_worker_if_unresponsive,
     generate_worker_id,
     get_current_version,
-    reconcile_stale_workers,
     record_worker_spawn,
-    spawn_replacement_workers,
+    signal_stale_worker_on_join,
 )
 
 # ---------------------------------------------------------------------------
@@ -245,25 +242,6 @@ async def test_drain_sends_shutdown_and_records_timestamp(monkeypatch):
     assert stale_ids == ["w-stale1"]
 
 
-def test_drain_timeout_default():
-    assert WORKER_DRAIN_TIMEOUT == 1800.0
-
-
-def test_drain_timeout_env_override(monkeypatch):
-    monkeypatch.setenv("PIONEER_WORKER_DRAIN_TIMEOUT", "120")
-    import importlib
-
-    import worker_lifecycle as wl
-
-    try:
-        importlib.reload(wl)
-        assert wl.WORKER_DRAIN_TIMEOUT == 120.0
-    finally:
-        # Always restore module state so later tests see the default value.
-        monkeypatch.delenv("PIONEER_WORKER_DRAIN_TIMEOUT", raising=False)
-        importlib.reload(wl)
-
-
 # ---------------------------------------------------------------------------
 # record_worker_spawn
 # ---------------------------------------------------------------------------
@@ -283,72 +261,113 @@ async def test_record_worker_spawn_writes_fields():
     mock_db.commit.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_record_worker_spawn_upserts_guild_defaults():
+    """With guild_pk and repos, the guild's spawn defaults are upserted in the same commit."""
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    with patch("worker_lifecycle.get_current_version", return_value="v-test"):
+        await record_worker_spawn(
+            mock_db,
+            "w-abc123",
+            "container-deadbeef",
+            guild_pk=42,
+            repos=["acme/widgets"],
+            tools=["claude"],
+            agent_count=2,
+        )
+
+    # Worker update + guild_spawn_defaults upsert, one commit.
+    assert mock_db.exec.call_count == 2
+    mock_db.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_record_worker_spawn_skips_defaults_without_repos():
+    """No repos recorded (or no guild_pk) → the defaults row is left untouched."""
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    with patch("worker_lifecycle.get_current_version", return_value="v-test"):
+        await record_worker_spawn(mock_db, "w-abc123", "container-deadbeef", guild_pk=42, repos=[])
+
+    mock_db.exec.assert_called_once()
+    mock_db.commit.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
-# _spawn_replacement_workers
+# signal_stale_worker_on_join
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_spawn_replacement_workers_no_op_on_empty():
-    """Empty stale_ids list → no DB or spawn calls."""
-    with patch("worker_lifecycle.AsyncSessionLocal") as mock_session:
-        await spawn_replacement_workers([])
-    mock_session.assert_not_called()
+async def test_signal_stale_worker_on_join_sends_shutdown():
+    """A worker joining with a version stamp that differs from the backend's is signalled."""
+    broadcasts = []
 
+    async def fake_broadcast(guild_slug, msg, *a, **kw):
+        broadcasts.append((guild_slug, msg))
 
-@pytest.mark.asyncio
-async def test_spawn_replacement_workers_calls_spawn_for_each():
-    """One replacement worker is spawned per stale worker."""
-    fake_worker = MagicMock()
-    fake_worker.id = "w-old1"
-    fake_worker.guild_id = 42
-    fake_worker.repos = '["owner/repo"]'
-    fake_worker.tools = '["bash"]'
-    fake_worker.name = "old-worker"
-
-    class FakeDB:
-        def __init__(self, rows):
-            self._rows = rows
-            self.exec = AsyncMock(
-                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
-            )
-            self.commit = AsyncMock()
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-    # Session 1: query workers + guild slugs.
-    # Session 2: passed to spawn_worker call.
-    sessions = [FakeDB([(fake_worker, "g-myguild")]), FakeDB([])]
-    session_iter = iter(sessions)
-    spawn_calls: list[dict] = []
-
-    async def fake_spawn(inp, guild_id, guild_pk, db):
-        spawn_calls.append({"inp": inp, "guild_id": guild_id, "guild_pk": guild_pk})
-        return ("ok", False)
-
-    fake_tools = MagicMock()
-    fake_tools.spawn_worker = fake_spawn
     with (
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch.dict("sys.modules", {"foreman": MagicMock(), "foreman.tools": fake_tools}),
+        patch("worker_lifecycle.get_current_version", return_value="v-new"),
+        patch("worker_lifecycle.broadcast_msg", fake_broadcast),
     ):
-        await spawn_replacement_workers(["w-old1"])
+        signalled = await signal_stale_worker_on_join("g-guild", "w-stale", "v-old")
 
-    assert len(spawn_calls) == 1
-    assert spawn_calls[0]["guild_id"] == "g-myguild"
-    assert spawn_calls[0]["guild_pk"] == 42
-    assert spawn_calls[0]["inp"]["repos"] == ["owner/repo"]
-    assert spawn_calls[0]["inp"]["tools"] == ["bash"]
-    # The replacement must get a fresh identity, never the drained worker's name.
-    assert "name" not in spawn_calls[0]["inp"]
+    assert signalled is True
+    assert len(broadcasts) == 1
+    guild_slug, msg = broadcasts[0]
+    assert guild_slug == "g-guild"
+    assert msg.workerId == "w-stale"
+    assert "version mismatch" in (msg.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_signal_stale_worker_on_join_skips_matching_version():
+    broadcast = AsyncMock()
+    with (
+        patch("worker_lifecycle.get_current_version", return_value="v-current"),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+    ):
+        signalled = await signal_stale_worker_on_join("g-guild", "w-fresh", "v-current")
+
+    assert signalled is False
+    broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_signal_stale_worker_on_join_skips_external_workers():
+    """Workers without a spawn version stamp (compose/manual CLI) are never signalled."""
+    broadcast = AsyncMock()
+    with (
+        patch("worker_lifecycle.get_current_version", return_value="v-current"),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+    ):
+        signalled = await signal_stale_worker_on_join("g-guild", "w-external", None)
+
+    assert signalled is False
+    broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_signal_stale_worker_on_join_skips_when_version_unknown():
+    """An undetermined backend version can't be compared — no signal."""
+    broadcast = AsyncMock()
+    with (
+        patch("worker_lifecycle.get_current_version", return_value=None),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+    ):
+        signalled = await signal_stale_worker_on_join("g-guild", "w-any", "v-old")
+
+    assert signalled is False
+    broadcast.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# disabled worker — drain and re-spawn exclusion
+# disabled worker — drain exclusion
 # ---------------------------------------------------------------------------
 
 
@@ -392,51 +411,6 @@ async def test_drain_skips_disabled_workers():
     # Disabled worker is not drained — empty result, no broadcast.
     assert result == []
     assert broadcast_calls == []
-
-
-@pytest.mark.asyncio
-async def test_spawn_replacement_workers_skips_disabled():
-    """spawn_replacement_workers skips workers that have disabled=True in the DB."""
-    fake_worker = MagicMock()
-    fake_worker.id = "w-disabled-spawn"
-    fake_worker.guild_id = 7
-    fake_worker.repos = '["owner/repo"]'
-    fake_worker.name = "disabled-worker"
-    fake_worker.disabled = True
-
-    class FakeDB:
-        def __init__(self, rows):
-            self._rows = rows
-            self.exec = AsyncMock(
-                return_value=MagicMock(all=MagicMock(return_value=self._rows or []))
-            )
-            self.commit = AsyncMock()
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-    # The DB query returns no rows because the disabled filter excludes the worker.
-    sessions = [FakeDB([])]
-    session_iter = iter(sessions)
-    spawn_calls: list[dict] = []
-
-    async def fake_spawn(inp, guild_id, guild_pk, db):
-        spawn_calls.append({"inp": inp, "guild_id": guild_id})
-        return ("ok", False)
-
-    fake_tools = MagicMock()
-    fake_tools.spawn_worker = fake_spawn
-    with (
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch.dict("sys.modules", {"foreman": MagicMock(), "foreman.tools": fake_tools}),
-    ):
-        await spawn_replacement_workers(["w-disabled-spawn"])
-
-    # No spawn calls because the disabled worker was excluded by the DB query.
-    assert spawn_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -488,132 +462,6 @@ async def test_generate_worker_id_raises_after_max_attempts():
         await generate_worker_id(mock_db)
 
     assert mock_db.exec.call_count == 5
-
-
-# ---------------------------------------------------------------------------
-# reconcile_stale_workers
-# ---------------------------------------------------------------------------
-
-
-class _FakeExecDB:
-    """Fake session whose exec().all() returns a fixed row list."""
-
-    def __init__(self, rows):
-        self.exec = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=rows)))
-        self.commit = AsyncMock()
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *a):
-        return False
-
-
-@contextlib.contextmanager
-def _reconcile_patches(sessions, times, mock_kill, mock_spawn, broadcasts):
-    """Common patch set for driving reconcile_stale_workers deterministically.
-
-    ``sessions`` are consumed one AsyncSessionLocal() at a time: the first is the
-    guild-slug lookup, the rest are the per-poll online-worker queries. ``times``
-    feeds loop.time() (one call to seed phase_started, then one per poll). Real
-    sleeps are stubbed out so the loop runs instantly.
-    """
-    session_iter = iter(sessions)
-    fake_loop = MagicMock()
-    fake_loop.time = MagicMock(side_effect=times)
-
-    async def fake_broadcast(slug, msg, *a, **kw):
-        broadcasts.append((slug, msg))
-
-    with (
-        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
-        patch("worker_lifecycle.asyncio.sleep", AsyncMock()),
-        patch("worker_lifecycle.asyncio.get_event_loop", return_value=fake_loop),
-        patch("worker_lifecycle._force_kill_containers", mock_kill),
-        patch("worker_lifecycle.spawn_replacement_workers", mock_spawn),
-        patch("worker_lifecycle.broadcast_msg", fake_broadcast),
-    ):
-        yield
-
-
-@pytest.mark.asyncio
-async def test_reconcile_noop_on_empty_ids():
-    """Empty stale_ids list → no DB polling, no force-kill, no respawn."""
-    with (
-        patch("worker_lifecycle.AsyncSessionLocal") as mock_session,
-        patch("worker_lifecycle._force_kill_containers") as mock_kill,
-        patch("worker_lifecycle.spawn_replacement_workers") as mock_spawn,
-    ):
-        await reconcile_stale_workers([])
-
-    mock_session.assert_not_called()
-    mock_kill.assert_not_called()
-    mock_spawn.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_reconcile_drains_then_replaces_reconnected_worker():
-    """A worker that reconnects then drains is soft-killed and replaced, never force-killed."""
-    sessions = [
-        _FakeExecDB([("w-a", "g-guild")]),  # guild-slug lookup
-        _FakeExecDB(["w-a"]),  # poll 1: back online → begin draining
-        _FakeExecDB([]),  # poll 2: gone offline → drained
-    ]
-    mock_kill = AsyncMock()
-    mock_spawn = AsyncMock()
-    broadcasts: list = []
-    # loop.time(): seed + poll1 + poll2. Well under the drain timeout.
-    times = [0.0, 10.0, 20.0]
-
-    with _reconcile_patches(sessions, times, mock_kill, mock_spawn, broadcasts):
-        await reconcile_stale_workers(["w-a"])
-
-    # Soft-kill delivered on reconnect; drained cleanly so no force-kill.
-    assert any(msg.workerId == "w-a" for _, msg in broadcasts)
-    mock_kill.assert_not_called()
-    mock_spawn.assert_called_once_with(["w-a"])
-
-
-@pytest.mark.asyncio
-async def test_reconcile_force_kills_and_replaces_worker_that_never_reconnects():
-    """A worker that never comes back within the reconnect grace is killed and replaced."""
-    sessions = [
-        _FakeExecDB([("w-a", "g-guild")]),  # guild-slug lookup
-        _FakeExecDB([]),  # poll 1: still offline, within grace
-        _FakeExecDB([]),  # poll 2: still offline, grace exceeded → dead
-    ]
-    mock_kill = AsyncMock()
-    mock_spawn = AsyncMock()
-    broadcasts: list = []
-    # Seed at 0; poll1 within grace; poll2 past WORKER_RECONNECT_GRACE.
-    times = [0.0, 10.0, WORKER_RECONNECT_GRACE + 1.0]
-
-    with _reconcile_patches(sessions, times, mock_kill, mock_spawn, broadcasts):
-        await reconcile_stale_workers(["w-a"])
-
-    mock_kill.assert_called_once_with({"w-a"})
-    mock_spawn.assert_called_once_with(["w-a"])
-
-
-@pytest.mark.asyncio
-async def test_reconcile_force_kills_wedged_worker_that_never_drains():
-    """A worker that reconnects but never goes offline is force-killed after the drain timeout."""
-    sessions = [
-        _FakeExecDB([("w-a", "g-guild")]),  # guild-slug lookup
-        _FakeExecDB(["w-a"]),  # poll 1: online → begin draining
-        _FakeExecDB(["w-a"]),  # poll 2: still online past the drain timeout → wedged
-    ]
-    mock_kill = AsyncMock()
-    mock_spawn = AsyncMock()
-    broadcasts: list = []
-    # Seed=0; poll1 begins drain (phase_started=10); poll2 past drain timeout.
-    times = [0.0, 10.0, 10.0 + WORKER_DRAIN_TIMEOUT + 1.0]
-
-    with _reconcile_patches(sessions, times, mock_kill, mock_spawn, broadcasts):
-        await reconcile_stale_workers(["w-a"])
-
-    mock_kill.assert_called_once_with({"w-a"})
-    mock_spawn.assert_called_once_with(["w-a"])
 
 
 # ---------------------------------------------------------------------------

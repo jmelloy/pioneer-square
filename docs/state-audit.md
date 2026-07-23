@@ -42,7 +42,7 @@ Relationship: `Guild → Workers → Agents` (one agent per live worker process;
 ### Notes
 
 - Worker state is coarse (online/offline/idle only); fine-grained "what is it doing" lives in agent state (below). The frontend has no separate worker vocabulary — `frontend/src/stores/agents.ts` derives a display state from the highest-priority agent state for that worker.
-- `backend/worker_lifecycle.py` (added after this audit) layers drain/reconcile behavior on top of the same three-value column, without adding new state values.
+- `backend/worker_lifecycle.py` (added after this audit) layers stale-version signalling and idle-reaping behavior on top of the same three-value column, without adding new state values.
 
 ---
 

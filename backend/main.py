@@ -38,7 +38,6 @@ from util.tasks import spawn
 from worker_lifecycle import (
     drain_stale_workers_on_startup,
     idle_worker_reaper,
-    reconcile_stale_workers,
 )
 from ws_types import WorkerPingMsg
 
@@ -363,22 +362,15 @@ async def lifespan(app: FastAPI):
             dnsid_runtime.guild_slug,
         )
 
-    # Phase 1: detect stale workers and send graceful-shutdown signals.
-    # Must be awaited directly before reset_connection_state() so the DB still
-    # holds the non-offline state that identifies which workers were stale.
-    stale_ids = await drain_stale_workers_on_startup()
+    # Detect stale workers and send graceful-shutdown signals. Must be awaited
+    # directly before reset_connection_state() so the DB still holds the
+    # non-offline state that identifies which workers were stale. Stale workers
+    # that reconnect later are signalled from the WS join handler; the idle
+    # reaper cleans up anything that never complies, and the foreman respawns
+    # workers on demand from the guild's spawn defaults.
+    await drain_stale_workers_on_startup()
 
     await reset_connection_state()
-
-    # Phase 2: drain each stale worker (wait for it to reconnect, soft-kill it,
-    # let it finish its task and go offline) and spawn a fresh replacement once
-    # it's down. Runs in the background so it doesn't block startup or the first
-    # request.
-    reconcile_bg = (
-        spawn(reconcile_stale_workers(stale_ids), name="stale-worker-reconcile")
-        if stale_ids
-        else None
-    )
     # Refresh the models.dev catalog on startup: persist to DB and warm the
     # in-memory cache so the first /api/models request is fast.
     from util.models_dev import refresh_model_catalog_if_stale as _refresh_catalog  # noqa: PLC0415
@@ -409,8 +401,6 @@ async def lifespan(app: FastAPI):
     finally:
         sweeper.cancel()
         idle_reaper.cancel()
-        if reconcile_bg is not None:
-            reconcile_bg.cancel()
         if discord_gw_task is not None:
             discord_gw_task.cancel()
         try:
@@ -421,11 +411,6 @@ async def lifespan(app: FastAPI):
             await idle_reaper
         except (asyncio.CancelledError, Exception):
             pass
-        if reconcile_bg is not None:
-            try:
-                await reconcile_bg
-            except (asyncio.CancelledError, Exception):
-                pass
         if discord_gw_task is not None:
             try:
                 await discord_gw_task

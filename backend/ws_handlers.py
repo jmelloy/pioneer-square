@@ -44,6 +44,7 @@ from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
 from utils import worker_display_name
+from worker_lifecycle import signal_stale_worker_on_join
 from ws_types import (
     KNOWN_INBOUND_TYPES,
     AgentJoinedMsg,
@@ -281,20 +282,23 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     # A misconfigured or misbehaving worker could connect to the wrong guild's
     # WebSocket; without this check it would create agent rows and broadcast
     # events into a guild it doesn't belong to.
+    worker_spawned_version: str | None = None
     if agent_type == "worker" and worker_id:
         member_res = await ctx.db.exec(
-            select(col(Worker.id)).where(
+            select(col(Worker.id), col(Worker.spawned_version)).where(
                 col(Worker.id) == worker_id,
                 col(Worker.guild_id) == ctx.guild_pk,
             )
         )
-        if member_res.one_or_none() is None:
+        member_row = member_res.one_or_none()
+        if member_row is None:
             logger.warning(
                 "join: worker %s is not a member of guild %s — ignoring",
                 worker_id,
                 ctx.guild_id,
             )
             return
+        worker_spawned_version = member_row[1]
         # Guard against two live connections claiming the same worker_id (e.g. a
         # container that reconnects with a fresh agent_id while its previous
         # socket is still lingering after a restart). Evict the older agent so
@@ -391,6 +395,12 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
         # decide it owns the agent, and stamp the just-joined agent offline.
         async with agent_owner_lock(ctx.guild_id):
             agent_owners[agent_id] = ctx.websocket
+    # A backend-spawned worker holding code from a previous backend version is
+    # told to shut down as it (re)connects: it finishes any in-progress task and
+    # exits, the idle reaper force-kills it if it never complies, and the
+    # foreman respawns on demand from the guild's spawn defaults.
+    if agent_type == "worker" and worker_id:
+        await signal_stale_worker_on_join(ctx.guild_id, worker_id, worker_spawned_version)
     # Only an explicit external Foreman API proxy may claim the proxy seat —
     # the legacy browser join still carries agentType="foreman" but must NOT
     # be registered in foreman_connections. The external client signals its

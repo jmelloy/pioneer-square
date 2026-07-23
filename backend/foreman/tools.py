@@ -1110,9 +1110,10 @@ def _post_agent_task(task_url: str, body: bytes) -> dict:
 
 # ---------------------------------------------------------------------------
 # spawn_worker implementation — exposed to the parent foreman via FOREMAN_TOOLS
-# and invoked directly by worker_lifecycle.spawn_replacement_workers(). Spawned
-# workers are auto-reaped by worker_lifecycle.idle_worker_reaper() after a
-# period of inactivity.
+# and invoked by the Discord /worker-spawn command. Spawned workers are
+# auto-reaped by worker_lifecycle.idle_worker_reaper() after a period of
+# inactivity; parameters omitted from the call fall back to the guild's
+# last-successful-spawn defaults (guild_spawn_defaults).
 # ---------------------------------------------------------------------------
 
 
@@ -1132,12 +1133,30 @@ async def spawn_worker(
 
     Returns (result_text, is_error).
     """
+    from worker_lifecycle import get_guild_spawn_defaults  # noqa: PLC0415
+
     repos: list = inp.get("repos") or []
     tools_list: list[str] = inp.get("tools") or []
     agent_count: int | None = inp.get("agent_count")
     custom_name: str | None = inp.get("name")
+
+    # Fall back to the guild's last-successful-spawn defaults for anything the
+    # call didn't specify, so "spawn a worker" works without restating the
+    # guild's usual configuration.
+    if guild_pk is not None and (not repos or not tools_list or agent_count is None):
+        defaults = await get_guild_spawn_defaults(db, guild_pk)
+        if defaults is not None:
+            if not repos:
+                repos = json.loads(defaults.repos or "[]")
+            if not tools_list:
+                tools_list = json.loads(defaults.tools or "[]")
+            if agent_count is None:
+                agent_count = defaults.agent_count
     if not repos:
-        return "spawn_worker requires at least one repo in the 'repos' list.", True
+        return (
+            "spawn_worker requires at least one repo in the 'repos' list — this guild has "
+            "no recorded spawn defaults to fall back on."
+        ), True
 
     worker_id = "w-" + secrets.token_hex(3)
     auth_token = secrets.token_urlsafe(32)
@@ -1194,10 +1213,19 @@ async def spawn_worker(
         spawned = await worker_runtime.start_worker_container(env=env, guild_id=guild_id)
         # Persist the spawn handle and version so the lifecycle module can
         # force-kill this container/task if the backend is redeployed with a
-        # different version (or the worker idles past the reap timeout).
+        # different version (or the worker idles past the reap timeout), and
+        # refresh the guild's spawn defaults with this successful spawn.
         from worker_lifecycle import record_worker_spawn as _record_worker_spawn  # noqa: PLC0415
 
-        await _record_worker_spawn(db, worker_id, spawned.handle)
+        await _record_worker_spawn(
+            db,
+            worker_id,
+            spawned.handle,
+            guild_pk=guild_pk,
+            repos=repos,
+            tools=tools_list,
+            agent_count=agent_count,
+        )
         result_text = json.dumps(
             {
                 "worker_id": worker_id,

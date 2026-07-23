@@ -656,6 +656,30 @@ class UserSpawnSettings(SQLModel, table=True):
     )
 
 
+class GuildSpawnDefaults(SQLModel, table=True):
+    """Per-guild default spawn-worker parameters, tracking the last successful spawn.
+
+    One row per guild, upserted every time a worker container is successfully
+    started with explicit parameters (foreman spawn_worker tool, REST
+    spawn-worker endpoint, Discord /worker-spawn). The foreman's spawn_worker
+    tool falls back to this row when a call omits repos/tools/agent_count, so
+    "spawn me a worker" works without restating the guild's usual configuration.
+    """
+
+    __tablename__ = "guild_spawn_defaults"  # type: ignore[assignment]
+    __table_args__ = (Index("uq_guild_spawn_defaults_guild_id", "guild_id", unique=True),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: int = Field(foreign_key="guilds.id")
+    # JSON-serialised list of "owner/repo" strings (same encoding as workers.repos).
+    repos: str = Field(default="[]", sa_column=Column(Text, nullable=False, server_default="'[]'"))
+    # JSON-serialised list of tool runner names (same encoding as workers.tools).
+    tools: str = Field(default="[]", sa_column=Column(Text, nullable=False, server_default="'[]'"))
+    # Concurrent agent slots requested at spawn; NULL = worker default.
+    agent_count: int | None = None
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class PushToken(SQLModel, table=True):
     """APNs (or, in the future, FCM) device token registered by the iOS app.
 
