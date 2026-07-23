@@ -15,16 +15,24 @@ Amazon Bedrock access.
 | `pgweb` (Metabase, `profiles: [tools]`) | Not migrated; run locally against the RDS endpoint if needed |
 | `postgres-test` (`profiles: [test]`) | Not migrated; test-only |
 
-### Worker dispatch — a known gap
+### Worker dispatch
 
-In docker-compose, the `backend` container spawns one `worker` container per task via the
-Docker socket (`docker.from_env()` in `backend/foreman/tools.py` and
-`backend/routes/workers.py`). Fargate tasks have no shared Docker socket, so this repo's
-application code still assumes the old model. This Terraform module registers a `worker`
-task definition and grants the backend's task role `ecs:RunTask`/`ecs:StopTask`/
-`ecs:DescribeTasks` scoped to this cluster (see `iam.tf`), so the infrastructure is ready —
-but switching `backend` to call `ecs.run_task(...)` instead of `docker.containers.run(...)`
-is an application-code change tracked separately, not part of this module.
+In docker-compose, the `backend` container spawns one `worker` container per spawn request
+via the Docker socket. Fargate tasks have no shared Docker socket, so on ECS the backend
+dispatches workers with `ecs:RunTask` instead: `backend/worker_runtime.py` switches to ECS
+mode automatically when `ECS_CLUSTER_NAME` and `ECS_WORKER_TASK_DEFINITION` are set (both
+injected into the backend task definition by `ecs.tf`, alongside `ECS_WORKER_SUBNETS` and
+`ECS_WORKER_SECURITY_GROUPS` for the worker task's awsvpc network interface). This module
+registers the `worker` task definition and grants the backend's task role
+`ecs:RunTask`/`ecs:StopTask`/`ecs:DescribeTasks` scoped to this cluster (see `iam.tf`).
+
+Spawned worker tasks connect back to the backend through the ALB (`WORKER_BACKEND_URL`),
+carry per-spawn configuration as container env overrides (static secrets like
+`GITHUB_TOKEN` ride in the task definition's `secrets` block), and are stopped with
+`ecs:StopTask` when force-killed. The backend's idle reaper
+(`backend/worker_lifecycle.py`, `PIONEER_WORKER_IDLE_TIMEOUT`, default 30 min) shuts
+spawned workers down after a period of inactivity so idle Fargate tasks don't accrue
+cost indefinitely.
 
 ## Prerequisites
 

@@ -16,6 +16,7 @@ import secrets
 import string
 from datetime import UTC, datetime
 
+import worker_runtime
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line, pending_claude_auth
@@ -160,18 +161,16 @@ async def spawn_worker_container(
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    """Start a new worker container via Docker. Requires the Docker socket to be mounted."""
-    try:
-        import docker as docker_sdk
-    except ImportError:
-        raise HTTPException(status_code=503, detail="Docker SDK not installed in backend")
+    """Start a new worker container.
 
+    Uses the runtime selected by ``worker_runtime``: the mounted Docker socket
+    in docker-compose/local dev, or ECS RunTask when the backend runs on
+    Fargate (ECS_CLUSTER_NAME + ECS_WORKER_TASK_DEFINITION set).
+    """
     try:
-        client = docker_sdk.from_env()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Docker socket unavailable: {e}")
-
-    image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
+        await worker_runtime.check_runtime_available()
+    except worker_runtime.WorkerSpawnError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
 
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
@@ -231,45 +230,14 @@ async def spawn_worker_container(
         extra_env=extra_env or None,
     )
 
-    # Join the same Docker network as the backend so the worker can reach it.
-    network = None
     try:
-        me = client.containers.get(os.environ.get("HOSTNAME", ""))
-        network = next(iter(me.attrs["NetworkSettings"]["Networks"].keys()), None)
-    except Exception:
-        pass
-
-    # Pioneer-owned labels — these containers are spawned and lifecycle-managed
-    # by the backend, not compose, so we don't tag them with com.docker.compose.*.
-    # List them with: docker ps --filter label=com.pioneer.kind=worker
-    labels = {
-        "com.pioneer.kind": "worker",
-        "com.pioneer.guild": guild_id,
-    }
-
-    container_name = f"pioneer-worker-{guild_id}-{secrets.token_hex(3)}"
-
-    try:
-        run_kwargs: dict = dict(
-            image=image,
-            environment=env,
-            detach=True,
-            remove=True,
-            labels=labels,
-            name=container_name,
-        )
-        if network:
-            run_kwargs["network"] = network
-        container = client.containers.run(**run_kwargs)
-    except docker_sdk.errors.ImageNotFound:
+        spawned = await worker_runtime.start_worker_container(env=env, guild_id=guild_id)
+    except worker_runtime.WorkerSpawnError as e:
         await db.exec(
             update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
         )
         await db.commit()
-        raise HTTPException(
-            status_code=404,
-            detail=f"Worker image '{image}' not found — run: docker compose build worker",
-        )
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except Exception as e:
         await db.exec(
             update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
@@ -277,11 +245,16 @@ async def spawn_worker_container(
         await db.commit()
         raise HTTPException(status_code=500, detail=f"Failed to start container: {e}")
 
-    # Persist container id and spawned version so the lifecycle module can
-    # force-kill this container if the backend is redeployed at a different version.
-    await record_worker_spawn(db, worker_id, container.id)
+    # Persist the spawn handle and version so the lifecycle module can
+    # force-kill this container/task if the backend is redeployed at a
+    # different version (or the worker idles past the reap timeout).
+    await record_worker_spawn(db, worker_id, spawned.handle)
 
-    return {"worker_id": worker_id, "container_id": container.id[:12], "image": image}
+    return {
+        "worker_id": worker_id,
+        "container_id": spawned.short_id,
+        "runtime": spawned.runtime,
+    }
 
 
 @router.get("/guilds/{guild_id}/pending-auth")

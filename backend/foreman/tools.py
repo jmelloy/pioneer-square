@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import discord_notifier
+import worker_runtime
 from database import get_db
 from db import github_cache
 from events import broadcast, broadcast_msg, emit_terminal_line
@@ -72,17 +73,6 @@ DEFAULT_FINALIZE_TTL_SECONDS = 3 * 24 * 60 * 60  # 3 days
 # event loop indefinitely.
 EXTERNAL_CALL_TIMEOUT = 30
 
-# Separate, larger timeout for docker_client.containers.run (detach=True).
-# The Docker API call itself should complete once the daemon confirms the container
-# started, but can legitimately take longer than a GitHub REST call on a loaded host.
-CONTAINER_RUN_TIMEOUT = 600
-
-# Module-level Docker client — created once per process to reuse the Unix-socket
-# connection across repeated spawn_worker calls instead of opening a new socket
-# each time.  None until first successful from_env(); tests can patch
-# _get_docker_client() directly to avoid touching sys.modules.
-_docker_client: Any = None
-
 # Per-tool-call collector for GitHub API response metadata (request IDs, status codes).
 # Each _exec_one_tool invocation sets a fresh list via _api_calls_ctx.set([]) using the
 # token-reset pattern so concurrent coroutines never share a list.  asyncio.to_thread
@@ -106,20 +96,6 @@ def _record_api_call(path: str, status: int, headers: Any) -> None:
         if ghrid:
             entry["x_github_request_id"] = ghrid
     calls.append(entry)
-
-
-async def _get_docker_client() -> Any:
-    """Return the cached Docker client, importing the SDK and calling from_env() once.
-
-    Skips the thread hop on subsequent calls once the client is cached.
-    """
-    global _docker_client
-    if _docker_client is not None:
-        return _docker_client
-    import docker  # ImportError propagated to caller if SDK not installed
-
-    _docker_client = await _to_thread(docker.from_env)
-    return _docker_client
 
 
 async def _to_thread(fn, /, *args, **kwargs):
@@ -1133,8 +1109,10 @@ def _post_agent_task(task_url: str, body: bytes) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# spawn_worker implementation (intentionally excluded from FOREMAN_TOOLS until
-# async/lock fixes in #551, #564, #566 are merged and tested — see #567)
+# spawn_worker implementation — exposed to the parent foreman via FOREMAN_TOOLS
+# and invoked directly by worker_lifecycle.spawn_replacement_workers(). Spawned
+# workers are auto-reaped by worker_lifecycle.idle_worker_reaper() after a
+# period of inactivity.
 # ---------------------------------------------------------------------------
 
 
@@ -1213,54 +1191,28 @@ async def spawn_worker(
     )
 
     try:
-        docker_client = await _get_docker_client()
-        image = os.environ.get("WORKER_IMAGE", "pioneer-square-worker")
-
-        network = None
-        try:
-            me = docker_client.containers.get(os.environ.get("HOSTNAME", ""))
-            network = next(iter(me.attrs["NetworkSettings"]["Networks"].keys()), None)
-        except Exception as e:
-            logger.warning(
-                "Docker network detection failed, starting without explicit network: %s",
-                e,
-            )
-
-        labels = {
-            "com.pioneer.kind": "worker",
-            "com.pioneer.guild": guild_id,
-        }
-        container_name = f"pioneer-worker-{guild_id}-{secrets.token_hex(3)}"
-        run_kwargs: dict = dict(
-            image=image,
-            environment=env,
-            detach=True,
-            remove=True,
-            labels=labels,
-            name=container_name,
-        )
-        if network:
-            run_kwargs["network"] = network
-
-        container = await asyncio.to_thread(docker_client.containers.run, **run_kwargs)
-        # Persist container id and version so the lifecycle module can force-kill
-        # this container if the backend is redeployed with a different version.
+        spawned = await worker_runtime.start_worker_container(env=env, guild_id=guild_id)
+        # Persist the spawn handle and version so the lifecycle module can
+        # force-kill this container/task if the backend is redeployed with a
+        # different version (or the worker idles past the reap timeout).
         from worker_lifecycle import record_worker_spawn as _record_worker_spawn  # noqa: PLC0415
 
-        await _record_worker_spawn(db, worker_id, container.id)
+        await _record_worker_spawn(db, worker_id, spawned.handle)
         result_text = json.dumps(
             {
                 "worker_id": worker_id,
-                "container_id": container.id[:12],
+                "container_id": spawned.short_id,
+                "runtime": spawned.runtime,
                 "repos": repos,
                 "name": worker_name,
             }
         )
         logger.info(
-            "spawn_worker: guild=%s worker_id=%s container=%s repos=%s",
+            "spawn_worker: guild=%s worker_id=%s runtime=%s container=%s repos=%s",
             guild_id,
             worker_id,
-            container.id[:12],
+            spawned.runtime,
+            spawned.short_id,
             repos,
         )
         return result_text, False
@@ -1269,8 +1221,9 @@ async def spawn_worker(
             update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
         )
         await db.commit()
+        sdk = "boto3" if worker_runtime.ecs_enabled() else "Docker SDK"
         return (
-            f"Worker pre-registered as {worker_id} but the Docker SDK is not "
+            f"Worker pre-registered as {worker_id} but the {sdk} is not "
             "installed on the backend — container was NOT started. "
             f"To start manually: PIONEER_WORKER_ID={worker_id} "
             f"PIONEER_AUTH_TOKEN={auth_token} "

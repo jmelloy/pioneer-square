@@ -35,7 +35,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from util.tasks import spawn
-from worker_lifecycle import drain_stale_workers_on_startup, reconcile_stale_workers
+from worker_lifecycle import (
+    drain_stale_workers_on_startup,
+    idle_worker_reaper,
+    reconcile_stale_workers,
+)
 from ws_types import WorkerPingMsg
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -387,6 +391,9 @@ async def lifespan(app: FastAPI):
 
     asyncio.ensure_future(_startup_refresh_catalog())
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
+    # Reap backend-spawned workers that have been idle past the configured
+    # timeout (PIONEER_WORKER_IDLE_TIMEOUT) — see worker_lifecycle.
+    idle_reaper = spawn(idle_worker_reaper(), name="idle-worker-reaper")
 
     # Discord Gateway (Phase 4): persistent websocket for inbound messages.
     # No-op unless DISCORD_GATEWAY_ENABLED=true and DISCORD_BOT_TOKEN are set.
@@ -401,12 +408,17 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         sweeper.cancel()
+        idle_reaper.cancel()
         if reconcile_bg is not None:
             reconcile_bg.cancel()
         if discord_gw_task is not None:
             discord_gw_task.cancel()
         try:
             await sweeper
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            await idle_reaper
         except (asyncio.CancelledError, Exception):
             pass
         if reconcile_bg is not None:

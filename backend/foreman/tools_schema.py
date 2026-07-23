@@ -649,13 +649,53 @@ FOREMAN_TOOLS = [
             "required": ["bot_user_id", "message"],
         },
     },
-    # spawn_worker intentionally disabled — see issues #551, #564, #566, #567
+    {
+        "name": "spawn_worker",
+        "description": (
+            "Start a new worker process to run tasks. Use when no worker is online for the "
+            "repos a task needs, or when every capable worker is busy and work is queueing up. "
+            "The worker is pre-registered and its container/ECS task is started immediately; it "
+            "comes online within a minute or so and then picks up assigned tasks. Do not spawn "
+            "a duplicate if a worker for the same repos is already online or currently starting. "
+            "Spawned workers are automatically shut down after a period of inactivity, so there "
+            "is no need to clean up idle workers yourself (shutdown_worker still works for an "
+            "immediate stop)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repos": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Repos the worker should serve, as 'owner/repo'. At least one.",
+                },
+                "tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional tool runners to enable on the worker "
+                        "(e.g. ['claude', 'codex']). Default: claude only."
+                    ),
+                },
+                "agent_count": {
+                    "type": "integer",
+                    "description": "Optional number of concurrent agent slots (default 4).",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional human-readable worker name.",
+                },
+            },
+            "required": ["repos"],
+        },
+    },
 ]
 
 # Tools excluded from per-task child contexts. Child contexts manage a single,
-# already-assigned task; creating or assigning new tasks remains the parent
-# foreman's responsibility. See docs/foreman-per-task-context.md.
-_CHILD_EXCLUDED_TOOLS = frozenset({"create_task", "assign_task"})
+# already-assigned task; creating or assigning new tasks — and standing up new
+# workers — remains the parent foreman's responsibility.
+# See docs/foreman-per-task-context.md.
+_CHILD_EXCLUDED_TOOLS = frozenset({"create_task", "assign_task", "spawn_worker"})
 
 # Tool set handed to a per-task child context (FOREMAN_TOOLS minus the
 # create/assign pair). Same JSON schemas, narrowed scope.
