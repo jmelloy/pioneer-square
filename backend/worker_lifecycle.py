@@ -62,6 +62,15 @@ WORKER_IDLE_SWEEP_INTERVAL = float(os.environ.get("PIONEER_WORKER_IDLE_SWEEP_INT
 # there is no in-progress task to wait for.
 IDLE_REAP_FORCE_KILL_TIMEOUT = float(os.environ.get("PIONEER_IDLE_REAP_KILL_TIMEOUT", "300"))
 
+# Minimum time a guild must wait between successful worker spawns, to guard
+# against accidental spam (e.g. a user mashing /worker-spawn) and the resource
+# waste of repeatedly starting containers. Enforced by callers that check
+# check_worker_spawn_cooldown() before invoking spawn_worker() — currently just
+# the Discord /worker-spawn command.
+WORKER_SPAWN_COOLDOWN = timedelta(
+    seconds=float(os.environ.get("PIONEER_WORKER_SPAWN_COOLDOWN", "300"))
+)
+
 # Grace period before a version-stale worker is drained. A worker spawned by the
 # *previous* backend during a rolling deploy is still cold-starting on Fargate
 # (image pull + per-guild credential fetch) when the new backend takes over; its
@@ -182,6 +191,21 @@ async def get_guild_spawn_defaults(db, guild_pk: int) -> GuildSpawnDefaults | No
             select(GuildSpawnDefaults).where(col(GuildSpawnDefaults.guild_id) == guild_pk)
         )
     ).one_or_none()
+
+
+async def check_worker_spawn_cooldown(db, guild_pk: int) -> timedelta | None:
+    """Return the remaining cooldown if *guild_pk* spawned a worker too recently, else None.
+
+    Reads ``guild_spawn_defaults.updated_at``, which record_worker_spawn()
+    refreshes on every successful spawn — so this reflects the guild's last
+    successful spawn regardless of which caller (Discord, foreman AI, REST)
+    triggered it.
+    """
+    defaults = await get_guild_spawn_defaults(db, guild_pk)
+    if defaults is None:
+        return None
+    remaining = WORKER_SPAWN_COOLDOWN - (datetime.now(UTC) - defaults.updated_at)
+    return remaining if remaining > timedelta(0) else None
 
 
 async def signal_stale_worker_on_join(
