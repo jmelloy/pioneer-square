@@ -211,7 +211,8 @@ doesn't permit — to add one, also add `"environment:terraform-apply"` to that 
 | --- | --- |
 | `AWS_DEPLOY_ROLE_ARN` | The `github_actions_deploy_role_arn` Terraform output — the OIDC role the deploy workflow assumes. |
 | `AWS_REGION` | Region to operate in (matches `var.aws_region`). |
-| `TF_STATE_BUCKET` | S3 bucket used for `terraform init -backend-config=bucket=...`. |
+
+(The tfstate bucket/region are hardcoded in `main.tf`'s `backend "s3"` block, so `deploy.yml` runs a bare `terraform init` — no `TF_STATE_BUCKET` secret needed. If you fork to another account, edit that block.)
 
 No `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are used — the workflow authenticates via
 OIDC (`aws-actions/configure-aws-credentials` + `role-to-assume`), which is why `iam.tf`

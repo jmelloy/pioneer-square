@@ -22,10 +22,10 @@ terraform {
   # Remote state in S3. Bootstrap the bucket (and, on Terraform < 1.10, a
   # DynamoDB lock table named the same as the bucket with a "-locks" suffix)
   # out of band before running `terraform init` — see README.md "Backend
-  # setup". Backend blocks cannot interpolate variables, so fill in the
-  # placeholders below (or pass them via `terraform init -backend-config=...`).
+  # setup". Backend blocks cannot interpolate variables; forking to another
+  # account means editing bucket/region here (or passing `-backend-config=...`).
   backend "s3" {
-    bucket       = "REPLACE_WITH_YOUR_TFSTATE_BUCKET"
+    bucket       = "pioneer-square-tfstate-117217845094"
     key          = "pioneer-square/terraform.tfstate"
     region       = "us-east-1"
     encrypt      = true
