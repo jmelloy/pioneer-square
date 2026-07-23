@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -94,6 +95,34 @@ _SUPPRESSED_LOGGERS = [
     "websockets",
     "urllib3",
 ]
+
+
+def running_on_ecs() -> bool:
+    """Detect whether the process is running inside an ECS task.
+
+    ECS (Fargate or EC2-backed) always sets a task metadata endpoint and,
+    for Fargate, injects task-role credentials via a relative URI; both are
+    reliable signals that we're in a container with no interactive
+    terminal, so ANSI color codes would just show up as garbage in the log
+    output (CloudWatch Logs et al.).
+    """
+    if "ECS_CONTAINER_METADATA_URI" in os.environ:
+        return True
+    if "ECS_CONTAINER_METADATA_URI_V4" in os.environ:
+        return True
+    if "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI" in os.environ:
+        return True
+    if "ECS" in os.environ.get("AWS_EXECUTION_ENV", ""):
+        return True
+    return False
+
+
+def default_log_format() -> str:
+    """Return the log format to use when ``LOG_FORMAT`` isn't set explicitly.
+
+    Plain (uncolored) output on ECS; colored output for local development.
+    """
+    return "plain" if running_on_ecs() else "colored"
 
 
 def get_logging_config(

@@ -11,7 +11,7 @@ import sys
 
 from . import __version__
 from . import config as config_mod
-from .logging_config import get_logging_config
+from .logging_config import default_log_format, get_logging_config
 from .mock_worker import MockWorker
 from .worker import Worker
 
@@ -147,7 +147,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    log_format = os.environ.get("LOG_FORMAT", "colored")
+    log_format = os.environ.get("LOG_FORMAT", default_log_format())
     logging.config.dictConfig(get_logging_config(log_level=args.log_level, log_format=log_format))
     log = logging.getLogger("pioneer_worker.cli")
     log.info("pioneer-worker CLI starting (log_level=%s)", args.log_level)

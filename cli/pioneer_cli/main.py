@@ -68,10 +68,10 @@ def _run_serve(argv: list[str]) -> int:
     os.chdir(backend_dir)
 
     import uvicorn  # noqa: PLC0415
-    from logging_config import get_logging_config  # noqa: PLC0415
+    from logging_config import default_log_format, get_logging_config  # noqa: PLC0415
 
     log_level = args.log_level.upper()
-    log_format = os.environ.get("LOG_FORMAT", "colored")
+    log_format = os.environ.get("LOG_FORMAT", default_log_format())
     uvicorn.run(
         "main:app",
         host=args.host,
