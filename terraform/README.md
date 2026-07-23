@@ -183,32 +183,25 @@ Nova, etc.) also requires access to be enabled per-account in the Bedrock consol
 
 ## CI/CD
 
-Two workflows live in `.github/workflows/`:
-
 ### `deploy.yml`
 
-Triggered on push to `main` or `release/**`. For each service (backend/foreman/worker):
+Triggered on push to `main` (or manually via `workflow_dispatch`). Two stages:
 
-1. Assumes the `github_actions_deploy_role_arn` output role via OIDC
-   (`aws-actions/configure-aws-credentials`, `role-to-assume` — no static AWS keys).
-2. Logs in to ECR (`aws-actions/amazon-ecr-login`) and builds/pushes the image
-   (`docker/build-push-action`), tagged with the commit SHA.
-3. Renders a new task definition revision from the current live one with the new image
-   (`aws-actions/amazon-ecs-render-task-definition`) and deploys it
-   (`aws-actions/amazon-ecs-deploy-task-definition`), which updates the ECS service and
-   waits for stability.
+1. **build** (one job per service, backend/foreman/worker): assumes the
+   `github_actions_deploy_role_arn` role via OIDC, logs in to ECR, and builds/pushes
+   the image tagged with the commit SHA (also stamped into the image as `PIONEER_VERSION`).
+2. **apply**: `terraform init` + `terraform apply -auto-approve -var container_image_tag=<sha>`.
+   Terraform is the single source of truth for the running task definitions — it renders
+   env (subnets, security groups, config) **and** the image tag into one revision and rolls
+   the services. There is no separate `amazon-ecs-deploy-task-definition` step and the
+   services no longer set `ignore_changes = [task_definition]`; config changes in
+   `ecs.tf` now reach the running services on the next push.
 
-Environment (staging vs. prod) is selected by branch: `main` → staging, `release/**` → prod
-(adjust the `environment` step in the workflow if your branching model differs), or trigger
-manually via `workflow_dispatch` and pick the environment input.
-
-### `terraform.yml`
-
-- On PRs touching `terraform/**`: `terraform fmt -check`, `terraform validate`, and
-  `terraform plan`, with the plan output posted as a PR comment.
-- On push to `main` touching `terraform/**`: the same checks, then
-  `terraform apply -auto-approve`, gated behind a GitHub **environment** (`terraform-apply`)
-  so it requires the reviewers/approval rule configured on that environment.
+Single tfstate today, so this deploys `staging` only. To add `prod`, give it its own state
+(workspace or backend key) and select it in the `apply` job before wiring a `release/**`
+trigger. The `apply` job has no GitHub `environment:` approval gate because that would
+change the OIDC subject claim to `environment:<name>`, which `var.github_oidc_allowed_refs`
+doesn't permit — to add one, also add `"environment:terraform-apply"` to that list.
 
 ### Required GitHub configuration
 
@@ -216,18 +209,14 @@ manually via `workflow_dispatch` and pick the environment input.
 
 | Name | Purpose |
 | --- | --- |
-| `AWS_DEPLOY_ROLE_ARN` | The `github_actions_deploy_role_arn` Terraform output — the OIDC role both workflows assume. |
+| `AWS_DEPLOY_ROLE_ARN` | The `github_actions_deploy_role_arn` Terraform output — the OIDC role the deploy workflow assumes. |
 | `AWS_REGION` | Region to operate in (matches `var.aws_region`). |
 | `TF_STATE_BUCKET` | S3 bucket used for `terraform init -backend-config=bucket=...`. |
 
-No `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are used — both workflows authenticate via
+No `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are used — the workflow authenticates via
 OIDC (`aws-actions/configure-aws-credentials` + `role-to-assume`), which is why `iam.tf`
 creates an `aws_iam_openid_connect_provider` for `token.actions.githubusercontent.com` plus
 a role trusting it, scoped to `var.github_repository` and `var.github_oidc_allowed_refs`.
-
-**Environment protection**: create a `terraform-apply` GitHub environment (Settings →
-Environments) with required reviewers, so `terraform apply -auto-approve` on push to `main`
-requires manual approval before it runs.
 
 If your account already has a `token.actions.githubusercontent.com` OIDC provider from
 another stack (only one can exist per account), set `var.github_oidc_provider_arn` to its

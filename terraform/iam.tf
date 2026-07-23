@@ -1,6 +1,6 @@
 # IAM: ECS task execution role, ECS task role (S3 + Bedrock + worker
 # dispatch), and the GitHub Actions OIDC provider + deploy role used by
-# .github/workflows/deploy.yml and terraform.yml.
+# .github/workflows/deploy.yml.
 
 # -----------------------------------------------------------------------------
 # ECS task execution role — used by the ECS agent to pull images from ECR,
@@ -188,8 +188,8 @@ resource "aws_iam_role_policy" "ecs_task_worker_dispatch" {
 
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC — used by .github/workflows/deploy.yml (build/push +
-# ECS deploy) and terraform.yml (plan/apply) via
-# aws-actions/configure-aws-credentials with role-to-assume, no static keys.
+# terraform apply) via aws-actions/configure-aws-credentials with
+# role-to-assume, no static keys.
 # -----------------------------------------------------------------------------
 
 data "tls_certificate" "github_actions" {
@@ -302,11 +302,11 @@ resource "aws_iam_role_policy" "github_actions_deploy" {
   policy = data.aws_iam_policy_document.github_actions_deploy.json
 }
 
-# terraform.yml additionally runs `terraform plan`/`apply` against this stack,
-# which needs broad read/write access across the resource types this module
-# manages. Using a managed PowerUserAccess-style policy here is intentionally
-# broader than the deploy-only policy above; tighten to your org's policies
-# before running in a shared/production AWS account.
+# deploy.yml's `apply` stage runs `terraform apply` against this stack, which
+# needs broad read/write access across the resource types this module manages.
+# Using a managed PowerUserAccess-style policy here is intentionally broader
+# than the deploy-only policy above; tighten to your org's policies before
+# running in a shared/production AWS account.
 resource "aws_iam_role_policy_attachment" "github_actions_terraform_poweruser" {
   role       = aws_iam_role.github_actions_deploy.name
   policy_arn = "arn:${local.partition}:iam::aws:policy/PowerUserAccess"

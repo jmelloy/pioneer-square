@@ -75,7 +75,7 @@ variable "route53_zone_id" {
 # -----------------------------------------------------------------------------
 
 variable "container_image_tag" {
-  description = "Default image tag deployed for all services on first apply (CI overrides this per-service on later deploys)."
+  description = "Image tag (commit SHA) deployed for all services. deploy.yml passes -var container_image_tag=<sha> on every push; a bare `terraform apply` without it falls back to the default below, which must be a tag that exists in ECR."
   type        = string
   default     = "latest"
 }
