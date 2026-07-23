@@ -10,12 +10,17 @@ from backend.foreman.prompt import (
 from backend.foreman.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
 
 
-def test_child_tools_exclude_create_and_assign():
+def test_child_tools_exclude_create_assign_and_spawn():
     names = {t["name"] for t in CHILD_FOREMAN_TOOLS}
     assert "create_task" not in names
     assert "assign_task" not in names
+    assert "spawn_worker" not in names
     # Everything else carries over.
-    assert names == {t["name"] for t in FOREMAN_TOOLS} - {"create_task", "assign_task"}
+    assert names == {t["name"] for t in FOREMAN_TOOLS} - {
+        "create_task",
+        "assign_task",
+        "spawn_worker",
+    }
 
 
 def test_child_tools_keep_lifecycle_tools():

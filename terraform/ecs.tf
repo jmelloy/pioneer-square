@@ -59,13 +59,20 @@ resource "aws_ecs_task_definition" "backend" {
       environment = [
         { name = "GITHUB_REDIRECT_URI", value = var.frontend_url != "" ? "${var.frontend_url}/auth/github/callback" : "" },
         { name = "FRONTEND_URL", value = var.frontend_url },
-        { name = "WORKER_BACKEND_URL", value = "http://localhost:${var.backend_container_port}" },
+        # Spawned workers run as separate Fargate tasks, so "localhost" would
+        # never reach the backend — they connect back through the ALB.
+        { name = "WORKER_BACKEND_URL", value = "${local.has_certificate ? "https" : "http"}://${var.domain_name != "" ? var.domain_name : aws_lb.main.dns_name}" },
         { name = "LOG_LEVEL", value = var.log_level },
         { name = "PIONEER_S3_BUCKET", value = aws_s3_bucket.assets.bucket },
         { name = "PIONEER_S3_PREFIX", value = "worker-sessions" },
         { name = "AWS_DEFAULT_REGION", value = local.region },
+        # Worker dispatch via ECS RunTask (backend/worker_runtime.py): the
+        # first two select ECS mode; the subnet/SG pair is the awsvpc network
+        # configuration each spawned worker task launches with.
         { name = "ECS_CLUSTER_NAME", value = aws_ecs_cluster.main.name },
         { name = "ECS_WORKER_TASK_DEFINITION", value = "${local.name_prefix}-worker" },
+        { name = "ECS_WORKER_SUBNETS", value = join(",", aws_subnet.private[*].id) },
+        { name = "ECS_WORKER_SECURITY_GROUPS", value = aws_security_group.ecs_tasks.id },
         # The embedded foreman (backend/foreman/runner.py) makes LLM calls from
         # this process whenever no standalone foreman proxy is connected for a
         # guild — it needs the same provider config as the foreman task below.

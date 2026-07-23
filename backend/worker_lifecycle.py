@@ -42,12 +42,13 @@ import logging
 import os
 import secrets
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import worker_runtime
 from database import AsyncSessionLocal
-from events import broadcast_msg
-from models import Guild, Worker
-from sqlalchemy import update
+from events import broadcast_msg, emit_terminal_line
+from models import Agent, Guild, Task, TaskLog, Worker, live_tasks_filter
+from sqlalchemy import func, update
 from sqlmodel import col, select
 from ws_types import WorkerShutdownMsg
 
@@ -68,6 +69,28 @@ WORKER_RECONNECT_GRACE = float(os.environ.get("PIONEER_WORKER_RECONNECT_GRACE", 
 # guards the startup version-mismatch drain) since this is the window the foreman
 # AI waits on every ordinary "stop this worker" request.
 SHUTDOWN_FORCE_KILL_TIMEOUT = float(os.environ.get("PIONEER_SHUTDOWN_TIMEOUT", "1800"))
+
+# How long a backend-spawned worker may sit with no live work before the idle
+# reaper shuts it down (and stops its container/ECS task). 0 disables reaping.
+WORKER_IDLE_TIMEOUT = float(os.environ.get("PIONEER_WORKER_IDLE_TIMEOUT", "1800"))
+
+# How often the idle reaper wakes up to look for idle spawned workers.
+WORKER_IDLE_SWEEP_INTERVAL = float(os.environ.get("PIONEER_WORKER_IDLE_SWEEP_INTERVAL", "60"))
+
+# Escalation window for the idle reaper's graceful shutdown. Much shorter than
+# SHUTDOWN_FORCE_KILL_TIMEOUT because a reaped worker is by definition idle —
+# there is no in-progress task to wait for.
+IDLE_REAP_FORCE_KILL_TIMEOUT = float(os.environ.get("PIONEER_IDLE_REAP_KILL_TIMEOUT", "300"))
+
+# Task states that hold a worker alive: queued or actively-running work.
+# "awaiting-review" deliberately does NOT hold a worker alive — a PR can sit in
+# review for days, and send_followup routes to any idle worker (which pulls the
+# branch from GitHub), so keeping the original worker running would defeat the
+# reaper entirely.
+_ACTIVE_TASK_STATES = ("pending", "working")
+
+# Agent states that mean the worker is actively doing something right now.
+_BUSY_AGENT_STATES = ("working", "thinking", "busy")
 
 
 def get_current_version() -> str | None:
@@ -268,25 +291,19 @@ async def drain_stale_workers_on_startup() -> list[str]:
 
 
 async def _force_kill_containers(worker_ids: set[str]) -> None:
-    """Force-kill the Docker containers backing the given worker IDs, if any."""
+    """Force-kill the containers/ECS tasks backing the given worker IDs, if any."""
     async with AsyncSessionLocal() as db:
         workers = (await db.exec(select(Worker).where(col(Worker.id).in_(worker_ids)))).all()
 
-    # Create the Docker client once; avoids per-container connection overhead and
-    # ensures consistent failure behaviour across all kills in this batch.
-    docker_client = None
     for worker in workers:
         if worker.container_id:
             try:
-                import docker  # noqa: PLC0415
-
-                # Use asyncio.to_thread for all blocking Docker SDK calls.
-                if docker_client is None:
-                    docker_client = await asyncio.to_thread(docker.from_env)
-                container = await asyncio.to_thread(
-                    docker_client.containers.get, worker.container_id
+                # worker_runtime dispatches on the handle itself (Docker container
+                # id vs ECS task ARN), so handles recorded under either runtime
+                # remain killable after a deployment-model change.
+                await worker_runtime.stop_worker_container(
+                    worker.container_id, reason=f"force-kill of worker {worker.id}"
                 )
-                await asyncio.to_thread(container.kill)
                 logger.info(
                     "worker_lifecycle: force-killed container %s (worker %s)",
                     worker.container_id[:12],
@@ -299,7 +316,7 @@ async def _force_kill_containers(worker_ids: set[str]) -> None:
                     exc_info=True,
                 )
         else:
-            # Non-Docker worker (started via compose or manual CLI): cannot force-kill.
+            # Externally-started worker (compose or manual CLI): cannot force-kill.
             logger.warning(
                 "worker_lifecycle: stale worker %s has no container_id; "
                 "relying on graceful-shutdown signal only",
@@ -476,3 +493,182 @@ async def reconcile_stale_workers(stale_ids: list[str]) -> None:
             pending.discard(wid)
 
     logger.info("worker_lifecycle: all stale workers drained and replaced")
+
+
+# ---------------------------------------------------------------------------
+# Idle-worker reaper — automatic shutdown of backend-spawned workers that have
+# had nothing to do for WORKER_IDLE_TIMEOUT. Only workers with a recorded spawn
+# handle (container_id) are ever reaped: externally-started workers (compose,
+# manual CLI) belong to whoever started them.
+# ---------------------------------------------------------------------------
+
+
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    """Attach UTC to naive datetimes read back from the DB (SQLite test runs)."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
+async def _worker_is_inactive(db, worker_id: str, cutoff: datetime) -> bool:
+    """True when *worker_id* has no live work and no activity since *cutoff*."""
+    active_task = (
+        await db.exec(
+            select(col(Task.id))
+            .where(
+                col(Task.worker_id) == worker_id,
+                col(Task.state).in_(_ACTIVE_TASK_STATES),
+                live_tasks_filter(),
+            )
+            .limit(1)
+        )
+    ).first()
+    if active_task is not None:
+        return False
+
+    busy_agent = (
+        await db.exec(
+            select(col(Agent.id))
+            .where(
+                col(Agent.worker_id) == worker_id,
+                col(Agent.state).in_(_BUSY_AGENT_STATES),
+            )
+            .limit(1)
+        )
+    ).first()
+    if busy_agent is not None:
+        return False
+
+    # Last activity = the newest task-log line attributed to this worker.
+    # TaskLog rows are written throughout a run, so the newest one marks the
+    # end of the worker's most recent piece of work; a worker that never ran
+    # anything has no rows and falls back to its spawn time (already checked
+    # against the cutoff by the candidate query).
+    last_log = (
+        await db.exec(
+            select(func.max(col(TaskLog.timestamp))).where(col(TaskLog.worker_id) == worker_id)
+        )
+    ).one_or_none()
+    last_log = _ensure_utc(last_log)
+    return last_log is None or last_log < cutoff
+
+
+async def reap_idle_workers_once(now: datetime | None = None) -> list[str]:
+    """One idle-reap pass; returns the IDs of the workers that were shut down.
+
+    Two kinds of spawned workers are reaped once they pass the idle cutoff:
+
+    - **Online and idle** — no pending/working task, no busy agent, and no
+      task-log activity within the window. Gets the graceful shutdown signal
+      (same path as shutdown_worker) plus a short force-kill backstop.
+    - **Offline zombies** — spawned but never (re)connected, or long dead. The
+      container/ECS task is force-killed directly (a no-op if it already
+      exited). Gated on ``last_seen`` also being past the cutoff so workers
+      that are merely reconnecting after a backend restart are left alone.
+
+    Both kinds are marked ``disabled`` so they are neither respawned on the
+    next backend restart nor re-examined on the next sweep.
+    """
+    if WORKER_IDLE_TIMEOUT <= 0:
+        return []
+    if now is None:
+        now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=WORKER_IDLE_TIMEOUT)
+
+    async with AsyncSessionLocal() as db:
+        candidates = (
+            await db.exec(
+                select(
+                    col(Worker.id),
+                    col(Worker.state),
+                    col(Worker.last_seen),
+                    col(Guild.slug).label("guild_slug"),
+                )
+                .join(Guild, col(Guild.id) == col(Worker.guild_id))
+                .where(
+                    col(Worker.container_id).isnot(None),
+                    col(Worker.disabled).is_(False),
+                    col(Worker.started_at).isnot(None),
+                    col(Worker.started_at) < cutoff,
+                )
+            )
+        ).all()
+
+    reaped: list[str] = []
+    for worker_id, state, last_seen, guild_slug in candidates:
+        try:
+            if state == "offline":
+                # Never-connected zombie or already-dead container. Skip if it
+                # was alive recently — it may be mid-reconnect after a restart.
+                last_seen = _ensure_utc(last_seen)
+                if last_seen is not None and last_seen >= cutoff:
+                    continue
+                async with AsyncSessionLocal() as db:
+                    await db.exec(
+                        update(Worker)
+                        .where(col(Worker.id) == worker_id)
+                        .values(disabled=True, drain_requested_at=now)
+                    )
+                    await db.commit()
+                logger.info(
+                    "worker_lifecycle: reaping offline spawned worker %s "
+                    "(no connection since spawn or last activity > %.0fs ago)",
+                    worker_id,
+                    WORKER_IDLE_TIMEOUT,
+                )
+                await _force_kill_containers({worker_id})
+                reaped.append(worker_id)
+                continue
+
+            async with AsyncSessionLocal() as db:
+                inactive = await _worker_is_inactive(db, worker_id, cutoff)
+                if not inactive:
+                    continue
+                await db.exec(
+                    update(Worker)
+                    .where(col(Worker.id) == worker_id)
+                    .values(disabled=True, drain_requested_at=now)
+                )
+                await db.commit()
+
+            reason = (
+                f"idle for over {int(WORKER_IDLE_TIMEOUT)}s — automatic shutdown of spawned worker"
+            )
+            logger.info("worker_lifecycle: reaping idle worker %s (%s)", worker_id, reason)
+            await broadcast_msg(guild_slug, WorkerShutdownMsg(workerId=worker_id, reason=reason))
+            await emit_terminal_line(guild_slug, worker_id, f"[lifecycle] {reason}")
+
+            # Backstop: the worker is idle, so it should exit within seconds of
+            # the signal; force-kill its container/ECS task if it doesn't.
+            from util.tasks import spawn  # noqa: PLC0415
+
+            spawn(
+                force_kill_worker_if_unresponsive(worker_id, timeout=IDLE_REAP_FORCE_KILL_TIMEOUT),
+                name=f"idle-reap-escalate:{worker_id}",
+            )
+            reaped.append(worker_id)
+        except Exception:
+            logger.warning(
+                "worker_lifecycle: idle-reap failed for worker %s", worker_id, exc_info=True
+            )
+    return reaped
+
+
+async def idle_worker_reaper() -> None:
+    """Background task: periodically reap spawned workers idle past the timeout."""
+    if WORKER_IDLE_TIMEOUT <= 0:
+        logger.info("worker_lifecycle: idle-worker reaper disabled (PIONEER_WORKER_IDLE_TIMEOUT=0)")
+        return
+    logger.info(
+        "worker_lifecycle: idle-worker reaper started: timeout=%.0fs interval=%.0fs",
+        WORKER_IDLE_TIMEOUT,
+        WORKER_IDLE_SWEEP_INTERVAL,
+    )
+    while True:
+        try:
+            await asyncio.sleep(WORKER_IDLE_SWEEP_INTERVAL)
+            await reap_idle_workers_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("worker_lifecycle: idle-worker reaper iteration failed")

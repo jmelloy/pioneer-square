@@ -2053,10 +2053,10 @@ class TestFinalizeClosedIssueAtomicity:
 
 
 class TestSpawnWorker:
-    """spawn_worker() is not in FOREMAN_TOOLS (see #567) but is still invoked
-    directly by worker_lifecycle.spawn_replacement_workers() on backend startup.
-    Regression test for a missing ``await`` on ``_get_docker_client()`` that
-    made every real invocation of this path fail (see #725).
+    """spawn_worker() is invoked by the foreman tool executor and directly by
+    worker_lifecycle.spawn_replacement_workers() on backend startup. Container
+    start goes through the worker_runtime abstraction (Docker socket locally,
+    ECS RunTask on Fargate).
     """
 
     async def test_spawn_worker_starts_container(self, db_session):
@@ -2068,7 +2068,7 @@ class TestSpawnWorker:
         fake_docker_client.containers.run.return_value = fake_container
 
         with (
-            patch("foreman.tools._get_docker_client", AsyncMock(return_value=fake_docker_client)),
+            patch("worker_runtime._get_docker_client", AsyncMock(return_value=fake_docker_client)),
             patch("foreman.tools.broadcast", new_callable=AsyncMock),
         ):
             results = await exec_tools(
@@ -2081,6 +2081,56 @@ class TestSpawnWorker:
         assert r.get("is_error") is not True, f"spawn_worker failed: {r['content']}"
         assert "abcdef012345" in r["content"]
         fake_docker_client.containers.run.assert_called_once()
+
+    async def test_spawn_worker_uses_ecs_when_configured(self, db_session, monkeypatch):
+        insert_guild(db_session, "g-spawn-ecs")
+
+        monkeypatch.setenv("ECS_CLUSTER_NAME", "ps-test-cluster")
+        monkeypatch.setenv("ECS_WORKER_TASK_DEFINITION", "ps-test-worker")
+        monkeypatch.setenv("ECS_WORKER_SUBNETS", "subnet-aaa, subnet-bbb")
+        monkeypatch.setenv("ECS_WORKER_SECURITY_GROUPS", "sg-ccc")
+
+        task_arn = (
+            "arn:aws:ecs:us-east-1:123456789012:task/ps-test-cluster/"
+            "0123456789abcdef0123456789abcdef"
+        )
+        fake_ecs = MagicMock()
+        fake_ecs.run_task.return_value = {"tasks": [{"taskArn": task_arn}], "failures": []}
+
+        with (
+            patch("worker_runtime._get_ecs_client", return_value=fake_ecs),
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+        ):
+            results = await exec_tools(
+                "g-spawn-ecs",
+                [_fake_tool_use("spawn_worker", {"repos": ["acme/widgets"]})],
+            )
+
+        r = results[0]
+        assert r.get("is_error") is not True, f"spawn_worker failed: {r['content']}"
+        assert "0123456789ab" in r["content"]
+        fake_ecs.run_task.assert_called_once()
+        kwargs = fake_ecs.run_task.call_args.kwargs
+        assert kwargs["cluster"] == "ps-test-cluster"
+        assert kwargs["taskDefinition"] == "ps-test-worker"
+        assert kwargs["launchType"] == "FARGATE"
+        net = kwargs["networkConfiguration"]["awsvpcConfiguration"]
+        assert net["subnets"] == ["subnet-aaa", "subnet-bbb"]
+        assert net["securityGroups"] == ["sg-ccc"]
+        assert net["assignPublicIp"] == "DISABLED"
+        env_override = kwargs["overrides"]["containerOverrides"][0]
+        assert env_override["name"] == "worker"
+        env_map = {e["name"]: e["value"] for e in env_override["environment"]}
+        assert env_map["PIONEER_GUILD_ID"] == "g-spawn-ecs"
+        assert env_map["PIONEER_REPOS"] == "acme/widgets"
+
+        # The worker row records the full task ARN so the lifecycle module can
+        # StopTask it later.
+        from models import Worker as WorkerModel  # noqa: PLC0415
+
+        with _sync_session(db_session) as session:
+            container_ids = session.execute(select(col(WorkerModel.container_id))).scalars().all()
+        assert task_arn in container_ids
 
 
 # ---------------------------------------------------------------------------

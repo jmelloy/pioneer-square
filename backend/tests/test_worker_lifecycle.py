@@ -746,3 +746,214 @@ async def test_force_kill_if_unresponsive_polls_across_multiple_iterations():
 
     assert fake_db.call_count == 3
     mock_kill.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# reap_idle_workers_once
+# ---------------------------------------------------------------------------
+
+
+class _FakeReapDB:
+    """Sequenced fake session: each exec() pops the next canned result."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.commit = AsyncMock()
+        self.exec_count = 0
+
+    async def exec(self, *a, **kw):
+        self.exec_count += 1
+        if self._results:
+            return self._results.pop(0)
+        return MagicMock()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _rows_result(rows):
+    return MagicMock(all=MagicMock(return_value=rows))
+
+
+def _first_result(value):
+    return MagicMock(first=MagicMock(return_value=value))
+
+
+def _scalar_result(value):
+    return MagicMock(one_or_none=MagicMock(return_value=value))
+
+
+def _old(seconds: float = 7200):
+    from datetime import timedelta
+
+    return datetime.now(UTC) - timedelta(seconds=seconds)
+
+
+@pytest.mark.asyncio
+async def test_reap_idle_worker_shuts_down_and_escalates():
+    """An online spawned worker with no live work and no recent task-log activity is
+    gracefully shut down, disabled, and given a force-kill backstop."""
+    from worker_lifecycle import reap_idle_workers_once
+
+    # Session 1: candidates. Session 2: inactivity checks (no active task, no
+    # busy agent, stale last log) + the disabled update.
+    sessions = [
+        _FakeReapDB([_rows_result([("w-idle", "idle", _old(60), "g-guild")])]),
+        _FakeReapDB(
+            [_first_result(None), _first_result(None), _scalar_result(_old()), MagicMock()]
+        ),
+    ]
+    session_iter = iter(sessions)
+    broadcast = AsyncMock()
+    terminal = AsyncMock()
+
+    def _swallow_coro(coro, **kw):
+        coro.close()  # avoid "coroutine never awaited" warnings
+        return MagicMock()
+
+    escalate = MagicMock(side_effect=_swallow_coro)
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+        patch("worker_lifecycle.emit_terminal_line", terminal),
+        patch("util.tasks.spawn", escalate),
+    ):
+        reaped = await reap_idle_workers_once()
+
+    assert reaped == ["w-idle"]
+    broadcast.assert_called_once()
+    guild_slug, msg = broadcast.call_args.args
+    assert guild_slug == "g-guild"
+    assert msg.workerId == "w-idle"
+    assert "idle" in (msg.reason or "")
+    sessions[1].commit.assert_called_once()
+    escalate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_worker_with_active_task():
+    from worker_lifecycle import reap_idle_workers_once
+
+    sessions = [
+        _FakeReapDB([_rows_result([("w-busy", "idle", _old(60), "g-guild")])]),
+        _FakeReapDB([_first_result("t-live")]),  # active pending/working task found
+    ]
+    session_iter = iter(sessions)
+    broadcast = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+    ):
+        reaped = await reap_idle_workers_once()
+
+    assert reaped == []
+    broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_worker_with_busy_agent():
+    from worker_lifecycle import reap_idle_workers_once
+
+    sessions = [
+        _FakeReapDB([_rows_result([("w-agent", "online", None, "g-guild")])]),
+        _FakeReapDB([_first_result(None), _first_result("a-busy")]),
+    ]
+    session_iter = iter(sessions)
+    broadcast = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+    ):
+        reaped = await reap_idle_workers_once()
+
+    assert reaped == []
+    broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_worker_with_recent_task_log():
+    from worker_lifecycle import reap_idle_workers_once
+
+    sessions = [
+        _FakeReapDB([_rows_result([("w-recent", "idle", _old(60), "g-guild")])]),
+        _FakeReapDB([_first_result(None), _first_result(None), _scalar_result(_old(seconds=30))]),
+    ]
+    session_iter = iter(sessions)
+    broadcast = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+    ):
+        reaped = await reap_idle_workers_once()
+
+    assert reaped == []
+    broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reap_offline_zombie_force_kills_directly():
+    """An offline spawned worker whose last_seen is past the cutoff (or NULL) gets its
+    container/ECS task force-killed without the graceful-drain dance."""
+    from worker_lifecycle import reap_idle_workers_once
+
+    sessions = [
+        _FakeReapDB([_rows_result([("w-zombie", "offline", None, "g-guild")])]),
+        _FakeReapDB([MagicMock()]),  # disabled update
+    ]
+    session_iter = iter(sessions)
+    mock_kill = AsyncMock()
+    broadcast = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+    ):
+        reaped = await reap_idle_workers_once()
+
+    assert reaped == ["w-zombie"]
+    mock_kill.assert_called_once_with({"w-zombie"})
+    broadcast.assert_not_called()  # nothing to signal — it never connected
+
+
+@pytest.mark.asyncio
+async def test_reap_skips_offline_worker_seen_recently():
+    """An offline worker seen recently may be mid-reconnect after a backend restart —
+    leave it alone."""
+    from worker_lifecycle import reap_idle_workers_once
+
+    sessions = [
+        _FakeReapDB([_rows_result([("w-reconnecting", "offline", _old(seconds=30), "g-g")])]),
+    ]
+    session_iter = iter(sessions)
+    mock_kill = AsyncMock()
+
+    with (
+        patch("worker_lifecycle.AsyncSessionLocal", lambda: next(session_iter)),
+        patch("worker_lifecycle._force_kill_containers", mock_kill),
+    ):
+        reaped = await reap_idle_workers_once()
+
+    assert reaped == []
+    mock_kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reap_disabled_when_timeout_zero():
+    from worker_lifecycle import reap_idle_workers_once
+
+    with (
+        patch("worker_lifecycle.WORKER_IDLE_TIMEOUT", 0),
+        patch("worker_lifecycle.AsyncSessionLocal") as mock_session,
+    ):
+        reaped = await reap_idle_workers_once()
+
+    assert reaped == []
+    mock_session.assert_not_called()

@@ -27,6 +27,11 @@ the branch from GitHub. Pass preferred_worker_id to force a specific worker.
 - Cancel tasks that are going wrong or are no longer needed via cancel_task
 - Shut down a misbehaving or no-longer-needed worker process via shutdown_worker \
 (graceful: idle agents exit immediately, busy agents finish their current task)
+- Spawn a new worker via spawn_worker when no online worker covers the repos a task \
+needs, or when all capable workers are busy and work is queueing. Never spawn a \
+duplicate for repos an online (or currently starting) worker already covers. Spawned \
+workers shut down automatically after a period of inactivity, so don't spawn \
+speculatively and don't worry about cleaning up idle ones
 - Summarise status and outcomes when asked
 - Escalate to the human only when genuinely stuck
 
