@@ -55,10 +55,11 @@ except ImportError:
 # the lifespan hook fires.  uvicorn will later call dictConfig with its own
 # defaults; our lifespan re-applies it (with force-equivalent disable_existing
 # behaviour) to ensure consistent formatting after uvicorn starts.
+from logging_config import default_log_format as _default_log_format
 from logging_config import get_logging_config as _get_logging_config
 
 _early_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-_early_log_format = os.environ.get("LOG_FORMAT", "colored")
+_early_log_format = os.environ.get("LOG_FORMAT", _default_log_format())
 logging.config.dictConfig(_get_logging_config(_early_log_level, _early_log_format))
 
 logger = logging.getLogger(__name__)
@@ -338,7 +339,7 @@ async def lifespan(app: FastAPI):
     # Re-apply our logging config after uvicorn has set up its own handlers so
     # the format remains consistent for the lifetime of the server.
     _log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    _log_format = os.environ.get("LOG_FORMAT", "colored")
+    _log_format = os.environ.get("LOG_FORMAT", _default_log_format())
     logging.config.dictConfig(_get_logging_config(_log_level, _log_format))
 
     # A configured public guild identity is a startup invariant. Failing here
@@ -577,7 +578,7 @@ if __name__ == "__main__":
     import uvicorn
 
     _main_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    _main_log_format = os.environ.get("LOG_FORMAT", "colored")
+    _main_log_format = os.environ.get("LOG_FORMAT", _default_log_format())
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
