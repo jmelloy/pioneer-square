@@ -174,6 +174,43 @@ async def get_guild_spawn_defaults(db, guild_pk: int) -> GuildSpawnDefaults | No
     ).one_or_none()
 
 
+async def set_guild_spawn_defaults(
+    db,
+    guild_pk: int,
+    *,
+    repos: list[str],
+    tools: list[str],
+    agent_count: int | None,
+) -> None:
+    """Explicitly upsert a guild's ``guild_spawn_defaults`` row.
+
+    Unlike :func:`record_worker_spawn` (which only refreshes the row as a
+    side-effect of a successful spawn, and only when ``repos`` is non-empty),
+    this is the operator-facing write path: it always replaces the full row so
+    an owner can curate the guild's spawn baseline directly, including clearing
+    repos/tools. Callers are expected to have committed their own transaction
+    boundary; this commits before returning.
+    """
+    stmt = pg_insert(GuildSpawnDefaults).values(
+        guild_id=guild_pk,
+        repos=json.dumps(repos),
+        tools=json.dumps(tools),
+        agent_count=agent_count,
+        updated_at=datetime.now(UTC),
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["guild_id"],
+        set_={
+            "repos": stmt.excluded.repos,
+            "tools": stmt.excluded.tools,
+            "agent_count": stmt.excluded.agent_count,
+            "updated_at": stmt.excluded.updated_at,
+        },
+    )
+    await db.exec(stmt)
+    await db.commit()
+
+
 async def signal_stale_worker_on_join(
     guild_slug: str, worker_id: str, spawned_version: str | None
 ) -> bool:

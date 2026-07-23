@@ -234,6 +234,84 @@ def test_shutdown_unknown_worker_returns_404(client):
     assert resp.status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# Guild spawn defaults
+# ---------------------------------------------------------------------------
+
+
+def test_get_spawn_defaults_empty(client):
+    """A guild with no recorded spawn returns empty defaults, not 404."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd1")
+    resp = test_client.get("/guilds/guild-sd1/spawn-defaults", headers=_auth(db_url))
+    assert resp.status_code == 200
+    assert resp.json() == {"repos": [], "tools": [], "agent_count": None}
+
+
+def test_put_spawn_defaults_roundtrips(client):
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd2")
+    resp = test_client.put(
+        "/guilds/guild-sd2/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": ["a/b", "a/c"], "tools": ["claude"], "agent_count": 3},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"repos": ["a/b", "a/c"], "tools": ["claude"], "agent_count": 3}
+    # A subsequent GET reflects the saved baseline.
+    got = test_client.get("/guilds/guild-sd2/spawn-defaults", headers=_auth(db_url))
+    assert got.json() == {"repos": ["a/b", "a/c"], "tools": ["claude"], "agent_count": 3}
+
+
+def test_put_spawn_defaults_full_replace_clears_fields(client):
+    """PUT has full-replace semantics: an empty body wipes the previous baseline."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd3")
+    test_client.put(
+        "/guilds/guild-sd3/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"], "tools": ["codex"], "agent_count": 5},
+    )
+    resp = test_client.put(
+        "/guilds/guild-sd3/spawn-defaults",
+        headers=_auth(db_url),
+        json={},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"repos": [], "tools": [], "agent_count": None}
+
+
+def test_put_spawn_defaults_rejects_bad_agent_count(client):
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd4")
+    resp = test_client.put(
+        "/guilds/guild-sd4/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": [], "tools": [], "agent_count": 99},
+    )
+    assert resp.status_code == 422
+
+
+def test_put_spawn_defaults_requires_owner(client):
+    """Non-owner members can read defaults but not set them."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd5")
+    insert_member(db_url, "guild-sd5", "gh-member", role="member")
+    member_auth = {
+        "Authorization": f"Bearer {make_auth_token(db_url, user_id='gh-member', username='member1')}"
+    }
+    # Member can GET.
+    got = test_client.get("/guilds/guild-sd5/spawn-defaults", headers=member_auth)
+    assert got.status_code == 200
+    # But cannot PUT.
+    resp = test_client.put(
+        "/guilds/guild-sd5/spawn-defaults",
+        headers=member_auth,
+        json={"repos": ["a/b"], "tools": [], "agent_count": 2},
+    )
+    assert resp.status_code == 403
+
+
 def test_spawn_worker_env_does_not_inject_claude_oauth_token():
     """Claude credentials are per-guild: the worker fetches them from the backend
     (/auth/claude/credentials) on startup, so they are NOT injected at spawn.

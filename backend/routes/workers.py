@@ -35,7 +35,9 @@ from utils import (
 from worker_lifecycle import (
     force_kill_worker_if_unresponsive,
     generate_worker_id,
+    get_guild_spawn_defaults,
     record_worker_spawn,
+    set_guild_spawn_defaults,
 )
 from ws_handlers import _resolve_user_identifier
 from ws_types import TaskAssignedMsg, WorkerMessageMsg, WorkerShutdownMsg
@@ -84,6 +86,21 @@ class SpawnWorkerRequest(BaseModel):
                 raise ValueError(
                     f"Env var value for {key!r} exceeds max length ({_MAX_ENV_VALUE_LEN} chars)"
                 )
+        return v
+
+
+class SaveSpawnDefaultsRequest(BaseModel):
+    """Guild-level spawn baseline. A full-replace PUT (no partial semantics)."""
+
+    repos: list[str] = []
+    tools: list[str] = []
+    agent_count: int | None = None
+
+    @field_validator("agent_count")
+    @classmethod
+    def validate_agent_count(cls, v: int | None) -> int | None:
+        if v is not None and not (1 <= v <= 16):
+            raise ValueError("agent_count must be between 1 and 16")
         return v
 
 
@@ -463,6 +480,64 @@ async def save_spawn_settings(
         row.updated_at = now
     await db.commit()
     return {"status": "saved"}
+
+
+def _spawn_defaults_payload(row) -> dict:
+    """Serialise a GuildSpawnDefaults row (or None) to the wire shape."""
+    if row is None:
+        return {"repos": [], "tools": [], "agent_count": None}
+    return {
+        "repos": json.loads(row.repos or "[]"),
+        "tools": json.loads(row.tools or "[]"),
+        "agent_count": row.agent_count,
+    }
+
+
+@router.get("/guilds/{guild_id}/spawn-defaults")
+async def get_spawn_defaults(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return the guild's default spawn parameters (repos, tools, agent_count).
+
+    Readable by any guild member: the per-user spawn form uses these as the
+    baseline it lets the caller override. Returns empty defaults when the guild
+    has never recorded a spawn and no owner has set them explicitly.
+    """
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    row = await get_guild_spawn_defaults(db, guild_pk)
+    return _spawn_defaults_payload(row)
+
+
+@router.put("/guilds/{guild_id}/spawn-defaults")
+async def save_spawn_defaults(
+    guild_id: str,
+    data: SaveSpawnDefaultsRequest,
+    github_user_id: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Set the guild's default spawn parameters (owner only).
+
+    These become the baseline the foreman's ``spawn_worker`` tool falls back to
+    and the per-user spawn form pre-fills from. A successful worker spawn still
+    refreshes them afterward (``record_worker_spawn``) — this endpoint just lets
+    an owner curate the baseline directly instead of waiting for the next spawn.
+    """
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    await set_guild_spawn_defaults(
+        db,
+        guild_pk,
+        repos=data.repos,
+        tools=data.tools,
+        agent_count=data.agent_count,
+    )
+    row = await get_guild_spawn_defaults(db, guild_pk)
+    return _spawn_defaults_payload(row)
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/message")

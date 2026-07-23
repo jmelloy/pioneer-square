@@ -278,6 +278,14 @@
       </div>
 
       <div class="settings-field">
+        <label class="settings-label">Worker Spawn Defaults</label>
+        <button class="pixel-btn foreman-toggle-btn" @click="showSpawnDefaults = !showSpawnDefaults">
+          {{ showSpawnDefaults ? 'Hide' : 'Manage' }}
+        </button>
+        <GuildSpawnDefaults v-if="showSpawnDefaults" :guild-id="currentGuild.id" />
+      </div>
+
+      <div class="settings-field">
         <label class="settings-label">Members</label>
         <button class="pixel-btn foreman-toggle-btn" @click="showMembers = !showMembers">
           {{ showMembers ? 'Hide' : 'Manage' }}
@@ -304,6 +312,7 @@ import { useAuthStore } from '../stores/auth'
 import { useModels } from '../composables/useModels'
 import GitHubConfigModal from './GitHubConfigModal.vue'
 import GuildMembers from './GuildMembers.vue'
+import GuildSpawnDefaults from './GuildSpawnDefaults.vue'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
@@ -369,6 +378,7 @@ const claudeCredsConfirmDelete = ref(false)
 
 const showForemanConfig = ref(false)
 const showMembers = ref(false)
+const showSpawnDefaults = ref(false)
 const foremanModel = ref('')
 const foremanProvider = ref('')
 // Remember the model entered for each provider. Models are provider-specific
@@ -580,6 +590,7 @@ watch(
     claudeCredsConfirmDelete.value = false
     showForemanConfig.value = false
     showMembers.value = false
+    showSpawnDefaults.value = false
     foremanModel.value = ''
     foremanProvider.value = ''
     modelByProvider.value = {}
