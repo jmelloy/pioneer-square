@@ -234,8 +234,13 @@ def test_shutdown_unknown_worker_returns_404(client):
     assert resp.status_code == 404
 
 
-def test_spawn_worker_env_forwards_claude_oauth_token():
-    """CLAUDE_CODE_OAUTH_TOKEN must reach the spawned container so it skips setup-token."""
+def test_spawn_worker_env_does_not_inject_claude_oauth_token():
+    """Claude credentials are per-guild: the worker fetches them from the backend
+    (/auth/claude/credentials) on startup, so they are NOT injected at spawn.
+
+    Injecting a backend-wide token would shadow the per-guild credential the
+    worker pulls (_check_claude_auth skips the fetch when the var is already set).
+    """
     from main import _build_spawn_worker_env
 
     env = _build_spawn_worker_env(
@@ -244,7 +249,7 @@ def test_spawn_worker_env_forwards_claude_oauth_token():
         worker_name=None,
         source_env={"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oauth-abc"},
     )
-    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oauth-abc"
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
     assert env["PIONEER_GUILD_ID"] == "g1"
     assert env["PIONEER_REPOS"] == "owner/repo"
 
@@ -262,24 +267,32 @@ def test_spawn_worker_env_does_not_forward_anthropic_api_key():
     assert "ANTHROPIC_API_KEY" not in env
 
 
-def test_spawn_worker_env_omits_unset_keys():
-    """Empty/unset auth keys must not be passed — the worker checks truthiness."""
+def test_spawn_worker_env_never_carries_credentials():
+    """Worker credentials are fetched at runtime, never injected — regardless of
+    what the backend happens to hold in its own environment."""
     from main import _build_spawn_worker_env
 
     env = _build_spawn_worker_env(
         guild_id="g1",
         repos=[],
         worker_name=None,
-        source_env={"CLAUDE_CODE_OAUTH_TOKEN": "", "GITHUB_TOKEN": ""},
+        source_env={
+            "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oauth",
+            "GITHUB_TOKEN": "ghp_xyz",
+            "OPENAI_API_KEY": "sk-openai",
+            "ANTHROPIC_API_KEY": "sk-ant-api",
+        },
     )
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
     assert "ANTHROPIC_API_KEY" not in env
     assert "GITHUB_TOKEN" not in env
     assert "PIONEER_GITHUB_TOKEN" not in env
+    assert "OPENAI_API_KEY" not in env
 
 
-def test_spawn_worker_env_forwards_github_token_under_both_names():
-    """GITHUB_TOKEN goes both as PIONEER_GITHUB_TOKEN (config loader) and GITHUB_TOKEN (gh CLI)."""
+def test_spawn_worker_env_does_not_inject_github_token():
+    """GitHub credentials are per-guild: the worker fetches them from the backend
+    (/auth/github/token) on startup, so they are NOT injected at spawn."""
     from main import _build_spawn_worker_env
 
     env = _build_spawn_worker_env(
@@ -288,8 +301,54 @@ def test_spawn_worker_env_forwards_github_token_under_both_names():
         worker_name=None,
         source_env={"GITHUB_TOKEN": "ghp_xyz"},
     )
-    assert env["GITHUB_TOKEN"] == "ghp_xyz"
-    assert env["PIONEER_GITHUB_TOKEN"] == "ghp_xyz"
+    assert "GITHUB_TOKEN" not in env
+    assert "PIONEER_GITHUB_TOKEN" not in env
+
+
+def test_spawn_worker_env_does_not_inject_provider_keys_from_backend_env():
+    """Provider API keys (OpenAI, etc.) are per-guild: the worker fetches them via
+    /guilds/{id}/foreman/env-vars, so a backend-wide value is NOT injected."""
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=[],
+        worker_name=None,
+        source_env={"OPENAI_API_KEY": "sk-openai-deploy"},
+    )
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_spawn_worker_env_passes_user_supplied_provider_key():
+    """A caller-supplied (guild/spawn) key rides through extra_env untouched — the
+    per-spawn override channel, distinct from the backend's own environment."""
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=[],
+        worker_name=None,
+        source_env={"OPENAI_API_KEY": "sk-openai-deploy"},
+        extra_env={"OPENAI_API_KEY": "sk-openai-user"},
+    )
+    assert env["OPENAI_API_KEY"] == "sk-openai-user"
+
+
+def test_spawn_worker_env_passes_arbitrary_user_env_vars():
+    """User-supplied extra_env keys of any name reach the spawned worker verbatim."""
+    from main import _build_spawn_worker_env
+
+    env = _build_spawn_worker_env(
+        guild_id="g1",
+        repos=[],
+        worker_name=None,
+        source_env={},
+        extra_env={"MY_CUSTOM_TOKEN": "abc123", "SOME_API_KEY": "xyz789"},
+    )
+    assert env["MY_CUSTOM_TOKEN"] == "abc123"
+    assert env["SOME_API_KEY"] == "xyz789"
+    # Pioneer's own wiring still wins over user-supplied collisions.
+    assert env["PIONEER_GUILD_ID"] == "g1"
 
 
 def test_spawn_worker_env_uses_worker_backend_url():
@@ -340,33 +399,6 @@ def test_spawn_worker_env_frontend_url_trailing_slash_stripped():
         source_env={"FRONTEND_URL": "https://pioneer-square.melloy.life/"},
     )
     assert env["PIONEER_FRONTEND_URL"] == "https://pioneer-square.melloy.life"
-
-
-def test_spawn_worker_env_db_token_beats_host_env():
-    """The DB-stored token wins over the host CLAUDE_CODE_OAUTH_TOKEN."""
-    from main import _build_spawn_worker_env
-
-    env = _build_spawn_worker_env(
-        guild_id="g1",
-        repos=[],
-        worker_name=None,
-        source_env={"CLAUDE_CODE_OAUTH_TOKEN": "stale-host-token"},
-        claude_oauth_token="fresh-db-token",
-    )
-    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "fresh-db-token"
-
-
-def test_spawn_worker_env_falls_back_to_host_env_when_db_empty():
-    from main import _build_spawn_worker_env
-
-    env = _build_spawn_worker_env(
-        guild_id="g1",
-        repos=[],
-        worker_name=None,
-        source_env={"CLAUDE_CODE_OAUTH_TOKEN": "host-token"},
-        claude_oauth_token=None,
-    )
-    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "host-token"
 
 
 def test_spawn_worker_env_forwards_debug_token():

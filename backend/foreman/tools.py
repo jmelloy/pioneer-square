@@ -34,7 +34,6 @@ from github_app_auth import get_app_installation_token, get_app_slug
 from lock_service import LockService
 from models import (
     Agent,
-    ClaudeCredentials,
     GithubToken,
     Guild,
     GuildKey,
@@ -48,7 +47,7 @@ from models import (
 from sqlalchemy import delete, literal, update
 from sqlmodel import col, select
 from util.tasks import spawn
-from utils import build_spawn_worker_env, decode_claude_oauth_token, worker_display_name
+from utils import build_spawn_worker_env, worker_display_name
 from ws_types import (
     TaskAssignedMsg,
     TaskCancelMsg,
@@ -1176,13 +1175,6 @@ async def spawn_worker(
     )
     await db.commit()
 
-    creds_result = await db.exec(
-        select(col(ClaudeCredentials.credentials_blob)).where(
-            col(ClaudeCredentials.guild_id) == guild_pk
-        )
-    )
-    stored_blob = creds_result.one_or_none()
-
     # Fetch guild-level env vars from foreman config and pass them to the worker.
     foreman_env_vars: dict[str, str] = {}
     if guild_pk is not None:
@@ -1201,7 +1193,6 @@ async def spawn_worker(
         repos=repos,
         worker_name=worker_name,
         source_env=dict(os.environ),
-        claude_oauth_token=decode_claude_oauth_token(stored_blob),
         worker_id=worker_id,
         auth_token=auth_token,
         agent_count=agent_count,

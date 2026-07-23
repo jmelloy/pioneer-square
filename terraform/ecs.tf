@@ -324,13 +324,18 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "AWS_DEFAULT_REGION", value = local.region },
       ]
 
-      secrets = [
-        for key, param in {
-          GITHUB_TOKEN            = aws_ssm_parameter.secret["github_token"]
-          CLAUDE_CODE_OAUTH_TOKEN = aws_ssm_parameter.secret["claude_code_oauth_token"]
-          OPENAI_API_KEY          = aws_ssm_parameter.secret["openai_api_key"]
-        } : { name = key, valueFrom = param.arn }
-      ]
+      # No `secrets` block here on purpose. Worker credentials (GitHub token,
+      # Claude OAuth token, provider API keys) are per-guild, so the worker
+      # fetches them from the backend on startup over its authenticated
+      # connection — /auth/github/token, /auth/claude/credentials, and the
+      # per-guild /guilds/{id}/foreman/env-vars (see the worker's
+      # _fetch_github_token_if_needed / _check_claude_auth / _fetch_guild_env_vars).
+      #
+      # Pinning them here as deploy-wide SSM secrets would be actively harmful:
+      # ECS won't let a RunTask container override replace a value a secret
+      # already binds (aws/containers-roadmap#1269), and the worker skips its
+      # per-guild fetch whenever the variable is already set in its environment
+      # — so a baked-in secret would shadow the correct per-guild credential.
 
       logConfiguration = {
         logDriver = "awslogs"
