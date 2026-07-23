@@ -36,6 +36,26 @@ output "ecs_worker_task_definition_family" {
   value       = aws_ecs_task_definition.worker.family
 }
 
+output "ecs_migrate_task_definition_family" {
+  description = "Task definition family for the one-off alembic migration release task, run via ecs:RunTask by deploy.yml before rolling the services."
+  value       = aws_ecs_task_definition.migrate.family
+}
+
+output "ecs_migrate_log_group" {
+  description = "CloudWatch log group of the migrate task, used by deploy.yml to surface migration output."
+  value       = aws_cloudwatch_log_group.migrate.name
+}
+
+output "private_subnet_ids" {
+  description = "Private subnet IDs, the awsvpc network configuration for one-off ECS tasks (migrate)."
+  value       = aws_subnet.private[*].id
+}
+
+output "ecs_tasks_security_group_id" {
+  description = "Security group shared by ECS tasks, used when launching one-off tasks (migrate)."
+  value       = aws_security_group.ecs_tasks.id
+}
+
 output "rds_endpoint" {
   description = "RDS Postgres connection endpoint (host:port)."
   value       = aws_db_instance.postgres.endpoint

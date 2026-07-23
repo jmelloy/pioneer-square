@@ -277,6 +277,7 @@ data "aws_iam_policy_document" "github_actions_deploy" {
       "ecs:DescribeTaskDefinition",
       "ecs:DescribeTasks",
       "ecs:RegisterTaskDefinition",
+      "ecs:RunTask", # deploy.yml runs the one-off migrate task before rolling the services
       "ecs:UpdateService",
     ]
     resources = ["*"] # ecs:RegisterTaskDefinition does not support resource-level scoping.

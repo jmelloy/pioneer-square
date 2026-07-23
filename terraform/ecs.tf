@@ -54,7 +54,10 @@ resource "aws_ecs_task_definition" "backend" {
         }
       ]
 
-      command = ["sh", "-c", "cd backend && alembic upgrade head && cd .. && pioneer serve"]
+      # Migrations run in the separate one-off migrate task below (before the
+      # services roll), so backend startup never gates on `alembic upgrade` and
+      # a new task can come up alongside the old one during a deploy.
+      command = ["pioneer", "serve"]
 
       environment = [
         { name = "GITHUB_REDIRECT_URI", value = var.frontend_url != "" ? "${var.frontend_url}/auth/github/callback" : "" },
@@ -147,6 +150,62 @@ resource "aws_ecs_service" "backend" {
   tags = {
     Name    = "${local.name_prefix}-backend"
     Service = "backend"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Migrate — one-off release task (no service). deploy.yml registers this at
+# the new image tag and runs it to completion via ecs:RunTask BEFORE the full
+# terraform apply rolls the services: the schema is upgraded first, then the
+# new backend comes up next to the old one and ECS tears the old one down
+# only once the new one is healthy.
+# -----------------------------------------------------------------------------
+
+resource "aws_cloudwatch_log_group" "migrate" {
+  name              = "/ecs/${local.name_prefix}/migrate"
+  retention_in_days = var.log_retention_days
+
+  tags = {
+    Name    = "${local.name_prefix}-migrate-logs"
+    Service = "migrate"
+  }
+}
+
+resource "aws_ecs_task_definition" "migrate" {
+  family                   = "${local.name_prefix}-migrate"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "migrate"
+      image     = "${aws_ecr_repository.service["backend"].repository_url}:${var.container_image_tag}"
+      essential = true
+
+      command = ["sh", "-c", "cd backend && alembic upgrade head"]
+
+      secrets = [
+        { name = "DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.migrate.name
+          "awslogs-region"        = local.region
+          "awslogs-stream-prefix" = "migrate"
+        }
+      }
+    }
+  ])
+
+  tags = {
+    Name    = "${local.name_prefix}-migrate"
+    Service = "migrate"
   }
 }
 

@@ -14,6 +14,7 @@ Amazon Bedrock access.
 | `worker` | ECS task definition only, **no service** — see "Worker dispatch" below |
 | `pgweb` (Metabase, `profiles: [tools]`) | Not migrated; run locally against the RDS endpoint if needed |
 | `postgres-test` (`profiles: [test]`) | Not migrated; test-only |
+| (backend's inline `alembic upgrade head`) | One-off `*-migrate` task definition, run at deploy time — see "Database migrations" below |
 
 ### Worker dispatch
 
@@ -33,6 +34,34 @@ carry per-spawn configuration as container env overrides (static secrets like
 (`backend/worker_lifecycle.py`, `PIONEER_WORKER_IDLE_TIMEOUT`, default 30 min) shuts
 spawned workers down after a period of inactivity so idle Fargate tasks don't accrue
 cost indefinitely.
+
+### Database migrations
+
+In docker-compose the backend container runs `alembic upgrade head` inline before
+`pioneer serve`. On ECS that would couple schema upgrades to backend startup, forcing the
+old task down before the new one could safely come up. Instead, `ecs.tf` registers a
+dedicated `*-migrate` task definition (backend image, `alembic upgrade head` only,
+`DATABASE_URL` as its single secret) with no service, and the backend container command is
+a plain `pioneer serve`.
+
+At deploy time, `deploy.yml`'s `migrate` job registers the migrate task definition at the
+new image tag (a `-target`ed apply that leaves the services untouched), runs it via
+`ecs:RunTask`, streams its CloudWatch output into the job log, and fails the deploy if the
+task exits non-zero — the services only roll after the schema is at `head`. Because the
+backend no longer migrates at startup, ECS's default rolling deployment (min healthy 100% /
+max 200%) brings the new backend up alongside the old one and tears the old one down only
+once the new one passes health checks.
+
+Running a migration out-of-band (without deploying) is the same call the workflow makes:
+
+```bash
+aws ecs run-task --cluster <cluster_name> \
+  --task-definition <name_prefix>-migrate \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[<private_subnet_ids>],securityGroups=[<ecs_tasks_security_group_id>],assignPublicIp=DISABLED}"
+```
+
+(all values available as Terraform outputs).
 
 ## Prerequisites
 
@@ -185,12 +214,16 @@ Nova, etc.) also requires access to be enabled per-account in the Bedrock consol
 
 ### `deploy.yml`
 
-Triggered on push to `main` (or manually via `workflow_dispatch`). Two stages:
+Triggered on push to `main` (or manually via `workflow_dispatch`). Three stages:
 
 1. **build** (one job per service, backend/foreman/worker): assumes the
    `github_actions_deploy_role_arn` role via OIDC, logs in to ECR, and builds/pushes
    the image tagged with the commit SHA (also stamped into the image as `PIONEER_VERSION`).
-2. **apply**: `terraform init` + `terraform apply -auto-approve -var container_image_tag=<sha>`.
+2. **migrate**: registers the `*-migrate` task definition at the new image tag
+   (`terraform apply -target=aws_ecs_task_definition.migrate`, services untouched), runs it
+   as a one-off Fargate task, and fails the deploy if `alembic upgrade head` exits non-zero
+   — see "Database migrations" above.
+3. **apply**: `terraform init` + `terraform apply -auto-approve -var container_image_tag=<sha>`.
    Terraform is the single source of truth for the running task definitions — it renders
    env (subnets, security groups, config) **and** the image tag into one revision and rolls
    the services. There is no separate `amazon-ecs-deploy-task-definition` step and the
