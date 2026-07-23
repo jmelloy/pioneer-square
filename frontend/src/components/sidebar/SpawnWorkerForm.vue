@@ -6,6 +6,9 @@
     </div>
     <template v-else>
       <label class="spawn-label">Repos</label>
+      <div v-if="prefilledFromGuild" class="spawn-prefill-note">
+        Pre-filled from this guild's last spawn — adjust as needed.
+      </div>
       <div v-if="loadingRepos" class="spawn-hint-text">Loading repos…</div>
       <div v-else-if="repoFetchFailed" class="spawn-error">
         Failed to load repos — saved selection cleared.
@@ -136,6 +139,12 @@ interface SpawnSettings {
   envVars?: EnvPair[]
 }
 
+interface GuildSpawnDefaults {
+  repos?: string[]
+  tools?: string[]
+  agent_count?: number | null
+}
+
 const selectedRepos = ref<string[]>([])
 const name = ref('')
 const selectedTools = ref<string[]>([])
@@ -147,12 +156,21 @@ const loadingRepos = ref(false)
 const repoFetchFailed = ref(false)
 const launched = ref(false)
 const launchedWorkerId = ref('')
+const prefilledFromGuild = ref(false)
 
 const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
 
 async function loadSavedSettings(guildId: string): Promise<SpawnSettings | null> {
   try {
     return await api<SpawnSettings>(`/guilds/${guildId}/spawn-settings`)
+  } catch {
+    return null
+  }
+}
+
+async function loadGuildDefaults(guildId: string): Promise<GuildSpawnDefaults | null> {
+  try {
+    return await api<GuildSpawnDefaults>(`/guilds/${guildId}/spawn-defaults`)
   } catch {
     return null
   }
@@ -190,24 +208,44 @@ onMounted(async () => {
   const saved = guild ? await loadSavedSettings(guild.id) : null
 
   if (saved && (saved.repos?.length || saved.tools?.length || saved.envVars?.length)) {
-    if (saved.repos?.length) {
-      if (repoFetchFailed.value) {
-        // Fetch failed — cannot validate saved repos against available ones.
-        selectedRepos.value = []
-      } else {
-        const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
-        // If fetch succeeded but returned no repos, the filter yields [] — correct.
-        selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
-      }
-    }
+    // Tier 1: this user's own saved settings win.
+    if (saved.repos?.length) selectedRepos.value = validateRepos(saved.repos)
     if (saved.tools?.length) selectedTools.value = saved.tools
     if (saved.envVars?.length) envVars.value = saved.envVars
-  } else {
-    selectedRepos.value = repoFetchFailed.value ? [] : [...ghStore.selectedRepos]
+    return
   }
+
+  // Tier 2: no personal settings — fall back to the guild's last successful
+  // spawn (the same defaults the foreman uses), so a new user sees the guild's
+  // usual configuration instead of a blank form.
+  const guildDefaults = guild ? await loadGuildDefaults(guild.id) : null
+  if (
+    guildDefaults &&
+    (guildDefaults.repos?.length ||
+      guildDefaults.tools?.length ||
+      guildDefaults.agent_count != null)
+  ) {
+    if (guildDefaults.repos?.length) selectedRepos.value = validateRepos(guildDefaults.repos)
+    if (guildDefaults.tools?.length) selectedTools.value = [...guildDefaults.tools]
+    if (guildDefaults.agent_count != null) agentCount.value = guildDefaults.agent_count
+    prefilledFromGuild.value = selectedRepos.value.length > 0
+    return
+  }
+
+  // Tier 3: nothing recorded — mirror the repos already selected in the GitHub sidebar.
+  selectedRepos.value = repoFetchFailed.value ? [] : [...ghStore.selectedRepos]
 })
 
+// Keep only repos that exist in the fetched list; on a fetch failure we can't
+// validate, so drop everything rather than send unknown repos to the backend.
+function validateRepos(repos: string[]): string[] {
+  if (repoFetchFailed.value) return []
+  const available = new Set(ghStore.repos.map((r) => r.full_name))
+  return repos.filter((r) => available.has(r))
+}
+
 function toggleRepo(fullName: string) {
+  prefilledFromGuild.value = false
   const idx = selectedRepos.value.indexOf(fullName)
   if (idx >= 0) {
     selectedRepos.value.splice(idx, 1)
@@ -227,6 +265,7 @@ function orgSomeSelected(owner: string): boolean {
 }
 
 function toggleOrg(owner: string) {
+  prefilledFromGuild.value = false
   const repos = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
   if (orgAllSelected(owner)) {
     const names = new Set(repos.map((r) => r.full_name))
@@ -391,6 +430,14 @@ async function launch() {
   color: var(--color-text-dim);
   padding: 4px 0;
   font-style: italic;
+}
+
+.spawn-prefill-note {
+  font-size: 9px;
+  color: var(--color-teal);
+  font-style: italic;
+  line-height: 1.4;
+  margin: 0 0 2px;
 }
 
 .spawn-repo-list {

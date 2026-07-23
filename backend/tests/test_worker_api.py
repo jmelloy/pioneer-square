@@ -234,6 +234,61 @@ def test_shutdown_unknown_worker_returns_404(client):
     assert resp.status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# Guild spawn defaults
+# ---------------------------------------------------------------------------
+
+
+def _insert_spawn_defaults(
+    db_url: str, guild_id: str, repos: str, tools: str, agent_count: int | None
+) -> None:
+    from datetime import UTC, datetime
+
+    from models import GuildSpawnDefaults
+
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == guild_id))
+        session.add(
+            GuildSpawnDefaults(
+                guild_id=guild_pk,
+                repos=repos,
+                tools=tools,
+                agent_count=agent_count,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+
+
+def test_get_spawn_defaults_empty_when_none(client):
+    """A guild that has never recorded a successful spawn returns an empty object."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-def-empty")
+    resp = test_client.get("/guilds/guild-def-empty/spawn-defaults", headers=_auth(db_url))
+    assert resp.status_code == 200
+    assert resp.json() == {}
+
+
+def test_get_spawn_defaults_returns_recorded(client):
+    """The endpoint parses the JSON columns and returns repos/tools/agent_count."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-def-set")
+    _insert_spawn_defaults(db_url, "guild-def-set", '["acme/widgets"]', '["claude", "codex"]', 2)
+    resp = test_client.get("/guilds/guild-def-set/spawn-defaults", headers=_auth(db_url))
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "repos": ["acme/widgets"],
+        "tools": ["claude", "codex"],
+        "agent_count": 2,
+    }
+
+
+def test_get_spawn_defaults_unknown_guild_404(client):
+    test_client, db_url = client
+    resp = test_client.get("/guilds/guild-def-nope/spawn-defaults", headers=_auth(db_url))
+    assert resp.status_code == 404
+
+
 def test_spawn_worker_env_forwards_claude_oauth_token():
     """CLAUDE_CODE_OAUTH_TOKEN must reach the spawned container so it skips setup-token."""
     from main import _build_spawn_worker_env

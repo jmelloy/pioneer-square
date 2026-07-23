@@ -21,7 +21,15 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeCredentials, Guild, Task, UserSpawnSettings, Worker, live_tasks_filter
+from models import (
+    ClaudeCredentials,
+    Guild,
+    GuildSpawnDefaults,
+    Task,
+    UserSpawnSettings,
+    Worker,
+    live_tasks_filter,
+)
 from pydantic import BaseModel, field_validator
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -263,6 +271,36 @@ async def spawn_worker_container(
         "worker_id": worker_id,
         "container_id": spawned.short_id,
         "runtime": spawned.runtime,
+    }
+
+
+@router.get("/guilds/{guild_id}/spawn-defaults")
+async def get_spawn_defaults(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return the guild's last-successful-spawn parameters (repos, tools, agent_count).
+
+    This is the guild-wide default the foreman falls back to when a
+    ``spawn_worker`` call omits parameters; the spawn form uses it to pre-fill
+    when the current user has no personal saved settings. Returns an empty
+    object when the guild has never recorded a successful spawn.
+    """
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    row = (
+        await db.exec(
+            select(GuildSpawnDefaults).where(col(GuildSpawnDefaults.guild_id) == guild_pk)
+        )
+    ).one_or_none()
+    if row is None:
+        return {}
+    return {
+        "repos": json.loads(row.repos or "[]"),
+        "tools": json.loads(row.tools or "[]"),
+        "agent_count": row.agent_count,
     }
 
 
