@@ -1,7 +1,7 @@
 """Authentication and identity routes.
 
-Covers GitHub OAuth (login/exchange/callback/token), Claude credential
-storage, the ``/auth/me`` + ``/api/me`` profile endpoints, and logout.
+Covers GitHub OAuth (login/exchange/callback/token), the ``/auth/me`` +
+``/api/me`` profile endpoints, and logout.
 """
 
 from __future__ import annotations
@@ -12,20 +12,17 @@ import urllib.parse
 from datetime import UTC, datetime
 
 from auth_deps import (
-    authorize_worker_or_member,
     get_guild_pk,
     http_bearer,
-    require_member,
     require_user,
     require_worker_or_member,
 )
 from database import get_db_dep
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from github_app_auth import get_app_installation_token, get_app_slug
 from models import (
-    ClaudeCredentials,
     GithubToken,
     Guild,
     GuildMember,
@@ -46,11 +43,6 @@ router = APIRouter()
 class CodeExchangeRequest(BaseModel):
     code: str
     state: str
-
-
-class ClaudeCredentialsRequest(BaseModel):
-    slug: str
-    credentials_blob: str  # base64-encoded tar.gz of ~/.claude/
 
 
 @router.get("/auth/github/login")
@@ -122,97 +114,6 @@ async def get_github_token(
     if not token_row:
         raise HTTPException(status_code=404, detail="GitHub token not found")
     return {"access_token": token_row.access_token, "username": token_row.github_username}
-
-
-@router.get("/auth/claude/credentials")
-async def get_claude_credentials(
-    guild_id: str = Query(...),
-    _principal: str = Depends(require_worker_or_member),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Return stored Claude credentials blob for a worker. Called by workers on startup.
-
-    Requires a worker auth_token (from registration) or a member login_token —
-    these credentials are sensitive and must not be readable by guild_id alone."""
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="No Claude credentials stored for this guild")
-    result = await db.exec(
-        select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
-    )
-    row = result.one_or_none()
-    if not row:
-        raise HTTPException(status_code=404, detail="No Claude credentials stored for this guild")
-    return {"credentials_blob": row.credentials_blob}
-
-
-@router.post("/auth/claude/credentials")
-async def store_claude_credentials(
-    data: ClaudeCredentialsRequest,
-    credentials: HTTPAuthorizationCredentials | None = Depends(http_bearer),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Store Claude credentials blob (called by worker after successful login).
-
-    Requires a worker auth_token or member login_token for ``data.guild_id``.
-    Without this check, anyone could overwrite a guild's Claude credentials."""
-    token = credentials.credentials if credentials else None
-    await authorize_worker_or_member(data.slug, token)
-    now = datetime.now(UTC)
-    guild_pk = await get_guild_pk(db, data.slug)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-    result = await db.exec(
-        select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
-    )
-    row = result.one_or_none()
-    if row:
-        row.credentials_blob = data.credentials_blob
-        row.updated_at = now
-    else:
-        db.add(
-            ClaudeCredentials(
-                guild_id=guild_pk,
-                credentials_blob=data.credentials_blob,
-                updated_at=now,
-            )
-        )
-    await db.commit()
-    return {"ok": True}
-
-
-@router.get("/auth/claude-credentials")
-async def get_claude_credentials_status(
-    guild_id: str = Query(...),
-    _user_id: str = Depends(require_member()),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Return masked Claude credentials status for the settings UI (never the full blob)."""
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-    result = await db.exec(
-        select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
-    )
-    row = result.one_or_none()
-    if not row:
-        return {"saved": False}
-    return {"saved": True, "updated_at": row.updated_at.isoformat() if row.updated_at else None}
-
-
-@router.delete("/auth/claude-credentials", status_code=204)
-async def delete_claude_credentials(
-    guild_id: str = Query(...),
-    _user_id: str = Depends(require_member()),
-    db: AsyncSession = Depends(get_db_dep),
-):
-    """Delete stored Claude credentials for a guild. Requires guild member auth."""
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
-        raise HTTPException(status_code=404, detail="Guild not found")
-    await db.exec(delete(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk))
-    await db.commit()
-    return Response(status_code=204)
 
 
 @router.get("/auth/me")

@@ -476,11 +476,11 @@ def test_spawn_worker_rejects_invalid_exclude_env_key(client):
 
 
 def test_spawn_worker_env_does_not_inject_claude_oauth_token():
-    """Claude credentials are per-guild: the worker fetches them from the backend
-    (/auth/claude/credentials) on startup, so they are NOT injected at spawn.
+    """Claude credentials are per-guild: they come from the guild's foreman
+    env_vars, so a backend-wide CLAUDE_CODE_OAUTH_TOKEN is NOT injected at spawn.
 
-    Injecting a backend-wide token would shadow the per-guild credential the
-    worker pulls (_check_claude_auth skips the fetch when the var is already set).
+    Injecting a backend-wide token would shadow the per-guild credential a
+    worker inherits from its guild env vars.
     """
     from main import _build_spawn_worker_env
 

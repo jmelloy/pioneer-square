@@ -91,7 +91,7 @@ async def test_setup_methods_are_noops():
     await worker._fetch_github_token_if_needed()
     await worker._refresh_github_repos()
     await worker._check_gh_auth()
-    await worker._check_claude_auth()
+    await worker._detect_available_tools()
     await worker._initial_worktree_sweep()
     assert worker._send.await_count == 0
 

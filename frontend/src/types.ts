@@ -1,13 +1,7 @@
 export type AgentState = 'idle' | 'thinking' | 'working' | 'busy' | 'error' | 'offline'
 
 export type AgentActivity =
-  | 'reading'
-  | 'editing'
-  | 'running'
-  | 'searching'
-  | 'fetching'
-  | 'thinking'
-  | 'planning'
+  'reading' | 'editing' | 'running' | 'searching' | 'fetching' | 'thinking' | 'planning'
 
 export type AgentType = 'foreman' | 'worker' | string
 
@@ -295,22 +289,6 @@ export interface NeedsInputWS {
   description?: string
 }
 
-export interface ClaudeAuthRequiredWS {
-  type: 'claude-auth-required'
-  workerId: string
-  url: string
-}
-
-export interface ClaudeAuthSuccessWS {
-  type: 'claude-auth-success'
-  workerId: string
-}
-
-export interface ClaudeAuthClearedWS {
-  type: 'claude-auth-cleared'
-  workerId: string
-}
-
 export interface ForemanPollStatusWS {
   type: 'foreman-poll-status'
   nextCheckIn?: number
@@ -352,9 +330,6 @@ export type WSInbound =
   | TaskCompleteWS
   | TaskFollowupDoneWS
   | NeedsInputWS
-  | ClaudeAuthRequiredWS
-  | ClaudeAuthSuccessWS
-  | ClaudeAuthClearedWS
   | ForemanPollStatusWS
   | ClaudeUsageWS
 

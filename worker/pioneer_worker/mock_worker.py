@@ -101,8 +101,10 @@ class MockWorker(Worker):
     async def _check_gh_auth(self) -> None:
         logger.info("[mock] skipping gh auth check")
 
-    async def _check_claude_auth(self) -> None:
-        logger.info("[mock] skipping claude auth check")
+    async def _detect_available_tools(self) -> None:
+        # Skip real PATH/credential probing; mock workers can run any tool.
+        self._available_tools = list(self.cfg.tools or ["claude", "codex", "pi"])
+        logger.info("[mock] available tools: %s", self._available_tools)
 
     async def _initial_worktree_sweep(self) -> None:
         return  # nothing on disk to sweep
