@@ -768,9 +768,7 @@ def _spawn_discord_task_assigned(
             task_id,
             fallback_title,
             issue_repo=inp.get("issue_repo"),
-            issue_number=int(inp["issue_number"])
-            if inp.get("issue_number") is not None
-            else None,
+            issue_number=int(inp["issue_number"]) if inp.get("issue_number") is not None else None,
         ),
         name=f"discord.task-assigned:{task_id}",
     )
