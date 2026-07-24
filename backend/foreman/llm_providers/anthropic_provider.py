@@ -18,6 +18,22 @@ from .errors import normalize_error
 
 logger = logging.getLogger(__name__)
 
+# Deployments sometimes set ANTHROPIC_API_KEY=placeholder as a non-empty
+# stand-in (e.g. to satisfy tooling that requires the var to be present)
+# without intending it as a real credential. Passing it to the SDK produces a
+# confusing 401 instead of the "no key configured" fallback callers expect.
+_PLACEHOLDER_KEY_VALUES = {"placeholder"}
+
+
+def _real_api_key(value: str | None) -> str | None:
+    """Return *value* unless it's blank or a known placeholder string."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped or stripped.lower() in _PLACEHOLDER_KEY_VALUES:
+        return None
+    return stripped
+
 
 class AnthropicProvider(LLMProvider):
     """Adapter for the direct Anthropic Messages API."""
@@ -53,7 +69,7 @@ class AnthropicProvider(LLMProvider):
         if env.get("ANTHROPIC_AUTH_TOKEN"):
             kwargs["auth_token"] = env["ANTHROPIC_AUTH_TOKEN"]
         else:
-            resolved_api_key = api_key or env.get("ANTHROPIC_API_KEY")
+            resolved_api_key = _real_api_key(api_key) or _real_api_key(env.get("ANTHROPIC_API_KEY"))
             if resolved_api_key:
                 kwargs["api_key"] = resolved_api_key
         if env.get("ANTHROPIC_BASE_URL"):
