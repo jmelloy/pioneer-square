@@ -56,9 +56,6 @@ services:
       GITHUB_REDIRECT_URI: ${GITHUB_REDIRECT_URI:-https://pioneer-square.melloy.life/auth/github/callback}
       FRONTEND_URL: ${FRONTEND_URL:-https://pioneer-square.melloy.life}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Forwarded to spawned worker containers so they skip the interactive
-      # `claude setup-token` flow. Generate one with `claude setup-token`.
-      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       WORKER_IMAGE: ${WORKER_IMAGE:-pioneer-square-worker}
       WORKER_BACKEND_URL: ${WORKER_BACKEND_URL:-http://backend:8000}
