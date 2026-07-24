@@ -69,9 +69,7 @@ class AnthropicProvider(LLMProvider):
         if env.get("ANTHROPIC_AUTH_TOKEN"):
             kwargs["auth_token"] = env["ANTHROPIC_AUTH_TOKEN"]
         else:
-            resolved_api_key = _real_api_key(api_key) or _real_api_key(
-                env.get("ANTHROPIC_API_KEY")
-            )
+            resolved_api_key = _real_api_key(api_key) or _real_api_key(env.get("ANTHROPIC_API_KEY"))
             if resolved_api_key:
                 kwargs["api_key"] = resolved_api_key
         if env.get("ANTHROPIC_BASE_URL"):
