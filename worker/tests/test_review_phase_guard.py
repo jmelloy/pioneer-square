@@ -206,7 +206,7 @@ async def test_review_phase_injects_no_pr_instructions(caplog: pytest.LogCapture
 async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptureFixture):
     """Review-phase tasks must check out the PR's own branch (via `gh pr checkout`,
     wrapped by ``git_ops.checkout_pr_worktree``) instead of generating a new
-    ``claude/...`` branch, and must never push commits (issue #799).
+    ``ps/...`` branch, and must never push commits (issue #799).
     """
     import os
     import tempfile
@@ -264,8 +264,8 @@ async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptur
     ]
     assert updates, "task record must be updated with the PR's actual branch, not a generated one"
     assert not any(
-        m.args[0].get("branch", "").startswith("claude/") for m in worker._send.await_args_list
-    ), "review tasks must never record a generated claude/... branch"
+        m.args[0].get("branch", "").startswith("ps/") for m in worker._send.await_args_list
+    ), "review tasks must never record a generated ps/... branch"
 
 
 async def test_review_prefers_pr_number_over_issue_number():
