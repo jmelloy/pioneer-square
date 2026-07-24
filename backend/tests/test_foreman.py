@@ -2572,9 +2572,7 @@ class TestExecToolsResultHandling:
 
         insert_guild(db_session, "g-devready")
         with _sync_session(db_session) as session:
-            guild_pk = session.scalar(
-                select(col(Guild.id)).where(col(Guild.slug) == "g-devready")
-            )
+            guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "g-devready"))
             session.execute(
                 update(Guild).where(col(Guild.id) == guild_pk).values(primary_repo="org/repo")
             )

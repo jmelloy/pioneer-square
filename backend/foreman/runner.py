@@ -642,9 +642,7 @@ async def _fetch_pr_status_lines(guild_id: str, pr_tasks: list[dict]) -> list[st
 _DEVREADY_LABELS = ("devReady", "dev-ready", "ready-for-dev", "ready")
 
 
-async def _fetch_devready_issues(
-    guild_id: str, linked_issues: set[tuple[str, int]]
-) -> list[str]:
+async def _fetch_devready_issues(guild_id: str, linked_issues: set[tuple[str, int]]) -> list[str]:
     """Pre-fetch unassigned devReady issues on the primary repo for pickup.
 
     Runs every periodic-check so the foreman acts on injected data instead of
@@ -662,9 +660,7 @@ async def _fetch_devready_issues(
 
     db = await get_db()
     try:
-        row = await db.exec(
-            select(col(Guild.primary_repo)).where(col(Guild.slug) == guild_id)
-        )
+        row = await db.exec(select(col(Guild.primary_repo)).where(col(Guild.slug) == guild_id))
         primary_repo = row.one_or_none()
     finally:
         await db.close()
