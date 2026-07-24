@@ -30,6 +30,20 @@ def row_to_dict(obj) -> dict:
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
 
+def mask_secret(value: str) -> str:
+    """Mask a credential value for display, revealing only a short prefix/suffix.
+
+    Never returns enough of the original value to reconstruct it — callers that
+    need the real value (e.g. injecting it into a worker's env) must fetch it
+    through its own unmasked source, not this helper's output.
+    """
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "•" * len(value)
+    return f"{value[:2]}…{value[-4:]}"
+
+
 def _slugify(name: str) -> str:
     """Lowercase, normalize unicode, replace non-alphanumeric runs with '-'."""
     normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
