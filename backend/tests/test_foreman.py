@@ -1997,6 +1997,136 @@ class TestExecToolsDispatching:
         assert ev is None, "No pending-followup event should be queued — follow-up was dispatched"
 
 
+class TestChildForemanFollowupAndRedirect:
+    """Per-task child Foreman contexts must be able to call send_followup and
+    redirect_task on their own task (issue #997), and must not be able to
+    reach into a different task's lifecycle from within that scoped context.
+
+    ``own_task_id`` mirrors what ``run_foreman_ai(child=True, task_id=...)``
+    passes through to ``exec_tools`` for a real child turn.
+    """
+
+    async def test_child_context_send_followup_succeeds_on_own_task(self, db_session):
+        insert_guild(db_session, "g-child-fu-ok")
+        _insert_worker(db_session, "g-child-fu-ok", "w-child1")
+        _insert_agent(db_session, "g-child-fu-ok", "w-child1", "a-child1")
+        _insert_task(db_session, "t-child-fu", "g-child-fu-ok", "w-child1")
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-child-fu-ok",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {"task_id": "t-child-fu", "instructions": "Add more tests"},
+                    )
+                ],
+                own_task_id="t-child-fu",
+            )
+
+        assert results[0].get("is_error") is not True
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 1
+        assert followup_msgs[0]["instructions"] == "Add more tests"
+
+    async def test_child_context_redirect_task_succeeds_on_own_task(self, db_session):
+        insert_guild(db_session, "g-child-redir-ok")
+        _insert_worker(db_session, "g-child-redir-ok", "w-child2")
+        _insert_task(db_session, "t-child-redir", "g-child-redir-ok", "w-child2", state="working")
+
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-child-redir-ok",
+                [
+                    _fake_tool_use(
+                        "redirect_task",
+                        {"task_id": "t-child-redir", "instructions": "New direction"},
+                    )
+                ],
+                own_task_id="t-child-redir",
+            )
+
+        assert results[0].get("is_error") is not True
+        assert "redirect" in results[0]["content"].lower()
+
+    async def test_child_context_send_followup_rejected_on_other_task(self, db_session):
+        """A child scoped to t-child-own must not be able to send_followup on
+        some other task t-other, even if that other task exists and is free."""
+        insert_guild(db_session, "g-child-fu-scope")
+        _insert_worker(db_session, "g-child-fu-scope", "w-child3")
+        _insert_agent(db_session, "g-child-fu-scope", "w-child3", "a-child3")
+        _insert_task(db_session, "t-child-own", "g-child-fu-scope", "w-child3")
+        _insert_task(db_session, "t-other", "g-child-fu-scope", "w-child3")
+        broadcast_calls = []
+
+        async def capture(gid, msg):
+            broadcast_calls.append(msg)
+
+        with patch("foreman.tools.broadcast", side_effect=capture):
+            results = await exec_tools(
+                "g-child-fu-scope",
+                [
+                    _fake_tool_use(
+                        "send_followup",
+                        {"task_id": "t-other", "instructions": "Do this instead"},
+                    )
+                ],
+                own_task_id="t-child-own",
+            )
+
+        assert results[0].get("is_error") is True
+        assert "task-scoped" in results[0]["content"].lower()
+        followup_msgs = [m for m in broadcast_calls if m.get("type") == "task-followup"]
+        assert len(followup_msgs) == 0
+
+    async def test_child_context_redirect_task_rejected_on_other_task(self, db_session):
+        insert_guild(db_session, "g-child-redir-scope")
+        _insert_worker(db_session, "g-child-redir-scope", "w-child4")
+        _insert_task(db_session, "t-child-own2", "g-child-redir-scope", "w-child4", state="working")
+        _insert_task(db_session, "t-other2", "g-child-redir-scope", "w-child4", state="working")
+
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock) as mock_broadcast:
+            results = await exec_tools(
+                "g-child-redir-scope",
+                [
+                    _fake_tool_use(
+                        "redirect_task",
+                        {"task_id": "t-other2", "instructions": "New direction"},
+                    )
+                ],
+                own_task_id="t-child-own2",
+            )
+
+        assert results[0].get("is_error") is True
+        assert "task-scoped" in results[0]["content"].lower()
+        mock_broadcast.assert_not_called()
+
+    async def test_parent_context_still_allowed_to_redirect_any_task(self, db_session):
+        """Baseline: a parent/whole-guild run (own_task_id=None) is unaffected by
+        the child-scope restriction and can still redirect any task in the guild."""
+        insert_guild(db_session, "g-parent-redirect")
+        _insert_worker(db_session, "g-parent-redirect", "w-parent1")
+        _insert_task(db_session, "t-parent-any", "g-parent-redirect", "w-parent1", state="working")
+
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-parent-redirect",
+                [
+                    _fake_tool_use(
+                        "redirect_task",
+                        {"task_id": "t-parent-any", "instructions": "New direction"},
+                    )
+                ],
+            )
+
+        assert results[0].get("is_error") is not True
+        assert "redirect" in results[0]["content"].lower()
+
+
 class TestFinalizeClosedIssueAtomicity:
     """finalize_closed_issue (backend/foreman/tools.py) guards against a lost-update
     race (jmelloy/pioneer-square#851, PR #848 review) by making the terminal-state

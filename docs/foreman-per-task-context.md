@@ -65,6 +65,13 @@ create or assign new work. The child state preamble includes only the relevant
 task and assigned worker, keeping review context small and free of unrelated
 task history.
 
+`send_followup` and `redirect_task` are scoped to the child's own task
+(issue [#997](https://github.com/jmelloy/pioneer-square/issues/997)):
+`_task_mutation_blocked()` in `backend/foreman/tools.py` rejects a call whose
+`task_id` differs from the child's own, so a per-task child context can course
+correct or continue its own task but cannot reach into another task's
+lifecycle — that stays the parent Foreman's job.
+
 ---
 
 ## Operational Notes

@@ -1317,20 +1317,29 @@ def _full_log_content(data_json: str | None) -> str | None:
 
 
 def _task_mutation_blocked(guild_id: str, task_id: str, own_task_id: str | None) -> str | None:
-    """Return a user-facing message if *task_id* is owned by a different in-flight
-    Foreman context right now, else None.
+    """Return a user-facing message if *task_id* cannot be mutated right now, else None.
 
     ``own_task_id`` is the task_id of the per-task child context this tool
     call is itself running in (None for a parent/whole-guild run). A run
-    never conflicts with its own per-task lock — this only fires when a
-    *different* context holds it, which in practice means a parent run
-    (periodic-check or human chat) reaching into a task whose own child run
-    is currently mutating it. See issue #927: parent and child runs key on
-    different (guild_id, key) pairs and would otherwise never serialise
-    against each other for the same task.
+    never conflicts with its own per-task lock or scope — this only fires
+    for a *different* task_id, in two cases:
+
+    1. A per-task child context (``own_task_id`` set) is scoped to its own
+       task only (see docs/foreman-per-task-context.md, issue #997) — it
+       must not reach into another task's lifecycle, which stays the parent
+       Foreman's job.
+    2. A parent run (periodic-check or human chat) reaching into a task
+       whose own child run is currently mutating it. See issue #927: parent
+       and child runs key on different (guild_id, key) pairs and would
+       otherwise never serialise against each other for the same task.
     """
     if own_task_id == task_id:
         return None
+    if own_task_id is not None:
+        return (
+            f"This is a task-scoped child Foreman context for {own_task_id} — it cannot "
+            f"act on task {task_id}. Only the parent Foreman can manage other tasks."
+        )
     from foreman.runner import is_child_task_run_active  # noqa: PLC0415 — avoids circular import
 
     if is_child_task_run_active(guild_id, task_id):
