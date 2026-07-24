@@ -47,6 +47,12 @@ Phase 4 — live task-stream mirroring
     inbound (``discord/gateway.py``, ``discord/router.py``) through the same
     table.
 
+    ``notify_task_stream_event`` posts a single embed into that same
+    ``"task_stream"`` thread (creating it if needed) and, unlike
+    ``notify_task_stream``, always runs — it's the fallback lifecycle
+    notification (task-assigned, etc.) for tasks with no linked GitHub issue,
+    which ``notify_event`` can't route into an ``"issue"`` thread.
+
 Phase 5 — new-member welcome DM
     ``send_welcome_dm`` is called by the Gateway client (``discord.gateway``)
     when a ``GUILD_MEMBER_ADD`` event arrives, and DMs the new member
@@ -1035,6 +1041,39 @@ async def _ensure_task_thread(task_id: str, channel: str) -> str | None:
         return f"⚙ {task_id}: {description}" if description else f"⚙ {task_id}"
 
     return await _get_or_create_thread(_SUBJECT_TASK_STREAM, task_id, channel, _thread_name)
+
+
+async def notify_task_stream_event(
+    guild_id: str,
+    task_id: str,
+    event_type: str,
+    title: str,
+    description: str,
+    color: int | None = None,
+) -> None:
+    """Post a Discord embed into *task_id*'s task-stream thread, creating it first.
+
+    Fallback destination for tasks with no linked GitHub issue (e.g. created
+    directly from Discord chat) — ``notify_event``'s ``"issue"`` thread has
+    nothing to key off in that case and would otherwise degrade to a flat
+    channel post (see its docstring). This reuses the same ``"task_stream"``
+    binding/thread as ``notify_task_stream``'s live terminal-output mirroring
+    (``_ensure_task_thread``), so a task never ends up with two separate
+    threads — but unlike that mirroring, this always runs; it is not gated
+    behind ``DISCORD_STREAM_TASKS``.
+
+    Silent no-op when the bot token isn't configured or no channel can be
+    resolved for *guild_id*. Never raises.
+    """
+    if not bot_token():
+        return
+    channel = await _resolve_channel_for_guild(guild_id)
+    if not channel:
+        return
+    thread_id = await _ensure_task_thread(task_id, channel)
+    if not thread_id:
+        return
+    await _post_to_thread(thread_id, event_type, title, description, color=color)
 
 
 def _chunk_content(text: str, size: int) -> list[str]:

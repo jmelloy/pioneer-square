@@ -711,35 +711,39 @@ async def notify_discord_task_assigned(
     caller's context — so a slow GitHub API call delays this background task,
     not the tool call that triggered it.
 
-    When they're omitted, the GitHub title lookup is skipped and
-    ``notify_event`` resolves the destination from the task's own linkage
-    (see ``discord_notifier._canonical_coords``).
+    When they're omitted, the GitHub title lookup is skipped and this falls
+    back to the task's own ``"task_stream"`` thread (see
+    ``discord_notifier.notify_task_stream_event``) — every task gets a
+    Discord thread of some kind, whether or not it has a linked GitHub issue.
 
     Skips entirely when Discord notifications aren't configured.
     """
     if not discord_notifier.is_configured():
         return
-    title = fallback_title
-    thread_name = None
     description = f"Foreman assigned task `{task_id}`."
     if issue_repo and issue_number is not None:
         title = await _resolve_issue_title(guild_id, issue_repo, issue_number, fallback_title)
         prefix = f"#{issue_number}: "
         thread_name = prefix + title[: 100 - len(prefix)]
         description = f"Foreman assigned task `{task_id}` on {issue_repo}#{issue_number}: {title}"
-    await discord_notifier.notify_event(
+        await discord_notifier.notify_event(
+            "task-assigned",
+            title=f"Task assigned: #{issue_number}",
+            description=description,
+            issue_repo=issue_repo,
+            issue_number=issue_number,
+            thread_name=thread_name,
+            ps_guild_slug=guild_id,
+            task_id=task_id,
+        )
+        return
+
+    await discord_notifier.notify_task_stream_event(
+        guild_id,
+        task_id,
         "task-assigned",
-        title=(
-            f"Task assigned: #{issue_number}"
-            if issue_number is not None
-            else f"Task assigned: {task_id}"
-        ),
+        title=f"Task assigned: {task_id}",
         description=description,
-        issue_repo=issue_repo,
-        issue_number=issue_number,
-        thread_name=thread_name,
-        ps_guild_slug=guild_id,
-        task_id=task_id,
     )
 
 
@@ -748,30 +752,26 @@ def _spawn_discord_task_assigned(
     inp: dict,
     task_id: str,
     fallback_title: str,
-    parent_task_id: str | None = None,
 ) -> None:
-    """Fire off ``notify_discord_task_assigned`` when there's a thread to route to.
+    """Fire off ``notify_discord_task_assigned`` for a just-assigned task.
 
     Shared by both branches of ``assign_task`` (re-assign vs. newly created
-    task). Fires when the tool call carries issue context (legacy per-issue
-    thread routing) or a *parent_task_id* (root-thread routing via the
-    issue-rooted task tree) — either gives ``notify_event`` something to
-    resolve a destination thread from.
+    task). Always spawns: every assigned task gets a Discord notification,
+    routed to its linked issue's thread when the tool call carries
+    ``issue_repo``/``issue_number``, or to its own task-stream thread
+    otherwise (standalone tasks created without a GitHub issue, e.g. from
+    Discord chat — see ``notify_discord_task_assigned``).
     """
-    has_issue = inp.get("issue_number") is not None and inp.get("issue_repo")
-    if has_issue or parent_task_id is not None:
-        spawn(
-            notify_discord_task_assigned(
-                guild_id,
-                task_id,
-                fallback_title,
-                issue_repo=inp.get("issue_repo"),
-                issue_number=int(inp["issue_number"])
-                if inp.get("issue_number") is not None
-                else None,
-            ),
-            name=f"discord.task-assigned:{task_id}",
-        )
+    spawn(
+        notify_discord_task_assigned(
+            guild_id,
+            task_id,
+            fallback_title,
+            issue_repo=inp.get("issue_repo"),
+            issue_number=int(inp["issue_number"]) if inp.get("issue_number") is not None else None,
+        ),
+        name=f"discord.task-assigned:{task_id}",
+    )
 
 
 async def notify_discord_followup(
@@ -1640,19 +1640,9 @@ async def _exec_one_tool(
                                 )
                                 await db.commit()
                                 name_result = await db.exec(
-                                    select(col(Task.name), col(Task.parent_task_id)).where(
-                                        col(Task.id) == existing_task_id
-                                    )
+                                    select(col(Task.name)).where(col(Task.id) == existing_task_id)
                                 )
-                                name_row = name_result.one_or_none()
-                                task_name = (name_row[0] if name_row else None) or desc[:60]
-                                # The update above only overwrites parent_task_id when the
-                                # caller passed one this call — re-select the persisted value
-                                # so root-thread routing sees a parent set by an earlier call
-                                # (e.g. the original create_task), not just this one's input.
-                                effective_parent_task_id = (
-                                    name_row[1] if name_row else parent_task_id
-                                )
+                                task_name = name_result.one_or_none() or desc[:60]
                                 task_id = existing_task_id
                                 await broadcast(
                                     guild_id,
@@ -1685,7 +1675,6 @@ async def _exec_one_tool(
                                     },
                                     task_id,
                                     task_name,
-                                    parent_task_id=effective_parent_task_id,
                                 )
                                 result_text = f"Task {task_id} assigned to {wid}."
                             else:
