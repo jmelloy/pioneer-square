@@ -1,0 +1,1084 @@
+<template>
+  <div class="settings-overlay" @mousedown.self="close">
+    <div class="settings-panel" role="dialog" aria-modal="true" aria-label="Guild settings" ref="panelRef">
+      <header class="settings-panel-header">
+        <div class="settings-panel-title">Guild Settings</div>
+        <div class="settings-panel-guild" v-if="currentGuild">
+          <span class="settings-panel-guild-name">{{ currentGuild.name || 'Unnamed Guild' }}</span>
+          <span class="settings-panel-guild-id">#{{ currentGuild.id }}</span>
+        </div>
+        <button class="settings-close-btn" @click="close" title="Close settings">✕</button>
+      </header>
+
+      <div class="settings-panel-body">
+        <nav class="settings-tabs">
+          <button
+            v-for="t in TABS"
+            :key="t.id"
+            class="settings-tab"
+            :class="{ active: activeTab === t.id }"
+            @click="activeTab = t.id"
+          >
+            {{ t.label }}
+          </button>
+        </nav>
+
+        <div class="settings-content">
+          <!-- General -->
+          <section v-if="activeTab === 'general'" class="settings-section">
+            <div class="settings-field">
+              <label class="settings-label">Name</label>
+              <div class="settings-row">
+                <input
+                  v-model="renameValue"
+                  class="settings-input"
+                  @keydown.enter="commitRename"
+                  @keydown.escape="close"
+                />
+                <button
+                  class="pixel-btn settings-save-btn"
+                  :disabled="renameValue.trim() === (currentGuild?.name || '') || !renameValue.trim()"
+                  @click="commitRename"
+                >
+                  Save
+                </button>
+              </div>
+              <span v-if="renameStatus" class="save-status" :class="'save-status-' + renameStatus">
+                {{ renameStatus === 'saved' ? 'Saved' : 'Error' }}
+              </span>
+            </div>
+
+            <div class="settings-field">
+              <label class="settings-label">Primary Repo</label>
+              <div class="settings-row">
+                <select v-model="primaryRepoValue" class="settings-input" @change="savePrimaryRepo">
+                  <option value="">— select primary repo —</option>
+                  <option v-for="repo in ghStore.repos" :key="repo.full_name" :value="repo.full_name">
+                    {{ repo.full_name }}
+                  </option>
+                </select>
+                <span v-if="repoStatus" class="save-status" :class="'save-status-' + repoStatus">
+                  {{ repoStatus === 'saved' ? 'Saved' : 'Error' }}
+                </span>
+              </div>
+            </div>
+
+            <div class="settings-field settings-meta">
+              <span class="settings-meta-label">Session ID</span>
+              <code class="settings-meta-value">{{ currentGuild?.id }}</code>
+            </div>
+          </section>
+
+          <!-- Foreman -->
+          <section v-else-if="activeTab === 'foreman'" class="settings-section">
+            <div class="foreman-field">
+              <label class="foreman-field-label">Provider</label>
+              <select v-model="foremanProvider" class="settings-input" @change="onProviderChange">
+                <option value="">default (anthropic)</option>
+                <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
+                  {{ p.name }}
+                </option>
+              </select>
+            </div>
+            <div class="foreman-field">
+              <label class="foreman-field-label">Model</label>
+              <input
+                v-model="foremanModel"
+                class="settings-input"
+                list="foreman-model-hints"
+                placeholder="default"
+                autocomplete="off"
+              />
+              <datalist id="foreman-model-hints">
+                <option v-for="m in foremanProviderModels" :key="m.id" :value="m.id" :label="m.name" />
+              </datalist>
+            </div>
+
+            <div class="foreman-field">
+              <label class="foreman-field-label">
+                {{ foremanProvider === 'bedrock' ? 'AWS Credentials' : 'Anthropic Credentials' }}
+              </label>
+              <div class="foreman-creds-grid">
+                <div v-for="f in wellKnownFields" :key="f.key" class="foreman-cred-field">
+                  <label class="foreman-cred-label">{{ f.label }}</label>
+                  <input
+                    class="settings-input"
+                    type="text"
+                    spellcheck="false"
+                    autocomplete="off"
+                    :placeholder="f.placeholder || ''"
+                    :value="wellKnownValue(f.key)"
+                    @input="setWellKnown(f.key, ($event.target as HTMLInputElement).value)"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div class="foreman-field">
+              <label class="foreman-field-label">System Prompt Suffix</label>
+              <textarea
+                v-model="foremanSystemSuffix"
+                class="settings-input foreman-textarea"
+                placeholder="Additional instructions appended to the system prompt…"
+                rows="3"
+              />
+            </div>
+
+            <div class="foreman-field foreman-row">
+              <div class="foreman-half">
+                <label class="foreman-field-label">Max Rounds</label>
+                <input
+                  v-model.number="foremanMaxRounds"
+                  class="settings-input"
+                  type="number"
+                  min="1"
+                  max="50"
+                  placeholder="10"
+                />
+              </div>
+              <div class="foreman-half">
+                <label class="foreman-field-label">Poll Min (s)</label>
+                <input
+                  v-model.number="foremanPollMin"
+                  class="settings-input"
+                  type="number"
+                  min="10"
+                  placeholder="60"
+                />
+              </div>
+              <div class="foreman-half">
+                <label class="foreman-field-label">Poll Max (s)</label>
+                <input
+                  v-model.number="foremanPollMax"
+                  class="settings-input"
+                  type="number"
+                  min="60"
+                  placeholder="3600"
+                />
+              </div>
+            </div>
+
+            <div class="foreman-field">
+              <label class="foreman-field-label">Environment Variables</label>
+              <p class="foreman-hint">Inherited by every worker spawned in this guild.</p>
+              <div class="env-var-list">
+                <div v-for="row in additionalEnvVarRows" :key="row.id" class="env-var-row">
+                  <input
+                    v-model="row.key"
+                    class="settings-input env-var-key"
+                    placeholder="KEY_NAME"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <input
+                    v-model="row.value"
+                    type="text"
+                    class="settings-input env-var-value"
+                    placeholder="value"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <button class="env-var-delete-btn" @click="removeEnvVar(row)" title="Remove variable">
+                    ✕
+                  </button>
+                </div>
+                <button class="pixel-btn env-var-add-btn" @click="addEnvVar">+ Add Variable</button>
+              </div>
+            </div>
+
+            <div class="foreman-actions">
+              <button class="pixel-btn settings-save-btn" :disabled="foremanSaving" @click="saveForemanConfig">
+                {{ foremanSaving ? 'Saving…' : 'Save' }}
+              </button>
+              <span v-if="foremanStatus" class="save-status" :class="'save-status-' + foremanStatus">
+                {{ foremanStatus === 'saved' ? 'Saved' : 'Error' }}
+              </span>
+            </div>
+          </section>
+
+          <!-- Claude -->
+          <section v-else-if="activeTab === 'claude'" class="settings-section">
+            <div class="settings-field">
+              <label class="settings-label">Claude Credentials</label>
+              <div v-if="claudeCredsStatus === null" class="creds-loading">Loading…</div>
+              <div v-else-if="claudeCredsStatus.saved" class="creds-saved-section">
+                <div class="settings-row creds-saved-row">
+                  <span class="creds-saved-at">Saved {{ formatCredsDate(claudeCredsStatus.updated_at) }}</span>
+                  <button
+                    v-if="!claudeCredsConfirmDelete"
+                    class="pixel-btn creds-delete-btn"
+                    :disabled="claudeCredsDeleting"
+                    @click="claudeCredsConfirmDelete = true"
+                  >
+                    Delete
+                  </button>
+                </div>
+                <div v-if="claudeCredsConfirmDelete" class="creds-confirm-row">
+                  <span class="creds-confirm-label">Delete credentials?</span>
+                  <button class="pixel-btn creds-confirm-yes-btn" :disabled="claudeCredsDeleting" @click="deleteClaude">
+                    Confirm
+                  </button>
+                  <button class="pixel-btn creds-confirm-no-btn" @click="claudeCredsConfirmDelete = false">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+              <div v-else class="creds-none">No credentials saved</div>
+              <div v-if="claudeCredsError" class="creds-error">{{ claudeCredsError }}</div>
+            </div>
+          </section>
+
+          <!-- Spawn Defaults -->
+          <section v-else-if="activeTab === 'spawn'" class="settings-section">
+            <GuildSpawnDefaults v-if="currentGuild" :guild-id="currentGuild.id" />
+          </section>
+
+          <!-- Members -->
+          <section v-else-if="activeTab === 'members'" class="settings-section">
+            <GuildMembers v-if="currentGuild" :guild-id="currentGuild.id" />
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, computed, reactive, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { useGuildStore } from '../stores/guild'
+import { useGitHubStore } from '../stores/github'
+import { useAuthStore } from '../stores/auth'
+import { useModels } from '../composables/useModels'
+import GuildMembers from './GuildMembers.vue'
+import GuildSpawnDefaults from './GuildSpawnDefaults.vue'
+
+const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
+
+const emit = defineEmits<{ close: [] }>()
+
+const guildStore = useGuildStore()
+const ghStore = useGitHubStore()
+const authStore = useAuthStore()
+
+const currentGuild = computed(() => guildStore.currentGuild)
+
+const TABS = [
+  { id: 'general', label: 'General' },
+  { id: 'foreman', label: 'Foreman' },
+  { id: 'claude', label: 'Claude' },
+  { id: 'spawn', label: 'Spawn Defaults' },
+  { id: 'members', label: 'Members' },
+] as const
+const activeTab = ref<(typeof TABS)[number]['id']>('general')
+
+const panelRef = ref<HTMLElement | null>(null)
+
+const modelsStore = reactive(useModels())
+const foremanProviderModels = computed(() =>
+  foremanProvider.value ? modelsStore.modelsForProvider(foremanProvider.value) : [],
+)
+// Dedicated, provider-specific credential fields. These are stored as ordinary
+// env_vars under the hood (the foreman client reads them via extra_env) but get
+// first-class inputs so users don't have to remember exact var names.
+interface WellKnownField {
+  key: string
+  label: string
+  placeholder?: string
+}
+const FOREMAN_WELL_KNOWN: Record<string, WellKnownField[]> = {
+  anthropic: [
+    { key: 'ANTHROPIC_API_KEY', label: 'API Key', placeholder: 'sk-ant-…' },
+    { key: 'ANTHROPIC_AUTH_TOKEN', label: 'Auth Token (optional)' },
+    {
+      key: 'ANTHROPIC_BASE_URL',
+      label: 'Base URL (optional)',
+      placeholder: 'https://api.anthropic.com',
+    },
+  ],
+  bedrock: [
+    { key: 'AWS_DEFAULT_REGION', label: 'Region', placeholder: 'us-east-1' },
+    { key: 'AWS_PROFILE', label: 'Profile (optional)' },
+    { key: 'AWS_ACCESS_KEY_ID', label: 'Access Key ID' },
+    { key: 'AWS_SECRET_ACCESS_KEY', label: 'Secret Access Key' },
+    { key: 'AWS_SESSION_TOKEN', label: 'Session Token (optional)' },
+    { key: 'AWS_BEARER_TOKEN_BEDROCK', label: 'Bedrock Bearer Token (optional)' },
+  ],
+}
+
+const renameValue = ref('')
+const primaryRepoValue = ref('')
+const renameStatus = ref<'' | 'saved' | 'error'>('')
+const repoStatus = ref<'' | 'saved' | 'error'>('')
+let renameStatusTimer: ReturnType<typeof setTimeout> | null = null
+let repoStatusTimer: ReturnType<typeof setTimeout> | null = null
+
+type CredsStatus = { saved: false } | { saved: true; updated_at: string | null }
+const claudeCredsStatus = ref<CredsStatus | null>(null)
+const claudeCredsDeleting = ref(false)
+const claudeCredsError = ref<string | null>(null)
+const claudeCredsConfirmDelete = ref(false)
+
+const foremanModel = ref('')
+const foremanProvider = ref('')
+// Remember the model entered for each provider. Models are provider-specific
+// (a Bedrock inference-profile ARN is invalid for the direct Anthropic API and
+// vice versa), so switching providers swaps the model out — but toggling off a
+// provider and back restores its model instead of wiping it.
+const modelByProvider = ref<Record<string, string>>({})
+let prevProvider = ''
+
+function onProviderChange() {
+  // v-model has already updated foremanProvider to the new value; foremanModel
+  // still holds the previous provider's model, so stash it under prevProvider.
+  modelByProvider.value[prevProvider] = foremanModel.value
+  foremanModel.value = modelByProvider.value[foremanProvider.value] ?? ''
+  prevProvider = foremanProvider.value
+}
+const foremanSystemSuffix = ref('')
+const foremanMaxRounds = ref<number | ''>('')
+const foremanPollMin = ref<number | ''>('')
+const foremanPollMax = ref<number | ''>('')
+const foremanSaving = ref(false)
+const foremanStatus = ref<'' | 'saved' | 'error'>('')
+let foremanStatusTimer: ReturnType<typeof setTimeout> | null = null
+const wellKnownFields = computed(() => FOREMAN_WELL_KNOWN[foremanProvider.value || 'anthropic'] ?? [])
+const wellKnownKeys = computed(() => new Set(wellKnownFields.value.map((f) => f.key)))
+// Free-form list excludes keys that have a dedicated field for the current provider.
+const additionalEnvVarRows = computed(() =>
+  envVarRows.value.filter((r) => !wellKnownKeys.value.has(r.key)),
+)
+
+interface EnvVarRow {
+  id: number
+  key: string
+  value: string
+}
+let envRowSeq = 0
+const envVarRows = ref<EnvVarRow[]>([])
+
+function wellKnownValue(key: string): string {
+  return envVarRows.value.find((r) => r.key === key)?.value ?? ''
+}
+
+function setWellKnown(key: string, value: string) {
+  const row = envVarRows.value.find((r) => r.key === key)
+  if (value) {
+    if (row) row.value = value
+    else envVarRows.value.push({ id: ++envRowSeq, key, value })
+  } else if (row) {
+    // Empty value → drop the row so we don't persist blank vars.
+    envVarRows.value.splice(envVarRows.value.indexOf(row), 1)
+  }
+}
+
+async function loadForemanConfig() {
+  if (!currentGuild.value) return
+  try {
+    const res = await fetch(
+      `${API_BASE}/api/guilds/${encodeURIComponent(currentGuild.value.id)}/foreman-config`,
+      { headers: authStore.authHeaders() },
+    )
+    if (res.ok) {
+      const cfg = await res.json()
+      foremanModel.value = cfg.model ?? ''
+      foremanProvider.value = cfg.provider ?? ''
+      // Seed the per-provider model memory with the persisted pairing so a later
+      // provider toggle can restore this model.
+      prevProvider = foremanProvider.value
+      modelByProvider.value = { [foremanProvider.value]: foremanModel.value }
+      foremanSystemSuffix.value = cfg.system_prompt_suffix ?? ''
+      foremanMaxRounds.value = cfg.max_rounds ?? ''
+      foremanPollMin.value = cfg.poll_min_interval ?? ''
+      foremanPollMax.value = cfg.poll_max_interval ?? ''
+      // Env var values are returned in clear text so they can be verified/edited.
+      envVarRows.value = (cfg.env_vars ?? []).map((e: { key: string; value?: string }) => ({
+        id: ++envRowSeq,
+        key: e.key,
+        value: e.value ?? '',
+      }))
+    }
+  } catch {
+    // non-fatal: fields stay blank (will use server defaults)
+  }
+}
+
+function addEnvVar() {
+  envVarRows.value.push({ id: ++envRowSeq, key: '', value: '' })
+}
+
+function removeEnvVar(row: EnvVarRow) {
+  const i = envVarRows.value.indexOf(row)
+  if (i >= 0) envVarRows.value.splice(i, 1)
+}
+
+async function saveForemanConfig() {
+  if (!currentGuild.value) return
+  foremanSaving.value = true
+  foremanStatus.value = ''
+  try {
+    const body: Record<string, unknown> = {}
+    if (foremanModel.value) body.model = foremanModel.value
+    else body.model = null
+    if (foremanProvider.value) body.provider = foremanProvider.value
+    else body.provider = null
+    if (foremanSystemSuffix.value) body.system_prompt_suffix = foremanSystemSuffix.value
+    else body.system_prompt_suffix = null
+    if (foremanMaxRounds.value !== '') body.max_rounds = foremanMaxRounds.value
+    else body.max_rounds = null
+    if (foremanPollMin.value !== '') body.poll_min_interval = foremanPollMin.value
+    else body.poll_min_interval = null
+    if (foremanPollMax.value !== '') body.poll_max_interval = foremanPollMax.value
+    else body.poll_max_interval = null
+    // Send actual values for every keyed row (dedicated credential fields and
+    // free-form rows alike both live in envVarRows). Skip rows with empty keys.
+    body.env_vars = envVarRows.value
+      .filter((r) => r.key.trim())
+      .map((r) => ({ key: r.key.trim(), value: r.value }))
+    const res = await fetch(
+      `${API_BASE}/api/guilds/${encodeURIComponent(currentGuild.value.id)}/foreman-config`,
+      {
+        method: 'PATCH',
+        headers: { ...authStore.authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    )
+    if (res.ok) {
+      foremanStatus.value = 'saved'
+      // Re-sync with the server's canonical config (clear-text values).
+      const saved = await res.json()
+      envVarRows.value = (saved.env_vars ?? []).map((e: { key: string; value?: string }) => ({
+        id: ++envRowSeq,
+        key: e.key,
+        value: e.value ?? '',
+      }))
+    } else {
+      foremanStatus.value = 'error'
+    }
+  } catch {
+    foremanStatus.value = 'error'
+  } finally {
+    foremanSaving.value = false
+    if (foremanStatusTimer) clearTimeout(foremanStatusTimer)
+    foremanStatusTimer = setTimeout(() => {
+      foremanStatus.value = ''
+    }, 2000)
+  }
+}
+
+async function loadClaudeCredsStatus() {
+  if (!currentGuild.value) return
+  claudeCredsStatus.value = null
+  claudeCredsError.value = null
+  try {
+    const res = await fetch(
+      `${API_BASE}/auth/claude-credentials?guild_id=${encodeURIComponent(currentGuild.value.id)}`,
+      { headers: authStore.authHeaders() },
+    )
+    if (res.ok) {
+      claudeCredsStatus.value = await res.json()
+    } else {
+      claudeCredsError.value = `Failed to load credentials status (${res.status})`
+      claudeCredsStatus.value = { saved: false }
+    }
+  } catch {
+    claudeCredsError.value = 'Failed to load credentials status'
+    claudeCredsStatus.value = { saved: false }
+  }
+}
+
+async function deleteClaude() {
+  if (!currentGuild.value) return
+  claudeCredsDeleting.value = true
+  claudeCredsError.value = null
+  try {
+    const res = await fetch(
+      `${API_BASE}/auth/claude-credentials?guild_id=${encodeURIComponent(currentGuild.value.id)}`,
+      { method: 'DELETE', headers: authStore.authHeaders() },
+    )
+    if (res.ok) {
+      claudeCredsStatus.value = { saved: false }
+      claudeCredsConfirmDelete.value = false
+    } else {
+      claudeCredsError.value = `Delete failed (${res.status})`
+    }
+  } catch {
+    claudeCredsError.value = 'Delete failed'
+  } finally {
+    claudeCredsDeleting.value = false
+  }
+}
+
+function formatCredsDate(iso: string | null) {
+  if (!iso) return 'unknown date'
+  return new Date(iso).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+async function commitRename() {
+  if (!currentGuild.value) return
+  const trimmed = renameValue.value.trim()
+  if (!trimmed || trimmed === currentGuild.value.name) return
+  try {
+    await guildStore.renameGuild(currentGuild.value.id, trimmed)
+    renameStatus.value = 'saved'
+  } catch (e) {
+    console.error('Failed to rename guild', e)
+    renameStatus.value = 'error'
+  } finally {
+    if (renameStatusTimer) clearTimeout(renameStatusTimer)
+    renameStatusTimer = setTimeout(() => {
+      renameStatus.value = ''
+    }, 2000)
+  }
+}
+
+async function savePrimaryRepo() {
+  if (!currentGuild.value) return
+  try {
+    await guildStore.updateGuild(currentGuild.value.id, {
+      primary_repo: primaryRepoValue.value || null,
+    })
+    repoStatus.value = 'saved'
+  } catch (e) {
+    console.error('Failed to save primary repo', e)
+    repoStatus.value = 'error'
+  } finally {
+    if (repoStatusTimer) clearTimeout(repoStatusTimer)
+    repoStatusTimer = setTimeout(() => {
+      repoStatus.value = ''
+    }, 2000)
+  }
+  await nextTick()
+}
+
+function close() {
+  emit('close')
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') close()
+}
+
+onMounted(async () => {
+  document.addEventListener('keydown', onKeydown)
+  renameValue.value = currentGuild.value?.name ?? ''
+  primaryRepoValue.value = currentGuild.value?.primary_repo ?? ''
+  if (ghStore.repos.length === 0 && ghStore.token) {
+    await ghStore.fetchRepos()
+  }
+  loadClaudeCredsStatus()
+  modelsStore.loadModels()
+  loadForemanConfig()
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKeydown)
+  if (renameStatusTimer) clearTimeout(renameStatusTimer)
+  if (repoStatusTimer) clearTimeout(repoStatusTimer)
+  if (foremanStatusTimer) clearTimeout(foremanStatusTimer)
+})
+</script>
+
+<style scoped>
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  padding: 20px;
+}
+
+.settings-panel {
+  width: min(920px, 94vw);
+  height: min(620px, 88vh);
+  background: var(--color-bg-secondary);
+  border: 2px solid var(--color-brass);
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.5),
+    0 0 16px rgba(232, 170, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.settings-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 2px solid var(--color-brass-dark);
+  flex-shrink: 0;
+}
+
+.settings-panel-title {
+  font-family: var(--font-pixel);
+  font-size: 9px;
+  color: var(--color-brass-light);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.settings-panel-guild {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-panel-guild-name {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  color: var(--color-brass);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-panel-guild-id {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+}
+
+.settings-close-btn {
+  background: var(--color-bg);
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-brass);
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  border-radius: 2px;
+  font-size: 12px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    color 0.12s;
+}
+
+.settings-close-btn:hover {
+  border-color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.1);
+  color: var(--color-brass-light);
+}
+
+.settings-panel-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 170px;
+  flex-shrink: 0;
+  padding: 10px 8px;
+  border-right: 1px solid var(--color-brass-dark);
+  background: var(--color-bg);
+  overflow-y: auto;
+}
+
+.settings-tab {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--color-brass-dark);
+  cursor: pointer;
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  text-align: left;
+  padding: 9px 10px;
+  border-radius: 2px;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
+}
+
+.settings-tab:hover {
+  color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.06);
+}
+
+.settings-tab.active {
+  color: var(--color-brass-light);
+  background: rgba(232, 170, 0, 0.1);
+  border-color: var(--color-brass-dark);
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 560px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.settings-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-input {
+  flex: 1;
+  background: var(--color-bg);
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  padding: 5px 7px;
+  outline: none;
+  border-radius: 2px;
+  min-width: 0;
+}
+
+.settings-input:focus {
+  border-color: var(--color-brass);
+}
+
+.settings-save-btn {
+  font-size: 7px;
+  padding: 5px 9px;
+  flex-shrink: 0;
+}
+
+.settings-save-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.save-status {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.save-status-saved {
+  color: var(--color-green);
+}
+.save-status-error {
+  color: var(--color-red);
+}
+
+.creds-loading {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-text-dim);
+}
+
+.creds-saved-row {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.creds-saved-at {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text);
+}
+
+.creds-delete-btn {
+  font-size: 7px;
+  padding: 5px 9px;
+  flex-shrink: 0;
+  border-color: var(--color-red, #c0392b);
+  color: var(--color-red, #e74c3c);
+}
+
+.creds-delete-btn:hover:not(:disabled) {
+  background: rgba(192, 57, 43, 0.2);
+}
+
+.creds-delete-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.creds-saved-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.creds-confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.creds-confirm-label {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-red, #e74c3c);
+  flex: 1;
+  white-space: nowrap;
+}
+
+.creds-confirm-yes-btn {
+  font-size: 7px;
+  padding: 5px 9px;
+  flex-shrink: 0;
+  border-color: var(--color-red, #c0392b);
+  color: var(--color-red, #e74c3c);
+}
+
+.creds-confirm-yes-btn:hover:not(:disabled) {
+  background: rgba(192, 57, 43, 0.2);
+}
+
+.creds-confirm-yes-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.creds-confirm-no-btn {
+  font-size: 7px;
+  padding: 5px 9px;
+  flex-shrink: 0;
+}
+
+.creds-none {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
+.creds-error {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-red, #e74c3c);
+}
+
+.foreman-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.foreman-field-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.foreman-hint {
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+  color: var(--color-text-dim);
+  font-style: italic;
+  margin: 0 0 3px;
+  line-height: 1.4;
+}
+
+.foreman-textarea {
+  resize: vertical;
+  min-height: 60px;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+}
+
+.foreman-row {
+  flex-direction: row;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.foreman-half {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.foreman-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.env-var-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.env-var-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.env-var-key {
+  flex: 0 0 160px;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.env-var-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.foreman-creds-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.foreman-cred-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.foreman-cred-label {
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+  color: var(--color-text-dim);
+  letter-spacing: 0.5px;
+}
+
+.env-var-delete-btn {
+  background: none;
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-text-dim);
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  flex-shrink: 0;
+  transition:
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.env-var-delete-btn:hover {
+  border-color: var(--color-red, #c0392b);
+  color: var(--color-red, #c0392b);
+}
+
+.env-var-add-btn {
+  font-size: 7px;
+  padding: 4px 8px;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.settings-meta {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--color-brass-dark);
+  padding-top: 12px;
+  margin-top: 4px;
+}
+
+.settings-meta-label {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.settings-meta-value {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-brass);
+  background: var(--color-bg);
+  border: 1px solid var(--color-brass-dark);
+  padding: 2px 6px;
+  border-radius: 2px;
+}
+
+@media (max-width: 720px) {
+  .settings-overlay {
+    padding: 0;
+  }
+
+  .settings-panel {
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: none;
+  }
+
+  .settings-panel-body {
+    flex-direction: column;
+  }
+
+  .settings-tabs {
+    flex-direction: row;
+    width: auto;
+    gap: 4px;
+    border-right: none;
+    border-bottom: 1px solid var(--color-brass-dark);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .settings-tab {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-close-btn,
+  .settings-tab,
+  .env-var-delete-btn {
+    transition: none;
+  }
+}
+</style>
