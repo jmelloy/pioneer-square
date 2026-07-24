@@ -387,7 +387,7 @@ FOREMAN_TOOLS = [
     },
     {
         "name": "get_github_issue",
-        "description": "Get full details of a single GitHub issue including its body and comments.",
+        "description": "Get full details of a single GitHub issue including its body, comments, and native sub-issues (child issues linked via GitHub's parenting feature — an epic's sub_issues array is non-empty).",
         "input_schema": {
             "type": "object",
             "properties": {

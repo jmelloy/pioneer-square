@@ -2392,6 +2392,16 @@ async def _exec_one_tool(
                         comments_raw = await _to_thread(
                             _gh_api, f"/repos/{repo}/issues/{num}/comments?per_page=20", token
                         )
+                        # Native GitHub sub-issues (parenting), not the body checklist.
+                        # 404/empty for issues without children — treat any failure as none.
+                        try:
+                            sub_raw = await _to_thread(
+                                _gh_api,
+                                f"/repos/{repo}/issues/{num}/sub_issues?per_page=100",
+                                token,
+                            )
+                        except urllib.error.HTTPError:
+                            sub_raw = []
                         result_text = json.dumps(
                             {
                                 "number": issue["number"],
@@ -2405,6 +2415,15 @@ async def _exec_one_tool(
                                         "body": (c.get("body") or "")[:500],
                                     }
                                     for c in comments_raw
+                                ],
+                                "sub_issues": [
+                                    {
+                                        "number": s["number"],
+                                        "title": s["title"],
+                                        "state": s["state"],
+                                        "assignees": [a["login"] for a in s.get("assignees", [])],
+                                    }
+                                    for s in sub_raw
                                 ],
                             }
                         )
