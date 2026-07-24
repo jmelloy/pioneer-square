@@ -235,20 +235,15 @@ class NeedsInputMsg(_WS):
     lastMessage: str | None = None
 
 
-class ClaudeAuthRequiredMsg(_WS):
-    """Bidirectional – echoed outbound."""
+class WorkerOutdatedMsg(_WS):
+    """Backend -> worker: this worker is running an older version.
 
-    type: Literal["claude-auth-required"] = "claude-auth-required"
-    workerId: str = ""
-    url: str = ""
+    Informational only — the worker logs it and keeps running its current work.
+    Replaces the old version-mismatch worker-shutdown signal."""
 
-
-class WorkerAuthResponseMsg(_WS):
-    """Bidirectional – echoed outbound."""
-
-    type: Literal["worker-auth-response"] = "worker-auth-response"
-    workerId: str = ""
-    code: str = ""
+    type: Literal["worker-outdated"] = "worker-outdated"
+    workerId: str
+    reason: str | None = None
 
 
 class WorkerMessageMsg(_WS):
@@ -388,6 +383,7 @@ class WorkerRegisterMsg(_WS):
 class WorkerDisconnectMsg(_WS):
     type: Literal["worker-disconnect"] = "worker-disconnect"
     workerId: str | None = None
+    reason: str | None = None
 
 
 class WorkerPongMsg(_WS):
@@ -430,10 +426,9 @@ OutboundWSMessage = Annotated[
     | TaskCancelMsg
     | TaskRedirectMsg
     | NeedsInputMsg
-    | ClaudeAuthRequiredMsg
-    | WorkerAuthResponseMsg
     | WorkerMessageMsg
     | WorkerShutdownMsg
+    | WorkerOutdatedMsg
     | WorkerPingMsg
     | ForemanApiRequestMsg
     | ForemanRegisteredMsg
@@ -462,10 +457,8 @@ InboundWSMessage = Annotated[
     | TaskCompleteMsg
     | TaskFollowupDoneMsg
     | NeedsInputMsg
-    | ClaudeAuthRequiredMsg
     | ForemanDisconnectMsg
     | ForemanApiResponseMsg
-    | WorkerAuthResponseMsg
     | OfferMsg
     | AnswerMsg
     | IceCandidateMsg,
@@ -489,10 +482,8 @@ KNOWN_INBOUND_TYPES: frozenset[str] = frozenset(
         "task-complete",
         "task-followup-done",
         "needs-input",
-        "claude-auth-required",
         "foreman-disconnect",
         "foreman-api-response",
-        "worker-auth-response",
         "offer",
         "answer",
         "ice-candidate",

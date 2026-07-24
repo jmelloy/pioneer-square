@@ -9,10 +9,11 @@ shut workers down — a restart never disrupts an in-progress task. A version
 bump is handled with a lightweight nudge plus the reaper:
 
 1. signal_stale_worker_on_join() — when a worker (re)connects, the join
-   handler tells version-stale backend-spawned workers to shut down. The
-   worker finishes any in-progress task and exits on its own.
-2. The idle reaper force-kills whatever is left: containers that died before
-   reconnecting (offline zombies) and workers that never processed the signal.
+   handler tells version-stale backend-spawned workers they are out of date.
+   This is informational; the worker keeps running its current work.
+2. The idle reaper shuts down and force-kills whatever is left once idle:
+   containers that died before reconnecting (offline zombies) and stale
+   workers that have run out of work.
 
 get_current_version() prefers the PIONEER_VERSION env var, else
 "<YYYYMMDD>-<sha>" from the current commit (committer date, never wall-clock —
@@ -37,7 +38,7 @@ from models import Agent, Guild, GuildSpawnDefaults, Task, TaskLog, Worker, live
 from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
-from ws_types import WorkerShutdownMsg
+from ws_types import WorkerOutdatedMsg, WorkerShutdownMsg
 
 logger = logging.getLogger(__name__)
 
@@ -253,20 +254,19 @@ async def signal_stale_worker_on_join(
     spawned_version: str | None,
     started_at: datetime | None = None,
 ) -> bool:
-    """Tell a version-stale backend-spawned worker to shut down as it (re)connects.
+    """Tell a version-stale backend-spawned worker it is out of date on (re)connect.
 
     Called from the WS join handler. Only workers with a recorded
     spawned_version are ever signalled: externally-started workers (compose,
     manual CLI) have no version stamp and belong to whoever started them.
-    The worker finishes any in-progress task and exits; the foreman respawns
-    on demand from the guild's spawn defaults, and the idle reaper force-kills
-    the container if the worker never acts on the signal.
+    The message is informational — the worker logs it and keeps running; the
+    idle reaper is what eventually shuts a stale-but-idle worker down.
 
     A worker spawned within STALE_DRAIN_MIN_AGE is spared: during a rolling
     deploy it was spawned by the previous backend and is only now finishing its
     cold-start, so its version differs but it is a healthy newborn, not a zombie.
 
-    Returns True when a shutdown signal was sent.
+    Returns True when an out-of-date signal was sent.
     """
     if not spawned_version:
         return False
@@ -285,14 +285,16 @@ async def signal_stale_worker_on_join(
         return False
     logger.info(
         "worker_lifecycle: worker %s joined with stale version %s (current %s) — "
-        "sending graceful shutdown",
+        "notifying it is out of date",
         worker_id,
         spawned_version,
         current,
     )
     await broadcast_msg(
         guild_slug,
-        WorkerShutdownMsg(workerId=worker_id, reason="backend restarted: version mismatch"),
+        WorkerOutdatedMsg(
+            workerId=worker_id, reason=f"version mismatch: worker {spawned_version} vs {current}"
+        ),
     )
     return True
 

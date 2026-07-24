@@ -24,9 +24,7 @@ from events import (
     agent_owners,
     broadcast,
     broadcast_msg,
-    connections,
     foreman_connections,
-    pending_claude_auth,
     send_ws_message,
 )
 from fastapi import WebSocket
@@ -51,7 +49,6 @@ from ws_types import (
     AgentStateMsg,
     AnswerMsg,
     ChatMsg,
-    ClaudeAuthRequiredMsg,
     ForemanDisconnectMsg,
     ForemanEvictedMsg,
     ForemanRegisteredMsg,
@@ -64,7 +61,6 @@ from ws_types import (
     TaskFollowupDoneMsg,
     TaskUpdateMsg,
     TerminalOutputMsg,
-    WorkerAuthResponseMsg,
     parse_inbound_message,
 )
 
@@ -612,29 +608,14 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
     if not (from_agent == "user" and to_agent == "foreman" and content):
         return
 
-    pending_workers = pending_claude_auth.get(ctx.guild_id, {})
-    if pending_workers:
-        pending_worker_id = next(iter(pending_workers))
-        pending_workers.pop(pending_worker_id)
-        logger.info(
-            "chat intercepted as auth code for %s in guild %s code_len=%d",
-            pending_worker_id,
-            ctx.guild_id,
-            len(content),
-        )
-        await broadcast_msg(
-            ctx.guild_id,
-            WorkerAuthResponseMsg(workerId=pending_worker_id, code=content),
-        )
-    else:
-        await _trigger_foreman(
-            ctx.guild_id,
-            "chat",
-            content,
-            user_id=ctx.ws_user_id,
-            task_name=f"foreman.chat:{ctx.guild_id}",
-        )
-        reset_foreman_poll(ctx.guild_id)
+    await _trigger_foreman(
+        ctx.guild_id,
+        "chat",
+        content,
+        user_id=ctx.ws_user_id,
+        task_name=f"foreman.chat:{ctx.guild_id}",
+    )
+    reset_foreman_poll(ctx.guild_id)
 
 
 async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
@@ -747,6 +728,7 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
 
 async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
     worker_id = data.get("workerId")
+    reason = data.get("reason") or "shutdown"
     for agent_id in ctx.joined_agents:
         await ctx.db.exec(
             update(Agent)
@@ -777,7 +759,7 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
             await _trigger_foreman(
                 ctx.guild_id,
                 "worker-offline",
-                f"[worker-offline] worker_id={worker_id} reason=shutdown",
+                f"[worker-offline] worker_id={worker_id} reason={reason}",
                 task_name=f"foreman.worker-offline:{worker_id}",
             )
         else:
@@ -1131,37 +1113,6 @@ async def handle_needs_input(ctx: WSContext, data: dict) -> None:
     reset_foreman_poll(ctx.guild_id)
 
 
-async def handle_claude_auth_required(ctx: WSContext, data: dict) -> None:
-    worker_id = data.get("workerId", "a worker")
-    auth_url = data.get("url", "")
-    logger.info(
-        "claude-auth-required from %s in guild %s url=%s",
-        worker_id,
-        ctx.guild_id,
-        auth_url[:80],
-    )
-    await broadcast_msg(
-        ctx.guild_id, ClaudeAuthRequiredMsg.model_validate(data), exclude=ctx.websocket
-    )
-    pending_claude_auth.setdefault(ctx.guild_id, {})[worker_id] = auth_url
-    logger.info(
-        "pending_claude_auth now has %d entries for guild %s",
-        len(pending_claude_auth.get(ctx.guild_id, {})),
-        ctx.guild_id,
-    )
-    await _trigger_foreman(
-        ctx.guild_id,
-        "claude-auth",
-        f"Worker {worker_id} needs Claude authentication. "
-        f"Auth URL: {auth_url}. "
-        "A human must visit this URL, complete authentication, then paste the "
-        "resulting code into the auth panel that has appeared in the chat UI "
-        "(or type it into the Foreman Comms input). The worker is waiting.",
-        task_name=f"foreman.claude-auth:{worker_id}",
-    )
-    reset_foreman_poll(ctx.guild_id)
-
-
 async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:
     """External Foreman API proxy announcing a graceful shutdown.
 
@@ -1183,25 +1134,6 @@ async def handle_foreman_disconnect(ctx: WSContext, data: dict) -> None:
         ForemanDisconnectMsg(guildId=ctx.guild_id),
         exclude=ctx.websocket,
     )
-
-
-async def handle_worker_auth_response(ctx: WSContext, data: dict) -> None:
-    worker_id = data.get("workerId", "")
-    code_len = len(data.get("code", ""))
-    logger.info(
-        "worker-auth-response for %s in guild %s code_len=%d",
-        worker_id,
-        ctx.guild_id,
-        code_len,
-    )
-    pending_claude_auth.get(ctx.guild_id, {}).pop(worker_id, None)
-    peer_count = len(connections.get(ctx.guild_id, []))
-    logger.info(
-        "broadcasting worker-auth-response to %d connections in guild %s",
-        peer_count,
-        ctx.guild_id,
-    )
-    await broadcast_msg(ctx.guild_id, WorkerAuthResponseMsg.model_validate(data))
 
 
 async def handle_foreman_api_response(ctx: WSContext, data: dict) -> None:
@@ -1237,10 +1169,8 @@ HANDLERS: dict[str, Any] = {
     "task-complete": handle_task_complete,
     "task-followup-done": handle_task_followup_done,
     "needs-input": handle_needs_input,
-    "claude-auth-required": handle_claude_auth_required,
     "foreman-disconnect": handle_foreman_disconnect,
     "foreman-api-response": handle_foreman_api_response,
-    "worker-auth-response": handle_worker_auth_response,
     "offer": handle_webrtc_signal,
     "answer": handle_webrtc_signal,
     "ice-candidate": handle_webrtc_signal,

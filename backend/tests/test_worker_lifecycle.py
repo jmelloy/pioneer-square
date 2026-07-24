@@ -167,8 +167,9 @@ async def test_check_worker_spawn_cooldown_expired():
 
 
 @pytest.mark.asyncio
-async def test_signal_stale_worker_on_join_sends_shutdown():
-    """A worker joining with a version stamp that differs from the backend's is signalled."""
+async def test_signal_stale_worker_on_join_sends_outdated():
+    """A worker joining with a version stamp that differs from the backend's gets a
+    worker-outdated notice (informational; it is not shut down)."""
     broadcasts = []
 
     async def fake_broadcast(guild_slug, msg, *a, **kw):
@@ -184,6 +185,7 @@ async def test_signal_stale_worker_on_join_sends_shutdown():
     assert len(broadcasts) == 1
     guild_slug, msg = broadcasts[0]
     assert guild_slug == "g-guild"
+    assert msg.type == "worker-outdated"
     assert msg.workerId == "w-stale"
     assert "version mismatch" in (msg.reason or "")
 

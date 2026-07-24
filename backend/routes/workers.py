@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 import worker_runtime
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
-from events import broadcast_msg, emit_terminal_line, pending_claude_auth
+from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Guild, Task, UserSpawnSettings, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
@@ -333,20 +333,6 @@ async def get_spawn_credentials(
             "updated_at": creds_row.updated_at.isoformat() if creds_row else None,
         },
     }
-
-
-@router.get("/guilds/{guild_id}/pending-auth")
-async def get_pending_auth(
-    guild_id: str,
-    github_user_id: str = Depends(require_member()),
-):
-    """Return workers currently waiting for a Claude auth code.
-
-    The frontend calls this on mount so the auth panel is restored after a
-    page refresh even if the original claude-auth-required broadcast was missed.
-    """
-    pending = pending_claude_auth.get(guild_id, {})
-    return [{"workerId": wid, "url": url} for wid, url in pending.items()]
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/tasks")

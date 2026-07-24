@@ -16,25 +16,20 @@
       <ChatTab ref="chatTabRef" />
     </div>
   </div>
-
-  <ClaudeAuthModal :pending="claudeAuthPending" @submit="onSubmitAuth" />
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
-import { api } from '../utils/api'
 import type { GitHubIssue, WSInbound } from '../types'
 import ChatTab from './chat-pane/ChatTab.vue'
-import ClaudeAuthModal from './chat-pane/ClaudeAuthModal.vue'
 
 const guildStore = useGuildStore()
 const agentsStore = useAgentsStore()
 
 const minimized = ref(false)
 const chatTabRef = ref<InstanceType<typeof ChatTab> | null>(null)
-const claudeAuthPending = ref<{ workerId: string; url: string } | null>(null)
 
 const foreman = computed(() => agentsStore.agents.find((a) => a.type === 'foreman'))
 
@@ -65,25 +60,6 @@ function selectIssue(issue: GitHubIssue) {
 
 defineExpose({ selectIssue })
 
-function onSubmitAuth({ workerId, code }: { workerId: string; code: string }) {
-  const sent = guildStore.sendMessage({
-    type: 'worker-auth-response',
-    workerId,
-    code,
-  })
-  if (!sent) {
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: '⚠ Connection not ready — please wait a moment and try again.',
-      createdAt: new Date().toISOString(),
-    })
-    return
-  }
-  claudeAuthPending.value = null
-}
-
 function handleTaskEvent(data: WSInbound) {
   if (data.type === 'task-complete') {
     guildStore.messages.push({
@@ -104,15 +80,6 @@ function handleTaskEvent(data: WSInbound) {
       content: `⚠ ${agentsStore.workerDisplayName(data.workerId)} needs attention on: "${data.description}"`,
       createdAt: new Date().toISOString(),
     })
-  } else if (data.type === 'claude-auth-required') {
-    claudeAuthPending.value = { workerId: data.workerId, url: data.url }
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: `⚿ ${agentsStore.workerDisplayName(data.workerId)} needs Claude auth — visit the URL and paste the code below`,
-      createdAt: new Date().toISOString(),
-    })
   } else if (data.type === 'task-assigned') {
     const taskName = (data.name || data.description || '').slice(0, 60)
     guildStore.messages.push({
@@ -128,25 +95,8 @@ function handleTaskEvent(data: WSInbound) {
   }
 }
 
-onMounted(async () => {
+onMounted(() => {
   guildStore.addMessageHandler(handleTaskEvent)
-  // Restore the auth panel if a worker was already waiting when we connected
-  // (handles page-refresh and late-join scenarios where the original
-  // claude-auth-required broadcast was missed).
-  const guildId = guildStore.currentGuild?.id
-  if (guildId && !claudeAuthPending.value) {
-    try {
-      const items = await api<Array<{ workerId: string; url: string }>>(
-        `/guilds/${guildId}/pending-auth`,
-      )
-      if (items.length > 0) {
-        claudeAuthPending.value = { workerId: items[0].workerId, url: items[0].url }
-      }
-    } catch (e) {
-      console.warn('Could not fetch pending auth state', e)
-    }
-  }
-
   pollCountdownTimer = setInterval(() => {
     pollTick.value++
   }, 30_000)

@@ -28,16 +28,18 @@ def _make_cfg(**kwargs) -> Config:
 
 
 async def test_notify_offline_sends_worker_disconnect():
-    """_notify_offline() must send exactly one worker-disconnect message."""
+    """_notify_offline() must send one worker-disconnect carrying the shutdown reason."""
     worker = Worker(_make_cfg())
     sent: list[dict] = []
     worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
 
+    await worker._initiate_shutdown("idle timeout")
     await worker._notify_offline()
 
     disconnect_msgs = [m for m in sent if m.get("type") == "worker-disconnect"]
     assert len(disconnect_msgs) == 1, f"Expected one worker-disconnect, got: {sent}"
     assert disconnect_msgs[0]["workerId"] == "w-test01"
+    assert disconnect_msgs[0]["reason"] == "idle timeout"
 
 
 async def test_notify_offline_swallows_send_errors():
@@ -73,7 +75,7 @@ async def test_run_sends_disconnect_before_ws_close():
     worker._fetch_guild_env_vars = AsyncMock()
     worker._check_gh_auth = AsyncMock()
     worker._check_codex_doctor = AsyncMock()
-    worker._check_claude_auth = AsyncMock()
+    worker._detect_available_tools = AsyncMock()
     worker._fetch_pending_tasks = AsyncMock(return_value=[])
     worker.ws.connect = AsyncMock()
     worker.ws.close = capture_close
@@ -144,54 +146,6 @@ async def test_on_ws_reconnect_skips_join_before_auth():
     await worker._on_ws_reconnect()
 
     assert sent == [], f"No messages should be sent before auth, got: {sent}"
-
-
-async def test_check_claude_auth_sets_event_from_env():
-    """Credentials already in env mark Claude ready synchronously — no login."""
-    worker = Worker(_make_cfg())
-    worker._run_claude_login = AsyncMock()
-    import os
-
-    os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "tok-abc"
-    try:
-        await worker._check_claude_auth()
-    finally:
-        del os.environ["CLAUDE_CODE_OAUTH_TOKEN"]
-
-    assert worker._claude_authed.is_set()
-    worker._run_claude_login.assert_not_awaited()
-
-
-async def test_check_claude_auth_does_not_block_when_unauthenticated(monkeypatch):
-    """With no creds, _check_claude_auth returns immediately and runs login in the
-    background — it must not block the join, and _claude_authed stays unset until
-    the login actually completes."""
-    worker = Worker(_make_cfg())
-    worker._send = AsyncMock()
-    worker._emit = AsyncMock()
-    monkeypatch.setattr(worker, "_claude_is_authenticated", AsyncMock(return_value=False))
-
-    login_started = asyncio.Event()
-    login_release = asyncio.Event()
-
-    async def fake_login():
-        login_started.set()
-        await login_release.wait()  # simulate the 300s human-paste wait
-
-    monkeypatch.setattr(worker, "_run_claude_login", fake_login)
-    # Make the backend credential fetch fail fast so we hit the login path.
-    monkeypatch.setattr(worker, "_http", AsyncMock(side_effect=OSError("no backend")))
-
-    # Must return promptly despite the login "blocking" indefinitely.
-    await asyncio.wait_for(worker._check_claude_auth(), timeout=2.0)
-
-    assert not worker._claude_authed.is_set(), (
-        "auth must not be marked ready before login completes"
-    )
-    await asyncio.wait_for(login_started.wait(), timeout=2.0)  # login runs in background
-    login_release.set()
-    if worker._claude_login_task:
-        await worker._claude_login_task
 
 
 async def test_on_ws_reconnect_resends_non_idle_agent_state():

@@ -56,11 +56,6 @@ def _slug(text: str, max_len: int = 60) -> str:
 _CANCEL_SENTINEL = object()  # placed in redirect queue to signal task cancellation
 _SHUTDOWN_SENTINEL = object()  # placed in task queue to wake idle agents during shutdown
 
-# How long a dispatched Claude task waits for a background login to finish
-# before failing. Matches the 300s setup-token code-entry window in
-# _run_claude_login — no point waiting past when the login itself gives up.
-CLAUDE_AUTH_WAIT_SECONDS = float(os.environ.get("PIONEER_CLAUDE_AUTH_WAIT", "300"))
-
 _PR_PHASES = frozenset({"execute", "followup"})
 
 
@@ -130,16 +125,9 @@ class Worker:
         )
         self.ws = WSClient(cfg.ws_url, sleep_monitor=self.sleep_monitor)
         self._shutdown_event = asyncio.Event()
-        # "Claude is ready to run tasks." Starts set (the common case: creds in
-        # env or restored, or a tool that isn't claude) and is CLEARED only when
-        # _check_claude_auth kicks off a background login, then set again when the
-        # login completes. Claude tasks wait on it; pi/codex tasks ignore it.
-        # Startup never blocks on it — the worker joins first and auths in the
-        # background (see _check_claude_auth).
-        self._claude_authed = asyncio.Event()
-        self._claude_authed.set()
-        # Handle to the background login coroutine so it isn't GC'd mid-flight.
-        self._claude_login_task: asyncio.Task | None = None
+        # Reason for the current shutdown, sent to the backend in worker-disconnect
+        # so the foreman can tell an idle-timeout reap from a signal/crash.
+        self._shutdown_reason: str | None = None
         self._worker_name: str = ""
         # Captured at run() start so the optional control API's handler thread
         # can schedule coroutines onto the worker's loop. Stays None when no
@@ -171,11 +159,9 @@ class Worker:
         # Keyed by task_id; each entry is a list of (repo_path, wt_path, last_used_monotonic).
         self._task_worktrees: dict[str, list[tuple[str, str, float]]] = {}
 
-        # ── Auth / repo state ────────────────────────────────────────────────
-        # Queue for auth codes received from the UI during claude auth login.
-        self._auth_code_queue: asyncio.Queue[str] | None = None
+        # ── Repo state ───────────────────────────────────────────────────────
         # Set to True once _join() has been called the first time so that
-        # _on_ws_reconnect doesn't prematurely join before auth completes.
+        # _on_ws_reconnect doesn't prematurely re-join.
         self._joined = False
         # Monotonic timestamp of the last successful GitHub repo-list refresh.
         # 0 means never refreshed; _idle_puller compares against this.
@@ -399,29 +385,31 @@ class Worker:
         else:
             logger.warning("codex doctor: failed (rc=%d)\n%s", proc.returncode, output)
 
-    async def _ensure_codex_api_key(self) -> None:
-        """Warn early if no OpenAI API key is available for Codex tasks.
+    async def _tool_has_credentials(self, name: str) -> bool:
+        """Return True if *name* has usable credentials in the environment.
 
-        The key is passed explicitly to each run_codex_auto call (via the
-        openai_api_key parameter) rather than being injected into os.environ,
-        so this method only checks and logs — it does not mutate global state.
+        Credentials belong in the guild env vars now (applied by
+        _fetch_guild_env_vars before detection). A tool missing its credentials
+        is dropped from the available-tools list with a warning rather than
+        launched and failed per-task.
         """
-        if self.cfg.openai_api_key is not None:
-            logger.info("OPENAI_API_KEY configured — Codex tasks will use it")
-        else:
-            logger.warning(
-                "OPENAI_API_KEY not configured — Codex tasks will fail. "
-                "Set openai_api_key in the [codex] config block or the OPENAI_API_KEY env var."
-            )
+        if name == "claude":
+            if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+                return True
+            # Fall back to a locally logged-in CLI (dev machines / keychain).
+            return await self._claude_is_authenticated()
+        if name == "codex":
+            return bool(os.environ.get("OPENAI_API_KEY") or self.cfg.openai_api_key)
+        return True  # pi and any other tool need no credentials
 
-    def _detect_available_tools(self) -> None:
-        """Populate self._available_tools based on which runner binaries are on PATH.
+    async def _detect_available_tools(self) -> None:
+        """Populate self._available_tools from runner binaries on PATH + credentials.
 
-        When cfg.tools is set, only the listed names are probed; any that aren't found
-        on PATH are excluded with a warning.  When cfg.tools is None (default), all
-        known tool binaries are probed automatically.
+        When cfg.tools is set, only the listed names are probed; when None (default)
+        all known tool binaries are probed. A tool is available only if its binary
+        is present AND it has usable credentials — otherwise it is dropped with a
+        warning telling the operator to set the credential in the guild env vars.
         """
-        import os
         import shutil
 
         def _is_executable(path: str) -> bool:
@@ -443,6 +431,10 @@ class Worker:
             "codex": self.cfg.codex_path,
             "pi": self.cfg.pi_path,
         }
+        cred_hint = {
+            "claude": "ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN",
+            "codex": "OPENAI_API_KEY",
+        }
         candidates = self.cfg.tools if self.cfg.tools is not None else list(tool_paths)
 
         tools: list[str] = []
@@ -451,14 +443,22 @@ class Worker:
             if binary is None:
                 logger.warning("Unknown tool %r in --tools list; skipping", name)
                 continue
-            if _is_executable(binary):
-                tools.append(name)
-            else:
+            if not _is_executable(binary):
                 logger.warning(
                     "Tool %r not found on PATH (checked %r); excluding from available tools",
                     name,
                     binary,
                 )
+                continue
+            if not await self._tool_has_credentials(name):
+                logger.warning(
+                    "Tool %r has no credentials (set %s in the guild env vars); "
+                    "excluding from available tools",
+                    name,
+                    cred_hint.get(name, "the required credentials"),
+                )
+                continue
+            tools.append(name)
         self._available_tools = tools
         logger.info("Available tools: %s", tools or ["(none)"])
 
@@ -523,369 +523,6 @@ class Worker:
         else:
             logger.info("claude auth status reports loggedIn=false")
         return logged_in
-
-    async def _check_claude_auth(self) -> None:
-        """Make Claude credentials usable without blocking the worker's startup.
-
-        The synchronous part is cheap: check the env, check an existing local
-        login, and try to restore a stored blob from the backend. Any of those
-        succeeding sets ``_claude_authed`` and returns.
-
-        If none do, we do NOT run the interactive ``claude setup-token`` login
-        inline — that blocks up to 300s waiting for a human to paste an OAuth
-        code, which on an unattended ECS worker means the worker never joins the
-        guild (and pi/codex workers that don't even use Claude get stuck too).
-        Instead the login runs in the background: the worker joins immediately,
-        emits ``claude-auth-required`` so the UI can drive the OAuth flow, and
-        Claude tasks wait on ``_claude_authed`` only when one is actually
-        dispatched.
-        """
-        import base64
-        import io
-        import json
-        import tarfile
-        from pathlib import Path
-
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            logger.info("ANTHROPIC_API_KEY set — skipping Claude login flow")
-            self._claude_authed.set()
-            return
-
-        if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-            logger.info("CLAUDE_CODE_OAUTH_TOKEN already in env — skipping login")
-            self._claude_authed.set()
-            return
-
-        if await self._claude_is_authenticated():
-            logger.info("Claude credentials already present")
-            self._claude_authed.set()
-            return
-
-        # Try restoring credentials stored in the backend. Two formats are
-        # supported: the new JSON {"oauth_token": "..."} blob produced by
-        # `claude setup-token`, and the legacy base64(tar.gz of ~/.claude)
-        # blob produced by older versions running `claude auth login`.
-        try:
-            async with await self._http(authed=True) as client:
-                resp = await client.get(
-                    "/auth/claude/credentials",
-                    params={"guild_id": self.cfg.guild_id},
-                )
-            if resp.status_code == 200:
-                blob = resp.json().get("credentials_blob", "")
-                if blob:
-                    raw = base64.b64decode(blob)
-                    try:
-                        payload = json.loads(raw)
-                        token = payload.get("oauth_token")
-                        if token:
-                            os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
-                            logger.info(
-                                "Restored CLAUDE_CODE_OAUTH_TOKEN from backend (len=%d)",
-                                len(token),
-                            )
-                            # The env var is inherited by every spawned claude;
-                            # no need to re-verify with `claude auth status`,
-                            # which can spuriously fail on macOS keychain hosts.
-                            self._claude_authed.set()
-                            return
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        pass  # fall through to legacy tarball path
-                    claude_dir = Path.home() / ".claude"
-                    claude_dir.mkdir(parents=True, exist_ok=True)
-                    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tar:
-                        tar.extractall(path=Path.home())
-                    logger.info("Restored Claude credentials tarball from backend (legacy)")
-                    if await self._claude_is_authenticated():
-                        self._claude_authed.set()
-                        return
-                    logger.warning("Restored credentials blob but auth status still fails")
-        except Exception as exc:
-            logger.warning("Could not fetch Claude credentials from backend: %s", exc)
-
-        # No usable credentials. Claude tasks must now wait, so clear the ready
-        # flag, then run the interactive login in the BACKGROUND — the worker
-        # still joins the guild immediately; _run_claude_login emits
-        # claude-auth-required and re-sets _claude_authed if a human completes it.
-        self._claude_authed.clear()
-        logger.info("No Claude credentials found — starting login in background (non-blocking)")
-        await self._emit(
-            "No Claude credentials found — starting login (worker stays online)...",
-            level=LEVEL_AUTH,
-        )
-        self._claude_login_task = asyncio.create_task(self._run_claude_login())
-
-    async def _run_claude_login(self) -> None:
-        """Drive `claude setup-token` to completion and persist the resulting OAuth token.
-
-        Why ``setup-token`` and not ``claude auth login``: the CLI ``auth login``
-        command has no manual paste path — its only way to receive the auth
-        code is via a localhost HTTP callback fired by the auto-opened browser,
-        which fails in headless containers. ``setup-token`` runs an Ink
-        (React-for-CLI) TUI that *does* prompt with "Paste code here if
-        prompted >" and accepts the code over stdin. The trade-off is scope:
-        the resulting token is ``user:inference`` only (sufficient for running
-        Claude Code tasks, but not for Remote Control / file_upload / mcp).
-
-        Mechanics: Ink mounts only when stdout is a real TTY and reads input
-        only when it has a controlling terminal, so we allocate a PTY pair,
-        plumb it into all three standard streams of the child, and use
-        setsid + TIOCSCTTY in a preexec to make the slave PTY the child's
-        ctty. The auth code must be written in two writes (paste, ~150ms
-        delay, CR alone) — a single ``code\\r`` write doesn't fire onSubmit
-        because Ink batches the CR into the paste event.
-        """
-        import base64
-        import fcntl
-        import json
-        import os
-        import pty
-        import re
-        import termios
-
-        self._auth_code_queue = asyncio.Queue()
-        logger.info("Starting claude setup-token — auth_code_queue is now open")
-
-        master_fd, slave_fd = pty.openpty()
-        # Disable input echo so the auth code we write isn't reflected onto
-        # stdout (which would put the secret into our logs).
-        try:
-            attrs = termios.tcgetattr(slave_fd)
-            attrs[3] &= ~termios.ECHO  # lflags
-            termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
-        except termios.error as exc:
-            logger.debug("Could not disable PTY echo: %s", exc)
-
-        def _attach_controlling_tty() -> None:
-            os.setsid()
-            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-
-        proc = await asyncio.create_subprocess_exec(
-            self.cfg.claude_path,
-            "setup-token",
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            preexec_fn=_attach_controlling_tty,
-        )
-        os.close(slave_fd)
-        logger.info(
-            "claude setup-token started pid=%s (PTY mode, master_fd=%d, ctty=slave)",
-            proc.pid,
-            master_fd,
-        )
-
-        loop = asyncio.get_event_loop()
-        reader = asyncio.StreamReader()
-        reader_protocol = asyncio.StreamReaderProtocol(reader)
-        master_pipe = os.fdopen(master_fd, "rb", buffering=0)
-        await loop.connect_read_pipe(lambda: reader_protocol, master_pipe)
-
-        # Strip ANSI/CSI escape sequences so we can grep Ink's output. Match
-        # the common cursor/SGR/erase forms claude emits.
-        ansi_re = re.compile(
-            rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b\][^\x07\x1b]*[\x07\x1b]"
-        )
-
-        def _clean(b: bytes) -> str:
-            return ansi_re.sub(b"", b).decode(errors="replace")
-
-        captured = bytearray()  # full raw output for token extraction at end
-        url_seen = False
-        code_sent = False
-        post_submit_watchdog: asyncio.Task | None = None
-        try:
-            while True:
-                try:
-                    chunk = await reader.read(4096)
-                except Exception as exc:
-                    logger.warning("PTY read error: %s", exc)
-                    break
-                if not chunk:
-                    break
-                captured.extend(chunk)
-                cleaned = _clean(chunk)
-                for line in cleaned.splitlines():
-                    line = line.rstrip()
-                    if line:
-                        logger.info("[claude setup-token] %s", line)
-                        await self._emit(line, level=LEVEL_AUTH)
-
-                # Detect the OAuth URL once it's been emitted. Ink word-wraps
-                # the URL across multiple lines (often after each ~80 chars),
-                # so we strip whitespace from the running buffer first and
-                # then look for the URL ending at the OAuth state parameter.
-                if not url_seen:
-                    full_no_ws = re.sub(r"\s+", "", _clean(bytes(captured)))
-                    m = re.search(
-                        r"https://claude\.com/cai/oauth/authorize\?[A-Za-z0-9=&%_.\-]+state=[A-Za-z0-9_\-]+",
-                        full_no_ws,
-                    )
-                    if m:
-                        url = m.group(0)
-                        url_seen = True
-                        await self._send(
-                            {
-                                "type": "claude-auth-required",
-                                "workerId": self.cfg.worker_id,
-                                "url": url,
-                            }
-                        )
-                        await self._emit(
-                            "Waiting for auth code — paste it into the auth panel in the UI...",
-                            level=LEVEL_AUTH,
-                        )
-                        logger.info("Auth login: awaiting code from queue (timeout=300s)")
-                        try:
-                            code = await asyncio.wait_for(
-                                self._auth_code_queue.get(), timeout=300.0
-                            )
-                        except TimeoutError:
-                            logger.warning("Auth login: timed out waiting for code from queue")
-                            await self._emit(
-                                "Timed out waiting for auth code — restart the worker to retry",
-                                level=LEVEL_AUTH,
-                            )
-                            proc.kill()
-                            await proc.wait()
-                            return
-                        logger.info(
-                            "Auth login: code dequeued (len=%d, pid_alive=%s)",
-                            len(code),
-                            proc.returncode is None,
-                        )
-                        await self._emit(
-                            "Code received — submitting to Claude CLI...", level=LEVEL_AUTH
-                        )
-                        try:
-                            os.write(master_fd, code.strip().encode())
-                            # Ink batches consecutive bytes into one paste
-                            # event; a CR included in the same write is
-                            # swallowed and never fires onSubmit. Sending CR
-                            # in a separate write after a short sleep makes
-                            # Ink treat it as a distinct keypress.
-                            await asyncio.sleep(0.2)
-                            os.write(master_fd, b"\r")
-                        except OSError as exc:
-                            logger.warning("Auth login: PTY write failed: %s", exc)
-                            await self._emit(
-                                f"Failed to send code to Claude: {exc}", level=LEVEL_AUTH
-                            )
-                            proc.kill()
-                            await proc.wait()
-                            return
-                        logger.info("Auth login: wrote code + CR (separate writes) to PTY")
-                        code_sent = True
-                        post_submit_watchdog = asyncio.create_task(self._auth_login_watchdog(proc))
-        finally:
-            self._auth_code_queue = None
-            if post_submit_watchdog is not None and not post_submit_watchdog.done():
-                post_submit_watchdog.cancel()
-            try:
-                master_pipe.close()
-            except OSError:
-                pass
-
-        logger.info(
-            "setup-token: PTY EOF reached (code_sent=%s); waiting for claude to exit",
-            code_sent,
-        )
-        await proc.wait()
-        logger.info("claude setup-token exited with rc=%s", proc.returncode)
-
-        # Extract the token from the captured Ink output. After Ink renders
-        # the success view there's a contiguous run of the token characters
-        # near "Store this token securely" / "export CLAUDE_CODE_OAUTH_TOKEN".
-        cleaned_full = _clean(bytes(captured))
-        token = self._extract_oauth_token(cleaned_full)
-        if not token:
-            await self._emit(
-                "Login finished but could not extract OAuth token from output — please retry",
-                level=LEVEL_AUTH,
-            )
-            logger.warning("Could not locate OAuth token in setup-token output")
-            return
-
-        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
-        self._claude_authed.set()
-        logger.info("Captured CLAUDE_CODE_OAUTH_TOKEN (len=%d) and set in env", len(token))
-        await self._emit(
-            "Token captured — saving to backend so future workers can reuse it",
-            level=LEVEL_AUTH,
-        )
-
-        try:
-            blob = base64.b64encode(json.dumps({"oauth_token": token}).encode()).decode()
-            async with await self._http(authed=True) as client:
-                await client.post(
-                    "/auth/claude/credentials",
-                    json={"guild_id": self.cfg.guild_id, "credentials_blob": blob},
-                )
-            await self._emit("Credentials saved", level=LEVEL_AUTH)
-            logger.info("Posted OAuth token to backend credentials store")
-        except Exception as exc:
-            logger.warning("Could not store Claude credentials: %s", exc)
-            await self._emit(f"Warning: could not store credentials: {exc}", level=LEVEL_AUTH)
-
-    @staticmethod
-    def _extract_oauth_token(cleaned_output: str) -> str | None:
-        """Locate the OAuth token in Ink's success-screen output.
-
-        The Ink TUI renders the token amid lots of surrounding text and ASCII
-        art; after stripping ANSI escapes it shows up as a long alphanumeric
-        run (40-100 chars from `[A-Za-z0-9_-]`) somewhere near the marker
-        "Store this token securely" / "Use this token by setting".
-
-        We anchor on those markers and pick the longest token-like run that
-        appears near them.
-        """
-        import re
-
-        text = cleaned_output
-        # Filter out spaces/newlines that Ink injects between glyphs in its
-        # box-layout, which would otherwise split the token character run.
-        compact = re.sub(r"[\s]+", "", text)
-        # The marker text gets compacted too.
-        marker_idx = compact.find("Storethistokensecurely")
-        if marker_idx < 0:
-            marker_idx = compact.find("UsethistokenbysettingexportCLAUDE_CODE_OAUTH_TOKEN")
-        if marker_idx < 0:
-            return None
-        # Search the 400 chars before the marker for the longest token-shaped run.
-        window = compact[max(0, marker_idx - 400) : marker_idx]
-        candidates = re.findall(r"[A-Za-z0-9_\-]{40,200}", window)
-        if not candidates:
-            return None
-        # Prefer the run closest to the marker (latest in the window).
-        return candidates[-1]
-
-    async def _auth_login_watchdog(self, proc: asyncio.subprocess.Process) -> None:
-        """Periodically log that we're still waiting on claude after the code was submitted.
-
-        Helps diagnose hangs where the async-for loop is blocked because claude
-        produced no further output (no newline, no exit) after stdin was sent.
-        """
-        ticks = 0
-        try:
-            while True:
-                await asyncio.sleep(15.0)
-                ticks += 1
-                if proc.returncode is not None:
-                    logger.info(
-                        "Auth login watchdog: claude exited rc=%s (after %ds)",
-                        proc.returncode,
-                        ticks * 15,
-                    )
-                    return
-                logger.warning(
-                    "Auth login watchdog: still waiting on claude stdout %ds after code submission (pid=%s, rc=%s)",
-                    ticks * 15,
-                    proc.pid,
-                    proc.returncode,
-                )
-        except asyncio.CancelledError:
-            logger.debug("Auth login watchdog cancelled")
-            raise
 
     # ------------------------------------------------------------------ Control API
     def _status_snapshot(self) -> dict:
@@ -1176,6 +813,7 @@ class Worker:
         if self._shutdown_event.is_set():
             return
         self._shutdown_event.set()
+        self._shutdown_reason = reason
         logger.info("Graceful shutdown initiated: %s", reason)
         try:
             await self._emit(
@@ -1225,6 +863,7 @@ class Worker:
                 {
                     "type": "worker-disconnect",
                     "workerId": self.cfg.worker_id,
+                    "reason": self._shutdown_reason,
                 }
             )
         except Exception as exc:
@@ -1272,21 +911,16 @@ class Worker:
         await self._refresh_github_repos()
         await self._check_gh_auth()
         await self._check_codex_doctor()
-        await self._ensure_codex_api_key()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
         self.ws.on_reconnect = self._on_ws_reconnect
         await self.ws.connect()
 
-        # Start listener before auth so it can relay auth codes from the UI.
-        # _check_claude_auth is non-blocking: it restores stored creds if it can
-        # and otherwise kicks off the login in the background. The worker joins
-        # right away — Claude tasks wait on _claude_authed when dispatched (see
-        # _execute_task); pi/codex workers never need it. Blocking the join on an
-        # interactive login stalled every unattended worker for 300s.
+        # Detect tools after guild env vars are applied so credential-gated tools
+        # (claude, codex) see their keys. A tool missing credentials is dropped
+        # with a warning rather than launched per-task and failed.
         listener = asyncio.create_task(self._listen())
-        await self._check_claude_auth()
-        self._detect_available_tools()
+        await self._detect_available_tools()
 
         await self._join()
         self._joined = True
@@ -1373,12 +1007,11 @@ class Worker:
     # ------------------------------------------------------------------ Listener
     async def _listen(self) -> None:
         logger.info("Listener started")
-        # Message types safe to process before _join() completes — auth-related
-        # messages flow during the pre-join window (claude setup-token), and
-        # Everything else (task assignments, follow-ups, redirects, etc.) must
-        # wait until we've actually joined, otherwise we'd start work before
-        # the backend sees us online.
-        _PRE_JOIN_ALLOWED = {"pong", "worker-message", "worker-auth-response"}
+        # Message types safe to process before _join() completes. Everything else
+        # (task assignments, follow-ups, redirects, etc.) must wait until we've
+        # actually joined, otherwise we'd start work before the backend sees us
+        # online.
+        _PRE_JOIN_ALLOWED = {"pong", "worker-message"}
         async for msg in self.ws.messages():
             mtype = msg.get("type")
             logger.debug("WS message: type=%s keys=%s", mtype, list(msg.keys()))
@@ -1440,49 +1073,25 @@ class Worker:
                     continue
                 text = msg.get("message", "")
                 if text:
-                    # During Claude login the auth queue is open; treat the
-                    # message as the auth code so the foreman can relay it.
-                    if self._auth_code_queue is not None:
-                        await self._auth_code_queue.put(text)
-                        logger.info(
-                            "Auth code received via worker-message (login flow) len=%d",
-                            len(text),
-                        )
-                        await self._emit("Auth code received and forwarded to login flow")
-                    else:
-                        active = next((s for s in self.agents if s.current_claude), None)
-                        if active:
-                            delivered = await active.current_claude.send_message(text)
-                            if delivered:
-                                await self._emit(f"Injected: {text[:80]}")
-                            else:
-                                logger.warning("Failed to inject message (stdin closed?)")
+                    active = next((s for s in self.agents if s.current_claude), None)
+                    if active:
+                        delivered = await active.current_claude.send_message(text)
+                        if delivered:
+                            await self._emit(f"Injected: {text[:80]}")
                         else:
-                            logger.debug("worker-message: no claude running; dropping")
+                            logger.warning("Failed to inject message (stdin closed?)")
+                    else:
+                        logger.debug("worker-message: no claude running; dropping")
 
-            elif mtype == "worker-auth-response":
-                msg_worker_id = msg.get("workerId")
+            elif mtype == "worker-outdated":
+                if msg.get("workerId") not in (None, self.cfg.worker_id):
+                    continue
+                # The backend noticed this worker is running an older version.
+                # Informational only — the worker keeps running its current work.
                 logger.info(
-                    "worker-auth-response received: msg_workerId=%s our_workerId=%s code_len=%d queue_open=%s",
-                    msg_worker_id,
-                    self.cfg.worker_id,
-                    len(msg.get("code", "")),
-                    self._auth_code_queue is not None,
+                    "Backend reports this worker is out of date (%s); continuing",
+                    msg.get("reason", "version mismatch"),
                 )
-                if msg_worker_id != self.cfg.worker_id:
-                    logger.warning("worker-auth-response workerId mismatch — ignoring")
-                    continue
-                code = msg.get("code", "")
-                if not code:
-                    logger.warning("worker-auth-response has empty code — ignoring")
-                    continue
-                if self._auth_code_queue is not None:
-                    await self._auth_code_queue.put(code)
-                    logger.info("Auth code queued (len=%d)", len(code))
-                else:
-                    logger.warning(
-                        "worker-auth-response received but no auth in progress (queue is None)"
-                    )
 
             elif mtype == "task-followup":
                 if msg.get("workerId") != self.cfg.worker_id:
@@ -2268,22 +1877,6 @@ class Worker:
             success = False
             stop_reason = "no_events"
             last_msg = ""
-
-            # Claude tasks need credentials; startup no longer blocks the join on
-            # them (see _check_claude_auth), so a claude task dispatched before
-            # login completes waits here instead of launching un-authed. pi/codex
-            # tasks skip this entirely. Bounded so a slot can't hang forever.
-            if tool == "claude" and not self._claude_authed.is_set():
-                logger.info("Task %s: waiting for Claude auth before launch", task_id)
-                await emit("Waiting for Claude authentication to complete...")
-                try:
-                    await asyncio.wait_for(
-                        self._claude_authed.wait(), timeout=CLAUDE_AUTH_WAIT_SECONDS
-                    )
-                except TimeoutError:
-                    raise RuntimeError(
-                        "Claude is not authenticated — complete the login in the UI, then retry"
-                    ) from None
 
             while True:
                 if tool == "codex":

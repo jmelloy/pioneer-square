@@ -1,13 +1,5 @@
 <template>
   <div class="actions-panel">
-    <div v-if="pendingAuthUrl" class="auth-banner">
-      <span class="auth-icon">⚿</span>
-      <span class="auth-text">Authentication required —</span>
-      <a :href="pendingAuthUrl" target="_blank" rel="noopener" class="auth-link">{{
-        pendingAuthUrl
-      }}</a>
-    </div>
-
     <!-- Message + shutdown row (always visible) -->
     <div class="action-row">
       <input
@@ -148,12 +140,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useAgentsStore } from '../../stores/agents'
 import { useGuildStore } from '../../stores/guild'
 import { useTasksStore } from '../../stores/tasks'
 import { api } from '../../utils/api'
-import type { WSInbound } from '../../types'
 
 const props = defineProps<{ workerId: string; workerState?: string }>()
 
@@ -166,7 +157,6 @@ const messageInput = ref('')
 const sendingMessage = ref(false)
 const shuttingDown = ref(false)
 const actionError = ref('')
-const pendingAuthUrl = ref<string | null>(null)
 
 // Expand toggle
 const expanded = ref(false)
@@ -340,44 +330,9 @@ async function handleCancelTask() {
   }
 }
 
-async function fetchPendingAuth() {
-  const guildId = guildStore.currentGuild?.id
-  if (!guildId) return
-  try {
-    const items = await api<Array<{ workerId: string; url: string }>>(
-      `/guilds/${guildId}/pending-auth`,
-    )
-    const match = items.find((i) => i.workerId === props.workerId)
-    pendingAuthUrl.value = match?.url ?? null
-  } catch {
-    // non-fatal
-  }
-}
-
-function handleAuthEvent(data: WSInbound) {
-  if (data.type === 'claude-auth-required' && data.workerId === props.workerId) {
-    pendingAuthUrl.value = data.url
-  } else if (
-    (data.type === 'claude-auth-success' || data.type === 'claude-auth-cleared') &&
-    data.workerId === props.workerId
-  ) {
-    pendingAuthUrl.value = null
-  }
-}
-
-onMounted(async () => {
-  await fetchPendingAuth()
-  guildStore.addMessageHandler(handleAuthEvent)
-})
-
-onUnmounted(() => {
-  guildStore.removeMessageHandler(handleAuthEvent)
-})
-
 watch(
   () => props.workerId,
-  async () => {
-    pendingAuthUrl.value = null
+  () => {
     expanded.value = false
     actionError.value = ''
     followupTaskId.value = ''
@@ -385,7 +340,6 @@ watch(
     redirectTaskId.value = ''
     redirectInstructions.value = ''
     cancelTaskId.value = ''
-    await fetchPendingAuth()
   },
 )
 </script>
@@ -491,33 +445,6 @@ watch(
   padding: 2px 0 0;
   font-size: 11px;
   color: var(--color-red);
-}
-
-.auth-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: rgba(255, 204, 0, 0.08);
-  border: 1px solid var(--color-amber);
-  border-radius: 2px;
-  font-size: 11px;
-  color: var(--color-amber);
-  flex-wrap: wrap;
-}
-.auth-icon {
-  font-size: 14px;
-}
-.auth-text {
-  font-family: var(--font-pixel);
-  font-size: 7px;
-  letter-spacing: 1px;
-}
-.auth-link {
-  color: var(--color-teal);
-  text-decoration: underline;
-  word-break: break-all;
-  font-size: 11px;
 }
 
 /* Expand toggle */
