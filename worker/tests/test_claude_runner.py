@@ -179,6 +179,26 @@ def test_parse_assistant_write_tool():
     assert text == "▶ write: /tmp/out.txt"
 
 
+def test_parse_assistant_read_tool_strips_worktree_prefix():
+    event = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "Read",
+                    "input": {
+                        "file_path": "/work/dnsid/w-4de676/t-vdfpj3/dnsid-infra/envs/dev/main.tf"
+                    },
+                }
+            ]
+        },
+    }
+    pairs = parse_claude_event(event)
+    text, _ = pairs[0]
+    assert text == "▶ read: dnsid-infra/envs/dev/main.tf"
+
+
 def test_parse_assistant_unknown_tool():
     event = {
         "type": "assistant",

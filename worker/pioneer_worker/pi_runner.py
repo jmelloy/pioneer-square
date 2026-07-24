@@ -7,6 +7,8 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 
+from .log_format import strip_worktree_prefix
+
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
@@ -75,7 +77,8 @@ def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, dict | None
         if name == "bash":
             summary = f"▶ bash: {inp.get('command', '')[:120]}"
         elif name in ("read", "write", "edit"):
-            summary = f"▶ {name}: {inp.get('path', inp.get('file_path', ''))}"
+            fp = strip_worktree_prefix(inp.get("path", inp.get("file_path", "")))
+            summary = f"▶ {name}: {fp}"
         else:
             summary = f"▶ {name}({json.dumps(inp)[:80]})"
         detail = {"toolType": "tool_use", "name": name, "input": inp}
