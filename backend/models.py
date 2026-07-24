@@ -174,8 +174,8 @@ class Worker(SQLModel, table=True):
     # Used by the lifecycle module to force-kill stale containers on version change.
     container_id: str | None = None
     # Backend version string recorded at spawn time (PIONEER_VERSION env var or git SHA).
-    # On startup, workers whose spawned_version differs from the current version are
-    # considered stale and drained/killed before fresh workers are started.
+    # When a worker with a stale spawned_version (re)connects, the join handler tells it
+    # to shut down gracefully; nothing runs at backend startup itself. See worker_lifecycle.
     spawned_version: str | None = None
     # UTC instant the container was successfully started (set after containers.run()).
     started_at: datetime | None = Field(

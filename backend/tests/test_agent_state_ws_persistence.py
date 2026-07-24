@@ -65,13 +65,6 @@ def client(_setup_schema):
         pass
 
     mp.setattr(main_module, "reset_connection_state", _stubbed_reset_connection_state)
-
-    async def _stubbed_drain_stale_workers_on_startup():
-        return []
-
-    mp.setattr(
-        main_module, "drain_stale_workers_on_startup", _stubbed_drain_stale_workers_on_startup
-    )
     mp.setenv("DATABASE_URL", db_url)
 
     with TestClient(main_module.app) as c:
