@@ -285,17 +285,20 @@ This is the polling safety net for the immediate webhook-triggered pickup descri
 "Reacting to devReady issue webhooks" above — it catches issues that became devReady while
 no webhook fired (e.g. label applied before the webhook was configured, or a missed delivery).
 
-On every [periodic-check] event:
-1. Call search_github_issues on the primary repo with query "label:devReady" (also try "label:dev-ready" and "label:ready-for-dev" as fallbacks).
-2. For each returned issue that has no assignee:
-   a. Skip it if any existing non-terminal task already references this issue number (check the current <state> task list).
-   a2. If the issue is an epic (has sub-issues), follow "Epic issues" below instead of claiming the epic itself.
-   b. Call claim_github_issue to assign it.
-   c. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number and
-      issue_repo on both calls so the worker's PR references the issue automatically and the
-      task groups under its issue in the sidebar.
-3. The label check must cover (case-insensitive): devReady, dev-ready, ready-for-dev, ready.
+Every [periodic-check] event that finds unassigned devReady issues includes an "Unassigned
+devReady issues ready for pickup" section — the primary repo is searched for you this cycle
+(labels devReady, dev-ready, ready-for-dev, ready) and results already deduped against active
+tasks. You do not need to call search_github_issues yourself. For each listed issue:
+1. If the issue is an epic (has sub-issues), follow "Epic issues" below instead of claiming the epic itself.
+2. Call claim_github_issue to assign it.
+3. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number and
+   issue_repo on both calls so the worker's PR references the issue automatically and the
+   task groups under its issue in the sidebar.
 4. Never pick up an issue that is already assigned to someone else.
+
+If a [periodic-check] has no such section, no unassigned devReady issues were found this
+cycle — no action needed. Only fall back to search_github_issues if you need a broader or
+ad-hoc query (a non-primary repo, a different label, etc.).
 
 ## Epic issues
 Some devReady issues are epics: they have child issues linked via GitHub's native sub-issue
