@@ -21,7 +21,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line, pending_claude_auth
 from fastapi import APIRouter, Depends, HTTPException
-from models import Guild, Task, UserSpawnSettings, Worker, live_tasks_filter
+from models import ClaudeCredentials, Guild, Task, UserSpawnSettings, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from sqlalchemy import update
 from sqlmodel import col, select
@@ -29,6 +29,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
 from utils import (
     build_spawn_worker_env,
+    mask_secret,
     row_to_dict,
     worker_display_name,
 )
@@ -69,6 +70,10 @@ class SpawnWorkerRequest(BaseModel):
     tools: list[str] | None = None
     agent_count: int | None = None
     env_vars: dict[str, str] | None = None
+    # Guild-level foreman_config.env_vars keys to drop from this spawn only (the
+    # guild's stored credentials are unchanged). Lets an operator see what a
+    # worker would inherit and opt individual ones out for a single launch.
+    exclude_env_keys: list[str] | None = None
 
     @field_validator("env_vars")
     @classmethod
@@ -85,6 +90,20 @@ class SpawnWorkerRequest(BaseModel):
             if len(value) > _MAX_ENV_VALUE_LEN:
                 raise ValueError(
                     f"Env var value for {key!r} exceeds max length ({_MAX_ENV_VALUE_LEN} chars)"
+                )
+        return v
+
+    @field_validator("exclude_env_keys")
+    @classmethod
+    def validate_exclude_env_keys(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        if len(v) > _MAX_ENV_VARS:
+            raise ValueError(f"Too many excluded env keys (max {_MAX_ENV_VARS})")
+        for key in v:
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                raise ValueError(
+                    f"Invalid env var key: {key!r}. Keys must match ^[A-Za-z_][A-Za-z0-9_]*$"
                 )
         return v
 
@@ -202,6 +221,9 @@ async def spawn_worker_container(
         for e in (guild_cfg.get("env_vars") or [])
         if e.get("key") and e.get("value") is not None
     }
+    if data.exclude_env_keys:
+        excluded_keys = set(data.exclude_env_keys)
+        foreman_env_vars = {k: v for k, v in foreman_env_vars.items() if k not in excluded_keys}
     # User-supplied vars at spawn time override guild defaults.
     extra_env: dict[str, str] = {**foreman_env_vars, **(data.env_vars or {})}
 
@@ -272,6 +294,44 @@ async def spawn_worker_container(
         "worker_id": worker_id,
         "container_id": spawned.short_id,
         "runtime": spawned.runtime,
+    }
+
+
+@router.get("/guilds/{guild_id}/spawn-credentials")
+async def get_spawn_credentials(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return masked credential status for the spawn form — never raw values.
+
+    Covers the two credential sources a spawned worker inherits: the guild's
+    ``foreman_config.env_vars`` (merged into every spawn unless excluded via
+    ``exclude_env_keys`` on POST /spawn-worker) and the guild's stored Claude
+    OAuth credentials. Lets an operator see, before launching, what a worker
+    will have access to without exposing the underlying secret values.
+    """
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    guild_res = await db.exec(select(Guild).where(col(Guild.id) == guild_pk))
+    guild = guild_res.one()
+    config = guild.foreman_config or {}
+    guild_env_vars = [
+        {"key": e["key"], "masked_value": mask_secret(e.get("value") or "")}
+        for e in (config.get("env_vars") or [])
+        if e.get("key")
+    ]
+    creds_result = await db.exec(
+        select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
+    )
+    creds_row = creds_result.one_or_none()
+    return {
+        "guild_env_vars": guild_env_vars,
+        "claude_credentials": {
+            "saved": creds_row is not None,
+            "updated_at": creds_row.updated_at.isoformat() if creds_row else None,
+        },
     }
 
 

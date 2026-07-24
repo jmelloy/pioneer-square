@@ -85,6 +85,42 @@
         max="16"
         placeholder="4"
       />
+      <label class="spawn-label">Guild Credentials <span class="spawn-hint">(optional)</span></label>
+      <div v-if="credentialsLoading" class="spawn-hint-text">Loading credentials…</div>
+      <div v-else-if="credentialsError" class="spawn-error">{{ credentialsError }}</div>
+      <div v-else-if="!hasCredentials" class="spawn-hint-text">No guild credentials configured.</div>
+      <template v-else>
+        <div class="spawn-cred-list">
+          <label
+            v-for="cred in credentials!.guild_env_vars"
+            :key="cred.key"
+            class="spawn-repo-row spawn-cred-row"
+            :class="{ selected: includedKeys[cred.key] !== false }"
+          >
+            <input
+              type="checkbox"
+              :checked="includedKeys[cred.key] !== false"
+              @change="toggleCredential(cred.key)"
+              class="spawn-repo-check"
+            />
+            <span class="spawn-repo-name spawn-cred-key">{{ cred.key }}</span>
+            <span class="spawn-cred-value">{{ cred.masked_value }}</span>
+          </label>
+          <div class="spawn-repo-row spawn-cred-row spawn-cred-claude">
+            <span
+              class="spawn-cred-status"
+              :class="{ 'spawn-cred-status--ok': credentials!.claude_credentials.saved }"
+            >
+              {{ credentials!.claude_credentials.saved ? '●' : '○' }}
+            </span>
+            <span class="spawn-repo-name">Claude OAuth credentials</span>
+            <span class="spawn-cred-value">
+              {{ credentials!.claude_credentials.saved ? 'configured' : 'not configured' }}
+            </span>
+          </div>
+        </div>
+        <p class="spawn-env-hint">Uncheck a credential to exclude it from this launch only.</p>
+      </template>
       <label class="spawn-label">Env Vars <span class="spawn-hint">(optional)</span></label>
       <p class="spawn-env-hint">
         Key-value pairs are saved to the server and restored each session.
@@ -155,6 +191,18 @@ interface GuildSpawnDefaults {
   agent_count: number | null
 }
 
+interface GuildEnvVarStatus {
+  key: string
+  masked_value: string
+}
+
+interface SpawnCredentials {
+  guild_env_vars: GuildEnvVarStatus[]
+  claude_credentials: { saved: boolean; updated_at: string | null }
+}
+
+const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 const guildDefaults = ref<GuildSpawnDefaults | null>(null)
 const usingGuildDefaults = ref(false)
 const selectedRepos = ref<string[]>([])
@@ -168,6 +216,23 @@ const loadingRepos = ref(false)
 const repoFetchFailed = ref(false)
 const launched = ref(false)
 const launchedWorkerId = ref('')
+const credentials = ref<SpawnCredentials | null>(null)
+const credentialsLoading = ref(false)
+const credentialsError = ref('')
+// Per-key opt-out for this launch only; a key defaults to included until unchecked.
+const includedKeys = ref<Record<string, boolean>>({})
+
+const hasCredentials = computed(
+  () =>
+    !!credentials.value &&
+    (credentials.value.guild_env_vars.length > 0 || credentials.value.claude_credentials.saved),
+)
+
+const excludeEnvKeys = computed(() =>
+  (credentials.value?.guild_env_vars ?? [])
+    .map((c) => c.key)
+    .filter((key) => includedKeys.value[key] === false),
+)
 
 const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
 
@@ -185,6 +250,45 @@ async function loadGuildDefaults(guildId: string): Promise<GuildSpawnDefaults | 
   } catch {
     return null
   }
+}
+
+async function loadCredentials(guildId: string) {
+  credentialsLoading.value = true
+  credentialsError.value = ''
+  try {
+    const result = await api<SpawnCredentials>(`/guilds/${guildId}/spawn-credentials`)
+    credentials.value = result
+    for (const cred of result.guild_env_vars) {
+      if (!(cred.key in includedKeys.value)) includedKeys.value[cred.key] = true
+    }
+  } catch (e: unknown) {
+    credentialsError.value = e instanceof Error ? e.message : 'Failed to load credentials'
+  } finally {
+    credentialsLoading.value = false
+  }
+}
+
+function toggleCredential(key: string) {
+  includedKeys.value[key] = includedKeys.value[key] === false ? true : false
+}
+
+/** Mirrors the backend's env-key regex (`SpawnWorkerRequest`) so bad keys are
+ *  caught before the request round-trip, and flags client-only duplicate keys
+ *  the backend wouldn't otherwise reject (a later dict entry silently wins). */
+function validateEnvVars(): string | null {
+  const seen = new Set<string>()
+  for (const pair of envVars.value) {
+    const key = pair.key.trim()
+    if (key === '') continue
+    if (!ENV_KEY_PATTERN.test(key)) {
+      return `Invalid env var key "${key}" — use letters, numbers, and underscores, starting with a letter or underscore.`
+    }
+    if (seen.has(key)) {
+      return `Duplicate env var key "${key}".`
+    }
+    seen.add(key)
+  }
+  return null
 }
 
 /** Apply the guild defaults as the current form values, validating repos against
@@ -247,6 +351,11 @@ onMounted(async () => {
     ? await Promise.all([loadSavedSettings(guild.id), loadGuildDefaults(guild.id)])
     : [null, null]
   guildDefaults.value = defaults
+
+  if (guild) {
+    // Fire-and-forget: credential status isn't needed to render the rest of the form.
+    loadCredentials(guild.id)
+  }
 
   if (saved && (saved.repos?.length || saved.tools?.length || saved.envVars?.length)) {
     // The user has their own saved overrides — those win over the guild baseline.
@@ -332,6 +441,11 @@ function removeEnvVar(idx: number) {
 async function launch() {
   const guild = guildStore.currentGuild
   if (!guild || selectedRepos.value.length === 0) return
+  const validationError = validateEnvVars()
+  if (validationError) {
+    error.value = validationError
+    return
+  }
   spawning.value = true
   error.value = ''
   try {
@@ -346,6 +460,7 @@ async function launch() {
         tools: selectedTools.value.length ? selectedTools.value : undefined,
         agent_count: agentCount.value ?? undefined,
         env_vars: Object.keys(envVarsPayload).length ? envVarsPayload : undefined,
+        exclude_env_keys: excludeEnvKeys.value.length ? excludeEnvKeys.value : undefined,
       },
     })
     await saveSettings(guild.id)
@@ -630,5 +745,47 @@ async function launch() {
   padding: 3px 7px;
   align-self: flex-start;
   margin-top: 1px;
+}
+
+.spawn-cred-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 2px;
+  background: var(--color-bg);
+}
+
+.spawn-cred-row {
+  cursor: default;
+}
+
+.spawn-cred-key {
+  flex-shrink: 0;
+  font-family: var(--font-mono, monospace);
+}
+
+.spawn-cred-value {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  font-family: var(--font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spawn-cred-claude {
+  cursor: default;
+  border-top: 1px solid var(--color-brass-dark);
+}
+
+.spawn-cred-status {
+  color: var(--color-text-dim);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.spawn-cred-status--ok {
+  color: var(--color-green, #4caf50);
 }
 </style>

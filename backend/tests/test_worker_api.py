@@ -10,8 +10,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 from datetime import UTC, datetime, timedelta
 
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
-from models import Agent, Guild, GuildSpawnDefaults, User, Worker
+from models import Agent, ClaudeCredentials, Guild, GuildSpawnDefaults, User, Worker
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col  # noqa: E402
 
 
@@ -354,6 +355,122 @@ def test_put_spawn_defaults_requires_owner(client):
         json={"repos": ["a/b"], "tools": [], "agent_count": 2},
     )
     assert resp.status_code == 403
+
+
+def test_get_spawn_credentials_empty(client):
+    """A guild with no foreman env vars and no Claude credentials reports both as unset."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred1")
+    resp = test_client.get("/guilds/guild-cred1/spawn-credentials", headers=_auth(db_url))
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "guild_env_vars": [],
+        "claude_credentials": {"saved": False, "updated_at": None},
+    }
+
+
+def test_get_spawn_credentials_masks_guild_env_var_values(client):
+    """Guild foreman env var values are never returned in the clear from this endpoint."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred2")
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred2"))
+        session.execute(
+            update(Guild)
+            .where(col(Guild.id) == guild_pk)
+            .values(
+                foreman_config={
+                    "env_vars": [{"key": "ANTHROPIC_API_KEY", "value": "sk-ant-supersecretvalue"}]
+                }
+            )
+        )
+        session.commit()
+    resp = test_client.get("/guilds/guild-cred2/spawn-credentials", headers=_auth(db_url))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["guild_env_vars"] == [{"key": "ANTHROPIC_API_KEY", "masked_value": "sk…alue"}]
+    assert "sk-ant-supersecretvalue" not in resp.text
+
+
+def test_get_spawn_credentials_reports_claude_creds_saved(client):
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred3")
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred3"))
+        session.execute(
+            pg_insert(ClaudeCredentials).values(
+                guild_id=guild_pk,
+                credentials_blob="ignored-for-this-test",
+                updated_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+    resp = test_client.get("/guilds/guild-cred3/spawn-credentials", headers=_auth(db_url))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["claude_credentials"]["saved"] is True
+    assert body["claude_credentials"]["updated_at"] is not None
+    # The raw blob is never part of the response.
+    assert "ignored-for-this-test" not in resp.text
+
+
+def test_spawn_worker_excludes_selected_guild_env_keys(client, monkeypatch):
+    """exclude_env_keys drops those guild-level credentials from this spawn only."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred4")
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred4"))
+        session.execute(
+            update(Guild)
+            .where(col(Guild.id) == guild_pk)
+            .values(
+                foreman_config={
+                    "env_vars": [
+                        {"key": "ANTHROPIC_API_KEY", "value": "keep-me"},
+                        {"key": "OPENAI_API_KEY", "value": "drop-me"},
+                    ]
+                }
+            )
+        )
+        session.commit()
+
+    import worker_runtime
+
+    captured_env: dict = {}
+
+    async def fake_check_runtime_available():
+        return None
+
+    async def fake_start_worker_container(*, env, guild_id):
+        captured_env.update(env)
+        return worker_runtime.SpawnedWorker(handle="fake-handle", short_id="fakehandle12", runtime="docker")
+
+    monkeypatch.setattr(worker_runtime, "check_runtime_available", fake_check_runtime_available)
+    monkeypatch.setattr(worker_runtime, "start_worker_container", fake_start_worker_container)
+
+    resp = test_client.post(
+        "/guilds/guild-cred4/spawn-worker",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"], "exclude_env_keys": ["OPENAI_API_KEY"]},
+    )
+    assert resp.status_code == 200
+    assert captured_env.get("ANTHROPIC_API_KEY") == "keep-me"
+    assert "OPENAI_API_KEY" not in captured_env
+    # The guild's stored credential is untouched — only this spawn skipped it.
+    stored = test_client.get("/guilds/guild-cred4/spawn-credentials", headers=_auth(db_url))
+    stored_keys = {e["key"] for e in stored.json()["guild_env_vars"]}
+    assert stored_keys == {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
+
+
+def test_spawn_worker_rejects_invalid_exclude_env_key(client):
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred5")
+    resp = test_client.post(
+        "/guilds/guild-cred5/spawn-worker",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"], "exclude_env_keys": ["not a valid key"]},
+    )
+    assert resp.status_code == 422
 
 
 def test_spawn_worker_env_does_not_inject_claude_oauth_token():
