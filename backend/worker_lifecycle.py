@@ -433,9 +433,17 @@ async def _worker_is_inactive(db, worker_id: str, cutoff: datetime) -> bool:
     # end of the worker's most recent piece of work; a worker that never ran
     # anything has no rows and falls back to its spawn time (already checked
     # against the cutoff by the candidate query).
+    #
+    # Only task-scoped rows count. Worker-level lines (task_id IS NULL) include
+    # the idle puller's periodic "Pulled <repo>" heartbeat every pull_interval
+    # (300s) — counting those would keep an otherwise-idle worker looking busy
+    # forever, since the pull interval is shorter than the idle cutoff.
     last_log = (
         await db.exec(
-            select(func.max(col(TaskLog.timestamp))).where(col(TaskLog.worker_id) == worker_id)
+            select(func.max(col(TaskLog.timestamp))).where(
+                col(TaskLog.worker_id) == worker_id,
+                col(TaskLog.task_id).isnot(None),
+            )
         )
     ).one_or_none()
     last_log = _ensure_utc(last_log)

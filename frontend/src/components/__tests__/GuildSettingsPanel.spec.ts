@@ -1,18 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { flushPromises, mount } from '@vue/test-utils'
-import { createRouter, createMemoryHistory } from 'vue-router'
-import TopBar from '../TopBar.vue'
+import GuildSettingsPanel from '../GuildSettingsPanel.vue'
 import { useGuildStore } from '../../stores/guild'
 import { useAuthStore } from '../../stores/auth'
 
+// Placeholder account id — the test only needs a bedrock-shaped ARN string.
 const BEDROCK_ARN =
-  'arn:aws:bedrock:us-east-1:446872464738:inference-profile/us.anthropic.claude-sonnet-4-6'
-
-const router = createRouter({
-  history: createMemoryHistory(),
-  routes: [{ path: '/', component: { template: '<div />' } }],
-})
+  'arn:aws:bedrock:us-east-1:000000000000:inference-profile/us.anthropic.claude-sonnet-4-6'
 
 function jsonResponse(body: unknown, status = 200) {
   return {
@@ -36,29 +31,25 @@ function mockFetch(foremanConfig: Record<string, unknown>) {
       )
     }
     if (url.includes('/foreman-config')) return Promise.resolve(jsonResponse(foremanConfig))
-    if (url.includes('/auth/claude-credentials')) {
-      return Promise.resolve(jsonResponse({ saved: false }))
-    }
     return Promise.resolve(jsonResponse({}))
   })
 }
 
-async function openForemanConfig(foremanConfig: Record<string, unknown>) {
+async function openForemanTab(foremanConfig: Record<string, unknown>) {
   mockFetch(foremanConfig)
   const guild = useGuildStore()
   guild.currentGuild = { id: 'g1', name: 'Test Guild' }
   const auth = useAuthStore()
   auth.loginToken = 'tok'
-  const wrapper = mount(TopBar, { global: { plugins: [router] } })
+  const wrapper = mount(GuildSettingsPanel)
   await flushPromises()
-  await wrapper.find('.settings-btn').trigger('click') // open settings popover
-  await flushPromises()
-  await wrapper.find('.foreman-toggle-btn').trigger('click') // open foreman config
+  const foremanTab = wrapper.findAll('.settings-tab').find((t) => t.text() === 'Foreman')
+  await foremanTab!.trigger('click')
   await flushPromises()
   return wrapper
 }
 
-describe('TopBar foreman provider/model', () => {
+describe('GuildSettingsPanel foreman provider/model', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
@@ -67,9 +58,9 @@ describe('TopBar foreman provider/model', () => {
   })
 
   it('preserves the bedrock model when toggling the provider off and back', async () => {
-    const wrapper = await openForemanConfig({ provider: 'bedrock', model: BEDROCK_ARN })
+    const wrapper = await openForemanTab({ provider: 'bedrock', model: BEDROCK_ARN })
 
-    const select = wrapper.find('.foreman-config-section select')
+    const select = wrapper.find('select')
     const modelInput = () =>
       wrapper.find('input[list="foreman-model-hints"]').element as HTMLInputElement
 
