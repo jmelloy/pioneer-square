@@ -76,11 +76,9 @@ Always create_task first and finalize_task after — whether you use a worker or
 
 **Shallow/fallback review** (no worker available, or quick diff-only review):
 1. create_task(name="Review PR #N: <title>", phase="review", pr_number=N, pr_repo="owner/repo") → returns task_id
-2. review_pr_internal (or review_pr) — pass the PR details. review_pr_internal never approves;
-   it posts COMMENT or REQUEST_CHANGES only. review_pr (the external MCP reviewer) may still
-   choose APPROVE per its own action parameter. Omit `action` to let the tool pick the verdict
-   itself from its own diff analysis (see "Review action policy" below); only pass `action`
-   explicitly to override that judgement.
+2. review_pr_internal (or review_pr) — pass the PR details. Omit `action` to let the tool pick
+   the verdict itself from its own diff analysis (see "Review action policy" below); only pass
+   `action` explicitly to override that judgement.
 3. finalize_task(task_id=<task_id from step 1>) — call after the review returns. \
    Use expires_in_seconds=86400 for error/failed reviews; omit (default 3 days) otherwise.
 
@@ -90,8 +88,7 @@ forbidden from committing or opening a new PR. review_pr_internal and review_pr 
 directly via the GitHub Reviews API. In both paths, there is nothing to commit or push.
 
 ## Review action policy
-This applies to worker-driven `gh pr review` and review_pr alike; review_pr_internal follows the
-same COMMENT vs. REQUEST_CHANGES judgement below but must never APPROVE:
+This applies to every PR review path — worker-driven `gh pr review` and review_pr_internal alike:
 - **APPROVE** — the diff is functionally correct and any issues are minor nits (style, naming,
   formatting). Submit APPROVE with inline comments noting the nits; don't withhold approval over
   them.
@@ -183,6 +180,8 @@ this one issue — the same steps as "Periodic devReady issue pickup" below:
 1. Skip if the issue is already assigned to someone else.
 2. Skip if any existing non-terminal task already references this issue number (check the
    current `<state>` task list).
+2b. If the issue is an epic (has sub-issues), follow "Epic issues" below instead of claiming
+   the epic itself.
 3. Call claim_github_issue to assign it.
 4. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number
    and issue_repo on both calls — the linkage groups the task under its issue in the
@@ -290,12 +289,33 @@ On every [periodic-check] event:
 1. Call search_github_issues on the primary repo with query "label:devReady" (also try "label:dev-ready" and "label:ready-for-dev" as fallbacks).
 2. For each returned issue that has no assignee:
    a. Skip it if any existing non-terminal task already references this issue number (check the current <state> task list).
+   a2. If the issue is an epic (has sub-issues), follow "Epic issues" below instead of claiming the epic itself.
    b. Call claim_github_issue to assign it.
    c. Call create_task + assign_task (as an atomic pair) to start work, passing issue_number and
       issue_repo on both calls so the worker's PR references the issue automatically and the
       task groups under its issue in the sidebar.
 3. The label check must cover (case-insensitive): devReady, dev-ready, ready-for-dev, ready.
 4. Never pick up an issue that is already assigned to someone else.
+
+## Epic issues
+Some devReady issues are epics: they have child issues linked via GitHub's native sub-issue
+parenting (not a body checklist). Detect this with get_github_issue — a non-empty `sub_issues`
+array means it's an epic. Never assign an epic directly to a worker — work one sub-issue at a
+time.
+
+When a devReady pickup lands on an epic:
+1. Call get_github_issue on the epic and read its `sub_issues` array.
+2. Pick the first workable sub-issue: state="open", no assignees, and not already referenced by
+   a non-terminal task in the current <state> list. Skip closed ones — they're done.
+3. Run the normal devReady pickup flow (claim_github_issue + create_task + assign_task) on that
+   ONE sub-issue's number — not the epic's. Pass the sub-issue's number/repo as
+   issue_number/issue_repo.
+4. Leave the epic itself unassigned and open — it stays the tracking parent, don't claim or
+   finalize it. Only one sub-issue runs at a time: a sub-issue with a non-terminal task is
+   skipped by step 2, so the next [periodic-check] only advances to the next sub-issue once the
+   current one's task is terminal.
+5. If no sub-issue is workable (all closed, or all remaining ones assigned/in-progress), do
+   nothing this cycle.
 
 ## Periodic PR status refresh
 Every [periodic-check] message that mentions open-PR tasks includes a "Fresh GitHub PR

@@ -2460,7 +2460,10 @@ class TestExecToolsResultHandling:
             "labels": [{"name": "critical"}],
         }
         fake_comments = [{"user": {"login": "alice"}, "body": "I see it too"}]
-        api_responses = iter([fake_issue, fake_comments])
+        fake_sub_issues = [
+            {"number": 43, "title": "Child A", "state": "open", "assignees": []},
+        ]
+        api_responses = iter([fake_issue, fake_comments, fake_sub_issues])
         with (
             patch("foreman.tools.broadcast", new_callable=AsyncMock),
             patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
@@ -2474,6 +2477,7 @@ class TestExecToolsResultHandling:
         assert parsed["number"] == 42
         assert parsed["body"] == "It breaks"
         assert parsed["comments"][0]["author"] == "alice"
+        assert parsed["sub_issues"][0]["number"] == 43
 
     async def test_list_github_prs(self, db_session):
         insert_guild(db_session, "g-gh-prs")
