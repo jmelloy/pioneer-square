@@ -44,6 +44,19 @@
           </label>
         </template>
       </div>
+      <div v-if="hasGuildDefaults" class="spawn-defaults-row">
+        <span class="spawn-defaults-note">
+          {{ usingGuildDefaults ? 'Prefilled from guild defaults' : 'Overriding guild defaults' }}
+        </span>
+        <button
+          v-if="!usingGuildDefaults"
+          class="spawn-defaults-reset"
+          type="button"
+          @click="resetToGuildDefaults"
+        >
+          Reset to guild defaults
+        </button>
+      </div>
       <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
       <input v-model="name" class="spawn-input" type="text" placeholder="auto-generated" />
       <label class="spawn-label">Tools <span class="spawn-hint">(optional)</span></label>
@@ -136,6 +149,14 @@ interface SpawnSettings {
   envVars?: EnvPair[]
 }
 
+interface GuildSpawnDefaults {
+  repos: string[]
+  tools: string[]
+  agent_count: number | null
+}
+
+const guildDefaults = ref<GuildSpawnDefaults | null>(null)
+const usingGuildDefaults = ref(false)
 const selectedRepos = ref<string[]>([])
 const name = ref('')
 const selectedTools = ref<string[]>([])
@@ -157,6 +178,41 @@ async function loadSavedSettings(guildId: string): Promise<SpawnSettings | null>
     return null
   }
 }
+
+async function loadGuildDefaults(guildId: string): Promise<GuildSpawnDefaults | null> {
+  try {
+    return await api<GuildSpawnDefaults>(`/guilds/${guildId}/spawn-defaults`)
+  } catch {
+    return null
+  }
+}
+
+/** Apply the guild defaults as the current form values, validating repos against
+ *  what GitHub actually returned. Used both for the initial pre-fill (when the
+ *  user has no saved overrides) and the explicit "reset to guild defaults" button. */
+function applyGuildDefaults(defaults: GuildSpawnDefaults) {
+  if (repoFetchFailed.value) {
+    selectedRepos.value = []
+  } else {
+    const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
+    selectedRepos.value = (defaults.repos ?? []).filter((r) => availableRepoNames.has(r))
+  }
+  selectedTools.value = [...(defaults.tools ?? [])]
+  agentCount.value = defaults.agent_count ?? null
+  usingGuildDefaults.value = true
+}
+
+function resetToGuildDefaults() {
+  if (guildDefaults.value) applyGuildDefaults(guildDefaults.value)
+}
+
+const hasGuildDefaults = computed(
+  () =>
+    !!guildDefaults.value &&
+    ((guildDefaults.value.repos?.length ?? 0) > 0 ||
+      (guildDefaults.value.tools?.length ?? 0) > 0 ||
+      guildDefaults.value.agent_count != null),
+)
 
 async function saveSettings(guildId: string) {
   try {
@@ -187,9 +243,13 @@ onMounted(async () => {
     }
   }
 
-  const saved = guild ? await loadSavedSettings(guild.id) : null
+  const [saved, defaults] = guild
+    ? await Promise.all([loadSavedSettings(guild.id), loadGuildDefaults(guild.id)])
+    : [null, null]
+  guildDefaults.value = defaults
 
   if (saved && (saved.repos?.length || saved.tools?.length || saved.envVars?.length)) {
+    // The user has their own saved overrides — those win over the guild baseline.
     if (saved.repos?.length) {
       if (repoFetchFailed.value) {
         // Fetch failed — cannot validate saved repos against available ones.
@@ -202,12 +262,16 @@ onMounted(async () => {
     }
     if (saved.tools?.length) selectedTools.value = saved.tools
     if (saved.envVars?.length) envVars.value = saved.envVars
+  } else if (defaults && hasGuildDefaults.value) {
+    // No personal overrides yet — start from the guild's spawn defaults.
+    applyGuildDefaults(defaults)
   } else {
     selectedRepos.value = repoFetchFailed.value ? [] : [...ghStore.selectedRepos]
   }
 })
 
 function toggleRepo(fullName: string) {
+  usingGuildDefaults.value = false
   const idx = selectedRepos.value.indexOf(fullName)
   if (idx >= 0) {
     selectedRepos.value.splice(idx, 1)
@@ -227,6 +291,7 @@ function orgSomeSelected(owner: string): boolean {
 }
 
 function toggleOrg(owner: string) {
+  usingGuildDefaults.value = false
   const repos = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
   if (orgAllSelected(owner)) {
     const names = new Set(repos.map((r) => r.full_name))
@@ -247,6 +312,7 @@ function setOrgCheckboxRef(el: HTMLInputElement | null, owner: string) {
 }
 
 function toggleTool(tool: string) {
+  usingGuildDefaults.value = false
   const idx = selectedTools.value.indexOf(tool)
   if (idx >= 0) {
     selectedTools.value.splice(idx, 1)
@@ -466,6 +532,36 @@ async function launch() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.spawn-defaults-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.spawn-defaults-note {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
+.spawn-defaults-reset {
+  background: none;
+  border: none;
+  color: var(--color-teal);
+  cursor: pointer;
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+  padding: 0;
+  text-decoration: underline;
+  flex-shrink: 0;
+}
+
+.spawn-defaults-reset:hover {
+  color: var(--color-brass-light);
 }
 
 .spawn-env-hint {

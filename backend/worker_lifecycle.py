@@ -193,6 +193,48 @@ async def get_guild_spawn_defaults(db, guild_pk: int) -> GuildSpawnDefaults | No
     ).one_or_none()
 
 
+async def set_guild_spawn_defaults(
+    db,
+    guild_pk: int,
+    *,
+    repos: list[str],
+    tools: list[str],
+    agent_count: int | None,
+) -> None:
+    """Explicitly upsert a guild's ``guild_spawn_defaults`` row.
+
+    Unlike :func:`record_worker_spawn` (which only refreshes the row as a
+    side-effect of a successful spawn, and only when ``repos`` is non-empty),
+    this is the operator-facing write path: it always replaces the full row so
+    an owner can curate the guild's spawn baseline directly, including clearing
+    repos/tools. Callers are expected to have committed their own transaction
+    boundary; this commits before returning.
+
+    ``updated_at`` is deliberately left untouched when the row already exists:
+    ``check_worker_spawn_cooldown`` reads it as the last *spawn* time, and an
+    owner editing defaults is not a spawn — bumping it would start a spurious
+    spawn cooldown. On first insert there is no prior spawn to protect, so it
+    seeds ``now()`` (the column is NOT NULL).
+    """
+    stmt = pg_insert(GuildSpawnDefaults).values(
+        guild_id=guild_pk,
+        repos=json.dumps(repos),
+        tools=json.dumps(tools),
+        agent_count=agent_count,
+        updated_at=datetime.now(UTC),
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["guild_id"],
+        set_={
+            "repos": stmt.excluded.repos,
+            "tools": stmt.excluded.tools,
+            "agent_count": stmt.excluded.agent_count,
+        },
+    )
+    await db.exec(stmt)
+    await db.commit()
+
+
 async def check_worker_spawn_cooldown(db, guild_pk: int) -> timedelta | None:
     """Return the remaining cooldown if *guild_pk* spawned a worker too recently, else None.
 

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
+from datetime import UTC, datetime, timedelta
+
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
-from models import Agent, Guild, User, Worker
+from models import Agent, Guild, GuildSpawnDefaults, User, Worker
 from sqlalchemy import select, update
 from sqlmodel import col  # noqa: E402
 
@@ -232,6 +235,125 @@ def test_shutdown_unknown_worker_returns_404(client):
         headers=_auth(db_url),
     )
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Guild spawn defaults
+# ---------------------------------------------------------------------------
+
+
+def test_get_spawn_defaults_empty(client):
+    """A guild with no recorded spawn returns empty defaults, not 404."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd1")
+    resp = test_client.get("/guilds/guild-sd1/spawn-defaults", headers=_auth(db_url))
+    assert resp.status_code == 200
+    assert resp.json() == {"repos": [], "tools": [], "agent_count": None}
+
+
+def test_put_spawn_defaults_roundtrips(client):
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd2")
+    resp = test_client.put(
+        "/guilds/guild-sd2/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": ["a/b", "a/c"], "tools": ["claude"], "agent_count": 3},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"repos": ["a/b", "a/c"], "tools": ["claude"], "agent_count": 3}
+    # A subsequent GET reflects the saved baseline.
+    got = test_client.get("/guilds/guild-sd2/spawn-defaults", headers=_auth(db_url))
+    assert got.json() == {"repos": ["a/b", "a/c"], "tools": ["claude"], "agent_count": 3}
+
+
+def test_put_spawn_defaults_full_replace_clears_fields(client):
+    """PUT has full-replace semantics: an empty body wipes the previous baseline."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd3")
+    test_client.put(
+        "/guilds/guild-sd3/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"], "tools": ["codex"], "agent_count": 5},
+    )
+    resp = test_client.put(
+        "/guilds/guild-sd3/spawn-defaults",
+        headers=_auth(db_url),
+        json={},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"repos": [], "tools": [], "agent_count": None}
+
+
+def test_put_spawn_defaults_rejects_bad_agent_count(client):
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd4")
+    resp = test_client.put(
+        "/guilds/guild-sd4/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": [], "tools": [], "agent_count": 99},
+    )
+    assert resp.status_code == 422
+
+
+def test_put_spawn_defaults_preserves_updated_at_for_cooldown(client):
+    """Editing defaults must not reset guild_spawn_defaults.updated_at.
+
+    check_worker_spawn_cooldown() reads updated_at as the last *spawn* time; an
+    owner curating the baseline is not a spawn, so an edit must not start a
+    spurious spawn cooldown.
+    """
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd6")
+    test_client.put(
+        "/guilds/guild-sd6/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"], "tools": [], "agent_count": 1},
+    )
+    # Simulate a spawn that happened 10 minutes ago.
+    past = datetime.now(UTC) - timedelta(minutes=10)
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-sd6"))
+        session.execute(
+            update(GuildSpawnDefaults)
+            .where(col(GuildSpawnDefaults.guild_id) == guild_pk)
+            .values(updated_at=past)
+        )
+        session.commit()
+    # Owner edits the defaults — content changes, but the spawn clock must not.
+    test_client.put(
+        "/guilds/guild-sd6/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": ["a/c"], "tools": ["claude"], "agent_count": 2},
+    )
+    with _sync_session(db_url) as session:
+        row = session.execute(
+            select(GuildSpawnDefaults).where(col(GuildSpawnDefaults.guild_id) == guild_pk)
+        ).scalar_one()
+    assert json.loads(row.repos) == ["a/c"]
+    assert json.loads(row.tools) == ["claude"]
+    assert row.agent_count == 2
+    # updated_at is unchanged (still ~10 minutes ago), so no cooldown was started.
+    assert abs((row.updated_at - past).total_seconds()) < 1
+
+
+def test_put_spawn_defaults_requires_owner(client):
+    """Non-owner members can read defaults but not set them."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd5")
+    insert_member(db_url, "guild-sd5", "gh-member", role="member")
+    member_auth = {
+        "Authorization": f"Bearer {make_auth_token(db_url, user_id='gh-member', username='member1')}"
+    }
+    # Member can GET.
+    got = test_client.get("/guilds/guild-sd5/spawn-defaults", headers=member_auth)
+    assert got.status_code == 200
+    # But cannot PUT.
+    resp = test_client.put(
+        "/guilds/guild-sd5/spawn-defaults",
+        headers=member_auth,
+        json={"repos": ["a/b"], "tools": [], "agent_count": 2},
+    )
+    assert resp.status_code == 403
 
 
 def test_spawn_worker_env_does_not_inject_claude_oauth_token():
