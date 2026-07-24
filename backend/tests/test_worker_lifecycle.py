@@ -596,6 +596,28 @@ async def test_reap_skips_worker_with_recent_task_log():
 
 
 @pytest.mark.asyncio
+async def test_worker_level_pull_log_does_not_block_reap(client):
+    """The idle puller's worker-level "Pulled <repo>" line (task_id NULL, emitted
+    every pull_interval=300s) must not keep an idle worker looking active — only
+    task-scoped logs count, or a worker would never reach the idle cutoff."""
+    import database as database_module
+    from models import TaskLog
+    from worker_lifecycle import _worker_is_inactive
+
+    worker_id = "w-pull-only-test"
+    now = datetime.now(UTC)
+    async with database_module.AsyncSessionLocal() as db:
+        db.add(TaskLog(task_id=None, worker_id=worker_id, timestamp=now, line="Pulled o/r"))
+        await db.commit()
+
+    async with database_module.AsyncSessionLocal() as db:
+        # A fresh worker-level pull log is the only activity; with a 30-min cutoff
+        # the worker must still read as inactive (the pull line is ignored).
+        inactive = await _worker_is_inactive(db, worker_id, now - timedelta(seconds=1800))
+    assert inactive is True
+
+
+@pytest.mark.asyncio
 async def test_reap_offline_zombie_force_kills_directly():
     """An offline spawned worker whose last_seen is past the cutoff (or NULL) gets its
     container/ECS task force-killed without the graceful-drain dance."""
