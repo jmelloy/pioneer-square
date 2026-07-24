@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 import database as database_module
+import discord_notifier
 from _test_config import TEST_DATABASE_URL  # noqa: E402
 from auth_deps import get_guild_pk
 from database import get_db
@@ -42,7 +43,7 @@ from foreman.runner import (
     _load_history,
     _save_turn,
 )
-from foreman.tools import exec_tools
+from foreman.tools import _spawn_discord_task_assigned, exec_tools, notify_discord_task_assigned
 from helpers import _sync_session, create_db, insert_agent, insert_guild, insert_task, insert_worker
 from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog, Worker  # noqa: E402
 from sqlalchemy import func, select, update  # noqa: E402
@@ -1995,6 +1996,97 @@ class TestExecToolsDispatching:
                 select(TaskEvent).where(TaskEvent.task_id == "t-err1")
             ).scalar_one_or_none()
         assert ev is None, "No pending-followup event should be queued — follow-up was dispatched"
+
+
+class TestDiscordTaskAssignedNotification:
+    """A standalone task (no issue_number/issue_repo, no GitHub issue behind it —
+    e.g. assigned directly from Discord chat) must still get a Discord
+    notification/thread (jmelloy/pioneer-square#996). Previously
+    ``_spawn_discord_task_assigned`` silently skipped calling anything at all
+    for this case; it now always fires, and ``notify_discord_task_assigned``
+    falls back to the task's own ``task_stream`` thread instead of the
+    issue-only ``notify_event`` path.
+    """
+
+    async def test_spawn_discord_task_assigned_fires_for_standalone_task(self):
+        """No issue linkage at all must still schedule a notification."""
+        with patch("foreman.tools.spawn") as mock_spawn:
+            _spawn_discord_task_assigned("g-1", {}, "t-standalone", "Standalone task")
+
+        mock_spawn.assert_called_once()
+        # First positional arg is the notify_discord_task_assigned(...) coroutine —
+        # close it to avoid an "was never awaited" warning since we never run it.
+        mock_spawn.call_args[0][0].close()
+
+    async def test_spawn_discord_task_assigned_fires_with_issue_linkage(self):
+        """Existing issue-linked routing keeps working unchanged."""
+        with patch("foreman.tools.spawn") as mock_spawn:
+            _spawn_discord_task_assigned(
+                "g-1",
+                {"issue_number": 42, "issue_repo": "acme/widgets"},
+                "t-issue",
+                "Issue task",
+            )
+
+        mock_spawn.assert_called_once()
+        mock_spawn.call_args[0][0].close()
+
+    async def test_notify_discord_task_assigned_uses_task_stream_when_no_issue(self):
+        """No issue_repo/issue_number → falls back to the task-stream thread, not notify_event."""
+        with (
+            patch("discord_notifier.is_configured", return_value=True),
+            patch.object(discord_notifier, "notify_event", new_callable=AsyncMock) as mock_event,
+            patch.object(
+                discord_notifier, "notify_task_stream_event", new_callable=AsyncMock
+            ) as mock_stream,
+        ):
+            await notify_discord_task_assigned("g-1", "t-standalone", "Standalone task")
+
+        mock_event.assert_not_called()
+        mock_stream.assert_called_once()
+        args, kwargs = mock_stream.call_args
+        assert args[0] == "g-1"
+        assert args[1] == "t-standalone"
+        assert kwargs["title"] == "Task assigned: t-standalone"
+        assert "t-standalone" in kwargs["description"]
+
+    async def test_notify_discord_task_assigned_uses_issue_thread_when_linked(self):
+        """issue_repo/issue_number present → still routes through notify_event, unchanged."""
+        with (
+            patch("discord_notifier.is_configured", return_value=True),
+            patch.object(discord_notifier, "notify_event", new_callable=AsyncMock) as mock_event,
+            patch.object(
+                discord_notifier, "notify_task_stream_event", new_callable=AsyncMock
+            ) as mock_stream,
+            patch("foreman.tools._resolve_issue_title", new_callable=AsyncMock) as mock_title,
+        ):
+            mock_title.return_value = "Fix the bug"
+            await notify_discord_task_assigned(
+                "g-1",
+                "t-issue",
+                "Fallback title",
+                issue_repo="acme/widgets",
+                issue_number=42,
+            )
+
+        mock_stream.assert_not_called()
+        mock_event.assert_called_once()
+        assert mock_event.call_args.kwargs["issue_number"] == 42
+        assert mock_event.call_args.kwargs["issue_repo"] == "acme/widgets"
+
+    async def test_notify_discord_task_assigned_noop_when_not_configured(self):
+        """Discord not configured at all → neither path fires."""
+        with (
+            patch("discord_notifier.is_configured", return_value=False),
+            patch.object(discord_notifier, "notify_event", new_callable=AsyncMock) as mock_event,
+            patch.object(
+                discord_notifier, "notify_task_stream_event", new_callable=AsyncMock
+            ) as mock_stream,
+        ):
+            await notify_discord_task_assigned("g-1", "t-standalone", "Standalone task")
+
+        mock_event.assert_not_called()
+        mock_stream.assert_not_called()
 
 
 class TestFinalizeClosedIssueAtomicity:
