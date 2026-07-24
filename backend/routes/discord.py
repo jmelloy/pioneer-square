@@ -33,6 +33,7 @@ Registered slash commands (see scripts/register_discord_commands.py):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -62,6 +63,7 @@ from models import (
 from oauth import FRONTEND_URL
 from sqlalchemy import func, update
 from sqlmodel import col, select
+from util.tasks import spawn
 from ws_types import TaskCancelMsg, TaskCreatedMsg, TaskUpdateMsg
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,14 @@ _CONNECT_TOKEN_TTL = timedelta(minutes=15)
 _MANAGE_CHANNELS_BIT = 0x10
 
 _DEFAULT_OPERATOR_ROLE_NAME = "Pioneer Square Operator"
+
+# How long to keep polling a freshly-spawned worker's state before giving up
+# on updating the Discord popup in place. 5 minutes comfortably covers a cold
+# ECS container start (image pull + boot + gateway handshake) — see issue #991.
+_WORKER_ONLINE_TIMEOUT = timedelta(minutes=5)
+
+# Interval between worker-state polls while awaiting the online transition.
+_WORKER_ONLINE_POLL_INTERVAL = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -748,7 +758,27 @@ async def _cmd_worker_spawn(interaction: dict) -> None:
         return
 
     status = state if state == "online" else "queued"
-    embeds = [
+    await _send_followup(token, embeds=_worker_spawn_embed(worker_id, status, repos, tools_list))
+
+    # The popup above reflects a point-in-time check; the worker is typically
+    # still mid-ECS-startup at this point. Keep polling in the background and
+    # edit the same message in place once the outcome is known, instead of
+    # leaving the popup stuck on "queued" — see issue #991.
+    if status != "online":
+        spawn(
+            _await_worker_online(token, worker_id, repos, tools_list),
+            name=f"discord-await-worker-online-{worker_id}",
+        )
+
+
+def _worker_spawn_embed(
+    worker_id: str, status: str, repos: list[str], tools_list: list[str]
+) -> list[dict]:
+    color = {
+        "online": 0x1ABC9C,  # teal, matches discord_notifier's "worker-online"
+        "offline": 0xE74C3C,  # red — spawn failed, or the worker dropped before joining
+    }.get(status, 0xF39C12)  # gold — still queued/starting
+    return [
         {
             "title": f"Worker Spawned: {worker_id}",
             "description": (
@@ -756,11 +786,55 @@ async def _cmd_worker_spawn(interaction: dict) -> None:
                 f"Repos: {', '.join(repos) if repos else '—'}\n"
                 f"Tools: {', '.join(tools_list) if tools_list else 'default'}"
             ),
-            "color": 0xF39C12,
+            "color": color,
             "timestamp": datetime.now(UTC).isoformat(),
         }
     ]
-    await _send_followup(token, embeds=embeds)
+
+
+async def _await_worker_online(
+    token: str, worker_id: str, repos: list[str], tools_list: list[str]
+) -> None:
+    """Poll a freshly-spawned worker's state and update the Discord popup in place.
+
+    Runs as a background task (see ``util.tasks.spawn``) so the interaction
+    handler itself doesn't block on ECS container startup. Discord follow-up
+    messages have no server-side expiry, so editing ``@original`` once the
+    worker actually reports online (or goes offline before joining) replaces
+    the transient "queued" status with the real outcome, rather than leaving
+    the popup looking stale for the ~minute a cold container takes to start.
+    Gives up after ``_WORKER_ONLINE_TIMEOUT`` and reports a timeout message.
+    """
+    deadline = asyncio.get_event_loop().time() + _WORKER_ONLINE_TIMEOUT.total_seconds()
+    try:
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(_WORKER_ONLINE_POLL_INTERVAL)
+            async with AsyncSessionLocal() as db:
+                state_result = await db.exec(
+                    select(col(Worker.state)).where(col(Worker.id) == worker_id)
+                )
+                state = state_result.one_or_none()
+            if state == "online":
+                await _send_followup(
+                    token, embeds=_worker_spawn_embed(worker_id, "online", repos, tools_list)
+                )
+                return
+            if state == "offline":
+                await _send_followup(
+                    token, embeds=_worker_spawn_embed(worker_id, "offline", repos, tools_list)
+                )
+                return
+    except Exception:
+        logger.exception("discord: _await_worker_online failed for worker_id=%s", worker_id)
+        return
+
+    await _send_followup(
+        token,
+        content=(
+            f"Worker `{worker_id}` is taking longer than expected to come online "
+            "(ECS container may still be starting). Check `/ps workers` for current status."
+        ),
+    )
 
 
 async def _permission_denied_message() -> str:

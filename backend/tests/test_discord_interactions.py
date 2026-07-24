@@ -835,6 +835,85 @@ async def test_cmd_worker_spawn_cooldown_active(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _await_worker_online — background poller that keeps the spawn popup updated
+# until the worker actually joins (see issue #991)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_await_worker_online_updates_message_once_joined(monkeypatch):
+    """_await_worker_online edits the popup to 'online' once the worker joins."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    import routes.discord as discord_routes
+
+    monkeypatch.setattr(discord_routes, "_WORKER_ONLINE_POLL_INTERVAL", 0)
+    monkeypatch.setattr(discord_routes, "_WORKER_ONLINE_TIMEOUT", timedelta(seconds=5))
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value="spawning")),  # still starting up
+            MagicMock(one_or_none=MagicMock(return_value="online")),  # joined
+        ]
+    )
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("discord_notifier.patch", new=fake_patch),
+    ):
+        await discord_routes._await_worker_online("tok-spawn", "w-abc123", ["org/repo"], ["claude"])
+
+    assert sent
+    embed = sent[-1]["embeds"][0]
+    assert "w-abc123" in embed["title"]
+    assert "online" in embed["description"]
+
+
+@pytest.mark.asyncio
+async def test_await_worker_online_times_out(monkeypatch):
+    """_await_worker_online reports a timeout instead of polling forever."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+
+    import routes.discord as discord_routes
+
+    monkeypatch.setattr(discord_routes, "_WORKER_ONLINE_POLL_INTERVAL", 0)
+    monkeypatch.setattr(discord_routes, "_WORKER_ONLINE_TIMEOUT", timedelta(seconds=0))
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        return_value=MagicMock(one_or_none=MagicMock(return_value="spawning"))
+    )
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("discord_notifier.patch", new=fake_patch),
+    ):
+        await discord_routes._await_worker_online("tok-spawn", "w-abc123", ["org/repo"], ["claude"])
+
+    mock_db.exec.assert_not_called()
+    assert sent
+    assert "w-abc123" in sent[0]["content"]
+    assert "taking longer" in sent[0]["content"]
+
+
+# ---------------------------------------------------------------------------
 # Permission helpers for /join-channel and /leave-channel (pure unit)
 # ---------------------------------------------------------------------------
 
