@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -604,11 +605,13 @@ async def test_cmd_worker_spawn_success(monkeypatch):
     fake_spawn_worker = AsyncMock(
         return_value=(json.dumps({"worker_id": "w-abc123", "repos": ["org/repo"]}), False)
     )
+    fake_cooldown = AsyncMock(return_value=None)
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
         patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.spawn_worker", new=fake_spawn_worker),
+        patch("worker_lifecycle.check_worker_spawn_cooldown", new=fake_cooldown),
     ):
         from routes.discord import _cmd_worker_spawn
 
@@ -656,11 +659,13 @@ async def test_cmd_worker_spawn_reports_queued_status(monkeypatch):
     fake_spawn_worker = AsyncMock(
         return_value=(json.dumps({"worker_id": "w-abc123", "repos": ["org/repo"]}), False)
     )
+    fake_cooldown = AsyncMock(return_value=None)
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
         patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.spawn_worker", new=fake_spawn_worker),
+        patch("worker_lifecycle.check_worker_spawn_cooldown", new=fake_cooldown),
     ):
         from routes.discord import _cmd_worker_spawn
 
@@ -768,11 +773,13 @@ async def test_cmd_worker_spawn_reports_tool_error(monkeypatch):
     fake_spawn_worker = AsyncMock(
         return_value=("spawn_worker requires at least one repo in the 'repos' list.", True)
     )
+    fake_cooldown = AsyncMock(return_value=None)
 
     with (
         patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
         patch("discord_notifier.patch", new=fake_patch),
         patch("routes.discord.spawn_worker", new=fake_spawn_worker),
+        patch("worker_lifecycle.check_worker_spawn_cooldown", new=fake_cooldown),
     ):
         from routes.discord import _cmd_worker_spawn
 
@@ -781,6 +788,50 @@ async def test_cmd_worker_spawn_reports_tool_error(monkeypatch):
     assert sent
     assert "Failed to spawn worker" in sent[0]["content"]
     assert "at least one repo" in sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_cmd_worker_spawn_cooldown_active(monkeypatch):
+    """_cmd_worker_spawn refuses (without calling spawn_worker) when the guild is in cooldown."""
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "app-id")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+    monkeypatch.setenv("DISCORD_PIONEER_GUILD_SLUG", "test-guild")
+
+    guild = MagicMock()
+    guild.id = 1
+
+    mock_db = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    mock_db.exec = AsyncMock(
+        side_effect=[
+            MagicMock(one_or_none=MagicMock(return_value="ps-user-1")),  # account link lookup
+            MagicMock(one_or_none=MagicMock(return_value=guild)),  # guild lookup
+        ]
+    )
+
+    sent = []
+
+    async def fake_patch(path, payload):
+        sent.append(payload)
+
+    fake_spawn_worker = AsyncMock()
+    fake_cooldown = AsyncMock(return_value=timedelta(seconds=150))
+
+    with (
+        patch("routes.discord.AsyncSessionLocal", return_value=mock_db),
+        patch("discord_notifier.patch", new=fake_patch),
+        patch("routes.discord.spawn_worker", new=fake_spawn_worker),
+        patch("worker_lifecycle.check_worker_spawn_cooldown", new=fake_cooldown),
+    ):
+        from routes.discord import _cmd_worker_spawn
+
+        await _cmd_worker_spawn(_worker_spawn_interaction())
+
+    fake_spawn_worker.assert_not_called()
+    assert sent
+    assert "cooldown" in sent[0]["content"].lower()
+    assert "3 minutes" in sent[0]["content"]
 
 
 # ---------------------------------------------------------------------------

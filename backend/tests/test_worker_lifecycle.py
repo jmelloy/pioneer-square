@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from worker_lifecycle import (  # noqa: E402
     SHUTDOWN_FORCE_KILL_TIMEOUT,
+    WORKER_SPAWN_COOLDOWN,
+    check_worker_spawn_cooldown,
     drain_stale_workers_on_startup,
     force_kill_worker_if_unresponsive,
     generate_worker_id,
@@ -299,6 +301,49 @@ async def test_record_worker_spawn_skips_defaults_without_repos():
 
 
 # ---------------------------------------------------------------------------
+# check_worker_spawn_cooldown
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_worker_spawn_cooldown_no_prior_spawn():
+    """A guild with no recorded spawn defaults is never in cooldown."""
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=None)))
+
+    remaining = await check_worker_spawn_cooldown(mock_db, 42)
+
+    assert remaining is None
+
+
+@pytest.mark.asyncio
+async def test_check_worker_spawn_cooldown_recent_spawn_still_active():
+    """A spawn 1 minute ago is still within the 5-minute cooldown."""
+    defaults = MagicMock(updated_at=datetime.now(UTC) - timedelta(minutes=1))
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=defaults)))
+
+    remaining = await check_worker_spawn_cooldown(mock_db, 42)
+
+    assert remaining is not None
+    assert timedelta(minutes=3) < remaining <= timedelta(minutes=4)
+
+
+@pytest.mark.asyncio
+async def test_check_worker_spawn_cooldown_expired():
+    """A spawn from longer ago than the cooldown window is not in cooldown."""
+    defaults = MagicMock(
+        updated_at=datetime.now(UTC) - WORKER_SPAWN_COOLDOWN - timedelta(seconds=1)
+    )
+    mock_db = AsyncMock()
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=defaults)))
+
+    remaining = await check_worker_spawn_cooldown(mock_db, 42)
+
+    assert remaining is None
+
+
+# ---------------------------------------------------------------------------
 # signal_stale_worker_on_join
 # ---------------------------------------------------------------------------
 
@@ -364,6 +409,40 @@ async def test_signal_stale_worker_on_join_skips_when_version_unknown():
 
     assert signalled is False
     broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_signal_stale_worker_on_join_spares_freshly_spawned():
+    """A stale-version worker spawned seconds ago (deploy overlap) is not killed."""
+    broadcast = AsyncMock()
+    just_now = datetime.now(UTC) - timedelta(seconds=5)
+    with (
+        patch("worker_lifecycle.get_current_version", return_value="v-new"),
+        patch("worker_lifecycle.broadcast_msg", broadcast),
+    ):
+        signalled = await signal_stale_worker_on_join("g-guild", "w-newborn", "v-old", just_now)
+
+    assert signalled is False
+    broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_signal_stale_worker_on_join_kills_old_stale_worker():
+    """A stale-version worker spawned long ago (real zombie) is still signalled."""
+    broadcasts = []
+
+    async def fake_broadcast(guild_slug, msg, *a, **kw):
+        broadcasts.append((guild_slug, msg))
+
+    long_ago = datetime.now(UTC) - timedelta(hours=1)
+    with (
+        patch("worker_lifecycle.get_current_version", return_value="v-new"),
+        patch("worker_lifecycle.broadcast_msg", fake_broadcast),
+    ):
+        signalled = await signal_stale_worker_on_join("g-guild", "w-zombie", "v-old", long_ago)
+
+    assert signalled is True
+    assert len(broadcasts) == 1
 
 
 # ---------------------------------------------------------------------------

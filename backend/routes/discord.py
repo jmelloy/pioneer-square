@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import string
@@ -657,6 +658,11 @@ async def _cmd_worker_spawn(interaction: dict) -> None:
     ``/connect-account`` first — spawning a worker starts a container and
     consumes credentials, so it's gated on the same account link used to
     resolve identity elsewhere (see ``discord/router.py::_resolve_identity``).
+
+    Also rejects the request if the guild spawned a worker within the last
+    ``worker_lifecycle.WORKER_SPAWN_COOLDOWN`` (default 5 min), to guard
+    against accidental spam and the resource waste of repeated container
+    starts — see ``worker_lifecycle.check_worker_spawn_cooldown``.
     """
     token = interaction.get("token", "")
     data = interaction.get("data", {})
@@ -701,6 +707,20 @@ async def _cmd_worker_spawn(interaction: dict) -> None:
             guild = guild_result.one_or_none()
             if not guild:
                 await _send_followup(token, content=f"Pioneer guild `{guild_slug}` not found.")
+                return
+
+            from worker_lifecycle import check_worker_spawn_cooldown  # noqa: PLC0415
+
+            remaining = await check_worker_spawn_cooldown(db, guild.id)
+            if remaining is not None:
+                minutes = max(1, math.ceil(remaining.total_seconds() / 60))
+                await _send_followup(
+                    token,
+                    content=(
+                        "Worker spawn cooldown active. Try again in "
+                        f"{minutes} minute{'s' if minutes != 1 else ''}."
+                    ),
+                )
                 return
 
             result_text, is_error = await spawn_worker(

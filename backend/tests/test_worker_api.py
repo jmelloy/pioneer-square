@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
+from datetime import UTC, datetime, timedelta
+
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
-from models import Agent, Guild, User, Worker
+from models import Agent, Guild, GuildSpawnDefaults, User, Worker
 from sqlalchemy import select, update
 from sqlmodel import col  # noqa: E402
 
@@ -290,6 +293,47 @@ def test_put_spawn_defaults_rejects_bad_agent_count(client):
         json={"repos": [], "tools": [], "agent_count": 99},
     )
     assert resp.status_code == 422
+
+
+def test_put_spawn_defaults_preserves_updated_at_for_cooldown(client):
+    """Editing defaults must not reset guild_spawn_defaults.updated_at.
+
+    check_worker_spawn_cooldown() reads updated_at as the last *spawn* time; an
+    owner curating the baseline is not a spawn, so an edit must not start a
+    spurious spawn cooldown.
+    """
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd6")
+    test_client.put(
+        "/guilds/guild-sd6/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"], "tools": [], "agent_count": 1},
+    )
+    # Simulate a spawn that happened 10 minutes ago.
+    past = datetime.now(UTC) - timedelta(minutes=10)
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-sd6"))
+        session.execute(
+            update(GuildSpawnDefaults)
+            .where(col(GuildSpawnDefaults.guild_id) == guild_pk)
+            .values(updated_at=past)
+        )
+        session.commit()
+    # Owner edits the defaults — content changes, but the spawn clock must not.
+    test_client.put(
+        "/guilds/guild-sd6/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": ["a/c"], "tools": ["claude"], "agent_count": 2},
+    )
+    with _sync_session(db_url) as session:
+        row = session.execute(
+            select(GuildSpawnDefaults).where(col(GuildSpawnDefaults.guild_id) == guild_pk)
+        ).scalar_one()
+    assert json.loads(row.repos) == ["a/c"]
+    assert json.loads(row.tools) == ["claude"]
+    assert row.agent_count == 2
+    # updated_at is unchanged (still ~10 minutes ago), so no cooldown was started.
+    assert abs((row.updated_at - past).total_seconds()) < 1
 
 
 def test_put_spawn_defaults_requires_owner(client):

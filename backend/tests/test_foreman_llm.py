@@ -345,6 +345,42 @@ class TestMakeAnthropicClient:
         )
         mock_mod.AsyncAnthropic.assert_called_once_with(api_key="sk-explicit")
 
+    @pytest.mark.parametrize("placeholder", ["placeholder", "Placeholder", " placeholder ", ""])
+    def test_placeholder_env_api_key_omitted_from_kwargs(self, monkeypatch, placeholder):
+        """ANTHROPIC_API_KEY=placeholder (any case/whitespace) must not reach the SDK."""
+        monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(extra_env={"ANTHROPIC_API_KEY": placeholder})
+        mock_mod.AsyncAnthropic.assert_called_once_with()
+
+    def test_placeholder_explicit_api_key_omitted_from_kwargs(self, monkeypatch):
+        """An explicit api_key of "placeholder" must not reach the SDK either."""
+        monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(api_key="placeholder")
+        mock_mod.AsyncAnthropic.assert_called_once_with()
+
+    def test_placeholder_env_falls_back_to_real_explicit_api_key(self, monkeypatch):
+        """A real explicit api_key must still be used when ANTHROPIC_API_KEY is a placeholder."""
+        monkeypatch.delenv("FOREMAN_PROVIDER", raising=False)
+        import foreman.llm as llm_mod
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        llm_mod.make_anthropic_client(
+            api_key="sk-explicit", extra_env={"ANTHROPIC_API_KEY": "placeholder"}
+        )
+        mock_mod.AsyncAnthropic.assert_called_once_with(api_key="sk-explicit")
+
     def test_auth_token_wins_over_process_api_key(self, monkeypatch):
         """Regression for #660: ANTHROPIC_AUTH_TOKEN in guild env_vars must win over a
         process-level ANTHROPIC_API_KEY so the SDK never receives both (it raises ValueError
