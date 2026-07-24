@@ -892,9 +892,7 @@ async def test_await_worker_online_times_out(monkeypatch):
     mock_db = AsyncMock()
     mock_db.__aenter__ = AsyncMock(return_value=mock_db)
     mock_db.__aexit__ = AsyncMock(return_value=False)
-    mock_db.exec = AsyncMock(
-        return_value=MagicMock(one_or_none=MagicMock(return_value="spawning"))
-    )
+    mock_db.exec = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value="spawning")))
 
     sent = []
 
