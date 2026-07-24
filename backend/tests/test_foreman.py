@@ -2566,6 +2566,48 @@ class TestExecToolsResultHandling:
         parsed = json.loads(results[0]["content"])
         assert parsed[0]["number"] == 3
 
+    async def test_fetch_devready_dedups_labels_and_filters_linked(self, db_session):
+        """Pre-fetch merges label variants (dedup by number) and drops already-linked issues."""
+        from foreman.runner import _fetch_devready_issues
+
+        insert_guild(db_session, "g-devready")
+        with _sync_session(db_session) as session:
+            guild_pk = session.scalar(
+                select(col(Guild.id)).where(col(Guild.slug) == "g-devready")
+            )
+            session.execute(
+                update(Guild).where(col(Guild.id) == guild_pk).values(primary_repo="org/repo")
+            )
+            session.commit()
+
+        def fake_gh_api(url, token):
+            # Issue 3 carries both devReady and dev-ready; 4 is only under dev-ready;
+            # 5 is already linked to an active task and must be filtered out.
+            def issue(n, labels):
+                return {
+                    "number": n,
+                    "title": f"Issue {n}",
+                    "html_url": f"https://github.com/org/repo/issues/{n}",
+                    "labels": [{"name": lbl} for lbl in labels],
+                }
+
+            if "devReady" in url:
+                return {"items": [issue(3, ["devReady"]), issue(5, ["devReady"])]}
+            if "dev-ready" in url:
+                return {"items": [issue(3, ["dev-ready"]), issue(4, ["dev-ready"])]}
+            return {"items": []}
+
+        with (
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._gh_api", side_effect=fake_gh_api),
+        ):
+            lines = await _fetch_devready_issues("g-devready", {("org/repo", 5)})
+
+        joined = "\n".join(lines)
+        assert len(lines) == 2  # 3 (deduped across labels) and 4; 5 filtered as linked
+        assert "org/repo#3" in joined and "org/repo#4" in joined
+        assert "#5" not in joined
+
     async def test_empty_result_does_not_crash(self, db_session):
         """A tool that produces an empty string result is valid."""
         insert_guild(db_session, "g-empty-res")

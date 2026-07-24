@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -69,7 +70,7 @@ from ws_types import ChatMsg, ForemanPollStatusMsg
 logger = logging.getLogger(__name__)
 
 POLL_MIN_SECS = 60  # initial poll interval: 1 minute
-POLL_MAX_SECS = 14400  # maximum poll interval: 4 hours
+POLL_MAX_SECS = 86400  # maximum poll interval: 24 hours
 
 # Upper bound on rows fetched by _load_history before Python-side windowing,
 # so query cost stays flat regardless of the table's total lifetime turn count.
@@ -637,6 +638,66 @@ async def _fetch_pr_status_lines(guild_id: str, pr_tasks: list[dict]) -> list[st
     return lines
 
 
+# devReady label variants, checked case-insensitively (mirrors prompt.py step 3).
+_DEVREADY_LABELS = ("devReady", "dev-ready", "ready-for-dev", "ready")
+
+
+async def _fetch_devready_issues(
+    guild_id: str, linked_issues: set[tuple[str, int]]
+) -> list[str]:
+    """Pre-fetch unassigned devReady issues on the primary repo for pickup.
+
+    Runs every periodic-check so the foreman acts on injected data instead of
+    calling search_github_issues itself. Best effort: a search failure (rate
+    limit, missing token, no primary repo) is logged and skipped. Already-linked
+    issues (an existing non-terminal task references them) are filtered out here
+    so the foreman only sees genuinely new work.
+    """
+    from foreman.tools import _gh_api, _guild_github_token, _to_thread
+
+    creds = await _guild_github_token(guild_id)
+    if not creds:
+        return []
+    token, _username = creds
+
+    db = await get_db()
+    try:
+        row = await db.exec(
+            select(col(Guild.primary_repo)).where(col(Guild.slug) == guild_id)
+        )
+        primary_repo = row.one_or_none()
+    finally:
+        await db.close()
+    if not primary_repo:
+        return []
+
+    # Merge results across label variants, deduping by issue number.
+    seen: dict[int, dict] = {}
+    for label in _DEVREADY_LABELS:
+        query = urllib.parse.quote(f'label:"{label}" no:assignee')
+        url = (
+            f"/search/issues?q={query}+repo:{primary_repo}+state:open"
+            "&per_page=10&sort=created&order=desc"
+        )
+        try:
+            data = await _to_thread(_gh_api, url, token)
+        except Exception:
+            logger.warning(
+                "guild=%s devReady search failed for label=%s", guild_id, label, exc_info=True
+            )
+            continue
+        for i in data.get("items", []) if isinstance(data, dict) else data:
+            seen.setdefault(i["number"], i)
+
+    lines: list[str] = []
+    for num, i in sorted(seen.items()):
+        if (primary_repo, num) in linked_issues:
+            continue  # an existing non-terminal task already owns this issue
+        labels = ", ".join(l["name"] for l in i.get("labels", []))
+        lines.append(f"- {primary_repo}#{num}: {i['title']} [labels: {labels}] ({i['html_url']})")
+    return lines
+
+
 async def _sweep_closed_issues(guild_id: str, linked_issues: set[tuple[str, int]]) -> None:
     """Sweep tasks whose linked GitHub issue has closed.
 
@@ -764,16 +825,19 @@ async def _poll_loop(guild_id: str) -> None:
                 next_interval / 60,
             )
 
+            # Always fire a [periodic-check] — even with zero active tasks. An empty
+            # board is exactly when the devReady sweep (which runs on every
+            # periodic-check) needs to pull in new work; gating on active_tasks
+            # silently stalled devReady pickup once a guild drained.
+            linked_issues = {
+                (t["issue_repo"], t["issue_number"])
+                for t in active_tasks
+                if t.get("issue_repo") and t.get("issue_number")
+            }
             if active_tasks:
                 task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
                 pr_tasks = [t for t in active_tasks if t.get("pr_url")]
                 pr_status_lines = await _fetch_pr_status_lines(guild_id, pr_tasks)
-
-                linked_issues = {
-                    (t["issue_repo"], t["issue_number"])
-                    for t in active_tasks
-                    if t.get("issue_repo") and t.get("issue_number")
-                }
                 await _sweep_closed_issues(guild_id, linked_issues)
 
                 msg = (
@@ -793,15 +857,31 @@ async def _poll_loop(guild_id: str) -> None:
                     )
                 else:
                     msg += " If everything looks healthy, no action is needed."
+            else:
+                msg = "[periodic-check] Automated status poll — no non-terminal tasks."
 
-                # Deferred import: ws_handlers imports from the foreman package at
-                # module load time, so importing it back at module scope here would
-                # create a circular import.
-                from ws_handlers import _trigger_foreman
-
-                await _trigger_foreman(
-                    guild_id, "periodic-check", msg, task_name=f"foreman.poll:{guild_id}"
+            # Pre-fetched devReady issues ready for pickup (see prompt "Periodic
+            # devReady issue pickup"). Injecting them here saves the foreman a
+            # search_github_issues round-trip and guarantees the sweep runs.
+            devready_lines = await _fetch_devready_issues(guild_id, linked_issues)
+            if devready_lines:
+                msg += (
+                    "\n\nUnassigned devReady issues ready for pickup (fetched this "
+                    "cycle, already deduped against active tasks):\n"
+                    + "\n".join(devready_lines)
+                    + "\nFor each, call claim_github_issue then create_task + assign_task "
+                    "(passing issue_number and issue_repo on both). Skip any already "
+                    "assigned to someone else."
                 )
+
+            # Deferred import: ws_handlers imports from the foreman package at
+            # module load time, so importing it back at module scope here would
+            # create a circular import.
+            from ws_handlers import _trigger_foreman
+
+            await _trigger_foreman(
+                guild_id, "periodic-check", msg, task_name=f"foreman.poll:{guild_id}"
+            )
 
             # Announce next check interval so the UI can display a countdown.
             interval = next_interval
