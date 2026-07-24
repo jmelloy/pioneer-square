@@ -443,7 +443,9 @@ def test_spawn_worker_excludes_selected_guild_env_keys(client, monkeypatch):
 
     async def fake_start_worker_container(*, env, guild_id):
         captured_env.update(env)
-        return worker_runtime.SpawnedWorker(handle="fake-handle", short_id="fakehandle12", runtime="docker")
+        return worker_runtime.SpawnedWorker(
+            handle="fake-handle", short_id="fakehandle12", runtime="docker"
+        )
 
     monkeypatch.setattr(worker_runtime, "check_runtime_available", fake_check_runtime_available)
     monkeypatch.setattr(worker_runtime, "start_worker_container", fake_start_worker_container)
