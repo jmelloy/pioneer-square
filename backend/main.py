@@ -35,10 +35,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from util.tasks import spawn
-from worker_lifecycle import (
-    drain_stale_workers_on_startup,
-    idle_worker_reaper,
-)
+from worker_lifecycle import idle_worker_reaper
 from ws_types import WorkerPingMsg
 
 # Load .env (looked up from CWD upward, then alongside this file) before any
@@ -362,14 +359,6 @@ async def lifespan(app: FastAPI):
             dnsid_runtime.domain,
             dnsid_runtime.guild_slug,
         )
-
-    # Detect stale workers and send graceful-shutdown signals. Must be awaited
-    # directly before reset_connection_state() so the DB still holds the
-    # non-offline state that identifies which workers were stale. Stale workers
-    # that reconnect later are signalled from the WS join handler; the idle
-    # reaper cleans up anything that never complies, and the foreman respawns
-    # workers on demand from the guild's spawn defaults.
-    await drain_stale_workers_on_startup()
 
     await reset_connection_state()
     # Refresh the models.dev catalog on startup: persist to DB and warm the

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest import mock
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -86,12 +85,8 @@ def client(monkeypatch, _setup_schema):
         models_dev_module, "refresh_model_catalog_if_stale", _stubbed_refresh_catalog
     )
 
-    # Stub drain_stale_workers_on_startup: it uses its own AsyncSessionLocal import
-    # (not patched above) and would fail with "Future attached to a different loop".
-    # Lifecycle drain logic is tested separately in test_worker_lifecycle.py.
-    with mock.patch("main.drain_stale_workers_on_startup", return_value=[]):
-        with TestClient(main_module.app) as c:
-            yield c, db_url
+    with TestClient(main_module.app) as c:
+        yield c, db_url
 
 
 @pytest.fixture(autouse=True)

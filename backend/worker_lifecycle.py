@@ -4,18 +4,15 @@ Workers are disposable. Since the idle reaper shuts down every backend-spawned
 worker after PIONEER_WORKER_IDLE_TIMEOUT (default 30 min) of inactivity, and the
 foreman respawns workers on demand from the guild's spawn defaults
 (``guild_spawn_defaults``, refreshed on every successful spawn), there is no
-drain-and-replace choreography anymore. A version bump is handled with two
-lightweight nudges plus the reaper:
+drain-and-replace choreography anymore. Nothing runs at backend startup to
+shut workers down — a restart never disrupts an in-progress task. A version
+bump is handled with a lightweight nudge plus the reaper:
 
-1. drain_stale_workers_on_startup() — on backend startup (before
-   reset_connection_state()), find workers whose spawned_version differs from
-   get_current_version(), record drain_requested_at, and best-effort broadcast a
-   graceful shutdown (reaches workers still connected across a hot reload).
-2. signal_stale_worker_on_join() — when a worker (re)connects after the restart,
-   the join handler tells version-stale backend-spawned workers to shut down.
-   The worker finishes any in-progress task and exits on its own.
-3. The idle reaper force-kills whatever is left: containers that died during
-   the deploy (offline zombies) and workers that never processed the signal.
+1. signal_stale_worker_on_join() — when a worker (re)connects, the join
+   handler tells version-stale backend-spawned workers to shut down. The
+   worker finishes any in-progress task and exits on its own.
+2. The idle reaper force-kills whatever is left: containers that died before
+   reconnecting (offline zombies) and workers that never processed the signal.
 
 get_current_version() prefers the PIONEER_VERSION env var, else
 "<YYYYMMDD>-<sha>" from the current commit (committer date, never wall-clock —
@@ -298,102 +295,6 @@ async def signal_stale_worker_on_join(
         WorkerShutdownMsg(workerId=worker_id, reason="backend restarted: version mismatch"),
     )
     return True
-
-
-async def drain_stale_workers_on_startup() -> list[str]:
-    """Detect workers spawned by a previous backend version and send shutdown signals.
-
-    Must be awaited directly *before* reset_connection_state() so the DB still
-    holds the non-offline state that identifies which workers were running before
-    this restart. The broadcast only reaches workers still connected across a
-    hot reload; cold-restart stragglers are signalled by
-    signal_stale_worker_on_join() when they reconnect, and the idle reaper
-    cleans up anything that never complies.
-
-    Returns the list of stale worker IDs (for logging and tests).
-    """
-    current_version = get_current_version()
-
-    # Step 1: find stale workers.  When the version is undetermined we cannot
-    # safely compare, so we conservatively treat *all* online workers as stale
-    # rather than silently leaving potential zombies from a previous deploy.
-    async with AsyncSessionLocal() as db:
-        if current_version is None:
-            logger.warning(
-                "worker_lifecycle: cannot determine backend version; "
-                "treating all online workers as stale to avoid leaving zombies running"
-            )
-            rows = (
-                await db.exec(
-                    select(Worker, col(Guild.slug).label("guild_slug"))
-                    .join(Guild, col(Guild.id) == col(Worker.guild_id))
-                    .where(col(Worker.state) != "offline", col(Worker.disabled).is_(False))
-                )
-            ).all()
-        else:
-            # Drain workers whose version differs from the current one, including workers
-            # with NULL spawned_version (pre-migration rows from before version tracking
-            # was introduced). NULL means we cannot confirm they match the current version,
-            # so we conservatively treat them as stale.
-            #
-            # But spare workers spawned within STALE_DRAIN_MIN_AGE: during a rolling deploy
-            # the previous backend just spawned them and they are still cold-starting, so
-            # their version differs yet they are healthy newborns. NULL started_at (never
-            # recorded a spawn time) is treated as old and still drained.
-            spawn_cutoff = datetime.now(UTC) - STALE_DRAIN_MIN_AGE
-            rows = (
-                await db.exec(
-                    select(Worker, col(Guild.slug).label("guild_slug"))
-                    .join(Guild, col(Guild.id) == col(Worker.guild_id))
-                    .where(
-                        col(Worker.spawned_version) != current_version,
-                        col(Worker.state) != "offline",
-                        col(Worker.disabled).is_(False),
-                        (col(Worker.started_at).is_(None))
-                        | (col(Worker.started_at) < spawn_cutoff),
-                    )
-                )
-            ).all()
-
-    if not rows:
-        logger.info(
-            "worker_lifecycle: no stale workers found (current version=%s)", current_version
-        )
-        return []
-
-    logger.info(
-        "worker_lifecycle: %d stale worker(s) from a previous deploy — "
-        "sending shutdown signals (current version=%s)",
-        len(rows),
-        current_version,
-    )
-
-    # Step 2: send graceful-shutdown WS signal and record drain timestamp.
-    now = datetime.now(UTC)
-    async with AsyncSessionLocal() as db:
-        for worker, guild_slug in rows:
-            try:
-                # Best-effort: no active connections on a cold restart, but
-                # this reaches workers during a hot-reload restart.
-                await broadcast_msg(
-                    guild_slug,
-                    WorkerShutdownMsg(
-                        workerId=worker.id,
-                        reason="backend restarted: version mismatch",
-                    ),
-                )
-            except Exception:
-                logger.warning(
-                    "worker_lifecycle: could not send shutdown signal to worker %s",
-                    worker.id,
-                    exc_info=True,
-                )
-            await db.exec(
-                update(Worker).where(col(Worker.id) == worker.id).values(drain_requested_at=now)
-            )
-        await db.commit()
-
-    return [worker.id for worker, _ in rows]
 
 
 async def _force_kill_containers(worker_ids: set[str]) -> None:
