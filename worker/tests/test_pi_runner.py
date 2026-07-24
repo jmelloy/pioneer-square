@@ -83,6 +83,16 @@ def test_parse_tool_execution_start_edit():
     assert text == "▶ edit: /tmp/bar.py"
 
 
+def test_parse_tool_execution_start_read_strips_worktree_prefix():
+    event = {
+        "type": "tool_execution_start",
+        "toolName": "read",
+        "args": {"path": "/work/dnsid/w-4de676/t-vdfpj3/dnsid-infra/envs/dev/main.tf"},
+    }
+    text, _, _ = parse_pi_event(event, "")
+    assert text == "▶ read: dnsid-infra/envs/dev/main.tf"
+
+
 def test_parse_tool_execution_start_unknown():
     event = {
         "type": "tool_execution_start",

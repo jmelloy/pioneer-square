@@ -8,6 +8,8 @@ import logging
 import os
 from collections.abc import Awaitable, Callable
 
+from .log_format import strip_worktree_prefix
+
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
@@ -114,7 +116,7 @@ def parse_claude_event(event: dict) -> list[tuple[str, dict | None]]:
                         if len(cmd_lines) > 2:
                             summary += f"\n         … ({len(cmd_lines) - 2} more lines)"
                 elif name in ("Read", "Write", "Edit"):
-                    fp = inp.get("file_path", inp.get("path", ""))
+                    fp = strip_worktree_prefix(inp.get("file_path", inp.get("path", "")))
                     summary = f"▶ {name.lower()}: {fp}"
                 else:
                     summary = f"▶ {name}: {json.dumps(inp)[:80]}"
