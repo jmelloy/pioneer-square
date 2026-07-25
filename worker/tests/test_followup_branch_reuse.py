@@ -220,9 +220,9 @@ async def test_new_task_still_generates_fresh_branch():
         await worker._execute_task(task, slot)
 
     assert created_branches, "create_worktree should have been called for a new task"
-    # Branch must start with "claude/" and contain the task_id prefix, not be empty
-    assert created_branches[0].startswith("claude/"), (
-        f"New task branch should start with 'claude/', got {created_branches[0]!r}"
+    # Branch must start with "ps/" and contain the task_id prefix, not be empty
+    assert created_branches[0].startswith("ps/"), (
+        f"New task branch should start with 'ps/', got {created_branches[0]!r}"
     )
     assert "t-new1"[:6] in created_branches[0], (
         f"New task branch should contain the task_id prefix, got {created_branches[0]!r}"
