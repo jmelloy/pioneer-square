@@ -470,15 +470,23 @@ async def update_foreman_config(
                 existing_map: dict[str, str] = {
                     e["key"]: e["value"] for e in config.get("env_vars", [])
                 }
-                new_env_vars: list[dict] = []
+                # Collapse duplicate keys (the guild edit screen can submit the
+                # same key twice — e.g. a well-known field plus a free-form row),
+                # keeping a non-empty value over a blank one so a stray blank
+                # can't shadow the real value at spawn time.
+                merged: dict[str, str] = {}
                 for item in value:
                     if item.value is None:
                         # Unchanged: keep the existing stored value if present
-                        if item.key in existing_map:
-                            new_env_vars.append({"key": item.key, "value": existing_map[item.key]})
+                        if item.key not in existing_map:
+                            continue
+                        resolved = existing_map[item.key]
                     else:
-                        new_env_vars.append({"key": item.key, "value": item.value})
-                config["env_vars"] = new_env_vars
+                        resolved = item.value
+                    if item.key in merged and resolved == "" and merged[item.key] != "":
+                        continue
+                    merged[item.key] = resolved
+                config["env_vars"] = [{"key": k, "value": v} for k, v in merged.items()]
         elif value is None:
             config.pop(field, None)
         else:

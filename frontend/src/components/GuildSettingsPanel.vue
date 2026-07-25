@@ -423,9 +423,18 @@ async function saveForemanConfig() {
     else body.poll_max_interval = null
     // Send actual values for every keyed row (dedicated credential fields and
     // free-form rows alike both live in envVarRows). Skip rows with empty keys.
-    body.env_vars = envVarRows.value
-      .filter((r) => r.key.trim())
-      .map((r) => ({ key: r.key.trim(), value: r.value }))
+    // A well-known key can be entered twice (dedicated field + a free-form row
+    // that then hides itself); collapse duplicates, keeping the non-empty value
+    // so a stray blank row can't shadow the real credential at spawn time.
+    const envByKey = new Map<string, string>()
+    for (const r of envVarRows.value) {
+      const key = r.key.trim()
+      if (!key) continue
+      const existing = envByKey.get(key)
+      if (existing && r.value === '' && existing !== '') continue
+      envByKey.set(key, r.value)
+    }
+    body.env_vars = [...envByKey].map(([key, value]) => ({ key, value }))
     const res = await fetch(
       `${API_BASE}/api/guilds/${encodeURIComponent(currentGuild.value.id)}/foreman-config`,
       {

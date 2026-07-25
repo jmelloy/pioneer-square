@@ -395,6 +395,30 @@ def test_foreman_config_env_vars_round_trip_in_clear(client):
     }
 
 
+def test_foreman_config_dedups_duplicate_keys_preferring_nonempty(client):
+    """The guild edit screen can submit the same key twice (a well-known field
+    plus a free-form row). The stored config keeps one entry, and a blank value
+    never wins over a real one."""
+    test_client, db_url = client
+    token = make_auth_token(db_url)  # owner of g-fdup
+    insert_guild(db_url, "g-fdup")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    patch = test_client.patch(
+        "/api/guilds/g-fdup/foreman-config",
+        headers=headers,
+        json={
+            "env_vars": [
+                {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token"},
+                {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": ""},
+            ],
+        },
+    )
+    assert patch.status_code == 200
+    env = patch.json()["env_vars"]
+    assert env == [{"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token"}]
+
+
 def test_foreman_config_bedrock_without_model_rejected(client, monkeypatch):
     """Regression for #817: saving provider=bedrock with no model configured must be
     rejected up front — Bedrock inference profiles are AWS-account-scoped, so silently

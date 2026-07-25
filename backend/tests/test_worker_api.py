@@ -505,6 +505,55 @@ def test_spawn_worker_empty_user_value_does_not_clobber_guild_credential(client,
     assert captured_env.get("AWS_BEARER_TOKEN_BEDROCK") == "real-token"
 
 
+def test_spawn_worker_guild_duplicate_key_prefers_nonempty(client, monkeypatch):
+    """A guild config that already stores the same key twice (one real value,
+    one blank — the pre-existing bad data) must boot the container with the real
+    value, not whichever entry comes last."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred-dup")
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(col(Guild.slug) == "guild-cred-dup")
+        )
+        session.execute(
+            update(Guild)
+            .where(col(Guild.id) == guild_pk)
+            .values(
+                foreman_config={
+                    "env_vars": [
+                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token"},
+                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": ""},
+                    ]
+                }
+            )
+        )
+        session.commit()
+
+    import worker_runtime
+
+    captured_env: dict = {}
+
+    async def fake_check_runtime_available():
+        return None
+
+    async def fake_start_worker_container(*, env, guild_id):
+        captured_env.update(env)
+        return worker_runtime.SpawnedWorker(
+            handle="fake-handle", short_id="fakehandle12", runtime="docker"
+        )
+
+    monkeypatch.setattr(worker_runtime, "check_runtime_available", fake_check_runtime_available)
+    monkeypatch.setattr(worker_runtime, "start_worker_container", fake_start_worker_container)
+
+    resp = test_client.post(
+        "/guilds/guild-cred-dup/spawn-worker",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"]},
+    )
+    assert resp.status_code == 200
+    assert captured_env.get("AWS_BEARER_TOKEN_BEDROCK") == "real-token"
+
+
 def test_spawn_worker_rejects_invalid_exclude_env_key(client):
     test_client, db_url = client
     insert_guild(db_url, "guild-cred5")
