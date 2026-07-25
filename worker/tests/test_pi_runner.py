@@ -218,6 +218,40 @@ sys.exit(0)
         assert not line.endswith("\n"), f"trailing newline in emitted line: {line!r}"
 
 
+async def test_run_pi_auto_publishes_proc_handle(tmp_path) -> None:
+    """on_proc receives a live, terminate-capable handle for the pi subprocess."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{"type": "agent_end"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    handles: list[object] = []
+
+    async def emit(line: str, detail: dict | None = None) -> None:
+        pass
+
+    await run_pi_auto(
+        "do the work",
+        str(tmp_path),
+        emit=emit,
+        pi_path=os.fspath(fake_pi),
+        on_proc=handles.append,
+    )
+
+    assert len(handles) == 1
+    handle = handles[0]
+    assert hasattr(handle, "terminate")
+    assert hasattr(handle, "send_message")
+    # terminate() on an already-exited proc is a no-op, not a crash.
+    await handle.terminate()
+
+
 async def test_run_pi_auto_not_found(tmp_path) -> None:
     """Missing pi binary → FileNotFoundError → returns (False, 'no_events', '', None)."""
     emitted: list[str] = []

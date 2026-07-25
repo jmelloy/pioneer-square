@@ -1928,8 +1928,13 @@ class Worker:
                         model=_pi_model,
                         provider=_pi_provider,
                         on_usage=_collect_usage,
+                        on_proc=_on_proc,
                         resume_session_id=resume_session_id,
                     )
+                    # pi returns its session via the return value, not the
+                    # ClaudeProcess slot; just release the live handle so the
+                    # worker reads as idle again (cancel/redirect used it).
+                    agent.current_claude = None
                 else:
                     _claude_model = task.get("model") or None
                     logger.info(
