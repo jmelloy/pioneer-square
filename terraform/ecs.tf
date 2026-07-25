@@ -102,10 +102,8 @@ resource "aws_ecs_task_definition" "backend" {
           GITHUB_CLIENT_SECRET     = aws_ssm_parameter.secret["github_client_secret"]
           GITHUB_TOKEN             = aws_ssm_parameter.secret["github_token"]
           ANTHROPIC_API_KEY        = aws_ssm_parameter.secret["anthropic_api_key"]
-          CLAUDE_CODE_OAUTH_TOKEN  = aws_ssm_parameter.secret["claude_code_oauth_token"]
           PIONEER_FOREMAN_KEY      = aws_ssm_parameter.secret["pioneer_foreman_key"]
           DISCORD_BOT_TOKEN        = aws_ssm_parameter.secret["discord_bot_token"]
-          AWS_BEARER_TOKEN_BEDROCK = aws_ssm_parameter.secret["aws_bearer_token_bedrock"]
         } : { name = key, valueFrom = param.arn }
       ]
 
