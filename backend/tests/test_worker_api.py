@@ -514,9 +514,7 @@ def test_spawn_worker_guild_duplicate_key_prefers_nonempty(client, monkeypatch):
     test_client, db_url = client
     insert_guild(db_url, "guild-cred-dup")
     with _sync_session(db_url) as session:
-        guild_pk = session.scalar(
-            select(col(Guild.id)).where(col(Guild.slug) == "guild-cred-dup")
-        )
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred-dup"))
         session.execute(
             update(Guild)
             .where(col(Guild.id) == guild_pk)
