@@ -1151,6 +1151,10 @@ async def spawn_worker(
                 tools_list = json.loads(defaults.tools or "[]")
             if agent_count is None:
                 agent_count = defaults.agent_count
+    # "Spawn a worker" means one agent unless asked for more; without this the
+    # worker falls through to config's max_agents default (4). ponytail: 1 slot.
+    if agent_count is None:
+        agent_count = 1
     if not repos:
         return (
             "spawn_worker requires at least one repo in the 'repos' list — this guild has "

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import signal
 from collections.abc import Awaitable, Callable
 
 from .log_format import strip_worktree_prefix
@@ -13,6 +15,54 @@ logger = logging.getLogger(__name__)
 
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
+OnProcFn = Callable[["PiProcess"], None]  # on_proc(proc) — worker's live-handle callback
+
+
+def _signal_group(proc: asyncio.subprocess.Process, sig: signal.Signals) -> None:
+    """Signal pi's whole process group, not just pi's own pid.
+
+    pi is spawned with ``start_new_session=True`` so it leads its own process
+    group; signalling the group also reaps the tool subprocesses pi spawns
+    (bash, the model client). A bare ``proc.kill()`` orphans those onto the
+    container's PID 1, which doesn't reap them.
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except ProcessLookupError:
+        pass
+    except Exception:
+        logger.debug("pi killpg failed", exc_info=True)
+
+
+class PiProcess:
+    """Live handle the worker holds so it can cancel/redirect a running pi.
+
+    Duck-compatible with claude_runner.ClaudeProcess (``terminate`` /
+    ``send_message`` / ``session_id``) so worker.py's cancel, redirect, and
+    message-injection paths work for pi too. Unlike ClaudeProcess, send_message
+    frames the text as a pi RPC ``prompt`` event and terminate signals the
+    whole process group.
+    """
+
+    def __init__(self, proc: asyncio.subprocess.Process) -> None:
+        self.proc = proc
+        self.session_id: str | None = None
+
+    async def send_message(self, text: str) -> bool:
+        if self.proc.stdin is None or self.proc.stdin.is_closing():
+            return False
+        try:
+            msg = json.dumps({"type": "prompt", "message": text}) + "\n"
+            self.proc.stdin.write(msg.encode())
+            await self.proc.stdin.drain()
+            return True
+        except Exception:
+            return False
+
+    async def terminate(self) -> None:
+        _signal_group(self.proc, signal.SIGTERM)
 
 # Seconds to wait for pi to exit after stdin is closed before killing it.
 _WAIT_TIMEOUT = 30
@@ -105,6 +155,7 @@ async def run_pi_auto(
     *,
     emit: EmitFn,
     on_usage: UsageFn | None = None,
+    on_proc: OnProcFn | None = None,
     pi_path: str = "pi",
     model: str | None = None,
     provider: str | None = None,
@@ -137,6 +188,7 @@ async def run_pi_auto(
         cwd,
         emit=emit,
         on_usage=on_usage,
+        on_proc=on_proc,
         pi_path=pi_path,
         model=model,
         provider=provider,
@@ -154,6 +206,7 @@ async def run_pi_auto(
             cwd,
             emit=emit,
             on_usage=on_usage,
+            on_proc=on_proc,
             pi_path=pi_path,
             model=model,
             provider=provider,
@@ -168,6 +221,7 @@ async def _run_pi_once(
     *,
     emit: EmitFn,
     on_usage: UsageFn | None,
+    on_proc: OnProcFn | None,
     pi_path: str,
     model: str | None,
     provider: str | None,
@@ -202,8 +256,14 @@ async def _run_pi_once(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=_STREAM_LIMIT,
+            # Own process group so _signal_group() can reap pi's tool children.
+            start_new_session=True,
         )
         logger.info("pi subprocess started pid=%s", proc.pid)
+        # Hand the worker a live handle so its cancel/redirect/message paths
+        # (which look at Agent.current_claude) can reach this pi process.
+        if on_proc is not None:
+            on_proc(PiProcess(proc))
 
         rpc_msg = json.dumps({"type": "prompt", "message": description}) + "\n"
         proc.stdin.write(rpc_msg.encode())  # type: ignore[union-attr]
@@ -358,7 +418,7 @@ async def _run_pi_once(
                 proc.pid,
                 _WAIT_TIMEOUT,
             )
-            proc.kill()
+            _signal_group(proc, signal.SIGKILL)
             exit_code = await proc.wait()
         await stderr_task
         if event_count == 0:
@@ -398,12 +458,7 @@ async def _run_pi_once(
                     proc.stdin.close()
                 except Exception:
                     pass
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            except Exception:
-                logger.debug("pi kill failed", exc_info=True)
+            _signal_group(proc, signal.SIGKILL)
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
             except BaseException:
