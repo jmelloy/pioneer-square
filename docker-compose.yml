@@ -57,6 +57,12 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-https://pioneer-square.melloy.life}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # GitHub App identity — mints installation tokens so comments/commits
+      # attribute to the bot. Per-guild installation ids live in the DB.
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
       WORKER_IMAGE: ${WORKER_IMAGE:-pioneer-square-worker}
       WORKER_BACKEND_URL: ${WORKER_BACKEND_URL:-http://backend:8000}
       # When set (e.g. DEBUG), backend-spawned worker containers are launched

@@ -470,13 +470,15 @@ def test_spawn_worker_empty_user_value_does_not_clobber_guild_credential(client,
     test_client, db_url = client
     insert_guild(db_url, "guild-cred-clob")
     with _sync_session(db_url) as session:
-        guild_pk = session.scalar(
-            select(col(Guild.id)).where(col(Guild.slug) == "guild-cred-clob")
-        )
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred-clob"))
         session.execute(
             update(Guild)
             .where(col(Guild.id) == guild_pk)
-            .values(foreman_config={"env_vars": [{"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token"}]})
+            .values(
+                foreman_config={
+                    "env_vars": [{"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token"}]
+                }
+            )
         )
         session.commit()
 

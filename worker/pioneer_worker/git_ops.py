@@ -112,6 +112,17 @@ async def attach_worktree(repo_path: str, wt_path: str, branch: str) -> bool:
     return rc == 0
 
 
+async def set_git_identity(name: str, email: str) -> None:
+    """Set the global git author/committer identity for this worker process.
+
+    Used so Claude's commits are attributed to the GitHub App bot: with the
+    bot's ``<id>+<slug>@users.noreply.github.com`` email, GitHub links commits
+    to the App identity rather than whichever token authenticated the push.
+    """
+    await run_git(["config", "--global", "user.name", name])
+    await run_git(["config", "--global", "user.email", email])
+
+
 async def run_gh(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     logger.debug("gh %s (cwd=%s)", " ".join(args), cwd or os.getcwd())
     proc = await asyncio.create_subprocess_exec(

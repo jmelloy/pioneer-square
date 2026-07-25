@@ -52,11 +52,11 @@ def _reset_token_cache(monkeypatch):
     monkeypatch.delenv("GITHUB_APP_PRIVATE_KEY_PATH", raising=False)
     monkeypatch.delenv("GITHUB_APP_INSTALLATION_ID", raising=False)
     monkeypatch.delenv("GITHUB_APP_SLUG", raising=False)
-    github_app_auth._token_cache["token"] = None
-    github_app_auth._token_cache["expires_at"] = None
+    github_app_auth._token_cache.clear()
+    github_app_auth._bot_identity_cache.clear()
     yield
-    github_app_auth._token_cache["token"] = None
-    github_app_auth._token_cache["expires_at"] = None
+    github_app_auth._token_cache.clear()
+    github_app_auth._bot_identity_cache.clear()
 
 
 def test_generate_jwt_has_correct_claims_and_signature(rsa_keypair):
@@ -276,7 +276,69 @@ def test_concurrent_get_github_token_is_race_free(monkeypatch, rsa_keypair):
 
     assert results == ["ghs_racey_token", "ghs_racey_token"]
     assert call_count["n"] == 1
-    assert github_app_auth._token_cache["token"] == "ghs_racey_token"
+    assert github_app_auth._token_cache["789"]["token"] == "ghs_racey_token"
+
+
+def test_installation_id_arg_overrides_env_and_caches_per_id(monkeypatch, rsa_keypair):
+    """An explicit installation_id selects that installation and caches separately."""
+    _private_key, pem = rsa_keypair
+    monkeypatch.setenv("GITHUB_APP_ID", "123456")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", pem)
+    monkeypatch.setenv("GITHUB_APP_INSTALLATION_ID", "789")  # env default
+
+    seen_urls = []
+    far_future = (datetime.now(UTC) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+
+    class FakeResponse:
+        def __init__(self, url):
+            self._url = url
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"token": f"ghs_{self._url.split('/')[-2]}", "expires_at": far_future}
+
+    def fake_post(url, headers=None, timeout=None):
+        seen_urls.append(url)
+        return FakeResponse(url)
+
+    monkeypatch.setattr(github_app_auth.httpx, "post", fake_post)
+
+    assert get_app_installation_token("555") == "ghs_555"  # arg wins over env 789
+    assert get_app_installation_token() == "ghs_789"  # env default
+    assert get_app_installation_token("555") == "ghs_555"  # cached, no refetch
+    assert len(seen_urls) == 2  # 555 and 789 fetched once each
+
+
+def test_bot_identity_builds_noreply_email(monkeypatch):
+    monkeypatch.setenv("GITHUB_APP_SLUG", "pioneer-square-melloy[bot]")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"id": 424242, "login": "pioneer-square-melloy[bot]"}
+
+    captured = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        captured["url"] = url
+        return FakeResponse()
+
+    monkeypatch.setattr(github_app_auth.httpx, "get", fake_get)
+
+    name, email = github_app_auth.get_app_bot_identity()
+    assert name == "pioneer-square-melloy[bot]"
+    assert email == "424242+pioneer-square-melloy[bot]@users.noreply.github.com"
+    assert captured["url"].endswith("pioneer-square-melloy%5Bbot%5D")
+    # Second call is cached — no second GET (would KeyError on the missing url).
+    assert github_app_auth.get_app_bot_identity() == (name, email)
+
+
+def test_bot_identity_none_when_slug_unset():
+    assert github_app_auth.get_app_bot_identity() is None
 
 
 def test_get_app_slug_defaults_when_unset():

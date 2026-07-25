@@ -328,6 +328,31 @@ variable "github_token" {
   default     = "CHANGE_ME_IN_SSM"
 }
 
+variable "github_app_id" {
+  description = "GitHub App id — the backend mints installation tokens so comments/commits attribute to the App bot. Non-secret."
+  type        = string
+  default     = "4394230"
+}
+
+variable "github_app_slug" {
+  description = "GitHub App bot username (public page github.com/apps/pioneer-square + '[bot]') used for attribution. Empty disables App identity."
+  type        = string
+  default     = "pioneer-square[bot]"
+}
+
+variable "github_app_installation_id" {
+  description = "Default GitHub App installation id used when a guild has none set (all jmelloy/* guilds share one). Per-guild rows override. Non-secret."
+  type        = string
+  default     = "149025614"
+}
+
+variable "github_app_private_key" {
+  description = "GitHub App private key (PEM). Stored in SSM; empty leaves the App disabled and falls back to GITHUB_TOKEN."
+  type        = string
+  sensitive   = true
+  default     = "CHANGE_ME_IN_SSM"
+}
+
 variable "anthropic_api_key" {
   description = "Anthropic API key for the backend foreman (Claude SDK)."
   type        = string

@@ -18,6 +18,7 @@ locals {
     github_client_id         = var.github_client_id
     github_client_secret     = var.github_client_secret
     github_token             = var.github_token
+    github_app_private_key   = var.github_app_private_key
     anthropic_api_key        = var.anthropic_api_key
     claude_code_oauth_token  = var.claude_code_oauth_token
     openai_api_key           = var.openai_api_key

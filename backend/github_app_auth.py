@@ -27,6 +27,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from cryptography.hazmat.primitives import hashes
@@ -46,8 +47,15 @@ GITHUB_APP_INSTALLATION_ID = "GITHUB_APP_INSTALLATION_ID"
 GITHUB_APP_SLUG = "GITHUB_APP_SLUG"
 DEFAULT_APP_SLUG = "github-app[bot]"
 
-# Cached installation token, refreshed once within 5 minutes of expiry.
-_token_cache: dict[str, Any] = {"token": None, "expires_at": None}
+# Cached installation tokens, keyed by installation_id, each refreshed once
+# within 5 minutes of expiry. One App (app_id + private key) can have many
+# installations — one per guild/account — so tokens must be cached per id.
+_token_cache: dict[str, dict[str, Any]] = {}
+
+# Cached (git_name, git_email) for the App's bot, keyed by slug. The bot's
+# numeric user id (needed for the commit-attribution noreply email) is fetched
+# once from the GitHub API and never changes for a given App.
+_bot_identity_cache: dict[str, tuple[str, str]] = {}
 
 # Guards the cache check + refresh in get_app_installation_token(). A plain
 # threading.Lock (not asyncio.Lock) because this function is synchronous and
@@ -103,10 +111,13 @@ def get_installation_token(app_id: str, private_key_pem: str, installation_id: s
     return _request_installation_token(app_id, private_key_pem, installation_id)["token"]
 
 
-def _app_credentials() -> tuple[str, str, str] | None:
-    """Return (app_id, private_key_pem, installation_id) if all App env vars are set, else None."""
+def _app_key_credentials() -> tuple[str, str] | None:
+    """Return (app_id, private_key_pem) if the App id + private key are set, else None.
+
+    The installation id is resolved separately (per-guild, falling back to the
+    ``GITHUB_APP_INSTALLATION_ID`` env var) since one App has many installations.
+    """
     app_id = os.environ.get(GITHUB_APP_ID)
-    installation_id = os.environ.get(GITHUB_APP_INSTALLATION_ID)
     private_key_pem = os.environ.get(GITHUB_APP_PRIVATE_KEY)
     if not private_key_pem:
         key_path = os.environ.get(GITHUB_APP_PRIVATE_KEY_PATH)
@@ -120,8 +131,8 @@ def _app_credentials() -> tuple[str, str, str] | None:
                     exc_info=True,
                 )
                 return None
-    if app_id and installation_id and private_key_pem:
-        return app_id, private_key_pem, installation_id
+    if app_id and private_key_pem:
+        return app_id, private_key_pem
     return None
 
 
@@ -133,38 +144,72 @@ def get_app_slug() -> str:
     return os.environ.get(GITHUB_APP_SLUG) or DEFAULT_APP_SLUG
 
 
-def get_app_installation_token() -> str | None:
+def get_app_installation_token(installation_id: str | None = None) -> str | None:
     """Return a cached GitHub App installation token, or None if the App isn't configured.
 
-    Refreshes when the cached token is within 5 minutes of expiry.
+    *installation_id* selects which installation (guild/account) to mint for;
+    when omitted it falls back to the ``GITHUB_APP_INSTALLATION_ID`` env var so
+    single-tenant deploys keep working unchanged. Refreshes when the cached
+    token is within 5 minutes of expiry.
     """
-    creds = _app_credentials()
+    creds = _app_key_credentials()
     if creds is None:
         return None
-    app_id, private_key_pem, installation_id = creds
+    app_id, private_key_pem = creds
+    installation_id = installation_id or os.environ.get(GITHUB_APP_INSTALLATION_ID)
+    if not installation_id:
+        return None
 
     with _cache_lock:
         now = datetime.now(UTC)
-        cached_expiry = _token_cache["expires_at"]
-        if _token_cache["token"] and cached_expiry and cached_expiry - now > timedelta(minutes=5):
-            return _token_cache["token"]
+        entry = _token_cache.get(installation_id)
+        if entry and entry["expires_at"] - now > timedelta(minutes=5):
+            return entry["token"]
 
         data = _request_installation_token(app_id, private_key_pem, installation_id)
-        _token_cache["token"] = data["token"]
-        _token_cache["expires_at"] = datetime.fromisoformat(
-            data["expires_at"].replace("Z", "+00:00")
+        expires_at = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
+        _token_cache[installation_id] = {"token": data["token"], "expires_at": expires_at}
+        return data["token"]
+
+
+def get_app_bot_identity() -> tuple[str, str] | None:
+    """Return (git_name, git_email) to author commits as the App's bot, or None.
+
+    GitHub attributes a commit to the bot when the author email is the bot's
+    ``<user_id>+<slug>@users.noreply.github.com`` noreply address. The numeric
+    user id is fetched once from ``GET /users/<slug>`` and cached. Returns None
+    when ``GITHUB_APP_SLUG`` isn't configured or the lookup fails.
+    """
+    slug = get_app_slug()
+    if slug == DEFAULT_APP_SLUG:
+        return None
+    cached = _bot_identity_cache.get(slug)
+    if cached:
+        return cached
+    try:
+        resp = httpx.get(
+            f"https://api.github.com/users/{quote(slug, safe='')}",
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=15,
         )
-        return _token_cache["token"]
+        resp.raise_for_status()
+        user_id = resp.json()["id"]
+    except (httpx.HTTPError, KeyError):
+        logger.warning("Failed to fetch bot user id for %r", slug, exc_info=True)
+        return None
+    identity = (slug, f"{user_id}+{slug}@users.noreply.github.com")
+    _bot_identity_cache[slug] = identity
+    return identity
 
 
-def get_github_token(fallback: str | None = None) -> str | None:
+def get_github_token(fallback: str | None = None, installation_id: str | None = None) -> str | None:
     """Return the GitHub token to use for API/``gh`` CLI calls, or None if unconfigured.
 
     Prefers a GitHub App installation token when the App env vars are set;
     otherwise returns *fallback* if given, else the ``GITHUB_TOKEN`` env var
     (or None if neither the App nor ``GITHUB_TOKEN`` is configured).
     """
-    token = get_app_installation_token()
+    token = get_app_installation_token(installation_id)
     if token:
         return token
     if fallback is not None:

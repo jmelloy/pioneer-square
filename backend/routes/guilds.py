@@ -424,6 +424,34 @@ async def get_webhook_secret(
     return {"slug": guild_id, "webhook_secret": secret}
 
 
+class GithubAppInstallation(BaseModel):
+    # GitHub installation ids are integers; accept the digits from the install
+    # URL (github.com/settings/installations/<id>). Empty string clears it.
+    installation_id: str = Field(pattern=r"^\d*$")
+
+
+@router.put("/guilds/{guild_id}/github-app-installation")
+async def set_github_app_installation(
+    guild_id: str,
+    body: GithubAppInstallation,
+    github_user_id: str = Depends(require_member("owner")),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Set (or clear) the GitHub App installation id for this guild (owner only).
+
+    Find it in the install URL after installing the App on your account/org:
+    ``github.com/settings/installations/<id>``. Clearing (empty string) falls
+    the guild back to the process-wide ``GITHUB_APP_INSTALLATION_ID`` env var.
+    """
+    res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
+    guild = res.one_or_none()
+    if not guild:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    guild.github_app_installation_id = body.installation_id or None
+    await db.commit()
+    return {"slug": guild_id, "github_app_installation_id": guild.github_app_installation_id}
+
+
 @router.get("/api/guilds/{guild_id}/foreman-config")
 async def get_foreman_config(
     guild_id: str,

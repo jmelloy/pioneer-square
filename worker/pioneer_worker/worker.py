@@ -274,6 +274,14 @@ class Worker:
                     data = resp.json()
                     self.cfg.github_token = data.get("access_token")
                     logger.info("Fetched GitHub token for user %s", data.get("username"))
+                    # When the backend is App-authenticated it also returns the
+                    # bot's git author identity; set it so commits attribute to
+                    # the App rather than the push token's default identity.
+                    name = data.get("git_author_name")
+                    email = data.get("git_author_email")
+                    if name and email:
+                        await git_ops.set_git_identity(name, email)
+                        logger.info("Git author identity set to %s <%s>", name, email)
                 else:
                     logger.warning("No GitHub token from backend (status %d)", resp.status_code)
             except Exception as exc:
