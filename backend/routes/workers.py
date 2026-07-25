@@ -224,8 +224,15 @@ async def spawn_worker_container(
     if data.exclude_env_keys:
         excluded_keys = set(data.exclude_env_keys)
         foreman_env_vars = {k: v for k, v in foreman_env_vars.items() if k not in excluded_keys}
-    # User-supplied vars at spawn time override guild defaults.
-    extra_env: dict[str, str] = {**foreman_env_vars, **(data.env_vars or {})}
+    # User-supplied vars at spawn time override guild defaults — but an empty
+    # user value must not blank out a guild credential that has a real value
+    # (the value wins). Without this, a stale empty spawn-setting for a key that
+    # also exists as a guild credential boots the container with no value.
+    extra_env: dict[str, str] = dict(foreman_env_vars)
+    for k, v in (data.env_vars or {}).items():
+        if v == "" and foreman_env_vars.get(k):
+            continue
+        extra_env[k] = v
 
     # Pre-register the worker so the container inherits a known worker_id and
     # can skip self-registration on startup.
