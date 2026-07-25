@@ -2734,6 +2734,296 @@ async def _exec_one_tool(
                                 }
                             )
 
+                    elif tu.name == "analyze_epic":
+                        repo = inp["repo"]
+                        num = int(inp["issue_number"])
+                        force = inp.get("force", False)
+                        file_gap_issues = inp.get("file_gap_issues", True)
+
+                        # Fetch the epic issue
+                        epic = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
+                        epic_labels = [l["name"] for l in epic.get("labels", [])]
+
+                        # Safeguard: skip if already reported (unless forced)
+                        if "pm-reported" in epic_labels and not force:
+                            # Check if report was recent (within 7 days)
+                            comments_raw = await _to_thread(
+                                _gh_api,
+                                f"/repos/{repo}/issues/{num}/comments?per_page=50",
+                                token,
+                            )
+                            recent_report = False
+                            for c in reversed(comments_raw):
+                                if c.get("body", "").startswith("## 📋 Epic Analysis Report"):
+                                    created = c.get("created_at", "")
+                                    if created:
+                                        from datetime import datetime as dt
+
+                                        report_time = dt.fromisoformat(
+                                            created.replace("Z", "+00:00")
+                                        )
+                                        if (datetime.now(UTC) - report_time) < timedelta(days=7):
+                                            recent_report = True
+                                    break
+                            if recent_report:
+                                result_text = json.dumps(
+                                    {
+                                        "skipped": True,
+                                        "reason": "Report already posted within the last 7 days. Use force=true to override.",
+                                        "epic": num,
+                                    }
+                                )
+                                # Skip to end — result_text is already set
+                            else:
+                                # Label exists but report is stale — proceed
+                                force = True
+
+                        if not ("pm-reported" in epic_labels and not force):
+                            # Fetch sub-issues
+                            try:
+                                sub_raw = await _to_thread(
+                                    _gh_api,
+                                    f"/repos/{repo}/issues/{num}/sub_issues?per_page=100",
+                                    token,
+                                )
+                            except urllib.error.HTTPError:
+                                sub_raw = []
+
+                            # Fetch linked PRs by searching for issues that reference this epic
+                            search_q = urllib.parse.quote(f"repo:{repo} is:pr linked:{num}")
+                            try:
+                                linked_prs_data = await _to_thread(
+                                    _gh_api,
+                                    f"/search/issues?q={search_q}&per_page=30",
+                                    token,
+                                )
+                                linked_prs = linked_prs_data.get("items", [])
+                            except urllib.error.HTTPError:
+                                linked_prs = []
+
+                            # Also search for PRs mentioning this issue number
+                            mention_q = urllib.parse.quote(f"repo:{repo} is:pr #{num}")
+                            try:
+                                mention_prs_data = await _to_thread(
+                                    _gh_api,
+                                    f"/search/issues?q={mention_q}&per_page=30",
+                                    token,
+                                )
+                                mention_prs = mention_prs_data.get("items", [])
+                            except urllib.error.HTTPError:
+                                mention_prs = []
+
+                            # Merge PR lists by number
+                            seen_pr_nums: set = set()
+                            all_prs: list = []
+                            for pr in linked_prs + mention_prs:
+                                if pr["number"] not in seen_pr_nums:
+                                    seen_pr_nums.add(pr["number"])
+                                    all_prs.append(pr)
+
+                            # Also gather PRs linked from sub-issues
+                            sub_issue_details = []
+                            for sub in sub_raw:
+                                sub_num = sub["number"]
+                                sub_detail = {
+                                    "number": sub_num,
+                                    "title": sub.get("title", ""),
+                                    "state": sub.get("state", "unknown"),
+                                    "labels": [l["name"] for l in sub.get("labels", [])],
+                                }
+                                # Find PRs linked to this sub-issue
+                                sub_q = urllib.parse.quote(f"repo:{repo} is:pr #{sub_num}")
+                                try:
+                                    sub_prs_data = await _to_thread(
+                                        _gh_api,
+                                        f"/search/issues?q={sub_q}&per_page=10",
+                                        token,
+                                    )
+                                    sub_prs = sub_prs_data.get("items", [])
+                                    sub_detail["linked_prs"] = [
+                                        {
+                                            "number": p["number"],
+                                            "state": p["state"],
+                                            "title": p["title"],
+                                        }
+                                        for p in sub_prs
+                                    ]
+                                    for pr in sub_prs:
+                                        if pr["number"] not in seen_pr_nums:
+                                            seen_pr_nums.add(pr["number"])
+                                            all_prs.append(pr)
+                                except urllib.error.HTTPError:
+                                    sub_detail["linked_prs"] = []
+                                sub_issue_details.append(sub_detail)
+
+                            # Analyze completeness
+                            total_subs = len(sub_issue_details)
+                            closed_subs = sum(
+                                1 for s in sub_issue_details if s["state"] == "closed"
+                            )
+                            open_subs = total_subs - closed_subs
+
+                            # Identify inconsistencies
+                            gaps: list = []
+                            for s in sub_issue_details:
+                                # Closed issue with no linked PRs may be suspicious
+                                if s["state"] == "closed" and not s.get("linked_prs"):
+                                    gaps.append(
+                                        f"Sub-issue #{s['number']} ({s['title']}) is closed but has no linked PRs"
+                                    )
+                                # Open issue with merged PR is inconsistent
+                                if s["state"] == "open":
+                                    for pr in s.get("linked_prs", []):
+                                        if pr["state"] == "closed":  # merged PRs show as closed
+                                            gaps.append(
+                                                f"Sub-issue #{s['number']} ({s['title']}) is still open but PR #{pr['number']} is merged/closed"
+                                            )
+
+                            # Check for dangling PRs (PRs not linked to any sub-issue)
+                            sub_linked_pr_nums = set()
+                            for s in sub_issue_details:
+                                for pr in s.get("linked_prs", []):
+                                    sub_linked_pr_nums.add(pr["number"])
+                            dangling_prs = [
+                                pr for pr in all_prs if pr["number"] not in sub_linked_pr_nums
+                            ]
+                            for pr in dangling_prs:
+                                gaps.append(
+                                    f"PR #{pr['number']} ({pr.get('title', '')}) references the epic but isn't linked to any sub-issue"
+                                )
+
+                            # Build report
+                            report_lines = [
+                                "## 📋 Epic Analysis Report",
+                                "",
+                                f"**Epic:** #{num} — {epic.get('title', '')}",
+                                f"**Analyzed:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+                                "",
+                                "### Summary",
+                                f"- **Sub-issues:** {total_subs} total, {closed_subs} closed, {open_subs} open",
+                                f"- **Related PRs:** {len(all_prs)} found",
+                                f"- **Gaps/Issues found:** {len(gaps)}",
+                                "",
+                            ]
+
+                            if sub_issue_details:
+                                report_lines.append("### Sub-issue Status")
+                                report_lines.append("| # | Title | State | PRs |")
+                                report_lines.append("|---|-------|-------|-----|")
+                                for s in sub_issue_details:
+                                    pr_links = (
+                                        ", ".join(
+                                            f"#{p['number']} ({p['state']})"
+                                            for p in s.get("linked_prs", [])
+                                        )
+                                        or "—"
+                                    )
+                                    state_emoji = "✅" if s["state"] == "closed" else "🔄"
+                                    report_lines.append(
+                                        f"| #{s['number']} | {s['title'][:50]} | {state_emoji} {s['state']} | {pr_links} |"
+                                    )
+                                report_lines.append("")
+
+                            if gaps:
+                                report_lines.append("### ⚠️ Gaps & Inconsistencies")
+                                for g in gaps:
+                                    report_lines.append(f"- {g}")
+                                report_lines.append("")
+
+                            if all_prs:
+                                report_lines.append("### Related PRs")
+                                for pr in all_prs[:20]:
+                                    pr_state = (
+                                        "✅ merged"
+                                        if pr.get("pull_request", {}).get("merged_at")
+                                        else pr["state"]
+                                    )
+                                    report_lines.append(
+                                        f"- #{pr['number']}: {pr.get('title', '')} ({pr_state})"
+                                    )
+                                report_lines.append("")
+
+                            if total_subs > 0 and open_subs == 0:
+                                report_lines.append("### ✅ Completion")
+                                report_lines.append(
+                                    "All sub-issues are closed. Epic may be ready to close."
+                                )
+                                report_lines.append("")
+                            elif total_subs > 0:
+                                pct = int((closed_subs / total_subs) * 100)
+                                report_lines.append(f"### 📊 Progress: {pct}%")
+                                report_lines.append(f"{open_subs} sub-issue(s) still open.")
+                                report_lines.append("")
+
+                            report_body = "\n".join(report_lines)
+
+                            # Post the report as a comment
+                            await _to_thread(
+                                _gh_api_post,
+                                f"/repos/{repo}/issues/{num}/comments",
+                                token,
+                                {"body": report_body},
+                            )
+
+                            # Add pm-reported label (create if needed)
+                            try:
+                                await _to_thread(
+                                    _gh_api_post,
+                                    f"/repos/{repo}/issues/{num}/labels",
+                                    token,
+                                    {"labels": ["pm-reported"]},
+                                )
+                            except urllib.error.HTTPError:
+                                pass  # label may already exist or lack permission
+
+                            # File gap issues if requested
+                            filed_issues: list = []
+                            if file_gap_issues and gaps:
+                                for gap in gaps[:5]:  # cap at 5 new issues
+                                    gap_payload = {
+                                        "title": f"[Epic #{num}] {gap[:80]}",
+                                        "body": (
+                                            f"Identified during epic analysis of #{num}.\n\n"
+                                            f"**Gap:** {gap}\n\n"
+                                            f"Parent epic: #{num}"
+                                        ),
+                                        "labels": ["bug", "epic-gap"],
+                                    }
+                                    try:
+                                        new_issue = await _to_thread(
+                                            _gh_api_post,
+                                            f"/repos/{repo}/issues",
+                                            token,
+                                            gap_payload,
+                                        )
+                                        filed_issues.append(
+                                            {
+                                                "number": new_issue["number"],
+                                                "title": new_issue["title"],
+                                                "url": new_issue["html_url"],
+                                            }
+                                        )
+                                    except urllib.error.HTTPError as exc:
+                                        logger.warning(
+                                            "analyze_epic: failed to file gap issue: %s",
+                                            exc,
+                                        )
+
+                            result_text = json.dumps(
+                                {
+                                    "epic": num,
+                                    "repo": repo,
+                                    "report_posted": True,
+                                    "sub_issues_total": total_subs,
+                                    "sub_issues_closed": closed_subs,
+                                    "sub_issues_open": open_subs,
+                                    "related_prs": len(all_prs),
+                                    "gaps_found": len(gaps),
+                                    "issues_filed": filed_issues,
+                                    "all_complete": total_subs > 0 and open_subs == 0,
+                                }
+                            )
+
                 except urllib.error.HTTPError as exc:
                     result_text = f"GitHub API error: {exc.code} {exc.reason}"
                     is_error = True

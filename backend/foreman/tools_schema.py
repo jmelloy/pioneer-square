@@ -617,6 +617,45 @@ FOREMAN_TOOLS = [
         },
     },
     {
+        "name": "analyze_epic",
+        "description": (
+            "Analyze a GitHub epic issue for completeness and consistency. Fetches all "
+            "sub-issues and linked PRs, evaluates their states, identifies gaps or "
+            "inconsistencies, posts a detailed report as a comment on the epic, and "
+            "optionally files new issues for any bugs/gaps found. Adds a 'pm-reported' "
+            "label to prevent re-running. Use this when an epic with 'devReady' label "
+            "has all sub-issues completed, or when explicitly asked to analyze an epic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {
+                    "type": "string",
+                    "description": "owner/repo (e.g. 'jmelloy/pioneer-square').",
+                },
+                "issue_number": {
+                    "type": "integer",
+                    "description": "The epic issue number to analyze.",
+                },
+                "file_gap_issues": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, file new GitHub issues for any gaps/bugs found "
+                        "and link them to the epic. Default: true."
+                    ),
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, run even if 'pm-reported' label is already present "
+                        "or a report was posted recently. Default: false."
+                    ),
+                },
+            },
+            "required": ["repo", "issue_number"],
+        },
+    },
+    {
         "name": "message_discord_bot",
         "description": (
             "Send a message to a bot user over Discord. Looks up the bot's user row "
