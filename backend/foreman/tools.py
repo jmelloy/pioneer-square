@@ -2355,6 +2355,7 @@ async def _exec_one_tool(
             "search_github_issues",
             "get_pr_status",
             "review_pr_internal",
+            "analyze_epic",
         ):
             logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
             creds = await _guild_github_token(guild_id, user_id)
