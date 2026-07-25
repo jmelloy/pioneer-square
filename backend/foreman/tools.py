@@ -468,7 +468,11 @@ async def _guild_github_token(guild_id: str, user_id: str | None = None) -> tupl
             if row:
                 return (row.access_token, row.github_username)
         else:
-            app_token = get_app_installation_token()
+            inst_res = await db.exec(
+                select(col(Guild.github_app_installation_id)).where(col(Guild.slug) == guild_id)
+            )
+            installation_id = inst_res.first()
+            app_token = get_app_installation_token(installation_id)
             if app_token:
                 return (app_token, get_app_slug())
 
@@ -2355,6 +2359,7 @@ async def _exec_one_tool(
             "search_github_issues",
             "get_pr_status",
             "review_pr_internal",
+            "analyze_epic",
         ):
             logger.info("Executing GitHub tool %s with input %s", tu.name, inp)
             creds = await _guild_github_token(guild_id, user_id)

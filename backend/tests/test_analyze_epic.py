@@ -53,3 +53,39 @@ def test_analyze_epic_file_gap_issues_default_false():
     tool = next(t for t in FOREMAN_TOOLS if t["name"] == "analyze_epic")
     desc = tool["input_schema"]["properties"]["file_gap_issues"]["description"]
     assert "Default: false" in desc
+
+
+async def test_analyze_epic_dispatches(monkeypatch):
+    """Regression: analyze_epic must be in the GitHub-tool gate so its handler is
+    reachable. A dead branch would leave result_text="" (empty content); a reachable
+    branch with no token returns the 'No GitHub token' error."""
+    import auth_deps
+    import foreman.tools as tools
+
+    class _FakeDB:
+        async def close(self):
+            pass
+
+    async def _fake_get_db():
+        return _FakeDB()
+
+    async def _fake_guild_pk(db, guild_id):
+        return 0
+
+    async def _fake_token(guild_id, user_id=None):
+        return None  # no creds -> handler returns the token error, proving dispatch
+
+    monkeypatch.setattr(tools, "get_db", _fake_get_db)
+    monkeypatch.setattr(auth_deps, "get_guild_pk", _fake_guild_pk)
+    monkeypatch.setattr(tools, "_guild_github_token", _fake_token)
+
+    class _ToolUse:
+        id = "tool-1"
+        name = "analyze_epic"
+        input = {"repo": "o/r", "issue_number": 1}
+
+    block = await tools._exec_one_tool("g1", _ToolUse())
+
+    assert block["content"], "analyze_epic returned empty content — handler unreachable"
+    assert block.get("is_error") is True
+    assert "No GitHub token" in block["content"]
