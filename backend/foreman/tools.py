@@ -1143,6 +1143,12 @@ async def spawn_worker(
     agent_count: int | None = inp.get("agent_count")
     custom_name: str | None = inp.get("name")
 
+    # Track which parameters were explicitly provided so we don't pollute
+    # guild_spawn_defaults with one-off overrides (see issue #1021).
+    repos_explicit = bool(repos)
+    tools_explicit = bool(tools_list)
+    agent_count_explicit = agent_count is not None
+
     # Fall back to the guild's last-successful-spawn defaults for anything the
     # call didn't specify, so "spawn a worker" works without restating the
     # guild's usual configuration.
@@ -1216,14 +1222,17 @@ async def spawn_worker(
         # refresh the guild's spawn defaults with this successful spawn.
         from worker_lifecycle import record_worker_spawn as _record_worker_spawn  # noqa: PLC0415
 
+        # Only persist parameters to guild_spawn_defaults that were NOT
+        # explicitly provided in this call — explicit overrides are one-off
+        # and must not pollute the base template (issue #1021).
         await _record_worker_spawn(
             db,
             worker_id,
             spawned.handle,
             guild_pk=guild_pk,
-            repos=repos,
-            tools=tools_list,
-            agent_count=agent_count,
+            repos=repos if not repos_explicit else None,
+            tools=tools_list if not tools_explicit else None,
+            agent_count=agent_count if not agent_count_explicit else None,
         )
         result_text = json.dumps(
             {

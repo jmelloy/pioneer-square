@@ -147,10 +147,11 @@ async def record_worker_spawn(
 ) -> None:
     """Persist container_id, spawned_version, and started_at after a successful worker spawn.
 
-    When *guild_pk* and a non-empty *repos* list are given, also upserts the
-    guild's ``guild_spawn_defaults`` row so it always reflects the last
-    successful spawn — the foreman's spawn_worker tool falls back to that row
-    when a call omits repos/tools/agent_count.
+    When *guild_pk* is given and at least one of *repos*, *tools*, or
+    *agent_count* is non-None, upserts only those provided fields into the
+    guild's ``guild_spawn_defaults`` row. Fields that are None are left
+    untouched — this prevents explicitly-overridden parameters from polluting
+    the persistent defaults template (see issue #1021).
     """
     await db.exec(
         update(Worker)
@@ -161,22 +162,31 @@ async def record_worker_spawn(
             started_at=datetime.now(UTC),
         )
     )
-    if guild_pk is not None and repos:
-        stmt = pg_insert(GuildSpawnDefaults).values(
-            guild_id=guild_pk,
-            repos=json.dumps(repos),
-            tools=json.dumps(tools or []),
-            agent_count=agent_count,
-            updated_at=datetime.now(UTC),
-        )
+    # Only update guild_spawn_defaults for fields that were defaulted (not
+    # explicitly overridden by the caller). Explicit one-off overrides must
+    # not pollute the persistent template (issue #1021).
+    has_updates = bool(repos) or tools is not None or agent_count is not None
+    if guild_pk is not None and has_updates:
+        # Build the set of columns to upsert — only those actually provided.
+        insert_values: dict = {
+            "guild_id": guild_pk,
+            "updated_at": datetime.now(UTC),
+        }
+        update_set: dict = {"updated_at": datetime.now(UTC)}
+        if repos:
+            insert_values["repos"] = json.dumps(repos)
+            update_set["repos"] = json.dumps(repos)
+        if tools is not None:
+            insert_values["tools"] = json.dumps(tools)
+            update_set["tools"] = json.dumps(tools)
+        if agent_count is not None:
+            insert_values["agent_count"] = agent_count
+            update_set["agent_count"] = agent_count
+
+        stmt = pg_insert(GuildSpawnDefaults).values(**insert_values)
         stmt = stmt.on_conflict_do_update(
             index_elements=["guild_id"],
-            set_={
-                "repos": stmt.excluded.repos,
-                "tools": stmt.excluded.tools,
-                "agent_count": stmt.excluded.agent_count,
-                "updated_at": stmt.excluded.updated_at,
-            },
+            set_=update_set,
         )
         await db.exec(stmt)
     await db.commit()

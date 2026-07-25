@@ -2226,7 +2226,7 @@ class TestSpawnWorker:
         assert task_arn in container_ids
 
     async def test_spawn_worker_records_guild_defaults(self, db_session):
-        """A successful spawn upserts the guild's last-successful-spawn defaults."""
+        """A successful spawn only persists non-explicit params to guild defaults (#1021)."""
         from models import GuildSpawnDefaults  # noqa: PLC0415
 
         insert_guild(db_session, "g-spawn-rec")
@@ -2236,6 +2236,8 @@ class TestSpawnWorker:
         fake_docker_client.containers.get.side_effect = Exception("not found")
         fake_docker_client.containers.run.return_value = fake_container
 
+        # Spawn with explicit tools and agent_count — these must NOT be
+        # persisted to guild_spawn_defaults (they are one-off overrides).
         with (
             patch("worker_runtime._get_docker_client", AsyncMock(return_value=fake_docker_client)),
             patch("foreman.tools.broadcast", new_callable=AsyncMock),
@@ -2251,26 +2253,56 @@ class TestSpawnWorker:
             )
         assert results[0].get("is_error") is not True, results[0]["content"]
 
+        # repos is NOT persisted either because it was explicitly provided.
+        # No guild_spawn_defaults row should exist since all params were explicit.
         with _sync_session(db_session) as session:
-            row = session.execute(select(GuildSpawnDefaults)).scalars().one()
-        assert json.loads(row.repos) == ["acme/widgets"]
-        assert json.loads(row.tools) == ["claude", "codex"]
-        assert row.agent_count == 2
+            row = session.execute(select(GuildSpawnDefaults)).scalars().one_or_none()
+        assert row is None
 
-        # A second spawn with different parameters replaces (not duplicates) the row.
+    async def test_spawn_worker_records_defaults_for_defaulted_params(self, db_session):
+        """When params come from guild defaults (not explicit), they are re-persisted."""
+        from models import GuildSpawnDefaults  # noqa: PLC0415
+
+        insert_guild(db_session, "g-spawn-rec2")
+        with _sync_session(db_session) as session:
+            guild_pk = session.execute(
+                select(col(Guild.id)).where(col(Guild.slug) == "g-spawn-rec2")
+            ).scalar_one()
+            session.add(
+                GuildSpawnDefaults(
+                    guild_id=guild_pk,
+                    repos='["acme/widgets"]',
+                    tools='["claude", "pi"]',
+                    agent_count=3,
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+
+        fake_container = SimpleNamespace(id="abcdef0123456789")
+        fake_docker_client = MagicMock()
+        fake_docker_client.containers.get.side_effect = Exception("not found")
+        fake_docker_client.containers.run.return_value = fake_container
+
+        # Spawn with explicit tools override only — repos and agent_count
+        # come from defaults, so those should be re-persisted unchanged.
         with (
             patch("worker_runtime._get_docker_client", AsyncMock(return_value=fake_docker_client)),
             patch("foreman.tools.broadcast", new_callable=AsyncMock),
         ):
             results = await exec_tools(
-                "g-spawn-rec",
-                [_fake_tool_use("spawn_worker", {"repos": ["acme/gears"]})],
+                "g-spawn-rec2",
+                [_fake_tool_use("spawn_worker", {"tools": ["claude", "codex"]})],
             )
         assert results[0].get("is_error") is not True, results[0]["content"]
 
+        # tools should NOT have been overwritten (was explicit override).
+        # repos and agent_count were defaulted → re-persisted unchanged.
         with _sync_session(db_session) as session:
             row = session.execute(select(GuildSpawnDefaults)).scalars().one()
-        assert json.loads(row.repos) == ["acme/gears"]
+        assert json.loads(row.tools) == ["claude", "pi"]  # original defaults preserved
+        assert json.loads(row.repos) == ["acme/widgets"]
+        assert row.agent_count == 3
 
     async def test_spawn_worker_falls_back_to_guild_defaults(self, db_session):
         """spawn_worker with no repos uses the guild's recorded spawn defaults."""
