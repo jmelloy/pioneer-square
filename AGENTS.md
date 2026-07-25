@@ -271,6 +271,37 @@ Runners: `claude_runner.py` (primary), `codex_runner.py`, `pi_runner.py`. All re
 `(success: bool, stop_reason: str, last_text: str)`. The claude runner uses a 16 MiB stdout line
 limit to handle large `tool_result` payloads.
 
+#### Model visibility: claude vs codex vs pi
+
+`GET /api/models` (`backend/routes/models.py` + `backend/util/models_dev.py`) is the only
+programmatic model catalog in this app, and it backs the model dropdown in the frontend's
+`AgentActions.vue`. It recognizes exactly two provider ids — `anthropic` and `bedrock`
+(`_PROVIDER_ALIASES` in `models_dev.py`), sourced from the models.dev catalog. The frontend's
+`TOOL_PROVIDER` map (`claude: 'anthropic'`, `codex: 'openai'`) means **only Claude gets a live
+model dropdown today**; Codex's `'openai'` id isn't in `_PROVIDER_ALIASES`, so `modelsForProvider`
+returns `[]` for it and it silently falls back to the same free-text model input as Pi (which has
+no `TOOL_PROVIDER` entry at all).
+
+Pi itself supports far more providers than either catalog entry: `pi --help` lists ~25 provider
+API-key env vars (Anthropic, OpenAI, Azure OpenAI, Google Gemini, AWS Bedrock, OpenRouter, Groq,
+Mistral, xAI, DeepSeek, Cloudflare, Qwen, and more), and picks whichever is present in the
+environment — `worker.py`'s `_tool_has_credentials()` deliberately returns `True` unconditionally
+for `pi` ("pi and any other tool need no credentials") since the required key varies per
+provider/model the caller requests, unlike Claude/Codex which are dropped from
+`_available_tools` when their one required key is missing. Pi's own model list is queryable with
+`pi --list-models [search]` (the optional arg fuzzy-filters model names, not providers), but that
+list is filtered to whatever provider(s) currently have usable credentials in the environment —
+it is not a static catalog. Confirmed live in this sandbox: with only `AWS_BEARER_TOKEN_BEDROCK`
+set, `pi --list-models` returns 109 Bedrock-hosted models (including Bedrock's Anthropic/OpenAI/
+Google-branded models) and nothing from any other provider.
+
+Critically, this listing is CLI-only — Pi's `--mode rpc` protocol has no equivalent. Sending
+`{"type": "list_models"}` over RPC returns `{"success": false, "error": "Unknown command:
+list_models"}` (verified against the installed `pi` binary). So neither the backend nor the
+worker can fetch Pi's live model list programmatically the way `/api/models` does for
+Claude/Bedrock; surfacing it in the UI would require shelling out to `pi --list-models` and
+parsing its tabular text output.
+
 ### Auth
 
 GitHub OAuth flow: frontend calls `/auth/github/login` (gets an authorize URL) → GitHub redirects

@@ -120,8 +120,11 @@ async def stream_agent(guild_id: str, agent_id: str, req: RunAgentRequest) -> No
         return
 
     if needs_stdin:
-        # Pi RPC: send the initial prompt as a JSON command, then leave stdin open
-        rpc_msg = json.dumps({"type": "prompt", "content": req.prompt}) + "\n"
+        # Pi RPC: send the initial prompt as a JSON command, then leave stdin open.
+        # The field must be "message" — pi's RPC handler reads event.message and
+        # crashes ("Cannot read properties of undefined (reading 'startsWith')")
+        # when it's missing, which pi reports as a success=false response event.
+        rpc_msg = json.dumps({"type": "prompt", "message": req.prompt}) + "\n"
         assert proc.stdin is not None  # PIPE was set above
         proc.stdin.write(rpc_msg.encode())
         await proc.stdin.drain()
@@ -166,6 +169,25 @@ async def stream_agent(guild_id: str, agent_id: str, req: RunAgentRequest) -> No
 
             if text_out:
                 await emit_terminal_line(guild_id, agent_id, text_out)
+
+            if tool == "pi":
+                # Pi's prompt can be rejected (e.g. malformed RPC message) before
+                # the agent ever starts; surface that explicitly since it has no
+                # other representation in the event stream.
+                if (
+                    event.get("type") == "response"
+                    and event.get("command") == "prompt"
+                    and not event.get("success", True)
+                ):
+                    err = event.get("error", "prompt rejected")
+                    await emit_terminal_line(guild_id, agent_id, f"✗ {err}")
+                    break
+                # Pi's RPC process stays alive after agent_end waiting for more
+                # stdin, so stdout never reaches EOF on its own — stop reading
+                # once the run is done or this loop (and the process) hangs
+                # forever instead of returning to idle.
+                if event.get("type") == "agent_end":
+                    break
 
     finally:
         if needs_stdin and proc.stdin and not proc.stdin.is_closing():
