@@ -619,12 +619,14 @@ FOREMAN_TOOLS = [
     {
         "name": "analyze_epic",
         "description": (
-            "Analyze a GitHub epic issue for completeness and consistency. Fetches all "
-            "sub-issues and linked PRs, evaluates their states, identifies gaps or "
-            "inconsistencies, posts a detailed report as a comment on the epic, and "
-            "optionally files new issues for any bugs/gaps found. Adds a 'pm-reported' "
-            "label to prevent re-running. Use this when an epic with 'devReady' label "
-            "has all sub-issues completed, or when explicitly asked to analyze an epic."
+            "Level 1: lightweight epic status summary. Fetches sub-issues and linked PRs, "
+            "returns completion metrics and identified gaps/inconsistencies at a glance. "
+            "Fast and suitable for periodic checks. Does NOT perform deep code analysis. "
+            "Posts a status summary comment on the epic and adds a 'pm-reported' label "
+            "to prevent re-running. When significant gaps are detected, suggests "
+            "triggering a Level 2 worker task (deep_epic_analysis) for code-level review. "
+            "Use this when an epic with 'devReady' label has all sub-issues completed, "
+            "or when asked for a quick status check on an epic."
         ),
         "input_schema": {
             "type": "object",
@@ -641,7 +643,7 @@ FOREMAN_TOOLS = [
                     "type": "boolean",
                     "description": (
                         "If true, file new GitHub issues for any gaps/bugs found "
-                        "and link them to the epic. Default: true."
+                        "and link them to the epic. Default: false."
                     ),
                 },
                 "force": {
@@ -649,6 +651,14 @@ FOREMAN_TOOLS = [
                     "description": (
                         "If true, run even if 'pm-reported' label is already present "
                         "or a report was posted recently. Default: false."
+                    ),
+                },
+                "trigger_deep_analysis": {
+                    "type": "boolean",
+                    "description": (
+                        "If true and significant gaps are found, automatically create "
+                        "a worker task for Level 2 deep code analysis. Default: false. "
+                        "When false, returns a recommendation flag instead."
                     ),
                 },
             },

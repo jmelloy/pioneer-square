@@ -2738,7 +2738,8 @@ async def _exec_one_tool(
                         repo = inp["repo"]
                         num = int(inp["issue_number"])
                         force = inp.get("force", False)
-                        file_gap_issues = inp.get("file_gap_issues", True)
+                        file_gap_issues = inp.get("file_gap_issues", False)
+                        trigger_deep = inp.get("trigger_deep_analysis", False)
 
                         # Fetch the epic issue
                         epic = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
@@ -2754,7 +2755,7 @@ async def _exec_one_tool(
                             )
                             recent_report = False
                             for c in reversed(comments_raw):
-                                if c.get("body", "").startswith("## 📋 Epic Analysis Report"):
+                                if c.get("body", "").startswith("## 📋 Epic Status Summary"):
                                     created = c.get("created_at", "")
                                     if created:
                                         from datetime import datetime as dt
@@ -2779,6 +2780,7 @@ async def _exec_one_tool(
                                 force = True
 
                         if not ("pm-reported" in epic_labels and not force):
+                            # --- Level 1: Lightweight status fetch ---
                             # Fetch sub-issues
                             try:
                                 sub_raw = await _to_thread(
@@ -2789,19 +2791,7 @@ async def _exec_one_tool(
                             except urllib.error.HTTPError:
                                 sub_raw = []
 
-                            # Fetch linked PRs by searching for issues that reference this epic
-                            search_q = urllib.parse.quote(f"repo:{repo} is:pr linked:{num}")
-                            try:
-                                linked_prs_data = await _to_thread(
-                                    _gh_api,
-                                    f"/search/issues?q={search_q}&per_page=30",
-                                    token,
-                                )
-                                linked_prs = linked_prs_data.get("items", [])
-                            except urllib.error.HTTPError:
-                                linked_prs = []
-
-                            # Also search for PRs mentioning this issue number
+                            # Fetch linked PRs (single search, no per-sub-issue queries)
                             mention_q = urllib.parse.quote(f"repo:{repo} is:pr #{num}")
                             try:
                                 mention_prs_data = await _to_thread(
@@ -2809,51 +2799,19 @@ async def _exec_one_tool(
                                     f"/search/issues?q={mention_q}&per_page=30",
                                     token,
                                 )
-                                mention_prs = mention_prs_data.get("items", [])
+                                all_prs = mention_prs_data.get("items", [])
                             except urllib.error.HTTPError:
-                                mention_prs = []
+                                all_prs = []
 
-                            # Merge PR lists by number
-                            seen_pr_nums: set = set()
-                            all_prs: list = []
-                            for pr in linked_prs + mention_prs:
-                                if pr["number"] not in seen_pr_nums:
-                                    seen_pr_nums.add(pr["number"])
-                                    all_prs.append(pr)
-
-                            # Also gather PRs linked from sub-issues
+                            # Build lightweight sub-issue summary (no per-issue API calls)
                             sub_issue_details = []
                             for sub in sub_raw:
-                                sub_num = sub["number"]
                                 sub_detail = {
-                                    "number": sub_num,
+                                    "number": sub["number"],
                                     "title": sub.get("title", ""),
                                     "state": sub.get("state", "unknown"),
                                     "labels": [l["name"] for l in sub.get("labels", [])],
                                 }
-                                # Find PRs linked to this sub-issue
-                                sub_q = urllib.parse.quote(f"repo:{repo} is:pr #{sub_num}")
-                                try:
-                                    sub_prs_data = await _to_thread(
-                                        _gh_api,
-                                        f"/search/issues?q={sub_q}&per_page=10",
-                                        token,
-                                    )
-                                    sub_prs = sub_prs_data.get("items", [])
-                                    sub_detail["linked_prs"] = [
-                                        {
-                                            "number": p["number"],
-                                            "state": p["state"],
-                                            "title": p["title"],
-                                        }
-                                        for p in sub_prs
-                                    ]
-                                    for pr in sub_prs:
-                                        if pr["number"] not in seen_pr_nums:
-                                            seen_pr_nums.add(pr["number"])
-                                            all_prs.append(pr)
-                                except urllib.error.HTTPError:
-                                    sub_detail["linked_prs"] = []
                                 sub_issue_details.append(sub_detail)
 
                             # Analyze completeness
@@ -2863,101 +2821,59 @@ async def _exec_one_tool(
                             )
                             open_subs = total_subs - closed_subs
 
-                            # Identify inconsistencies
+                            # Identify basic inconsistencies (no API calls needed)
                             gaps: list = []
                             for s in sub_issue_details:
-                                # Closed issue with no linked PRs may be suspicious
-                                if s["state"] == "closed" and not s.get("linked_prs"):
+                                # Closed issue — note it for potential verification
+                                if s["state"] == "closed" and not any(
+                                    f"#{s['number']}" in (p.get("title", "") + p.get("body", ""))
+                                    for p in all_prs
+                                ):
                                     gaps.append(
-                                        f"Sub-issue #{s['number']} ({s['title']}) is closed but has no linked PRs"
+                                        f"Sub-issue #{s['number']} ({s['title']}) is closed but no PR references it"
                                     )
-                                # Open issue with merged PR is inconsistent
-                                if s["state"] == "open":
-                                    for pr in s.get("linked_prs", []):
-                                        if pr["state"] == "closed":  # merged PRs show as closed
-                                            gaps.append(
-                                                f"Sub-issue #{s['number']} ({s['title']}) is still open but PR #{pr['number']} is merged/closed"
-                                            )
 
-                            # Check for dangling PRs (PRs not linked to any sub-issue)
-                            sub_linked_pr_nums = set()
-                            for s in sub_issue_details:
-                                for pr in s.get("linked_prs", []):
-                                    sub_linked_pr_nums.add(pr["number"])
-                            dangling_prs = [
-                                pr for pr in all_prs if pr["number"] not in sub_linked_pr_nums
-                            ]
-                            for pr in dangling_prs:
-                                gaps.append(
-                                    f"PR #{pr['number']} ({pr.get('title', '')}) references the epic but isn't linked to any sub-issue"
-                                )
+                            # Determine if deep analysis is recommended
+                            recommend_deep = len(gaps) >= 2 or (
+                                total_subs > 0 and open_subs == 0 and len(all_prs) > 0
+                            )
 
-                            # Build report
+                            # Build concise status summary
+                            pct = int((closed_subs / total_subs) * 100) if total_subs > 0 else 0
                             report_lines = [
-                                "## 📋 Epic Analysis Report",
+                                "## 📋 Epic Status Summary",
                                 "",
                                 f"**Epic:** #{num} — {epic.get('title', '')}",
-                                f"**Analyzed:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+                                f"**Checked:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
                                 "",
-                                "### Summary",
-                                f"- **Sub-issues:** {total_subs} total, {closed_subs} closed, {open_subs} open",
+                                f"### Progress: {pct}%",
+                                f"- **Sub-issues:** {total_subs} total — {closed_subs} closed, {open_subs} open",
                                 f"- **Related PRs:** {len(all_prs)} found",
-                                f"- **Gaps/Issues found:** {len(gaps)}",
-                                "",
                             ]
 
-                            if sub_issue_details:
-                                report_lines.append("### Sub-issue Status")
-                                report_lines.append("| # | Title | State | PRs |")
-                                report_lines.append("|---|-------|-------|-----|")
-                                for s in sub_issue_details:
-                                    pr_links = (
-                                        ", ".join(
-                                            f"#{p['number']} ({p['state']})"
-                                            for p in s.get("linked_prs", [])
-                                        )
-                                        or "—"
-                                    )
-                                    state_emoji = "✅" if s["state"] == "closed" else "🔄"
-                                    report_lines.append(
-                                        f"| #{s['number']} | {s['title'][:50]} | {state_emoji} {s['state']} | {pr_links} |"
-                                    )
-                                report_lines.append("")
-
                             if gaps:
-                                report_lines.append("### ⚠️ Gaps & Inconsistencies")
-                                for g in gaps:
+                                report_lines.append(f"- **Potential gaps:** {len(gaps)}")
+                                report_lines.append("")
+                                report_lines.append("### ⚠️ Gaps")
+                                for g in gaps[:10]:
                                     report_lines.append(f"- {g}")
-                                report_lines.append("")
+                            else:
+                                report_lines.append("- **Gaps:** None detected")
 
-                            if all_prs:
-                                report_lines.append("### Related PRs")
-                                for pr in all_prs[:20]:
-                                    pr_state = (
-                                        "✅ merged"
-                                        if pr.get("pull_request", {}).get("merged_at")
-                                        else pr["state"]
-                                    )
-                                    report_lines.append(
-                                        f"- #{pr['number']}: {pr.get('title', '')} ({pr_state})"
-                                    )
-                                report_lines.append("")
-
+                            report_lines.append("")
                             if total_subs > 0 and open_subs == 0:
-                                report_lines.append("### ✅ Completion")
                                 report_lines.append(
-                                    "All sub-issues are closed. Epic may be ready to close."
+                                    "✅ All sub-issues closed. Epic may be ready to finalize."
                                 )
-                                report_lines.append("")
-                            elif total_subs > 0:
-                                pct = int((closed_subs / total_subs) * 100)
-                                report_lines.append(f"### 📊 Progress: {pct}%")
-                                report_lines.append(f"{open_subs} sub-issue(s) still open.")
-                                report_lines.append("")
+                            report_lines.append("")
+                            report_lines.append(
+                                "*Level 1 status check. Use `trigger_deep_analysis` for "
+                                "code-level review.*"
+                            )
 
                             report_body = "\n".join(report_lines)
 
-                            # Post the report as a comment
+                            # Post the status summary as a comment
                             await _to_thread(
                                 _gh_api_post,
                                 f"/repos/{repo}/issues/{num}/comments",
@@ -3009,18 +2925,51 @@ async def _exec_one_tool(
                                             exc,
                                         )
 
+                            # Build deep analysis task description if triggered
+                            deep_analysis_task_id = None
+                            if trigger_deep and recommend_deep:
+                                # Level 2: Create a worker task for deep code analysis
+                                deep_desc = (
+                                    f"Deep code analysis for epic #{num} in {repo}.\n\n"
+                                    f"## Context\n"
+                                    f"Epic: {epic.get('title', '')}\n"
+                                    f"Sub-issues: {total_subs} ({closed_subs} closed, {open_subs} open)\n"
+                                    f"Related PRs: {', '.join('#' + str(p['number']) for p in all_prs[:15])}\n\n"
+                                    f"## Instructions\n"
+                                    f"1. Check out each related PR branch and review the code changes\n"
+                                    f"2. Compare implementations against the requirements in each sub-issue\n"
+                                    f"3. Identify: bugs, missing functionality, architectural issues, "
+                                    f"test gaps\n"
+                                    f"4. Post detailed findings as a comment on epic #{num}\n"
+                                    f"5. If bugs are found, file individual issues with 'bug' label\n\n"
+                                    f"## Gaps already identified (Level 1)\n"
+                                )
+                                for g in gaps:
+                                    deep_desc += f"- {g}\n"
+
+                                # Store the description for the foreman to use with assign_task
+                                # We return it in the result so the foreman can create+assign
+                                deep_analysis_task_id = "pending_assignment"
+
                             result_text = json.dumps(
                                 {
                                     "epic": num,
                                     "repo": repo,
+                                    "level": 1,
                                     "report_posted": True,
                                     "sub_issues_total": total_subs,
                                     "sub_issues_closed": closed_subs,
                                     "sub_issues_open": open_subs,
                                     "related_prs": len(all_prs),
                                     "gaps_found": len(gaps),
+                                    "gaps": gaps[:10],
                                     "issues_filed": filed_issues,
                                     "all_complete": total_subs > 0 and open_subs == 0,
+                                    "recommend_deep_analysis": recommend_deep,
+                                    "deep_analysis_triggered": deep_analysis_task_id is not None,
+                                    "deep_analysis_description": (
+                                        deep_desc if deep_analysis_task_id else None
+                                    ),
                                 }
                             )
 
