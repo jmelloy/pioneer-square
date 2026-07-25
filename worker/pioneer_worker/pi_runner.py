@@ -64,6 +64,7 @@ class PiProcess:
     async def terminate(self) -> None:
         _signal_group(self.proc, signal.SIGTERM)
 
+
 # Seconds to wait for pi to exit after stdin is closed before killing it.
 _WAIT_TIMEOUT = 30
 
