@@ -216,16 +216,29 @@ async def spawn_worker_container(
         select(col(Guild.foreman_config)).where(col(Guild.id) == guild_pk)
     )
     guild_cfg = guild_cfg_res.one_or_none() or {}
-    foreman_env_vars: dict[str, str] = {
-        e["key"]: e["value"]
-        for e in (guild_cfg.get("env_vars") or [])
-        if e.get("key") and e.get("value") is not None
-    }
+    # The guild edit screen can store the same key twice (one real value, one
+    # blank — see #dup). Collapse duplicates so the real value wins instead of
+    # whichever entry happens to come last.
+    foreman_env_vars: dict[str, str] = {}
+    for e in guild_cfg.get("env_vars") or []:
+        k, v = e.get("key"), e.get("value")
+        if not k or v is None:
+            continue
+        if k in foreman_env_vars and v == "" and foreman_env_vars[k] != "":
+            continue
+        foreman_env_vars[k] = v
     if data.exclude_env_keys:
         excluded_keys = set(data.exclude_env_keys)
         foreman_env_vars = {k: v for k, v in foreman_env_vars.items() if k not in excluded_keys}
-    # User-supplied vars at spawn time override guild defaults.
-    extra_env: dict[str, str] = {**foreman_env_vars, **(data.env_vars or {})}
+    # User-supplied vars at spawn time override guild defaults — but an empty
+    # user value must not blank out a guild credential that has a real value
+    # (the value wins). Without this, a stale empty spawn-setting for a key that
+    # also exists as a guild credential boots the container with no value.
+    extra_env: dict[str, str] = dict(foreman_env_vars)
+    for k, v in (data.env_vars or {}).items():
+        if v == "" and foreman_env_vars.get(k):
+            continue
+        extra_env[k] = v
 
     # Pre-register the worker so the container inherits a known worker_id and
     # can skip self-registration on startup.

@@ -12,7 +12,6 @@ import urllib.parse
 from datetime import UTC, datetime
 
 from auth_deps import (
-    get_guild_pk,
     http_bearer,
     require_user,
     require_worker_or_member,
@@ -21,7 +20,7 @@ from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from github_app_auth import get_app_installation_token, get_app_slug
+from github_app_auth import get_app_bot_identity, get_app_installation_token, get_app_slug
 from models import (
     GithubToken,
     Guild,
@@ -90,13 +89,21 @@ async def get_github_token(
 
     Requires a worker auth_token (from registration) or a member login_token.
     Without auth, anyone knowing a guild_id could exfiltrate the GitHub token."""
-    app_token = get_app_installation_token()
+    guild_res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
+    guild = guild_res.one_or_none()
+    installation_id = guild.github_app_installation_id if guild else None
+    app_token = get_app_installation_token(installation_id)
     if app_token:
-        return {"access_token": app_token, "username": get_app_slug()}
+        resp = {"access_token": app_token, "username": get_app_slug()}
+        # Author name/email so the worker can `git config` commits as the bot.
+        identity = get_app_bot_identity()
+        if identity:
+            resp["git_author_name"], resp["git_author_email"] = identity
+        return resp
 
-    guild_pk = await get_guild_pk(db, guild_id)
-    if guild_pk is None:
+    if guild is None:
         raise HTTPException(status_code=404, detail="No GitHub account linked to this guild")
+    guild_pk = guild.id
     owner_res = await db.exec(
         select(col(GuildMember.user_id))
         .where(col(GuildMember.guild_id) == guild_pk, col(GuildMember.role) == "owner")

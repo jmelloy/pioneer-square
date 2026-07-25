@@ -43,6 +43,10 @@ class Guild(SQLModel, table=True):
     # this guild. NULL until an owner first requests one via the
     # webhook-secret endpoint.
     webhook_secret: str | None = None
+    # GitHub App installation id for this guild's account/org. One App serves
+    # every guild; only the installation id varies. NULL = fall back to the
+    # process-wide GITHUB_APP_INSTALLATION_ID env var (single-tenant deploys).
+    github_app_installation_id: str | None = None
     # A2A AgentCard fields — used to populate /.well-known/agent.json
     description: str | None = None
     url: str | None = None

@@ -126,21 +126,26 @@
         Key-value pairs are saved to the server and restored each session.
       </p>
       <div class="spawn-env-list">
-        <div v-for="(pair, idx) in envVars" :key="idx" class="spawn-env-row">
+        <div v-for="entry in visibleEnvVars" :key="entry.idx" class="spawn-env-row">
           <input
-            v-model="pair.key"
+            v-model="entry.pair.key"
             class="spawn-input spawn-env-input spawn-env-key"
             placeholder="KEY"
             type="text"
           />
           <span class="spawn-env-sep">=</span>
           <input
-            v-model="pair.value"
+            v-model="entry.pair.value"
             class="spawn-input spawn-env-input spawn-env-val"
             placeholder="value"
             type="text"
           />
-          <button class="spawn-env-remove" @click="removeEnvVar(idx)" type="button" title="Remove">
+          <button
+            class="spawn-env-remove"
+            @click="removeEnvVar(entry.idx)"
+            type="button"
+            title="Remove"
+          >
             ×
           </button>
         </div>
@@ -236,6 +241,18 @@ const excludeEnvKeys = computed(() =>
 
 const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
 
+// A key that already exists as a guild credential is shown/managed in the Guild
+// Credentials section (with its value, checked by default) — don't also surface a
+// stale blank personal row for it here, and don't let it override the credential.
+const guildCredKeys = computed(
+  () => new Set((credentials.value?.guild_env_vars ?? []).map((c) => c.key)),
+)
+const visibleEnvVars = computed(() =>
+  envVars.value
+    .map((pair, idx) => ({ pair, idx }))
+    .filter((e) => !guildCredKeys.value.has(e.pair.key.trim())),
+)
+
 async function loadSavedSettings(guildId: string): Promise<SpawnSettings | null> {
   try {
     return await api<SpawnSettings>(`/guilds/${guildId}/spawn-settings`)
@@ -325,7 +342,11 @@ async function saveSettings(guildId: string) {
       json: {
         repos: selectedRepos.value,
         tools: selectedTools.value,
-        envVars: envVars.value.filter((e) => e.key.trim() !== ''),
+        // Persist only meaningful, non-duplicating pairs so a stale blank row
+        // can't reappear and shadow a guild credential next session.
+        envVars: envVars.value.filter(
+          (e) => e.key.trim() !== '' && e.value.trim() !== '' && !guildCredKeys.value.has(e.key.trim()),
+        ),
       },
     })
   } catch {
@@ -450,7 +471,12 @@ async function launch() {
   error.value = ''
   try {
     const envVarsPayload = Object.fromEntries(
-      envVars.value.filter((e) => e.key.trim() !== '').map((e) => [e.key.trim(), e.value.trim()]),
+      envVars.value
+        // Drop blank keys, blank values (a blank pair sets nothing), and any key
+        // that duplicates a guild credential (that value is the source of truth).
+        .filter((e) => e.key.trim() !== '' && e.value.trim() !== '')
+        .filter((e) => !guildCredKeys.value.has(e.key.trim()))
+        .map((e) => [e.key.trim(), e.value.trim()]),
     )
     const result = await api<{ worker_id?: string }>(`/guilds/${guild.id}/spawn-worker`, {
       method: 'POST',

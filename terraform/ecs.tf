@@ -62,6 +62,12 @@ resource "aws_ecs_task_definition" "backend" {
       environment = [
         { name = "GITHUB_REDIRECT_URI", value = var.frontend_url != "" ? "${var.frontend_url}/auth/github/callback" : "" },
         { name = "FRONTEND_URL", value = var.frontend_url },
+        # GitHub App identity — the backend mints per-guild installation tokens so
+        # comments/commits attribute to the bot. Private key rides in `secrets`.
+        # Per-guild installation ids are stored in the DB, not here.
+        { name = "GITHUB_APP_ID", value = var.github_app_id },
+        { name = "GITHUB_APP_SLUG", value = var.github_app_slug },
+        { name = "GITHUB_APP_INSTALLATION_ID", value = var.github_app_installation_id },
         # Spawned workers run as separate Fargate tasks, so "localhost" would
         # never reach the backend — they connect back through the ALB.
         { name = "WORKER_BACKEND_URL", value = "${local.has_certificate ? "https" : "http"}://${var.domain_name != "" ? var.domain_name : aws_lb.main.dns_name}" },
@@ -97,13 +103,14 @@ resource "aws_ecs_task_definition" "backend" {
 
       secrets = [
         for key, param in {
-          DATABASE_URL             = aws_ssm_parameter.database_url
-          GITHUB_CLIENT_ID         = aws_ssm_parameter.secret["github_client_id"]
-          GITHUB_CLIENT_SECRET     = aws_ssm_parameter.secret["github_client_secret"]
-          GITHUB_TOKEN             = aws_ssm_parameter.secret["github_token"]
-          ANTHROPIC_API_KEY        = aws_ssm_parameter.secret["anthropic_api_key"]
-          PIONEER_FOREMAN_KEY      = aws_ssm_parameter.secret["pioneer_foreman_key"]
-          DISCORD_BOT_TOKEN        = aws_ssm_parameter.secret["discord_bot_token"]
+          DATABASE_URL           = aws_ssm_parameter.database_url
+          GITHUB_CLIENT_ID       = aws_ssm_parameter.secret["github_client_id"]
+          GITHUB_CLIENT_SECRET   = aws_ssm_parameter.secret["github_client_secret"]
+          GITHUB_TOKEN           = aws_ssm_parameter.secret["github_token"]
+          GITHUB_APP_PRIVATE_KEY = aws_ssm_parameter.secret["github_app_private_key"]
+          ANTHROPIC_API_KEY      = aws_ssm_parameter.secret["anthropic_api_key"]
+          PIONEER_FOREMAN_KEY    = aws_ssm_parameter.secret["pioneer_foreman_key"]
+          DISCORD_BOT_TOKEN      = aws_ssm_parameter.secret["discord_bot_token"]
         } : { name = key, valueFrom = param.arn }
       ]
 
