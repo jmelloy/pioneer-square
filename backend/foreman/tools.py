@@ -2734,6 +2734,245 @@ async def _exec_one_tool(
                                 }
                             )
 
+                    elif tu.name == "analyze_epic":
+                        repo = inp["repo"]
+                        num = int(inp["issue_number"])
+                        force = inp.get("force", False)
+                        file_gap_issues = inp.get("file_gap_issues", False)
+                        trigger_deep = inp.get("trigger_deep_analysis", False)
+
+                        # Fetch the epic issue
+                        epic = await _to_thread(_gh_api, f"/repos/{repo}/issues/{num}", token)
+                        epic_labels = [l["name"] for l in epic.get("labels", [])]
+
+                        # Safeguard: skip if already reported (unless forced)
+                        if "pm-reported" in epic_labels and not force:
+                            # Check if report was recent (within 7 days)
+                            comments_raw = await _to_thread(
+                                _gh_api,
+                                f"/repos/{repo}/issues/{num}/comments?per_page=50",
+                                token,
+                            )
+                            recent_report = False
+                            for c in reversed(comments_raw):
+                                if c.get("body", "").startswith("## 📋 Epic Status Summary"):
+                                    created = c.get("created_at", "")
+                                    if created:
+                                        from datetime import datetime as dt
+
+                                        report_time = dt.fromisoformat(
+                                            created.replace("Z", "+00:00")
+                                        )
+                                        if (datetime.now(UTC) - report_time) < timedelta(days=7):
+                                            recent_report = True
+                                    break
+                            if recent_report:
+                                result_text = json.dumps(
+                                    {
+                                        "skipped": True,
+                                        "reason": "Report already posted within the last 7 days. Use force=true to override.",
+                                        "epic": num,
+                                    }
+                                )
+                                # Skip to end — result_text is already set
+                            else:
+                                # Label exists but report is stale — proceed
+                                force = True
+
+                        if not ("pm-reported" in epic_labels and not force):
+                            # --- Level 1: Lightweight status fetch ---
+                            # Fetch sub-issues
+                            try:
+                                sub_raw = await _to_thread(
+                                    _gh_api,
+                                    f"/repos/{repo}/issues/{num}/sub_issues?per_page=100",
+                                    token,
+                                )
+                            except urllib.error.HTTPError:
+                                sub_raw = []
+
+                            # Fetch linked PRs (single search, no per-sub-issue queries)
+                            mention_q = urllib.parse.quote(f"repo:{repo} is:pr #{num}")
+                            try:
+                                mention_prs_data = await _to_thread(
+                                    _gh_api,
+                                    f"/search/issues?q={mention_q}&per_page=30",
+                                    token,
+                                )
+                                all_prs = mention_prs_data.get("items", [])
+                            except urllib.error.HTTPError:
+                                all_prs = []
+
+                            # Build lightweight sub-issue summary (no per-issue API calls)
+                            sub_issue_details = []
+                            for sub in sub_raw:
+                                sub_detail = {
+                                    "number": sub["number"],
+                                    "title": sub.get("title", ""),
+                                    "state": sub.get("state", "unknown"),
+                                    "labels": [l["name"] for l in sub.get("labels", [])],
+                                }
+                                sub_issue_details.append(sub_detail)
+
+                            # Analyze completeness
+                            total_subs = len(sub_issue_details)
+                            closed_subs = sum(
+                                1 for s in sub_issue_details if s["state"] == "closed"
+                            )
+                            open_subs = total_subs - closed_subs
+
+                            # Identify basic inconsistencies (no API calls needed)
+                            gaps: list = []
+                            for s in sub_issue_details:
+                                # Closed issue — note it for potential verification
+                                if s["state"] == "closed" and not any(
+                                    f"#{s['number']}" in (p.get("title", "") + p.get("body", ""))
+                                    for p in all_prs
+                                ):
+                                    gaps.append(
+                                        f"Sub-issue #{s['number']} ({s['title']}) is closed but no PR references it"
+                                    )
+
+                            # Determine if deep analysis is recommended
+                            recommend_deep = len(gaps) >= 2 or (
+                                total_subs > 0 and open_subs == 0 and len(all_prs) > 0
+                            )
+
+                            # Build concise status summary
+                            pct = int((closed_subs / total_subs) * 100) if total_subs > 0 else 0
+                            report_lines = [
+                                "## 📋 Epic Status Summary",
+                                "",
+                                f"**Epic:** #{num} — {epic.get('title', '')}",
+                                f"**Checked:** {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+                                "",
+                                f"### Progress: {pct}%",
+                                f"- **Sub-issues:** {total_subs} total — {closed_subs} closed, {open_subs} open",
+                                f"- **Related PRs:** {len(all_prs)} found",
+                            ]
+
+                            if gaps:
+                                report_lines.append(f"- **Potential gaps:** {len(gaps)}")
+                                report_lines.append("")
+                                report_lines.append("### ⚠️ Gaps")
+                                for g in gaps[:10]:
+                                    report_lines.append(f"- {g}")
+                            else:
+                                report_lines.append("- **Gaps:** None detected")
+
+                            report_lines.append("")
+                            if total_subs > 0 and open_subs == 0:
+                                report_lines.append(
+                                    "✅ All sub-issues closed. Epic may be ready to finalize."
+                                )
+                            report_lines.append("")
+                            report_lines.append(
+                                "*Level 1 status check. Use `trigger_deep_analysis` for "
+                                "code-level review.*"
+                            )
+
+                            report_body = "\n".join(report_lines)
+
+                            # Post the status summary as a comment
+                            await _to_thread(
+                                _gh_api_post,
+                                f"/repos/{repo}/issues/{num}/comments",
+                                token,
+                                {"body": report_body},
+                            )
+
+                            # Add pm-reported label (create if needed)
+                            try:
+                                await _to_thread(
+                                    _gh_api_post,
+                                    f"/repos/{repo}/issues/{num}/labels",
+                                    token,
+                                    {"labels": ["pm-reported"]},
+                                )
+                            except urllib.error.HTTPError:
+                                pass  # label may already exist or lack permission
+
+                            # File gap issues if requested
+                            filed_issues: list = []
+                            if file_gap_issues and gaps:
+                                for gap in gaps[:5]:  # cap at 5 new issues
+                                    gap_payload = {
+                                        "title": f"[Epic #{num}] {gap[:80]}",
+                                        "body": (
+                                            f"Identified during epic analysis of #{num}.\n\n"
+                                            f"**Gap:** {gap}\n\n"
+                                            f"Parent epic: #{num}"
+                                        ),
+                                        "labels": ["bug", "epic-gap"],
+                                    }
+                                    try:
+                                        new_issue = await _to_thread(
+                                            _gh_api_post,
+                                            f"/repos/{repo}/issues",
+                                            token,
+                                            gap_payload,
+                                        )
+                                        filed_issues.append(
+                                            {
+                                                "number": new_issue["number"],
+                                                "title": new_issue["title"],
+                                                "url": new_issue["html_url"],
+                                            }
+                                        )
+                                    except urllib.error.HTTPError as exc:
+                                        logger.warning(
+                                            "analyze_epic: failed to file gap issue: %s",
+                                            exc,
+                                        )
+
+                            # Build deep analysis task description if triggered
+                            deep_analysis_task_id = None
+                            if trigger_deep and recommend_deep:
+                                # Level 2: Create a worker task for deep code analysis
+                                deep_desc = (
+                                    f"Deep code analysis for epic #{num} in {repo}.\n\n"
+                                    f"## Context\n"
+                                    f"Epic: {epic.get('title', '')}\n"
+                                    f"Sub-issues: {total_subs} ({closed_subs} closed, {open_subs} open)\n"
+                                    f"Related PRs: {', '.join('#' + str(p['number']) for p in all_prs[:15])}\n\n"
+                                    f"## Instructions\n"
+                                    f"1. Check out each related PR branch and review the code changes\n"
+                                    f"2. Compare implementations against the requirements in each sub-issue\n"
+                                    f"3. Identify: bugs, missing functionality, architectural issues, "
+                                    f"test gaps\n"
+                                    f"4. Post detailed findings as a comment on epic #{num}\n"
+                                    f"5. If bugs are found, file individual issues with 'bug' label\n\n"
+                                    f"## Gaps already identified (Level 1)\n"
+                                )
+                                for g in gaps:
+                                    deep_desc += f"- {g}\n"
+
+                                # Store the description for the foreman to use with assign_task
+                                # We return it in the result so the foreman can create+assign
+                                deep_analysis_task_id = "pending_assignment"
+
+                            result_text = json.dumps(
+                                {
+                                    "epic": num,
+                                    "repo": repo,
+                                    "level": 1,
+                                    "report_posted": True,
+                                    "sub_issues_total": total_subs,
+                                    "sub_issues_closed": closed_subs,
+                                    "sub_issues_open": open_subs,
+                                    "related_prs": len(all_prs),
+                                    "gaps_found": len(gaps),
+                                    "gaps": gaps[:10],
+                                    "issues_filed": filed_issues,
+                                    "all_complete": total_subs > 0 and open_subs == 0,
+                                    "recommend_deep_analysis": recommend_deep,
+                                    "deep_analysis_triggered": deep_analysis_task_id is not None,
+                                    "deep_analysis_description": (
+                                        deep_desc if deep_analysis_task_id else None
+                                    ),
+                                }
+                            )
+
                 except urllib.error.HTTPError as exc:
                     result_text = f"GitHub API error: {exc.code} {exc.reason}"
                     is_error = True

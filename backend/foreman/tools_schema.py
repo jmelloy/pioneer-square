@@ -617,6 +617,55 @@ FOREMAN_TOOLS = [
         },
     },
     {
+        "name": "analyze_epic",
+        "description": (
+            "Level 1: lightweight epic status summary. Fetches sub-issues and linked PRs, "
+            "returns completion metrics and identified gaps/inconsistencies at a glance. "
+            "Fast and suitable for periodic checks. Does NOT perform deep code analysis. "
+            "Posts a status summary comment on the epic and adds a 'pm-reported' label "
+            "to prevent re-running. When significant gaps are detected, suggests "
+            "triggering a Level 2 worker task (deep_epic_analysis) for code-level review. "
+            "Use this when an epic with 'devReady' label has all sub-issues completed, "
+            "or when asked for a quick status check on an epic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {
+                    "type": "string",
+                    "description": "owner/repo (e.g. 'jmelloy/pioneer-square').",
+                },
+                "issue_number": {
+                    "type": "integer",
+                    "description": "The epic issue number to analyze.",
+                },
+                "file_gap_issues": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, file new GitHub issues for any gaps/bugs found "
+                        "and link them to the epic. Default: false."
+                    ),
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, run even if 'pm-reported' label is already present "
+                        "or a report was posted recently. Default: false."
+                    ),
+                },
+                "trigger_deep_analysis": {
+                    "type": "boolean",
+                    "description": (
+                        "If true and significant gaps are found, automatically create "
+                        "a worker task for Level 2 deep code analysis. Default: false. "
+                        "When false, returns a recommendation flag instead."
+                    ),
+                },
+            },
+            "required": ["repo", "issue_number"],
+        },
+    },
+    {
         "name": "message_discord_bot",
         "description": (
             "Send a message to a bot user over Discord. Looks up the bot's user row "
