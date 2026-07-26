@@ -9,6 +9,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -1164,6 +1165,17 @@ async def spawn_worker(
             "spawn_worker requires at least one repo in the 'repos' list — this guild has "
             "no recorded spawn defaults to fall back on."
         ), True
+
+    if guild_pk is not None:
+        from worker_lifecycle import check_worker_spawn_cooldown  # noqa: PLC0415
+
+        remaining = await check_worker_spawn_cooldown(db, guild_pk)
+        if remaining is not None:
+            minutes = max(1, math.ceil(remaining.total_seconds() / 60))
+            return (
+                "Worker spawn cooldown active. Try again in "
+                f"{minutes} minute{'s' if minutes != 1 else ''}."
+            ), True
 
     worker_id = "w-" + secrets.token_hex(3)
     auth_token = secrets.token_urlsafe(32)

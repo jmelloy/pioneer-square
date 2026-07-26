@@ -565,6 +565,90 @@ def test_spawn_worker_rejects_invalid_exclude_env_key(client):
     assert resp.status_code == 422
 
 
+def test_spawn_worker_rejects_when_guild_in_cooldown(client, monkeypatch):
+    """A guild that spawned a worker within the cooldown window gets 429, no container started."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cooldown")
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cooldown"))
+        session.add(
+            GuildSpawnDefaults(
+                guild_id=guild_pk,
+                repos="[]",
+                tools="[]",
+                agent_count=None,
+                updated_at=datetime.now(UTC) - timedelta(minutes=1),
+            )
+        )
+        session.commit()
+
+    import worker_runtime
+
+    started = {"called": False}
+
+    async def fake_check_runtime_available():
+        return None
+
+    async def fake_start_worker_container(*, env, guild_id):
+        started["called"] = True
+        return worker_runtime.SpawnedWorker(
+            handle="fake-handle", short_id="fakehandle12", runtime="docker"
+        )
+
+    monkeypatch.setattr(worker_runtime, "check_runtime_available", fake_check_runtime_available)
+    monkeypatch.setattr(worker_runtime, "start_worker_container", fake_start_worker_container)
+
+    resp = test_client.post(
+        "/guilds/guild-cooldown/spawn-worker",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"]},
+    )
+
+    assert resp.status_code == 429
+    assert "cooldown" in resp.json()["detail"].lower()
+    assert started["called"] is False
+
+
+def test_spawn_worker_allowed_after_cooldown_expires(client, monkeypatch):
+    """A guild whose last spawn is older than the cooldown window may spawn again."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cooldown-ok")
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(
+            select(col(Guild.id)).where(col(Guild.slug) == "guild-cooldown-ok")
+        )
+        session.add(
+            GuildSpawnDefaults(
+                guild_id=guild_pk,
+                repos="[]",
+                tools="[]",
+                agent_count=None,
+                updated_at=datetime.now(UTC) - timedelta(minutes=10),
+            )
+        )
+        session.commit()
+
+    import worker_runtime
+
+    async def fake_check_runtime_available():
+        return None
+
+    async def fake_start_worker_container(*, env, guild_id):
+        return worker_runtime.SpawnedWorker(
+            handle="fake-handle", short_id="fakehandle12", runtime="docker"
+        )
+
+    monkeypatch.setattr(worker_runtime, "check_runtime_available", fake_check_runtime_available)
+    monkeypatch.setattr(worker_runtime, "start_worker_container", fake_start_worker_container)
+
+    resp = test_client.post(
+        "/guilds/guild-cooldown-ok/spawn-worker",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"]},
+    )
+    assert resp.status_code == 200
+
+
 def test_spawn_worker_env_does_not_inject_claude_oauth_token():
     """Claude credentials are per-guild: they come from the guild's foreman
     env_vars, so a backend-wide CLAUDE_CODE_OAUTH_TOKEN is NOT injected at spawn.
