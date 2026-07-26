@@ -2274,7 +2274,9 @@ class TestSpawnWorker:
                     repos='["acme/widgets"]',
                     tools='["claude", "pi"]',
                     agent_count=3,
-                    updated_at=datetime.now(UTC),
+                    # Older than the spawn cooldown window so this fixture (an
+                    # existing recorded default) doesn't itself trip the cooldown.
+                    updated_at=datetime.now(UTC) - timedelta(minutes=10),
                 )
             )
             session.commit()
@@ -2319,7 +2321,9 @@ class TestSpawnWorker:
                     repos='["acme/widgets"]',
                     tools='["claude"]',
                     agent_count=3,
-                    updated_at=datetime.now(UTC),
+                    # Older than the spawn cooldown window so this fixture (an
+                    # existing recorded default) doesn't itself trip the cooldown.
+                    updated_at=datetime.now(UTC) - timedelta(minutes=10),
                 )
             )
             session.commit()
@@ -2357,6 +2361,79 @@ class TestSpawnWorker:
         assert r.get("is_error") is True
         assert "no recorded spawn defaults" in r["content"]
         fake_docker_client.containers.run.assert_not_called()
+
+    async def test_spawn_worker_rejects_when_guild_in_cooldown(self, db_session):
+        """A guild that spawned a worker within the cooldown window is refused, no container started."""
+        from models import GuildSpawnDefaults  # noqa: PLC0415
+
+        insert_guild(db_session, "g-spawn-cooldown")
+        with _sync_session(db_session) as session:
+            guild_pk = session.execute(
+                select(col(Guild.id)).where(col(Guild.slug) == "g-spawn-cooldown")
+            ).scalar_one()
+            session.add(
+                GuildSpawnDefaults(
+                    guild_id=guild_pk,
+                    repos="[]",
+                    tools="[]",
+                    agent_count=None,
+                    updated_at=datetime.now(UTC) - timedelta(minutes=1),
+                )
+            )
+            session.commit()
+
+        fake_docker_client = MagicMock()
+        with (
+            patch("worker_runtime._get_docker_client", AsyncMock(return_value=fake_docker_client)),
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+        ):
+            results = await exec_tools(
+                "g-spawn-cooldown",
+                [_fake_tool_use("spawn_worker", {"repos": ["acme/widgets"]})],
+            )
+
+        r = results[0]
+        assert r.get("is_error") is True
+        assert "cooldown" in r["content"].lower()
+        assert "4 minute" in r["content"]
+        fake_docker_client.containers.run.assert_not_called()
+
+    async def test_spawn_worker_allowed_after_cooldown_expires(self, db_session):
+        """A guild whose last spawn is older than the cooldown window may spawn again."""
+        from models import GuildSpawnDefaults  # noqa: PLC0415
+
+        insert_guild(db_session, "g-spawn-cooldown-ok")
+        with _sync_session(db_session) as session:
+            guild_pk = session.execute(
+                select(col(Guild.id)).where(col(Guild.slug) == "g-spawn-cooldown-ok")
+            ).scalar_one()
+            session.add(
+                GuildSpawnDefaults(
+                    guild_id=guild_pk,
+                    repos="[]",
+                    tools="[]",
+                    agent_count=None,
+                    updated_at=datetime.now(UTC) - timedelta(minutes=10),
+                )
+            )
+            session.commit()
+
+        fake_container = SimpleNamespace(id="abcdef0123456789")
+        fake_docker_client = MagicMock()
+        fake_docker_client.containers.get.side_effect = Exception("not found")
+        fake_docker_client.containers.run.return_value = fake_container
+        with (
+            patch("worker_runtime._get_docker_client", AsyncMock(return_value=fake_docker_client)),
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+        ):
+            results = await exec_tools(
+                "g-spawn-cooldown-ok",
+                [_fake_tool_use("spawn_worker", {"repos": ["acme/widgets"]})],
+            )
+
+        r = results[0]
+        assert r.get("is_error") is not True, f"spawn_worker failed: {r['content']}"
+        fake_docker_client.containers.run.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

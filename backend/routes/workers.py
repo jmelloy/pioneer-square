@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -34,6 +35,7 @@ from utils import (
     worker_display_name,
 )
 from worker_lifecycle import (
+    check_worker_spawn_cooldown,
     force_kill_worker_if_unresponsive,
     generate_worker_id,
     get_guild_spawn_defaults,
@@ -210,6 +212,17 @@ async def spawn_worker_container(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
+
+    remaining = await check_worker_spawn_cooldown(db, guild_pk)
+    if remaining is not None:
+        minutes = max(1, math.ceil(remaining.total_seconds() / 60))
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Worker spawn cooldown active. Try again in "
+                f"{minutes} minute{'s' if minutes != 1 else ''}."
+            ),
+        )
 
     # Merge guild-level foreman env vars (base) with user-supplied env vars (override).
     guild_cfg_res = await db.exec(
