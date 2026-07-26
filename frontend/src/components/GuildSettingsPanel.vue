@@ -150,32 +150,31 @@
             <!-- Pi: provider-agnostic tool, so it needs both a default model and provider -->
             <template v-else-if="foremanToolTab === 'pi'">
               <div class="foreman-field">
+                <label class="foreman-field-label">Default Provider</label>
+                <select v-model="piDefaultProvider" class="settings-input">
+                  <option value="">default (anthropic)</option>
+                  <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
+                    {{ p.name }}
+                  </option>
+                </select>
+              </div>
+              <div class="foreman-field">
                 <label class="foreman-field-label">Default Model</label>
                 <input
                   v-model="piDefaultModel"
                   class="settings-input"
-                  placeholder="e.g. claude-sonnet-4-6"
+                  list="pi-model-hints"
+                  :placeholder="piDefaultProvider === 'bedrock' ? 'inference-profile ARN' : 'e.g. claude-sonnet-4-6'"
                   autocomplete="off"
                 />
-              </div>
-              <div class="foreman-field">
-                <label class="foreman-field-label">Default Provider</label>
-                <input
-                  v-model="piDefaultProvider"
-                  class="settings-input"
-                  list="pi-provider-hints"
-                  placeholder="anthropic"
-                  autocomplete="off"
-                />
-                <datalist id="pi-provider-hints">
-                  <option value="anthropic" />
-                  <option value="openai" />
-                  <option value="google" />
+                <datalist id="pi-model-hints">
+                  <option v-for="m in piProviderModels" :key="m.id" :value="m.id" :label="m.name" />
                 </datalist>
               </div>
               <p class="foreman-hint">
                 Used when the foreman assigns a task to the Pi tool without an explicit
-                model/provider override.
+                model/provider override. Select "Amazon Bedrock" to run Pi against Bedrock;
+                its credentials are shared with the Claude tab's AWS Credentials fields.
               </p>
             </template>
 
@@ -344,6 +343,9 @@ const panelRef = ref<HTMLElement | null>(null)
 const modelsStore = reactive(useModels())
 const foremanProviderModels = computed(() =>
   foremanProvider.value ? modelsStore.modelsForProvider(foremanProvider.value) : [],
+)
+const piProviderModels = computed(() =>
+  piDefaultProvider.value ? modelsStore.modelsForProvider(piDefaultProvider.value) : [],
 )
 // Dedicated, provider-specific credential fields. These are stored as ordinary
 // env_vars under the hood (the foreman client reads them via extra_env) but get

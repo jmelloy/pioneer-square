@@ -124,4 +124,35 @@ describe('GuildSettingsPanel foreman tool tabs', () => {
     const body = JSON.parse((patchCall![1] as RequestInit).body as string)
     expect(body.pi_default_model).toBe('claude-opus-4-8')
   })
+
+  it('lets the Pi default provider be set to Bedrock and saved', async () => {
+    const wrapper = await openForemanTab({ pi_default_provider: 'anthropic' })
+
+    const piTab = wrapper.findAll('.foreman-tool-tab').find((t) => t.text() === 'Pi')
+    await piTab!.trigger('click')
+
+    const piProviderSelect = wrapper.find('select')
+    expect((piProviderSelect.element as HTMLSelectElement).value).toBe('anthropic')
+
+    const options = piProviderSelect.findAll('option').map((o) => o.element.value)
+    expect(options).toContain('bedrock')
+
+    await piProviderSelect.setValue('bedrock')
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      {
+        ok: true,
+        status: 200,
+        json: async () => ({ pi_default_provider: 'bedrock' }),
+      } as Response,
+    )
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === 'Save')
+    await saveBtn!.trigger('click')
+    await flushPromises()
+
+    const patchCall = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PATCH')
+    expect(patchCall).toBeTruthy()
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string)
+    expect(body.pi_default_provider).toBe('bedrock')
+  })
 })
