@@ -78,3 +78,50 @@ describe('GuildSettingsPanel foreman provider/model', () => {
     expect(modelInput().value).toBe(BEDROCK_ARN)
   })
 })
+
+describe('GuildSettingsPanel foreman tool tabs', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('defaults to the Claude sub-tab and shows the existing provider/model fields', async () => {
+    const wrapper = await openForemanTab({})
+    const toolTabs = wrapper.findAll('.foreman-tool-tab')
+    expect(toolTabs.map((t) => t.text())).toEqual(['Claude', 'Pi', 'Codex'])
+    expect(toolTabs.find((t) => t.text() === 'Claude')!.classes()).toContain('active')
+    expect(wrapper.find('select').exists()).toBe(true)
+    expect(wrapper.find('input[list="foreman-model-hints"]').exists()).toBe(true)
+  })
+
+  it('lets the Pi default model be set and saved', async () => {
+    const wrapper = await openForemanTab({ pi_default_model: 'claude-sonnet-4-6' })
+
+    const piTab = wrapper.findAll('.foreman-tool-tab').find((t) => t.text() === 'Pi')
+    await piTab!.trigger('click')
+
+    const inputs = wrapper.findAll('.foreman-field input.settings-input')
+    const piModelInput = inputs[0].element as HTMLInputElement
+    expect(piModelInput.value).toBe('claude-sonnet-4-6')
+
+    await inputs[0].setValue('claude-opus-4-8')
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      {
+        ok: true,
+        status: 200,
+        json: async () => ({ pi_default_model: 'claude-opus-4-8' }),
+      } as Response,
+    )
+    const saveBtn = wrapper.findAll('button').find((b) => b.text() === 'Save')
+    await saveBtn!.trigger('click')
+    await flushPromises()
+
+    const patchCall = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PATCH')
+    expect(patchCall).toBeTruthy()
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string)
+    expect(body.pi_default_model).toBe('claude-opus-4-8')
+  })
+})

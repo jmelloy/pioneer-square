@@ -83,53 +83,118 @@
 
           <!-- Foreman -->
           <section v-else-if="activeTab === 'foreman'" class="settings-section">
-            <div class="foreman-field">
-              <label class="foreman-field-label">Provider</label>
-              <select v-model="foremanProvider" class="settings-input" @change="onProviderChange">
-                <option value="">default (anthropic)</option>
-                <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
-                  {{ p.name }}
-                </option>
-              </select>
-            </div>
-            <div class="foreman-field">
-              <label class="foreman-field-label">Model</label>
-              <input
-                v-model="foremanModel"
-                class="settings-input"
-                list="foreman-model-hints"
-                placeholder="default"
-                autocomplete="off"
-              />
-              <datalist id="foreman-model-hints">
-                <option
-                  v-for="m in foremanProviderModels"
-                  :key="m.id"
-                  :value="m.id"
-                  :label="m.name"
-                />
-              </datalist>
-            </div>
+            <nav class="foreman-tool-tabs">
+              <button
+                v-for="ft in FOREMAN_TOOL_TABS"
+                :key="ft.id"
+                type="button"
+                class="foreman-tool-tab"
+                :class="{ active: foremanToolTab === ft.id }"
+                @click="foremanToolTab = ft.id"
+              >
+                {{ ft.label }}
+              </button>
+            </nav>
 
-            <div class="foreman-field">
-              <label class="foreman-field-label">
-                {{ foremanProvider === 'bedrock' ? 'AWS Credentials' : 'Anthropic Credentials' }}
-              </label>
-              <div class="foreman-creds-grid">
-                <div v-for="f in wellKnownFields" :key="f.key" class="foreman-cred-field">
-                  <label class="foreman-cred-label">{{ f.label }}</label>
-                  <input
-                    class="settings-input"
-                    type="text"
-                    spellcheck="false"
-                    autocomplete="off"
-                    :placeholder="f.placeholder || ''"
-                    :value="wellKnownValue(f.key)"
-                    @input="setWellKnown(f.key, ($event.target as HTMLInputElement).value)"
+            <!-- Claude: the foreman's own LLM (the AI orchestrator itself) -->
+            <template v-if="foremanToolTab === 'claude'">
+              <div class="foreman-field">
+                <label class="foreman-field-label">Provider</label>
+                <select v-model="foremanProvider" class="settings-input" @change="onProviderChange">
+                  <option value="">default (anthropic)</option>
+                  <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
+                    {{ p.name }}
+                  </option>
+                </select>
+              </div>
+              <div class="foreman-field">
+                <label class="foreman-field-label">Model</label>
+                <input
+                  v-model="foremanModel"
+                  class="settings-input"
+                  list="foreman-model-hints"
+                  placeholder="default"
+                  autocomplete="off"
+                />
+                <datalist id="foreman-model-hints">
+                  <option
+                    v-for="m in foremanProviderModels"
+                    :key="m.id"
+                    :value="m.id"
+                    :label="m.name"
                   />
+                </datalist>
+              </div>
+
+              <div class="foreman-field">
+                <label class="foreman-field-label">
+                  {{ foremanProvider === 'bedrock' ? 'AWS Credentials' : 'Anthropic Credentials' }}
+                </label>
+                <div class="foreman-creds-grid">
+                  <div v-for="f in wellKnownFields" :key="f.key" class="foreman-cred-field">
+                    <label class="foreman-cred-label">{{ f.label }}</label>
+                    <input
+                      class="settings-input"
+                      type="text"
+                      spellcheck="false"
+                      autocomplete="off"
+                      :placeholder="f.placeholder || ''"
+                      :value="wellKnownValue(f.key)"
+                      @input="setWellKnown(f.key, ($event.target as HTMLInputElement).value)"
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
+            </template>
+
+            <!-- Pi: provider-agnostic tool, so it needs both a default model and provider -->
+            <template v-else-if="foremanToolTab === 'pi'">
+              <div class="foreman-field">
+                <label class="foreman-field-label">Default Model</label>
+                <input
+                  v-model="piDefaultModel"
+                  class="settings-input"
+                  placeholder="e.g. claude-sonnet-4-6"
+                  autocomplete="off"
+                />
+              </div>
+              <div class="foreman-field">
+                <label class="foreman-field-label">Default Provider</label>
+                <input
+                  v-model="piDefaultProvider"
+                  class="settings-input"
+                  list="pi-provider-hints"
+                  placeholder="anthropic"
+                  autocomplete="off"
+                />
+                <datalist id="pi-provider-hints">
+                  <option value="anthropic" />
+                  <option value="openai" />
+                  <option value="google" />
+                </datalist>
+              </div>
+              <p class="foreman-hint">
+                Used when the foreman assigns a task to the Pi tool without an explicit
+                model/provider override.
+              </p>
+            </template>
+
+            <!-- Codex -->
+            <template v-else-if="foremanToolTab === 'codex'">
+              <div class="foreman-field">
+                <label class="foreman-field-label">Default Model</label>
+                <input
+                  v-model="codexDefaultModel"
+                  class="settings-input"
+                  placeholder="e.g. gpt-5-codex"
+                  autocomplete="off"
+                />
+              </div>
+              <p class="foreman-hint">
+                Used when the foreman assigns a task to the Codex tool without an explicit
+                model override.
+              </p>
+            </template>
 
             <div class="foreman-field">
               <label class="foreman-field-label">System Prompt Suffix</label>
@@ -267,6 +332,13 @@ const TABS = [
 ] as const
 const activeTab = ref<(typeof TABS)[number]['id']>('general')
 
+const FOREMAN_TOOL_TABS = [
+  { id: 'claude', label: 'Claude' },
+  { id: 'pi', label: 'Pi' },
+  { id: 'codex', label: 'Codex' },
+] as const
+const foremanToolTab = ref<(typeof FOREMAN_TOOL_TABS)[number]['id']>('claude')
+
 const panelRef = ref<HTMLElement | null>(null)
 
 const modelsStore = reactive(useModels())
@@ -324,6 +396,9 @@ function onProviderChange() {
   foremanModel.value = modelByProvider.value[foremanProvider.value] ?? ''
   prevProvider = foremanProvider.value
 }
+const piDefaultModel = ref('')
+const piDefaultProvider = ref('')
+const codexDefaultModel = ref('')
 const foremanSystemSuffix = ref('')
 const foremanMaxRounds = ref<number | ''>('')
 const foremanPollMin = ref<number | ''>('')
@@ -378,6 +453,9 @@ async function loadForemanConfig() {
       // provider toggle can restore this model.
       prevProvider = foremanProvider.value
       modelByProvider.value = { [foremanProvider.value]: foremanModel.value }
+      piDefaultModel.value = cfg.pi_default_model ?? ''
+      piDefaultProvider.value = cfg.pi_default_provider ?? ''
+      codexDefaultModel.value = cfg.codex_default_model ?? ''
       foremanSystemSuffix.value = cfg.system_prompt_suffix ?? ''
       foremanMaxRounds.value = cfg.max_rounds ?? ''
       foremanPollMin.value = cfg.poll_min_interval ?? ''
@@ -413,6 +491,12 @@ async function saveForemanConfig() {
     else body.model = null
     if (foremanProvider.value) body.provider = foremanProvider.value
     else body.provider = null
+    if (piDefaultModel.value) body.pi_default_model = piDefaultModel.value
+    else body.pi_default_model = null
+    if (piDefaultProvider.value) body.pi_default_provider = piDefaultProvider.value
+    else body.pi_default_provider = null
+    if (codexDefaultModel.value) body.codex_default_model = codexDefaultModel.value
+    else body.codex_default_model = null
     if (foremanSystemSuffix.value) body.system_prompt_suffix = foremanSystemSuffix.value
     else body.system_prompt_suffix = null
     if (foremanMaxRounds.value !== '') body.max_rounds = foremanMaxRounds.value
@@ -748,6 +832,40 @@ onBeforeUnmount(() => {
   color: var(--color-red);
 }
 
+.foreman-tool-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 2px;
+}
+
+.foreman-tool-tab {
+  background: none;
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-brass-dark);
+  cursor: pointer;
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 6px 12px;
+  border-radius: 2px;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
+}
+
+.foreman-tool-tab:hover {
+  color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.06);
+}
+
+.foreman-tool-tab.active {
+  color: var(--color-brass-light);
+  background: rgba(232, 170, 0, 0.1);
+  border-color: var(--color-brass);
+}
+
 .foreman-field {
   display: flex;
   flex-direction: column;
@@ -935,6 +1053,7 @@ onBeforeUnmount(() => {
 @media (prefers-reduced-motion: reduce) {
   .settings-close-btn,
   .settings-tab,
+  .foreman-tool-tab,
   .env-var-delete-btn {
     transition: none;
   }
