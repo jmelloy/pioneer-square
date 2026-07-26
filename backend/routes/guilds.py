@@ -84,6 +84,13 @@ class ForemanConfigUpdate(BaseModel):
     max_rounds: int | None = Field(default=None, gt=0)
     poll_min_interval: int | None = Field(default=None, gt=0)
     poll_max_interval: int | None = Field(default=None, gt=0)
+    # Default model/provider used when the foreman assigns a task to the Pi tool
+    # without an explicit override (Pi is provider-agnostic, unlike claude/codex).
+    pi_default_model: str | None = Field(default=None, max_length=200)
+    pi_default_provider: str | None = Field(default=None, max_length=100)
+    # Default model used when the foreman assigns a task to the Codex tool
+    # without an explicit override.
+    codex_default_model: str | None = Field(default=None, max_length=200)
     # None (field absent) → leave existing env_vars unchanged.
     # Empty list → clear all env_vars.
     env_vars: list[EnvVarItem] | None = None
