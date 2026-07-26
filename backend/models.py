@@ -1,3 +1,4 @@
+import json as _json
 from datetime import UTC, datetime
 
 from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, UniqueConstraint, or_, text
@@ -203,6 +204,78 @@ class Worker(SQLModel, table=True):
     # Primary tool runner this worker is configured for (e.g. 'claude', 'pi', 'codex').
     # NULL on legacy rows; set during worker-register.
     tool: str | None = None
+
+    # --- Convenience properties for guild spawn defaults ---
+    # These expose the guild's default repos/tools/agent_count via the shared
+    # guild_id FK.  They are populated by a join to guild_spawn_defaults when
+    # the caller uses Worker.with_spawn_defaults(); without the join they fall
+    # back to the worker's own repos/tools columns.
+
+    @property
+    def default_repos(self) -> list[str]:
+        """Guild's default repos list (from guild_spawn_defaults join).
+
+        Falls back to this worker's own repos column when the join wasn't loaded.
+        """
+        if hasattr(self, "_spawn_defaults_repos") and self._spawn_defaults_repos is not None:
+            return _json.loads(self._spawn_defaults_repos)
+        return _json.loads(self.repos or "[]")
+
+    @property
+    def default_tools(self) -> list[str]:
+        """Guild's default tools list (from guild_spawn_defaults join).
+
+        Falls back to this worker's own tools column when the join wasn't loaded.
+        """
+        if hasattr(self, "_spawn_defaults_tools") and self._spawn_defaults_tools is not None:
+            return _json.loads(self._spawn_defaults_tools)
+        return _json.loads(self.tools or "[]")
+
+    @property
+    def default_agent_count(self) -> int | None:
+        """Guild's default agent_count (from guild_spawn_defaults join).
+
+        Returns None when no guild_spawn_defaults row exists or join wasn't loaded.
+        """
+        if hasattr(self, "_spawn_defaults_agent_count"):
+            return self._spawn_defaults_agent_count
+        return None
+
+    @classmethod
+    def with_spawn_defaults(cls):
+        """Return a select() that outer-joins guild_spawn_defaults.
+
+        Usage::
+
+            from sqlmodel import select
+            stmt = Worker.with_spawn_defaults().where(Worker.id == worker_id)
+            row = (await db.exec(stmt)).one_or_none()
+            # row is a tuple: (Worker, gsd_repos, gsd_tools, gsd_agent_count)
+
+        Callers can hydrate the worker's properties via
+        ``Worker.hydrate_spawn_defaults(worker, repos, tools, agent_count)``.
+        """
+        from sqlmodel import select  # noqa: PLC0415
+
+        return select(
+            cls,
+            GuildSpawnDefaults.repos.label("gsd_repos"),  # type: ignore[attr-defined]
+            GuildSpawnDefaults.tools.label("gsd_tools"),  # type: ignore[attr-defined]
+            GuildSpawnDefaults.agent_count.label("gsd_agent_count"),  # type: ignore[attr-defined]
+        ).outerjoin(
+            GuildSpawnDefaults,
+            col(GuildSpawnDefaults.guild_id) == col(cls.guild_id),
+        )
+
+    @classmethod
+    def hydrate_spawn_defaults(
+        cls, worker: "Worker", repos: str | None, tools: str | None, agent_count: int | None
+    ) -> "Worker":
+        """Attach guild_spawn_defaults data to a Worker instance after a join query."""
+        worker._spawn_defaults_repos = repos  # noqa: SLF001
+        worker._spawn_defaults_tools = tools  # noqa: SLF001
+        worker._spawn_defaults_agent_count = agent_count  # noqa: SLF001
+        return worker
 
 
 class Task(SQLModel, table=True):

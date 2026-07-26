@@ -82,73 +82,18 @@ async def test_record_worker_spawn_writes_fields():
 
 
 @pytest.mark.asyncio
-async def test_record_worker_spawn_upserts_guild_defaults():
-    """With guild_pk and repos, the guild's spawn defaults are upserted in the same commit."""
+async def test_record_worker_spawn_does_not_touch_guild_defaults():
+    """record_worker_spawn no longer modifies guild_spawn_defaults (issue #1021)."""
     mock_db = AsyncMock()
     mock_db.exec = AsyncMock()
     mock_db.commit = AsyncMock()
 
     with patch("worker_lifecycle.get_current_version", return_value="v-test"):
-        await record_worker_spawn(
-            mock_db,
-            "w-abc123",
-            "container-deadbeef",
-            guild_pk=42,
-            repos=["acme/widgets"],
-            tools=["claude"],
-            agent_count=2,
-        )
+        await record_worker_spawn(mock_db, "w-abc123", "container-deadbeef")
 
-    # Worker update + guild_spawn_defaults upsert, one commit.
-    assert mock_db.exec.call_count == 2
-    mock_db.commit.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_record_worker_spawn_skips_defaults_without_repos():
-    """No repos recorded (or no guild_pk) → the defaults row is left untouched."""
-    mock_db = AsyncMock()
-    mock_db.exec = AsyncMock()
-    mock_db.commit = AsyncMock()
-
-    with patch("worker_lifecycle.get_current_version", return_value="v-test"):
-        await record_worker_spawn(mock_db, "w-abc123", "container-deadbeef", guild_pk=42, repos=[])
-
+    # Only the worker row update — no guild_spawn_defaults upsert.
     mock_db.exec.assert_called_once()
     mock_db.commit.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_record_worker_spawn_only_persists_provided_fields():
-    """Only non-None fields are written to guild_spawn_defaults (issue #1021).
-
-    When tools and agent_count are None (explicit overrides withheld), the
-    upsert should only touch repos — not pollute tools/agent_count defaults.
-    """
-    mock_db = AsyncMock()
-    mock_db.exec = AsyncMock()
-    mock_db.commit = AsyncMock()
-
-    with patch("worker_lifecycle.get_current_version", return_value="v-test"):
-        await record_worker_spawn(
-            mock_db,
-            "w-abc123",
-            "container-deadbeef",
-            guild_pk=42,
-            repos=["acme/widgets"],
-            tools=None,
-            agent_count=None,
-        )
-
-    # Worker update + guild_spawn_defaults upsert (repos only), one commit.
-    assert mock_db.exec.call_count == 2
-    mock_db.commit.assert_called_once()
-    # Verify the upsert statement doesn't include tools or agent_count columns
-    upsert_call = mock_db.exec.call_args_list[1]
-    stmt = upsert_call[0][0]
-    # The on_conflict_do_update set_ dict should not contain tools or agent_count
-    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
-    assert "tools" not in compiled or "tools" not in str(stmt)  # basic sanity
 
 
 # ---------------------------------------------------------------------------

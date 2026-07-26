@@ -139,13 +139,12 @@ async def record_worker_spawn(
     db,
     worker_id: str,
     container_id: str,
-    *,
-    guild_pk: int | None = None,
-    repos: list[str] | None = None,
-    tools: list[str] | None = None,
-    agent_count: int | None = None,
 ) -> None:
     """Persist container_id, spawned_version, and started_at after a successful worker spawn.
+
+    This function records only the spawn event on the worker row itself.
+    It does NOT modify guild_spawn_defaults — guild defaults are managed
+    exclusively via :func:`set_guild_spawn_defaults`.
     """
     await db.exec(
         update(Worker)
@@ -156,7 +155,6 @@ async def record_worker_spawn(
             started_at=datetime.now(UTC),
         )
     )
-    
     await db.commit()
 
 

@@ -291,21 +291,11 @@ async def spawn_worker_container(
 
     # Persist the spawn handle and version so the lifecycle module can
     # force-kill this container/task if the backend is redeployed at a
-    # different version (or the worker idles past the reap timeout), and
-    # refresh the guild's spawn defaults with this successful spawn.
-    # Persist the spawn handle and refresh guild_spawn_defaults with repos
-    # (always required/provided in the REST request). tools and agent_count are
-    # optional overrides — when explicitly provided they are one-off and must
-    # NOT pollute the persistent defaults template (issue #1021). When None
-    # (not provided) there is nothing new to persist for those fields either.
+    # different version (or the worker idles past the reap timeout).
     await record_worker_spawn(
         db,
         worker_id,
         spawned.handle,
-        guild_pk=guild_pk,
-        repos=data.repos,
-        tools=None,
-        agent_count=None,
     )
 
     return {
