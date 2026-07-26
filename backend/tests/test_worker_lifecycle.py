@@ -82,38 +82,16 @@ async def test_record_worker_spawn_writes_fields():
 
 
 @pytest.mark.asyncio
-async def test_record_worker_spawn_upserts_guild_defaults():
-    """With guild_pk and repos, the guild's spawn defaults are upserted in the same commit."""
+async def test_record_worker_spawn_does_not_touch_guild_defaults():
+    """record_worker_spawn no longer modifies guild_spawn_defaults (issue #1021)."""
     mock_db = AsyncMock()
     mock_db.exec = AsyncMock()
     mock_db.commit = AsyncMock()
 
     with patch("worker_lifecycle.get_current_version", return_value="v-test"):
-        await record_worker_spawn(
-            mock_db,
-            "w-abc123",
-            "container-deadbeef",
-            guild_pk=42,
-            repos=["acme/widgets"],
-            tools=["claude"],
-            agent_count=2,
-        )
+        await record_worker_spawn(mock_db, "w-abc123", "container-deadbeef")
 
-    # Worker update + guild_spawn_defaults upsert, one commit.
-    assert mock_db.exec.call_count == 2
-    mock_db.commit.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_record_worker_spawn_skips_defaults_without_repos():
-    """No repos recorded (or no guild_pk) → the defaults row is left untouched."""
-    mock_db = AsyncMock()
-    mock_db.exec = AsyncMock()
-    mock_db.commit = AsyncMock()
-
-    with patch("worker_lifecycle.get_current_version", return_value="v-test"):
-        await record_worker_spawn(mock_db, "w-abc123", "container-deadbeef", guild_pk=42, repos=[])
-
+    # Only the worker row update — no guild_spawn_defaults upsert.
     mock_db.exec.assert_called_once()
     mock_db.commit.assert_called_once()
 

@@ -1212,18 +1212,13 @@ async def spawn_worker(
         spawned = await worker_runtime.start_worker_container(env=env, guild_id=guild_id)
         # Persist the spawn handle and version so the lifecycle module can
         # force-kill this container/task if the backend is redeployed with a
-        # different version (or the worker idles past the reap timeout), and
-        # refresh the guild's spawn defaults with this successful spawn.
+        # different version (or the worker idles past the reap timeout).
         from worker_lifecycle import record_worker_spawn as _record_worker_spawn  # noqa: PLC0415
 
         await _record_worker_spawn(
             db,
             worker_id,
             spawned.handle,
-            guild_pk=guild_pk,
-            repos=repos,
-            tools=tools_list,
-            agent_count=agent_count,
         )
         result_text = json.dumps(
             {
