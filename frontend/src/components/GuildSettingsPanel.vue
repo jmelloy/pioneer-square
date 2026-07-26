@@ -75,6 +75,39 @@
               </div>
             </div>
 
+            <div class="settings-field">
+              <label class="settings-label">GitHub App Installation ID</label>
+              <p class="settings-hint">
+                From github.com/settings/installations/&lt;id&gt;. Attributes comments and commits
+                to the app bot. Blank uses the server default.
+              </p>
+              <div class="settings-row">
+                <input
+                  v-model="githubAppInstallationId"
+                  type="text"
+                  inputmode="numeric"
+                  placeholder="e.g. 149025614"
+                  class="settings-input"
+                  @keydown.enter="saveGithubAppInstallation"
+                  @keydown.escape="close"
+                />
+                <button
+                  class="pixel-btn settings-save-btn"
+                  :disabled="appInstallSaving || githubAppInstallationId.trim() === savedInstallId"
+                  @click="saveGithubAppInstallation"
+                >
+                  {{ appInstallSaving ? 'Saving…' : 'Save' }}
+                </button>
+                <span
+                  v-if="appInstallStatus"
+                  class="save-status"
+                  :class="'save-status-' + appInstallStatus"
+                >
+                  {{ appInstallStatus === 'saved' ? 'Saved' : 'Error' }}
+                </span>
+              </div>
+            </div>
+
             <div class="settings-field settings-meta">
               <span class="settings-meta-label">Session ID</span>
               <code class="settings-meta-value">{{ currentGuild?.id }}</code>
@@ -382,6 +415,12 @@ const repoStatus = ref<'' | 'saved' | 'error'>('')
 let renameStatusTimer: ReturnType<typeof setTimeout> | null = null
 let repoStatusTimer: ReturnType<typeof setTimeout> | null = null
 
+const githubAppInstallationId = ref('')
+const savedInstallId = ref('') // baseline for the "unchanged" disabled check
+const appInstallStatus = ref<'' | 'saved' | 'error'>('')
+const appInstallSaving = ref(false)
+let appInstallStatusTimer: ReturnType<typeof setTimeout> | null = null
+
 const foremanModel = ref('')
 const foremanProvider = ref('')
 // Remember the model entered for each provider. Models are provider-specific
@@ -589,6 +628,38 @@ async function savePrimaryRepo() {
   await nextTick()
 }
 
+async function saveGithubAppInstallation() {
+  if (!currentGuild.value) return
+  appInstallSaving.value = true
+  appInstallStatus.value = ''
+  try {
+    const res = await fetch(
+      `${API_BASE}/guilds/${encodeURIComponent(currentGuild.value.id)}/github-app-installation`,
+      {
+        method: 'PUT',
+        headers: { ...authStore.authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ installation_id: githubAppInstallationId.value.trim() }),
+      },
+    )
+    if (res.ok) {
+      const saved = await res.json()
+      githubAppInstallationId.value = saved.github_app_installation_id ?? ''
+      savedInstallId.value = githubAppInstallationId.value
+      appInstallStatus.value = 'saved'
+    } else {
+      appInstallStatus.value = 'error'
+    }
+  } catch {
+    appInstallStatus.value = 'error'
+  } finally {
+    appInstallSaving.value = false
+    if (appInstallStatusTimer) clearTimeout(appInstallStatusTimer)
+    appInstallStatusTimer = setTimeout(() => {
+      appInstallStatus.value = ''
+    }, 2000)
+  }
+}
+
 function close() {
   emit('close')
 }
@@ -601,6 +672,8 @@ onMounted(async () => {
   document.addEventListener('keydown', onKeydown)
   renameValue.value = currentGuild.value?.name ?? ''
   primaryRepoValue.value = currentGuild.value?.primary_repo ?? ''
+  githubAppInstallationId.value = currentGuild.value?.github_app_installation_id ?? ''
+  savedInstallId.value = githubAppInstallationId.value
   if (ghStore.repos.length === 0 && ghStore.token) {
     await ghStore.fetchRepos()
   }
@@ -612,6 +685,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown)
   if (renameStatusTimer) clearTimeout(renameStatusTimer)
   if (repoStatusTimer) clearTimeout(repoStatusTimer)
+  if (appInstallStatusTimer) clearTimeout(appInstallStatusTimer)
   if (foremanStatusTimer) clearTimeout(foremanStatusTimer)
 })
 </script>
@@ -882,7 +956,8 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
 }
 
-.foreman-hint {
+.foreman-hint,
+.settings-hint {
   font-family: var(--font-mono, monospace);
   font-size: 9px;
   color: var(--color-text-dim);

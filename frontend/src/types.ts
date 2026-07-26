@@ -108,6 +108,7 @@ export interface Guild {
   id: string
   name?: string
   primary_repo?: string | null
+  github_app_installation_id?: string | null
   agents?: Array<{
     id: string
     name: string
