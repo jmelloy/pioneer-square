@@ -698,7 +698,9 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 300;
+  /* FactoryFloor robots/stations use z-index up to ~1000 (Math.round(y * 1000)),
+     so the settings overlay must sit above that to stay clickable. */
+  z-index: 2000;
   padding: 20px;
 }
 
