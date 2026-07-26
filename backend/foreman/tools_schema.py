@@ -703,8 +703,9 @@ FOREMAN_TOOLS = [
         "description": (
             "Start a new worker process to run tasks. Use when no worker is online for the "
             "repos a task needs, or when every capable worker is busy and work is queueing up. "
-            "The worker is pre-registered and its container/ECS task is started immediately; it "
-            "comes online within a minute or so and then picks up assigned tasks. Do not spawn "
+            "This call is asynchronous: it returns as soon as the worker is pre-registered and "
+            "its container/ECS task has been started, but the worker itself takes about 2 "
+            "minutes to come online and start picking up assigned tasks. Do not spawn "
             "a duplicate if a worker for the same repos is already online or currently starting. "
             "Spawned workers are automatically shut down after a period of inactivity, so there "
             "is no need to clean up idle workers yourself (shutdown_worker still works for an "

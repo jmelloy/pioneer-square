@@ -1129,6 +1129,11 @@ async def spawn_worker(
 ) -> tuple[str, bool]:
     """Spawn a new worker container.
 
+    Asynchronous: this coroutine returns as soon as the container/ECS task has
+    been started, not once the worker is online. The worker process itself
+    takes about 2 minutes to come up and register before it can pick up
+    assigned tasks.
+
     *user_id* identifies the human on whose behalf the worker is being spawned
     (e.g. a Discord user's linked Pioneer Square account) and is stamped onto
     the new ``Worker`` row for ownership attribution. ``None`` for
