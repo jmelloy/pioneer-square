@@ -173,7 +173,8 @@ def test_get_github_token_task_id_falls_back_when_no_user_token(client):
         headers={"Authorization": f"Bearer {worker['auth_token']}"},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["access_token"] == "gh_tok"
+    # Owner gh-user-test's token from the auth fixture (make_auth_token).
+    assert resp.json()["access_token"] == "gh_tok_fake"
 
 
 def test_get_github_token_no_owner_in_guild_members(client):
