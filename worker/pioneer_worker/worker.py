@@ -1999,7 +1999,10 @@ class Worker:
                     )
                 elif tool == "pi":
                     _pi_model = task.get("model") or self.cfg.pi_model
-                    _pi_provider = task.get("provider") or self.cfg.pi_provider
+                    # Fall back to the worker's generic provider if pi_provider is
+                    # unset, so pi still launches with a provider when the task
+                    # carried none (defensive companion to the backend #1040 fix).
+                    _pi_provider = task.get("provider") or self.cfg.pi_provider or self.cfg.provider
 
                     logger.info(
                         "Task %s: launching pi in %s (model=%s provider=%s resume=%s)",
