@@ -25,6 +25,7 @@ from models import (
     GithubToken,
     Guild,
     GuildMember,
+    Task,
     User,
     UserSession,
 )
@@ -77,21 +78,43 @@ async def github_callback(code: str = Query(...), state: str = Query(...)):
 @router.get("/auth/github/token")
 async def get_github_token(
     guild_id: str = Query(...),
+    task_id: str | None = Query(None),
     _principal: str = Depends(require_worker_or_member),
     db: AsyncSession = Depends(get_db_dep),
 ):
     """Return a GitHub token for the guild, for workers to use.
 
-    Prefers the GitHub App installation token when configured (so worker
-    actions like ``gh pr comment`` are attributed to the App identity);
-    otherwise falls back to the stored OAuth token for the guild's linked
-    GitHub user.
+    When ``task_id`` is given (push / PR creation), prefers the OAuth token of
+    the human who triggered that task so the branch and PR are attributed to
+    them, falling back to the App installation token if that user has no stored
+    token. Without ``task_id`` (guild-level reads: clone / fetch / webhook),
+    prefers the GitHub App installation token so automation is attributed to the
+    App identity; otherwise falls back to the guild owner's OAuth token.
 
     Requires a worker auth_token (from registration) or a member login_token.
     Without auth, anyone knowing a guild_id could exfiltrate the GitHub token."""
     guild_res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = guild_res.one_or_none()
     installation_id = guild.github_app_installation_id if guild else None
+
+    # Task-scoped request → attribute to the triggering user's OAuth token.
+    if task_id:
+        task_q = select(col(Task.user_id)).where(col(Task.id) == task_id)
+        if guild is not None:
+            task_q = task_q.where(col(Task.guild_id) == guild.id)
+        task_user_id = (await db.exec(task_q)).one_or_none()
+        if task_user_id:
+            row = (
+                await db.exec(
+                    select(col(GithubToken.access_token), col(GithubToken.github_username)).where(
+                        col(GithubToken.github_user_id) == task_user_id
+                    )
+                )
+            ).first()
+            if row:
+                return {"access_token": row.access_token, "username": row.github_username}
+        # No user token for this task — fall through to the App/owner token.
+
     app_token = get_app_installation_token(installation_id)
     if app_token:
         resp = {"access_token": app_token, "username": get_app_slug()}

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 from helpers import _sync_session, insert_guild
-from models import GithubToken, Guild
+from models import GithubToken, Guild, Task
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col  # noqa: E402
@@ -102,6 +102,78 @@ def test_get_github_token_uses_guild_members_owner(client):
     data = resp.json()
     assert "access_token" in data
     assert "username" in data
+
+
+def _insert_task(db_url: str, guild_slug: str, task_id: str, user_id: str | None) -> None:
+    now = datetime.now(UTC)
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == guild_slug))
+        assert guild_pk is not None, f"Guild {guild_slug!r} not found"
+        session.execute(
+            pg_insert(Task)
+            .values(
+                id=task_id,
+                guild_id=guild_pk,
+                description="do a thing",
+                state="pending",
+                created_at=now,
+                user_id=user_id,
+            )
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
+        session.commit()
+
+
+def test_get_github_token_task_id_returns_triggering_user_token(client):
+    """With task_id, the endpoint returns the triggering user's own OAuth token
+    (push/PR attributed to them), not the guild owner's."""
+    test_client, db_url = client
+    insert_guild(db_url, "g-task-tok")  # owner gh-user-test, token gh_tok
+    # A different human triggered the task; seed their distinct token.
+    _seed_github_token(db_url, user_id="gh-triggerer")
+    with _sync_session(db_url) as session:
+        session.execute(
+            pg_insert(GithubToken)
+            .values(
+                github_user_id="gh-triggerer",
+                github_username="triggerer",
+                access_token="trigger_tok",
+                token_type="bearer",
+                scope="repo",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+            .on_conflict_do_update(
+                index_elements=["github_user_id"], set_={"access_token": "trigger_tok"}
+            )
+        )
+        session.commit()
+    _insert_task(db_url, "g-task-tok", "t-trig1", user_id="gh-triggerer")
+    worker = _register_worker(test_client, "g-task-tok")
+    resp = test_client.get(
+        "/auth/github/token",
+        params={"guild_id": "g-task-tok", "task_id": "t-trig1"},
+        headers={"Authorization": f"Bearer {worker['auth_token']}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["access_token"] == "trigger_tok"
+
+
+def test_get_github_token_task_id_falls_back_when_no_user_token(client):
+    """A task whose user has no stored token falls back to the guild owner's
+    token (which, in prod with an App configured, would be the App token)."""
+    test_client, db_url = client
+    insert_guild(db_url, "g-task-fb")
+    _seed_github_token(db_url)
+    _insert_task(db_url, "g-task-fb", "t-nouser", user_id=None)
+    worker = _register_worker(test_client, "g-task-fb")
+    resp = test_client.get(
+        "/auth/github/token",
+        params={"guild_id": "g-task-fb", "task_id": "t-nouser"},
+        headers={"Authorization": f"Bearer {worker['auth_token']}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["access_token"] == "gh_tok"
 
 
 def test_get_github_token_no_owner_in_guild_members(client):

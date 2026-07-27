@@ -209,7 +209,7 @@ async def test_new_task_still_generates_fresh_branch():
         patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
         patch(
             "pioneer_worker.worker.github_pr.open_pr",
-            return_value=("https://github.com/o/r/pull/1", 1),
+            return_value="https://github.com/o/r/pull/1",
         ),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
         patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
@@ -265,7 +265,7 @@ async def test_new_task_branch_contains_full_task_id_not_truncated():
         patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
         patch(
             "pioneer_worker.worker.github_pr.open_pr",
-            return_value=("https://github.com/o/r/pull/1", 1),
+            return_value="https://github.com/o/r/pull/1",
         ),
         patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
         patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
