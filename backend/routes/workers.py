@@ -232,8 +232,13 @@ async def spawn_worker_container(
     # The guild edit screen can store the same key twice (one real value, one
     # blank — see #dup). Collapse duplicates so the real value wins instead of
     # whichever entry happens to come last.
+    # Only vars explicitly marked forward=True reach workers; the rest stay with
+    # the foreman's own LLM (see EnvVarItem.forward). This keeps foreman
+    # credentials from leaking into every worker tool automatically.
     foreman_env_vars: dict[str, str] = {}
     for e in guild_cfg.get("env_vars") or []:
+        if not e.get("forward"):
+            continue
         k, v = e.get("key"), e.get("value")
         if not k or v is None:
             continue
@@ -327,7 +332,8 @@ async def get_spawn_credentials(
     """Return masked credential status for the spawn form — never raw values.
 
     Covers the two credential sources a spawned worker inherits: the guild's
-    ``foreman_config.env_vars`` (merged into every spawn unless excluded via
+    forwarded ``foreman_config.env_vars`` (only vars marked ``forward=True``
+    reach a worker; merged into every spawn unless excluded via
     ``exclude_env_keys`` on POST /spawn-worker) and the guild's stored Claude
     OAuth credentials. Lets an operator see, before launching, what a worker
     will have access to without exposing the underlying secret values.
@@ -341,7 +347,7 @@ async def get_spawn_credentials(
     guild_env_vars = [
         {"key": e["key"], "masked_value": mask_secret(e.get("value") or "")}
         for e in (config.get("env_vars") or [])
-        if e.get("key")
+        if e.get("key") and e.get("forward")
     ]
     creds_result = await db.exec(
         select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)

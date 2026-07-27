@@ -1207,10 +1207,12 @@ async def spawn_worker(
             select(col(Guild.foreman_config)).where(col(Guild.id) == guild_pk)
         )
         guild_cfg = guild_res.one_or_none() or {}
+        # Only forward=True vars reach the worker; unshared foreman credentials
+        # stay with the foreman's own LLM (parity with the user spawn path).
         foreman_env_vars = {
             e["key"]: e["value"]
             for e in (guild_cfg.get("env_vars") or [])
-            if e.get("key") and e.get("value") is not None
+            if e.get("forward") and e.get("key") and e.get("value") is not None
         }
 
     env = build_spawn_worker_env(

@@ -72,12 +72,48 @@ _MAX_FOREMAN_ENV_VARS = 20
 _SCOPED_TOOLS = {"claude", "pi", "codex"}
 _MAX_ENV_VALUE_LEN = 4096
 
+# Foreman LLM settings that can be supplied by the process environment. Surfaced
+# (masked) on GET so the settings UI can show "from env" instead of an empty
+# field when the guild hasn't overridden them.
+_FOREMAN_ENV_DEFAULT_KEYS = (
+    "FOREMAN_PROVIDER",
+    "FOREMAN_MODEL",
+    "FOREMAN_BEDROCK_MODEL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "AWS_DEFAULT_REGION",
+    "AWS_PROFILE",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+)
+
+
+def _mask_env_default(key: str, value: str) -> str:
+    """Show non-secret config (provider/model/region/url) as-is; mask secrets to
+    the last 4 chars so the UI can confirm one is set without leaking it."""
+    if any(tag in key for tag in ("KEY", "TOKEN", "SECRET")):
+        return f"••••{value[-4:]}" if len(value) > 4 else "••••"
+    return value
+
+
+def _foreman_env_defaults() -> dict[str, str]:
+    return {
+        k: _mask_env_default(k, v) for k in _FOREMAN_ENV_DEFAULT_KEYS if (v := os.environ.get(k))
+    }
+
 
 class EnvVarItem(BaseModel):
     key: str
     # None → keep the currently stored value. Kept for API compatibility; the UI
     # now sends actual values since env vars are returned in clear text.
     value: str | None = None
+    # Shared env_vars only: True → also forward this var to worker tools. Default
+    # (None/False) keeps it with the foreman's own LLM and does NOT leak it to
+    # workers. Ignored for tool_env_vars (those are always scoped to their tool).
+    forward: bool | None = None
 
 
 def _validate_env_var_list(v: list[EnvVarItem] | None) -> list[EnvVarItem] | None:
@@ -101,22 +137,32 @@ def _merge_env_var_list(submitted: list[EnvVarItem], existing: list[dict] | None
     """Merge a submitted env-var list over the stored one.
 
     - value None → keep the existing stored value (dropped if none stored).
+    - forward None → keep the existing stored flag (so a value-only PATCH doesn't
+      silently un-forward a var); explicit True/False overrides it.
     - Duplicate keys collapse, preferring a non-empty value over a blank one so a
       stray blank row can't shadow a real credential at spawn time.
     """
-    existing_map: dict[str, str] = {e["key"]: e["value"] for e in (existing or [])}
-    merged: dict[str, str] = {}
+    existing_map: dict[str, dict] = {e["key"]: e for e in (existing or [])}
+    merged: dict[str, dict] = {}
     for item in submitted:
         if item.value is None:
             if item.key not in existing_map:
                 continue
-            resolved = existing_map[item.key]
+            resolved = existing_map[item.key].get("value", "")
         else:
             resolved = item.value
-        if item.key in merged and resolved == "" and merged[item.key] != "":
+        forward = item.forward
+        if forward is None:
+            forward = bool(existing_map.get(item.key, {}).get("forward"))
+        if item.key in merged and resolved == "" and merged[item.key]["value"] != "":
             continue
-        merged[item.key] = resolved
-    return [{"key": k, "value": v} for k, v in merged.items()]
+        entry: dict = {"key": item.key, "value": resolved}
+        if forward:
+            # Only persist the flag when set, keeping unshared entries' shape as
+            # {key, value} (back-compat with stored configs and existing tests).
+            entry["forward"] = True
+        merged[item.key] = entry
+    return list(merged.values())
 
 
 class ForemanConfigUpdate(BaseModel):
@@ -521,7 +567,7 @@ async def get_foreman_config(
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    return guild.foreman_config or {}
+    return {**(guild.foreman_config or {}), "env_defaults": _foreman_env_defaults()}
 
 
 @router.patch("/api/guilds/{guild_id}/foreman-config")

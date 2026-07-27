@@ -380,7 +380,13 @@ def test_get_spawn_credentials_masks_guild_env_var_values(client):
             .where(col(Guild.id) == guild_pk)
             .values(
                 foreman_config={
-                    "env_vars": [{"key": "ANTHROPIC_API_KEY", "value": "sk-ant-supersecretvalue"}]
+                    "env_vars": [
+                        {
+                            "key": "ANTHROPIC_API_KEY",
+                            "value": "sk-ant-supersecretvalue",
+                            "forward": True,
+                        }
+                    ]
                 }
             )
         )
@@ -426,8 +432,8 @@ def test_spawn_worker_excludes_selected_guild_env_keys(client, monkeypatch):
             .values(
                 foreman_config={
                     "env_vars": [
-                        {"key": "ANTHROPIC_API_KEY", "value": "keep-me"},
-                        {"key": "OPENAI_API_KEY", "value": "drop-me"},
+                        {"key": "ANTHROPIC_API_KEY", "value": "keep-me", "forward": True},
+                        {"key": "OPENAI_API_KEY", "value": "drop-me", "forward": True},
                     ]
                 }
             )
@@ -464,6 +470,53 @@ def test_spawn_worker_excludes_selected_guild_env_keys(client, monkeypatch):
     assert stored_keys == {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
 
 
+def test_spawn_worker_only_forwards_flagged_guild_env_vars(client, monkeypatch):
+    """A guild env var without forward=True stays with the foreman and must not
+    reach the spawned worker; a forwarded one does."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-fwd")
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-fwd"))
+        session.execute(
+            update(Guild)
+            .where(col(Guild.id) == guild_pk)
+            .values(
+                foreman_config={
+                    "env_vars": [
+                        {"key": "SHARED_TOKEN", "value": "yes", "forward": True},
+                        {"key": "FOREMAN_ONLY", "value": "no"},  # no forward flag
+                    ]
+                }
+            )
+        )
+        session.commit()
+
+    import worker_runtime
+
+    captured_env: dict = {}
+
+    async def fake_check_runtime_available():
+        return None
+
+    async def fake_start_worker_container(*, env, guild_id):
+        captured_env.update(env)
+        return worker_runtime.SpawnedWorker(
+            handle="fake-handle", short_id="fakehandle12", runtime="docker"
+        )
+
+    monkeypatch.setattr(worker_runtime, "check_runtime_available", fake_check_runtime_available)
+    monkeypatch.setattr(worker_runtime, "start_worker_container", fake_start_worker_container)
+
+    resp = test_client.post(
+        "/guilds/guild-fwd/spawn-worker",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"]},
+    )
+    assert resp.status_code == 200
+    assert captured_env.get("SHARED_TOKEN") == "yes"
+    assert "FOREMAN_ONLY" not in captured_env
+
+
 def test_spawn_worker_empty_user_value_does_not_clobber_guild_credential(client, monkeypatch):
     """An empty spawn-time value for a key that also exists as a guild credential
     must not blank out the credential's real value (the value wins)."""
@@ -476,7 +529,9 @@ def test_spawn_worker_empty_user_value_does_not_clobber_guild_credential(client,
             .where(col(Guild.id) == guild_pk)
             .values(
                 foreman_config={
-                    "env_vars": [{"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token"}]
+                    "env_vars": [
+                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token", "forward": True}
+                    ]
                 }
             )
         )
@@ -521,8 +576,8 @@ def test_spawn_worker_guild_duplicate_key_prefers_nonempty(client, monkeypatch):
             .values(
                 foreman_config={
                     "env_vars": [
-                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token"},
-                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": ""},
+                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token", "forward": True},
+                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "", "forward": True},
                     ]
                 }
             )
