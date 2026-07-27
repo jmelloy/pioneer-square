@@ -1,8 +1,5 @@
 <template>
-  <div
-    class="workers-section"
-    :class="{ 'workers-section--empty': onlineWorkers.length === 0 && !showSpawnForm }"
-  >
+  <div class="workers-section" :class="{ 'workers-section--empty': onlineWorkers.length === 0 }">
     <div class="section-header">
       <span class="section-label">Workers</span>
       <span class="section-count" v-if="onlineWorkers.length > 0">{{ onlineWorkers.length }}</span>
@@ -15,7 +12,11 @@
       </button>
     </div>
 
-    <SpawnWorkerForm v-if="showSpawnForm" @launched="showSpawnForm = false" />
+    <SpawnWorkerForm
+      v-if="showSpawnForm"
+      @launched="showSpawnForm = false"
+      @close="showSpawnForm = false"
+    />
 
     <template v-for="worker in onlineWorkers" :key="worker.id">
       <div class="worker-row" :class="worker.state" @click="agentsStore.selectWorker(worker.id)">

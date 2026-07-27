@@ -1,181 +1,274 @@
 <template>
-  <div class="spawn-form">
-    <div v-if="launched" class="spawn-success">
-      <span class="spawn-success-label">Launched</span>
-      <span class="spawn-success-id">{{ launchedWorkerId }}</span>
-    </div>
-    <template v-else>
-      <label class="spawn-label">Repos</label>
-      <div v-if="loadingRepos" class="spawn-hint-text">Loading repos…</div>
-      <div v-else-if="repoFetchFailed" class="spawn-error">
-        Failed to load repos — saved selection cleared.
+  <div class="settings-overlay" @mousedown.self="close">
+    <div
+      class="settings-panel spawn-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Spawn worker"
+      ref="panelRef"
+    >
+      <header class="settings-panel-header">
+        <div class="settings-panel-title">Spawn Worker</div>
+        <div class="settings-panel-guild" v-if="currentGuild">
+          <span class="settings-panel-guild-name">{{ currentGuild.name || 'Unnamed Guild' }}</span>
+          <span class="settings-panel-guild-id">#{{ currentGuild.id }}</span>
+        </div>
+        <button class="settings-close-btn" @click="close" title="Close">✕</button>
+      </header>
+
+      <div v-if="launched" class="spawn-success">
+        <span class="spawn-success-label">Launched</span>
+        <span class="spawn-success-id">{{ launchedWorkerId }}</span>
       </div>
-      <div v-else-if="ghStore.repos.length === 0" class="spawn-hint-text">
-        No repos found — configure GitHub first.
-      </div>
-      <div v-else class="spawn-repo-list">
-        <template v-for="group in groupedRepos" :key="group.owner">
-          <label
-            class="spawn-repo-row spawn-org-row"
-            :class="{ selected: orgAllSelected(group.owner) }"
-          >
-            <input
-              type="checkbox"
-              :ref="(el) => setOrgCheckboxRef(el as HTMLInputElement | null, group.owner)"
-              :checked="orgAllSelected(group.owner)"
-              @change="toggleOrg(group.owner)"
-              class="spawn-repo-check"
-            />
-            <span class="spawn-repo-name spawn-org-name">{{ group.owner }}</span>
-          </label>
-          <label
-            v-for="repo in group.repos"
-            :key="repo.full_name"
-            class="spawn-repo-row spawn-repo-indent"
-            :class="{ selected: selectedRepos.includes(repo.full_name) }"
-          >
-            <input
-              type="checkbox"
-              :checked="selectedRepos.includes(repo.full_name)"
-              @change="toggleRepo(repo.full_name)"
-              class="spawn-repo-check"
-            />
-            <span class="spawn-repo-name">{{ repo.full_name.split('/')[1] }}</span>
-          </label>
-        </template>
-      </div>
-      <div v-if="hasGuildDefaults" class="spawn-defaults-row">
-        <span class="spawn-defaults-note">
-          {{ usingGuildDefaults ? 'Prefilled from guild defaults' : 'Overriding guild defaults' }}
-        </span>
-        <button
-          v-if="!usingGuildDefaults"
-          class="spawn-defaults-reset"
-          type="button"
-          @click="resetToGuildDefaults"
-        >
-          Reset to guild defaults
-        </button>
-      </div>
-      <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
-      <input v-model="name" class="spawn-input" type="text" placeholder="auto-generated" />
-      <label class="spawn-label">Tools <span class="spawn-hint">(optional)</span></label>
-      <div class="spawn-tool-list">
-        <label
-          v-for="tool in AVAILABLE_TOOLS"
-          :key="tool"
-          class="spawn-repo-row"
-          :class="{ selected: selectedTools.includes(tool) }"
-        >
-          <input
-            type="checkbox"
-            :checked="selectedTools.includes(tool)"
-            @change="toggleTool(tool)"
-            class="spawn-repo-check"
-          />
-          <span class="spawn-repo-name">{{ tool }}</span>
-        </label>
-      </div>
-      <label class="spawn-label">Agents <span class="spawn-hint">(optional)</span></label>
-      <input
-        v-model.number="agentCount"
-        class="spawn-input spawn-input--narrow"
-        type="number"
-        min="1"
-        max="16"
-        placeholder="4"
-      />
-      <label class="spawn-label">Guild Credentials <span class="spawn-hint">(optional)</span></label>
-      <div v-if="credentialsLoading" class="spawn-hint-text">Loading credentials…</div>
-      <div v-else-if="credentialsError" class="spawn-error">{{ credentialsError }}</div>
-      <div v-else-if="!hasCredentials" class="spawn-hint-text">No guild credentials configured.</div>
+
       <template v-else>
-        <div class="spawn-cred-list">
-          <label
-            v-for="cred in credentials!.guild_env_vars"
-            :key="cred.key"
-            class="spawn-repo-row spawn-cred-row"
-            :class="{ selected: includedKeys[cred.key] !== false }"
-          >
-            <input
-              type="checkbox"
-              :checked="includedKeys[cred.key] !== false"
-              @change="toggleCredential(cred.key)"
-              class="spawn-repo-check"
-            />
-            <span class="spawn-repo-name spawn-cred-key">{{ cred.key }}</span>
-            <span class="spawn-cred-value">{{ cred.masked_value }}</span>
-          </label>
-          <div class="spawn-repo-row spawn-cred-row spawn-cred-claude">
-            <span
-              class="spawn-cred-status"
-              :class="{ 'spawn-cred-status--ok': credentials!.claude_credentials.saved }"
+        <div class="settings-panel-body">
+          <nav class="settings-tabs">
+            <button
+              v-for="t in TABS"
+              :key="t.id"
+              class="settings-tab"
+              :class="{ active: activeTab === t.id }"
+              @click="activeTab = t.id"
             >
-              {{ credentials!.claude_credentials.saved ? '●' : '○' }}
-            </span>
-            <span class="spawn-repo-name">Claude OAuth credentials</span>
-            <span class="spawn-cred-value">
-              {{ credentials!.claude_credentials.saved ? 'configured' : 'not configured' }}
-            </span>
+              {{ t.label }}
+            </button>
+          </nav>
+
+          <div class="settings-content">
+            <!-- General: identity + repo selection -->
+            <section v-if="activeTab === 'general'" class="settings-section">
+              <div class="settings-field">
+                <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
+                <input
+                  v-model="name"
+                  class="spawn-input"
+                  type="text"
+                  placeholder="auto-generated"
+                />
+              </div>
+
+              <div class="settings-field">
+                <label class="spawn-label">Repos</label>
+                <div v-if="loadingRepos" class="spawn-hint-text">Loading repos…</div>
+                <div v-else-if="repoFetchFailed" class="spawn-error">
+                  Failed to load repos — saved selection cleared.
+                </div>
+                <div v-else-if="ghStore.repos.length === 0" class="spawn-hint-text">
+                  No repos found — configure GitHub first.
+                </div>
+                <div v-else class="spawn-repo-list">
+                  <template v-for="group in groupedRepos" :key="group.owner">
+                    <label
+                      class="spawn-repo-row spawn-org-row"
+                      :class="{ selected: orgAllSelected(group.owner) }"
+                    >
+                      <input
+                        type="checkbox"
+                        :ref="(el) => setOrgCheckboxRef(el as HTMLInputElement | null, group.owner)"
+                        :checked="orgAllSelected(group.owner)"
+                        @change="toggleOrg(group.owner)"
+                        class="spawn-repo-check"
+                      />
+                      <span class="spawn-repo-name spawn-org-name">{{ group.owner }}</span>
+                    </label>
+                    <label
+                      v-for="repo in group.repos"
+                      :key="repo.full_name"
+                      class="spawn-repo-row spawn-repo-indent"
+                      :class="{ selected: selectedRepos.includes(repo.full_name) }"
+                    >
+                      <input
+                        type="checkbox"
+                        :checked="selectedRepos.includes(repo.full_name)"
+                        @change="toggleRepo(repo.full_name)"
+                        class="spawn-repo-check"
+                      />
+                      <span class="spawn-repo-name">{{ repo.full_name.split('/')[1] }}</span>
+                    </label>
+                  </template>
+                </div>
+                <div v-if="hasGuildDefaults" class="spawn-defaults-row">
+                  <span class="spawn-defaults-note">
+                    {{
+                      usingGuildDefaults
+                        ? 'Prefilled from guild defaults'
+                        : 'Overriding guild defaults'
+                    }}
+                  </span>
+                  <button
+                    v-if="!usingGuildDefaults"
+                    class="spawn-defaults-reset"
+                    type="button"
+                    @click="resetToGuildDefaults"
+                  >
+                    Reset to guild defaults
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <!-- Tools: worker tools + concurrency -->
+            <section v-else-if="activeTab === 'tools'" class="settings-section">
+              <div class="settings-field">
+                <label class="spawn-label">Tools <span class="spawn-hint">(optional)</span></label>
+                <div class="spawn-tool-list">
+                  <label
+                    v-for="tool in AVAILABLE_TOOLS"
+                    :key="tool"
+                    class="spawn-repo-row"
+                    :class="{ selected: selectedTools.includes(tool) }"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="selectedTools.includes(tool)"
+                      @change="toggleTool(tool)"
+                      class="spawn-repo-check"
+                    />
+                    <span class="spawn-repo-name">{{ tool }}</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <label class="spawn-label">Agents <span class="spawn-hint">(optional)</span></label>
+                <input
+                  v-model.number="agentCount"
+                  class="spawn-input spawn-input--narrow"
+                  type="number"
+                  min="1"
+                  max="16"
+                  placeholder="4"
+                />
+              </div>
+            </section>
+
+            <!-- Environment: guild credentials + per-launch env vars -->
+            <section v-else-if="activeTab === 'environment'" class="settings-section">
+              <div class="settings-field">
+                <label class="spawn-label"
+                  >Guild Credentials <span class="spawn-hint">(optional)</span></label
+                >
+                <div v-if="credentialsLoading" class="spawn-hint-text">Loading credentials…</div>
+                <div v-else-if="credentialsError" class="spawn-error">{{ credentialsError }}</div>
+                <div v-else-if="!hasCredentials" class="spawn-hint-text">
+                  No guild credentials configured.
+                </div>
+                <template v-else>
+                  <div class="spawn-cred-list">
+                    <label
+                      v-for="cred in credentials!.guild_env_vars"
+                      :key="cred.key"
+                      class="spawn-repo-row spawn-cred-row"
+                      :class="{ selected: includedKeys[cred.key] !== false }"
+                    >
+                      <input
+                        type="checkbox"
+                        :checked="includedKeys[cred.key] !== false"
+                        @change="toggleCredential(cred.key)"
+                        class="spawn-repo-check"
+                      />
+                      <span class="spawn-repo-name spawn-cred-key">{{ cred.key }}</span>
+                      <span class="spawn-cred-value">{{ cred.masked_value }}</span>
+                    </label>
+                    <div class="spawn-repo-row spawn-cred-row spawn-cred-claude">
+                      <span
+                        class="spawn-cred-status"
+                        :class="{ 'spawn-cred-status--ok': credentials!.claude_credentials.saved }"
+                      >
+                        {{ credentials!.claude_credentials.saved ? '●' : '○' }}
+                      </span>
+                      <span class="spawn-repo-name">Claude OAuth credentials</span>
+                      <span class="spawn-cred-value">
+                        {{
+                          credentials!.claude_credentials.saved ? 'configured' : 'not configured'
+                        }}
+                      </span>
+                    </div>
+                  </div>
+                  <p class="spawn-env-hint">
+                    Uncheck a credential to exclude it from this launch only.
+                  </p>
+                </template>
+              </div>
+
+              <div class="settings-field">
+                <label class="spawn-label"
+                  >Env Vars <span class="spawn-hint">(optional)</span></label
+                >
+                <p class="spawn-env-hint">
+                  Key-value pairs are saved to the server and restored each session.
+                </p>
+                <div class="spawn-env-list">
+                  <div v-for="entry in visibleEnvVars" :key="entry.idx" class="spawn-env-row">
+                    <input
+                      v-model="entry.pair.key"
+                      class="spawn-input spawn-env-input spawn-env-key"
+                      placeholder="KEY"
+                      type="text"
+                    />
+                    <span class="spawn-env-sep">=</span>
+                    <input
+                      v-model="entry.pair.value"
+                      class="spawn-input spawn-env-input spawn-env-val"
+                      placeholder="value"
+                      type="text"
+                    />
+                    <button
+                      class="spawn-env-remove"
+                      @click="removeEnvVar(entry.idx)"
+                      type="button"
+                      title="Remove"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <button class="pixel-btn spawn-env-add" @click="addEnvVar" type="button">
+                    + Add
+                  </button>
+                </div>
+              </div>
+            </section>
           </div>
         </div>
-        <p class="spawn-env-hint">Uncheck a credential to exclude it from this launch only.</p>
-      </template>
-      <label class="spawn-label">Env Vars <span class="spawn-hint">(optional)</span></label>
-      <p class="spawn-env-hint">
-        Key-value pairs are saved to the server and restored each session.
-      </p>
-      <div class="spawn-env-list">
-        <div v-for="entry in visibleEnvVars" :key="entry.idx" class="spawn-env-row">
-          <input
-            v-model="entry.pair.key"
-            class="spawn-input spawn-env-input spawn-env-key"
-            placeholder="KEY"
-            type="text"
-          />
-          <span class="spawn-env-sep">=</span>
-          <input
-            v-model="entry.pair.value"
-            class="spawn-input spawn-env-input spawn-env-val"
-            placeholder="value"
-            type="text"
-          />
+
+        <footer class="spawn-panel-footer">
+          <span v-if="error" class="spawn-error">{{ error }}</span>
           <button
-            class="spawn-env-remove"
-            @click="removeEnvVar(entry.idx)"
-            type="button"
-            title="Remove"
+            class="pixel-btn spawn-launch-btn"
+            :disabled="spawning || selectedRepos.length === 0"
+            @click="launch"
           >
-            ×
+            {{ spawning ? 'Launching…' : 'Launch' }}
           </button>
-        </div>
-        <button class="pixel-btn spawn-env-add" @click="addEnvVar" type="button">+ Add</button>
-      </div>
-      <div class="spawn-actions">
-        <button
-          class="pixel-btn spawn-launch-btn"
-          :disabled="spawning || selectedRepos.length === 0"
-          @click="launch"
-        >
-          {{ spawning ? 'Launching…' : 'Launch' }}
-        </button>
-      </div>
-      <div v-if="error" class="spawn-error">{{ error }}</div>
-    </template>
+        </footer>
+      </template>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useGitHubStore } from '../../stores/github'
 import { api } from '../../utils/api'
 import { groupAndSortRepos } from '../../utils/repoGroups'
 
-const emit = defineEmits<{ (e: 'launched'): void }>()
+const emit = defineEmits<{ (e: 'launched'): void; (e: 'close'): void }>()
 
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
+
+const currentGuild = computed(() => guildStore.currentGuild)
+
+const TABS = [
+  { id: 'general', label: 'General' },
+  { id: 'tools', label: 'Tools' },
+  { id: 'environment', label: 'Environment' },
+] as const
+const activeTab = ref<(typeof TABS)[number]['id']>('general')
+
+const panelRef = ref<HTMLElement | null>(null)
 
 const AVAILABLE_TOOLS = ['claude', 'codex', 'pi'] as const
 
@@ -345,7 +438,8 @@ async function saveSettings(guildId: string) {
         // Persist only meaningful, non-duplicating pairs so a stale blank row
         // can't reappear and shadow a guild credential next session.
         envVars: envVars.value.filter(
-          (e) => e.key.trim() !== '' && e.value.trim() !== '' && !guildCredKeys.value.has(e.key.trim()),
+          (e) =>
+            e.key.trim() !== '' && e.value.trim() !== '' && !guildCredKeys.value.has(e.key.trim()),
         ),
       },
     })
@@ -354,7 +448,17 @@ async function saveSettings(guildId: string) {
   }
 }
 
+function close() {
+  emit('close')
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') close()
+}
+
 onMounted(async () => {
+  document.addEventListener('keydown', onKeydown)
+
   const guild = guildStore.currentGuild
 
   if (ghStore.repos.length === 0 && ghStore.token) {
@@ -398,6 +502,10 @@ onMounted(async () => {
   } else {
     selectedRepos.value = repoFetchFailed.value ? [] : [...ghStore.selectedRepos]
   }
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKeydown)
 })
 
 function toggleRepo(fullName: string) {
@@ -502,20 +610,184 @@ async function launch() {
 </script>
 
 <style scoped>
-.spawn-form {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--color-brass-dark);
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* FactoryFloor robots/stations use z-index up to ~1000 (Math.round(y * 1000)),
+     so the overlay must sit above that to stay clickable. */
+  z-index: 2000;
+  padding: 20px;
+}
+
+.settings-panel {
+  width: min(760px, 94vw);
+  height: min(560px, 88vh);
   background: var(--color-bg-secondary);
+  border: 2px solid var(--color-brass);
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.5),
+    0 0 16px rgba(232, 170, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.settings-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 2px solid var(--color-brass-dark);
+  flex-shrink: 0;
+}
+
+.settings-panel-title {
+  font-family: var(--font-pixel);
+  font-size: 9px;
+  color: var(--color-brass-light);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.settings-panel-guild {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-panel-guild-name {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  color: var(--color-brass);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-panel-guild-id {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-text-dim);
+  flex-shrink: 0;
+}
+
+.settings-close-btn {
+  background: var(--color-bg);
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-brass);
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  border-radius: 2px;
+  font-size: 12px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    border-color 0.12s,
+    background 0.12s,
+    color 0.12s;
+}
+
+.settings-close-btn:hover {
+  border-color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.1);
+  color: var(--color-brass-light);
+}
+
+.settings-panel-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 150px;
+  flex-shrink: 0;
+  padding: 10px 8px;
+  border-right: 1px solid var(--color-brass-dark);
+  background: var(--color-bg);
+  overflow-y: auto;
+}
+
+.settings-tab {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--color-brass-dark);
+  cursor: pointer;
+  font-family: var(--font-pixel);
+  font-size: 7px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  text-align: left;
+  padding: 9px 10px;
+  border-radius: 2px;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
+}
+
+.settings-tab:hover {
+  color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.06);
+}
+
+.settings-tab.active {
+  color: var(--color-brass-light);
+  background: rgba(232, 170, 0, 0.1);
+  border-color: var(--color-brass-dark);
+}
+
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 14px 16px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.spawn-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--color-brass-dark);
+  flex-shrink: 0;
 }
 
 .spawn-success {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  flex: 1;
   padding: 12px 4px;
 }
 
@@ -571,15 +843,9 @@ async function launch() {
   width: 80px;
 }
 
-.spawn-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 2px;
-}
-
 .spawn-launch-btn {
   font-size: 7px;
-  padding: 4px 10px;
+  padding: 5px 12px;
 }
 
 .spawn-launch-btn:disabled {
@@ -604,7 +870,7 @@ async function launch() {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  max-height: 160px;
+  max-height: 220px;
   overflow-y: auto;
   border: 1px solid var(--color-brass-dark);
   border-radius: 2px;
@@ -736,7 +1002,7 @@ async function launch() {
 }
 
 .spawn-env-key {
-  width: 80px;
+  width: 100px;
   flex-shrink: 0;
 }
 
@@ -813,5 +1079,44 @@ async function launch() {
 
 .spawn-cred-status--ok {
   color: var(--color-green, #4caf50);
+}
+
+@media (max-width: 720px) {
+  .settings-overlay {
+    padding: 0;
+  }
+
+  .settings-panel {
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: none;
+  }
+
+  .settings-panel-body {
+    flex-direction: column;
+  }
+
+  .settings-tabs {
+    flex-direction: row;
+    width: auto;
+    gap: 4px;
+    border-right: none;
+    border-bottom: 1px solid var(--color-brass-dark);
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .settings-tab {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-close-btn,
+  .settings-tab {
+    transition: none;
+  }
 }
 </style>
