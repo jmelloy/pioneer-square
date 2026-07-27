@@ -208,10 +208,19 @@ class TestCredentialGating:
             await worker2._detect_available_tools()
         assert "codex" in worker2._available_tools
 
-    async def test_pi_needs_no_credentials(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    async def test_pi_without_scoped_env_is_excluded(self):
+        # Empty pi tab → no scoped env → dropped.
         cfg = _make_cfg(tools=["pi"], pi_path="pi")
         worker = Worker(cfg)
+        with patch("shutil.which", return_value="pi"):
+            await worker._detect_available_tools()
+        assert "pi" not in worker._available_tools
+
+    async def test_pi_with_scoped_env_is_included(self):
+        # Any scoped var (a Bedrock bearer token here) counts as configured.
+        cfg = _make_cfg(tools=["pi"], pi_path="pi")
+        worker = Worker(cfg)
+        worker._tool_env = {"pi": {"AWS_BEARER_TOKEN_BEDROCK": "tok"}}
         with patch("shutil.which", return_value="pi"):
             await worker._detect_available_tools()
         assert "pi" in worker._available_tools
