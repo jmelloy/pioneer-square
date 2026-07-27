@@ -37,9 +37,7 @@ async def test_already_present_tool_is_not_installed():
 async def test_missing_tool_is_installed_via_npm():
     with (
         patch("shutil.which", return_value=None),
-        patch(
-            "asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc())
-        ) as create,
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc())) as create,
     ):
         await tool_installer.ensure_tools_installed(["codex"], tool_paths=_tool_paths())
     create.assert_awaited_once_with(
@@ -55,9 +53,7 @@ async def test_missing_tool_is_installed_via_npm():
 async def test_successful_pi_install_also_installs_subagents():
     with (
         patch("shutil.which", return_value=None),
-        patch(
-            "asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc())
-        ) as create,
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_FakeProc())) as create,
     ):
         await tool_installer.ensure_tools_installed(["pi"], tool_paths=_tool_paths())
     assert create.await_count == 2

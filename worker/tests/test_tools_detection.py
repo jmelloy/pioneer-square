@@ -408,9 +408,7 @@ class TestEnsureToolsInstalled:
     async def test_uses_install_tools_when_set(self):
         cfg = _make_cfg(install_tools=["claude"], tools=["claude", "codex"])
         worker = Worker(cfg)
-        with patch.object(
-            tool_installer, "ensure_tools_installed", AsyncMock()
-        ) as ensure:
+        with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
             await worker._ensure_tools_installed()
         ensure.assert_awaited_once()
         assert ensure.await_args.args[0] == ["claude"]
@@ -418,26 +416,20 @@ class TestEnsureToolsInstalled:
     async def test_falls_back_to_tools_when_install_tools_unset(self):
         cfg = _make_cfg(install_tools=None, tools=["codex"])
         worker = Worker(cfg)
-        with patch.object(
-            tool_installer, "ensure_tools_installed", AsyncMock()
-        ) as ensure:
+        with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
             await worker._ensure_tools_installed()
         assert ensure.await_args.args[0] == ["codex"]
 
     async def test_falls_back_to_all_tools_when_both_unset(self):
         cfg = _make_cfg(install_tools=None, tools=None)
         worker = Worker(cfg)
-        with patch.object(
-            tool_installer, "ensure_tools_installed", AsyncMock()
-        ) as ensure:
+        with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
             await worker._ensure_tools_installed()
         assert ensure.await_args.args[0] == list(tool_installer.ALL_TOOLS)
 
     async def test_empty_install_tools_skips_installation(self):
         cfg = _make_cfg(install_tools=[], tools=None)
         worker = Worker(cfg)
-        with patch.object(
-            tool_installer, "ensure_tools_installed", AsyncMock()
-        ) as ensure:
+        with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
             await worker._ensure_tools_installed()
         ensure.assert_not_awaited()
