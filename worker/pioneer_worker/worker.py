@@ -295,6 +295,29 @@ class Worker:
             os.environ["GITHUB_TOKEN"] = self.cfg.github_token
             logger.info("GITHUB_TOKEN set in environment for gh CLI and subprocesses")
 
+    async def _task_github_token(self, task_id: str) -> str | None:
+        """Fetch a fresh token to push/PR *task_id* as its triggering user.
+
+        The backend returns that user's OAuth token (so the branch and PR are
+        attributed to the human who triggered the task), falling back to the
+        App installation token. Fetched per task and used in an explicit push
+        URL — never persisted in the shared ``origin`` remote — so concurrent
+        agents pushing as different users don't collide, and the token is never
+        stale the way a clone-time embedded token was.
+        """
+        try:
+            async with await self._http(authed=True) as client:
+                resp = await client.get(
+                    "/auth/github/token",
+                    params={"guild_id": self.cfg.guild_id, "task_id": task_id},
+                )
+            if resp.status_code == 200:
+                return resp.json().get("access_token")
+            logger.warning("No task GitHub token from backend (status %d)", resp.status_code)
+        except Exception as exc:
+            logger.warning("Could not fetch task GitHub token: %s", exc)
+        return self.cfg.github_token
+
     async def _fetch_guild_env_vars(self) -> None:
         """Fetch guild-level env vars from foreman config and apply to the process environment.
 
@@ -2064,28 +2087,41 @@ class Worker:
                     records=usage_records,
                 )
 
+            # Push/PR are attributed to the human who triggered the task (their
+            # OAuth token), falling back to the App token — see _task_github_token.
+            push_token = await self._task_github_token(task_id)
             if is_review:
                 # Review tasks only read the PR and post a `gh pr review` —
                 # never push commits or auto-commit stray local changes.
                 await emit("Review phase — skipping push (read-only task).", level=LEVEL_WORKER)
+                pr_url = await github_pr.find_existing_pr(
+                    branch=branch, worktree_path=primary_wt, token=push_token
+                )
             else:
                 # Push the branch regardless of outcome so partial work is visible
                 # and a follow-up run can build on it.
                 push_ok = await github_pr.push_branch(
                     branch=branch,
                     worktree_path=primary_wt,
+                    token=push_token,
                     emit=emit,
                 )
                 if push_ok:
                     await emit(f"Branch pushed: {branch}", level=LEVEL_WORKER)
+                pr_url = await github_pr.find_existing_pr(
+                    branch=branch, worktree_path=primary_wt, token=push_token
+                )
+                if not pr_url and push_ok:
+                    pr_url = await github_pr.open_pr(
+                        task=task,
+                        branch=branch,
+                        worktree_path=primary_wt,
+                        token=push_token,
+                        emit=emit,
+                    )
 
-            pr_url = await github_pr.find_existing_pr(
-                branch=branch,
-                worktree_path=primary_wt,
-                token=token,
-            )
             if pr_url:
-                label = "Reviewed PR" if is_review else "✓ Claude-authored PR"
+                label = "Reviewed PR" if is_review else "✓ PR"
                 await emit(f"{label}: {pr_url}", level=LEVEL_WORKER)
                 await self._ensure_pr_webhook(pr_url, emit)
 

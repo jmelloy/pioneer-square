@@ -395,6 +395,7 @@ async def assign_task(
             phase=data.phase or "execute",
             parent_task_id=data.parent_task_id,
             created_at=created_at,
+            user_id=github_user_id,
         )
     )
     await db.commit()
