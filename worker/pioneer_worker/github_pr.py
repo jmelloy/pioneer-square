@@ -75,13 +75,16 @@ async def push_branch(
     worktree_path: str,
     token: str | None,
     emit: EmitFn,
-) -> bool:
-    """Push *branch* using *token*. Returns True on success.
+) -> str:
+    """Push *branch* to origin using *token*.
+
+    Returns one of: ``"pushed"`` (commits published), ``"nothing"`` (no commits
+    beyond the base — nothing to push, not a failure), or ``"failed"`` (a real
+    error, e.g. git permission denied).
 
     The token is passed in an explicit push URL rather than baked into the
     shared ``origin`` remote, so concurrent agents can push as different users
-    and a stale clone-time token can never be reused. ``-u`` is omitted so the
-    token-bearing URL is never persisted as the branch upstream."""
+    and a stale clone-time token can never be reused."""
     # Stage and commit any uncommitted work so it isn't silently lost on push
     # (can happen on max-turns, plan-phase completion, or normal task end).
     rc_status, status_out, _ = await git_ops.run_git(["status", "--porcelain"], cwd=worktree_path)
@@ -94,7 +97,23 @@ async def push_branch(
         )
         if rc_commit != 0:
             await emit(f"✗ Auto-commit failed: {commit_err.strip()[:120]}", level=_LEVEL)
-            return False
+            return "failed"
+
+    # Skip the push when the branch has no commits beyond what's already
+    # published — avoids creating empty remote branches / PRs when the agent
+    # did nothing (e.g. bailed on a permission prompt). Compare against the
+    # upstream if one exists (continued task), else the base (origin/HEAD).
+    rc_up, upstream, _ = await git_ops.run_git(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+        cwd=worktree_path,
+    )
+    base_ref = upstream.strip() if rc_up == 0 and upstream.strip() else "origin/HEAD"
+    rc_cnt, ahead, _ = await git_ops.run_git(
+        ["rev-list", "--count", f"{base_ref}..HEAD"], cwd=worktree_path
+    )
+    if rc_cnt == 0 and ahead.strip() == "0":
+        await emit(f"No new commits on {branch} — skipping push", level=_LEVEL)
+        return "nothing"
 
     await emit(f"Pushing {branch}...", level=_LEVEL)
     # ponytail: token in argv is visible via `ps`/DEBUG logs; acceptable for a
@@ -115,9 +134,9 @@ async def push_branch(
     rc, _, err = await git_ops.run_git(push_args, cwd=worktree_path)
     if rc != 0:
         await emit(f"✗ Push failed: {err.strip()[:120]}", level=_LEVEL)
-        return False
+        return "failed"
     await emit(f"✓ Pushed {branch}", level=_LEVEL)
-    return True
+    return "pushed"
 
 
 async def find_existing_pr(

@@ -2098,20 +2098,42 @@ class Worker:
                     branch=branch, worktree_path=primary_wt, token=push_token
                 )
             else:
-                # Push the branch regardless of outcome so partial work is visible
-                # and a follow-up run can build on it.
-                push_ok = await github_pr.push_branch(
+                # Push the branch so partial work is visible and a follow-up can
+                # build on it. push_branch returns "pushed" | "nothing" | "failed".
+                push_result = await github_pr.push_branch(
                     branch=branch,
                     worktree_path=primary_wt,
                     token=push_token,
                     emit=emit,
                 )
-                if push_ok:
-                    await emit(f"Branch pushed: {branch}", level=LEVEL_WORKER)
+                if push_result == "failed" and success:
+                    # A genuine push failure (e.g. git permission denied) after an
+                    # agent "success" must not surface as a reviewable result.
+                    logger.warning(
+                        "Task %s: agent reported success but push failed — marking error",
+                        task_id,
+                    )
+                    success = False
+                    stop_reason = "push_failed"
+                elif push_result == "nothing" and success:
+                    # The agent claimed success but left no commits — usually it
+                    # was blocked (e.g. every tool call denied) and never did the
+                    # work. Don't mask that as a reviewable result.
+                    logger.warning(
+                        "Task %s: agent reported success but produced no commits — marking error",
+                        task_id,
+                    )
+                    await emit(
+                        "Agent reported success but produced no commits — flagging for review.",
+                        level=LEVEL_WORKER,
+                    )
+                    success = False
+                    stop_reason = "no_changes"
+
                 pr_url = await github_pr.find_existing_pr(
                     branch=branch, worktree_path=primary_wt, token=push_token
                 )
-                if not pr_url and push_ok:
+                if not pr_url and push_result == "pushed":
                     pr_url = await github_pr.open_pr(
                         task=task,
                         branch=branch,
