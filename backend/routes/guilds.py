@@ -67,6 +67,9 @@ class GuildUpdate(BaseModel):
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MAX_FOREMAN_ENV_VARS = 20
+# Worker tools whose env vars can be scoped per-tool (passed only to that tool's
+# runner, never leaked into the others' environment).
+_SCOPED_TOOLS = {"claude", "pi", "codex"}
 _MAX_ENV_VALUE_LEN = 4096
 
 
@@ -75,6 +78,45 @@ class EnvVarItem(BaseModel):
     # None → keep the currently stored value. Kept for API compatibility; the UI
     # now sends actual values since env vars are returned in clear text.
     value: str | None = None
+
+
+def _validate_env_var_list(v: list[EnvVarItem] | None) -> list[EnvVarItem] | None:
+    if v is None:
+        return v
+    if len(v) > _MAX_FOREMAN_ENV_VARS:
+        raise ValueError(f"Too many env vars (max {_MAX_FOREMAN_ENV_VARS})")
+    for item in v:
+        if not _ENV_KEY_RE.match(item.key):
+            raise ValueError(
+                f"Invalid env var key {item.key!r}; must match ^[A-Za-z_][A-Za-z0-9_]*$"
+            )
+        if item.value is not None and len(item.value) > _MAX_ENV_VALUE_LEN:
+            raise ValueError(
+                f"Value for {item.key!r} exceeds max length ({_MAX_ENV_VALUE_LEN} chars)"
+            )
+    return v
+
+
+def _merge_env_var_list(submitted: list[EnvVarItem], existing: list[dict] | None) -> list[dict]:
+    """Merge a submitted env-var list over the stored one.
+
+    - value None → keep the existing stored value (dropped if none stored).
+    - Duplicate keys collapse, preferring a non-empty value over a blank one so a
+      stray blank row can't shadow a real credential at spawn time.
+    """
+    existing_map: dict[str, str] = {e["key"]: e["value"] for e in (existing or [])}
+    merged: dict[str, str] = {}
+    for item in submitted:
+        if item.value is None:
+            if item.key not in existing_map:
+                continue
+            resolved = existing_map[item.key]
+        else:
+            resolved = item.value
+        if item.key in merged and resolved == "" and merged[item.key] != "":
+            continue
+        merged[item.key] = resolved
+    return [{"key": k, "value": v} for k, v in merged.items()]
 
 
 class ForemanConfigUpdate(BaseModel):
@@ -93,24 +135,29 @@ class ForemanConfigUpdate(BaseModel):
     codex_default_model: str | None = Field(default=None, max_length=200)
     # None (field absent) → leave existing env_vars unchanged.
     # Empty list → clear all env_vars.
+    # Shared env vars: applied to every worker tool AND the foreman's own LLM.
     env_vars: list[EnvVarItem] | None = None
+    # Per-tool env vars: each tool's runner receives only its own set (plus the
+    # shared env_vars), so e.g. Pi's Bedrock token never reaches the Claude CLI.
+    # None → leave unchanged; a tool mapped to [] clears that tool's vars.
+    tool_env_vars: dict[str, list[EnvVarItem]] | None = None
 
     @field_validator("env_vars")
     @classmethod
     def validate_env_vars(cls, v: list[EnvVarItem] | None) -> list[EnvVarItem] | None:
+        return _validate_env_var_list(v)
+
+    @field_validator("tool_env_vars")
+    @classmethod
+    def validate_tool_env_vars(
+        cls, v: dict[str, list[EnvVarItem]] | None
+    ) -> dict[str, list[EnvVarItem]] | None:
         if v is None:
             return v
-        if len(v) > _MAX_FOREMAN_ENV_VARS:
-            raise ValueError(f"Too many env vars (max {_MAX_FOREMAN_ENV_VARS})")
-        for item in v:
-            if not _ENV_KEY_RE.match(item.key):
-                raise ValueError(
-                    f"Invalid env var key {item.key!r}; must match ^[A-Za-z_][A-Za-z0-9_]*$"
-                )
-            if item.value is not None and len(item.value) > _MAX_ENV_VALUE_LEN:
-                raise ValueError(
-                    f"Value for {item.key!r} exceeds max length ({_MAX_ENV_VALUE_LEN} chars)"
-                )
+        for tool, items in v.items():
+            if tool not in _SCOPED_TOOLS:
+                raise ValueError(f"Unknown tool {tool!r}; must be one of {sorted(_SCOPED_TOOLS)}")
+            _validate_env_var_list(items)
         return v
 
 
@@ -502,26 +549,21 @@ async def update_foreman_config(
                 # Explicit null → clear all env vars
                 config.pop("env_vars", None)
             else:
-                existing_map: dict[str, str] = {
-                    e["key"]: e["value"] for e in config.get("env_vars", [])
-                }
                 # Collapse duplicate keys (the guild edit screen can submit the
                 # same key twice — e.g. a well-known field plus a free-form row),
                 # keeping a non-empty value over a blank one so a stray blank
                 # can't shadow the real value at spawn time.
-                merged: dict[str, str] = {}
-                for item in value:
-                    if item.value is None:
-                        # Unchanged: keep the existing stored value if present
-                        if item.key not in existing_map:
-                            continue
-                        resolved = existing_map[item.key]
-                    else:
-                        resolved = item.value
-                    if item.key in merged and resolved == "" and merged[item.key] != "":
-                        continue
-                    merged[item.key] = resolved
-                config["env_vars"] = [{"key": k, "value": v} for k, v in merged.items()]
+                config["env_vars"] = _merge_env_var_list(value, config.get("env_vars"))
+        elif field == "tool_env_vars":
+            if value is None:
+                config.pop("tool_env_vars", None)
+            else:
+                # Merge each submitted tool independently; tools absent from the
+                # payload keep their stored vars. A tool mapped to [] clears it.
+                existing_tools: dict = dict(config.get("tool_env_vars") or {})
+                for tool, items in value.items():
+                    existing_tools[tool] = _merge_env_var_list(items, existing_tools.get(tool))
+                config["tool_env_vars"] = existing_tools
         elif value is None:
             config.pop(field, None)
         else:

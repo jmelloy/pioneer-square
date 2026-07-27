@@ -395,6 +395,63 @@ def test_foreman_config_env_vars_round_trip_in_clear(client):
     }
 
 
+def test_foreman_config_tool_env_vars_round_trip_and_scope(client):
+    """Per-tool env vars round-trip under tool_env_vars, isolated per tool, and
+    merge independently of the shared env_vars list."""
+    test_client, db_url = client
+    token = make_auth_token(db_url)  # owner of g-ftool
+    insert_guild(db_url, "g-ftool")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    patch = test_client.patch(
+        "/api/guilds/g-ftool/foreman-config",
+        headers=headers,
+        json={
+            "env_vars": [{"key": "GITHUB_TOKEN", "value": "shared"}],
+            "tool_env_vars": {
+                "claude": [{"key": "CLAUDE_CODE_OAUTH_TOKEN", "value": "claude-tok"}],
+                "pi": [{"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "pi-bedrock"}],
+                "codex": [],
+            },
+        },
+    )
+    assert patch.status_code == 200
+    cfg = patch.json()
+    assert cfg["tool_env_vars"]["claude"] == [
+        {"key": "CLAUDE_CODE_OAUTH_TOKEN", "value": "claude-tok"}
+    ]
+    assert cfg["tool_env_vars"]["pi"] == [
+        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "pi-bedrock"}
+    ]
+    assert cfg["tool_env_vars"]["codex"] == []
+
+    # A later PATCH touching only claude leaves pi's scoped vars intact.
+    patch2 = test_client.patch(
+        "/api/guilds/g-ftool/foreman-config",
+        headers=headers,
+        json={"tool_env_vars": {"claude": [{"key": "ANTHROPIC_API_KEY", "value": "sk-x"}]}},
+    )
+    assert patch2.status_code == 200
+    cfg2 = patch2.json()
+    assert cfg2["tool_env_vars"]["pi"] == [
+        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "pi-bedrock"}
+    ]
+    assert {e["key"] for e in cfg2["tool_env_vars"]["claude"]} == {"ANTHROPIC_API_KEY"}
+
+
+def test_foreman_config_tool_env_vars_rejects_unknown_tool(client):
+    test_client, db_url = client
+    token = make_auth_token(db_url)
+    insert_guild(db_url, "g-fbad")
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = test_client.patch(
+        "/api/guilds/g-fbad/foreman-config",
+        headers=headers,
+        json={"tool_env_vars": {"gemini": [{"key": "GEMINI_API_KEY", "value": "x"}]}},
+    )
+    assert resp.status_code == 422
+
+
 def test_foreman_config_dedups_duplicate_keys_preferring_nonempty(client):
     """The guild edit screen can submit the same key twice (a well-known field
     plus a free-form row). The stored config keeps one entry, and a blank value

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -214,6 +215,47 @@ class TestCredentialGating:
         with patch("shutil.which", return_value="pi"):
             await worker._detect_available_tools()
         assert "pi" in worker._available_tools
+
+
+class TestPerToolEnvScoping:
+    """Per-tool env vars reach only their own tool and gate credentials without
+    leaking into os.environ or the other tools."""
+
+    async def test_env_for_tool_isolates_scoped_vars(self, monkeypatch):
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setenv("SHARED_VAR", "shared")
+        worker = Worker(_make_cfg())
+        worker._tool_env = {
+            "claude": {"CLAUDE_CODE_OAUTH_TOKEN": "claude-tok"},
+            "pi": {"AWS_BEARER_TOKEN_BEDROCK": "pi-bedrock"},
+        }
+
+        claude_env = worker._env_for_tool("claude")
+        pi_env = worker._env_for_tool("pi")
+
+        # Each tool sees its own scoped var plus the shared process env...
+        assert claude_env["CLAUDE_CODE_OAUTH_TOKEN"] == "claude-tok"
+        assert claude_env["SHARED_VAR"] == "shared"
+        assert pi_env["AWS_BEARER_TOKEN_BEDROCK"] == "pi-bedrock"
+        # ...but never the other tool's scoped var.
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in claude_env
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in pi_env
+        # Scoped vars must not have leaked into the real process environment.
+        assert "AWS_BEARER_TOKEN_BEDROCK" not in os.environ
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in os.environ
+
+    async def test_scoped_credential_gates_tool_availability(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        cfg = _make_cfg(tools=["claude"], claude_path="claude")
+        worker = Worker(cfg)
+        worker._claude_is_authenticated = AsyncMock(return_value=False)
+        # Credential present only in the claude-scoped env (never os.environ).
+        worker._tool_env = {"claude": {"CLAUDE_CODE_OAUTH_TOKEN": "claude-tok"}}
+        with patch("shutil.which", return_value="claude"):
+            await worker._detect_available_tools()
+        assert "claude" in worker._available_tools
 
 
 class TestToolsCLIFlag:

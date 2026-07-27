@@ -83,6 +83,7 @@ async def run_codex_auto(
     openai_api_key: str | None = None,
     model: str | None = None,
     resume_session_id: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run codex on *description* in *cwd*. Returns (success, stop_reason, last_text, session_id).
 
@@ -108,6 +109,7 @@ async def run_codex_auto(
         openai_api_key=openai_api_key,
         model=model,
         resume_session_id=resume_session_id,
+        env=env,
     )
     if resume_session_id and not success:
         logger.warning(
@@ -125,6 +127,7 @@ async def run_codex_auto(
             openai_api_key=openai_api_key,
             model=model,
             resume_session_id=None,
+            env=env,
         )
     return success, stop_reason, last_text, session_id
 
@@ -139,6 +142,7 @@ async def _run_codex_once(
     openai_api_key: str | None,
     model: str | None,
     resume_session_id: str | None,
+    env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Single codex invocation. See run_codex_auto for the retrying wrapper."""
     last_message_file = tempfile.NamedTemporaryFile(
@@ -173,16 +177,16 @@ async def _run_codex_once(
         # prompt content and tries to drain it. Give it an idle TTY so the
         # explicit prompt argument is the only task input.
         master_fd, slave_fd = pty.openpty()
-        env = dict(os.environ)
+        subprocess_env = dict(env) if env is not None else dict(os.environ)
         if openai_api_key is not None:
-            env["OPENAI_API_KEY"] = openai_api_key
+            subprocess_env["OPENAI_API_KEY"] = openai_api_key
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
             stdin=slave_fd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=env,
+            env=subprocess_env,
             limit=8 * 1024 * 1024,  # raise readline limit to 8 MB
         )
         os.close(slave_fd)

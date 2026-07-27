@@ -161,6 +161,7 @@ async def run_pi_auto(
     model: str | None = None,
     provider: str | None = None,
     resume_session_id: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run pi on *description* in *cwd*.
 
@@ -194,6 +195,7 @@ async def run_pi_auto(
         model=model,
         provider=provider,
         resume_session_id=resume_session_id,
+        env=env,
     )
     if resume_session_id and not success:
         logger.warning(
@@ -212,6 +214,7 @@ async def run_pi_auto(
             model=model,
             provider=provider,
             resume_session_id=None,
+            env=env,
         )
     return success, stop_reason, last_text, session_id
 
@@ -227,6 +230,7 @@ async def _run_pi_once(
     model: str | None,
     provider: str | None,
     resume_session_id: str | None,
+    env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Single pi invocation. See run_pi_auto for the retrying wrapper."""
     cmd = [pi_path]
@@ -257,6 +261,7 @@ async def _run_pi_once(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=_STREAM_LIMIT,
+            env=env,
             # Own process group so _signal_group() can reap pi's tool children.
             start_new_session=True,
         )

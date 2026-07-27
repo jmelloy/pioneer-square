@@ -131,6 +131,10 @@
 
             <!-- Claude: the foreman's own LLM (the AI orchestrator itself) -->
             <template v-if="foremanToolTab === 'claude'">
+              <p class="foreman-hint">
+                These configure the foreman's own orchestrator LLM (the AI itself). The Claude
+                worker CLI's environment is in the section below.
+              </p>
               <div class="foreman-field">
                 <label class="foreman-field-label">Provider</label>
                 <select v-model="foremanProvider" class="settings-input" @change="onProviderChange">
@@ -206,8 +210,9 @@
               </div>
               <p class="foreman-hint">
                 Used when the foreman assigns a task to the Pi tool without an explicit
-                model/provider override. Select "Amazon Bedrock" to run Pi against Bedrock;
-                its credentials are shared with the Claude tab's AWS Credentials fields.
+                model/provider override. Select "Amazon Bedrock" to run Pi against Bedrock; set its
+                AWS credentials in the Pi Environment section below (or the shared variables, which
+                apply to every tool).
               </p>
             </template>
 
@@ -227,6 +232,55 @@
                 model override.
               </p>
             </template>
+
+            <!-- Per-tool environment: passed ONLY to the selected tool's runner,
+                 never leaked to the other tools. -->
+            <div class="foreman-field">
+              <label class="foreman-field-label">{{ activeToolLabel }} Environment</label>
+              <p class="foreman-hint">
+                Passed only to the {{ activeToolLabel }} CLI — never to the other tools. Overrides
+                the shared variables below for this tool. Pick a known variable or type your own.
+              </p>
+              <div class="env-var-list">
+                <div
+                  v-for="row in toolEnvRows[foremanToolTab]"
+                  :key="row.id"
+                  class="env-var-row"
+                >
+                  <input
+                    v-model="row.key"
+                    class="settings-input env-var-key"
+                    :list="`tool-env-keys-${foremanToolTab}`"
+                    placeholder="KEY_NAME"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <input
+                    v-model="row.value"
+                    type="text"
+                    class="settings-input env-var-value"
+                    placeholder="value"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <button
+                    class="env-var-delete-btn"
+                    @click="removeToolEnvVar(row)"
+                    title="Remove variable"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <datalist :id="`tool-env-keys-${foremanToolTab}`">
+                  <option v-for="k in TOOL_ENV_KEYS[foremanToolTab]" :key="k" :value="k" />
+                </datalist>
+                <button class="pixel-btn env-var-add-btn" @click="addToolEnvVar">
+                  + Add Variable
+                </button>
+              </div>
+            </div>
+
+            <div class="foreman-divider">General — applies to all tools &amp; the foreman</div>
 
             <div class="foreman-field">
               <label class="foreman-field-label">System Prompt Suffix</label>
@@ -273,8 +327,11 @@
             </div>
 
             <div class="foreman-field">
-              <label class="foreman-field-label">Environment Variables</label>
-              <p class="foreman-hint">Inherited by every worker spawned in this guild.</p>
+              <label class="foreman-field-label">Shared Environment Variables</label>
+              <p class="foreman-hint">
+                Inherited by every worker tool in this guild and the foreman's own LLM. Use the
+                per-tool sections above to scope a variable to a single tool.
+              </p>
               <div class="env-var-list">
                 <div v-for="row in additionalEnvVarRows" :key="row.id" class="env-var-row">
                   <input
@@ -370,6 +427,67 @@ const FOREMAN_TOOL_TABS = [
   { id: 'codex', label: 'Codex' },
 ] as const
 const foremanToolTab = ref<(typeof FOREMAN_TOOL_TABS)[number]['id']>('claude')
+const activeToolLabel = computed(
+  () => FOREMAN_TOOL_TABS.find((t) => t.id === foremanToolTab.value)?.label ?? '',
+)
+
+// Known env-var keys per worker tool, surfaced as datalist suggestions. Users can
+// still type any other key. Sourced from each CLI's own docs (`pi --help`, Claude
+// Code / Codex provider env vars).
+const TOOL_ENV_KEYS: Record<string, string[]> = {
+  claude: [
+    'ANTHROPIC_API_KEY',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_AUTH_TOKEN',
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_MODEL',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'AWS_REGION',
+    'AWS_PROFILE',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+    'AWS_BEARER_TOKEN_BEDROCK',
+  ],
+  codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL'],
+  pi: [
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_OAUTH_TOKEN',
+    'OPENAI_API_KEY',
+    'AZURE_OPENAI_API_KEY',
+    'AZURE_OPENAI_BASE_URL',
+    'AZURE_OPENAI_RESOURCE_NAME',
+    'AZURE_OPENAI_API_VERSION',
+    'AZURE_OPENAI_DEPLOYMENT_NAME_MAP',
+    'DEEPSEEK_API_KEY',
+    'GEMINI_API_KEY',
+    'GROQ_API_KEY',
+    'CEREBRAS_API_KEY',
+    'XAI_API_KEY',
+    'FIREWORKS_API_KEY',
+    'TOGETHER_API_KEY',
+    'OPENROUTER_API_KEY',
+    'AI_GATEWAY_API_KEY',
+    'ZAI_API_KEY',
+    'MISTRAL_API_KEY',
+    'MINIMAX_API_KEY',
+    'MOONSHOT_API_KEY',
+    'OPENCODE_API_KEY',
+    'KIMI_API_KEY',
+    'CLOUDFLARE_API_KEY',
+    'CLOUDFLARE_ACCOUNT_ID',
+    'CLOUDFLARE_GATEWAY_ID',
+    'XIAOMI_API_KEY',
+    'XIAOMI_TOKEN_PLAN_CN_API_KEY',
+    'XIAOMI_TOKEN_PLAN_AMS_API_KEY',
+    'XIAOMI_TOKEN_PLAN_SGP_API_KEY',
+    'AWS_PROFILE',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_BEARER_TOKEN_BEDROCK',
+    'AWS_REGION',
+  ],
+}
 
 const panelRef = ref<HTMLElement | null>(null)
 
@@ -464,6 +582,20 @@ interface EnvVarRow {
 let envRowSeq = 0
 const envVarRows = ref<EnvVarRow[]>([])
 
+// Per-tool env var rows, keyed by tool id. Each tool's rows are saved under
+// foreman_config.tool_env_vars[tool] and reach only that tool's runner.
+const toolEnvRows = reactive<Record<string, EnvVarRow[]>>({ claude: [], pi: [], codex: [] })
+
+function addToolEnvVar() {
+  toolEnvRows[foremanToolTab.value].push({ id: ++envRowSeq, key: '', value: '' })
+}
+
+function removeToolEnvVar(row: EnvVarRow) {
+  const rows = toolEnvRows[foremanToolTab.value]
+  const i = rows.indexOf(row)
+  if (i >= 0) rows.splice(i, 1)
+}
+
 function wellKnownValue(key: string): string {
   return envVarRows.value.find((r) => r.key === key)?.value ?? ''
 }
@@ -507,6 +639,14 @@ async function loadForemanConfig() {
         key: e.key,
         value: e.value ?? '',
       }))
+      const toolEnv = cfg.tool_env_vars ?? {}
+      for (const tool of ['claude', 'pi', 'codex']) {
+        toolEnvRows[tool] = (toolEnv[tool] ?? []).map((e: { key: string; value?: string }) => ({
+          id: ++envRowSeq,
+          key: e.key,
+          value: e.value ?? '',
+        }))
+      }
     }
   } catch {
     // non-fatal: fields stay blank (will use server defaults)
@@ -560,6 +700,20 @@ async function saveForemanConfig() {
       envByKey.set(key, r.value)
     }
     body.env_vars = [...envByKey].map(([key, value]) => ({ key, value }))
+    // Per-tool env vars: send all three tools so an emptied tab clears its set.
+    const toolEnvVars: Record<string, { key: string; value: string }[]> = {}
+    for (const tool of ['claude', 'pi', 'codex']) {
+      const byKey = new Map<string, string>()
+      for (const r of toolEnvRows[tool]) {
+        const key = r.key.trim()
+        if (!key) continue
+        const existing = byKey.get(key)
+        if (existing && r.value === '' && existing !== '') continue
+        byKey.set(key, r.value)
+      }
+      toolEnvVars[tool] = [...byKey].map(([key, value]) => ({ key, value }))
+    }
+    body.tool_env_vars = toolEnvVars
     const res = await fetch(
       `${API_BASE}/api/guilds/${encodeURIComponent(currentGuild.value.id)}/foreman-config`,
       {
@@ -577,6 +731,16 @@ async function saveForemanConfig() {
         key: e.key,
         value: e.value ?? '',
       }))
+      const savedToolEnv = saved.tool_env_vars ?? {}
+      for (const tool of ['claude', 'pi', 'codex']) {
+        toolEnvRows[tool] = (savedToolEnv[tool] ?? []).map(
+          (e: { key: string; value?: string }) => ({
+            id: ++envRowSeq,
+            key: e.key,
+            value: e.value ?? '',
+          }),
+        )
+      }
     } else {
       foremanStatus.value = 'error'
     }
@@ -942,6 +1106,17 @@ onBeforeUnmount(() => {
   color: var(--color-brass-light);
   background: rgba(232, 170, 0, 0.1);
   border-color: var(--color-brass);
+}
+
+.foreman-divider {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  border-top: 1px solid var(--color-brass-dark);
+  padding-top: 12px;
+  margin-top: 6px;
 }
 
 .foreman-field {

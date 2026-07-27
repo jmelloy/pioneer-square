@@ -172,6 +172,10 @@ class Worker:
         self._broadcast_repos: list[str] = list(cfg.repos)
         # Available tool runners detected at startup (e.g. ["claude", "codex", "pi"]).
         self._available_tools: list[str] = []
+        # Per-tool env vars (claude/pi/codex). Kept OUT of os.environ so one tool's
+        # credentials never leak into another's subprocess; merged over os.environ
+        # only when spawning that specific tool. See _env_for_tool.
+        self._tool_env: dict[str, dict[str, str]] = {}
 
     # ------------------------------------------------------------------ HTTP
     async def _http(self, *, authed: bool = False) -> httpx.AsyncClient:
@@ -305,7 +309,8 @@ class Worker:
                     "Foreman env vars: status %d (no vars or not auth'd)", resp.status_code
                 )
                 return
-            env_vars = resp.json().get("env_vars", [])
+            payload = resp.json()
+            env_vars = payload.get("env_vars", [])
             applied = 0
             for item in env_vars:
                 key = item.get("key", "")
@@ -320,8 +325,33 @@ class Worker:
                     logger.debug("Skipping foreman env var %s (already set in environment)", key)
             if applied:
                 logger.info("Applied %d foreman env var(s) to process environment", applied)
+
+            # Per-tool env vars stay scoped: stored here, never dumped into
+            # os.environ, and merged in only when the matching tool is spawned.
+            self._tool_env = {}
+            for tool, items in (payload.get("tool_env_vars") or {}).items():
+                scoped: dict[str, str] = {}
+                for item in items or []:
+                    key = item.get("key", "")
+                    value = item.get("value")
+                    if key and value is not None:
+                        scoped[key] = value
+                if scoped:
+                    self._tool_env[tool] = scoped
+                    logger.info("Loaded %d scoped env var(s) for tool %r", len(scoped), tool)
         except Exception as exc:
             logger.warning("Could not fetch foreman env vars: %s", exc)
+
+    def _env_for_tool(self, tool: str) -> dict[str, str]:
+        """Return the environment a *tool*'s runner subprocess should inherit.
+
+        Base process env (which already carries the shared foreman env_vars)
+        overlaid with the tool's own scoped vars. Scoped vars win so a guild can
+        override a shared default for one tool without affecting the others.
+        """
+        env = dict(os.environ)
+        env.update(self._tool_env.get(tool, {}))
+        return env
 
     async def _check_gh_auth(self) -> None:
         """Run `gh auth status` and log the result as a startup health check."""
@@ -401,13 +431,14 @@ class Worker:
         is dropped from the available-tools list with a warning rather than
         launched and failed per-task.
         """
+        env = self._env_for_tool(name)
         if name == "claude":
-            if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            if env.get("ANTHROPIC_API_KEY") or env.get("CLAUDE_CODE_OAUTH_TOKEN"):
                 return True
             # Fall back to a locally logged-in CLI (dev machines / keychain).
             return await self._claude_is_authenticated()
         if name == "codex":
-            return bool(os.environ.get("OPENAI_API_KEY") or self.cfg.openai_api_key)
+            return bool(env.get("OPENAI_API_KEY") or self.cfg.openai_api_key)
         return True  # pi and any other tool need no credentials
 
     async def _detect_available_tools(self) -> None:
@@ -1885,6 +1916,9 @@ class Worker:
             success = False
             stop_reason = "no_events"
             last_msg = ""
+            # Scoped environment for this tool: shared vars + this tool's own set,
+            # with the other tools' credentials deliberately excluded.
+            tool_env = self._env_for_tool(tool)
 
             while True:
                 if tool == "codex":
@@ -1910,6 +1944,7 @@ class Worker:
                         openai_api_key=self.cfg.openai_api_key,
                         model=_codex_model,
                         resume_session_id=resume_session_id,
+                        env=tool_env,
                     )
                 elif tool == "pi":
                     _pi_model = task.get("model") or self.cfg.pi_model
@@ -1938,6 +1973,7 @@ class Worker:
                         on_usage=_collect_usage,
                         on_proc=_on_proc,
                         resume_session_id=resume_session_id,
+                        env=tool_env,
                     )
                     # pi returns its session via the return value, not the
                     # ClaudeProcess slot; just release the live handle so the
@@ -1968,6 +2004,7 @@ class Worker:
                         claude_path=self.cfg.claude_path,
                         resume_session_id=resume_session_id,
                         model=_claude_model,
+                        env=tool_env,
                     )
 
                     _capture_session_and_clear()
