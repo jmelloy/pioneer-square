@@ -452,7 +452,9 @@ class Worker:
         Credentials belong in the guild env vars now (applied by
         _fetch_guild_env_vars before detection). A tool missing its credentials
         is dropped from the available-tools list with a warning rather than
-        launched and failed per-task.
+        launched and failed per-task. This holds for pi too: it needs a provider
+        credential like the others, so an unconfigured pi is dropped instead of
+        becoming a task-swallowing default.
         """
         env = self._env_for_tool(name)
         if name == "claude":
@@ -462,7 +464,19 @@ class Worker:
             return await self._claude_is_authenticated()
         if name == "codex":
             return bool(env.get("OPENAI_API_KEY") or self.cfg.openai_api_key)
-        return True  # pi and any other tool need no credentials
+        if name == "pi":
+            # Pi speaks to ~20 providers via ~35 different env vars — API keys,
+            # OAuth tokens, and AWS/Bedrock forms like AWS_BEARER_TOKEN_BEDROCK
+            # (see TOOL_ENV_KEYS in GuildSettingsPanel.vue). Rather than mirror
+            # that list and drift from it, treat pi as configured when the guild
+            # set any scoped env var for it. An empty pi tab means pi would launch,
+            # fail auth per-task, and — as the only tool left when claude/codex are
+            # unconfigured — silently swallow every task; drop it instead.
+            # ponytail: presence check, not per-key validation; a scoped non-cred
+            # var (e.g. AWS_REGION alone) still counts. Tighten to the key list if
+            # that false-positive ever bites.
+            return bool(self._tool_env.get("pi"))
+        return True  # any other tool needs no credentials
 
     async def _detect_available_tools(self) -> None:
         """Populate self._available_tools from runner binaries on PATH + credentials.
@@ -970,6 +984,20 @@ class Worker:
 
         await self._fetch_github_token_if_needed()
         await self._fetch_guild_env_vars()
+        # Log what this worker received, once every source has landed (container
+        # env, config, fetched shared vars, per-tool overrides). Keys only —
+        # never values — so credentials don't reach the logs.
+        logger.info(
+            "Worker received: tool=%s provider=%s pi_model=%s tools=%s max_agents=%d"
+            " env_keys=%s tool_env_keys=%s",
+            self.cfg.tool,
+            self.cfg.provider,
+            self.cfg.pi_model,
+            self.cfg.tools,
+            self.cfg.max_agents,
+            sorted(os.environ.keys()),
+            {tool: sorted(v.keys()) for tool, v in self._tool_env.items()},
+        )
         await self._refresh_github_repos()
         await self._check_gh_auth()
         await self._check_codex_doctor()
