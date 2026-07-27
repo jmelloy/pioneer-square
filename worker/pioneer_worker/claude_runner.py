@@ -291,6 +291,7 @@ async def run_claude_auto(
     claude_path: str = "claude",
     resume_session_id: str | None = None,
     model: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run claude on *description* in *cwd*. Returns (success, stop_reason, last_assistant_text, session_id).
 
@@ -333,6 +334,7 @@ async def run_claude_auto(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=STDOUT_LINE_LIMIT,
+            env=env,
         )
         logger.info("claude subprocess started pid=%s", proc.pid)
         claude_proc = ClaudeProcess(proc)

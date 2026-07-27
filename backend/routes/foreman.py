@@ -125,14 +125,21 @@ async def get_foreman_env_vars(
     (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) into their process environment.
     Requires a valid worker auth_token or member login_token.
 
-    Response: ``{ "env_vars": [{"key": str, "value": str}, ...] }``
+    ``env_vars`` are shared across every tool; ``tool_env_vars`` are scoped to a
+    single worker tool (claude/pi/codex) and must not leak into the others.
+
+    Response: ``{ "env_vars": [{"key", "value"}, ...],
+                  "tool_env_vars": {"claude": [...], "pi": [...], "codex": [...]} }``
     """
     res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
     config = guild.foreman_config or {}
-    return {"env_vars": config.get("env_vars", [])}
+    return {
+        "env_vars": config.get("env_vars", []),
+        "tool_env_vars": config.get("tool_env_vars", {}),
+    }
 
 
 # ---------------------------------------------------------------------------
