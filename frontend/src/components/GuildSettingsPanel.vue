@@ -98,6 +98,10 @@
 
             <!-- Claude: the foreman's own LLM (the AI orchestrator itself) -->
             <template v-if="foremanToolTab === 'claude'">
+              <p class="foreman-hint">
+                These configure the foreman's own orchestrator LLM (the AI itself). The Claude
+                worker CLI's environment is in the section below.
+              </p>
               <div class="foreman-field">
                 <label class="foreman-field-label">Provider</label>
                 <select v-model="foremanProvider" class="settings-input" @change="onProviderChange">
@@ -173,8 +177,9 @@
               </div>
               <p class="foreman-hint">
                 Used when the foreman assigns a task to the Pi tool without an explicit
-                model/provider override. Select "Amazon Bedrock" to run Pi against Bedrock;
-                its credentials are shared with the Claude tab's AWS Credentials fields.
+                model/provider override. Select "Amazon Bedrock" to run Pi against Bedrock; set its
+                AWS credentials in the Pi Environment section below (or the shared variables, which
+                apply to every tool).
               </p>
             </template>
 
@@ -241,6 +246,8 @@
                 </button>
               </div>
             </div>
+
+            <div class="foreman-divider">General — applies to all tools &amp; the foreman</div>
 
             <div class="foreman-field">
               <label class="foreman-field-label">System Prompt Suffix</label>
@@ -1023,6 +1030,17 @@ onBeforeUnmount(() => {
   color: var(--color-brass-light);
   background: rgba(232, 170, 0, 0.1);
   border-color: var(--color-brass);
+}
+
+.foreman-divider {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  border-top: 1px solid var(--color-brass-dark);
+  padding-top: 12px;
+  margin-top: 6px;
 }
 
 .foreman-field {
