@@ -1,10 +1,15 @@
-"""Tests for soft-delete on tasks (issue #177).
+"""Tests for soft-delete on tasks.
+
+Model: ``deleted_at`` records *when* a task was deleted (stamped now() at
+finalize/cancel). A task is live while ``deleted_at`` is NULL or within
+``SOFT_DELETE_GRACE`` of now. Successful tasks tied to a still-open issue are
+left NULL until the issue closes.
 
 Covers:
 - Migration adds the deleted_at column.
-- _resolve_finalize_deleted_at honours deleted_at, expires_in_seconds, default.
-- live_tasks_filter hides soft-deleted rows from the list endpoint.
-- The finalize endpoint persists deleted_at to the row.
+- finalize_soft_delete_at: keep-alive-while-issue-open vs. stamp-now rules.
+- live_tasks_filter hides rows deleted longer ago than the grace window.
+- The finalize endpoint stamps now() (or NULL for an open-issue done task).
 """
 
 from __future__ import annotations
@@ -13,14 +18,12 @@ import os
 import sys
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import _sync_session, insert_guild, make_auth_token, raw_conn  # noqa: E402
-from models import Task
-from sqlalchemy import select, update
+from models import SOFT_DELETE_GRACE, Task, finalize_soft_delete_at  # noqa: E402
+from sqlalchemy import select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
 
@@ -43,14 +46,22 @@ def _create_task(test_client, guild_id: str, worker_id: str, desc: str, db_url: 
 
 
 def _set_deleted_at(db_url: str, task_id: str, deleted_at: datetime | None) -> None:
-
     with _sync_session(db_url) as session:
         session.execute(update(Task).where(col(Task.id) == task_id).values(deleted_at=deleted_at))
         session.commit()
 
 
-def _read_task(db_url: str, task_id: str) -> dict:
+def _set_issue(db_url: str, task_id: str, number: int, state: str) -> None:
+    with _sync_session(db_url) as session:
+        session.execute(
+            update(Task)
+            .where(col(Task.id) == task_id)
+            .values(issue_repo="o/r", issue_number=number, issue_state=state)
+        )
+        session.commit()
 
+
+def _read_task(db_url: str, task_id: str) -> dict:
     with _sync_session(db_url) as session:
         row = session.execute(select(Task).where(col(Task.id) == task_id)).scalar_one_or_none()
     return dict(row.model_dump()) if row else {}
@@ -74,148 +85,80 @@ def test_migration_adds_deleted_at_column(client):
 
 
 # ---------------------------------------------------------------------------
-# _resolve_finalize_deleted_at (REST helper)
+# finalize_soft_delete_at — the delete rule
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_finalize_default_window(monkeypatch):
-    from main import DEFAULT_FINALIZE_TTL, _resolve_finalize_deleted_at
-
-    fixed = datetime(2026, 1, 1, tzinfo=UTC)
-
-    class _FixedDT(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fixed
-
-    monkeypatch.setattr("routes.tasks.datetime", _FixedDT)
-    out = _resolve_finalize_deleted_at(None)
-    assert out == fixed + DEFAULT_FINALIZE_TTL
+def test_done_with_open_issue_stays_live():
+    """A successful task on a still-open issue is not stamped."""
+    assert finalize_soft_delete_at("done", 42, "open") is None
+    assert finalize_soft_delete_at("done", 42, None) is None  # unknown ⇒ treat as open
 
 
-def test_resolve_finalize_explicit_seconds(monkeypatch):
-    from main import FinalizeBody, _resolve_finalize_deleted_at
-
-    fixed = datetime(2026, 1, 1, tzinfo=UTC)
-
-    class _FixedDT(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fixed
-
-    monkeypatch.setattr("routes.tasks.datetime", _FixedDT)
-    out = _resolve_finalize_deleted_at(FinalizeBody(expires_in_seconds=1200))
-    assert out == fixed + timedelta(seconds=1200)
+def test_done_with_closed_issue_stamps_now():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    assert finalize_soft_delete_at("done", 42, "closed", now=now) == now
 
 
-def test_resolve_finalize_explicit_deleted_at_iso():
-    from main import FinalizeBody, _resolve_finalize_deleted_at
-
-    target = "2026-06-15T12:00:00+00:00"
-    out = _resolve_finalize_deleted_at(FinalizeBody(deleted_at=target))
-    assert out == datetime.fromisoformat(target)
+def test_done_without_issue_stamps_now():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    assert finalize_soft_delete_at("done", None, None, now=now) == now
 
 
-def test_resolve_finalize_deleted_at_naive_assumed_utc():
-    from main import FinalizeBody, _resolve_finalize_deleted_at
-
-    out = _resolve_finalize_deleted_at(FinalizeBody(deleted_at="2026-06-15T12:00:00"))
-    assert out.tzinfo is not None
-    assert out == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
+def test_failed_and_cancelled_stamp_now_regardless_of_issue():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    assert finalize_soft_delete_at("failed", 42, "open", now=now) == now
+    assert finalize_soft_delete_at("cancelled", 42, "open", now=now) == now
 
 
-def test_resolve_finalize_deleted_at_z_suffix():
-    from main import FinalizeBody, _resolve_finalize_deleted_at
-
-    out = _resolve_finalize_deleted_at(FinalizeBody(deleted_at="2026-06-15T12:00:00Z"))
-    assert out == datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
-
-
-def test_resolve_finalize_invalid_deleted_at_raises():
-    from fastapi import HTTPException
-    from main import FinalizeBody, _resolve_finalize_deleted_at
-
-    with pytest.raises(HTTPException) as excinfo:
-        _resolve_finalize_deleted_at(FinalizeBody(deleted_at="not-a-date"))
-    assert excinfo.value.status_code == 400
-
-
-def test_resolve_finalize_negative_seconds_raises():
-    from fastapi import HTTPException
-    from main import FinalizeBody, _resolve_finalize_deleted_at
-
-    with pytest.raises(HTTPException) as excinfo:
-        _resolve_finalize_deleted_at(FinalizeBody(expires_in_seconds=-1))
-    assert excinfo.value.status_code == 400
-
-
-def test_resolve_finalize_deleted_at_wins_over_seconds():
-    """If both fields are set, deleted_at takes precedence."""
-    from main import FinalizeBody, _resolve_finalize_deleted_at
-
-    out = _resolve_finalize_deleted_at(
-        FinalizeBody(deleted_at="2026-12-25T00:00:00Z", expires_in_seconds=60)
-    )
-    assert out == datetime(2026, 12, 25, tzinfo=UTC)
+def test_issue_root_task_stamps_now_even_with_open_issue():
+    """A phase='issue' root IS the issue proxy — finalizing it stamps immediately."""
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    assert finalize_soft_delete_at("done", 42, "open", phase="issue", now=now) == now
 
 
 # ---------------------------------------------------------------------------
-# live_tasks_filter — list endpoints hide soft-deleted rows
+# live_tasks_filter — grace window
 # ---------------------------------------------------------------------------
 
 
-def test_list_guild_tasks_hides_past_deleted_at(client):
+def test_list_hides_tasks_deleted_before_grace_window(client):
     test_client, db_url = client
     insert_guild(db_url, "gsd01")
     worker_id = _create_worker(test_client, "gsd01")
     t_live = _create_task(test_client, "gsd01", worker_id, "live task", db_url)
-    t_dead = _create_task(test_client, "gsd01", worker_id, "dead task", db_url)
-    t_future = _create_task(test_client, "gsd01", worker_id, "future task", db_url)
+    t_recent = _create_task(test_client, "gsd01", worker_id, "recently deleted", db_url)
+    t_dead = _create_task(test_client, "gsd01", worker_id, "long deleted", db_url)
 
-    past = datetime.now(UTC) - timedelta(seconds=5)
-    future = datetime.now(UTC) + timedelta(days=1)
-    _set_deleted_at(db_url, t_dead, past)
-    _set_deleted_at(db_url, t_future, future)
+    now = datetime.now(UTC)
+    _set_deleted_at(db_url, t_recent, now - (SOFT_DELETE_GRACE / 2))  # within grace ⇒ visible
+    _set_deleted_at(db_url, t_dead, now - SOFT_DELETE_GRACE - timedelta(minutes=1))  # past ⇒ hidden
 
     resp = test_client.get("/guilds/gsd01/tasks", headers=_auth(db_url))
     assert resp.status_code == 200
     ids = {t["id"] for t in resp.json()}
     assert t_live in ids
-    assert t_future in ids
+    assert t_recent in ids
     assert t_dead not in ids
 
 
-def test_list_worker_tasks_hides_past_deleted_at(client):
-    test_client, db_url = client
-    insert_guild(db_url, "gsd02")
-    worker_id = _create_worker(test_client, "gsd02")
-    t_live = _create_task(test_client, "gsd02", worker_id, "live", db_url)
-    t_dead = _create_task(test_client, "gsd02", worker_id, "dead", db_url)
-    _set_deleted_at(db_url, t_dead, datetime.now(UTC) - timedelta(minutes=1))
-
-    resp = test_client.get(f"/guilds/gsd02/workers/{worker_id}/tasks")
-    assert resp.status_code == 200
-    ids = {t["id"] for t in resp.json()}
-    assert ids == {t_live}
-
-
-def test_get_task_logs_404_on_soft_deleted(client):
+def test_get_task_logs_404_after_grace_window(client):
     test_client, db_url = client
     insert_guild(db_url, "gsd03")
     worker_id = _create_worker(test_client, "gsd03")
     task_id = _create_task(test_client, "gsd03", worker_id, "task", db_url)
-    _set_deleted_at(db_url, task_id, datetime.now(UTC) - timedelta(minutes=1))
+    _set_deleted_at(db_url, task_id, datetime.now(UTC) - SOFT_DELETE_GRACE - timedelta(minutes=1))
 
     resp = test_client.get(f"/guilds/gsd03/tasks/{task_id}/logs", headers=_auth(db_url))
     assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# Finalize endpoint — persists deleted_at and supports overrides
+# Finalize endpoint
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_endpoint_default_sets_three_day_window(client):
+def test_finalize_endpoint_stamps_now(client):
     test_client, db_url = client
     insert_guild(db_url, "gsd04")
     worker_id = _create_worker(test_client, "gsd04")
@@ -224,163 +167,47 @@ def test_finalize_endpoint_default_sets_three_day_window(client):
     before = datetime.now(UTC)
     resp = test_client.post(f"/guilds/gsd04/tasks/{task_id}/finalize", headers=_auth(db_url))
     assert resp.status_code == 200, resp.text
-    deleted_at = resp.json()["deletedAt"]
-    parsed = datetime.fromisoformat(deleted_at)
-    # Should be roughly 3 days from now (allow ±1 minute slack for slow machines).
-    assert timedelta(days=3, minutes=-1) <= parsed - before <= timedelta(days=3, minutes=1)
-    assert _read_task(db_url, task_id)["deleted_at"] == datetime.fromisoformat(deleted_at)
+    parsed = datetime.fromisoformat(resp.json()["deletedAt"])
+    assert timedelta(minutes=-1) <= parsed - before <= timedelta(minutes=1)
+    assert _read_task(db_url, task_id)["deleted_at"] == parsed
 
 
-def test_finalize_endpoint_explicit_expires_in_seconds(client):
+def test_finalize_endpoint_keeps_open_issue_task_live(client):
     test_client, db_url = client
     insert_guild(db_url, "gsd05")
     worker_id = _create_worker(test_client, "gsd05")
     task_id = _create_task(test_client, "gsd05", worker_id, "task", db_url)
+    _set_issue(db_url, task_id, 7, "open")
 
-    before = datetime.now(UTC)
-    resp = test_client.post(
-        f"/guilds/gsd05/tasks/{task_id}/finalize",
-        json={"expires_in_seconds": 1200},
-        headers=_auth(db_url),
-    )
+    resp = test_client.post(f"/guilds/gsd05/tasks/{task_id}/finalize", headers=_auth(db_url))
     assert resp.status_code == 200, resp.text
-    parsed = datetime.fromisoformat(resp.json()["deletedAt"])
-    assert timedelta(seconds=1199) <= parsed - before <= timedelta(seconds=1260)
+    assert resp.json()["deletedAt"] is None
+    row = _read_task(db_url, task_id)
+    assert row["state"] == "done"
+    assert row["deleted_at"] is None  # still live — issue is open
 
-
-def test_finalize_endpoint_explicit_deleted_at(client):
-    test_client, db_url = client
-    insert_guild(db_url, "gsd06")
-    worker_id = _create_worker(test_client, "gsd06")
-    task_id = _create_task(test_client, "gsd06", worker_id, "task", db_url)
-
-    target = "2026-12-25T00:00:00+00:00"
-    resp = test_client.post(
-        f"/guilds/gsd06/tasks/{task_id}/finalize",
-        json={"deleted_at": target},
-        headers=_auth(db_url),
-    )
-    assert resp.status_code == 200
-    assert datetime.fromisoformat(resp.json()["deletedAt"]) == datetime.fromisoformat(target)
-
-
-def test_finalize_endpoint_rejects_bad_deleted_at(client):
-    test_client, db_url = client
-    insert_guild(db_url, "gsd07")
-    worker_id = _create_worker(test_client, "gsd07")
-    task_id = _create_task(test_client, "gsd07", worker_id, "task", db_url)
-
-    resp = test_client.post(
-        f"/guilds/gsd07/tasks/{task_id}/finalize",
-        json={"deleted_at": "garbage"},
-        headers=_auth(db_url),
-    )
-    assert resp.status_code == 400
-
-
-def test_finalize_then_list_hides_after_window_passes(client):
-    """End-to-end: finalize with a tiny window, list excludes after it elapses."""
-    test_client, db_url = client
-    insert_guild(db_url, "gsd08")
-    worker_id = _create_worker(test_client, "gsd08")
-    task_id = _create_task(test_client, "gsd08", worker_id, "task", db_url)
-
-    test_client.post(
-        f"/guilds/gsd08/tasks/{task_id}/finalize",
-        json={"expires_in_seconds": 0},
-        headers=_auth(db_url),
-    )
-    # Backdate by 1 second so the strict `>` comparison hides it.
-    past = datetime.now(UTC) - timedelta(seconds=1)
-    _set_deleted_at(db_url, task_id, past)
-    resp = test_client.get("/guilds/gsd08/tasks", headers=_auth(db_url))
-    ids = {t["id"] for t in resp.json()}
-    assert task_id not in ids
+    # Still listed while the issue stays open.
+    ids = {t["id"] for t in test_client.get("/guilds/gsd05/tasks", headers=_auth(db_url)).json()}
+    assert task_id in ids
 
 
 # ---------------------------------------------------------------------------
-# Foreman tool helper — _resolve_finalize_deleted_at in foreman/tools.py
+# Foreman tool schema + prompt no longer expose an expiry knob
 # ---------------------------------------------------------------------------
 
 
-def test_foreman_tool_resolver_default():
-    from foreman.tools import DEFAULT_FINALIZE_TTL_SECONDS, _resolve_finalize_deleted_at
-
-    before = datetime.now(UTC)
-    out, err = _resolve_finalize_deleted_at({})
-    assert err is None
-    assert out is not None
-    delta = out - before
-    assert (
-        timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS - 60)
-        <= delta
-        <= timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS + 60)
-    )
-
-
-def test_foreman_tool_resolver_explicit_seconds():
-    from foreman.tools import _resolve_finalize_deleted_at
-
-    before = datetime.now(UTC)
-    out, err = _resolve_finalize_deleted_at({"expires_in_seconds": 1200})
-    assert err is None
-    assert out is not None
-    delta = out - before
-    assert timedelta(seconds=1199) <= delta <= timedelta(seconds=1260)
-
-
-def test_foreman_tool_resolver_invalid_seconds():
-    from foreman.tools import _resolve_finalize_deleted_at
-
-    out, err = _resolve_finalize_deleted_at({"expires_in_seconds": "not-an-int"})
-    assert out is None
-    assert err and "Invalid expires_in_seconds" in err
-
-
-def test_foreman_tool_resolver_negative_seconds():
-    from foreman.tools import _resolve_finalize_deleted_at
-
-    out, err = _resolve_finalize_deleted_at({"expires_in_seconds": -5})
-    assert out is None
-    assert err and ">=" in err
-
-
-def test_foreman_tool_resolver_explicit_deleted_at():
-    from foreman.tools import _resolve_finalize_deleted_at
-
-    target = "2026-12-25T00:00:00Z"
-    out, err = _resolve_finalize_deleted_at({"deleted_at": target})
-    assert err is None
-    assert out == datetime(2026, 12, 25, tzinfo=UTC)
-
-
-def test_foreman_tool_resolver_invalid_deleted_at():
-    from foreman.tools import _resolve_finalize_deleted_at
-
-    out, err = _resolve_finalize_deleted_at({"deleted_at": "garbage"})
-    assert out is None
-    assert err and "Invalid deleted_at" in err
-
-
-def test_foreman_tool_definition_advertises_expiry_fields():
-    """Schema must expose expires_in_seconds and deleted_at on finalize_task."""
+def test_finalize_task_schema_has_no_expiry_fields():
     from foreman.tools import FOREMAN_TOOLS
 
     finalize = next(t for t in FOREMAN_TOOLS if t["name"] == "finalize_task")
     props = finalize["input_schema"]["properties"]
-    assert "expires_in_seconds" in props
-    assert props["expires_in_seconds"]["type"] == "integer"
-    assert "deleted_at" in props
-    assert props["deleted_at"]["type"] == "string"
-    # task_id is the only required field; expiry fields stay optional.
+    assert "expires_in_seconds" not in props
+    assert "deleted_at" not in props
+    assert set(props) == {"task_id", "outcome"}
     assert finalize["input_schema"]["required"] == ["task_id"]
 
 
-def test_foreman_prompt_documents_expiry_windows():
-    """The system prompt must mention each expiry window so the foreman picks them."""
+def test_foreman_prompt_drops_expiry_knob():
     from foreman.prompt import FOREMAN_SYSTEM
 
-    assert "1200" in FOREMAN_SYSTEM
-    assert "259200" in FOREMAN_SYSTEM
-    assert "86400" in FOREMAN_SYSTEM
-    assert "expires_in_seconds" in FOREMAN_SYSTEM
+    assert "expires_in_seconds" not in FOREMAN_SYSTEM

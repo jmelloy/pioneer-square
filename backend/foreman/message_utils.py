@@ -8,7 +8,6 @@ from datetime import date, datetime
 from typing import Any
 
 from .constants import (
-    _DEFAULT_TASK_TTL_SECS,
     _TERMINAL_STATES,
     MAX_HISTORY_MESSAGES,
     MAX_TOOL_RESULT_CHARS,
@@ -183,8 +182,7 @@ def _summarize_task(task: dict, cutoff_ts: float) -> dict | None:
     their ``description`` field to keep context lean.  Non-terminal tasks are
     returned unchanged.
 
-    Completion time is approximated as ``deleted_at - DEFAULT_TTL`` since
-    ``finished_at`` was removed in favour of the single ``deleted_at`` column.
+    ``deleted_at`` is stamped at finalize time, so it *is* the completion instant.
     """
     state = task.get("state", "")
     if state not in _TERMINAL_STATES:
@@ -192,10 +190,9 @@ def _summarize_task(task: dict, cutoff_ts: float) -> dict | None:
     deleted_at = task.get("deleted_at")
     if deleted_at:
         try:
-            deleted_ts = datetime.fromisoformat(
+            finished_ts = datetime.fromisoformat(
                 deleted_at.replace("Z", "+00:00") if isinstance(deleted_at, str) else deleted_at
             ).timestamp()
-            finished_ts = deleted_ts - _DEFAULT_TASK_TTL_SECS
             if finished_ts < cutoff_ts:
                 return None  # older than 24 h — drop entirely
         except (ValueError, AttributeError, TypeError):

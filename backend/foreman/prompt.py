@@ -81,8 +81,7 @@ Always create_task first and finalize_task after — whether you use a worker or
 2. review_pr_internal (or review_pr) — pass the PR details. Omit `action` to let the tool pick
    the verdict itself from its own diff analysis (see "Review action policy" below); only pass
    `action` explicitly to override that judgement.
-3. finalize_task(task_id=<task_id from step 1>) — call after the review returns. \
-   Use expires_in_seconds=86400 for error/failed reviews; omit (default 3 days) otherwise.
+3. finalize_task(task_id=<task_id from step 1>) — call after the review returns.
 
 CRITICAL — review output must go to GitHub PR review comments, never to a new PR.
 Workers in review phase receive explicit instructions to post via `gh pr review` and are
@@ -104,15 +103,11 @@ pedantic, and never block a merge over style.
 When dispatching a worker for a review-phase task, include this policy in the task description
 so the worker's `gh pr review` verdict follows it too.
 
-## Finalize expiry windows
-Every finalize_task call sets a soft-delete window via expires_in_seconds so the
-task table doesn't accumulate cruft. Pick the window by task type:
-- **Ephemeral tasks** (periodic-check, status-poll, automated health checks):
-  expires_in_seconds = 1200 (20 minutes)
-- **Code tasks** (execute / review / followup phases): omit the field to use
-  the default 3 days, or pass expires_in_seconds = 259200
-- **Error / failed tasks**: expires_in_seconds = 86400 (1 day)
-Pass deleted_at instead if you need an exact ISO-8601 timestamp.
+## Finalize soft-delete
+Soft-delete is automatic — you don't pick a window. A successful task tied to a
+still-open issue stays visible until the issue closes; every other finalized task
+(failures, cancellations, done tasks with no open issue) disappears from the board
+a few hours later. Just call finalize_task with the right outcome.
 
 ## GitHub access
 You have direct GitHub access via list_github_issues, get_github_issue, list_github_prs,
@@ -145,7 +140,7 @@ Use the body to decide:
   this event, but do not rely on it firing reliably — always call get_pr_status to
   confirm the merged state before calling finalize_task.
 - **PR closed unmerged**: call get_pr_status to read the rejection reason, then either
-  send_followup with the fix or finalize_task with expires_in_seconds=86400 if abandoning.
+  send_followup with the fix or finalize_task(outcome="failed") if abandoning.
 - **Review submitted, `changes_requested`**: send_followup — see "Reviewer feedback vs.
   issue intent" above; only pass along requests that don't contradict the linked issue.
 - **Review submitted, `approved`**: usually no action — wait for merge, or finalize if
@@ -332,7 +327,7 @@ the gap when a webhook was missed or never fired. Act on it immediately, per tas
   instructions to fix it.
 - **A review with state=changes_requested**: call send_followup with the requested changes.
 - **state=closed and merged=False**: read the reviews/checks for context, then either
-  send_followup with a fix or finalize_task with expires_in_seconds=86400 if abandoning.
+  send_followup with a fix or finalize_task(outcome="failed") if abandoning.
 - **Approved (state=approved review, no failing checks) with nothing else pending**: no
   action needed beyond noting it — a human or auto-merge will land it.
 This section is a snapshot fetched moments ago — you do not need to call get_pr_status
@@ -372,11 +367,10 @@ task and you own its lifecycle from here until it is finalized.
   or no worker is available to continue). You cannot create or assign new tasks — that is
   the parent's job; surface anything that needs a new task to the human.
 
-## Finalize expiry windows
-Every finalize_task call sets a soft-delete window via expires_in_seconds:
-- Ephemeral/automation tasks: expires_in_seconds = 1200 (20 minutes)
-- Code tasks (execute / review / followup): omit to use the default 3 days
-- Error / failed tasks: expires_in_seconds = 86400 (1 day)
+## Finalize soft-delete
+Soft-delete is automatic — you don't pick a window. A successful task tied to a
+still-open issue stays visible until the issue closes; every other finalized task
+disappears from the board a few hours later.
 
 ## Checking task progress
 Use get_task_status to verify this task is making progress — it returns the current

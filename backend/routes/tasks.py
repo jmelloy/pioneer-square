@@ -1,8 +1,7 @@
 """Task lifecycle routes: list, logs, follow-up, finalize, cancel, redirect.
 
-Soft-delete TTL handling lives here too — ``DEFAULT_FINALIZE_TTL``,
-``FinalizeBody``, and ``_resolve_finalize_deleted_at`` are exported for
-direct unit testing in ``tests/test_soft_delete_tasks.py``.
+Soft-delete is a single ``deleted_at`` stamp (see ``models.finalize_soft_delete_at``
+/ ``live_tasks_filter``) — no per-task TTL windows.
 """
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
@@ -19,7 +18,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from foreman.classify import is_human_event
 from foreman.runner import run_foreman_ai
 from lock_service import LockService
-from models import GithubIssue, GithubPullRequest, Guild, Task, TaskLog, live_tasks_filter
+from models import (
+    GithubIssue,
+    GithubPullRequest,
+    Guild,
+    Task,
+    TaskLog,
+    finalize_soft_delete_at,
+    live_tasks_filter,
+)
 from pydantic import BaseModel
 from sqlalchemy import tuple_, update
 from sqlmodel import col, select
@@ -30,43 +37,12 @@ from ws_types import TaskCancelMsg, TaskFinalizeMsg, TaskRedirectMsg, TaskUpdate
 router = APIRouter()
 
 
-# Default soft-delete window for finalized tasks when the caller does not
-# specify one. 3 days lets the operator review recent work in the UI before
-# it disappears.
-DEFAULT_FINALIZE_TTL = timedelta(days=3)
-
-
 class FollowupCreate(BaseModel):
     instructions: str
 
 
-class FinalizeBody(BaseModel):
-    # Optional ISO-8601 timestamp at which to soft-delete this task.
-    deleted_at: str | None = None
-    # Optional convenience: seconds from now until soft-delete. If both fields
-    # are set, deleted_at wins.
-    expires_in_seconds: int | None = None
-
-
 class RedirectCreate(BaseModel):
     instructions: str
-
-
-def _resolve_finalize_deleted_at(body: FinalizeBody | None) -> datetime:
-    """Return a UTC datetime for the task's soft-delete instant."""
-    if body and body.deleted_at:
-        try:
-            parsed = datetime.fromisoformat(body.deleted_at.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid deleted_at: {exc}") from exc
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
-    if body and body.expires_in_seconds is not None:
-        if body.expires_in_seconds < 0:
-            raise HTTPException(status_code=400, detail="expires_in_seconds must be >= 0")
-        return datetime.now(UTC) + timedelta(seconds=body.expires_in_seconds)
-    return datetime.now(UTC) + DEFAULT_FINALIZE_TTL
 
 
 @router.get("/guilds/{guild_id}/tasks")
@@ -259,26 +235,31 @@ async def create_task_followup(
 async def finalize_task_endpoint(
     guild_id: str,
     task_id: str,
-    body: FinalizeBody | None = None,
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
 ):
     """Signal a worker to finalize a task — no more follow-ups.
 
-    The optional body may carry ``deleted_at`` (ISO-8601) or
-    ``expires_in_seconds`` to set the task's soft-delete window. If neither is
-    set, the task is soft-deleted ``DEFAULT_FINALIZE_TTL`` from now.
+    Soft-deletes the task now, unless it is tied to a still-open issue: then
+    ``deleted_at`` stays NULL until the issue closes (see
+    ``models.finalize_soft_delete_at``).
     """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
     result = await db.exec(
-        select(col(Task.worker_id)).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+        select(
+            col(Task.worker_id),
+            col(Task.issue_number),
+            col(Task.issue_state),
+            col(Task.phase),
+        ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
     )
-    worker_id = result.one_or_none()
-    if not worker_id:
+    row = result.one_or_none()
+    if not row:
         raise HTTPException(status_code=404, detail="Task not found")
-    deleted_at = _resolve_finalize_deleted_at(body)
+    worker_id, issue_number, issue_state, phase = row
+    deleted_at = finalize_soft_delete_at("done", issue_number, issue_state, phase)
     await db.exec(
         update(Task).where(col(Task.id) == task_id).values(state="done", deleted_at=deleted_at)
     )
@@ -289,7 +270,7 @@ async def finalize_task_endpoint(
         TaskUpdateMsg(
             taskId=task_id,
             state="done",
-            deletedAt=deleted_at.isoformat(),
+            deletedAt=deleted_at.isoformat() if deleted_at else None,
         ),
     )
     # Return raw datetime — FastAPI's jsonable_encoder handles ISO-8601 serialisation.
@@ -318,7 +299,7 @@ async def cancel_task_endpoint(
     worker_id, state = row
     if state in ("done", "failed", "cancelled"):
         raise HTTPException(status_code=409, detail=f"Task is already {state}")
-    deleted_at = datetime.now(UTC) + DEFAULT_FINALIZE_TTL
+    deleted_at = datetime.now(UTC)
     await db.exec(
         update(Task).where(col(Task.id) == task_id).values(state="cancelled", deleted_at=deleted_at)
     )

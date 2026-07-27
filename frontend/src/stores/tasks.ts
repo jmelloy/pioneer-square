@@ -11,6 +11,10 @@ export function taskTabId(id: string): string {
 // immediately on long horizons (e.g. a 3-day finalize window).
 const MAX_TIMEOUT_MS = 2_147_483_647
 
+// Grace window a soft-deleted task stays visible after `deleted_at` (stamped at
+// delete time). Must match backend models.SOFT_DELETE_GRACE (4 hours).
+const SOFT_DELETE_GRACE_MS = 4 * 60 * 60 * 1000
+
 const TERMINAL_STATES = new Set<string>(['done', 'failed', 'cancelled', 'error'])
 
 const STATE_LABELS: Record<string, string> = {
@@ -63,7 +67,7 @@ export const useTasksStore = defineStore('tasks', () => {
       _expiryTimers.delete(taskId)
     }
     if (!deletedAt) return
-    const delay = new Date(deletedAt).getTime() - Date.now()
+    const delay = new Date(deletedAt).getTime() + SOFT_DELETE_GRACE_MS - Date.now()
     if (Number.isNaN(delay)) return
     if (delay <= 0) {
       _removeTask(taskId)
@@ -121,8 +125,9 @@ export const useTasksStore = defineStore('tasks', () => {
     const prevDeletedAt = task?.deleted_at
     if (task) {
       task.state = 'cancelled'
-      // Optimistic: set deleted_at to now + 3 days (matches backend DEFAULT_FINALIZE_TTL)
-      task.deleted_at = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString()
+      // Optimistic: backend stamps deleted_at = now() on cancel; the row stays
+      // visible for SOFT_DELETE_GRACE_MS via the liveTasks filter.
+      task.deleted_at = new Date().toISOString()
     }
     try {
       await api(`/guilds/${guildId}/tasks/${taskId}/cancel`, { method: 'POST' })
@@ -240,7 +245,7 @@ export const useTasksStore = defineStore('tasks', () => {
     return tasks.value.filter((t) => {
       if (!t.deleted_at) return true
       const ts = new Date(t.deleted_at).getTime()
-      return Number.isNaN(ts) || ts > now
+      return Number.isNaN(ts) || ts + SOFT_DELETE_GRACE_MS > now
     })
   })
 

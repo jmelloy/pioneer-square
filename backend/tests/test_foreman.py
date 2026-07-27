@@ -2946,8 +2946,9 @@ class TestSummarizeTask:
     """Terminal tasks are summarised/excluded; non-terminal tasks are kept in full."""
 
     _24H = 86_400
-    # Must match foreman/constants._DEFAULT_TASK_TTL_SECS (3 days)
-    _TTL = 3 * 24 * 60 * 60
+    # deleted_at is now stamped at finalize time (== finish instant), so there is
+    # no window to subtract: `self._iso(self._TTL - N)` resolves to `now - N`.
+    _TTL = 0
 
     def _now_ts(self):
         return datetime.now(UTC).timestamp()
