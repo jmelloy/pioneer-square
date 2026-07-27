@@ -35,7 +35,7 @@ function mockFetch(foremanConfig: Record<string, unknown>) {
   })
 }
 
-async function openForemanTab(foremanConfig: Record<string, unknown>) {
+async function openTab(label: string, foremanConfig: Record<string, unknown>) {
   mockFetch(foremanConfig)
   const guild = useGuildStore()
   guild.currentGuild = { id: 'g1', name: 'Test Guild' }
@@ -43,11 +43,14 @@ async function openForemanTab(foremanConfig: Record<string, unknown>) {
   auth.loginToken = 'tok'
   const wrapper = mount(GuildSettingsPanel)
   await flushPromises()
-  const foremanTab = wrapper.findAll('.settings-tab').find((t) => t.text() === 'Foreman')
-  await foremanTab!.trigger('click')
+  const tab = wrapper.findAll('.settings-tab').find((t) => t.text() === label)
+  await tab!.trigger('click')
   await flushPromises()
   return wrapper
 }
+
+const openForemanTab = (cfg: Record<string, unknown>) => openTab('Foreman', cfg)
+const openWorkerTab = (cfg: Record<string, unknown>) => openTab('Worker Settings', cfg)
 
 describe('GuildSettingsPanel foreman provider/model', () => {
   beforeEach(() => {
@@ -79,7 +82,7 @@ describe('GuildSettingsPanel foreman provider/model', () => {
   })
 })
 
-describe('GuildSettingsPanel foreman tool tabs', () => {
+describe('GuildSettingsPanel worker tool tabs', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
@@ -87,17 +90,17 @@ describe('GuildSettingsPanel foreman tool tabs', () => {
     vi.restoreAllMocks()
   })
 
-  it('defaults to the Claude sub-tab and shows the existing provider/model fields', async () => {
-    const wrapper = await openForemanTab({})
+  it('defaults to the General sub-tab; the foreman LLM fields stay in the Foreman tab', async () => {
+    const wrapper = await openWorkerTab({})
     const toolTabs = wrapper.findAll('.foreman-tool-tab')
-    expect(toolTabs.map((t) => t.text())).toEqual(['Claude', 'Pi', 'Codex'])
-    expect(toolTabs.find((t) => t.text() === 'Claude')!.classes()).toContain('active')
-    expect(wrapper.find('select').exists()).toBe(true)
-    expect(wrapper.find('input[list="foreman-model-hints"]').exists()).toBe(true)
+    expect(toolTabs.map((t) => t.text())).toEqual(['General', 'Claude', 'Pi', 'Codex'])
+    expect(toolTabs.find((t) => t.text() === 'General')!.classes()).toContain('active')
+    // The foreman's own model input never renders under Worker Settings.
+    expect(wrapper.find('input[list="foreman-model-hints"]').exists()).toBe(false)
   })
 
   it('lets the Pi default model be set and saved', async () => {
-    const wrapper = await openForemanTab({ pi_default_model: 'claude-sonnet-4-6' })
+    const wrapper = await openWorkerTab({ pi_default_model: 'claude-sonnet-4-6' })
 
     const piTab = wrapper.findAll('.foreman-tool-tab').find((t) => t.text() === 'Pi')
     await piTab!.trigger('click')
@@ -126,7 +129,7 @@ describe('GuildSettingsPanel foreman tool tabs', () => {
   })
 
   it('lets the Pi default provider be set to Bedrock and saved', async () => {
-    const wrapper = await openForemanTab({ pi_default_provider: 'anthropic' })
+    const wrapper = await openWorkerTab({ pi_default_provider: 'anthropic' })
 
     const piTab = wrapper.findAll('.foreman-tool-tab').find((t) => t.text() === 'Pi')
     await piTab!.trigger('click')
@@ -154,5 +157,58 @@ describe('GuildSettingsPanel foreman tool tabs', () => {
     expect(patchCall).toBeTruthy()
     const body = JSON.parse((patchCall![1] as RequestInit).body as string)
     expect(body.pi_default_provider).toBe('bedrock')
+  })
+})
+
+describe('GuildSettingsPanel foreman env forwarding', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('round-trips the per-var forward flag and reflects it on the Worker General tab', async () => {
+    // A stored var with forward=true, another without.
+    const wrapper = await openForemanTab({
+      env_vars: [
+        { key: 'ANTHROPIC_API_KEY', value: 'sk', forward: true },
+        { key: 'FOREMAN_ONLY', value: 'x' },
+      ],
+    })
+
+    const boxes = wrapper.findAll('input[type="checkbox"].env-var-fwd')
+    expect(boxes.length).toBe(2)
+    expect((boxes[0].element as HTMLInputElement).checked).toBe(true)
+    expect((boxes[1].element as HTMLInputElement).checked).toBe(false)
+
+    // Forward the second var too, then save.
+    await boxes[1].setValue(true)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        env_vars: [
+          { key: 'ANTHROPIC_API_KEY', value: 'sk', forward: true },
+          { key: 'FOREMAN_ONLY', value: 'x', forward: true },
+        ],
+      }),
+    } as Response)
+    const saveBtn = wrapper.findAll('.foreman-actions button').find((b) => b.text() === 'Save')
+    await saveBtn!.trigger('click')
+    await flushPromises()
+
+    const patchCall = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PATCH')
+    const body = JSON.parse((patchCall![1] as RequestInit).body as string)
+    const byKey = Object.fromEntries(body.env_vars.map((e: { key: string; forward: boolean }) => [e.key, e.forward]))
+    expect(byKey).toEqual({ ANTHROPIC_API_KEY: true, FOREMAN_ONLY: true })
+
+    // The Worker Settings → General tab lists only forwarded vars.
+    const workerTab = wrapper.findAll('.settings-tab').find((t) => t.text() === 'Worker Settings')
+    await workerTab!.trigger('click')
+    await flushPromises()
+    const roKeys = wrapper.findAll('.env-var-ro.env-var-key').map((s) => s.text())
+    expect(roKeys).toContain('ANTHROPIC_API_KEY')
+    expect(roKeys).toContain('FOREMAN_ONLY')
   })
 })

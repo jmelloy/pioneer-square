@@ -494,7 +494,9 @@ def test_foreman_config_bedrock_without_model_rejected(client, monkeypatch):
     assert patch.status_code == 400
 
     got = test_client.get("/api/guilds/g-fconf2/foreman-config", headers=headers)
-    assert got.json() == {}
+    # env_defaults is a read-only view of the process environment, not stored
+    # config — the rejected save must have persisted nothing else.
+    assert {k: v for k, v in got.json().items() if k != "env_defaults"} == {}
 
 
 def test_foreman_config_bedrock_with_model_accepted(client, monkeypatch):

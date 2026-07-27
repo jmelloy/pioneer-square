@@ -126,7 +126,9 @@ async def get_foreman_env_vars(
     Requires a valid worker auth_token or member login_token.
 
     ``env_vars`` are shared across every tool; ``tool_env_vars`` are scoped to a
-    single worker tool (claude/pi/codex) and must not leak into the others.
+    single worker tool (claude/pi/codex) and must not leak into the others. Only
+    shared vars marked ``forward=True`` are returned — unshared ones stay with
+    the foreman's own LLM and never reach a worker.
 
     Response: ``{ "env_vars": [{"key", "value"}, ...],
                   "tool_env_vars": {"claude": [...], "pi": [...], "codex": [...]} }``
@@ -136,8 +138,9 @@ async def get_foreman_env_vars(
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
     config = guild.foreman_config or {}
+    forwarded = [e for e in config.get("env_vars", []) if e.get("forward")]
     return {
-        "env_vars": config.get("env_vars", []),
+        "env_vars": forwarded,
         "tool_env_vars": config.get("tool_env_vars", {}),
     }
 

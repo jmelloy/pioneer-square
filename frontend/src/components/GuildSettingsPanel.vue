@@ -114,173 +114,42 @@
             </div>
           </section>
 
-          <!-- Foreman -->
+          <!-- Foreman — the orchestrator AI itself (its LLM + orchestration knobs).
+               Per-worker-tool defaults/env live under Worker Settings. -->
           <section v-else-if="activeTab === 'foreman'" class="settings-section">
-            <nav class="foreman-tool-tabs">
-              <button
-                v-for="ft in FOREMAN_TOOL_TABS"
-                :key="ft.id"
-                type="button"
-                class="foreman-tool-tab"
-                :class="{ active: foremanToolTab === ft.id }"
-                @click="foremanToolTab = ft.id"
-              >
-                {{ ft.label }}
-              </button>
-            </nav>
-
-            <!-- Claude: the foreman's own LLM (the AI orchestrator itself) -->
-            <template v-if="foremanToolTab === 'claude'">
-              <p class="foreman-hint">
-                These configure the foreman's own orchestrator LLM (the AI itself). The Claude
-                worker CLI's environment is in the section below.
-              </p>
-              <div class="foreman-field">
-                <label class="foreman-field-label">Provider</label>
-                <select v-model="foremanProvider" class="settings-input" @change="onProviderChange">
-                  <option value="">default (anthropic)</option>
-                  <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
-                    {{ p.name }}
-                  </option>
-                </select>
-              </div>
-              <div class="foreman-field">
-                <label class="foreman-field-label">Model</label>
-                <input
-                  v-model="foremanModel"
-                  class="settings-input"
-                  list="foreman-model-hints"
-                  placeholder="default"
-                  autocomplete="off"
-                />
-                <datalist id="foreman-model-hints">
-                  <option
-                    v-for="m in foremanProviderModels"
-                    :key="m.id"
-                    :value="m.id"
-                    :label="m.name"
-                  />
-                </datalist>
-              </div>
-
-              <div class="foreman-field">
-                <label class="foreman-field-label">
-                  {{ foremanProvider === 'bedrock' ? 'AWS Credentials' : 'Anthropic Credentials' }}
-                </label>
-                <div class="foreman-creds-grid">
-                  <div v-for="f in wellKnownFields" :key="f.key" class="foreman-cred-field">
-                    <label class="foreman-cred-label">{{ f.label }}</label>
-                    <input
-                      class="settings-input"
-                      type="text"
-                      spellcheck="false"
-                      autocomplete="off"
-                      :placeholder="f.placeholder || ''"
-                      :value="wellKnownValue(f.key)"
-                      @input="setWellKnown(f.key, ($event.target as HTMLInputElement).value)"
-                    />
-                  </div>
-                </div>
-              </div>
-            </template>
-
-            <!-- Pi: provider-agnostic tool, so it needs both a default model and provider -->
-            <template v-else-if="foremanToolTab === 'pi'">
-              <div class="foreman-field">
-                <label class="foreman-field-label">Default Provider</label>
-                <select v-model="piDefaultProvider" class="settings-input">
-                  <option value="">default (anthropic)</option>
-                  <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
-                    {{ p.name }}
-                  </option>
-                </select>
-              </div>
-              <div class="foreman-field">
-                <label class="foreman-field-label">Default Model</label>
-                <input
-                  v-model="piDefaultModel"
-                  class="settings-input"
-                  list="pi-model-hints"
-                  :placeholder="piDefaultProvider === 'bedrock' ? 'inference-profile ARN' : 'e.g. claude-sonnet-4-6'"
-                  autocomplete="off"
-                />
-                <datalist id="pi-model-hints">
-                  <option v-for="m in piProviderModels" :key="m.id" :value="m.id" :label="m.name" />
-                </datalist>
-              </div>
-              <p class="foreman-hint">
-                Used when the foreman assigns a task to the Pi tool without an explicit
-                model/provider override. Select "Amazon Bedrock" to run Pi against Bedrock; set its
-                AWS credentials in the Pi Environment section below (or the shared variables, which
-                apply to every tool).
-              </p>
-            </template>
-
-            <!-- Codex -->
-            <template v-else-if="foremanToolTab === 'codex'">
-              <div class="foreman-field">
-                <label class="foreman-field-label">Default Model</label>
-                <input
-                  v-model="codexDefaultModel"
-                  class="settings-input"
-                  placeholder="e.g. gpt-5-codex"
-                  autocomplete="off"
-                />
-              </div>
-              <p class="foreman-hint">
-                Used when the foreman assigns a task to the Codex tool without an explicit
-                model override.
-              </p>
-            </template>
-
-            <!-- Per-tool environment: passed ONLY to the selected tool's runner,
-                 never leaked to the other tools. -->
+            <p class="foreman-hint">
+              These configure the foreman's own orchestrator LLM (the AI itself). Fields left blank
+              fall back to the server defaults shown below.
+            </p>
             <div class="foreman-field">
-              <label class="foreman-field-label">{{ activeToolLabel }} Environment</label>
-              <p class="foreman-hint">
-                Passed only to the {{ activeToolLabel }} CLI — never to the other tools. Overrides
-                the shared variables below for this tool. Pick a known variable or type your own.
-              </p>
-              <div class="env-var-list">
-                <div
-                  v-for="row in toolEnvRows[foremanToolTab]"
-                  :key="row.id"
-                  class="env-var-row"
-                >
-                  <input
-                    v-model="row.key"
-                    class="settings-input env-var-key"
-                    :list="`tool-env-keys-${foremanToolTab}`"
-                    placeholder="KEY_NAME"
-                    spellcheck="false"
-                    autocomplete="off"
-                  />
-                  <input
-                    v-model="row.value"
-                    type="text"
-                    class="settings-input env-var-value"
-                    placeholder="value"
-                    spellcheck="false"
-                    autocomplete="off"
-                  />
-                  <button
-                    class="env-var-delete-btn"
-                    @click="removeToolEnvVar(row)"
-                    title="Remove variable"
-                  >
-                    ✕
-                  </button>
-                </div>
-                <datalist :id="`tool-env-keys-${foremanToolTab}`">
-                  <option v-for="k in TOOL_ENV_KEYS[foremanToolTab]" :key="k" :value="k" />
-                </datalist>
-                <button class="pixel-btn env-var-add-btn" @click="addToolEnvVar">
-                  + Add Variable
-                </button>
-              </div>
+              <label class="foreman-field-label">Provider</label>
+              <select v-model="foremanProvider" class="settings-input" @change="onProviderChange">
+                <option value="">{{ providerDefaultLabel }}</option>
+                <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
+                  {{ p.name }}
+                </option>
+              </select>
+            </div>
+            <div class="foreman-field">
+              <label class="foreman-field-label">Model</label>
+              <input
+                v-model="foremanModel"
+                class="settings-input"
+                list="foreman-model-hints"
+                :placeholder="foremanModelPlaceholder"
+                autocomplete="off"
+              />
+              <datalist id="foreman-model-hints">
+                <option
+                  v-for="m in foremanProviderModels"
+                  :key="m.id"
+                  :value="m.id"
+                  :label="m.name"
+                />
+              </datalist>
             </div>
 
-            <div class="foreman-divider">General — applies to all tools &amp; the foreman</div>
+            <div class="foreman-divider">Orchestration</div>
 
             <div class="foreman-field">
               <label class="foreman-field-label">System Prompt Suffix</label>
@@ -327,16 +196,28 @@
             </div>
 
             <div class="foreman-field">
-              <label class="foreman-field-label">Shared Environment Variables</label>
+              <label class="foreman-field-label">Environment Variables</label>
               <p class="foreman-hint">
-                Inherited by every worker tool in this guild and the foreman's own LLM. Use the
-                per-tool sections above to scope a variable to a single tool.
+                Used by the foreman's own LLM (credentials, base URLs, etc.). A variable stays with
+                the foreman unless you tick <em>forward</em> — then it is also sent to every worker
+                tool in this guild. Scope a variable to a single tool in Worker Settings.
+              </p>
+              <p v-if="envDefaultKeys.length" class="foreman-hint">
+                From the server environment (masked, always available to the foreman):
+                {{ envDefaultsSummary }}
               </p>
               <div class="env-var-list">
-                <div v-for="row in additionalEnvVarRows" :key="row.id" class="env-var-row">
+                <div class="env-var-row env-var-head">
+                  <span class="env-var-key">Key</span>
+                  <span class="env-var-value">Value</span>
+                  <span class="env-var-fwd" title="Also send to worker tools">fwd</span>
+                  <span class="env-var-spacer"></span>
+                </div>
+                <div v-for="row in envVarRows" :key="row.id" class="env-var-row">
                   <input
                     v-model="row.key"
                     class="settings-input env-var-key"
+                    list="foreman-env-keys"
                     placeholder="KEY_NAME"
                     spellcheck="false"
                     autocomplete="off"
@@ -349,6 +230,12 @@
                     spellcheck="false"
                     autocomplete="off"
                   />
+                  <input
+                    v-model="row.forward"
+                    type="checkbox"
+                    class="env-var-fwd"
+                    title="Forward this variable to worker tools"
+                  />
                   <button
                     class="env-var-delete-btn"
                     @click="removeEnvVar(row)"
@@ -357,6 +244,9 @@
                     ✕
                   </button>
                 </div>
+                <datalist id="foreman-env-keys">
+                  <option v-for="k in FOREMAN_ENV_KEYS" :key="k" :value="k" />
+                </datalist>
                 <button class="pixel-btn env-var-add-btn" @click="addEnvVar">+ Add Variable</button>
               </div>
             </div>
@@ -379,9 +269,160 @@
             </div>
           </section>
 
-          <!-- Spawn Defaults -->
+          <!-- Worker Settings — spawn defaults + per-worker-tool model/env config -->
           <section v-else-if="activeTab === 'spawn'" class="settings-section">
             <GuildSpawnDefaults v-if="currentGuild" :guild-id="currentGuild.id" />
+
+            <div class="foreman-divider">Worker Tools</div>
+            <nav class="foreman-tool-tabs">
+              <button
+                v-for="ft in WORKER_SUBTABS"
+                :key="ft.id"
+                type="button"
+                class="foreman-tool-tab"
+                :class="{ active: workerSubTab === ft.id }"
+                @click="workerSubTab = ft.id"
+              >
+                {{ ft.label }}
+              </button>
+            </nav>
+
+            <!-- General: what every worker tool receives (the forwarded foreman vars) -->
+            <template v-if="workerSubTab === 'general'">
+              <p class="foreman-hint">
+                Every worker tool in this guild inherits these variables — the ones marked
+                <em>forward</em> on the Foreman tab. Edit them there; use the Claude / Pi / Codex
+                tabs to override a value for a single tool.
+              </p>
+              <div v-if="forwardedEnvRows.length" class="env-var-list">
+                <div class="env-var-row env-var-head">
+                  <span class="env-var-key">Key</span>
+                  <span class="env-var-value">Value</span>
+                </div>
+                <div v-for="row in forwardedEnvRows" :key="row.id" class="env-var-row">
+                  <span class="env-var-key env-var-ro">{{ row.key }}</span>
+                  <span class="env-var-value env-var-ro">{{ row.value || '—' }}</span>
+                </div>
+              </div>
+              <p v-else class="foreman-hint">
+                No forwarded variables yet. Tick <em>forward</em> on a Foreman variable to send it to
+                workers.
+              </p>
+            </template>
+
+            <!-- Pi: provider-agnostic tool, so it needs both a default model and provider -->
+            <template v-else-if="workerSubTab === 'pi'">
+              <div class="foreman-field">
+                <label class="foreman-field-label">Default Provider</label>
+                <select v-model="piDefaultProvider" class="settings-input">
+                  <option value="">default (anthropic)</option>
+                  <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
+                    {{ p.name }}
+                  </option>
+                </select>
+              </div>
+              <div class="foreman-field">
+                <label class="foreman-field-label">Default Model</label>
+                <input
+                  v-model="piDefaultModel"
+                  class="settings-input"
+                  list="pi-model-hints"
+                  :placeholder="piDefaultProvider === 'bedrock' ? 'inference-profile ARN' : 'e.g. claude-sonnet-4-6'"
+                  autocomplete="off"
+                />
+                <datalist id="pi-model-hints">
+                  <option v-for="m in piProviderModels" :key="m.id" :value="m.id" :label="m.name" />
+                </datalist>
+              </div>
+              <p class="foreman-hint">
+                Used when the foreman assigns a task to the Pi tool without an explicit
+                model/provider override. Select "Amazon Bedrock" to run Pi against Bedrock; set its
+                AWS credentials in the Pi Environment section below (or the General forwarded
+                variables, which apply to every tool).
+              </p>
+            </template>
+
+            <!-- Codex -->
+            <template v-else-if="workerSubTab === 'codex'">
+              <div class="foreman-field">
+                <label class="foreman-field-label">Default Model</label>
+                <input
+                  v-model="codexDefaultModel"
+                  class="settings-input"
+                  placeholder="e.g. gpt-5-codex"
+                  autocomplete="off"
+                />
+              </div>
+              <p class="foreman-hint">
+                Used when the foreman assigns a task to the Codex tool without an explicit
+                model override.
+              </p>
+            </template>
+
+            <!-- Claude: no per-tool default model here (the foreman's own LLM lives
+                 in the Foreman tab); only its worker-CLI environment. -->
+            <template v-else-if="workerSubTab === 'claude'">
+              <p class="foreman-hint">
+                The Claude worker CLI takes no default model here — set its override environment
+                below.
+              </p>
+            </template>
+
+            <!-- Per-tool override environment: passed ONLY to the selected tool's
+                 runner, never to the other tools; overrides the General vars. -->
+            <div v-if="workerSubTab !== 'general'" class="foreman-field">
+              <label class="foreman-field-label">{{ activeToolLabel }} Overrides</label>
+              <p class="foreman-hint">
+                Passed only to the {{ activeToolLabel }} CLI — never to the other tools. Overrides a
+                General forwarded variable for this tool. Pick a known variable or type your own.
+              </p>
+              <div class="env-var-list">
+                <div v-for="row in toolEnvRows[workerSubTab]" :key="row.id" class="env-var-row">
+                  <input
+                    v-model="row.key"
+                    class="settings-input env-var-key"
+                    :list="`tool-env-keys-${workerSubTab}`"
+                    placeholder="KEY_NAME"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <input
+                    v-model="row.value"
+                    type="text"
+                    class="settings-input env-var-value"
+                    placeholder="value"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <button
+                    class="env-var-delete-btn"
+                    @click="removeToolEnvVar(row)"
+                    title="Remove variable"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <datalist :id="`tool-env-keys-${workerSubTab}`">
+                  <option v-for="k in TOOL_ENV_KEYS[workerSubTab]" :key="k" :value="k" />
+                </datalist>
+                <button class="pixel-btn env-var-add-btn" @click="addToolEnvVar">
+                  + Add Variable
+                </button>
+              </div>
+            </div>
+
+            <div class="foreman-actions">
+              <button
+                class="pixel-btn settings-save-btn"
+                :disabled="foremanSaving"
+                @click="saveForemanConfig"
+              >
+                {{ foremanSaving ? 'Saving…' : 'Save' }}
+              </button>
+              <span v-if="foremanStatus" class="save-status" :class="'save-status-' + foremanStatus">
+                {{ foremanStatus === 'saved' ? 'Saved' : 'Error' }}
+              </span>
+            </div>
           </section>
 
           <!-- Members -->
@@ -416,20 +457,37 @@ const currentGuild = computed(() => guildStore.currentGuild)
 const TABS = [
   { id: 'general', label: 'General' },
   { id: 'foreman', label: 'Foreman' },
-  { id: 'spawn', label: 'Spawn Defaults' },
+  { id: 'spawn', label: 'Worker Settings' },
   { id: 'members', label: 'Members' },
 ] as const
 const activeTab = ref<(typeof TABS)[number]['id']>('general')
 
-const FOREMAN_TOOL_TABS = [
+// Worker Settings sub-tabs: General (vars every tool receives) + one override
+// tab per worker tool.
+const WORKER_SUBTABS = [
+  { id: 'general', label: 'General' },
   { id: 'claude', label: 'Claude' },
   { id: 'pi', label: 'Pi' },
   { id: 'codex', label: 'Codex' },
 ] as const
-const foremanToolTab = ref<(typeof FOREMAN_TOOL_TABS)[number]['id']>('claude')
+const workerSubTab = ref<(typeof WORKER_SUBTABS)[number]['id']>('general')
 const activeToolLabel = computed(
-  () => FOREMAN_TOOL_TABS.find((t) => t.id === foremanToolTab.value)?.label ?? '',
+  () => WORKER_SUBTABS.find((t) => t.id === workerSubTab.value)?.label ?? '',
 )
+
+// Common foreman env-var keys, surfaced as datalist suggestions on the Foreman
+// tab. Users can still type any other key.
+const FOREMAN_ENV_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'AWS_DEFAULT_REGION',
+  'AWS_PROFILE',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'AWS_BEARER_TOKEN_BEDROCK',
+]
 
 // Known env-var keys per worker tool, surfaced as datalist suggestions. Users can
 // still type any other key. Sourced from each CLI's own docs (`pi --help`, Claude
@@ -498,34 +556,6 @@ const foremanProviderModels = computed(() =>
 const piProviderModels = computed(() =>
   piDefaultProvider.value ? modelsStore.modelsForProvider(piDefaultProvider.value) : [],
 )
-// Dedicated, provider-specific credential fields. These are stored as ordinary
-// env_vars under the hood (the foreman client reads them via extra_env) but get
-// first-class inputs so users don't have to remember exact var names.
-interface WellKnownField {
-  key: string
-  label: string
-  placeholder?: string
-}
-const FOREMAN_WELL_KNOWN: Record<string, WellKnownField[]> = {
-  anthropic: [
-    { key: 'ANTHROPIC_API_KEY', label: 'API Key', placeholder: 'sk-ant-…' },
-    { key: 'ANTHROPIC_AUTH_TOKEN', label: 'Auth Token (optional)' },
-    {
-      key: 'ANTHROPIC_BASE_URL',
-      label: 'Base URL (optional)',
-      placeholder: 'https://api.anthropic.com',
-    },
-  ],
-  bedrock: [
-    { key: 'AWS_DEFAULT_REGION', label: 'Region', placeholder: 'us-east-1' },
-    { key: 'AWS_PROFILE', label: 'Profile (optional)' },
-    { key: 'AWS_ACCESS_KEY_ID', label: 'Access Key ID' },
-    { key: 'AWS_SECRET_ACCESS_KEY', label: 'Secret Access Key' },
-    { key: 'AWS_SESSION_TOKEN', label: 'Session Token (optional)' },
-    { key: 'AWS_BEARER_TOKEN_BEDROCK', label: 'Bedrock Bearer Token (optional)' },
-  ],
-}
-
 const renameValue = ref('')
 const primaryRepoValue = ref('')
 const renameStatus = ref<'' | 'saved' | 'error'>('')
@@ -565,19 +595,35 @@ const foremanPollMax = ref<number | ''>('')
 const foremanSaving = ref(false)
 const foremanStatus = ref<'' | 'saved' | 'error'>('')
 let foremanStatusTimer: ReturnType<typeof setTimeout> | null = null
-const wellKnownFields = computed(
-  () => FOREMAN_WELL_KNOWN[foremanProvider.value || 'anthropic'] ?? [],
+
+// Masked foreman defaults supplied by the server's process environment (see
+// GET foreman-config). Shown so an unset field reads as "inherited from env"
+// rather than blank/unconfigured. Non-secret values (provider/model/region)
+// come through in the clear; secrets are already masked server-side.
+const envDefaults = ref<Record<string, string>>({})
+const envDefaultKeys = computed(() => Object.keys(envDefaults.value))
+const envDefaultsSummary = computed(() =>
+  envDefaultKeys.value.map((k) => `${k}=${envDefaults.value[k]}`).join(', '),
 )
-const wellKnownKeys = computed(() => new Set(wellKnownFields.value.map((f) => f.key)))
-// Free-form list excludes keys that have a dedicated field for the current provider.
-const additionalEnvVarRows = computed(() =>
-  envVarRows.value.filter((r) => !wellKnownKeys.value.has(r.key)),
+const providerDefaultLabel = computed(() =>
+  envDefaults.value.FOREMAN_PROVIDER
+    ? `default (${envDefaults.value.FOREMAN_PROVIDER} · from env)`
+    : 'default (anthropic)',
 )
+const foremanModelPlaceholder = computed(() => {
+  const key = foremanProvider.value === 'bedrock' ? 'FOREMAN_BEDROCK_MODEL' : 'FOREMAN_MODEL'
+  return envDefaults.value[key] ? `${envDefaults.value[key]} · from env` : 'default'
+})
+// The forwarded subset shown read-only on the Worker Settings → General tab.
+const forwardedEnvRows = computed(() => envVarRows.value.filter((r) => r.forward))
 
 interface EnvVarRow {
   id: number
   key: string
   value: string
+  // Foreman env_vars only: forward this var to worker tools. Per-tool rows
+  // ignore it (they're always scoped to their own tool).
+  forward?: boolean
 }
 let envRowSeq = 0
 const envVarRows = ref<EnvVarRow[]>([])
@@ -587,28 +633,15 @@ const envVarRows = ref<EnvVarRow[]>([])
 const toolEnvRows = reactive<Record<string, EnvVarRow[]>>({ claude: [], pi: [], codex: [] })
 
 function addToolEnvVar() {
-  toolEnvRows[foremanToolTab.value].push({ id: ++envRowSeq, key: '', value: '' })
+  if (workerSubTab.value === 'general') return
+  toolEnvRows[workerSubTab.value].push({ id: ++envRowSeq, key: '', value: '' })
 }
 
 function removeToolEnvVar(row: EnvVarRow) {
-  const rows = toolEnvRows[foremanToolTab.value]
+  if (workerSubTab.value === 'general') return
+  const rows = toolEnvRows[workerSubTab.value]
   const i = rows.indexOf(row)
   if (i >= 0) rows.splice(i, 1)
-}
-
-function wellKnownValue(key: string): string {
-  return envVarRows.value.find((r) => r.key === key)?.value ?? ''
-}
-
-function setWellKnown(key: string, value: string) {
-  const row = envVarRows.value.find((r) => r.key === key)
-  if (value) {
-    if (row) row.value = value
-    else envVarRows.value.push({ id: ++envRowSeq, key, value })
-  } else if (row) {
-    // Empty value → drop the row so we don't persist blank vars.
-    envVarRows.value.splice(envVarRows.value.indexOf(row), 1)
-  }
 }
 
 async function loadForemanConfig() {
@@ -620,6 +653,7 @@ async function loadForemanConfig() {
     )
     if (res.ok) {
       const cfg = await res.json()
+      envDefaults.value = cfg.env_defaults ?? {}
       foremanModel.value = cfg.model ?? ''
       foremanProvider.value = cfg.provider ?? ''
       // Seed the per-provider model memory with the persisted pairing so a later
@@ -634,11 +668,14 @@ async function loadForemanConfig() {
       foremanPollMin.value = cfg.poll_min_interval ?? ''
       foremanPollMax.value = cfg.poll_max_interval ?? ''
       // Env var values are returned in clear text so they can be verified/edited.
-      envVarRows.value = (cfg.env_vars ?? []).map((e: { key: string; value?: string }) => ({
-        id: ++envRowSeq,
-        key: e.key,
-        value: e.value ?? '',
-      }))
+      envVarRows.value = (cfg.env_vars ?? []).map(
+        (e: { key: string; value?: string; forward?: boolean }) => ({
+          id: ++envRowSeq,
+          key: e.key,
+          value: e.value ?? '',
+          forward: !!e.forward,
+        }),
+      )
       const toolEnv = cfg.tool_env_vars ?? {}
       for (const tool of ['claude', 'pi', 'codex']) {
         toolEnvRows[tool] = (toolEnv[tool] ?? []).map((e: { key: string; value?: string }) => ({
@@ -654,7 +691,7 @@ async function loadForemanConfig() {
 }
 
 function addEnvVar() {
-  envVarRows.value.push({ id: ++envRowSeq, key: '', value: '' })
+  envVarRows.value.push({ id: ++envRowSeq, key: '', value: '', forward: false })
 }
 
 function removeEnvVar(row: EnvVarRow) {
@@ -686,20 +723,18 @@ async function saveForemanConfig() {
     else body.poll_min_interval = null
     if (foremanPollMax.value !== '') body.poll_max_interval = foremanPollMax.value
     else body.poll_max_interval = null
-    // Send actual values for every keyed row (dedicated credential fields and
-    // free-form rows alike both live in envVarRows). Skip rows with empty keys.
-    // A well-known key can be entered twice (dedicated field + a free-form row
-    // that then hides itself); collapse duplicates, keeping the non-empty value
-    // so a stray blank row can't shadow the real credential at spawn time.
-    const envByKey = new Map<string, string>()
+    // Send every keyed row. Skip empty keys; collapse duplicate keys, keeping a
+    // non-empty value (and forward=true) over a blank/unset one so a stray blank
+    // row can't shadow the real credential or drop its forward flag.
+    const envByKey = new Map<string, { value: string; forward: boolean }>()
     for (const r of envVarRows.value) {
       const key = r.key.trim()
       if (!key) continue
       const existing = envByKey.get(key)
-      if (existing && r.value === '' && existing !== '') continue
-      envByKey.set(key, r.value)
+      if (existing && r.value === '' && existing.value !== '') continue
+      envByKey.set(key, { value: r.value, forward: !!r.forward || !!existing?.forward })
     }
-    body.env_vars = [...envByKey].map(([key, value]) => ({ key, value }))
+    body.env_vars = [...envByKey].map(([key, { value, forward }]) => ({ key, value, forward }))
     // Per-tool env vars: send all three tools so an emptied tab clears its set.
     const toolEnvVars: Record<string, { key: string; value: string }[]> = {}
     for (const tool of ['claude', 'pi', 'codex']) {
@@ -726,11 +761,14 @@ async function saveForemanConfig() {
       foremanStatus.value = 'saved'
       // Re-sync with the server's canonical config (clear-text values).
       const saved = await res.json()
-      envVarRows.value = (saved.env_vars ?? []).map((e: { key: string; value?: string }) => ({
-        id: ++envRowSeq,
-        key: e.key,
-        value: e.value ?? '',
-      }))
+      envVarRows.value = (saved.env_vars ?? []).map(
+        (e: { key: string; value?: string; forward?: boolean }) => ({
+          id: ++envRowSeq,
+          key: e.key,
+          value: e.value ?? '',
+          forward: !!e.forward,
+        }),
+      )
       const savedToolEnv = saved.tool_env_vars ?? {}
       for (const tool of ['claude', 'pi', 'codex']) {
         toolEnvRows[tool] = (savedToolEnv[tool] ?? []).map(
@@ -1195,23 +1233,32 @@ onBeforeUnmount(() => {
   font-size: 10px;
 }
 
-.foreman-creds-grid {
+/* Forward checkbox column + its header/read-only cells. */
+.env-var-fwd {
+  flex: 0 0 28px;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  justify-content: center;
+  accent-color: var(--color-brass);
 }
 
-.foreman-cred-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.env-var-spacer {
+  flex: 0 0 22px;
 }
 
-.foreman-cred-label {
+.env-var-head span {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  color: var(--color-brass-dark);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.env-var-ro {
   font-family: var(--font-mono, monospace);
-  font-size: 9px;
-  color: var(--color-text-dim);
-  letter-spacing: 0.5px;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .env-var-delete-btn {
