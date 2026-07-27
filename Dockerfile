@@ -116,19 +116,27 @@ RUN ARCH=$(dpkg --print-architecture) \
     && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
         | tar -C /usr/local -xz
 ENV GOPATH=/home/worker/go \
-    PATH=/usr/local/go/bin:/home/worker/go/bin:/home/worker/.local/bin:$PATH
+    PATH=/usr/local/go/bin:/home/worker/go/bin:/home/worker/.local/bin:/home/worker/.npm-global/bin:$PATH
+
+# npm's default global prefix (/usr/lib or /usr/local, depending on how
+# Node.js was installed) is root-owned; the worker process runs as the
+# unprivileged `worker` user (below) and needs to `npm install -g` its own AI
+# coding CLIs at startup (see tool_installer.py), so point the global prefix
+# at a directory it owns instead.
+ENV NPM_CONFIG_PREFIX=/home/worker/.npm-global
 
 # Shared Python tooling agents expect on PATH.
 RUN pip install --no-cache-dir ruff pytest uv pipx
 
-# AI coding CLIs — the layer most likely to update.
-RUN npm install -g \
-        @anthropic-ai/claude-code \
-        @openai/codex \
-        @earendil-works/pi-coding-agent
+# AI coding CLIs (claude, codex, pi) are intentionally NOT baked in here.
+# pioneer_worker.tool_installer npm-installs whichever are missing from PATH
+# at worker startup (see Worker._ensure_tools_installed in worker.py), keyed
+# off cfg.install_tools/cfg.tools/PIONEER_INSTALL_TOOLS. This lets tool
+# versions bump without an image rebuild; npm itself (installed above with
+# Node.js) is all this image needs to provide.
 
 RUN useradd --create-home --shell /bin/bash worker \
-    && mkdir -p /work/repos /work/worktrees /config /home/worker/go \
+    && mkdir -p /work/repos /work/worktrees /config /home/worker/go /home/worker/.npm-global \
     && chown -R worker:worker /work /config /home/worker
 
 # Personal skills (~/.claude/skills) are discovered by the claude CLI regardless
@@ -140,13 +148,6 @@ COPY worker/skills/ /home/worker/.claude/skills/
 RUN chmod +x /home/worker/.claude/skills/*/scripts/*.sh \
     && chown -R worker:worker /home/worker/.claude
 ENV PIONEER_SKILL_DIR=/home/worker/.claude/skills/debug-query
-
-# Pi extension for delegating tasks to subagents (#938), giving pi-coding-agent
-# a subagent/delegation tool. Installed as the `worker` user (not root) since
-# `pi install` writes into $HOME/.pi, and the container runs as `worker`.
-USER worker
-RUN pi install npm:pi-subagents
-USER root
 
 # PGDATA gives the coding agent a sensible default cluster location to
 # initialise with `initdb`/`pg_ctl` when a repo's tests need a real Postgres.

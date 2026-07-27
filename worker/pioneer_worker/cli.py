@@ -85,6 +85,14 @@ def _build_parser() -> argparse.ArgumentParser:
             "with a warning. Omit to auto-detect all known tools."
         ),
     )
+    parser.add_argument(
+        "--install-tools",
+        help=(
+            "Comma-separated list of tool runners to install via npm at startup if missing "
+            "from PATH (e.g. claude,codex,pi). Omit to fall back to --tools, or install all "
+            "known tools if that's also unset. Pass an empty string to disable installation."
+        ),
+    )
 
     # Control API (drive/inspect a live worker without a frontend or foreman)
     parser.add_argument(
@@ -171,6 +179,11 @@ def main(argv: list[str] | None = None) -> int:
             "tools": (
                 [t.strip() for t in args.tools.split(",") if t.strip()]
                 if args.tools is not None
+                else None
+            ),
+            "install_tools": (
+                [t.strip() for t in args.install_tools.split(",") if t.strip()]
+                if args.install_tools is not None
                 else None
             ),
             "pull_interval": args.pull_interval,

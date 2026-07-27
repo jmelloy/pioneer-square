@@ -335,3 +335,50 @@ def test_load_max_agents_toml_beats_env(tmp_path, monkeypatch):
     toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\nmax_agents = 8\n')
     cfg = load(str(toml_path))
     assert cfg.max_agents == 8
+
+
+# ---------------------------------------------------------------------------
+# install_tools: override > TOML > PIONEER_INSTALL_TOOLS env > None
+# ---------------------------------------------------------------------------
+
+
+def test_install_tools_none_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("PIONEER_INSTALL_TOOLS", raising=False)
+    cfg = load(
+        str(tmp_path / "missing.toml"),
+        overrides={"backend_url": "ws://x:1", "guild_id": "g"},
+    )
+    assert cfg.install_tools is None
+
+
+def test_install_tools_from_toml(tmp_path):
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text(
+        'backend_url = "ws://x:1"\nguild_id = "g"\ninstall_tools = ["claude", "pi"]\n'
+    )
+    cfg = load(str(toml_path))
+    assert cfg.install_tools == ["claude", "pi"]
+
+
+def test_install_tools_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIONEER_BACKEND_URL", "ws://x:1")
+    monkeypatch.setenv("PIONEER_GUILD_ID", "g")
+    monkeypatch.setenv("PIONEER_INSTALL_TOOLS", "codex, pi")
+    cfg = load(str(tmp_path / "missing.toml"))
+    assert cfg.install_tools == ["codex", "pi"]
+
+
+def test_install_tools_override_beats_toml(tmp_path):
+    toml_path = tmp_path / "pioneer-worker.toml"
+    toml_path.write_text('backend_url = "ws://x:1"\nguild_id = "g"\ninstall_tools = ["claude"]\n')
+    cfg = load(str(toml_path), overrides={"install_tools": ["codex"]})
+    assert cfg.install_tools == ["codex"]
+
+
+def test_install_tools_empty_override_disables(tmp_path):
+    """An explicit empty list must be preserved, not treated as unset."""
+    cfg = load(
+        str(tmp_path / "missing.toml"),
+        overrides={"backend_url": "ws://x:1", "guild_id": "g", "install_tools": []},
+    )
+    assert cfg.install_tools == []
