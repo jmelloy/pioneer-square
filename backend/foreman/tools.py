@@ -44,6 +44,7 @@ from models import (
     TaskLog,
     User,
     Worker,
+    finalize_soft_delete_at,
 )
 from sqlalchemy import delete, literal, update
 from sqlmodel import col, select
@@ -62,10 +63,6 @@ from ws_types import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Default soft-delete window (seconds) when finalize_task is called without
-# an explicit expiry. Mirrors backend.main.DEFAULT_FINALIZE_TTL.
-DEFAULT_FINALIZE_TTL_SECONDS = 3 * 24 * 60 * 60  # 3 days
 
 # Hard cap on any single blocking external-service call (GitHub API, Docker, A2A
 # agent).  Wrapping asyncio.to_thread with asyncio.wait_for(timeout=...) means a
@@ -144,34 +141,6 @@ def _apply_pi_defaults(
     return provider, model
 
 
-def _resolve_finalize_deleted_at(inp: dict) -> tuple[datetime | None, str | None]:
-    """Compute the soft-delete instant for a finalize_task tool call.
-
-    Returns ``(deleted_at, error)`` — error is non-None when the inputs
-    were malformed. Honours an explicit ``deleted_at`` first, then
-    ``expires_in_seconds``, otherwise falls back to the default 3-day window.
-    """
-    raw = inp.get("deleted_at")
-    if raw:
-        try:
-            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except ValueError as exc:
-            return None, f"Invalid deleted_at: {exc}"
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC), None
-    seconds = inp.get("expires_in_seconds")
-    if seconds is not None:
-        try:
-            secs = int(seconds)
-        except (TypeError, ValueError):
-            return None, f"Invalid expires_in_seconds: {seconds!r}"
-        if secs < 0:
-            return None, "expires_in_seconds must be >= 0"
-        return datetime.now(UTC) + timedelta(seconds=secs), None
-    return datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS), None
-
-
 async def finalize_closed_issue(
     db, guild_pk: int, guild_id: str, issue_repo: str, issue_number: int
 ) -> list[str]:
@@ -187,7 +156,7 @@ async def finalize_closed_issue(
     verification comment summarising linked-PR merge status when anything was
     finalized. Returns the ids of the tasks that were finalized or swept.
     """
-    deleted_at = datetime.now(UTC) + timedelta(seconds=DEFAULT_FINALIZE_TTL_SECONDS)
+    deleted_at = datetime.now(UTC)
     issue_filter = (
         col(Task.guild_id) == guild_pk,
         col(Task.issue_repo) == issue_repo,
@@ -2124,79 +2093,77 @@ async def _exec_one_tool(
                     result_text = _blocked
                     is_error = True
                 else:
-                    deleted_at, err = _resolve_finalize_deleted_at(inp)
-                    if err:
-                        result_text = err
-                        is_error = True
+                    result = await db.exec(
+                        select(Task)
+                        .where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+                        .with_for_update()
+                    )
+                    task = result.one_or_none()
+                    if not task:
+                        result_text = f"Task {task_id} not found."
                     else:
-                        result = await db.exec(
-                            select(Task)
-                            .where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
-                            .with_for_update()
+                        deleted_at = finalize_soft_delete_at(
+                            outcome, task.issue_number, task.issue_state, task.phase
                         )
-                        task = result.one_or_none()
-                        if not task:
-                            result_text = f"Task {task_id} not found."
-                        else:
-                            await db.exec(
-                                update(Task)
-                                .where(col(Task.id) == task_id)
-                                .values(
-                                    state=outcome,
-                                    deleted_at=deleted_at,
-                                )
+                        await db.exec(
+                            update(Task)
+                            .where(col(Task.id) == task_id)
+                            .values(
+                                state=outcome,
+                                deleted_at=deleted_at,
                             )
-                            # Discard any queued follow-up events — the task is closed.
-                            await db.exec(
-                                delete(TaskEvent).where(col(TaskEvent.task_id) == task_id)
-                            )
-                            await LockService(db).release(f"task:{task_id}")
+                        )
+                        # Discard any queued follow-up events — the task is closed.
+                        await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
+                        await LockService(db).release(f"task:{task_id}")
 
-                            # phase='issue' root tasks own an entire GitHub issue's worth of
-                            # work — cascade the soft-delete to descendants that already
-                            # finished, but never force-close in-progress/pending ones (a
-                            # human decides whether to cancel in-flight work).
-                            descendants: list[Task] = []
-                            if task.phase == "issue":
-                                descendants = await find_descendant_tasks(db, task_id)
-                                await cascade_soft_delete_terminal_descendants(
-                                    db, descendants, deleted_at
-                                )
-
-                            await db.commit()
-                            await broadcast_msg(
-                                guild_id,
-                                TaskFinalizeMsg(workerId=task.worker_id, taskId=task_id),
+                        # phase='issue' root tasks own an entire GitHub issue's worth of
+                        # work — cascade the soft-delete to descendants that already
+                        # finished, but never force-close in-progress/pending ones (a
+                        # human decides whether to cancel in-flight work).
+                        descendants: list[Task] = []
+                        if task.phase == "issue":
+                            descendants = await find_descendant_tasks(db, task_id)
+                            await cascade_soft_delete_terminal_descendants(
+                                db, descendants, deleted_at
                             )
-                            await broadcast_msg(
-                                guild_id,
-                                TaskUpdateMsg(
-                                    taskId=task_id,
-                                    state=outcome,
-                                    deletedAt=deleted_at.isoformat()
-                                    if deleted_at is not None
-                                    else None,
+
+                        await db.commit()
+                        await broadcast_msg(
+                            guild_id,
+                            TaskFinalizeMsg(workerId=task.worker_id, taskId=task_id),
+                        )
+                        await broadcast_msg(
+                            guild_id,
+                            TaskUpdateMsg(
+                                taskId=task_id,
+                                state=outcome,
+                                deletedAt=deleted_at.isoformat() if deleted_at is not None else None,
+                            ),
+                        )
+                        if (
+                            task.phase == "issue"
+                            and task.issue_repo
+                            and task.issue_number is not None
+                        ):
+                            await post_issue_close_summary_comment(
+                                guild_id, task.issue_repo, task.issue_number, descendants
+                            )
+                        if outcome == "failed":
+                            spawn(
+                                notify_discord_task_finalized(
+                                    task.issue_repo, task.issue_number, task_id, "failed"
                                 ),
+                                name=f"discord.finalize:{task_id}",
                             )
-                            if (
-                                task.phase == "issue"
-                                and task.issue_repo
-                                and task.issue_number is not None
-                            ):
-                                await post_issue_close_summary_comment(
-                                    guild_id, task.issue_repo, task.issue_number, descendants
-                                )
-                            if outcome == "failed":
-                                spawn(
-                                    notify_discord_task_finalized(
-                                        task.issue_repo, task.issue_number, task_id, "failed"
-                                    ),
-                                    name=f"discord.finalize:{task_id}",
-                                )
-                            result_text = (
-                                f"Task {task_id} finalized as {outcome}; soft-delete at "
-                                f"{deleted_at.isoformat() if deleted_at is not None else 'unknown'}."
+                        result_text = (
+                            f"Task {task_id} finalized as {outcome}; "
+                            + (
+                                f"soft-deleted at {deleted_at.isoformat()}."
+                                if deleted_at is not None
+                                else "kept live until its issue closes."
                             )
+                        )
 
             elif tu.name == "message_worker":
                 wid = inp["worker_id"]
@@ -2280,9 +2247,7 @@ async def _exec_one_tool(
                         if state in ("done", "failed", "cancelled"):
                             result_text = f"Task {task_id} is already {state}."
                         else:
-                            deleted_at = datetime.now(UTC) + timedelta(
-                                seconds=DEFAULT_FINALIZE_TTL_SECONDS
-                            )
+                            deleted_at = datetime.now(UTC)
                             await db.exec(
                                 update(Task)
                                 .where(col(Task.id) == task_id)

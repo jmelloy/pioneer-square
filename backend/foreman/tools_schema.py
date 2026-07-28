@@ -247,14 +247,9 @@ FOREMAN_TOOLS = [
             "Close a task with no further follow-up needed. "
             "Call after reviewing a completed or errored task when no additional work is required. "
             "Use outcome='failed' when the task did not succeed (push errors, agent errors, "
-            "abandoned work). Tasks are soft-deleted after their expiry window so the table "
-            "doesn't accumulate cruft. Pick the window by task type:\n"
-            "  - Ephemeral tasks (periodic-check, status-poll, automated health "
-            "checks): expires_in_seconds = 1200 (20 minutes)\n"
-            "  - Code tasks (execute / review / followup phases): omit the field "
-            "to use the default 3 days, or pass expires_in_seconds = 259200\n"
-            "  - Error / failed tasks: expires_in_seconds = 86400 (1 day)\n"
-            "Pass deleted_at instead if you need an exact ISO-8601 timestamp.\n"
+            "abandoned work). Soft-delete is automatic: successful tasks tied to a still-open "
+            "issue stay visible until the issue closes; everything else disappears from the "
+            "board a few hours after finalizing. You do not choose the window.\n"
             "NOTE: For tasks that have an open PR, the GitHub webhook *may* deliver a "
             "'PR merged' event — but do not rely on it firing reliably. Always call "
             "get_pr_status to confirm the merged state before calling finalize_task."
@@ -270,20 +265,6 @@ FOREMAN_TOOLS = [
                         "Final state to set on the task. "
                         "'done' (default) for successful completion; "
                         "'failed' for tasks that errored, hit push failures, or were abandoned."
-                    ),
-                },
-                "expires_in_seconds": {
-                    "type": "integer",
-                    "description": (
-                        "Seconds from now until the task is soft-deleted. "
-                        "Defaults to 259200 (3 days) when omitted."
-                    ),
-                },
-                "deleted_at": {
-                    "type": "string",
-                    "description": (
-                        "ISO-8601 UTC timestamp at which the task is soft-deleted. "
-                        "Takes precedence over expires_in_seconds when both are set."
                     ),
                 },
             },

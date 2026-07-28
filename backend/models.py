@@ -1,5 +1,5 @@
 import json as _json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import JSON, Boolean, Column, DateTime, Index, Text, UniqueConstraint, or_, text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -11,16 +11,48 @@ from sqlmodel import Field, SQLModel, col
 VALID_TOOLS = ("claude", "codex", "pi")
 
 
+# Grace window: a soft-deleted task stays visible this long after ``deleted_at``
+# (stamped at delete time) so operators can see just-finished work before it
+# disappears. Single knob — tune here, nowhere else.
+SOFT_DELETE_GRACE = timedelta(hours=4)
+
+
 def live_tasks_filter(now: datetime | None = None):
     """SQL clause matching tasks that have not been soft-deleted.
 
-    A task is "live" when ``deleted_at`` is NULL or set to a future timestamp.
-    *now* defaults to the current UTC time; pass an explicit value to make a
-    query reproducible in tests.
+    ``deleted_at`` records *when* a task was deleted (NULL = never). A task is
+    "live" while ``deleted_at`` is NULL or was stamped within the last
+    ``SOFT_DELETE_GRACE``. *now* defaults to the current UTC time; pass an
+    explicit value to make a query reproducible in tests.
     """
     if now is None:
         now = datetime.now(UTC)
-    return or_(col(Task.deleted_at).is_(None), col(Task.deleted_at) > now)
+    return or_(col(Task.deleted_at).is_(None), col(Task.deleted_at) > now - SOFT_DELETE_GRACE)
+
+
+def finalize_soft_delete_at(
+    outcome: str,
+    issue_number: int | None,
+    issue_state: str | None,
+    phase: str | None = None,
+    now: datetime | None = None,
+) -> datetime | None:
+    """When to stamp ``deleted_at`` for a task entering a terminal state.
+
+    Successful *sub-tasks* tied to a still-open issue stay live (return None)
+    until the issue closes — the issue-close webhook/sweep stamps them then. A
+    ``phase='issue'`` root task IS the issue proxy, not a sub-task, so finalizing
+    it means the issue tracking is done: stamp it now. Everything else (failures,
+    cancellations, done tasks with no open issue) is stamped immediately at *now*.
+    """
+    if (
+        outcome == "done"
+        and phase != "issue"
+        and issue_number is not None
+        and issue_state != "closed"
+    ):
+        return None
+    return now if now is not None else datetime.now(UTC)
 
 
 class Guild(SQLModel, table=True):
@@ -312,8 +344,8 @@ class Task(SQLModel, table=True):
     name: str | None = None
     parent_task_id: str | None = None
     phase: str | None = Field(default="execute", sa_column_kwargs={"server_default": "'execute'"})
-    # UTC instant at which this task is considered soft-deleted.
-    # NULL = live; once `now() > deleted_at`, list/get queries hide the row.
+    # UTC instant at which this task was soft-deleted. NULL = live; once it is
+    # stamped, list/get queries hide the row after `SOFT_DELETE_GRACE` elapses.
     deleted_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
