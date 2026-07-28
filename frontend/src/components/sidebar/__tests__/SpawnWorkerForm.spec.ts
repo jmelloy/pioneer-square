@@ -22,7 +22,14 @@ function mockFetch(routes: Routes, onSpawn?: (body: unknown) => unknown) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input)
     if (url.includes('/spawn-credentials')) {
-      return Promise.resolve(jsonResponse(routes.credentials ?? { guild_env_vars: [], claude_credentials: { saved: false, updated_at: null } }))
+      return Promise.resolve(
+        jsonResponse(
+          routes.credentials ?? {
+            guild_env_vars: [],
+            claude_credentials: { saved: false, updated_at: null },
+          },
+        ),
+      )
     }
     if (url.includes('/spawn-worker')) {
       const body = init?.body ? JSON.parse(init.body as string) : {}
@@ -51,6 +58,13 @@ async function selectFirstRepo(wrapper: ReturnType<typeof mountForm>) {
   await repoCheckboxes[1].setValue(true)
 }
 
+async function switchTab(wrapper: ReturnType<typeof mountForm>, label: string) {
+  const tabs = wrapper.findAll('.settings-tab')
+  const tab = tabs.find((t) => t.text() === label)
+  if (!tab) throw new Error(`Tab "${label}" not found`)
+  await tab.trigger('click')
+}
+
 describe('SpawnWorkerForm credentials', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -68,6 +82,7 @@ describe('SpawnWorkerForm credentials', () => {
     })
     const wrapper = mountForm()
     await flushPromises()
+    await switchTab(wrapper, 'Environment')
     expect(wrapper.text()).toContain('ANTHROPIC_API_KEY')
     expect(wrapper.text()).toContain('sk…alue')
     expect(wrapper.text()).toContain('configured')
@@ -78,6 +93,7 @@ describe('SpawnWorkerForm credentials', () => {
     mockFetch({})
     const wrapper = mountForm()
     await flushPromises()
+    await switchTab(wrapper, 'Environment')
     expect(wrapper.text()).toContain('No guild credentials configured')
   })
 
@@ -95,6 +111,7 @@ describe('SpawnWorkerForm credentials', () => {
     const wrapper = mountForm()
     await flushPromises()
     await selectFirstRepo(wrapper)
+    await switchTab(wrapper, 'Environment')
 
     const credCheckbox = wrapper.find('.spawn-cred-row input[type="checkbox"]')
     expect(credCheckbox.exists()).toBe(true)
@@ -114,6 +131,7 @@ describe('SpawnWorkerForm credentials', () => {
     const wrapper = mountForm()
     await flushPromises()
     await selectFirstRepo(wrapper)
+    await switchTab(wrapper, 'Environment')
 
     await wrapper.find('.spawn-env-add').trigger('click')
     const keyInput = wrapper.find('.spawn-env-key')

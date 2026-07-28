@@ -74,6 +74,7 @@ async def test_run_sends_disconnect_before_ws_close():
     worker._fetch_github_token_if_needed = AsyncMock()
     worker._fetch_guild_env_vars = AsyncMock()
     worker._check_gh_auth = AsyncMock()
+    worker._ensure_tools_installed = AsyncMock()
     worker._check_codex_doctor = AsyncMock()
     worker._detect_available_tools = AsyncMock()
     worker._fetch_pending_tasks = AsyncMock(return_value=[])

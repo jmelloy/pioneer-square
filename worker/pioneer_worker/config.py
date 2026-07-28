@@ -83,6 +83,13 @@ class Config:
     # only checks the listed names and warns about any that are absent from PATH.
     tools: list[str] | None = None
 
+    # Which tool runners to install (via `npm install -g`) at startup if missing
+    # from PATH. None (default) falls back to `tools` if set, else installs every
+    # known tool (claude, codex, pi) — the worker image no longer bakes any of
+    # them in. Set to an empty list to disable dynamic installation entirely
+    # (e.g. a custom image that already provides its own tool binaries).
+    install_tools: list[str] | None = None
+
     # Optional S3 session-log sync. Disabled unless s3_bucket is set.
     # Periodically runs `aws s3 sync` for each path in s3_paths.
     s3_bucket: str | None = None
@@ -272,6 +279,20 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
     else:
         _tools_val = None
 
+    # install_tools: override list > TOML list > PIONEER_INSTALL_TOOLS env var
+    # (comma-separated) > None (falls back to `tools`, then to installing all).
+    _install_tools_override = overrides.get("install_tools")
+    _install_tools_raw = raw.get("install_tools")
+    _install_tools_env = os.environ.get("PIONEER_INSTALL_TOOLS", "").strip()
+    if _install_tools_override is not None:
+        _install_tools_val: list[str] | None = list(_install_tools_override)
+    elif _install_tools_raw is not None:
+        _install_tools_val = list(_install_tools_raw)
+    elif _install_tools_env:
+        _install_tools_val = [t.strip() for t in _install_tools_env.split(",") if t.strip()]
+    else:
+        _install_tools_val = None
+
     return Config(
         backend_url=backend_url.rstrip("/"),
         guild_id=guild_id,
@@ -341,6 +362,7 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
         api_port=_api_port,
         api_host=_api_host,
         tools=_tools_val,
+        install_tools=_install_tools_val,
         s3_bucket=overrides.get("s3_bucket")
         or s3_block.get("bucket")
         or os.environ.get("PIONEER_S3_BUCKET")

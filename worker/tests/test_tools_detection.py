@@ -6,7 +6,7 @@ import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from pioneer_worker import cli
+from pioneer_worker import cli, tool_installer
 from pioneer_worker.config import Config
 from pioneer_worker.worker import Worker
 
@@ -334,3 +334,102 @@ class TestToolsCLIFlag:
         rc = cli.main(["--config", str(toml_path), "--tools", " claude , pi "])
         assert rc == 0
         assert captured["tools"] == ["claude", "pi"]
+
+
+class TestInstallToolsCLIFlag:
+    """Tests for the --install-tools CLI flag wiring through cli.main()."""
+
+    def _write_toml(self, tmp_path, body: str):
+        p = tmp_path / "pioneer-worker.toml"
+        p.write_text(body)
+        return p
+
+    def test_install_tools_flag_passed_to_config(self, tmp_path, monkeypatch):
+        toml_path = self._write_toml(
+            tmp_path,
+            'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\nrepos = ["owner/repo"]\n',
+        )
+        captured = {}
+
+        class _FakeWorker:
+            def __init__(self, cfg):
+                captured["install_tools"] = cfg.install_tools
+
+            async def run(self):
+                return None
+
+        monkeypatch.setattr(cli, "Worker", _FakeWorker)
+        rc = cli.main(["--config", str(toml_path), "--install-tools", "claude,codex"])
+        assert rc == 0
+        assert captured["install_tools"] == ["claude", "codex"]
+
+    def test_no_install_tools_flag_gives_none(self, tmp_path, monkeypatch):
+        toml_path = self._write_toml(
+            tmp_path,
+            'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\nrepos = ["owner/repo"]\n',
+        )
+        captured = {}
+
+        class _FakeWorker:
+            def __init__(self, cfg):
+                captured["install_tools"] = cfg.install_tools
+
+            async def run(self):
+                return None
+
+        monkeypatch.setattr(cli, "Worker", _FakeWorker)
+        rc = cli.main(["--config", str(toml_path)])
+        assert rc == 0
+        assert captured["install_tools"] is None
+
+    def test_empty_install_tools_flag_disables(self, tmp_path, monkeypatch):
+        toml_path = self._write_toml(
+            tmp_path,
+            'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\nrepos = ["owner/repo"]\n',
+        )
+        captured = {}
+
+        class _FakeWorker:
+            def __init__(self, cfg):
+                captured["install_tools"] = cfg.install_tools
+
+            async def run(self):
+                return None
+
+        monkeypatch.setattr(cli, "Worker", _FakeWorker)
+        rc = cli.main(["--config", str(toml_path), "--install-tools", ""])
+        assert rc == 0
+        assert captured["install_tools"] == []
+
+
+class TestEnsureToolsInstalled:
+    """Tests for Worker._ensure_tools_installed's target-list resolution."""
+
+    async def test_uses_install_tools_when_set(self):
+        cfg = _make_cfg(install_tools=["claude"], tools=["claude", "codex"])
+        worker = Worker(cfg)
+        with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
+            await worker._ensure_tools_installed()
+        ensure.assert_awaited_once()
+        assert ensure.await_args.args[0] == ["claude"]
+
+    async def test_falls_back_to_tools_when_install_tools_unset(self):
+        cfg = _make_cfg(install_tools=None, tools=["codex"])
+        worker = Worker(cfg)
+        with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
+            await worker._ensure_tools_installed()
+        assert ensure.await_args.args[0] == ["codex"]
+
+    async def test_falls_back_to_all_tools_when_both_unset(self):
+        cfg = _make_cfg(install_tools=None, tools=None)
+        worker = Worker(cfg)
+        with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
+            await worker._ensure_tools_installed()
+        assert ensure.await_args.args[0] == list(tool_installer.ALL_TOOLS)
+
+    async def test_empty_install_tools_skips_installation(self):
+        cfg = _make_cfg(install_tools=[], tools=None)
+        worker = Worker(cfg)
+        with patch.object(tool_installer, "ensure_tools_installed", AsyncMock()) as ensure:
+            await worker._ensure_tools_installed()
+        ensure.assert_not_awaited()

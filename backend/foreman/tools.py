@@ -109,6 +109,38 @@ async def _to_thread(fn, /, *args, **kwargs):
     )
 
 
+async def _guild_foreman_config(db, guild_pk: int | None) -> dict:
+    """Read a guild's foreman_config via the in-scope session (not a fresh one,
+    so it stays inside the caller's transaction and test fixtures apply)."""
+    if guild_pk is None:
+        return {}
+    res = await db.exec(select(col(Guild.foreman_config)).where(col(Guild.id) == guild_pk))
+    cfg = res.one_or_none()
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _apply_pi_defaults(
+    tool: str | None,
+    provider: str | None,
+    model: str | None,
+    guild_cfg: dict | None,
+) -> tuple[str | None, str | None]:
+    """Fill pi's provider/model from the guild's foreman config when a dispatch
+    left them unset. Pi is provider-agnostic and has no built-in default that
+    authenticates, so without this a pi task launches with no --provider/--model
+    and fails per-task (see #1040). Only applies to the pi tool; an explicit
+    provider/model from the foreman's tool call always wins.
+    """
+    if tool != "pi":
+        return provider, model
+    cfg = guild_cfg or {}
+    if provider is None:
+        provider = cfg.get("pi_default_provider") or None
+    if model is None:
+        model = cfg.get("pi_default_model") or None
+    return provider, model
+
+
 async def finalize_closed_issue(
     db, guild_pk: int, guild_id: str, issue_repo: str, issue_number: int
 ) -> list[str]:
@@ -1508,6 +1540,13 @@ async def _exec_one_tool(
                         # worker is legacy (no tools registered) — accept it as-is.
                         tool = requested_tool
 
+                    # Pi has no built-in default that authenticates — fall back to
+                    # the guild's configured pi default provider/model (#1040).
+                    if tool == "pi" and (provider is None or model is None):
+                        provider, model = _apply_pi_defaults(
+                            tool, provider, model, await _guild_foreman_config(db, guild_pk)
+                        )
+
                     from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
 
                     model_tier = _select_tier(phase, complexity_hint=requested_tier)
@@ -1861,6 +1900,17 @@ async def _exec_one_tool(
                                     if task_provider is not None
                                     else followup_worker_provider
                                 )
+                                # Pi has no authenticating built-in default — fall
+                                # back to the guild's configured pi default (#1040).
+                                if effective_tool == "pi" and (
+                                    effective_provider is None or effective_model is None
+                                ):
+                                    effective_provider, effective_model = _apply_pi_defaults(
+                                        effective_tool,
+                                        effective_provider,
+                                        effective_model,
+                                        await _guild_foreman_config(db, guild_pk),
+                                    )
 
                                 from util.model_tiers import (  # noqa: PLC0415
                                     select_model_tier as _select_tier,

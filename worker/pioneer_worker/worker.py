@@ -15,7 +15,15 @@ from datetime import UTC, datetime
 import anyio
 import httpx
 
-from . import claude_runner, codex_runner, git_ops, github_pr, pi_runner, s3_uploader
+from . import (
+    claude_runner,
+    codex_runner,
+    git_ops,
+    github_pr,
+    pi_runner,
+    s3_uploader,
+    tool_installer,
+)
 from . import config as config_mod
 from .control_api import ControlServer
 from .sleep_monitor import SystemSleepMonitor
@@ -477,6 +485,30 @@ class Worker:
             # that false-positive ever bites.
             return bool(self._tool_env.get("pi"))
         return True  # any other tool needs no credentials
+
+    async def _ensure_tools_installed(self) -> None:
+        """Install any missing AI coding CLIs before probing PATH for them.
+
+        Worker images no longer bake in claude/codex/pi (see the `worker` stage
+        in the root Dockerfile); each is npm-installed here on first use in a
+        given container and left alone on every later call, since a tool
+        already resolvable via its configured path/PATH entry is skipped.
+        """
+        targets = (
+            self.cfg.install_tools
+            if self.cfg.install_tools is not None
+            else self.cfg.tools
+            if self.cfg.tools is not None
+            else list(tool_installer.ALL_TOOLS)
+        )
+        if not targets:
+            return
+        tool_paths = {
+            "claude": self.cfg.claude_path,
+            "codex": self.cfg.codex_path,
+            "pi": self.cfg.pi_path,
+        }
+        await tool_installer.ensure_tools_installed(targets, tool_paths=tool_paths)
 
     async def _detect_available_tools(self) -> None:
         """Populate self._available_tools from runner binaries on PATH + credentials.
@@ -1000,6 +1032,7 @@ class Worker:
         )
         await self._refresh_github_repos()
         await self._check_gh_auth()
+        await self._ensure_tools_installed()
         await self._check_codex_doctor()
 
         logger.info("Connecting to backend WebSocket at %s", self.cfg.ws_url)
@@ -1999,7 +2032,10 @@ class Worker:
                     )
                 elif tool == "pi":
                     _pi_model = task.get("model") or self.cfg.pi_model
-                    _pi_provider = task.get("provider") or self.cfg.pi_provider
+                    # Fall back to the worker's generic provider if pi_provider is
+                    # unset, so pi still launches with a provider when the task
+                    # carried none (defensive companion to the backend #1040 fix).
+                    _pi_provider = task.get("provider") or self.cfg.pi_provider or self.cfg.provider
 
                     logger.info(
                         "Task %s: launching pi in %s (model=%s provider=%s resume=%s)",
