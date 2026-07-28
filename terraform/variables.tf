@@ -15,6 +15,9 @@ variable "project_name" {
 }
 
 variable "environment" {
+  # NOTE: label is "staging" but this is the ONLY live deployment and it serves
+  # the single real org — treat it as production. Not renamed to "prod" because
+  # that reshuffles every resource name/ARN (a destroy+recreate).
   description = "Deployment environment name (e.g. staging, prod). Used in resource names and tags."
   type        = string
   default     = "staging"
