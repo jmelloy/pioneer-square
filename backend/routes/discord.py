@@ -82,9 +82,6 @@ _DEFERRED_CHANNEL_MESSAGE = 5
 # Ephemeral message flag
 _EPHEMERAL = 64
 
-# Default soft-delete window for cancelled tasks
-_CANCEL_TTL = timedelta(days=3)
-
 # Lifetime of a /connect-account one-time token
 _CONNECT_TOKEN_TTL = timedelta(minutes=15)
 
@@ -571,7 +568,7 @@ async def _cmd_cancel(interaction_token: str, guild_slug: str, task_id: str) -> 
                 )
                 return
 
-            deleted_at = datetime.now(UTC) + _CANCEL_TTL
+            deleted_at = datetime.now(UTC)  # cancellations are stamped immediately
             await db.exec(
                 update(Task)
                 .where(col(Task.id) == task_id)

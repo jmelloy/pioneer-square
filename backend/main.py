@@ -501,11 +501,6 @@ if os.environ.get("DEBUG_TOKEN"):
 # helpers directly. Don't use these in new code — import from the source module.
 # ---------------------------------------------------------------------------
 
-from routes.tasks import (  # noqa: E402,F401
-    DEFAULT_FINALIZE_TTL,
-    FinalizeBody,
-    _resolve_finalize_deleted_at,
-)
 from utils import build_spawn_worker_env as _build_spawn_worker_env  # noqa: E402,F401
 from utils import decode_claude_oauth_token as _decode_claude_oauth_token  # noqa: E402,F401
 

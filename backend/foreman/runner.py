@@ -802,6 +802,26 @@ async def _poll_loop(guild_id: str) -> None:
                 )
                 active_tasks = [dict(r._mapping) for r in result.all()]
 
+                # Kept-alive done tasks (issue still open ⇒ deleted_at left NULL)
+                # rely on the issue-close sweep to ever be stamped; a dropped
+                # issues webhook would otherwise strand them live forever. Gather
+                # their issues too so the sweep below covers them.
+                # ponytail: re-polls each such open issue every cycle; add a
+                # per-issue cooldown if the GitHub API budget bites.
+                kept_alive_result = await db.exec(
+                    select(col(Task.issue_repo), col(Task.issue_number))
+                    .where(
+                        col(Task.guild_id) == guild_pk_val,
+                        col(Task.state).in_(list(_TERMINAL_STATES)),
+                        col(Task.deleted_at).is_(None),
+                        col(Task.issue_number).is_not(None),
+                    )
+                    .distinct()
+                )
+                kept_alive_issues = {
+                    (r[0], r[1]) for r in kept_alive_result.all() if r[0] and r[1]
+                }
+
                 # Opportunistically refresh the model catalog while we have a DB
                 # session open. The function is a no-op when the catalog is fresh.
                 from util.models_dev import refresh_model_catalog_if_stale as _refresh_catalog
@@ -829,12 +849,15 @@ async def _poll_loop(guild_id: str) -> None:
                 (t["issue_repo"], t["issue_number"])
                 for t in active_tasks
                 if t.get("issue_repo") and t.get("issue_number")
-            }
+            } | kept_alive_issues
+            # Sweep whenever any linked issue exists — kept-alive done tasks need
+            # it even when there are no non-terminal tasks left on the board.
+            if linked_issues:
+                await _sweep_closed_issues(guild_id, linked_issues)
             if active_tasks:
                 task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
                 pr_tasks = [t for t in active_tasks if t.get("pr_url")]
                 pr_status_lines = await _fetch_pr_status_lines(guild_id, pr_tasks)
-                await _sweep_closed_issues(guild_id, linked_issues)
 
                 msg = (
                     f"[periodic-check] Automated status poll — {n} non-terminal "
