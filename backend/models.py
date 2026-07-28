@@ -784,13 +784,13 @@ class UserSpawnSettings(SQLModel, table=True):
 
 
 class GuildSpawnDefaults(SQLModel, table=True):
-    """Per-guild default spawn-worker parameters, tracking the last successful spawn.
+    """Per-guild default spawn-worker parameters, curated by the operator.
 
-    One row per guild, upserted every time a worker container is successfully
-    started with explicit parameters (foreman spawn_worker tool, REST
-    spawn-worker endpoint, Discord /worker-spawn). The foreman's spawn_worker
-    tool falls back to this row when a call omits repos/tools/agent_count, so
-    "spawn me a worker" works without restating the guild's usual configuration.
+    One row per guild, written only via the operator-facing spawn-defaults
+    endpoint (set_guild_spawn_defaults); worker spawns no longer touch it. The
+    foreman's spawn_worker tool falls back to this row when a call omits
+    repos/tools/agent_count, so "spawn me a worker" works without restating the
+    guild's usual configuration.
     """
 
     __tablename__ = "guild_spawn_defaults"  # type: ignore[assignment]
