@@ -13,6 +13,18 @@ from .log_format import strip_worktree_prefix
 
 logger = logging.getLogger(__name__)
 
+# Pioneer names its Bedrock provider "bedrock" everywhere (foreman config,
+# guild pi_default_provider, task.provider), but pi's CLI calls it
+# "amazon-bedrock" — passing "bedrock" straight through makes pi exit 1 with
+# `Unknown provider "bedrock"`. Translate at the pi boundary only.
+_PI_PROVIDER_ALIASES = {"bedrock": "amazon-bedrock"}
+
+
+def pi_provider_arg(provider: str | None) -> str | None:
+    """Map a pioneer provider id to pi's CLI provider name (pass-through if unmapped)."""
+    return _PI_PROVIDER_ALIASES.get(provider, provider) if provider else provider
+
+
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
 UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
 OnProcFn = Callable[["PiProcess"], None]  # on_proc(proc) — worker's live-handle callback
@@ -238,7 +250,7 @@ async def _run_pi_once(
         cmd += ["--session", resume_session_id]
     cmd += ["--mode", "rpc"]
     if provider:
-        cmd += ["--provider", provider]
+        cmd += ["--provider", pi_provider_arg(provider)]
     if model:
         cmd += ["--model", model]
     logger.info("Spawning pi in %s; description=%r", cwd, description)

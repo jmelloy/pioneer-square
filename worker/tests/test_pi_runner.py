@@ -8,7 +8,26 @@ import os
 import sys
 
 import pytest
-from pioneer_worker.pi_runner import parse_pi_event, run_pi_auto
+from pioneer_worker.pi_runner import parse_pi_event, pi_provider_arg, run_pi_auto
+
+# ---------------------------------------------------------------------------
+# pi_provider_arg — pioneer provider id -> pi CLI provider name
+# ---------------------------------------------------------------------------
+
+
+def test_pi_provider_arg_maps_bedrock():
+    # pi rejects "bedrock"; it must become "amazon-bedrock".
+    assert pi_provider_arg("bedrock") == "amazon-bedrock"
+
+
+def test_pi_provider_arg_passes_through_unmapped():
+    assert pi_provider_arg("anthropic") == "anthropic"
+    assert pi_provider_arg("openai") == "openai"
+
+
+def test_pi_provider_arg_none():
+    assert pi_provider_arg(None) is None
+
 
 # ---------------------------------------------------------------------------
 # parse_pi_event
