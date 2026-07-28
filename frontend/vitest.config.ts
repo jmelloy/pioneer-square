@@ -7,6 +7,7 @@ export default mergeConfig(
     test: {
       environment: 'happy-dom',
       globals: true,
+      setupFiles: ['./vitest.setup.ts'],
       include: ['src/**/*.{test,spec}.{ts,js}', 'tests/**/*.{test,spec}.{ts,js}'],
       coverage: {
         provider: 'v8',
