@@ -58,6 +58,7 @@ async def upsert_issue(db: AsyncSession, repo: str, payload: dict) -> GithubIssu
         "updated_at": _parse_dt_or_now(payload.get("updated_at")),
         "closed_at": _parse_dt(payload.get("closed_at")),
         "raw": payload,
+        "last_refreshed_at": datetime.now(UTC),
     }
     stmt = pg_insert(GithubIssue).values(**values)
     stmt = stmt.on_conflict_do_update(
@@ -101,6 +102,7 @@ async def upsert_pr(db: AsyncSession, repo: str, payload: dict) -> GithubPullReq
         "closed_at": _parse_dt(payload.get("closed_at")),
         "merged_at": _parse_dt(payload.get("merged_at")),
         "raw": payload,
+        "last_refreshed_at": datetime.now(UTC),
     }
     stmt = pg_insert(GithubPullRequest).values(**values)
     stmt = stmt.on_conflict_do_update(
