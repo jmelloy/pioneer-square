@@ -8,7 +8,7 @@ import time
 import urllib.parse
 from collections import deque
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -55,6 +55,8 @@ from models import (
     Agent,
     ApiRequestLog,
     ForemanTurn,
+    GithubIssue,
+    GithubPullRequest,
     Guild,
     GuildMember,
     Message,
@@ -62,7 +64,7 @@ from models import (
     Worker,
     live_tasks_filter,
 )
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, tuple_
 from sqlmodel import col, select
 from util.tasks import spawn
 from ws_types import ChatMsg, ForemanPollStatusMsg
@@ -71,6 +73,11 @@ logger = logging.getLogger(__name__)
 
 POLL_MIN_SECS = 60  # initial poll interval: 1 minute
 POLL_MAX_SECS = 86400  # maximum poll interval: 24 hours
+
+# Minimum age of a github_issues/github_pull_requests cache row before the
+# stale-link refresh sweep (_refresh_stale_github_links) will refetch it. Keeps
+# the sweep from re-hitting the GitHub API for the same row every poll tick.
+_GITHUB_CACHE_REFRESH_STALE_SECS = 300
 
 # Upper bound on rows fetched by _load_history before Python-side windowing,
 # so query cost stays flat regardless of the table's total lifetime turn count.
@@ -753,6 +760,113 @@ async def _sweep_closed_issues(guild_id: str, linked_issues: set[tuple[str, int]
         await db.close()
 
 
+async def _stale_cache_keys(
+    db, model: type[GithubIssue] | type[GithubPullRequest], keys: set[tuple[str, int]]
+) -> list[tuple[str, int]]:
+    """Return the subset of *keys* whose cache row is missing or older than the staleness cutoff.
+
+    A key with no cache row at all counts as stale (it has never been fetched).
+    Shared by the issue and PR halves of ``_refresh_stale_github_links`` — the
+    two cache tables share the same ``(repo, number)`` shape.
+    """
+    if not keys:
+        return []
+    cutoff = datetime.now(UTC) - timedelta(seconds=_GITHUB_CACHE_REFRESH_STALE_SECS)
+    result = await db.exec(
+        select(col(model.repo), col(model.number), col(model.last_refreshed_at)).where(
+            tuple_(col(model.repo), col(model.number)).in_(keys)
+        )
+    )
+    cached_at = {(repo, number): refreshed_at for repo, number, refreshed_at in result.all()}
+    return sorted(k for k in keys if cached_at.get(k, cutoff) <= cutoff)
+
+
+async def _refresh_stale_github_links(guild_id: str) -> None:
+    """Refresh the github_issues/github_pull_requests cache for every linked task, terminal included.
+
+    ``_sweep_closed_issues`` and ``_fetch_pr_status_lines`` above only refresh
+    issues/PRs linked by *non-terminal* tasks, since those feed the foreman's
+    own periodic-check narration. But the tasks/tree view renders every live
+    task regardless of state — once a task's issue/PR closes and its last task
+    goes terminal, those two sweeps stop looking at it and the cached status
+    goes stale forever. This sweep scans every distinct issue/PR reference on
+    live tasks (any state) and refetches cache rows older than
+    ``_GITHUB_CACHE_REFRESH_STALE_SECS`` (or never fetched), independent of
+    task state. Best effort: an individual fetch failure is logged and
+    skipped rather than aborting the sweep.
+    """
+    from foreman.tools import _PR_URL_RE, _guild_github_token, fetch_issue_state, fetch_pr_status
+
+    creds = await _guild_github_token(guild_id)
+    if not creds:
+        return
+    token, _username = creds
+
+    db = await get_db()
+    try:
+        guild_pk_val = await get_guild_pk(db, guild_id)
+        result = await db.exec(
+            select(
+                col(Task.issue_repo),
+                col(Task.issue_number),
+                col(Task.pr_repo),
+                col(Task.pr_number),
+                col(Task.pr_url),
+            ).where(col(Task.guild_id) == guild_pk_val, live_tasks_filter())
+        )
+        rows = result.all()
+
+        issue_keys = {
+            (r.issue_repo, r.issue_number) for r in rows if r.issue_repo and r.issue_number
+        }
+        pr_keys: set[tuple[str, int]] = set()
+        for r in rows:
+            if r.pr_repo and r.pr_number:
+                pr_keys.add((r.pr_repo, r.pr_number))
+            elif r.pr_url:
+                m = _PR_URL_RE.match(r.pr_url.rstrip("/"))
+                if m:
+                    pr_keys.add((m.group(1), int(m.group(2))))
+
+        stale_issues = await _stale_cache_keys(db, GithubIssue, issue_keys)
+        stale_prs = await _stale_cache_keys(db, GithubPullRequest, pr_keys)
+        if not stale_issues and not stale_prs:
+            return
+
+        logger.debug(
+            "guild=%s _refresh_stale_github_links: refreshing %d issue(s), %d PR(s)",
+            guild_id,
+            len(stale_issues),
+            len(stale_prs),
+        )
+
+        for repo, number in stale_issues:
+            try:
+                await fetch_issue_state(repo, number, token, db=db)
+            except Exception:
+                logger.warning(
+                    "guild=%s failed to refresh cached issue status for %s#%s",
+                    guild_id,
+                    repo,
+                    number,
+                    exc_info=True,
+                )
+
+        for repo, number in stale_prs:
+            try:
+                await fetch_pr_status(repo, number, token, db=db)
+            except Exception:
+                logger.warning(
+                    "guild=%s failed to refresh cached PR status for %s#%s",
+                    guild_id,
+                    repo,
+                    number,
+                    exc_info=True,
+                )
+    finally:
+        await db.close()
+
+
 async def _poll_loop(guild_id: str) -> None:
     """Background loop: check non-terminal tasks and trigger the foreman if any are found.
 
@@ -818,9 +932,7 @@ async def _poll_loop(guild_id: str) -> None:
                     )
                     .distinct()
                 )
-                kept_alive_issues = {
-                    (r[0], r[1]) for r in kept_alive_result.all() if r[0] and r[1]
-                }
+                kept_alive_issues = {(r[0], r[1]) for r in kept_alive_result.all() if r[0] and r[1]}
 
                 # Opportunistically refresh the model catalog while we have a DB
                 # session open. The function is a no-op when the catalog is fresh.
@@ -854,6 +966,13 @@ async def _poll_loop(guild_id: str) -> None:
             # it even when there are no non-terminal tasks left on the board.
             if linked_issues:
                 await _sweep_closed_issues(guild_id, linked_issues)
+
+            # Independent of active_tasks/linked_issues above: refreshes the
+            # github_issues/github_pull_requests cache for *every* live task's
+            # linked issue/PR (terminal included), so the tasks/tree view never
+            # shows indefinitely-stale status just because its tasks finished.
+            await _refresh_stale_github_links(guild_id)
+
             if active_tasks:
                 task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
                 pr_tasks = [t for t in active_tasks if t.get("pr_url")]

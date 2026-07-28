@@ -614,6 +614,12 @@ class GithubIssue(SQLModel, table=True):
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     raw: dict = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
+    # When we last polled GitHub for this row — distinct from ``updated_at``,
+    # which is GitHub's own timestamp for when *its* state last changed. Lets
+    # the periodic refresh sweep (foreman.runner) throttle refetches.
+    last_refreshed_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    )
 
 
 class GithubPullRequest(SQLModel, table=True):
@@ -654,6 +660,12 @@ class GithubPullRequest(SQLModel, table=True):
         default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
     )
     raw: dict = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
+    # When we last polled GitHub for this row — distinct from ``updated_at``,
+    # which is GitHub's own timestamp for when *its* state last changed. Lets
+    # the periodic refresh sweep (foreman.runner) throttle refetches.
+    last_refreshed_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    )
 
 
 class Lock(SQLModel, table=True):
