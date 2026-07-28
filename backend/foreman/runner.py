@@ -520,6 +520,8 @@ async def _create_api_request_log(
     messages: list,
     extra: dict,
     task_id: str | None = None,
+    guild_id: str | None = None,
+    user_id: str | None = None,
 ) -> int:
     """Insert an api_request_log row before making the Anthropic API call.
 
@@ -534,6 +536,8 @@ async def _create_api_request_log(
             messages=messages,
             extra=extra or None,
             task_id=task_id,
+            guild_id=await get_guild_pk(db, guild_id) if guild_id else None,
+            user_id=user_id,
         )
         db.add(log)
         await db.commit()
@@ -1574,6 +1578,8 @@ async def _run_foreman_ai(
                 messages=messages,
                 extra={"max_tokens": 1024, "tools": tools},
                 task_id=_task_id,
+                guild_id=guild_id,
+                user_id=user_id,
             )
             llm_result = await _call_llm(
                 guild_id,
@@ -1807,6 +1813,8 @@ async def _run_foreman_ai(
                     "tool_choice": {"type": "none"},
                 },
                 task_id=_task_id,
+                guild_id=guild_id,
+                user_id=user_id,
             )
             wrap_llm_result = await _call_llm(
                 guild_id,

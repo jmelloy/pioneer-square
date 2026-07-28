@@ -529,6 +529,12 @@ class ApiRequestLog(SQLModel, table=True):
     stop_reason: str | None = None
     # Task this API call was made on behalf of (nullable; foreman may handle multiple tasks).
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
+    # Guild this call was made for (int FK to guilds.id; nullable — pre-existing
+    # rows and any call where the guild can't be resolved leave it NULL).
+    guild_id: int | None = Field(default=None, foreign_key="guilds.id")
+    # github_user_id of the human this call was made on behalf of; NULL for
+    # system/worker-driven calls. No FK, matching tasks.user_id / messages.user_id.
+    user_id: str | None = None
     # Extra API parameters: max_tokens, tools list, tool_choice, etc.
     extra: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
