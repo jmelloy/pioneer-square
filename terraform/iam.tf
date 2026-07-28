@@ -186,6 +186,28 @@ resource "aws_iam_role_policy" "ecs_task_worker_dispatch" {
   policy = data.aws_iam_policy_document.ecs_task_worker_dispatch.json
 }
 
+# --- ECS Exec: SSM channels so `aws ecs execute-command` can open a shell in
+# a running task (used for one-off DB access / debugging via `run-task
+# --enable-execute-command`). No resource-level scoping is supported on these
+# ssmmessages actions. ---
+resource "aws_iam_role_policy" "ecs_task_exec" {
+  name = "${local.name_prefix}-ecs-task-exec"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC — used by .github/workflows/deploy.yml (build/push +
 # terraform apply) via aws-actions/configure-aws-credentials with
