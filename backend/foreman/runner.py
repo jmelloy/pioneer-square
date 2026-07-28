@@ -932,9 +932,7 @@ async def _poll_loop(guild_id: str) -> None:
                     )
                     .distinct()
                 )
-                kept_alive_issues = {
-                    (r[0], r[1]) for r in kept_alive_result.all() if r[0] and r[1]
-                }
+                kept_alive_issues = {(r[0], r[1]) for r in kept_alive_result.all() if r[0] and r[1]}
 
                 # Opportunistically refresh the model catalog while we have a DB
                 # session open. The function is a no-op when the catalog is fresh.

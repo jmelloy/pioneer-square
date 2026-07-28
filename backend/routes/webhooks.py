@@ -288,7 +288,6 @@ class DebounceQueue:
 _debounce_queue = DebounceQueue()
 
 
-
 async def _auto_finalize_task_on_pr_merge(
     db: AsyncSession,
     guild_pk: int,
@@ -306,9 +305,9 @@ async def _auto_finalize_task_on_pr_merge(
     # state filtering is delegated entirely to the conditional UPDATE to eliminate
     # the SELECT→UPDATE TOCTOU.
     row_result = await db.exec(
-        select(
-            col(Task.worker_id), col(Task.issue_number), col(Task.issue_state)
-        ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+        select(col(Task.worker_id), col(Task.issue_number), col(Task.issue_state)).where(
+            col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+        )
     )
     task_row = row_result.one_or_none()
     if task_row is None:

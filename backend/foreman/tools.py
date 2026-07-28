@@ -2138,7 +2138,9 @@ async def _exec_one_tool(
                             TaskUpdateMsg(
                                 taskId=task_id,
                                 state=outcome,
-                                deletedAt=deleted_at.isoformat() if deleted_at is not None else None,
+                                deletedAt=deleted_at.isoformat()
+                                if deleted_at is not None
+                                else None,
                             ),
                         )
                         if (
@@ -2156,13 +2158,10 @@ async def _exec_one_tool(
                                 ),
                                 name=f"discord.finalize:{task_id}",
                             )
-                        result_text = (
-                            f"Task {task_id} finalized as {outcome}; "
-                            + (
-                                f"soft-deleted at {deleted_at.isoformat()}."
-                                if deleted_at is not None
-                                else "kept live until its issue closes."
-                            )
+                        result_text = f"Task {task_id} finalized as {outcome}; " + (
+                            f"soft-deleted at {deleted_at.isoformat()}."
+                            if deleted_at is not None
+                            else "kept live until its issue closes."
                         )
 
             elif tu.name == "message_worker":
