@@ -71,7 +71,13 @@ from ws_types import ChatMsg, ForemanPollStatusMsg
 
 logger = logging.getLogger(__name__)
 
-POLL_MIN_SECS = 60  # initial poll interval: 1 minute
+POLL_MIN_SECS = 300  # initial poll interval: 5 minutes
+# ponytail: raised 60→300s. Periodic checks were ~84% of foreman token spend;
+# reset_foreman_poll slams the interval back to this floor on every event, so a
+# busy day fired a full-context [periodic-check] every minute. 5min cuts that ~5×.
+# Trade-off: stalled-task / devReady pickup latency goes 1min → 5min (fine).
+# Also widens the _guild_active_recently window (below), which keys off this — a
+# deliberate, benign coupling: "recently active" now means the last 5min.
 POLL_MAX_SECS = 86400  # maximum poll interval: 24 hours
 
 # Minimum age of a github_issues/github_pull_requests cache row before the
