@@ -627,12 +627,11 @@ def test_spawn_worker_rejects_when_guild_in_cooldown(client, monkeypatch):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cooldown"))
         session.add(
-            GuildSpawnDefaults(
+            Worker(
+                id="w-cooldown-prior",
                 guild_id=guild_pk,
-                repos="[]",
-                tools="[]",
-                agent_count=None,
-                updated_at=datetime.now(UTC) - timedelta(minutes=1),
+                created_at=datetime.now(UTC) - timedelta(minutes=1),
+                started_at=datetime.now(UTC) - timedelta(minutes=1),
             )
         )
         session.commit()
@@ -673,12 +672,11 @@ def test_spawn_worker_allowed_after_cooldown_expires(client, monkeypatch):
             select(col(Guild.id)).where(col(Guild.slug) == "guild-cooldown-ok")
         )
         session.add(
-            GuildSpawnDefaults(
+            Worker(
+                id="w-cooldown-ok-prior",
                 guild_id=guild_pk,
-                repos="[]",
-                tools="[]",
-                agent_count=None,
-                updated_at=datetime.now(UTC) - timedelta(minutes=10),
+                created_at=datetime.now(UTC) - timedelta(minutes=10),
+                started_at=datetime.now(UTC) - timedelta(minutes=10),
             )
         )
         session.commit()
