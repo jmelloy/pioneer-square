@@ -17,6 +17,10 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 
   # Remote state in S3. Bootstrap the bucket (and, on Terraform < 1.10, a
