@@ -198,9 +198,10 @@
             <div class="foreman-field">
               <label class="foreman-field-label">Environment Variables</label>
               <p class="foreman-hint">
-                Used by the foreman's own LLM (credentials, base URLs, etc.). A variable stays with
-                the foreman unless you tick <em>forward</em> — then it is also sent to every worker
-                tool in this guild. Scope a variable to a single tool in Worker Settings.
+                Used only by the foreman's own LLM (credentials, base URLs, etc.) — these are
+                <em>not</em> sent to workers. To give a variable to every worker, add it under
+                Worker Settings → General; to scope it to one tool, use the Claude / Pi / Codex
+                tabs.
               </p>
               <p v-if="envDefaultKeys.length" class="foreman-hint">
                 From the server environment (masked, always available to the foreman):
@@ -210,10 +211,9 @@
                 <div class="env-var-row env-var-head">
                   <span class="env-var-key">Key</span>
                   <span class="env-var-value">Value</span>
-                  <span class="env-var-fwd" title="Also send to worker tools">fwd</span>
                   <span class="env-var-spacer"></span>
                 </div>
-                <div v-for="row in envVarRows" :key="row.id" class="env-var-row">
+                <div v-for="row in foremanEnvRows" :key="row.id" class="env-var-row">
                   <input
                     v-model="row.key"
                     class="settings-input env-var-key"
@@ -230,15 +230,9 @@
                     spellcheck="false"
                     autocomplete="off"
                   />
-                  <input
-                    v-model="row.forward"
-                    type="checkbox"
-                    class="env-var-fwd"
-                    title="Forward this variable to worker tools"
-                  />
                   <button
                     class="env-var-delete-btn"
-                    @click="removeEnvVar(row)"
+                    @click="removeEnvRow(foremanEnvRows, row)"
                     title="Remove variable"
                   >
                     ✕
@@ -247,7 +241,9 @@
                 <datalist id="foreman-env-keys">
                   <option v-for="k in FOREMAN_ENV_KEYS" :key="k" :value="k" />
                 </datalist>
-                <button class="pixel-btn env-var-add-btn" @click="addEnvVar">+ Add Variable</button>
+                <button class="pixel-btn env-var-add-btn" @click="addEnvRow(foremanEnvRows)">
+                  + Add Variable
+                </button>
               </div>
             </div>
 
@@ -287,27 +283,46 @@
               </button>
             </nav>
 
-            <!-- General: what every worker tool receives (the forwarded foreman vars) -->
+            <!-- General: env vars every worker tool in this guild receives -->
             <template v-if="workerSubTab === 'general'">
               <p class="foreman-hint">
-                Every worker tool in this guild inherits these variables — the ones marked
-                <em>forward</em> on the Foreman tab. Edit them there; use the Claude / Pi / Codex
-                tabs to override a value for a single tool.
+                Every worker tool in this guild inherits these variables. Use the Claude / Pi /
+                Codex tabs to override a value for a single tool.
               </p>
-              <div v-if="forwardedEnvRows.length" class="env-var-list">
+              <div class="env-var-list">
                 <div class="env-var-row env-var-head">
                   <span class="env-var-key">Key</span>
                   <span class="env-var-value">Value</span>
+                  <span class="env-var-spacer"></span>
                 </div>
-                <div v-for="row in forwardedEnvRows" :key="row.id" class="env-var-row">
-                  <span class="env-var-key env-var-ro">{{ row.key }}</span>
-                  <span class="env-var-value env-var-ro">{{ row.value || '—' }}</span>
+                <div v-for="row in workerEnvRows" :key="row.id" class="env-var-row">
+                  <input
+                    v-model="row.key"
+                    class="settings-input env-var-key"
+                    placeholder="KEY_NAME"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <input
+                    v-model="row.value"
+                    type="text"
+                    class="settings-input env-var-value"
+                    placeholder="value"
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <button
+                    class="env-var-delete-btn"
+                    @click="removeEnvRow(workerEnvRows, row)"
+                    title="Remove variable"
+                  >
+                    ✕
+                  </button>
                 </div>
+                <button class="pixel-btn env-var-add-btn" @click="addEnvRow(workerEnvRows)">
+                  + Add Variable
+                </button>
               </div>
-              <p v-else class="foreman-hint">
-                No forwarded variables yet. Tick <em>forward</em> on a Foreman variable to send it to
-                workers.
-              </p>
             </template>
 
             <!-- Pi: provider-agnostic tool, so it needs both a default model and provider -->
@@ -327,7 +342,11 @@
                   v-model="piDefaultModel"
                   class="settings-input"
                   list="pi-model-hints"
-                  :placeholder="piDefaultProvider === 'bedrock' ? 'inference-profile ARN' : 'e.g. claude-sonnet-4-6'"
+                  :placeholder="
+                    piDefaultProvider === 'bedrock'
+                      ? 'inference-profile ARN'
+                      : 'e.g. claude-sonnet-4-6'
+                  "
                   autocomplete="off"
                 />
                 <datalist id="pi-model-hints">
@@ -354,8 +373,8 @@
                 />
               </div>
               <p class="foreman-hint">
-                Used when the foreman assigns a task to the Codex tool without an explicit
-                model override.
+                Used when the foreman assigns a task to the Codex tool without an explicit model
+                override.
               </p>
             </template>
 
@@ -419,7 +438,11 @@
               >
                 {{ foremanSaving ? 'Saving…' : 'Save' }}
               </button>
-              <span v-if="foremanStatus" class="save-status" :class="'save-status-' + foremanStatus">
+              <span
+                v-if="foremanStatus"
+                class="save-status"
+                :class="'save-status-' + foremanStatus"
+              >
                 {{ foremanStatus === 'saved' ? 'Saved' : 'Error' }}
               </span>
             </div>
@@ -614,19 +637,26 @@ const foremanModelPlaceholder = computed(() => {
   const key = foremanProvider.value === 'bedrock' ? 'FOREMAN_BEDROCK_MODEL' : 'FOREMAN_MODEL'
   return envDefaults.value[key] ? `${envDefaults.value[key]} · from env` : 'default'
 })
-// The forwarded subset shown read-only on the Worker Settings → General tab.
-const forwardedEnvRows = computed(() => envVarRows.value.filter((r) => r.forward))
-
 interface EnvVarRow {
   id: number
   key: string
   value: string
-  // Foreman env_vars only: forward this var to worker tools. Per-tool rows
-  // ignore it (they're always scoped to their own tool).
-  forward?: boolean
 }
 let envRowSeq = 0
-const envVarRows = ref<EnvVarRow[]>([])
+// Guild env vars split by destination instead of a per-row `forward` checkbox:
+// workerEnvRows reach every worker tool (persisted with forward=true), while
+// foremanEnvRows stay with the foreman's own LLM (forward=false). The wire
+// format still carries the flag; the UI derives it from which list a var is in.
+const workerEnvRows = ref<EnvVarRow[]>([])
+const foremanEnvRows = ref<EnvVarRow[]>([])
+
+function addEnvRow(rows: EnvVarRow[]) {
+  rows.push({ id: ++envRowSeq, key: '', value: '' })
+}
+function removeEnvRow(rows: EnvVarRow[], row: EnvVarRow) {
+  const i = rows.indexOf(row)
+  if (i >= 0) rows.splice(i, 1)
+}
 
 // Per-tool env var rows, keyed by tool id. Each tool's rows are saved under
 // foreman_config.tool_env_vars[tool] and reach only that tool's runner.
@@ -668,14 +698,17 @@ async function loadForemanConfig() {
       foremanPollMin.value = cfg.poll_min_interval ?? ''
       foremanPollMax.value = cfg.poll_max_interval ?? ''
       // Env var values are returned in clear text so they can be verified/edited.
-      envVarRows.value = (cfg.env_vars ?? []).map(
-        (e: { key: string; value?: string; forward?: boolean }) => ({
-          id: ++envRowSeq,
-          key: e.key,
-          value: e.value ?? '',
-          forward: !!e.forward,
-        }),
-      )
+      // Split by forward: forwarded → worker (General) list, rest → foreman list.
+      workerEnvRows.value = []
+      foremanEnvRows.value = []
+      for (const e of (cfg.env_vars ?? []) as {
+        key: string
+        value?: string
+        forward?: boolean
+      }[]) {
+        const target = e.forward ? workerEnvRows : foremanEnvRows
+        target.value.push({ id: ++envRowSeq, key: e.key, value: e.value ?? '' })
+      }
       const toolEnv = cfg.tool_env_vars ?? {}
       for (const tool of ['claude', 'pi', 'codex']) {
         toolEnvRows[tool] = (toolEnv[tool] ?? []).map((e: { key: string; value?: string }) => ({
@@ -688,15 +721,6 @@ async function loadForemanConfig() {
   } catch {
     // non-fatal: fields stay blank (will use server defaults)
   }
-}
-
-function addEnvVar() {
-  envVarRows.value.push({ id: ++envRowSeq, key: '', value: '', forward: false })
-}
-
-function removeEnvVar(row: EnvVarRow) {
-  const i = envVarRows.value.indexOf(row)
-  if (i >= 0) envVarRows.value.splice(i, 1)
 }
 
 async function saveForemanConfig() {
@@ -723,16 +747,23 @@ async function saveForemanConfig() {
     else body.poll_min_interval = null
     if (foremanPollMax.value !== '') body.poll_max_interval = foremanPollMax.value
     else body.poll_max_interval = null
-    // Send every keyed row. Skip empty keys; collapse duplicate keys, keeping a
-    // non-empty value (and forward=true) over a blank/unset one so a stray blank
-    // row can't shadow the real credential or drop its forward flag.
+    // Combine both destination lists into the wire format: worker rows carry
+    // forward=true, foreman-only rows forward=false. Skip empty keys; collapse
+    // duplicate keys, keeping a non-empty value over a blank one. If the same
+    // key appears in both lists, worker (forward=true) wins so it still reaches
+    // workers.
     const envByKey = new Map<string, { value: string; forward: boolean }>()
-    for (const r of envVarRows.value) {
-      const key = r.key.trim()
-      if (!key) continue
-      const existing = envByKey.get(key)
-      if (existing && r.value === '' && existing.value !== '') continue
-      envByKey.set(key, { value: r.value, forward: !!r.forward || !!existing?.forward })
+    for (const { rows, forward } of [
+      { rows: foremanEnvRows.value, forward: false },
+      { rows: workerEnvRows.value, forward: true },
+    ]) {
+      for (const r of rows) {
+        const key = r.key.trim()
+        if (!key) continue
+        const existing = envByKey.get(key)
+        if (existing && r.value === '' && existing.value !== '') continue
+        envByKey.set(key, { value: r.value, forward: forward || !!existing?.forward })
+      }
     }
     body.env_vars = [...envByKey].map(([key, { value, forward }]) => ({ key, value, forward }))
     // Per-tool env vars: send all three tools so an emptied tab clears its set.
@@ -761,14 +792,16 @@ async function saveForemanConfig() {
       foremanStatus.value = 'saved'
       // Re-sync with the server's canonical config (clear-text values).
       const saved = await res.json()
-      envVarRows.value = (saved.env_vars ?? []).map(
-        (e: { key: string; value?: string; forward?: boolean }) => ({
-          id: ++envRowSeq,
-          key: e.key,
-          value: e.value ?? '',
-          forward: !!e.forward,
-        }),
-      )
+      workerEnvRows.value = []
+      foremanEnvRows.value = []
+      for (const e of (saved.env_vars ?? []) as {
+        key: string
+        value?: string
+        forward?: boolean
+      }[]) {
+        const target = e.forward ? workerEnvRows : foremanEnvRows
+        target.value.push({ id: ++envRowSeq, key: e.key, value: e.value ?? '' })
+      }
       const savedToolEnv = saved.tool_env_vars ?? {}
       for (const tool of ['claude', 'pi', 'codex']) {
         toolEnvRows[tool] = (savedToolEnv[tool] ?? []).map(
@@ -1233,14 +1266,6 @@ onBeforeUnmount(() => {
   font-size: 10px;
 }
 
-/* Forward checkbox column + its header/read-only cells. */
-.env-var-fwd {
-  flex: 0 0 28px;
-  display: flex;
-  justify-content: center;
-  accent-color: var(--color-brass);
-}
-
 .env-var-spacer {
   flex: 0 0 22px;
 }
@@ -1251,14 +1276,6 @@ onBeforeUnmount(() => {
   color: var(--color-brass-dark);
   letter-spacing: 1px;
   text-transform: uppercase;
-}
-
-.env-var-ro {
-  font-family: var(--font-mono, monospace);
-  color: var(--color-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .env-var-delete-btn {

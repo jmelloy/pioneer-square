@@ -807,6 +807,61 @@ class GuildSpawnDefaults(SQLModel, table=True):
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class SpawnSettings(SQLModel, table=True):
+    """Unified spawn configuration, at two scopes in one table.
+
+    A row with ``user_id IS NULL`` is the guild's baseline; a row with a
+    ``user_id`` is that user's override for the same guild. One resolver
+    (``spawn_config.resolve_spawn``) layers call-args > user row > guild row >
+    process env into the settings a worker container is launched with.
+
+    Supersedes guild_spawn_defaults (repos/tools/agent_count), user_spawn_settings
+    (per-user repos/tools/env), and the *worker-facing* slice of
+    guilds.foreman_config (forwarded env_vars, tool_env_vars, pi provider/model).
+    foreman_config keeps only the foreman's own LLM credentials. There is no
+    ``forward`` flag: everything here is by definition worker-bound.
+    """
+
+    __tablename__ = "spawn_settings"  # type: ignore[assignment]
+    __table_args__ = (
+        # One baseline row per guild (user_id NULL) and one override per
+        # (guild, user). Two partial unique indexes because NULLs don't collide
+        # in a normal unique index.
+        Index(
+            "uq_spawn_settings_guild_baseline",
+            "guild_id",
+            unique=True,
+            postgresql_where=text("user_id IS NULL"),
+        ),
+        Index(
+            "uq_spawn_settings_guild_user",
+            "guild_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL"),
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: int = Field(foreign_key="guilds.id")
+    # NULL = guild baseline; set = this user's override for the guild.
+    user_id: str | None = Field(default=None, foreign_key="users.id")
+    # JSON-serialised list of "owner/repo" strings (same encoding as workers.repos).
+    repos: str = Field(default="[]", sa_column=Column(Text, nullable=False, server_default="'[]'"))
+    # JSON-serialised list of tool runner names.
+    tools: str = Field(default="[]", sa_column=Column(Text, nullable=False, server_default="'[]'"))
+    # Concurrent agent slots; NULL = worker default.
+    agent_count: int | None = None
+    # Worker-facing env vars, {KEY: VALUE}. All are forwarded to the container.
+    env_vars: dict = Field(default_factory=dict, sa_column=Column(JSON, nullable=False, server_default=text("'{}'")))
+    # Per-tool scoped env, {tool: {KEY: VALUE}} — merged only when that tool spawns.
+    tool_env_vars: dict = Field(default_factory=dict, sa_column=Column(JSON, nullable=False, server_default=text("'{}'")))
+    # Default provider/model for tool runs (was foreman_config.pi_default_*).
+    provider: str | None = None
+    model: str | None = None
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class PushToken(SQLModel, table=True):
     """APNs (or, in the future, FCM) device token registered by the iOS app.
 

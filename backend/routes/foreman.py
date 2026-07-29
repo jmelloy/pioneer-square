@@ -133,15 +133,23 @@ async def get_foreman_env_vars(
     Response: ``{ "env_vars": [{"key", "value"}, ...],
                   "tool_env_vars": {"claude": [...], "pi": [...], "codex": [...]} }``
     """
+    from spawn_config import get_spawn_row  # noqa: PLC0415
+
     res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    config = guild.foreman_config or {}
-    forwarded = [e for e in config.get("env_vars", []) if e.get("forward")]
+    # Worker-facing env now lives in the spawn_settings guild baseline (env_vars
+    # are all worker-bound — no forward flag — and tool_env_vars stay scoped).
+    row = await get_spawn_row(db, guild.id, None)
+    env_vars = dict(row.env_vars) if row else {}
+    tool_env_vars = dict(row.tool_env_vars) if row else {}
     return {
-        "env_vars": forwarded,
-        "tool_env_vars": config.get("tool_env_vars", {}),
+        "env_vars": [{"key": k, "value": v} for k, v in env_vars.items()],
+        "tool_env_vars": {
+            tool: [{"key": k, "value": v} for k, v in (kv or {}).items()]
+            for tool, kv in tool_env_vars.items()
+        },
     }
 
 
