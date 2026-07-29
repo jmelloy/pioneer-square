@@ -3,7 +3,7 @@
 Workers are disposable. Since the idle reaper shuts down every backend-spawned
 worker after PIONEER_WORKER_IDLE_TIMEOUT (default 30 min) of inactivity, and the
 foreman respawns workers on demand from the guild's spawn defaults
-(``guild_spawn_defaults``, refreshed on every successful spawn), there is no
+(``guild_spawn_defaults``, curated by the operator), there is no
 drain-and-replace choreography anymore. Nothing runs at backend startup to
 shut workers down — a restart never disrupts an in-progress task. A version
 bump is handled with a lightweight nudge plus the reaper:
@@ -177,18 +177,16 @@ async def set_guild_spawn_defaults(
 ) -> None:
     """Explicitly upsert a guild's ``guild_spawn_defaults`` row.
 
-    Unlike :func:`record_worker_spawn` (which only refreshes the row as a
-    side-effect of a successful spawn, and only when ``repos`` is non-empty),
-    this is the operator-facing write path: it always replaces the full row so
-    an owner can curate the guild's spawn baseline directly, including clearing
-    repos/tools. Callers are expected to have committed their own transaction
-    boundary; this commits before returning.
+    This is the only write path for the row: worker spawns no longer touch it.
+    It always replaces the full row so an owner can curate the guild's spawn
+    baseline directly, including clearing repos/tools. Callers are expected to
+    have committed their own transaction boundary; this commits before
+    returning.
 
-    ``updated_at`` is deliberately left untouched when the row already exists:
-    ``check_worker_spawn_cooldown`` reads it as the last *spawn* time, and an
-    owner editing defaults is not a spawn — bumping it would start a spurious
-    spawn cooldown. On first insert there is no prior spawn to protect, so it
-    seeds ``now()`` (the column is NOT NULL).
+    ``updated_at`` is deliberately left untouched on conflict — nothing reads
+    it as a spawn time anymore (the spawn cooldown keys off workers.started_at),
+    and an owner editing defaults is not a spawn. On first insert it seeds
+    ``now()`` because the column is NOT NULL.
     """
     stmt = pg_insert(GuildSpawnDefaults).values(
         guild_id=guild_pk,
@@ -212,15 +210,19 @@ async def set_guild_spawn_defaults(
 async def check_worker_spawn_cooldown(db, guild_pk: int) -> timedelta | None:
     """Return the remaining cooldown if *guild_pk* spawned a worker too recently, else None.
 
-    Reads ``guild_spawn_defaults.updated_at``, which record_worker_spawn()
-    refreshes on every successful spawn — so this reflects the guild's last
-    successful spawn regardless of which caller (Discord, foreman AI, REST)
-    triggered it.
+    Keys off the most recent ``workers.started_at`` for the guild, which
+    record_worker_spawn() stamps on every successful spawn regardless of which
+    caller (Discord, foreman AI, REST) triggered it. Returns None when the
+    guild has never spawned a worker (MAX over no non-NULL rows is NULL).
     """
-    defaults = await get_guild_spawn_defaults(db, guild_pk)
-    if defaults is None:
+    last_spawn = (
+        await db.exec(
+            select(func.max(col(Worker.started_at))).where(col(Worker.guild_id) == guild_pk)
+        )
+    ).one_or_none()
+    if last_spawn is None:
         return None
-    remaining = WORKER_SPAWN_COOLDOWN - (datetime.now(UTC) - defaults.updated_at)
+    remaining = WORKER_SPAWN_COOLDOWN - (datetime.now(UTC) - last_spawn)
     return remaining if remaining > timedelta(0) else None
 
 

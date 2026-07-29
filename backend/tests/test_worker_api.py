@@ -296,12 +296,12 @@ def test_put_spawn_defaults_rejects_bad_agent_count(client):
     assert resp.status_code == 422
 
 
-def test_put_spawn_defaults_preserves_updated_at_for_cooldown(client):
-    """Editing defaults must not reset guild_spawn_defaults.updated_at.
+def test_put_spawn_defaults_preserves_updated_at_on_edit(client):
+    """Editing defaults replaces content but leaves guild_spawn_defaults.updated_at alone.
 
-    check_worker_spawn_cooldown() reads updated_at as the last *spawn* time; an
-    owner curating the baseline is not a spawn, so an edit must not start a
-    spurious spawn cooldown.
+    set_guild_spawn_defaults deliberately omits updated_at from its on-conflict
+    set, so an owner curating the baseline only touches repos/tools/agent_count.
+    (The spawn cooldown keys off workers.started_at, not this timestamp.)
     """
     test_client, db_url = client
     insert_guild(db_url, "guild-sd6")
@@ -333,7 +333,7 @@ def test_put_spawn_defaults_preserves_updated_at_for_cooldown(client):
     assert json.loads(row.repos) == ["a/c"]
     assert json.loads(row.tools) == ["claude"]
     assert row.agent_count == 2
-    # updated_at is unchanged (still ~10 minutes ago), so no cooldown was started.
+    # updated_at is unchanged (still ~10 minutes ago) — the edit didn't touch it.
     assert abs((row.updated_at - past).total_seconds()) < 1
 
 
@@ -627,12 +627,11 @@ def test_spawn_worker_rejects_when_guild_in_cooldown(client, monkeypatch):
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cooldown"))
         session.add(
-            GuildSpawnDefaults(
+            Worker(
+                id="w-cooldown-prior",
                 guild_id=guild_pk,
-                repos="[]",
-                tools="[]",
-                agent_count=None,
-                updated_at=datetime.now(UTC) - timedelta(minutes=1),
+                created_at=datetime.now(UTC) - timedelta(minutes=1),
+                started_at=datetime.now(UTC) - timedelta(minutes=1),
             )
         )
         session.commit()
@@ -673,12 +672,11 @@ def test_spawn_worker_allowed_after_cooldown_expires(client, monkeypatch):
             select(col(Guild.id)).where(col(Guild.slug) == "guild-cooldown-ok")
         )
         session.add(
-            GuildSpawnDefaults(
+            Worker(
+                id="w-cooldown-ok-prior",
                 guild_id=guild_pk,
-                repos="[]",
-                tools="[]",
-                agent_count=None,
-                updated_at=datetime.now(UTC) - timedelta(minutes=10),
+                created_at=datetime.now(UTC) - timedelta(minutes=10),
+                started_at=datetime.now(UTC) - timedelta(minutes=10),
             )
         )
         session.commit()
