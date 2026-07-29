@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -44,6 +45,27 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 
 PAGE_SIZE = 500
+
+_ISO_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+00:00$")
+
+
+def _sql_timestamp_literal(iso_str: str) -> str:
+    """Validate `iso_str` is a strict UTC ISO-8601 timestamp and quote it as a SQL literal.
+
+    /debug/query takes one raw `sql` string with no bind-parameter support, so this
+    is the sanitization boundary: reject anything that isn't exactly this shape
+    before it gets interpolated into a query.
+    """
+    if not _ISO_TIMESTAMP_RE.match(iso_str):
+        raise ValueError(f"refusing to interpolate non-ISO-8601 timestamp: {iso_str!r}")
+    return f"'{iso_str}'"
+
+
+def _sql_int_literal(value: int) -> str:
+    """Validate `value` is a real int (not just int-like) and render it as a SQL literal."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"expected int, got {value!r}")
+    return str(value)
 
 
 def _backend_url() -> str:
@@ -71,12 +93,13 @@ def fetch_assistant_turns(token: str, since_iso: str, guild_id: int | None) -> l
     """Page through foreman_turns assistant rows with usage data, oldest first."""
     rows: list[dict] = []
     offset = 0
-    guild_clause = f" AND guild_id = {int(guild_id)}" if guild_id is not None else ""
+    since_literal = _sql_timestamp_literal(since_iso)
+    guild_clause = f" AND guild_id = {_sql_int_literal(guild_id)}" if guild_id is not None else ""
     while True:
         sql = (
             "SELECT task_id, api_calls_json, created_at FROM foreman_turns "
             "WHERE role = 'assistant' AND api_calls_json IS NOT NULL "
-            f"AND created_at >= '{since_iso}'{guild_clause} "
+            f"AND created_at >= {since_literal}{guild_clause} "
             f"ORDER BY created_at LIMIT {PAGE_SIZE} OFFSET {offset}"
         )
         page = _debug_query(sql, token=token)

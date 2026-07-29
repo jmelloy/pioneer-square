@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -42,6 +43,28 @@ from datetime import UTC, datetime, timedelta
 
 PAGE_SIZE = 500
 ONLINE_THRESHOLD_MINUTES = 10
+
+_ISO_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+00:00$")
+
+
+def _sql_timestamp_literal(iso_str: str) -> str:
+    """Validate `iso_str` is a strict UTC ISO-8601 timestamp and quote it as a SQL literal.
+
+    /debug/query takes one raw `sql` string with no bind-parameter support, so this
+    is the sanitization boundary: reject anything that isn't exactly this shape
+    before it gets interpolated into a query.
+    """
+    if not _ISO_TIMESTAMP_RE.match(iso_str):
+        raise ValueError(f"refusing to interpolate non-ISO-8601 timestamp: {iso_str!r}")
+    return f"'{iso_str}'"
+
+
+def _sql_int_literal(value: int) -> str:
+    """Validate `value` is a real int (not just int-like) and render it as a SQL literal."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"expected int, got {value!r}")
+    return str(value)
+
 
 # Mirrors backend/worker_lifecycle.py's own definition of "actively occupying
 # a worker slot" — used only to label the queue-depth snapshot, not to filter
@@ -100,28 +123,31 @@ def _parse_dt(val) -> datetime | None:
 
 
 def fetch_workers(token: str, since_iso: str, guild_id: int | None) -> list[dict]:
-    guild_clause = f" AND guild_id = {int(guild_id)}" if guild_id is not None else ""
+    since_literal = _sql_timestamp_literal(since_iso)
+    guild_clause = f" AND guild_id = {_sql_int_literal(guild_id)}" if guild_id is not None else ""
     sql = (
         "SELECT id, spawned_version, state, disabled, created_at, started_at, last_seen "
-        f"FROM workers WHERE created_at >= '{since_iso}'{guild_clause} ORDER BY created_at"
+        f"FROM workers WHERE created_at >= {since_literal}{guild_clause} ORDER BY created_at"
     )
     return _fetch_all(sql, token=token)
 
 
 def fetch_tasks(token: str, since_iso: str, guild_id: int | None) -> list[dict]:
-    guild_clause = f" AND guild_id = {int(guild_id)}" if guild_id is not None else ""
+    since_literal = _sql_timestamp_literal(since_iso)
+    guild_clause = f" AND guild_id = {_sql_int_literal(guild_id)}" if guild_id is not None else ""
     sql = (
         "SELECT id, worker_id, state, phase, created_at, deleted_at "
-        f"FROM tasks WHERE created_at >= '{since_iso}'{guild_clause} ORDER BY created_at"
+        f"FROM tasks WHERE created_at >= {since_literal}{guild_clause} ORDER BY created_at"
     )
     return _fetch_all(sql, token=token)
 
 
 def fetch_agents(token: str, since_iso: str, guild_id: int | None) -> list[dict]:
-    guild_clause = f" AND guild_id = {int(guild_id)}" if guild_id is not None else ""
+    since_literal = _sql_timestamp_literal(since_iso)
+    guild_clause = f" AND guild_id = {_sql_int_literal(guild_id)}" if guild_id is not None else ""
     sql = (
         "SELECT id, worker_id, state, joined_at, last_seen, current_task_id "
-        f"FROM agents WHERE joined_at >= '{since_iso}'{guild_clause} ORDER BY joined_at"
+        f"FROM agents WHERE joined_at >= {since_literal}{guild_clause} ORDER BY joined_at"
     )
     return _fetch_all(sql, token=token)
 
