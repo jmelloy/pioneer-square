@@ -1040,6 +1040,22 @@ async def _poll_loop(guild_id: str) -> None:
             logger.exception("guild=%s _poll_loop iteration failed", guild_id)
 
 
+def ensure_poll_loop(guild_id: str) -> None:
+    """Guarantee a poll loop exists for this guild WITHOUT touching its backoff.
+
+    For automated events (github webhooks post-debounce, worker connect/disconnect,
+    agent/task state updates) that already fired their own foreman run. They must
+    not reset the interval to the floor — during active development that pins the
+    poll at POLL_MIN_SECS and dominates token spend — but the safety-net loop still
+    has to be running. Never interrupts an existing loop's sleep, so the backoff
+    keeps growing naturally.
+    """
+    existing = _poll_tasks.get(guild_id)
+    if existing is None or existing.done():
+        task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
+        _poll_tasks[guild_id] = task
+
+
 def reset_foreman_poll(guild_id: str) -> None:
     """Ensure a poll loop is running for this guild, resetting the backoff only when appropriate.
 
@@ -1072,10 +1088,7 @@ def reset_foreman_poll(guild_id: str) -> None:
     else:
         # Foreman is idle — only start a loop if none exists; do not interrupt
         # the current loop's sleep so the backoff continues to grow naturally.
-        existing = _poll_tasks.get(guild_id)
-        if existing is None or existing.done():
-            task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
-            _poll_tasks[guild_id] = task
+        ensure_poll_loop(guild_id)
 
 
 async def _fetch_online_workers(db, guild_id: str) -> list[dict]:

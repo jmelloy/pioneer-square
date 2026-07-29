@@ -28,7 +28,7 @@ from db import github_cache
 from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from foreman.constants import _TERMINAL_STATES
-from foreman.runner import reset_foreman_poll, run_foreman_ai
+from foreman.runner import ensure_poll_loop, run_foreman_ai
 from lock_service import LockService
 from models import (
     GithubEvent,
@@ -196,7 +196,10 @@ class DebounceQueue:
         await run_foreman_ai(
             guild_id, combined, user_id=user_id, task_id=task_id, child=bool(task_id)
         )
-        reset_foreman_poll(guild_id)
+        # Automated github churn (CI check/status especially) fired its run above;
+        # only guarantee the safety-net loop exists — do NOT reset the backoff, or
+        # a PR under active CI would pin the periodic poll at the floor.
+        ensure_poll_loop(guild_id)
         logger.info(
             "github webhook debounce fired key=%s events=%d guild=%s",
             key,

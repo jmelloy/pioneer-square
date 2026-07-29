@@ -561,7 +561,7 @@ class TestDebounce:
         with (
             patch.object(wh, "_debounce_queue", queue),
             patch.object(wh, "run_foreman_ai", new=fake_run_foreman),
-            patch.object(wh, "reset_foreman_poll"),
+            patch.object(wh, "ensure_poll_loop"),
         ):
             try:
                 yield
