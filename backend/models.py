@@ -853,9 +853,13 @@ class SpawnSettings(SQLModel, table=True):
     # Concurrent agent slots; NULL = worker default.
     agent_count: int | None = None
     # Worker-facing env vars, {KEY: VALUE}. All are forwarded to the container.
-    env_vars: dict = Field(default_factory=dict, sa_column=Column(JSON, nullable=False, server_default=text("'{}'")))
+    env_vars: dict = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False, server_default=text("'{}'"))
+    )
     # Per-tool scoped env, {tool: {KEY: VALUE}} — merged only when that tool spawns.
-    tool_env_vars: dict = Field(default_factory=dict, sa_column=Column(JSON, nullable=False, server_default=text("'{}'")))
+    tool_env_vars: dict = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False, server_default=text("'{}'"))
+    )
     # Default provider/model for tool runs (was foreman_config.pi_default_*).
     provider: str | None = None
     model: str | None = None

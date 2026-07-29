@@ -14,6 +14,7 @@ call args. Merge rules per field type:
 
 See models.SpawnSettings for the storage shape.
 """
+
 from __future__ import annotations
 
 import json
@@ -136,7 +137,9 @@ async def upsert_spawn_row(db, guild_pk: int, user_id: str | None = None, **fiel
     return row
 
 
-async def resolve_spawn(db, guild_pk: int, user_id: str | None, call: SpawnLayer | None = None) -> ResolvedSpawn:
+async def resolve_spawn(
+    db, guild_pk: int, user_id: str | None, call: SpawnLayer | None = None
+) -> ResolvedSpawn:
     """Load the guild baseline + user override rows and merge with optional call args."""
     from models import SpawnSettings  # noqa: PLC0415 — avoid circular import at module load
     from sqlmodel import col, select  # noqa: PLC0415
