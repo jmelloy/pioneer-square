@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -98,6 +99,41 @@ def row_to_layer(row) -> SpawnLayer | None:
         provider=row.provider,
         model=row.model,
     )
+
+
+async def get_spawn_row(db, guild_pk: int, user_id: str | None = None):
+    """Return the guild baseline row (user_id=None) or a user override row, or None."""
+    from models import SpawnSettings  # noqa: PLC0415
+    from sqlmodel import col, select  # noqa: PLC0415
+
+    clause = (
+        col(SpawnSettings.user_id).is_(None)
+        if user_id is None
+        else col(SpawnSettings.user_id) == user_id
+    )
+    return (
+        await db.exec(select(SpawnSettings).where(col(SpawnSettings.guild_id) == guild_pk, clause))
+    ).one_or_none()
+
+
+async def upsert_spawn_row(db, guild_pk: int, user_id: str | None = None, **fields):
+    """Create or update a spawn_settings row, setting only the provided fields.
+
+    Partial by design: e.g. the spawn-defaults endpoint sets repos/tools/agent_count
+    on the guild baseline without touching its env_vars/tool_env_vars/provider.
+    """
+    from models import SpawnSettings  # noqa: PLC0415
+
+    row = await get_spawn_row(db, guild_pk, user_id)
+    if row is None:
+        row = SpawnSettings(guild_id=guild_pk, user_id=user_id, updated_at=datetime.now(UTC))
+        db.add(row)
+    for k, v in fields.items():
+        setattr(row, k, v)
+    row.updated_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(row)
+    return row
 
 
 async def resolve_spawn(db, guild_pk: int, user_id: str | None, call: SpawnLayer | None = None) -> ResolvedSpawn:

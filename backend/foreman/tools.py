@@ -1143,29 +1143,28 @@ async def spawn_worker(
 
     Returns (result_text, is_error).
     """
-    from worker_lifecycle import get_guild_spawn_defaults  # noqa: PLC0415
+    from spawn_config import SpawnLayer, merge_layers, resolve_spawn  # noqa: PLC0415
 
-    repos: list = inp.get("repos") or []
-    tools_list: list[str] = inp.get("tools") or []
-    agent_count: int | None = inp.get("agent_count")
     custom_name: str | None = inp.get("name")
 
-    # Fall back to the guild's last-successful-spawn defaults for anything the
-    # call didn't specify, so "spawn a worker" works without restating the
-    # guild's usual configuration.
-    if guild_pk is not None and (not repos or not tools_list or agent_count is None):
-        defaults = await get_guild_spawn_defaults(db, guild_pk)
-        if defaults is not None:
-            if not repos:
-                repos = json.loads(defaults.repos or "[]")
-            if not tools_list:
-                tools_list = json.loads(defaults.tools or "[]")
-            if agent_count is None:
-                agent_count = defaults.agent_count
+    # One resolution path: call args override the user's spawn_settings override
+    # over the guild baseline (see spawn_config). Anything the call omits falls
+    # back down the layers, so "spawn a worker" works without restating config.
+    call = SpawnLayer(
+        repos=inp.get("repos") or None,
+        tools=inp.get("tools") or None,
+        agent_count=inp.get("agent_count"),
+    )
+    resolved = (
+        await resolve_spawn(db, guild_pk, user_id, call)
+        if guild_pk is not None
+        else merge_layers([call])
+    )
+    repos = resolved.repos
+    tools_list = resolved.tools
     # "Spawn a worker" means one agent unless asked for more; without this the
     # worker falls through to config's max_agents default (4). ponytail: 1 slot.
-    if agent_count is None:
-        agent_count = 1
+    agent_count = resolved.agent_count if resolved.agent_count is not None else 1
     if not repos:
         return (
             "spawn_worker requires at least one repo in the 'repos' list — this guild has "
@@ -1201,21 +1200,9 @@ async def spawn_worker(
     )
     await db.commit()
 
-    # Fetch guild-level env vars from foreman config and pass them to the worker.
-    foreman_env_vars: dict[str, str] = {}
-    if guild_pk is not None:
-        guild_res = await db.exec(
-            select(col(Guild.foreman_config)).where(col(Guild.id) == guild_pk)
-        )
-        guild_cfg = guild_res.one_or_none() or {}
-        # Only forward=True vars reach the worker; unshared foreman credentials
-        # stay with the foreman's own LLM (parity with the user spawn path).
-        foreman_env_vars = {
-            e["key"]: e["value"]
-            for e in (guild_cfg.get("env_vars") or [])
-            if e.get("forward") and e.get("key") and e.get("value") is not None
-        }
-
+    # Worker-facing env vars come from the resolved spawn_settings (guild
+    # baseline + user override), already merged in spawn_config. tool_env_vars
+    # still reach the worker via /guilds/{id}/foreman/env-vars at startup.
     env = build_spawn_worker_env(
         guild_id=guild_id,
         repos=repos,
@@ -1225,7 +1212,7 @@ async def spawn_worker(
         auth_token=auth_token,
         agent_count=agent_count,
         tools=tools_list or None,
-        extra_env=foreman_env_vars or None,
+        extra_env=resolved.env_vars or None,
     )
 
     try:

@@ -633,6 +633,32 @@ async def update_foreman_config(
 
     guild.foreman_config = config
     await db.commit()
+
+    # Keep the spawn_settings guild baseline in sync with foreman_config's
+    # worker-facing slice: resolve_spawn reads spawn_settings, but the guild
+    # settings UI still edits foreman_config (until its own cutover). Forwarded
+    # env vars, per-tool scoped vars, and the pi provider/model defaults are the
+    # bits that reach a worker; the foreman's own credentials stay behind.
+    from spawn_config import upsert_spawn_row  # noqa: PLC0415
+
+    worker_env = {
+        e["key"]: e["value"]
+        for e in (config.get("env_vars") or [])
+        if e.get("forward") and e.get("key") and e.get("value") is not None
+    }
+    worker_tool_env = {
+        tool: {i["key"]: i["value"] for i in (items or []) if i.get("key") and i.get("value") is not None}
+        for tool, items in (config.get("tool_env_vars") or {}).items()
+    }
+    await upsert_spawn_row(
+        db,
+        guild.id,
+        None,
+        env_vars=worker_env,
+        tool_env_vars={t: kv for t, kv in worker_tool_env.items() if kv},
+        provider=config.get("pi_default_provider"),
+        model=config.get("pi_default_model"),
+    )
     return config
 
 
