@@ -647,7 +647,11 @@ async def update_foreman_config(
         if e.get("forward") and e.get("key") and e.get("value") is not None
     }
     worker_tool_env = {
-        tool: {i["key"]: i["value"] for i in (items or []) if i.get("key") and i.get("value") is not None}
+        tool: {
+            i["key"]: i["value"]
+            for i in (items or [])
+            if i.get("key") and i.get("value") is not None
+        }
         for tool, items in (config.get("tool_env_vars") or {}).items()
     }
     await upsert_spawn_row(
