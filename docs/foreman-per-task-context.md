@@ -75,3 +75,29 @@ task history.
 - Frontend/Discord messages produced inside a child turn are tagged with that
   `task_id`; parent messages can still route to a task's Discord thread without
   being stored in that task's child history.
+
+---
+
+## Toggling Child Contexts
+
+Set `FOREMAN_CHILD_CONTEXTS=0` (or `false`/`no`/`off`) to disable per-task child
+contexts entirely; every trigger then falls back to the legacy whole-guild
+parent context. See `_child_contexts_enabled()` in `backend/foreman/runner.py`.
+It defaults on (`1`).
+
+## Evaluating Effectiveness
+
+Two standalone scripts under `scripts/` use the `/debug/query` endpoint
+(`DEBUG_TOKEN`-gated) to measure this feature:
+
+- `scripts/evaluate_child_context_tokens.py` — compares per-turn token usage
+  (input/output/cache read/cache write) between child (`task_id IS NOT NULL`)
+  and parent (`task_id IS NULL`) `foreman_turns` rows, to answer whether
+  `FOREMAN_CHILD_CONTEXTS` is actually reducing token spend.
+- `scripts/eval_foreman_metrics.py` — broader child-foreman health metrics:
+  worker spawn success rate, task assignment/completion, worker lifecycle,
+  queue depth, and worker utilization.
+
+Both require `DEBUG_TOKEN` (and optionally `PIONEER_BACKEND_URL`, default
+`http://localhost:8000`) and print a formatted report; run with `--help` for
+options.
