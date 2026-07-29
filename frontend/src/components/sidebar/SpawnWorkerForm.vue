@@ -755,6 +755,12 @@ async function launch() {
 .settings-content {
   flex: 1;
   min-width: 0;
+  /* Flex items default to min-height: auto, which lets this grow to its
+     content height instead of shrinking to the container — on mobile,
+     where settings-panel-body stacks as a column, that pushes the footer
+     (and the Launch button) off the bottom of the viewport instead of
+     scrolling internally. */
+  min-height: 0;
   overflow-y: auto;
   padding: 14px 16px;
 }
@@ -1110,6 +1116,12 @@ async function launch() {
   .settings-tab {
     white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  /* Keep the Launch button clear of the home-indicator / gesture-bar
+     area on notched phones in a full-screen dialog. */
+  .spawn-panel-footer {
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 }
 
