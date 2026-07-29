@@ -78,9 +78,13 @@ variable "route53_zone_id" {
 # -----------------------------------------------------------------------------
 
 variable "container_image_tag" {
-  description = "Image tag (commit SHA) deployed for all services. deploy.yml passes -var container_image_tag=<sha> on every push; a bare `terraform apply` without it falls back to the default below, which must be a tag that exists in ECR."
+  # No default on purpose: deploy.yml always passes -var container_image_tag=<sha>.
+  # A "latest" default was a footgun — nothing ever pushes that tag, so a bare
+  # `terraform apply` (without the var) would point every task def at a
+  # nonexistent image and break the running services. Required means a bare
+  # apply fails loudly instead.
+  description = "Image tag (commit SHA) deployed for all services. deploy.yml passes -var container_image_tag=<sha> on every push. Required — a bare `terraform apply` must specify a tag that exists in ECR."
   type        = string
-  default     = "latest"
 }
 
 variable "log_retention_days" {
