@@ -194,7 +194,12 @@ class DebounceQueue:
         # github events for a known task run in that task's isolated child context.
         task_id = next((tid for _, _, tid in items if tid), None)
         await run_foreman_ai(
-            guild_id, combined, user_id=user_id, task_id=task_id, child=bool(task_id)
+            guild_id,
+            combined,
+            user_id=user_id,
+            task_id=task_id,
+            child=bool(task_id),
+            trigger="github-event",
         )
         reset_foreman_poll(guild_id)
         logger.info(

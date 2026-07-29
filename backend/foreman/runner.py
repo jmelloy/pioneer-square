@@ -160,6 +160,7 @@ class _QueuedHumanTurn:
     child: bool
     queued_at: str
     reply_channel_id: str | None = None
+    trigger: str | None = None
 
 
 # Monotonic timestamp (time.monotonic()) of the last foreman run that made at
@@ -486,7 +487,6 @@ async def _save_turn(
     *,
     is_tool_response: bool = False,
     parent_id: int | None = None,
-    api_calls: list | None = None,
     api_log_id: int | None = None,
     task_id: str | None = None,
 ) -> int:
@@ -502,7 +502,6 @@ async def _save_turn(
             is_tool_response=1 if is_tool_response else 0,
             parent_id=parent_id,
             created_at=datetime.now(UTC),
-            api_calls_json=json.dumps(api_calls) if api_calls else None,
             request_id=api_log_id,
             task_id=task_id,
         )
@@ -522,6 +521,7 @@ async def _create_api_request_log(
     task_id: str | None = None,
     guild_id: str | None = None,
     user_id: str | None = None,
+    trigger: str | None = None,
 ) -> int:
     """Insert an api_request_log row before making the Anthropic API call.
 
@@ -538,6 +538,7 @@ async def _create_api_request_log(
             task_id=task_id,
             guild_id=await get_guild_pk(db, guild_id) if guild_id else None,
             user_id=user_id,
+            trigger=trigger,
         )
         db.add(log)
         await db.commit()
@@ -1158,6 +1159,7 @@ async def run_foreman_ai(
     child: bool = False,
     is_human: bool = False,
     reply_channel_id: str | None = None,
+    trigger: str | None = None,
 ) -> None:
     """Serialise per-context and delegate to ``_run_foreman_ai``.
 
@@ -1199,6 +1201,7 @@ async def run_foreman_ai(
                 task_id,
                 use_child,
                 reply_channel_id,
+                trigger=trigger,
             )
         else:
             logger.info(
@@ -1217,6 +1220,7 @@ async def run_foreman_ai(
             task_id=task_id,
             child=use_child,
             reply_channel_id=reply_channel_id,
+            trigger=trigger,
         )
         # Drain any human messages that queued up while this turn ran, before
         # going idle — each drained turn can itself queue further messages, so
@@ -1236,6 +1240,7 @@ def _enqueue_human_turn(
     task_id: str | None,
     child: bool,
     reply_channel_id: str | None = None,
+    trigger: str | None = None,
 ) -> None:
     """Append a human message to the busy queue for *lock_key*, bounded and FIFO.
 
@@ -1264,6 +1269,7 @@ def _enqueue_human_turn(
             child=child,
             queued_at=datetime.now(UTC).isoformat(),
             reply_channel_id=reply_channel_id,
+            trigger=trigger,
         )
     )
     logger.info(
@@ -1315,6 +1321,7 @@ async def _drain_human_queue(lock_key: tuple[str, str | None]) -> None:
                     task_id=turn.task_id,
                     child=turn.child,
                     reply_channel_id=turn.reply_channel_id,
+                    trigger=turn.trigger,
                 )
             except Exception as exc:
                 logger.exception(
@@ -1366,6 +1373,7 @@ async def _run_foreman_ai(
     *,
     child: bool = False,
     reply_channel_id: str | None = None,
+    trigger: str | None = None,
 ):
     """Process a human message (or system escalation) through the Claude foreman AI.
 
@@ -1580,6 +1588,7 @@ async def _run_foreman_ai(
                 task_id=_task_id,
                 guild_id=guild_id,
                 user_id=user_id,
+                trigger=trigger,
             )
             llm_result = await _call_llm(
                 guild_id,
@@ -1623,24 +1632,12 @@ async def _run_foreman_ai(
                 stop_reason=resp.stop_reason,
             )
 
-            _api_call_meta = {
-                "request_id": _api_request_id,
-                "provider": llm_result.provider,
-                "model": llm_result.model,
-                "input_tokens": _input_tokens,
-                "output_tokens": _output_tokens,
-                "cache_read_tokens": _cache_read,
-                "cache_write_tokens": _cache_write,
-                "ts": datetime.now(UTC).isoformat(),
-            }
-
             # Persist assistant turn and append to local messages
             asst_turn_id = await _save_turn(
                 guild_id,
                 user_id,
                 "assistant",
                 resp.content,
-                api_calls=[_api_call_meta],
                 api_log_id=api_log_id,
                 task_id=_task_id,
             )
@@ -1815,6 +1812,7 @@ async def _run_foreman_ai(
                 task_id=_task_id,
                 guild_id=guild_id,
                 user_id=user_id,
+                trigger=trigger,
             )
             wrap_llm_result = await _call_llm(
                 guild_id,
@@ -1856,22 +1854,11 @@ async def _run_foreman_ai(
                 cache_write_tokens=_wrap_cache_write,
                 stop_reason=wrap_resp.stop_reason,
             )
-            _wrap_api_meta = {
-                "request_id": _wrap_request_id,
-                "provider": wrap_llm_result.provider,
-                "model": wrap_llm_result.model,
-                "input_tokens": _wrap_input,
-                "output_tokens": _wrap_output,
-                "cache_read_tokens": _wrap_cache_read,
-                "cache_write_tokens": _wrap_cache_write,
-                "ts": datetime.now(UTC).isoformat(),
-            }
             await _save_turn(
                 guild_id,
                 user_id,
                 "assistant",
                 wrap_resp.content,
-                api_calls=[_wrap_api_meta],
                 api_log_id=_wrap_api_log_id,
                 task_id=_task_id,
             )
@@ -2006,9 +1993,6 @@ async def get_foreman_history(guild_id: str, user_id: str) -> dict:
             "parent_id": t.parent_id,
             "content": json.loads(t.content_json),
             "created_at": t.created_at,
-            "input_tokens": t.input_tokens,
-            "output_tokens": t.output_tokens,
-            "api_calls": json.loads(t.api_calls_json) if t.api_calls_json else None,
         }
         for t in turns[cutoff:]
         if t.role != "system"

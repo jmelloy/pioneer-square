@@ -220,6 +220,7 @@ async def _trigger_foreman(
             child=child,
             is_human=is_human,
             reply_channel_id=reply_channel_id,
+            trigger=event,
         ),
         name=task_name,
     )

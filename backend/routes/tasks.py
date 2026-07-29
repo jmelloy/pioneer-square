@@ -225,6 +225,7 @@ async def create_task_followup(
             # string of their own, so they tag "user-followup" purely to
             # share the same human/automated classifier as ws_handlers.
             is_human=is_human_event("user-followup"),
+            trigger="user-followup",
         ),
         name=f"foreman.user-followup:{task_id}",
     )
