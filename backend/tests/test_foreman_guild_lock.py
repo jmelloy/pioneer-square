@@ -50,7 +50,7 @@ def test_concurrent_same_guild_drops_second():
         hold = asyncio.Event()
 
         async def _impl(
-            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
         ):
             nonlocal call_count
             call_count += 1
@@ -86,7 +86,7 @@ def test_concurrent_different_guilds_both_run():
         hold = asyncio.Event()
 
         async def _impl(
-            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
         ):
             call_log.append(gid)
             await hold.wait()
@@ -114,7 +114,7 @@ def test_lock_released_after_completion():
         call_count = 0
 
         async def _impl(
-            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
         ):
             nonlocal call_count
             call_count += 1
@@ -139,7 +139,7 @@ def test_lock_released_after_impl_exception():
         call_count = 0
 
         async def _impl(
-            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
         ):
             nonlocal call_count
             call_count += 1
@@ -172,7 +172,7 @@ def test_human_message_queued_when_busy_then_drained():
         hold = asyncio.Event()
 
         async def _impl(
-            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
         ):
             call_log.append(msg)
             if len(call_log) == 1:
@@ -211,7 +211,7 @@ def test_automated_still_drops_while_human_queue_exists():
         hold = asyncio.Event()
 
         async def _impl(
-            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
         ):
             call_log.append(msg)
             if len(call_log) == 1:
@@ -246,7 +246,7 @@ def test_human_queue_bounded_drops_oldest():
         hold = asyncio.Event()
 
         async def _impl(
-            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
         ):
             await hold.wait()
 
@@ -296,7 +296,7 @@ def test_drain_snapshots_queue_before_processing():
         key = ("g7", None)
 
         async def _impl(
-            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+            gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
         ):
             call_log.append(msg)
             if msg == "first":
