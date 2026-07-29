@@ -529,6 +529,12 @@ class ApiRequestLog(SQLModel, table=True):
     stop_reason: str | None = None
     # Task this API call was made on behalf of (nullable; foreman may handle multiple tasks).
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
+    # Guild this call was made for (int FK to guilds.id; nullable — pre-existing
+    # rows and any call where the guild can't be resolved leave it NULL).
+    guild_id: int | None = Field(default=None, foreign_key="guilds.id")
+    # github_user_id of the human this call was made on behalf of; NULL for
+    # system/worker-driven calls. No FK, matching tasks.user_id / messages.user_id.
+    user_id: str | None = None
     # Extra API parameters: max_tokens, tools list, tool_choice, etc.
     extra: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
@@ -778,13 +784,13 @@ class UserSpawnSettings(SQLModel, table=True):
 
 
 class GuildSpawnDefaults(SQLModel, table=True):
-    """Per-guild default spawn-worker parameters, tracking the last successful spawn.
+    """Per-guild default spawn-worker parameters, curated by the operator.
 
-    One row per guild, upserted every time a worker container is successfully
-    started with explicit parameters (foreman spawn_worker tool, REST
-    spawn-worker endpoint, Discord /worker-spawn). The foreman's spawn_worker
-    tool falls back to this row when a call omits repos/tools/agent_count, so
-    "spawn me a worker" works without restating the guild's usual configuration.
+    One row per guild, written only via the operator-facing spawn-defaults
+    endpoint (set_guild_spawn_defaults); worker spawns no longer touch it. The
+    foreman's spawn_worker tool falls back to this row when a call omits
+    repos/tools/agent_count, so "spawn me a worker" works without restating the
+    guild's usual configuration.
     """
 
     __tablename__ = "guild_spawn_defaults"  # type: ignore[assignment]

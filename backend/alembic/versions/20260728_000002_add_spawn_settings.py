@@ -1,7 +1,7 @@
 """Add unified spawn_settings table and backfill from the three legacy sources.
 
 Revision ID: 20260728_000002_add_spawn_settings
-Revises: 20260728_000000_add_last_refreshed_at_to_github_cache
+Revises: 20260728_000001_add_guild_user_to_api_request_log
 Create Date: 2026-07-28
 
 Additive step of the spawn-settings unification. Creates spawn_settings (guild
@@ -25,7 +25,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260728_000002_add_spawn_settings"
-down_revision: str | Sequence[str] | None = "20260728_000000_add_last_refreshed_at_to_github_cache"
+down_revision: str | Sequence[str] | None = "20260728_000001_add_guild_user_to_api_request_log"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

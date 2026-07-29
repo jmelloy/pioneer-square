@@ -2366,20 +2366,17 @@ class TestSpawnWorker:
 
     async def test_spawn_worker_rejects_when_guild_in_cooldown(self, db_session):
         """A guild that spawned a worker within the cooldown window is refused, no container started."""
-        from models import GuildSpawnDefaults  # noqa: PLC0415
-
         insert_guild(db_session, "g-spawn-cooldown")
         with _sync_session(db_session) as session:
             guild_pk = session.execute(
                 select(col(Guild.id)).where(col(Guild.slug) == "g-spawn-cooldown")
             ).scalar_one()
             session.add(
-                GuildSpawnDefaults(
+                Worker(
+                    id="w-cooldown-prior",
                     guild_id=guild_pk,
-                    repos="[]",
-                    tools="[]",
-                    agent_count=None,
-                    updated_at=datetime.now(UTC) - timedelta(minutes=1),
+                    created_at=datetime.now(UTC) - timedelta(minutes=1),
+                    started_at=datetime.now(UTC) - timedelta(minutes=1),
                 )
             )
             session.commit()
@@ -2402,20 +2399,17 @@ class TestSpawnWorker:
 
     async def test_spawn_worker_allowed_after_cooldown_expires(self, db_session):
         """A guild whose last spawn is older than the cooldown window may spawn again."""
-        from models import GuildSpawnDefaults  # noqa: PLC0415
-
         insert_guild(db_session, "g-spawn-cooldown-ok")
         with _sync_session(db_session) as session:
             guild_pk = session.execute(
                 select(col(Guild.id)).where(col(Guild.slug) == "g-spawn-cooldown-ok")
             ).scalar_one()
             session.add(
-                GuildSpawnDefaults(
+                Worker(
+                    id="w-cooldown-ok-prior",
                     guild_id=guild_pk,
-                    repos="[]",
-                    tools="[]",
-                    agent_count=None,
-                    updated_at=datetime.now(UTC) - timedelta(minutes=10),
+                    created_at=datetime.now(UTC) - timedelta(minutes=10),
+                    started_at=datetime.now(UTC) - timedelta(minutes=10),
                 )
             )
             session.commit()
