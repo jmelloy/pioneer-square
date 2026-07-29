@@ -2259,9 +2259,10 @@ class TestSpawnWorker:
             row = session.execute(select(GuildSpawnDefaults)).scalars().one_or_none()
         assert row is None
 
-    async def test_spawn_worker_records_defaults_for_defaulted_params(self, db_session):
-        """When params come from guild defaults (not explicit), they are re-persisted."""
-        from models import GuildSpawnDefaults  # noqa: PLC0415
+    async def test_spawn_worker_resolves_defaulted_params_from_baseline(self, db_session):
+        """Params omitted from the call resolve from the guild baseline; explicit
+        ones override. Spawning does not rewrite the baseline row."""
+        from models import SpawnSettings  # noqa: PLC0415
 
         insert_guild(db_session, "g-spawn-rec2")
         with _sync_session(db_session) as session:
@@ -2269,14 +2270,13 @@ class TestSpawnWorker:
                 select(col(Guild.id)).where(col(Guild.slug) == "g-spawn-rec2")
             ).scalar_one()
             session.add(
-                GuildSpawnDefaults(
+                SpawnSettings(
                     guild_id=guild_pk,
+                    user_id=None,
                     repos='["acme/widgets"]',
                     tools='["claude", "pi"]',
                     agent_count=3,
-                    # Older than the spawn cooldown window so this fixture (an
-                    # existing recorded default) doesn't itself trip the cooldown.
-                    updated_at=datetime.now(UTC) - timedelta(minutes=10),
+                    updated_at=datetime.now(UTC),
                 )
             )
             session.commit()
@@ -2286,8 +2286,7 @@ class TestSpawnWorker:
         fake_docker_client.containers.get.side_effect = Exception("not found")
         fake_docker_client.containers.run.return_value = fake_container
 
-        # Spawn with explicit tools override only — repos and agent_count
-        # come from defaults, so those should be re-persisted unchanged.
+        # Explicit tools override; repos + agent_count come from the baseline.
         with (
             patch("worker_runtime._get_docker_client", AsyncMock(return_value=fake_docker_client)),
             patch("foreman.tools.broadcast", new_callable=AsyncMock),
@@ -2298,17 +2297,21 @@ class TestSpawnWorker:
             )
         assert results[0].get("is_error") is not True, results[0]["content"]
 
-        # tools should NOT have been overwritten (was explicit override).
-        # repos and agent_count were defaulted → re-persisted unchanged.
+        env = fake_docker_client.containers.run.call_args.kwargs["environment"]
+        assert env["PIONEER_TOOLS"] == "claude,codex"  # call override wins
+        assert env["PIONEER_REPOS"] == "acme/widgets"  # from baseline
+        assert env["PIONEER_MAX_AGENTS"] == "3"  # from baseline
+
+        # Spawning does not rewrite the baseline row.
         with _sync_session(db_session) as session:
-            row = session.execute(select(GuildSpawnDefaults)).scalars().one()
-        assert json.loads(row.tools) == ["claude", "pi"]  # original defaults preserved
+            row = session.execute(select(SpawnSettings)).scalars().one()
+        assert json.loads(row.tools) == ["claude", "pi"]
         assert json.loads(row.repos) == ["acme/widgets"]
         assert row.agent_count == 3
 
     async def test_spawn_worker_falls_back_to_guild_defaults(self, db_session):
-        """spawn_worker with no repos uses the guild's recorded spawn defaults."""
-        from models import GuildSpawnDefaults  # noqa: PLC0415
+        """spawn_worker with no repos uses the guild baseline spawn_settings row."""
+        from models import SpawnSettings  # noqa: PLC0415
 
         insert_guild(db_session, "g-spawn-def")
         with _sync_session(db_session) as session:
@@ -2316,14 +2319,13 @@ class TestSpawnWorker:
                 select(col(Guild.id)).where(col(Guild.slug) == "g-spawn-def")
             ).scalar_one()
             session.add(
-                GuildSpawnDefaults(
+                SpawnSettings(
                     guild_id=guild_pk,
+                    user_id=None,
                     repos='["acme/widgets"]',
                     tools='["claude"]',
                     agent_count=3,
-                    # Older than the spawn cooldown window so this fixture (an
-                    # existing recorded default) doesn't itself trip the cooldown.
-                    updated_at=datetime.now(UTC) - timedelta(minutes=10),
+                    updated_at=datetime.now(UTC),
                 )
             )
             session.commit()

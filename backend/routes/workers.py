@@ -22,8 +22,9 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeCredentials, Guild, Task, UserSpawnSettings, Worker, live_tasks_filter
+from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
+from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, upsert_spawn_row
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -38,9 +39,7 @@ from worker_lifecycle import (
     check_worker_spawn_cooldown,
     force_kill_worker_if_unresponsive,
     generate_worker_id,
-    get_guild_spawn_defaults,
     record_worker_spawn,
-    set_guild_spawn_defaults,
 )
 from ws_handlers import _resolve_user_identifier
 from ws_types import TaskAssignedMsg, WorkerMessageMsg, WorkerShutdownMsg
@@ -224,39 +223,25 @@ async def spawn_worker_container(
             ),
         )
 
-    # Merge guild-level foreman env vars (base) with user-supplied env vars (override).
-    guild_cfg_res = await db.exec(
-        select(col(Guild.foreman_config)).where(col(Guild.id) == guild_pk)
+    # One resolution path (see spawn_config): request args override this user's
+    # spawn_settings override over the guild baseline. The empty-value guard and
+    # the guild/user env merge all live in resolve_spawn now.
+    resolved = await resolve_spawn(
+        db,
+        guild_pk,
+        github_user_id,
+        SpawnLayer(
+            repos=data.repos or None,
+            tools=data.tools or None,
+            agent_count=data.agent_count,
+            env_vars=data.env_vars or None,
+        ),
     )
-    guild_cfg = guild_cfg_res.one_or_none() or {}
-    # The guild edit screen can store the same key twice (one real value, one
-    # blank — see #dup). Collapse duplicates so the real value wins instead of
-    # whichever entry happens to come last.
-    # Only vars explicitly marked forward=True reach workers; the rest stay with
-    # the foreman's own LLM (see EnvVarItem.forward). This keeps foreman
-    # credentials from leaking into every worker tool automatically.
-    foreman_env_vars: dict[str, str] = {}
-    for e in guild_cfg.get("env_vars") or []:
-        if not e.get("forward"):
-            continue
-        k, v = e.get("key"), e.get("value")
-        if not k or v is None:
-            continue
-        if k in foreman_env_vars and v == "" and foreman_env_vars[k] != "":
-            continue
-        foreman_env_vars[k] = v
+    # exclude_env_keys drops specific keys from the resolved worker env for this
+    # spawn only (the UI's per-spawn opt-out).
     if data.exclude_env_keys:
-        excluded_keys = set(data.exclude_env_keys)
-        foreman_env_vars = {k: v for k, v in foreman_env_vars.items() if k not in excluded_keys}
-    # User-supplied vars at spawn time override guild defaults — but an empty
-    # user value must not blank out a guild credential that has a real value
-    # (the value wins). Without this, a stale empty spawn-setting for a key that
-    # also exists as a guild credential boots the container with no value.
-    extra_env: dict[str, str] = dict(foreman_env_vars)
-    for k, v in (data.env_vars or {}).items():
-        if v == "" and foreman_env_vars.get(k):
-            continue
-        extra_env[k] = v
+        for k in set(data.exclude_env_keys):
+            resolved.env_vars.pop(k, None)
 
     # Pre-register the worker so the container inherits a known worker_id and
     # can skip self-registration on startup.
@@ -267,11 +252,12 @@ async def spawn_worker_container(
         Worker(
             id=worker_id,
             guild_id=guild_pk,
-            repos=json.dumps(data.repos),
+            repos=json.dumps(resolved.repos),
             state="offline",
             created_at=datetime.now(UTC),
             auth_token=auth_token,
             name=worker_name,
+            user_id=github_user_id,
         )
     )
     await db.commit()
@@ -282,14 +268,14 @@ async def spawn_worker_container(
 
     env = build_spawn_worker_env(
         guild_id=guild_id,
-        repos=data.repos,
+        repos=resolved.repos,
         worker_name=worker_name,
         source_env=dict(os.environ),
         worker_id=worker_id,
         auth_token=auth_token,
-        agent_count=data.agent_count,
-        tools=data.tools or None,
-        extra_env=extra_env or None,
+        agent_count=resolved.agent_count,
+        tools=resolved.tools or None,
+        extra_env=resolved.env_vars or None,
     )
 
     try:
@@ -341,13 +327,12 @@ async def get_spawn_credentials(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    guild_res = await db.exec(select(Guild).where(col(Guild.id) == guild_pk))
-    guild = guild_res.one()
-    config = guild.foreman_config or {}
+    # The env a worker would actually get for this user, resolved through the
+    # single spawn path (guild baseline + this user's override), masked.
+    resolved = await resolve_spawn(db, guild_pk, github_user_id)
     guild_env_vars = [
-        {"key": e["key"], "masked_value": mask_secret(e.get("value") or "")}
-        for e in (config.get("env_vars") or [])
-        if e.get("key") and e.get("forward")
+        {"key": k, "masked_value": mask_secret(v or "")}
+        for k, v in sorted(resolved.env_vars.items())
     ]
     creds_result = await db.exec(
         select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
@@ -496,22 +481,14 @@ async def get_spawn_settings(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    result = await db.exec(
-        select(UserSpawnSettings).where(
-            col(UserSpawnSettings.guild_id) == guild_pk,
-            col(UserSpawnSettings.user_id) == github_user_id,
-        )
-    )
-    row = result.one_or_none()
+    row = await get_spawn_row(db, guild_pk, github_user_id)
     if row is None:
         return {}
-    try:
-        return json.loads(row.settings_json)
-    except json.JSONDecodeError as exc:
-        logger.warning(
-            "Corrupt settings_json for user %s guild %s: %s", github_user_id, guild_pk, exc
-        )
-        return {}
+    return {
+        "repos": json.loads(row.repos or "[]"),
+        "tools": json.loads(row.tools or "[]"),
+        "envVars": [{"key": k, "value": v} for k, v in (row.env_vars or {}).items()],
+    }
 
 
 @router.put("/guilds/{guild_id}/spawn-settings")
@@ -525,39 +502,23 @@ async def save_spawn_settings(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    result = await db.exec(
-        select(UserSpawnSettings).where(
-            col(UserSpawnSettings.guild_id) == guild_pk,
-            col(UserSpawnSettings.user_id) == github_user_id,
-        )
-    )
-    row = result.one_or_none()
-    # model_dump() without exclude_none gives full-replace PUT semantics: every field
-    # is always written, so callers cannot do partial updates through this endpoint.
-    incoming = data.model_dump()
-    now = datetime.now(UTC)
+    # Full-replace PUT semantics: every field is written, so this is the user's
+    # complete override row for the guild.
     # TODO: encrypt env var values at rest before production use (tracked in GH issue #537).
-    # Currently stored as plaintext JSON — an improvement over localStorage but not
-    # suitable for highly sensitive credentials until encryption is added.
-    settings_blob = json.dumps(incoming)
-    if row is None:
-        db.add(
-            UserSpawnSettings(
-                guild_id=guild_pk,
-                user_id=github_user_id,
-                settings_json=settings_blob,
-                updated_at=now,
-            )
-        )
-    else:
-        row.settings_json = settings_blob
-        row.updated_at = now
-    await db.commit()
+    env_vars = {p.key: p.value for p in data.envVars if p.key}
+    await upsert_spawn_row(
+        db,
+        guild_pk,
+        github_user_id,
+        repos=json.dumps(data.repos),
+        tools=json.dumps(data.tools),
+        env_vars=env_vars,
+    )
     return {"status": "saved"}
 
 
 def _spawn_defaults_payload(row) -> dict:
-    """Serialise a GuildSpawnDefaults row (or None) to the wire shape."""
+    """Serialise a spawn_settings baseline row (or None) to the wire shape."""
     if row is None:
         return {"repos": [], "tools": [], "agent_count": None}
     return {
@@ -582,7 +543,7 @@ async def get_spawn_defaults(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    row = await get_guild_spawn_defaults(db, guild_pk)
+    row = await get_spawn_row(db, guild_pk, None)
     return _spawn_defaults_payload(row)
 
 
@@ -603,14 +564,14 @@ async def save_spawn_defaults(
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    await set_guild_spawn_defaults(
+    row = await upsert_spawn_row(
         db,
         guild_pk,
-        repos=data.repos,
-        tools=data.tools,
+        None,
+        repos=json.dumps(data.repos),
+        tools=json.dumps(data.tools),
         agent_count=data.agent_count,
     )
-    row = await get_guild_spawn_defaults(db, guild_pk)
     return _spawn_defaults_payload(row)
 
 

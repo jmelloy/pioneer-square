@@ -388,6 +388,18 @@ variable "pioneer_foreman_key" {
   default     = "CHANGE_ME_IN_SSM"
 }
 
+variable "debug_token" {
+  # The backend mounts /debug/query whenever DEBUG_TOKEN is non-empty (main.py),
+  # with no placeholder-stripping — so unlike the other secrets we can't seed the
+  # shared "CHANGE_ME_IN_SSM" placeholder here or the routes would go live behind
+  # a publicly-known token. Left empty, ssm.tf seeds an unguessable random value
+  # (routes mounted but unreachable); set a real token to actually use them.
+  description = "Bearer token gating the backend /debug/query routes. Leave empty to keep them unreachable; set a real value to enable."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "pioneer_ci_key" {
   description = "Shared secret for GitHub Actions CI-completion notifications to /guilds/{guild_id}/foreman/ci-notify."
   type        = string

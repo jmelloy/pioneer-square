@@ -21,6 +21,19 @@ def _auth(db_url: str) -> dict:
     return {"Authorization": f"Bearer {make_auth_token(db_url)}"}
 
 
+def _set_guild_env(test_client, db_url: str, slug: str, env_vars: list[dict]) -> None:
+    """Set a guild's env vars via the real PATCH endpoint.
+
+    Routes through PATCH /guilds/{slug}, which merges/dedups and syncs the
+    forwarded worker-slice into the spawn_settings baseline (the source the spawn
+    path resolves from). ``env_vars`` items are {key, value, forward} dicts.
+    """
+    resp = test_client.patch(
+        f"/api/guilds/{slug}/foreman-config", headers=_auth(db_url), json={"env_vars": env_vars}
+    )
+    assert resp.status_code == 200, resp.text
+
+
 def _workers_for_guild(db_url: str, guild_id: str) -> list[Worker]:
     """Query workers for *guild_id* directly (no list-workers REST endpoint exists)."""
     with _sync_session(db_url) as session:
@@ -296,47 +309,6 @@ def test_put_spawn_defaults_rejects_bad_agent_count(client):
     assert resp.status_code == 422
 
 
-def test_put_spawn_defaults_preserves_updated_at_on_edit(client):
-    """Editing defaults replaces content but leaves guild_spawn_defaults.updated_at alone.
-
-    set_guild_spawn_defaults deliberately omits updated_at from its on-conflict
-    set, so an owner curating the baseline only touches repos/tools/agent_count.
-    (The spawn cooldown keys off workers.started_at, not this timestamp.)
-    """
-    test_client, db_url = client
-    insert_guild(db_url, "guild-sd6")
-    test_client.put(
-        "/guilds/guild-sd6/spawn-defaults",
-        headers=_auth(db_url),
-        json={"repos": ["a/b"], "tools": [], "agent_count": 1},
-    )
-    # Simulate a spawn that happened 10 minutes ago.
-    past = datetime.now(UTC) - timedelta(minutes=10)
-    with _sync_session(db_url) as session:
-        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-sd6"))
-        session.execute(
-            update(GuildSpawnDefaults)
-            .where(col(GuildSpawnDefaults.guild_id) == guild_pk)
-            .values(updated_at=past)
-        )
-        session.commit()
-    # Owner edits the defaults — content changes, but the spawn clock must not.
-    test_client.put(
-        "/guilds/guild-sd6/spawn-defaults",
-        headers=_auth(db_url),
-        json={"repos": ["a/c"], "tools": ["claude"], "agent_count": 2},
-    )
-    with _sync_session(db_url) as session:
-        row = session.execute(
-            select(GuildSpawnDefaults).where(col(GuildSpawnDefaults.guild_id) == guild_pk)
-        ).scalar_one()
-    assert json.loads(row.repos) == ["a/c"]
-    assert json.loads(row.tools) == ["claude"]
-    assert row.agent_count == 2
-    # updated_at is unchanged (still ~10 minutes ago) — the edit didn't touch it.
-    assert abs((row.updated_at - past).total_seconds()) < 1
-
-
 def test_put_spawn_defaults_requires_owner(client):
     """Non-owner members can read defaults but not set them."""
     test_client, db_url = client
@@ -373,24 +345,12 @@ def test_get_spawn_credentials_masks_guild_env_var_values(client):
     """Guild foreman env var values are never returned in the clear from this endpoint."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred2")
-    with _sync_session(db_url) as session:
-        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred2"))
-        session.execute(
-            update(Guild)
-            .where(col(Guild.id) == guild_pk)
-            .values(
-                foreman_config={
-                    "env_vars": [
-                        {
-                            "key": "ANTHROPIC_API_KEY",
-                            "value": "sk-ant-supersecretvalue",
-                            "forward": True,
-                        }
-                    ]
-                }
-            )
-        )
-        session.commit()
+    _set_guild_env(
+        test_client,
+        db_url,
+        "guild-cred2",
+        [{"key": "ANTHROPIC_API_KEY", "value": "sk-ant-supersecretvalue", "forward": True}],
+    )
     resp = test_client.get("/guilds/guild-cred2/spawn-credentials", headers=_auth(db_url))
     assert resp.status_code == 200
     body = resp.json()
@@ -424,21 +384,15 @@ def test_spawn_worker_excludes_selected_guild_env_keys(client, monkeypatch):
     """exclude_env_keys drops those guild-level credentials from this spawn only."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred4")
-    with _sync_session(db_url) as session:
-        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred4"))
-        session.execute(
-            update(Guild)
-            .where(col(Guild.id) == guild_pk)
-            .values(
-                foreman_config={
-                    "env_vars": [
-                        {"key": "ANTHROPIC_API_KEY", "value": "keep-me", "forward": True},
-                        {"key": "OPENAI_API_KEY", "value": "drop-me", "forward": True},
-                    ]
-                }
-            )
-        )
-        session.commit()
+    _set_guild_env(
+        test_client,
+        db_url,
+        "guild-cred4",
+        [
+            {"key": "ANTHROPIC_API_KEY", "value": "keep-me", "forward": True},
+            {"key": "OPENAI_API_KEY", "value": "drop-me", "forward": True},
+        ],
+    )
 
     import worker_runtime
 
@@ -475,21 +429,15 @@ def test_spawn_worker_only_forwards_flagged_guild_env_vars(client, monkeypatch):
     reach the spawned worker; a forwarded one does."""
     test_client, db_url = client
     insert_guild(db_url, "guild-fwd")
-    with _sync_session(db_url) as session:
-        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-fwd"))
-        session.execute(
-            update(Guild)
-            .where(col(Guild.id) == guild_pk)
-            .values(
-                foreman_config={
-                    "env_vars": [
-                        {"key": "SHARED_TOKEN", "value": "yes", "forward": True},
-                        {"key": "FOREMAN_ONLY", "value": "no"},  # no forward flag
-                    ]
-                }
-            )
-        )
-        session.commit()
+    _set_guild_env(
+        test_client,
+        db_url,
+        "guild-fwd",
+        [
+            {"key": "SHARED_TOKEN", "value": "yes", "forward": True},
+            {"key": "FOREMAN_ONLY", "value": "no", "forward": False},  # not forwarded
+        ],
+    )
 
     import worker_runtime
 
@@ -522,20 +470,12 @@ def test_spawn_worker_empty_user_value_does_not_clobber_guild_credential(client,
     must not blank out the credential's real value (the value wins)."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred-clob")
-    with _sync_session(db_url) as session:
-        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred-clob"))
-        session.execute(
-            update(Guild)
-            .where(col(Guild.id) == guild_pk)
-            .values(
-                foreman_config={
-                    "env_vars": [
-                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token", "forward": True}
-                    ]
-                }
-            )
-        )
-        session.commit()
+    _set_guild_env(
+        test_client,
+        db_url,
+        "guild-cred-clob",
+        [{"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token", "forward": True}],
+    )
 
     import worker_runtime
 
@@ -563,26 +503,20 @@ def test_spawn_worker_empty_user_value_does_not_clobber_guild_credential(client,
 
 
 def test_spawn_worker_guild_duplicate_key_prefers_nonempty(client, monkeypatch):
-    """A guild config that already stores the same key twice (one real value,
-    one blank — the pre-existing bad data) must boot the container with the real
-    value, not whichever entry comes last."""
+    """Submitting the same key twice (one real value, one blank) must collapse to
+    the real value on write, so the container boots with the real value — not
+    whichever entry came last."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred-dup")
-    with _sync_session(db_url) as session:
-        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred-dup"))
-        session.execute(
-            update(Guild)
-            .where(col(Guild.id) == guild_pk)
-            .values(
-                foreman_config={
-                    "env_vars": [
-                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token", "forward": True},
-                        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "", "forward": True},
-                    ]
-                }
-            )
-        )
-        session.commit()
+    _set_guild_env(
+        test_client,
+        db_url,
+        "guild-cred-dup",
+        [
+            {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token", "forward": True},
+            {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "", "forward": True},
+        ],
+    )
 
     import worker_runtime
 

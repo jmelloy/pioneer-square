@@ -111,18 +111,18 @@ describe('GuildSettingsPanel worker tool tabs', () => {
 
     await inputs[0].setValue('claude-opus-4-8')
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      {
-        ok: true,
-        status: 200,
-        json: async () => ({ pi_default_model: 'claude-opus-4-8' }),
-      } as Response,
-    )
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ pi_default_model: 'claude-opus-4-8' }),
+    } as Response)
     const saveBtn = wrapper.findAll('button').find((b) => b.text() === 'Save')
     await saveBtn!.trigger('click')
     await flushPromises()
 
-    const patchCall = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PATCH')
+    const patchCall = fetchSpy.mock.calls.find(
+      ([, init]) => (init as RequestInit)?.method === 'PATCH',
+    )
     expect(patchCall).toBeTruthy()
     const body = JSON.parse((patchCall![1] as RequestInit).body as string)
     expect(body.pi_default_model).toBe('claude-opus-4-8')
@@ -142,25 +142,25 @@ describe('GuildSettingsPanel worker tool tabs', () => {
 
     await piProviderSelect.setValue('bedrock')
 
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      {
-        ok: true,
-        status: 200,
-        json: async () => ({ pi_default_provider: 'bedrock' }),
-      } as Response,
-    )
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ pi_default_provider: 'bedrock' }),
+    } as Response)
     const saveBtn = wrapper.findAll('button').find((b) => b.text() === 'Save')
     await saveBtn!.trigger('click')
     await flushPromises()
 
-    const patchCall = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PATCH')
+    const patchCall = fetchSpy.mock.calls.find(
+      ([, init]) => (init as RequestInit)?.method === 'PATCH',
+    )
     expect(patchCall).toBeTruthy()
     const body = JSON.parse((patchCall![1] as RequestInit).body as string)
     expect(body.pi_default_provider).toBe('bedrock')
   })
 })
 
-describe('GuildSettingsPanel foreman env forwarding', () => {
+describe('GuildSettingsPanel worker vs foreman env split', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
@@ -168,47 +168,52 @@ describe('GuildSettingsPanel foreman env forwarding', () => {
     vi.restoreAllMocks()
   })
 
-  it('round-trips the per-var forward flag and reflects it on the Worker General tab', async () => {
-    // A stored var with forward=true, another without.
+  const keyValues = (wrapper: ReturnType<typeof mount>) =>
+    wrapper.findAll('input.env-var-key').map((i) => (i.element as HTMLInputElement).value)
+
+  it('splits env by destination (no forward checkbox) and saves the right flags', async () => {
+    // One forwarded (worker/General) var and one foreman-only var.
     const wrapper = await openForemanTab({
       env_vars: [
         { key: 'ANTHROPIC_API_KEY', value: 'sk', forward: true },
-        { key: 'FOREMAN_ONLY', value: 'x' },
+        { key: 'FOREMAN_ONLY', value: 'x', forward: false },
       ],
     })
 
-    const boxes = wrapper.findAll('input[type="checkbox"].env-var-fwd')
-    expect(boxes.length).toBe(2)
-    expect((boxes[0].element as HTMLInputElement).checked).toBe(true)
-    expect((boxes[1].element as HTMLInputElement).checked).toBe(false)
+    // The per-row forward checkbox is gone.
+    expect(wrapper.find('input[type="checkbox"].env-var-fwd').exists()).toBe(false)
+    // Foreman tab shows only the foreman-only var, as an editable input.
+    expect(keyValues(wrapper)).toEqual(['FOREMAN_ONLY'])
 
-    // Forward the second var too, then save.
-    await boxes[1].setValue(true)
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        env_vars: [
-          { key: 'ANTHROPIC_API_KEY', value: 'sk', forward: true },
-          { key: 'FOREMAN_ONLY', value: 'x', forward: true },
-        ],
-      }),
-    } as Response)
+    // Worker Settings → General (default sub-tab) shows the forwarded var, editable.
+    const workerTab = wrapper.findAll('.settings-tab').find((t) => t.text() === 'Worker Settings')
+    await workerTab!.trigger('click')
+    await flushPromises()
+    expect(keyValues(wrapper)).toEqual(['ANTHROPIC_API_KEY'])
+
+    // Add a new worker-wide var in General.
+    const addBtn = wrapper
+      .findAll('.env-var-add-btn')
+      .find((b) => b.text().includes('Add Variable'))
+    await addBtn!.trigger('click')
+    const keyInputs = wrapper.findAll('input.env-var-key')
+    await keyInputs[keyInputs.length - 1].setValue('WORKER_NEW')
+    const valInputs = wrapper.findAll('input.env-var-value')
+    await valInputs[valInputs.length - 1].setValue('v')
+
+    // Save (Worker Settings tab) → forwarded vars carry forward=true, foreman-only false.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ env_vars: [] }))
     const saveBtn = wrapper.findAll('.foreman-actions button').find((b) => b.text() === 'Save')
     await saveBtn!.trigger('click')
     await flushPromises()
 
-    const patchCall = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PATCH')
+    const patchCall = fetchSpy.mock.calls.find(
+      ([, init]) => (init as RequestInit)?.method === 'PATCH',
+    )
     const body = JSON.parse((patchCall![1] as RequestInit).body as string)
-    const byKey = Object.fromEntries(body.env_vars.map((e: { key: string; forward: boolean }) => [e.key, e.forward]))
-    expect(byKey).toEqual({ ANTHROPIC_API_KEY: true, FOREMAN_ONLY: true })
-
-    // The Worker Settings → General tab lists only forwarded vars.
-    const workerTab = wrapper.findAll('.settings-tab').find((t) => t.text() === 'Worker Settings')
-    await workerTab!.trigger('click')
-    await flushPromises()
-    const roKeys = wrapper.findAll('.env-var-ro.env-var-key').map((s) => s.text())
-    expect(roKeys).toContain('ANTHROPIC_API_KEY')
-    expect(roKeys).toContain('FOREMAN_ONLY')
+    const byKey = Object.fromEntries(
+      body.env_vars.map((e: { key: string; forward: boolean }) => [e.key, e.forward]),
+    )
+    expect(byKey).toEqual({ ANTHROPIC_API_KEY: true, WORKER_NEW: true, FOREMAN_ONLY: false })
   })
 })

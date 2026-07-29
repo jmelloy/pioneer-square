@@ -26,7 +26,15 @@ locals {
     pioneer_ci_key           = var.pioneer_ci_key
     discord_bot_token        = var.discord_bot_token
     aws_bearer_token_bedrock = var.aws_bearer_token_bedrock
+    # Falls back to an unguessable value, not the shared placeholder — see the
+    # variable "debug_token" comment for why this secret must fail closed.
+    debug_token = coalesce(var.debug_token, random_password.debug_token.result)
   }
+}
+
+resource "random_password" "debug_token" {
+  length  = 48
+  special = false
 }
 
 resource "aws_ssm_parameter" "secret" {

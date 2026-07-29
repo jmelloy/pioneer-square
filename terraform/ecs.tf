@@ -111,6 +111,7 @@ resource "aws_ecs_task_definition" "backend" {
           ANTHROPIC_API_KEY      = aws_ssm_parameter.secret["anthropic_api_key"]
           PIONEER_FOREMAN_KEY    = aws_ssm_parameter.secret["pioneer_foreman_key"]
           DISCORD_BOT_TOKEN      = aws_ssm_parameter.secret["discord_bot_token"]
+          DEBUG_TOKEN            = aws_ssm_parameter.secret["debug_token"]
         } : { name = key, valueFrom = param.arn }
       ]
 
