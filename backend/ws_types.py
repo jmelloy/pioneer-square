@@ -235,6 +235,17 @@ class NeedsInputMsg(_WS):
     lastMessage: str | None = None
 
 
+class WorkerStateMsg(_WS):
+    """Worker.state changed — lets clients learn about a worker (e.g. "launching")
+    before its first agent-joined event, since the sidebar previously had no way
+    to see a spawned worker until it fully connected."""
+
+    type: Literal["worker-state"] = "worker-state"
+    workerId: str
+    state: str
+    name: str | None = None
+
+
 class WorkerOutdatedMsg(_WS):
     """Backend -> worker: this worker is running an older version.
 
@@ -429,6 +440,7 @@ OutboundWSMessage = Annotated[
     | WorkerMessageMsg
     | WorkerShutdownMsg
     | WorkerOutdatedMsg
+    | WorkerStateMsg
     | WorkerPingMsg
     | ForemanApiRequestMsg
     | ForemanRegisteredMsg
