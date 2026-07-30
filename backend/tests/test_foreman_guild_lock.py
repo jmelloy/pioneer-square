@@ -19,7 +19,7 @@ async def _run_foreman_ai_patched(guild_id: str, impl_event: asyncio.Event | Non
     import foreman.runner as runner
 
     async def _slow_impl(
-        gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None
+        gid, msg, extra="", uid=None, task_id=None, child=False, reply_channel_id=None, trigger=None
     ):
         if impl_event is not None:
             await impl_event.wait()

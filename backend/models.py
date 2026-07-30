@@ -535,6 +535,12 @@ class ApiRequestLog(SQLModel, table=True):
     # github_user_id of the human this call was made on behalf of; NULL for
     # system/worker-driven calls. No FK, matching tasks.user_id / messages.user_id.
     user_id: str | None = None
+    # What triggered the foreman run this call belongs to — the _trigger_foreman
+    # event vocabulary (periodic-check, chat, task-complete, followup-done,
+    # needs-input, worker-online/offline, claude-auth) plus github-event and
+    # user-followup. Lets usage be attributed by trigger source. Nullable:
+    # pre-existing rows and any run whose entry point didn't pass one stay NULL.
+    trigger: str | None = None
     # Extra API parameters: max_tokens, tools list, tool_choice, etc.
     extra: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
@@ -553,14 +559,6 @@ class ForemanTurn(SQLModel, table=True):
     # For tool_result turns: id of the assistant turn whose tool_use blocks this answers
     parent_id: int | None = Field(default=None, foreign_key="foreman_turns.id")
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-    # Token usage — deprecated; use api_request_log for usage going forward.
-    # Kept nullable so existing rows are not affected.
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    # JSON array of Anthropic API call metadata captured for each messages.create() call.
-    # Each entry: {request_id?, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, ts}
-    # Set on assistant turns; NULL otherwise.
-    api_calls_json: str | None = None
     # FK to api_request_log.id for the API call that produced this assistant turn.
     # NULL on user/system turns and on turns predating this column.
     request_id: int | None = Field(default=None, foreign_key="api_request_log.id")
