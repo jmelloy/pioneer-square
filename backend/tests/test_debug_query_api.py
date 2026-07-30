@@ -249,9 +249,9 @@ def test_debug_raw_query_allows_iso_timestamp_literal(client, monkeypatch):
 # Statement timeout
 #
 # Triggering a real 30s Postgres statement-timeout cancellation from an
-# integration test would be slow and flaky (the endpoint's own keyword/table
-# allowlist rules out the obvious ways to force a slow query, e.g. PG_SLEEP is
-# explicitly forbidden). Instead, exercise the error-mapping branch directly:
+# integration test would be slow and flaky (the table allowlist rules out the
+# obvious ways to force a slow query — e.g. `FROM pg_sleep(...)` is a
+# non-allowlisted table ref). Instead, exercise the error-mapping branch directly:
 # a fake session whose second `exec()` raises the same asyncpg
 # QueryCanceledError shape Postgres raises on a real timeout.
 # ---------------------------------------------------------------------------
@@ -291,3 +291,63 @@ def test_debug_raw_query_other_db_errors_return_400_not_500():
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(debug_query.debug_raw_query(req, db=_FakeOtherDbErrorSession()))
     assert exc_info.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Read-only enforcement (replaces the old write-keyword blocklist)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT pg_read_file('/etc/passwd')",
+        "SELECT pg_ls_dir('/')",
+        "SELECT * FROM dblink('', '') AS t(x int)",
+    ],
+)
+def test_debug_raw_query_rejects_filesystem_functions(client, monkeypatch, sql):
+    """The READ ONLY transaction doesn't stop pure-read disclosure functions, so
+    the slim function guard must still reject them before they reach the DB."""
+    _, _ = client
+    dc = _debug_app_client(monkeypatch)
+    resp = dc.post(
+        "/debug/query",
+        json={"sql": sql},
+        headers={"Authorization": f"Bearer {_TOKEN}"},
+    )
+    assert resp.status_code == 400
+
+
+class _RecordingSession:
+    """Records every statement text passed to exec(), in order."""
+
+    def __init__(self):
+        self.statements: list[str] = []
+
+    async def exec(self, stmt, params=None):
+        self.statements.append(str(stmt))
+        if params is None:
+            return None
+
+        class _Empty:
+            def all(self_inner):
+                return []
+
+        return _Empty()
+
+
+def test_debug_raw_query_issues_read_only_before_query():
+    """Writes are enforced by SET TRANSACTION READ ONLY, which Postgres requires
+    to precede any snapshot-taking statement — so it must be issued before the
+    wrapped query. This guards the one ordering mistake that would silently
+    disable write protection."""
+    session = _RecordingSession()
+    req = debug_query.DebugRawQueryRequest(sql="SELECT id FROM tasks")
+    asyncio.run(debug_query.debug_raw_query(req, db=session))
+
+    joined = " | ".join(session.statements)
+    assert "SET TRANSACTION READ ONLY" in joined
+    ro_idx = next(i for i, s in enumerate(session.statements) if "READ ONLY" in s)
+    query_idx = next(i for i, s in enumerate(session.statements) if "debug_query" in s)
+    assert ro_idx < query_idx, "READ ONLY must be set before the query runs"
