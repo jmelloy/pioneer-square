@@ -182,7 +182,10 @@ def _record_guild_action(guild_id: str) -> None:
 
 def _guild_active_recently(guild_id: str) -> bool:
     """Return True if the foreman made tool calls within the last POLL_MIN_SECS."""
-    return (time.monotonic() - _guild_last_action_at.get(guild_id, 0.0)) <= POLL_MIN_SECS
+    ts = _guild_last_action_at.get(guild_id)
+    if ts is None:
+        return False
+    return (time.monotonic() - ts) <= POLL_MIN_SECS
 
 
 # Module-level client — reused across calls so the underlying httpx connection
