@@ -554,14 +554,16 @@ class TestDebounce:
         """
         self._foreman_calls: list[tuple[str, str, str | None, str | None]] = []
 
-        async def fake_run_foreman(guild_id, summary, *, user_id=None, task_id=None, child=False):
+        async def fake_run_foreman(
+            guild_id, summary, *, user_id=None, task_id=None, child=False, trigger=None
+        ):
             self._foreman_calls.append((guild_id, summary, user_id, task_id))
 
         queue = wh.DebounceQueue(window_seconds=0.05)
         with (
             patch.object(wh, "_debounce_queue", queue),
             patch.object(wh, "run_foreman_ai", new=fake_run_foreman),
-            patch.object(wh, "reset_foreman_poll"),
+            patch.object(wh, "ensure_poll_loop"),
         ):
             try:
                 yield

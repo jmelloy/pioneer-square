@@ -499,3 +499,9 @@ variable "discord_pr_debounce_seconds" {
   type        = string
   default     = ""
 }
+
+variable "webhook_debounce_seconds" {
+  description = "Seconds to coalesce bursty GitHub webhook events before each batch triggers a foreman run. Code default is 30; raised to cut CI-driven foreman token spend."
+  type        = string
+  default     = "120"
+}

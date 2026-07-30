@@ -31,7 +31,7 @@ from fastapi import WebSocket
 from foreman.classify import is_human_event
 from foreman.github_url_parser import parse_github_urls
 from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
-from foreman.runner import reset_foreman_poll, run_foreman_ai
+from foreman.runner import ensure_poll_loop, reset_foreman_poll, run_foreman_ai
 from foreman.tools import maybe_post_plan_comment
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
@@ -220,6 +220,7 @@ async def _trigger_foreman(
             child=child,
             is_human=is_human,
             reply_channel_id=reply_channel_id,
+            trigger=event,
         ),
         name=task_name,
     )
@@ -435,7 +436,8 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
             ForemanRegisteredMsg(guildId=ctx.guild_id, agentId=agent_id),
         )
     elif agent_type == "worker":
-        reset_foreman_poll(ctx.guild_id)
+        # Worker connect is automated churn — ensure the loop, don't reset backoff.
+        ensure_poll_loop(ctx.guild_id)
         # Replay any pending tasks already assigned to this worker so they
         # aren't lost if the backend sent task-assigned while the socket was
         # down. The worker's HTTP _fetch_pending_tasks() covers the same gap,
@@ -568,7 +570,8 @@ async def handle_agent_state(ctx: WSContext, data: dict) -> None:
             taskId=update_vals.get("current_task_id"),
         ),
     )
-    reset_foreman_poll(ctx.guild_id)
+    # Agent state update is automated churn — ensure the loop, don't reset backoff.
+    ensure_poll_loop(ctx.guild_id)
 
 
 async def handle_chat(ctx: WSContext, data: dict) -> None:
@@ -768,7 +771,8 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
                 worker_id,
                 ctx.guild_id,
             )
-    reset_foreman_poll(ctx.guild_id)
+    # Worker disconnect is automated churn — ensure the loop, don't reset backoff.
+    ensure_poll_loop(ctx.guild_id)
 
 
 async def handle_task_update(ctx: WSContext, data: dict) -> None:
@@ -798,7 +802,8 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
         await ctx.db.commit()
     await broadcast_msg(ctx.guild_id, TaskUpdateMsg.model_validate(data), exclude=ctx.websocket)
     if "state" in update_values:
-        reset_foreman_poll(ctx.guild_id)
+        # Worker-driven task state update is automated — ensure the loop, no reset.
+        ensure_poll_loop(ctx.guild_id)
     # Free the task's Discord stream buffer once it reaches a terminal state
     # (failed/cancelled/error), draining any tail output first.
     if update_values.get("state") in _TERMINAL_STATES:

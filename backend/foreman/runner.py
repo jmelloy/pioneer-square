@@ -71,7 +71,13 @@ from ws_types import ChatMsg, ForemanPollStatusMsg
 
 logger = logging.getLogger(__name__)
 
-POLL_MIN_SECS = 60  # initial poll interval: 1 minute
+POLL_MIN_SECS = 300  # initial poll interval: 5 minutes
+# ponytail: raised 60→300s. Periodic checks were ~84% of foreman token spend;
+# reset_foreman_poll slams the interval back to this floor on every event, so a
+# busy day fired a full-context [periodic-check] every minute. 5min cuts that ~5×.
+# Trade-off: stalled-task / devReady pickup latency goes 1min → 5min (fine).
+# Also widens the _guild_active_recently window (below), which keys off this — a
+# deliberate, benign coupling: "recently active" now means the last 5min.
 POLL_MAX_SECS = 86400  # maximum poll interval: 24 hours
 
 # Minimum age of a github_issues/github_pull_requests cache row before the
@@ -160,6 +166,7 @@ class _QueuedHumanTurn:
     child: bool
     queued_at: str
     reply_channel_id: str | None = None
+    trigger: str | None = None
 
 
 # Monotonic timestamp (time.monotonic()) of the last foreman run that made at
@@ -175,7 +182,10 @@ def _record_guild_action(guild_id: str) -> None:
 
 def _guild_active_recently(guild_id: str) -> bool:
     """Return True if the foreman made tool calls within the last POLL_MIN_SECS."""
-    return (time.monotonic() - _guild_last_action_at.get(guild_id, 0.0)) <= POLL_MIN_SECS
+    ts = _guild_last_action_at.get(guild_id)
+    if ts is None:
+        return False
+    return (time.monotonic() - ts) <= POLL_MIN_SECS
 
 
 # Module-level client — reused across calls so the underlying httpx connection
@@ -486,7 +496,6 @@ async def _save_turn(
     *,
     is_tool_response: bool = False,
     parent_id: int | None = None,
-    api_calls: list | None = None,
     api_log_id: int | None = None,
     task_id: str | None = None,
 ) -> int:
@@ -502,7 +511,6 @@ async def _save_turn(
             is_tool_response=1 if is_tool_response else 0,
             parent_id=parent_id,
             created_at=datetime.now(UTC),
-            api_calls_json=json.dumps(api_calls) if api_calls else None,
             request_id=api_log_id,
             task_id=task_id,
         )
@@ -522,6 +530,7 @@ async def _create_api_request_log(
     task_id: str | None = None,
     guild_id: str | None = None,
     user_id: str | None = None,
+    trigger: str | None = None,
 ) -> int:
     """Insert an api_request_log row before making the Anthropic API call.
 
@@ -538,6 +547,7 @@ async def _create_api_request_log(
             task_id=task_id,
             guild_id=await get_guild_pk(db, guild_id) if guild_id else None,
             user_id=user_id,
+            trigger=trigger,
         )
         db.add(log)
         await db.commit()
@@ -1034,6 +1044,22 @@ async def _poll_loop(guild_id: str) -> None:
             logger.exception("guild=%s _poll_loop iteration failed", guild_id)
 
 
+def ensure_poll_loop(guild_id: str) -> None:
+    """Guarantee a poll loop exists for this guild WITHOUT touching its backoff.
+
+    For automated events (github webhooks post-debounce, worker connect/disconnect,
+    agent/task state updates) that already fired their own foreman run. They must
+    not reset the interval to the floor — during active development that pins the
+    poll at POLL_MIN_SECS and dominates token spend — but the safety-net loop still
+    has to be running. Never interrupts an existing loop's sleep, so the backoff
+    keeps growing naturally.
+    """
+    existing = _poll_tasks.get(guild_id)
+    if existing is None or existing.done():
+        task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
+        _poll_tasks[guild_id] = task
+
+
 def reset_foreman_poll(guild_id: str) -> None:
     """Ensure a poll loop is running for this guild, resetting the backoff only when appropriate.
 
@@ -1066,10 +1092,7 @@ def reset_foreman_poll(guild_id: str) -> None:
     else:
         # Foreman is idle — only start a loop if none exists; do not interrupt
         # the current loop's sleep so the backoff continues to grow naturally.
-        existing = _poll_tasks.get(guild_id)
-        if existing is None or existing.done():
-            task = spawn(_poll_loop(guild_id), name=f"foreman.poll-loop:{guild_id}")
-            _poll_tasks[guild_id] = task
+        ensure_poll_loop(guild_id)
 
 
 async def _fetch_online_workers(db, guild_id: str) -> list[dict]:
@@ -1158,6 +1181,7 @@ async def run_foreman_ai(
     child: bool = False,
     is_human: bool = False,
     reply_channel_id: str | None = None,
+    trigger: str | None = None,
 ) -> None:
     """Serialise per-context and delegate to ``_run_foreman_ai``.
 
@@ -1199,6 +1223,7 @@ async def run_foreman_ai(
                 task_id,
                 use_child,
                 reply_channel_id,
+                trigger=trigger,
             )
         else:
             logger.info(
@@ -1217,6 +1242,7 @@ async def run_foreman_ai(
             task_id=task_id,
             child=use_child,
             reply_channel_id=reply_channel_id,
+            trigger=trigger,
         )
         # Drain any human messages that queued up while this turn ran, before
         # going idle — each drained turn can itself queue further messages, so
@@ -1236,6 +1262,7 @@ def _enqueue_human_turn(
     task_id: str | None,
     child: bool,
     reply_channel_id: str | None = None,
+    trigger: str | None = None,
 ) -> None:
     """Append a human message to the busy queue for *lock_key*, bounded and FIFO.
 
@@ -1264,6 +1291,7 @@ def _enqueue_human_turn(
             child=child,
             queued_at=datetime.now(UTC).isoformat(),
             reply_channel_id=reply_channel_id,
+            trigger=trigger,
         )
     )
     logger.info(
@@ -1315,6 +1343,7 @@ async def _drain_human_queue(lock_key: tuple[str, str | None]) -> None:
                     task_id=turn.task_id,
                     child=turn.child,
                     reply_channel_id=turn.reply_channel_id,
+                    trigger=turn.trigger,
                 )
             except Exception as exc:
                 logger.exception(
@@ -1366,6 +1395,7 @@ async def _run_foreman_ai(
     *,
     child: bool = False,
     reply_channel_id: str | None = None,
+    trigger: str | None = None,
 ):
     """Process a human message (or system escalation) through the Claude foreman AI.
 
@@ -1580,6 +1610,7 @@ async def _run_foreman_ai(
                 task_id=_task_id,
                 guild_id=guild_id,
                 user_id=user_id,
+                trigger=trigger,
             )
             llm_result = await _call_llm(
                 guild_id,
@@ -1623,24 +1654,12 @@ async def _run_foreman_ai(
                 stop_reason=resp.stop_reason,
             )
 
-            _api_call_meta = {
-                "request_id": _api_request_id,
-                "provider": llm_result.provider,
-                "model": llm_result.model,
-                "input_tokens": _input_tokens,
-                "output_tokens": _output_tokens,
-                "cache_read_tokens": _cache_read,
-                "cache_write_tokens": _cache_write,
-                "ts": datetime.now(UTC).isoformat(),
-            }
-
             # Persist assistant turn and append to local messages
             asst_turn_id = await _save_turn(
                 guild_id,
                 user_id,
                 "assistant",
                 resp.content,
-                api_calls=[_api_call_meta],
                 api_log_id=api_log_id,
                 task_id=_task_id,
             )
@@ -1815,6 +1834,7 @@ async def _run_foreman_ai(
                 task_id=_task_id,
                 guild_id=guild_id,
                 user_id=user_id,
+                trigger=trigger,
             )
             wrap_llm_result = await _call_llm(
                 guild_id,
@@ -1856,22 +1876,11 @@ async def _run_foreman_ai(
                 cache_write_tokens=_wrap_cache_write,
                 stop_reason=wrap_resp.stop_reason,
             )
-            _wrap_api_meta = {
-                "request_id": _wrap_request_id,
-                "provider": wrap_llm_result.provider,
-                "model": wrap_llm_result.model,
-                "input_tokens": _wrap_input,
-                "output_tokens": _wrap_output,
-                "cache_read_tokens": _wrap_cache_read,
-                "cache_write_tokens": _wrap_cache_write,
-                "ts": datetime.now(UTC).isoformat(),
-            }
             await _save_turn(
                 guild_id,
                 user_id,
                 "assistant",
                 wrap_resp.content,
-                api_calls=[_wrap_api_meta],
                 api_log_id=_wrap_api_log_id,
                 task_id=_task_id,
             )
@@ -2006,9 +2015,6 @@ async def get_foreman_history(guild_id: str, user_id: str) -> dict:
             "parent_id": t.parent_id,
             "content": json.loads(t.content_json),
             "created_at": t.created_at,
-            "input_tokens": t.input_tokens,
-            "output_tokens": t.output_tokens,
-            "api_calls": json.loads(t.api_calls_json) if t.api_calls_json else None,
         }
         for t in turns[cutoff:]
         if t.role != "system"
