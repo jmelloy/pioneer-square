@@ -99,6 +99,10 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "DISCORD_GATEWAY_ENABLED", value = var.discord_gateway_enabled },
         { name = "DISCORD_DEV_GUILD_ID", value = var.discord_dev_guild_id },
         { name = "DISCORD_PR_DEBOUNCE_SECONDS", value = var.discord_pr_debounce_seconds },
+        # Coalesces bursty GitHub webhook events (CI check_run/check_suite/status
+        # especially) before each batch triggers a foreman run — a major foreman
+        # token-cost lever. Default 30s in code; raised here to cut CI-driven runs.
+        { name = "WEBHOOK_DEBOUNCE_SECONDS", value = var.webhook_debounce_seconds },
       ]
 
       secrets = [

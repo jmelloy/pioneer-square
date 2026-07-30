@@ -296,3 +296,58 @@ def test_run_foreman_ai_records_action_on_tool_calls():
         assert runner._guild_active_recently(guild) is True
 
     _run(_test())
+
+
+# ---------------------------------------------------------------------------
+# ensure_poll_loop — starts a loop but never resets the backoff
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_poll_loop_starts_when_none_exists():
+    """ensure_poll_loop spawns a loop when the guild has none."""
+
+    async def _test():
+        import foreman.runner as runner
+
+        guild = "g-ensure-new"
+        runner._poll_tasks.pop(guild, None)
+
+        fake_task = MagicMock()
+        spawned = []
+
+        def _fake_spawn(coro, **kw):
+            spawned.append(coro)
+            coro.close()  # avoid "coroutine never awaited" warning
+            return fake_task
+
+        with patch.object(runner, "spawn", side_effect=_fake_spawn):
+            runner.ensure_poll_loop(guild)
+
+        assert len(spawned) == 1
+        assert runner._poll_tasks[guild] is fake_task
+
+    _run(_test())
+
+
+def test_ensure_poll_loop_leaves_existing_loop_even_when_recently_active():
+    """The whole point of the decoupling: automated events must NOT reset the
+    backoff. Even with a fresh action timestamp, an existing running loop is left
+    untouched — no cancel, no respawn."""
+
+    async def _test():
+        import foreman.runner as runner
+
+        guild = "g-ensure-existing"
+        runner._guild_last_action_at[guild] = time.monotonic()  # recently active
+
+        old_task = MagicMock()
+        old_task.done.return_value = False
+        runner._poll_tasks[guild] = old_task
+
+        with patch.object(runner, "spawn", side_effect=AssertionError("must not spawn")):
+            runner.ensure_poll_loop(guild)
+
+        old_task.cancel.assert_not_called()
+        assert runner._poll_tasks[guild] is old_task
+
+    _run(_test())
