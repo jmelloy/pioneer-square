@@ -325,10 +325,10 @@
               </div>
             </template>
 
-            <!-- Pi: provider-agnostic tool, so it needs both a default model and provider -->
+            <!-- Pi: provider-agnostic tool, so it needs a provider + model override -->
             <template v-else-if="workerSubTab === 'pi'">
               <div class="foreman-field">
-                <label class="foreman-field-label">Default Provider</label>
+                <label class="foreman-field-label">Provider Override</label>
                 <select v-model="piDefaultProvider" class="settings-input">
                   <option value="">default (anthropic)</option>
                   <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
@@ -337,7 +337,7 @@
                 </select>
               </div>
               <div class="foreman-field">
-                <label class="foreman-field-label">Default Model</label>
+                <label class="foreman-field-label">Model Override</label>
                 <input
                   v-model="piDefaultModel"
                   class="settings-input"
@@ -354,10 +354,11 @@
                 </datalist>
               </div>
               <p class="foreman-hint">
-                Used when the foreman assigns a task to the Pi tool without an explicit
-                model/provider override. Select "Amazon Bedrock" to run Pi against Bedrock; set its
-                AWS credentials in the Pi Environment section below (or the General forwarded
-                variables, which apply to every tool).
+                Overrides the model Pi runs when the foreman assigns it a task without an explicit
+                model/provider. Setting a provider forces Pi onto that provider's models (Pi ignores
+                a bare provider unless the model is pinned too). Select "Amazon Bedrock" to run Pi
+                against Bedrock; set its AWS credentials in the Pi Environment section below (or the
+                General forwarded variables, which apply to every tool).
               </p>
             </template>
 

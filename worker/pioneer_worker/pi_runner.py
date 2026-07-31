@@ -250,7 +250,11 @@ async def _run_pi_once(
         cmd += ["--session", resume_session_id]
     cmd += ["--mode", "rpc"]
     if provider:
-        cmd += ["--provider", pi_provider_arg(provider)]
+        # `--provider` only takes effect alongside `--model`; on its own pi
+        # stays on its default provider. `--models {provider}/*` actually
+        # switches the active provider (and picks its first matching model),
+        # which is what we want when a provider is set without a specific model.
+        cmd += ["--models", f"{pi_provider_arg(provider)}/*"]
     if model:
         cmd += ["--model", model]
     logger.info("Spawning pi in %s; description=%r", cwd, description)
