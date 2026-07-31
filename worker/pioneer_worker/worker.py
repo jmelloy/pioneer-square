@@ -471,19 +471,19 @@ class Worker:
             # Fall back to a locally logged-in CLI (dev machines / keychain).
             return await self._claude_is_authenticated()
         if name == "codex":
-            return bool(env.get("OPENAI_API_KEY") or self.cfg.openai_api_key)
+            if env.get("OPENAI_API_KEY") or self.cfg.openai_api_key:
+                return True
+            # Fall back to a locally logged-in CLI (chatgpt tokens in auth.json).
+            return await self._codex_is_authenticated()
         if name == "pi":
-            # Pi speaks to ~20 providers via ~35 different env vars — API keys,
-            # OAuth tokens, and AWS/Bedrock forms like AWS_BEARER_TOKEN_BEDROCK
-            # (see TOOL_ENV_KEYS in GuildSettingsPanel.vue). Rather than mirror
-            # that list and drift from it, treat pi as configured when the guild
-            # set any scoped env var for it. An empty pi tab means pi would launch,
-            # fail auth per-task, and — as the only tool left when claude/codex are
-            # unconfigured — silently swallow every task; drop it instead.
-            # ponytail: presence check, not per-key validation; a scoped non-cred
-            # var (e.g. AWS_REGION alone) still counts. Tighten to the key list if
-            # that false-positive ever bites.
-            return bool(self._tool_env.get("pi"))
+            # Pi speaks to ~20 providers via ~35 different env vars, so mirroring
+            # that key list here would drift from it. Instead ask pi: `pi
+            # --list-models` only lists providers whose creds/config are present
+            # in the environment, so a non-empty catalog means pi has something
+            # usable. It doesn't truly auth, but an unconfigured pi lists nothing
+            # and would otherwise launch, fail per-task, and — as the only tool
+            # left when claude/codex are unconfigured — silently swallow tasks.
+            return await self._pi_has_models()
         return True  # any other tool needs no credentials
 
     async def _ensure_tools_installed(self) -> None:
@@ -631,6 +631,101 @@ class Worker:
         else:
             logger.info("claude auth status reports loggedIn=false")
         return logged_in
+
+    async def _codex_is_authenticated(self) -> bool:
+        """Return True if `codex doctor --json --summary` reports auth configured.
+
+        Mirrors _claude_is_authenticated: the exit code alone doesn't isolate
+        auth (doctor returns 0 with unrelated warnings), so we parse the JSON
+        and read the auth.credentials check's status. A timeout guards against a
+        hung subprocess.
+        """
+        import json as _json
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.cfg.codex_path,
+                "doctor",
+                "--json",
+                "--summary",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=self._env_for_tool("codex"),
+            )
+        except FileNotFoundError as exc:
+            logger.warning("codex binary not found at %r: %s", self.cfg.codex_path, exc)
+            return False
+        except Exception as exc:
+            logger.warning("codex doctor spawn failed: %s", exc)
+            return False
+
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+        except TimeoutError:
+            logger.warning("codex doctor timed out after 20s; killing pid=%s", proc.pid)
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            return False
+
+        raw = stdout.decode(errors="replace").strip()
+        try:
+            parsed = _json.loads(raw)
+        except _json.JSONDecodeError:
+            logger.warning("codex doctor output is not JSON: %s", raw[:200])
+            return False
+        status = parsed.get("checks", {}).get("auth.credentials", {}).get("status")
+        logger.info("codex doctor auth.credentials status=%s", status)
+        return status == "ok"
+
+    async def _pi_has_models(self) -> bool:
+        """Return True if `pi --list-models` prints at least one model row.
+
+        pi --list-models doesn't authenticate, but it only lists providers whose
+        credentials/config are present in the environment, so a non-empty
+        catalog means pi has something usable. A timeout guards a hung
+        subprocess (it may do startup network fetches).
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.cfg.pi_path,
+                "--list-models",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=self._env_for_tool("pi"),
+            )
+        except FileNotFoundError as exc:
+            logger.warning("pi binary not found at %r: %s", self.cfg.pi_path, exc)
+            return False
+        except Exception as exc:
+            logger.warning("pi --list-models spawn failed: %s", exc)
+            return False
+
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+        except TimeoutError:
+            logger.warning("pi --list-models timed out after 20s; killing pid=%s", proc.pid)
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            return False
+
+        if proc.returncode != 0:
+            logger.warning("pi --list-models rc=%d", proc.returncode)
+            return False
+        # First line is the "provider model ..." header; any data row means a
+        # provider is configured. "Warning:" lines don't count as models.
+        rows = [
+            ln
+            for ln in stdout.decode(errors="replace").splitlines()
+            if ln.strip() and not ln.startswith(("provider", "Warning"))
+        ]
+        logger.info("pi --list-models returned %d model rows", len(rows))
+        return bool(rows)
 
     # ------------------------------------------------------------------ Control API
     def _status_snapshot(self) -> dict:

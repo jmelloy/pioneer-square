@@ -194,33 +194,47 @@ class TestCredentialGating:
             await worker._detect_available_tools()
         assert "claude" in worker._available_tools
 
-    async def test_codex_requires_openai_key(self, monkeypatch):
+    async def test_codex_env_key_skips_cli_check(self, monkeypatch):
+        # An env OPENAI_API_KEY is a fast-path: codex is included without
+        # running `codex doctor`.
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        worker = Worker(_make_cfg(tools=["codex"], codex_path="codex"))
+        worker._codex_is_authenticated = AsyncMock(return_value=False)
+        with patch("shutil.which", return_value="codex"):
+            await worker._detect_available_tools()
+        assert "codex" in worker._available_tools
+        worker._codex_is_authenticated.assert_not_awaited()
+
+    async def test_codex_without_key_falls_back_to_cli(self, monkeypatch):
+        # No env key → gated on `codex doctor` auth status.
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         cfg = _make_cfg(tools=["codex"], codex_path="codex")
         worker = Worker(cfg)
+        worker._codex_is_authenticated = AsyncMock(return_value=False)
         with patch("shutil.which", return_value="codex"):
             await worker._detect_available_tools()
         assert "codex" not in worker._available_tools
 
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
-        worker2 = Worker(_make_cfg(tools=["codex"], codex_path="codex"))
+        worker2 = Worker(cfg)
+        worker2._codex_is_authenticated = AsyncMock(return_value=True)
         with patch("shutil.which", return_value="codex"):
             await worker2._detect_available_tools()
         assert "codex" in worker2._available_tools
 
-    async def test_pi_without_scoped_env_is_excluded(self):
-        # Empty pi tab → no scoped env → dropped.
+    async def test_pi_without_models_is_excluded(self):
+        # `pi --list-models` returns nothing → dropped.
         cfg = _make_cfg(tools=["pi"], pi_path="pi")
         worker = Worker(cfg)
+        worker._pi_has_models = AsyncMock(return_value=False)
         with patch("shutil.which", return_value="pi"):
             await worker._detect_available_tools()
         assert "pi" not in worker._available_tools
 
-    async def test_pi_with_scoped_env_is_included(self):
-        # Any scoped var (a Bedrock bearer token here) counts as configured.
+    async def test_pi_with_models_is_included(self):
+        # `pi --list-models` returns at least one model → configured.
         cfg = _make_cfg(tools=["pi"], pi_path="pi")
         worker = Worker(cfg)
-        worker._tool_env = {"pi": {"AWS_BEARER_TOKEN_BEDROCK": "tok"}}
+        worker._pi_has_models = AsyncMock(return_value=True)
         with patch("shutil.which", return_value="pi"):
             await worker._detect_available_tools()
         assert "pi" in worker._available_tools
