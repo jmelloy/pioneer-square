@@ -1666,7 +1666,11 @@ class Worker:
     async def _execute_task(self, task: dict, agent: Agent) -> None:
         task_id = task["id"]
         desc = task.get("description") or ""
-        token = self.cfg.github_token
+        # Clone/fetch as the triggering user's OAuth token, same as push does
+        # below. The App installation token (self.cfg.github_token) is scoped to
+        # one org, so a remote worker can't clone a repo the App isn't installed
+        # on; the user's token can. Falls back to the App token per _task_github_token.
+        token = await self._task_github_token(task_id)
         issue_repo = task.get("issue_repo") or ""
         explicit_repos = task.get("repos") or []
         if explicit_repos:
