@@ -1117,8 +1117,8 @@ def _post_agent_task(task_url: str, body: bytes) -> dict:
 # spawn_worker implementation — exposed to the parent foreman via FOREMAN_TOOLS
 # and invoked by the Discord /worker-spawn command. Spawned workers are
 # auto-reaped by worker_lifecycle.idle_worker_reaper() after a period of
-# inactivity; parameters omitted from the call fall back to the guild's
-# last-successful-spawn defaults (guild_spawn_defaults).
+# inactivity; parameters omitted from the call fall back through resolve_spawn
+# (spawn_settings: this user's override, then the guild baseline).
 # ---------------------------------------------------------------------------
 
 

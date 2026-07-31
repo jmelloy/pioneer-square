@@ -228,6 +228,63 @@
                   </button>
                 </div>
               </div>
+
+              <!-- Per-tool overrides: passed only to the selected tool's runner,
+                   never the others; overrides a shared Env Var for that tool.
+                   Mirrors Guild Settings → Worker Tools. -->
+              <div class="settings-field">
+                <label class="spawn-label"
+                  >Per-Tool Overrides <span class="spawn-hint">(optional)</span></label
+                >
+                <nav class="spawn-tool-tabs">
+                  <button
+                    v-for="tool in AVAILABLE_TOOLS"
+                    :key="tool"
+                    type="button"
+                    class="spawn-tool-tab"
+                    :class="{ active: envToolTab === tool }"
+                    @click="envToolTab = tool"
+                  >
+                    {{ tool }}
+                  </button>
+                </nav>
+                <p class="spawn-env-hint">
+                  Passed only to the {{ envToolTab }} CLI — never the other tools. Overrides an Env
+                  Var above for this tool.
+                </p>
+                <div class="spawn-env-list">
+                  <div
+                    v-for="(pair, idx) in toolEnvVars[envToolTab]"
+                    :key="idx"
+                    class="spawn-env-row"
+                  >
+                    <input
+                      v-model="pair.key"
+                      class="spawn-input spawn-env-input spawn-env-key"
+                      placeholder="KEY"
+                      type="text"
+                    />
+                    <span class="spawn-env-sep">=</span>
+                    <input
+                      v-model="pair.value"
+                      class="spawn-input spawn-env-input spawn-env-val"
+                      placeholder="value"
+                      type="text"
+                    />
+                    <button
+                      class="spawn-env-remove"
+                      @click="removeToolEnvVar(idx)"
+                      type="button"
+                      title="Remove"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <button class="pixel-btn spawn-env-add" @click="addToolEnvVar" type="button">
+                    + Add
+                  </button>
+                </div>
+              </div>
             </section>
           </div>
         </div>
@@ -248,7 +305,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useGitHubStore } from '../../stores/github'
 import { api } from '../../utils/api'
@@ -281,6 +338,7 @@ interface SpawnSettings {
   repos?: string[]
   tools?: string[]
   envVars?: EnvPair[]
+  toolEnvVars?: Record<string, EnvPair[]>
 }
 
 interface GuildSpawnDefaults {
@@ -308,6 +366,10 @@ const name = ref('')
 const selectedTools = ref<string[]>([])
 const agentCount = ref<number | null>(null)
 const envVars = ref<EnvPair[]>([])
+// Per-tool override env, keyed by tool. Reaches only that tool's runner via the
+// worker's /foreman/env-vars fetch (resolved against this user's spawn row).
+const toolEnvVars = reactive<Record<string, EnvPair[]>>({ claude: [], codex: [], pi: [] })
+const envToolTab = ref<(typeof AVAILABLE_TOOLS)[number]>('claude')
 const spawning = ref(false)
 const error = ref('')
 const loadingRepos = ref(false)
@@ -385,18 +447,28 @@ function toggleCredential(key: string) {
 /** Mirrors the backend's env-key regex (`SpawnWorkerRequest`) so bad keys are
  *  caught before the request round-trip, and flags client-only duplicate keys
  *  the backend wouldn't otherwise reject (a later dict entry silently wins). */
-function validateEnvVars(): string | null {
+function validatePairs(pairs: EnvPair[], label: string): string | null {
   const seen = new Set<string>()
-  for (const pair of envVars.value) {
+  for (const pair of pairs) {
     const key = pair.key.trim()
     if (key === '') continue
     if (!ENV_KEY_PATTERN.test(key)) {
-      return `Invalid env var key "${key}" — use letters, numbers, and underscores, starting with a letter or underscore.`
+      return `Invalid ${label} key "${key}" — use letters, numbers, and underscores, starting with a letter or underscore.`
     }
     if (seen.has(key)) {
-      return `Duplicate env var key "${key}".`
+      return `Duplicate ${label} key "${key}".`
     }
     seen.add(key)
+  }
+  return null
+}
+
+function validateEnvVars(): string | null {
+  const flat = validatePairs(envVars.value, 'env var')
+  if (flat) return flat
+  for (const tool of AVAILABLE_TOOLS) {
+    const err = validatePairs(toolEnvVars[tool], `${tool} override`)
+    if (err) return err
   }
   return null
 }
@@ -441,6 +513,12 @@ async function saveSettings(guildId: string) {
           (e) =>
             e.key.trim() !== '' && e.value.trim() !== '' && !guildCredKeys.value.has(e.key.trim()),
         ),
+        toolEnvVars: Object.fromEntries(
+          AVAILABLE_TOOLS.map((tool) => [
+            tool,
+            toolEnvVars[tool].filter((e) => e.key.trim() !== '' && e.value.trim() !== ''),
+          ]),
+        ),
       },
     })
   } catch {
@@ -482,7 +560,11 @@ onMounted(async () => {
     loadCredentials(guild.id)
   }
 
-  if (saved && (saved.repos?.length || saved.tools?.length || saved.envVars?.length)) {
+  const savedHasToolEnv = Object.values(saved?.toolEnvVars ?? {}).some((p) => p.length)
+  if (
+    saved &&
+    (saved.repos?.length || saved.tools?.length || saved.envVars?.length || savedHasToolEnv)
+  ) {
     // The user has their own saved overrides — those win over the guild baseline.
     if (saved.repos?.length) {
       if (repoFetchFailed.value) {
@@ -496,6 +578,9 @@ onMounted(async () => {
     }
     if (saved.tools?.length) selectedTools.value = saved.tools
     if (saved.envVars?.length) envVars.value = saved.envVars
+    for (const tool of AVAILABLE_TOOLS) {
+      toolEnvVars[tool] = (saved.toolEnvVars?.[tool] ?? []).map((p) => ({ ...p }))
+    }
   } else if (defaults && hasGuildDefaults.value) {
     // No personal overrides yet — start from the guild's spawn defaults.
     applyGuildDefaults(defaults)
@@ -565,6 +650,14 @@ function addEnvVar() {
 
 function removeEnvVar(idx: number) {
   envVars.value.splice(idx, 1)
+}
+
+function addToolEnvVar() {
+  toolEnvVars[envToolTab.value].push({ key: '', value: '' })
+}
+
+function removeToolEnvVar(idx: number) {
+  toolEnvVars[envToolTab.value].splice(idx, 1)
 }
 
 async function launch() {
@@ -890,6 +983,40 @@ async function launch() {
   border: 1px solid var(--color-brass-dark);
   border-radius: 2px;
   background: var(--color-bg);
+}
+
+.spawn-tool-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.spawn-tool-tab {
+  background: none;
+  border: 1px solid var(--color-brass-dark);
+  color: var(--color-brass-dark);
+  cursor: pointer;
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 5px 10px;
+  border-radius: 2px;
+  transition:
+    color 0.12s,
+    background 0.12s,
+    border-color 0.12s;
+}
+
+.spawn-tool-tab:hover {
+  color: var(--color-brass);
+  background: rgba(232, 170, 0, 0.06);
+}
+
+.spawn-tool-tab.active {
+  color: var(--color-brass-light);
+  background: rgba(232, 170, 0, 0.1);
+  border-color: var(--color-brass);
 }
 
 .spawn-repo-row {
