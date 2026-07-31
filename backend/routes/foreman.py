@@ -37,6 +37,7 @@ from models import (
     Guild,
     Message,
     Task,
+    Worker,
 )
 from pydantic import BaseModel
 from sqlalchemy import update
@@ -133,22 +134,30 @@ async def get_foreman_env_vars(
     Response: ``{ "env_vars": [{"key", "value"}, ...],
                   "tool_env_vars": {"claude": [...], "pi": [...], "codex": [...]} }``
     """
-    from spawn_config import get_spawn_row  # noqa: PLC0415
+    from spawn_config import resolve_spawn  # noqa: PLC0415
 
     res = await db.exec(select(Guild).where(col(Guild.slug) == guild_id))
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    # Worker-facing env now lives in the spawn_settings guild baseline (env_vars
-    # are all worker-bound — no forward flag — and tool_env_vars stay scoped).
-    row = await get_spawn_row(db, guild.id, None)
-    env_vars = dict(row.env_vars) if row else {}
-    tool_env_vars = dict(row.tool_env_vars) if row else {}
+    # Resolve the worker's owner so this user's spawn-settings override (env_vars
+    # + per-tool tool_env_vars) layers over the guild baseline, matching what the
+    # worker's container was launched with. A worker principal maps to its
+    # Worker.user_id; a member principal is that member; otherwise baseline only.
+    user_id: str | None = None
+    if _caller.startswith("worker:"):
+        worker_id = _caller.split(":", 1)[1]
+        user_id = (
+            await db.exec(select(col(Worker.user_id)).where(col(Worker.id) == worker_id))
+        ).one_or_none()
+    elif _caller.startswith("user:"):
+        user_id = _caller.split(":", 1)[1]
+    resolved = await resolve_spawn(db, guild.id, user_id)
     return {
-        "env_vars": [{"key": k, "value": v} for k, v in env_vars.items()],
+        "env_vars": [{"key": k, "value": v} for k, v in resolved.env_vars.items()],
         "tool_env_vars": {
             tool: [{"key": k, "value": v} for k, v in (kv or {}).items()]
-            for tool, kv in tool_env_vars.items()
+            for tool, kv in resolved.tool_env_vars.items()
         },
     }
 

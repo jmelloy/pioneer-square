@@ -445,29 +445,49 @@ class EnvVarPair(BaseModel):
     value: str
 
 
+# The worker tools that can carry a per-tool env override, mirroring the guild
+# settings Worker Tools tabs. Unknown tool keys are rejected so the stored map
+# can't grow unbounded from a malformed payload.
+_SPAWN_TOOLS = ("claude", "pi", "codex")
+
+
+def _validate_env_pairs(pairs: list[EnvVarPair]) -> list[EnvVarPair]:
+    if len(pairs) > _MAX_SETTINGS_ENV_VARS:
+        raise ValueError(f"Too many env vars (max {_MAX_SETTINGS_ENV_VARS})")
+    for pair in pairs:
+        if len(pair.key) > _MAX_SETTINGS_ENV_KEY_LEN:
+            raise ValueError(f"Env var key exceeds max length ({_MAX_SETTINGS_ENV_KEY_LEN} chars)")
+        if len(pair.value) > _MAX_SETTINGS_ENV_VALUE_LEN:
+            raise ValueError("An env var value exceeds the maximum allowed length")
+        if pair.key and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", pair.key):
+            raise ValueError(
+                f"Invalid env var key: {pair.key!r}. Must match ^[A-Za-z_][A-Za-z0-9_]*$"
+            )
+    return pairs
+
+
 class SaveSpawnSettingsRequest(BaseModel):
     # All fields default to empty so a PUT always replaces the full settings object
     # (no partial-update / PATCH semantics).
     repos: list[str] = []
     tools: list[str] = []
     envVars: list[EnvVarPair] = []
+    # Per-tool env overrides, {tool: [{key, value}, ...]}. Same shape as the guild
+    # settings tool_env_vars; merged in only when that tool spawns for this user.
+    toolEnvVars: dict[str, list[EnvVarPair]] = {}
 
     @field_validator("envVars")
     @classmethod
     def validate_env_var_keys(cls, v: list[EnvVarPair]) -> list[EnvVarPair]:
-        if len(v) > _MAX_SETTINGS_ENV_VARS:
-            raise ValueError(f"Too many env vars (max {_MAX_SETTINGS_ENV_VARS})")
-        for pair in v:
-            if len(pair.key) > _MAX_SETTINGS_ENV_KEY_LEN:
-                raise ValueError(
-                    f"Env var key exceeds max length ({_MAX_SETTINGS_ENV_KEY_LEN} chars)"
-                )
-            if len(pair.value) > _MAX_SETTINGS_ENV_VALUE_LEN:
-                raise ValueError("An env var value exceeds the maximum allowed length")
-            if pair.key and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", pair.key):
-                raise ValueError(
-                    f"Invalid env var key: {pair.key!r}. Must match ^[A-Za-z_][A-Za-z0-9_]*$"
-                )
+        return _validate_env_pairs(v)
+
+    @field_validator("toolEnvVars")
+    @classmethod
+    def validate_tool_env_vars(cls, v: dict[str, list[EnvVarPair]]) -> dict[str, list[EnvVarPair]]:
+        for tool, pairs in v.items():
+            if tool not in _SPAWN_TOOLS:
+                raise ValueError(f"Unknown tool {tool!r}; expected one of {_SPAWN_TOOLS}")
+            _validate_env_pairs(pairs)
         return v
 
 
@@ -488,6 +508,10 @@ async def get_spawn_settings(
         "repos": json.loads(row.repos or "[]"),
         "tools": json.loads(row.tools or "[]"),
         "envVars": [{"key": k, "value": v} for k, v in (row.env_vars or {}).items()],
+        "toolEnvVars": {
+            tool: [{"key": k, "value": v} for k, v in (kv or {}).items()]
+            for tool, kv in (row.tool_env_vars or {}).items()
+        },
     }
 
 
@@ -506,6 +530,11 @@ async def save_spawn_settings(
     # complete override row for the guild.
     # TODO: encrypt env var values at rest before production use (tracked in GH issue #537).
     env_vars = {p.key: p.value for p in data.envVars if p.key}
+    tool_env_vars = {
+        tool: {p.key: p.value for p in pairs if p.key} for tool, pairs in data.toolEnvVars.items()
+    }
+    # Drop tools that resolved to no vars so the stored map stays clean.
+    tool_env_vars = {t: kv for t, kv in tool_env_vars.items() if kv}
     await upsert_spawn_row(
         db,
         guild_pk,
@@ -513,6 +542,7 @@ async def save_spawn_settings(
         repos=json.dumps(data.repos),
         tools=json.dumps(data.tools),
         env_vars=env_vars,
+        tool_env_vars=tool_env_vars,
     )
     return {"status": "saved"}
 
@@ -557,9 +587,9 @@ async def save_spawn_defaults(
     """Set the guild's default spawn parameters (owner only).
 
     These become the baseline the foreman's ``spawn_worker`` tool falls back to
-    and the per-user spawn form pre-fills from. A successful worker spawn still
-    refreshes them afterward (``record_worker_spawn``) — this endpoint just lets
-    an owner curate the baseline directly instead of waiting for the next spawn.
+    (via ``resolve_spawn``) and the per-user spawn form pre-fills from. Worker
+    spawns no longer write defaults back; this endpoint is the owner's curation
+    path for the guild baseline row.
     """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:

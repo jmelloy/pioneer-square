@@ -883,3 +883,92 @@ def test_guild_task_list(client):
     descriptions = {t["description"] for t in resp.json()}
     assert "Alpha" in descriptions
     assert "Beta" in descriptions
+
+
+# ---------------------------------------------------------------------------
+# Per-user spawn settings: per-tool env overrides
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_settings_tool_env_vars_round_trip(client):
+    """PUT /spawn-settings persists per-tool env overrides; GET returns them,
+    dropping empty keys and tools that resolve to nothing."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-tenv")
+    headers = _auth(db_url)
+
+    resp = test_client.put(
+        "/guilds/guild-tenv/spawn-settings",
+        headers=headers,
+        json={
+            "repos": [],
+            "tools": [],
+            "envVars": [],
+            "toolEnvVars": {
+                "claude": [
+                    {"key": "ANTHROPIC_MODEL", "value": "sonnet"},
+                    {"key": "", "value": "x"},
+                ],
+                "pi": [],  # empty tool is dropped
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    got = test_client.get("/guilds/guild-tenv/spawn-settings", headers=headers).json()
+    assert got["toolEnvVars"] == {"claude": [{"key": "ANTHROPIC_MODEL", "value": "sonnet"}]}
+
+
+def test_spawn_settings_rejects_unknown_tool(client):
+    """An unknown tool key in toolEnvVars is a 422 (guards unbounded storage)."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-tbad")
+    resp = test_client.put(
+        "/guilds/guild-tbad/spawn-settings",
+        headers=_auth(db_url),
+        json={"toolEnvVars": {"bogus": [{"key": "K", "value": "v"}]}},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_foreman_env_vars_layers_user_tool_override_over_guild_baseline(client):
+    """GET /foreman/env-vars resolves the caller's per-tool override on top of the
+    guild baseline so a user's tool env reaches their worker."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-lyr")
+    headers = _auth(db_url)
+
+    # Guild baseline: claude gets BASE_ONLY + SHARED=guild (via foreman-config).
+    resp = test_client.patch(
+        "/api/guilds/guild-lyr/foreman-config",
+        headers=headers,
+        json={
+            "tool_env_vars": {
+                "claude": [
+                    {"key": "BASE_ONLY", "value": "base"},
+                    {"key": "SHARED", "value": "guild"},
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    # This user's override: claude SHARED=user + USER_ONLY.
+    resp = test_client.put(
+        "/guilds/guild-lyr/spawn-settings",
+        headers=headers,
+        json={
+            "toolEnvVars": {
+                "claude": [
+                    {"key": "SHARED", "value": "user"},
+                    {"key": "USER_ONLY", "value": "u"},
+                ]
+            }
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    # env-vars endpoint, called as this member, merges both (user wins on SHARED).
+    got = test_client.get("/guilds/guild-lyr/foreman/env-vars", headers=headers).json()
+    claude = {p["key"]: p["value"] for p in got["tool_env_vars"].get("claude", [])}
+    assert claude == {"BASE_ONLY": "base", "SHARED": "user", "USER_ONLY": "u"}
