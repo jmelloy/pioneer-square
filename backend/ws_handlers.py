@@ -690,11 +690,13 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     user_ident = data.get("user")
     provider = data.get("provider") or None
     tool = data.get("tool") or None
+    hostname = data.get("hostname") or None
     update_vals: dict = {
         "repos": json.dumps(repos),
         "tools": json.dumps(tools),
         "provider": provider,
         "tool": tool,
+        "hostname": hostname,
     }
     if user_ident:
         resolved = await _resolve_user_identifier(ctx.db, user_ident)

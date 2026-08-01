@@ -994,6 +994,7 @@ class Worker:
             "workerId": self.cfg.worker_id,
             "repos": self._broadcast_repos,
             "tools": self._available_tools,
+            "hostname": socket.gethostname(),
         }
         if self.cfg.user:
             msg["user"] = self.cfg.user
@@ -1591,6 +1592,7 @@ class Worker:
                 "workerId": self.cfg.worker_id,
                 "repos": self._broadcast_repos,
                 "tools": self._available_tools,
+                "hostname": socket.gethostname(),
             }
             if self.cfg.user:
                 refresh_msg["user"] = self.cfg.user

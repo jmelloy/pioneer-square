@@ -179,6 +179,7 @@ async def create_worker(
             user_id=resolved_user_id,
             auth_token=auth_token,
             name=worker_name,
+            hostname=data.hostname,
         )
     )
     await db.commit()

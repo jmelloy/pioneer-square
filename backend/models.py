@@ -242,6 +242,10 @@ class Worker(SQLModel, table=True):
     # would otherwise hand back exactly the credentials that were excluded.
     # NULL/empty = nothing excluded.
     excluded_env_keys: list | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+    # Hostname of the machine/container running this worker process. Set at
+    # HTTP self-registration and refreshed on every worker-register WS message.
+    # NULL on legacy rows and rows created before the worker process reports in.
+    hostname: str | None = None
 
     # --- Convenience properties for guild spawn defaults ---
     # These expose the guild's default repos/tools/agent_count via the shared
