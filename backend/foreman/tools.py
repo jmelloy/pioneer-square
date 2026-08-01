@@ -60,6 +60,7 @@ from ws_types import (
     TaskUpdateMsg,
     WorkerMessageMsg,
     WorkerShutdownMsg,
+    WorkerStateMsg,
 )
 
 logger = logging.getLogger(__name__)
@@ -1199,7 +1200,9 @@ async def spawn_worker(
         )
     )
     await db.commit()
-    await broadcast_msg(guild_id, WorkerStateMsg(workerId=worker_id, state="launching", name=worker_name))
+    await broadcast_msg(
+        guild_id, WorkerStateMsg(workerId=worker_id, state="launching", name=worker_name)
+    )
 
     # Worker-facing env vars come from the resolved spawn_settings (guild
     # baseline + user override), already merged in spawn_config. tool_env_vars
