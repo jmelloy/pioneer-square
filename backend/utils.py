@@ -164,26 +164,6 @@ def worker_display_name(worker_id: str, hostname: str | None = None) -> str:
     return droid
 
 
-def decode_claude_oauth_token(blob: str | None) -> str | None:
-    """Extract the OAuth token from a stored claude_credentials blob.
-
-    Only handles the modern ``base64(json({"oauth_token": "..."}))`` format
-    written by ``claude setup-token``. The legacy tarball format is meant to
-    be extracted to ``~/.claude`` on disk and can't be reduced to a single
-    env var, so we ignore it here and let the worker handle it via the HTTP
-    fetch path.
-    """
-    if not blob:
-        return None
-    try:
-        raw = base64.b64decode(blob)
-        payload = json.loads(raw)
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    token = payload.get("oauth_token") if isinstance(payload, dict) else None
-    return token if isinstance(token, str) and token else None
-
-
 # ---------------------------------------------------------------------------
 # Foreman JWT helpers (HS256, stdlib-only)
 # ---------------------------------------------------------------------------
@@ -246,13 +226,13 @@ def build_spawn_worker_env(
 ) -> dict[str, str]:
     """Build the env dict for a spawned worker container.
 
-    The worker's own credentials — GitHub token, Claude OAuth token, and any
-    provider API keys (OpenAI, etc.) — are deliberately NOT injected here. The
+    The worker's own credentials — GitHub token and any provider API keys
+    (Anthropic, OpenAI, etc.) — are deliberately NOT injected here. The
     worker fetches them from the backend on startup over its authenticated
-    connection: ``/auth/github/token``, ``/auth/claude/credentials``, and the
-    per-guild ``/guilds/{id}/foreman/env-vars`` (see the worker's
-    ``_fetch_github_token_if_needed`` / ``_check_claude_auth`` /
-    ``_fetch_guild_env_vars``). Injecting them here would be redundant and, on
+    connection: ``/auth/github/token`` and the per-guild
+    ``/guilds/{id}/foreman/env-vars`` (see the worker's
+    ``_fetch_github_token_if_needed`` / ``_fetch_guild_env_vars``). Injecting
+    them here would be redundant and, on
     ECS, actively harmful: the worker skips those fetches when the variable is
     already present in its environment, so a baked-in deploy-wide value would
     shadow the per-guild credential the worker would otherwise pull.

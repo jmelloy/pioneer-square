@@ -247,7 +247,7 @@ All real-time communication is JSON over `ws://localhost:8000/ws/{guild_id}`. Ke
 ### Database schema
 
 Core tables include `guilds`, `agents`, `workers`, `tasks`, `task_logs`, `messages`,
-`github_tokens`, `claude_credentials`, `user_sessions`; the schema has grown well beyond this list
+`github_tokens`, `user_sessions`; the schema has grown well beyond this list
 (Discord integration, GitHub issue/PR caching, usage tracking, etc.) — `backend/models.py`
 (SQLModel ORM) is the authoritative source. Migrated by Alembic — see
 `backend/alembic/versions/`. In docker-compose the backend container command runs

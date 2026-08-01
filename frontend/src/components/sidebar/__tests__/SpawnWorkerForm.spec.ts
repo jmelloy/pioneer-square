@@ -25,12 +25,7 @@ function mockFetch(routes: Routes, onSpawn?: (body: unknown) => unknown) {
     const url = String(input)
     if (url.includes('/spawn-credentials')) {
       return Promise.resolve(
-        jsonResponse(
-          routes.credentials ?? {
-            guild_env_vars: [],
-            claude_credentials: { saved: false, updated_at: null },
-          },
-        ),
+        jsonResponse(routes.credentials ?? { guild_env_vars: [] }),
       )
     }
     if (url.includes('/spawn-worker')) {
@@ -75,11 +70,10 @@ describe('SpawnWorkerForm credentials', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows masked guild env vars and claude credential status', async () => {
+  it('shows masked guild env vars', async () => {
     mockFetch({
       credentials: {
         guild_env_vars: [{ key: 'ANTHROPIC_API_KEY', masked_value: 'sk…alue' }],
-        claude_credentials: { saved: true, updated_at: '2026-07-24T00:00:00Z' },
       },
     })
     const wrapper = mountForm()
@@ -87,7 +81,6 @@ describe('SpawnWorkerForm credentials', () => {
     await switchTab(wrapper, 'Environment')
     expect(wrapper.text()).toContain('ANTHROPIC_API_KEY')
     expect(wrapper.text()).toContain('sk…alue')
-    expect(wrapper.text()).toContain('configured')
     expect(wrapper.text()).not.toContain('No guild credentials configured')
   })
 

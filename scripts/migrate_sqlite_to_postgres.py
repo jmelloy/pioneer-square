@@ -481,36 +481,6 @@ def migrate_guild_members(sq: sqlite3.Connection, pg: Any, guild_map: dict[str, 
     _log("guild_members", inserted, skipped)
 
 
-def migrate_claude_credentials(sq: sqlite3.Connection, pg: Any, guild_map: dict[str, int]) -> None:
-    if not _exists(sq, "claude_credentials"):
-        return
-    cols = _columns(sq, "claude_credentials")
-    inserted = skipped = 0
-    with pg.cursor() as cur:
-        for raw in sq.execute("SELECT * FROM claude_credentials ORDER BY id"):
-            d = _row(cols, raw)
-            guild_pk = _lookup_guild_pk(d, guild_map)
-            if guild_pk is None:
-                print(f"    claude_credentials: skipping id={d.get('id')} — guild not in map")
-                continue
-            cur.execute(
-                """
-                INSERT INTO claude_credentials
-                    (id, guild_pk, credentials_blob, updated_at)
-                VALUES (%s,%s,%s,%s)
-                ON CONFLICT (id) DO NOTHING
-                """,
-                (d.get("id"), guild_pk, d.get("credentials_blob"), d.get("updated_at")),
-            )
-            if cur.rowcount:
-                inserted += 1
-            else:
-                skipped += 1
-    pg.commit()
-    _reset_seq(pg, "claude_credentials")
-    _log("claude_credentials", inserted, skipped)
-
-
 def migrate_guild_keys(sq: sqlite3.Connection, pg: Any, guild_map: dict[str, int]) -> None:
     if not _exists(sq, "guild_keys"):
         return
@@ -691,7 +661,6 @@ def main() -> int:
     migrate_task_logs(sq, pg)
     migrate_messages(sq, pg, guild_map)
     migrate_guild_members(sq, pg, guild_map)
-    migrate_claude_credentials(sq, pg, guild_map)
     migrate_guild_keys(sq, pg, guild_map)
     migrate_github_events(sq, pg, guild_map)
     migrate_foreman_turns(sq, pg, guild_map)

@@ -477,16 +477,6 @@ class TaskLog(SQLModel, table=True):
     level: str | None = None
 
 
-class ClaudeCredentials(SQLModel, table=True):
-    __tablename__ = "claude_credentials"  # type: ignore[assignment]
-
-    id: int | None = Field(default=None, primary_key=True)
-    # guild_id is the integer FK to guilds.id (renamed from guild_pk).
-    guild_id: int = Field(foreign_key="guilds.id", unique=True)
-    credentials_blob: str  # base64-encoded tar.gz of ~/.claude/
-    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
-
-
 class GuildKey(SQLModel, table=True):
     __tablename__ = "guild_keys"  # type: ignore[assignment]
 

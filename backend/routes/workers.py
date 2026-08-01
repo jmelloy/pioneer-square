@@ -22,7 +22,7 @@ from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
-from models import ClaudeCredentials, Task, Worker, live_tasks_filter
+from models import Task, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, row_to_layer, upsert_spawn_row
 from sqlalchemy import update
@@ -325,12 +325,11 @@ async def get_spawn_credentials(
 ):
     """Return masked credential status for the spawn form — never raw values.
 
-    Covers the two credential sources a spawned worker inherits: the guild's
-    forwarded ``foreman_config.env_vars`` (only vars marked ``forward=True``
-    reach a worker; merged into every spawn unless excluded via
-    ``exclude_env_keys`` on POST /spawn-worker) and the guild's stored Claude
-    OAuth credentials. Lets an operator see, before launching, what a worker
-    will have access to without exposing the underlying secret values.
+    Covers the guild's forwarded ``foreman_config.env_vars`` (only vars marked
+    ``forward=True`` reach a worker; merged into every spawn unless excluded
+    via ``exclude_env_keys`` on POST /spawn-worker). Lets an operator see,
+    before launching, what a worker will have access to without exposing the
+    underlying secret values.
 
     ``guild_env_vars`` is the **guild baseline only**, deliberately not the
     resolved merge: the spawn form shows the caller's own saved vars separately
@@ -351,18 +350,7 @@ async def get_spawn_credentials(
         for tool, kv in sorted(((baseline.tool_env_vars if baseline else None) or {}).items())
         if kv
     }
-    creds_result = await db.exec(
-        select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
-    )
-    creds_row = creds_result.one_or_none()
-    return {
-        "guild_env_vars": guild_env_vars,
-        "guild_tool_env_vars": guild_tool_env_vars,
-        "claude_credentials": {
-            "saved": creds_row is not None,
-            "updated_at": creds_row.updated_at.isoformat() if creds_row else None,
-        },
-    }
+    return {"guild_env_vars": guild_env_vars, "guild_tool_env_vars": guild_tool_env_vars}
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/tasks")
