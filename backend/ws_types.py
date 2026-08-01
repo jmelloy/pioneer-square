@@ -394,6 +394,7 @@ class WorkerRegisterMsg(_WS):
     workerId: str | None = None
     repos: list[str] | None = None
     user: str | None = None
+    hostname: str | None = None
 
 
 class WorkerDisconnectMsg(_WS):
