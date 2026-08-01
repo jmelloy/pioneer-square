@@ -2356,14 +2356,16 @@ class TestSpawnWorker:
         assert env["PIONEER_REPOS"] == "acme/widgets"
         assert env["PIONEER_MAX_AGENTS"] == "3"
 
-    async def test_spawn_worker_uses_requesting_users_settings(self, db_session):
-        """The foreman tool executor threads user_id through, so the requesting
-        user's spawn_settings override wins over the guild baseline and the new
-        worker row is attributed to them.
+    async def test_spawn_worker_ignores_the_chatting_users_settings(self, db_session):
+        """A foreman-initiated spawn takes the guild baseline, not the personal
+        spawn settings of whoever is talking to the foreman.
 
-        Without it every foreman-requested worker launched off the guild
-        baseline and came up unattributed, which also cost it the per-user env
-        it re-fetches from /foreman/env-vars at startup.
+        The worker serves the guild's queue, so a member's own launch-form state
+        — their repo subset, their tools, their env overrides — must not leak
+        into it. The worker row stays unattributed for the same reason: it is
+        what /foreman/env-vars resolves the worker's startup env against, so
+        attributing it would re-introduce that member's env layer by the back
+        door.
         """
         from models import SpawnSettings  # noqa: PLC0415
 
@@ -2413,17 +2415,60 @@ class TestSpawnWorker:
         assert results[0].get("is_error") is not True, results[0]["content"]
 
         env = fake_docker_client.containers.run.call_args.kwargs["environment"]
-        assert env["PIONEER_REPOS"] == "acme/mine"  # user override, not baseline
-        assert env["PIONEER_TOOLS"] == "pi"
-        assert env["PIONEER_MAX_AGENTS"] == "3"  # unset by the user -> baseline
-        assert env["SHARED"] == "user"  # user layer wins key-by-key
-        assert env["USER_ONLY"] == "u"
+        assert env["PIONEER_REPOS"] == "acme/baseline"
+        assert env["PIONEER_TOOLS"] == "claude"
+        assert env["PIONEER_MAX_AGENTS"] == "3"
+        assert env["SHARED"] == "guild"
+        assert "USER_ONLY" not in env
 
         with _sync_session(db_session) as session:
             owner = session.execute(
                 select(col(Worker.user_id)).where(col(Worker.guild_id) == guild_pk)
             ).scalar_one()
-        assert owner == "gh-spawner"
+        assert owner is None
+
+    async def test_spawn_worker_call_args_still_override_the_guild_baseline(self, db_session):
+        """Explicit arguments are how a foreman spawn departs from the baseline —
+        the escape hatch that makes the baseline-only default workable."""
+        from models import SpawnSettings  # noqa: PLC0415
+
+        insert_guild(db_session, "g-spawn-explicit")
+        with _sync_session(db_session) as session:
+            guild_pk = session.execute(
+                select(col(Guild.id)).where(col(Guild.slug) == "g-spawn-explicit")
+            ).scalar_one()
+            session.add(
+                SpawnSettings(
+                    guild_id=guild_pk,
+                    user_id=None,
+                    repos='["acme/baseline"]',
+                    tools='["claude"]',
+                    agent_count=3,
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+
+        fake_container = SimpleNamespace(id="abcdef0123456789")
+        fake_docker_client = MagicMock()
+        fake_docker_client.containers.get.side_effect = Exception("not found")
+        fake_docker_client.containers.run.return_value = fake_container
+
+        with (
+            patch("worker_runtime._get_docker_client", AsyncMock(return_value=fake_docker_client)),
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+        ):
+            results = await exec_tools(
+                "g-spawn-explicit",
+                [_fake_tool_use("spawn_worker", {"repos": ["acme/urgent"], "agent_count": 2})],
+                user_id="gh-spawner",
+            )
+        assert results[0].get("is_error") is not True, results[0]["content"]
+
+        env = fake_docker_client.containers.run.call_args.kwargs["environment"]
+        assert env["PIONEER_REPOS"] == "acme/urgent"  # explicit arg wins
+        assert env["PIONEER_MAX_AGENTS"] == "2"
+        assert env["PIONEER_TOOLS"] == "claude"  # omitted -> baseline
 
     async def test_spawn_worker_errors_without_repos_or_defaults(self, db_session):
         """No repos in the call and no recorded defaults → clear error, no container."""

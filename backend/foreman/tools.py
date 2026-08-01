@@ -1119,7 +1119,8 @@ def _post_agent_task(task_url: str, body: bytes) -> dict:
 # and invoked by the Discord /worker-spawn command. Spawned workers are
 # auto-reaped by worker_lifecycle.idle_worker_reaper() after a period of
 # inactivity; parameters omitted from the call fall back through resolve_spawn
-# (spawn_settings: this user's override, then the guild baseline).
+# to the guild baseline, or to *user_id*'s settings layered over it when the
+# spawn is a named human's own request (see the user_id docstring below).
 # ---------------------------------------------------------------------------
 
 
@@ -1137,10 +1138,17 @@ async def spawn_worker(
     takes about 2 minutes to come up and register before it can pick up
     assigned tasks.
 
-    *user_id* identifies the human on whose behalf the worker is being spawned
-    (e.g. a Discord user's linked Pioneer Square account) and is stamped onto
-    the new ``Worker`` row for ownership attribution. ``None`` for
-    unattributed spawns.
+    *user_id* identifies the human who directly asked for this worker — a
+    Discord ``/worker-spawn`` caller, say. It both stamps the new ``Worker``
+    row for ownership and selects that user's ``spawn_settings`` layer, so
+    their own launch reproduces the setup they configured for themselves.
+
+    Pass ``None`` — as the foreman's own ``spawn_worker`` tool does — when the
+    spawn is not a specific person's request. An autonomous spawn ("no worker
+    covers these repos, stand one up") is guild work: it takes the guild
+    baseline, not the personal repo/tool/env choices of whoever happened to be
+    in the conversation. The tool's explicit ``repos``/``tools``/
+    ``agent_count`` arguments remain the way to deviate from that baseline.
 
     Returns (result_text, is_error).
     """
@@ -1148,9 +1156,10 @@ async def spawn_worker(
 
     custom_name: str | None = inp.get("name")
 
-    # One resolution path: call args override the user's spawn_settings override
-    # over the guild baseline (see spawn_config). Anything the call omits falls
-    # back down the layers, so "spawn a worker" works without restating config.
+    # One resolution path: call args over *user_id*'s spawn_settings (when a
+    # user is named) over the guild baseline (see spawn_config). Anything the
+    # call omits falls back down the layers, so "spawn a worker" works without
+    # restating config.
     call = SpawnLayer(
         repos=inp.get("repos") or None,
         tools=inp.get("tools") or None,
@@ -2313,13 +2322,19 @@ async def _exec_one_tool(
                     )
 
             elif tu.name == "spawn_worker":
-                # user_id must be threaded through: it selects this user's
-                # spawn_settings override layer (repos/tools/agent_count/env_vars)
-                # and is stamped on the Worker row, which is what
-                # /guilds/{id}/foreman/env-vars later resolves the worker's
-                # env + per-tool env against. Dropping it silently spawned every
-                # foreman-requested worker off the guild baseline alone.
-                result_text, is_error = await spawn_worker(inp, guild_id, guild_pk, db, user_id)
+                # Deliberately NOT this turn's user_id. A worker the foreman
+                # stands up serves the guild's queue, not the member who
+                # happened to be talking to it, so it takes the guild baseline
+                # rather than that member's personal spawn settings — which are
+                # their own launch form's state and can differ wildly (their
+                # repo subset, their tools, their env overrides). The tool's
+                # explicit repos/tools/agent_count args are how a spawn departs
+                # from the baseline. Human-initiated spawns (Discord
+                # /worker-spawn, the REST endpoint) do pass a user and get that
+                # user's layer.
+                result_text, is_error = await spawn_worker(
+                    inp, guild_id, guild_pk, db, user_id=None
+                )
 
             elif tu.name == "get_task_status":
                 task_id = inp["task_id"]
