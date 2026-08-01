@@ -502,7 +502,6 @@ if os.environ.get("DEBUG_TOKEN"):
 # ---------------------------------------------------------------------------
 
 from utils import build_spawn_worker_env as _build_spawn_worker_env  # noqa: E402,F401
-from utils import decode_claude_oauth_token as _decode_claude_oauth_token  # noqa: E402,F401
 
 # ---------------------------------------------------------------------------
 # Static SPA assets. The frontend is built into ./static by the Dockerfile and

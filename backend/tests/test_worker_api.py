@@ -11,9 +11,8 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
-from models import Agent, ClaudeCredentials, Guild, GuildSpawnDefaults, User, Worker
+from models import Agent, Guild, GuildSpawnDefaults, User, Worker
 from sqlalchemy import select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col  # noqa: E402
 
 
@@ -388,16 +387,12 @@ def test_put_spawn_defaults_requires_owner(client):
 
 
 def test_get_spawn_credentials_empty(client):
-    """A guild with no foreman env vars and no Claude credentials reports both as unset."""
+    """A guild with no foreman env vars reports an empty list."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred1")
     resp = test_client.get("/guilds/guild-cred1/spawn-credentials", headers=_auth(db_url))
     assert resp.status_code == 200
-    assert resp.json() == {
-        "guild_env_vars": [],
-        "guild_tool_env_vars": {},
-        "claude_credentials": {"saved": False, "updated_at": None},
-    }
+    assert resp.json() == {"guild_env_vars": [], "guild_tool_env_vars": {}}
 
 
 def test_get_spawn_credentials_masks_guild_env_var_values(client):
@@ -415,28 +410,6 @@ def test_get_spawn_credentials_masks_guild_env_var_values(client):
     body = resp.json()
     assert body["guild_env_vars"] == [{"key": "ANTHROPIC_API_KEY", "masked_value": "sk…alue"}]
     assert "sk-ant-supersecretvalue" not in resp.text
-
-
-def test_get_spawn_credentials_reports_claude_creds_saved(client):
-    test_client, db_url = client
-    insert_guild(db_url, "guild-cred3")
-    with _sync_session(db_url) as session:
-        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == "guild-cred3"))
-        session.execute(
-            pg_insert(ClaudeCredentials).values(
-                guild_id=guild_pk,
-                credentials_blob="ignored-for-this-test",
-                updated_at=datetime.now(UTC),
-            )
-        )
-        session.commit()
-    resp = test_client.get("/guilds/guild-cred3/spawn-credentials", headers=_auth(db_url))
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["claude_credentials"]["saved"] is True
-    assert body["claude_credentials"]["updated_at"] is not None
-    # The raw blob is never part of the response.
-    assert "ignored-for-this-test" not in resp.text
 
 
 def test_spawn_worker_excludes_selected_guild_env_keys(client, monkeypatch):
@@ -1021,42 +994,6 @@ def test_spawn_worker_env_omits_debug_token_when_unset():
 
     env = _build_spawn_worker_env(guild_id="g1", repos=[], worker_name=None, source_env={})
     assert "DEBUG_TOKEN" not in env
-
-
-def test_decode_claude_oauth_token_modern_format():
-    """base64(json({'oauth_token': '...'})) is the format setup-token writes."""
-    import base64
-    import json
-
-    from main import _decode_claude_oauth_token
-
-    blob = base64.b64encode(json.dumps({"oauth_token": "sk-ant-oauth-real"}).encode()).decode()
-    assert _decode_claude_oauth_token(blob) == "sk-ant-oauth-real"
-
-
-def test_decode_claude_oauth_token_handles_empty_and_invalid():
-    from main import _decode_claude_oauth_token
-
-    assert _decode_claude_oauth_token(None) is None
-    assert _decode_claude_oauth_token("") is None
-    assert _decode_claude_oauth_token("not-base64!!!") is None
-    # Legacy tarball blob (binary, not JSON) — silently ignored so the worker's
-    # HTTP fetch path can handle it on disk instead.
-    import base64
-
-    not_json = base64.b64encode(b"\x1f\x8b\x08random tar bytes").decode()
-    assert _decode_claude_oauth_token(not_json) is None
-
-
-def test_decode_claude_oauth_token_missing_key():
-    """JSON without oauth_token shouldn't crash."""
-    import base64
-    import json
-
-    from main import _decode_claude_oauth_token
-
-    blob = base64.b64encode(json.dumps({"other_key": "value"}).encode()).decode()
-    assert _decode_claude_oauth_token(blob) is None
 
 
 def test_guild_task_list(client):

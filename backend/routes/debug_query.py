@@ -22,7 +22,7 @@ whole safety story):
   * Single ``SELECT`` statement, no comments, no stacked statements, wrapped in
     ``SELECT * FROM (<q>) LIMIT n`` — keeps the input to one bounded read.
   * ``_ALLOWED_TABLES`` — the only thing keeping credential-bearing tables
-    (github_tokens, user_sessions, claude_credentials, …) out of reach.
+    (github_tokens, user_sessions, …) out of reach.
   * ``_FORBIDDEN_FUNCTIONS`` — the read-only transaction does NOT stop pure-read
     disclosure functions (pg_read_file, pg_ls_dir, dblink, lo_get), so those
     stay explicitly blocked.
@@ -51,8 +51,8 @@ _MAX_LIMIT = 500
 _STATEMENT_TIMEOUT_MS = 30_000
 
 # Tables safe to expose to a raw SELECT: operational/state tables only — no
-# credential-bearing tables (github_tokens, user_sessions, claude_credentials,
-# guild_keys, discord_pending_connects, discord_account_links, push_tokens).
+# credential-bearing tables (github_tokens, user_sessions, guild_keys,
+# discord_pending_connects, discord_account_links, push_tokens).
 _ALLOWED_TABLES = frozenset(
     {
         "tasks",

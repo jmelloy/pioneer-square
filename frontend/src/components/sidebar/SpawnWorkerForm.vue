@@ -210,20 +210,6 @@
                       </span>
                       <span v-else class="spawn-cred-value">{{ cred.masked_value }}</span>
                     </label>
-                    <div class="spawn-repo-row spawn-cred-row spawn-cred-claude">
-                      <span
-                        class="spawn-cred-status"
-                        :class="{ 'spawn-cred-status--ok': credentials!.claude_credentials.saved }"
-                      >
-                        {{ credentials!.claude_credentials.saved ? '●' : '○' }}
-                      </span>
-                      <span class="spawn-repo-name">Claude OAuth credentials</span>
-                      <span class="spawn-cred-value">
-                        {{
-                          credentials!.claude_credentials.saved ? 'configured' : 'not configured'
-                        }}
-                      </span>
-                    </div>
                   </div>
                   <p class="spawn-env-hint">
                     Uncheck a credential to exclude it from this launch only.
@@ -413,7 +399,6 @@ interface SpawnCredentials {
   // from /spawn-settings so they stay editable here.
   guild_env_vars: GuildEnvVarStatus[]
   guild_tool_env_vars?: Record<string, GuildEnvVarStatus[]>
-  claude_credentials: { saved: boolean; updated_at: string | null }
 }
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -447,9 +432,7 @@ const credentialsError = ref('')
 const includedKeys = ref<Record<string, boolean>>({})
 
 const hasCredentials = computed(
-  () =>
-    !!credentials.value &&
-    (credentials.value.guild_env_vars.length > 0 || credentials.value.claude_credentials.saved),
+  () => !!credentials.value && credentials.value.guild_env_vars.length > 0,
 )
 
 const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
@@ -1365,21 +1348,6 @@ async function launch() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.spawn-cred-claude {
-  cursor: default;
-  border-top: 1px solid var(--color-brass-dark);
-}
-
-.spawn-cred-status {
-  color: var(--color-text-dim);
-  font-size: 10px;
-  flex-shrink: 0;
-}
-
-.spawn-cred-status--ok {
-  color: var(--color-green, #4caf50);
 }
 
 @media (max-width: 720px) {
