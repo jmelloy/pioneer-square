@@ -1676,6 +1676,9 @@ async def _exec_one_tool(
                                     "provider": provider,
                                     "phase": phase,
                                     "state": "pending",
+                                    "extra_cli_flags": json.dumps(extra_flags)
+                                    if extra_flags
+                                    else None,
                                 }
                                 if name_override:
                                     update_values["name"] = name_override
@@ -1721,6 +1724,7 @@ async def _exec_one_tool(
                                         prNumber=effective_pr_number,
                                         prRepo=effective_pr_repo,
                                         repos=repos,
+                                        extraCliFlags=extra_flags or None,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
                                 _spawn_discord_task_assigned(
@@ -1762,6 +1766,9 @@ async def _exec_one_tool(
                                         parent_task_id=parent_task_id,
                                         created_at=created_at,
                                         user_id=user_id,
+                                        extra_cli_flags=json.dumps(extra_flags)
+                                        if extra_flags
+                                        else None,
                                     )
                                 )
                                 await db.commit()
@@ -1783,6 +1790,7 @@ async def _exec_one_tool(
                                         prNumber=effective_pr_number,
                                         prRepo=effective_pr_repo,
                                         repos=repos,
+                                        extraCliFlags=extra_flags or None,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
                                 _spawn_discord_task_assigned(
@@ -1829,6 +1837,7 @@ async def _exec_one_tool(
                             col(Task.issue_number),
                             col(Task.issue_repo),
                             col(Task.claude_session_id),
+                            col(Task.extra_cli_flags),
                         ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
                     )
                     row = result.one_or_none()
@@ -1848,7 +1857,19 @@ async def _exec_one_tool(
                             task_issue_number,
                             task_issue_repo,
                             task_session_id,
+                            task_extra_cli_flags,
                         ) = row
+                        # Omitting extra_flags keeps the task's existing flags; passing
+                        # an explicit list (including []) replaces them — see
+                        # send_followup's extra_flags description in tools_schema.py.
+                        if "extra_flags" in inp:
+                            effective_extra_flags = _sanitize_extra_cli_flags(
+                                inp.get("extra_flags")
+                            )
+                        else:
+                            effective_extra_flags = (
+                                json.loads(task_extra_cli_flags) if task_extra_cli_flags else []
+                            )
                         target_worker_id = await _select_followup_worker(
                             db,
                             guild_id=guild_id,
@@ -2040,6 +2061,11 @@ async def _exec_one_tool(
                                         "model": effective_model,
                                         "model_tier": effective_tier,
                                         "provider": effective_provider,
+                                        "extra_cli_flags": (
+                                            json.dumps(effective_extra_flags)
+                                            if effective_extra_flags
+                                            else None
+                                        ),
                                     }
                                     if prior_state in ("done", "failed", "cancelled"):
                                         # Re-opening a terminal task: clear soft-delete so it
@@ -2084,6 +2110,7 @@ async def _exec_one_tool(
                                             issueNumber=task_issue_number,
                                             issueRepo=task_issue_repo,
                                             sessionId=followup_session_id,
+                                            extraCliFlags=effective_extra_flags or None,
                                         ).model_dump(by_alias=True, exclude_none=True),
                                     )
                                     spawn(
