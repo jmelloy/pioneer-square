@@ -1422,6 +1422,12 @@ async def _run_foreman_ai(
         )
         return
 
+    # Automated triggers (periodic-check, worker-online/offline, task-complete,
+    # ...) call _trigger_foreman without a user_id. Falling back to the guild
+    # owner (rather than leaving it None) means this resolved user_id, threaded
+    # through to exec_tools -> _exec_one_tool -> spawn_worker below, lets an
+    # owner's personal spawn_settings override apply and stamps Worker.user_id
+    # on foreman-initiated spawns instead of leaving them unattributed.
     if not user_id:
         user_id = await _get_guild_user_id(guild_id) or guild_id
 

@@ -2313,7 +2313,17 @@ async def _exec_one_tool(
                     )
 
             elif tu.name == "spawn_worker":
-                result_text, is_error = await spawn_worker(inp, guild_id, guild_pk, db)
+                # user_id here is whoever's foreman session is running this tool
+                # call — for periodic-check/other automated triggers, runner.py's
+                # _run_foreman_ai resolves it to the guild owner (see
+                # _get_guild_user_id) rather than leaving it unset. Passing it
+                # through lets resolve_spawn() apply that user's spawn_settings
+                # override layer (on top of the guild baseline, which resolves
+                # off guild_pk regardless) and stamps Worker.user_id so the
+                # spawned worker is attributed instead of orphaned.
+                result_text, is_error = await spawn_worker(
+                    inp, guild_id, guild_pk, db, user_id=user_id
+                )
 
             elif tu.name == "get_task_status":
                 task_id = inp["task_id"]
