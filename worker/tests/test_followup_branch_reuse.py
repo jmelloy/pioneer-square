@@ -75,7 +75,7 @@ async def test_followup_ws_path_uses_existing_branch():
 
     attached_branches: list[str] = []
 
-    async def fake_attach(repo_path: str, wt_path: str, branch: str) -> bool:
+    async def fake_attach(repo_path: str, wt_path: str, branch: str, token=None) -> bool:
         attached_branches.append(branch)
         return True
 
@@ -145,7 +145,7 @@ async def test_followup_rest_path_uses_existing_branch():
 
     attached_branches: list[str] = []
 
-    async def fake_attach(repo_path: str, wt_path: str, branch: str) -> bool:
+    async def fake_attach(repo_path: str, wt_path: str, branch: str, token=None) -> bool:
         attached_branches.append(branch)
         return True
 
@@ -196,7 +196,7 @@ async def test_new_task_still_generates_fresh_branch():
 
     created_branches: list[str] = []
 
-    async def fake_create(repo_path: str, wt_path: str, branch: str) -> bool:
+    async def fake_create(repo_path: str, wt_path: str, branch: str, token=None) -> bool:
         created_branches.append(branch)
         return True
 
@@ -252,7 +252,7 @@ async def test_new_task_branch_contains_full_task_id_not_truncated():
 
     created_branches: list[str] = []
 
-    async def fake_create(repo_path: str, wt_path: str, branch: str) -> bool:
+    async def fake_create(repo_path: str, wt_path: str, branch: str, token=None) -> bool:
         created_branches.append(branch)
         return True
 

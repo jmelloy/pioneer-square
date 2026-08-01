@@ -326,6 +326,7 @@ async def run_claude_auto(
     stop_reason = "no_events"
     event_count = 0
     session_id = None
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -432,3 +433,17 @@ async def run_claude_auto(
         logger.exception("claude subprocess crashed: %s", exc)
         await emit(f"[claude] ✗ {exc}")
         return False, "error_during_execution", last_text, session_id
+    finally:
+        # Anything that escapes the streaming loop — a WS send that gave up, a
+        # stdout line past STDOUT_LINE_LIMIT — leaves claude running against the
+        # worktree with nothing holding a reference to it. Reap it here; on the
+        # normal path returncode is already set and this is a no-op.
+        if proc is not None and proc.returncode is None:
+            logger.warning("Reaping orphaned claude subprocess pid=%s", proc.pid)
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+            except Exception as exc:  # pragma: no cover
+                logger.debug("Failed to reap claude pid=%s: %s", proc.pid, exc)

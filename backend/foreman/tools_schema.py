@@ -273,12 +273,24 @@ FOREMAN_TOOLS = [
     },
     {
         "name": "message_worker",
-        "description": "Send a message to a worker's terminal — reaches the active agent subprocess mid-task; has no effect if the worker is idle.",
+        "description": (
+            "Send a message to a worker's terminal — reaches the agent subprocess running "
+            "mid-task; has no effect if the worker is idle. Always pass task_id when you mean "
+            "a specific task: a worker runs several tasks at once, and without it the message "
+            "is only delivered when exactly one agent is running."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "worker_id": {"type": "string"},
                 "message": {"type": "string"},
+                "task_id": {
+                    "type": "string",
+                    "description": (
+                        "Task (t-xxxxxx) whose agent should receive the message. Required in "
+                        "practice whenever the worker may be running more than one task."
+                    ),
+                },
             },
             "required": ["worker_id", "message"],
         },

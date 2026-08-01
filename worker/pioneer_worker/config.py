@@ -355,7 +355,10 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             if overrides.get("claude_max_turns") is not None
             else claude_block.get("max_turns", 50)
         ),
-        max_agents=int(_max_agents_val),
+        # Floor at 1: the agent pool is sized from this, so a 0 (or negative)
+        # produces a worker that connects, announces no agents, and silently
+        # never runs anything.
+        max_agents=max(1, int(_max_agents_val)),
         public_backend_url=overrides.get("public_backend_url")
         or raw.get("public_backend_url")
         or os.environ.get("PIONEER_FRONTEND_URL"),

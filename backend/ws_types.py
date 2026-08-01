@@ -261,6 +261,11 @@ class WorkerMessageMsg(_WS):
     type: Literal["worker-message"] = "worker-message"
     workerId: str
     message: str
+    # Which of the worker's concurrently running agents the message is for. A
+    # worker runs max_agents tasks at once, so without this the worker has to
+    # guess and can inject the text into an unrelated task's agent. None = let
+    # the worker deliver only if exactly one agent is running.
+    taskId: str | None = None
 
 
 class WorkerShutdownMsg(_WS):

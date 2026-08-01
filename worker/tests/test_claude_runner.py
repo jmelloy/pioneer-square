@@ -415,8 +415,12 @@ class _FakeProc:
         self.stdout = _FakeStream(stdout_lines)
         self.stderr = _FakeStream([])
         self.stdin = None
+        # Real asyncio Processes always expose this; run_claude_auto's reaper
+        # reads it to decide whether the child still needs killing.
+        self.returncode: int | None = None
 
     async def wait(self) -> int:
+        self.returncode = 0
         return 0
 
 

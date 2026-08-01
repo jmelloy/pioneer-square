@@ -77,6 +77,20 @@ WORKTREE_SWEEP_INTERVAL_SECONDS = 60 * 60
 # list current if new repos are added or permissions change without a restart.
 REPO_REFRESH_INTERVAL_SECONDS = 20 * 60
 
+# Env vars that mean "claude has a way to authenticate". A direct key, an OAuth
+# token, a proxy auth token, or a gateway flag that makes claude authenticate
+# through the cloud provider's own credentials instead (this deployment runs
+# claude on Bedrock, so the flag alone is a valid configuration). A tool with
+# none of these and no logged-in CLI is dropped from the available list rather
+# than launched per-task and failed.
+_CLAUDE_CREDENTIAL_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
+
 
 class Agent:
     """An agent owned by a Worker.
@@ -466,10 +480,10 @@ class Worker:
         """
         env = self._env_for_tool(name)
         if name == "claude":
-            if env.get("ANTHROPIC_API_KEY") or env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            if any(env.get(k) for k in _CLAUDE_CREDENTIAL_KEYS):
                 return True
             # Fall back to a locally logged-in CLI (dev machines / keychain).
-            return await self._claude_is_authenticated()
+            return await self._claude_is_authenticated(env)
         if name == "codex":
             if env.get("OPENAI_API_KEY") or self.cfg.openai_api_key:
                 return True
@@ -540,7 +554,7 @@ class Worker:
             "pi": self.cfg.pi_path,
         }
         cred_hint = {
-            "claude": "ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN",
+            "claude": " or ".join(_CLAUDE_CREDENTIAL_KEYS),
             "codex": "OPENAI_API_KEY",
         }
         candidates = self.cfg.tools if self.cfg.tools is not None else list(tool_paths)
@@ -570,7 +584,7 @@ class Worker:
         self._available_tools = tools
         logger.info("Available tools: %s", tools or ["(none)"])
 
-    async def _claude_is_authenticated(self) -> bool:
+    async def _claude_is_authenticated(self, env: dict[str, str] | None = None) -> bool:
         """Return True if `claude auth status --json` reports loggedIn=true.
 
         Works on macOS keychain and Linux. The exit code alone is unreliable
@@ -578,6 +592,11 @@ class Worker:
         false``), so we parse the JSON. A timeout guards against macOS keychain
         access prompts that can hang the subprocess indefinitely when invoked
         without a controlling TTY.
+
+        *env* is claude's scoped environment (see _env_for_tool). Passing it
+        matters: the codex and pi probes already do, and without it a per-tool
+        override that configures claude's auth is invisible to the probe, so a
+        correctly configured tool reads as unauthenticated and gets dropped.
         """
         import json as _json
 
@@ -589,6 +608,7 @@ class Worker:
                 "--json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env=env if env is not None else self._env_for_tool("claude"),
             )
         except FileNotFoundError as exc:
             logger.warning("claude binary not found at %r: %s", self.cfg.claude_path, exc)
@@ -879,6 +899,51 @@ class Worker:
                     await self._emit_agent_state(slot)
 
         return _emit_task
+
+    async def _inject_worker_message(self, text: str, task_id: str | None) -> None:
+        """Write *text* to the stdin of the agent running *task_id*.
+
+        A worker runs up to ``max_agents`` tasks concurrently, so "the running
+        agent" is ambiguous. With a task id we target exactly that agent. Without
+        one we deliver only when a single agent is running — picking arbitrarily
+        would inject one task's instructions into an unrelated task's session,
+        which is worse than not delivering at all.
+        """
+        running = [s for s in self.agents if s.current_claude]
+        if task_id:
+            target = next((s for s in running if s.current_task_id == task_id), None)
+            if target is None:
+                logger.info(
+                    "worker-message for task %s: no agent running it here (running=%s); dropping",
+                    task_id,
+                    [s.current_task_id for s in running] or "none",
+                )
+                return
+        elif len(running) == 1:
+            target = running[0]
+        elif not running:
+            logger.debug("worker-message: no agent running; dropping")
+            return
+        else:
+            tasks = ", ".join(str(s.current_task_id) for s in running)
+            logger.warning(
+                "worker-message without a taskId while %d agents are running (%s); dropping",
+                len(running),
+                tasks,
+            )
+            await self._emit(
+                f"Message not delivered — {len(running)} tasks are running ({tasks}). "
+                "Send it to a specific task."
+            )
+            return
+
+        delivered = await target.current_claude.send_message(text)
+        if delivered:
+            await self._emit(f"Injected into {target.current_task_id}: {text[:80]}")
+        else:
+            logger.warning(
+                "Failed to inject message into %s (stdin closed?)", target.current_task_id
+            )
 
     async def _emit_agent_state(self, slot: Agent) -> None:
         """Broadcast the slot's full identity + runtime state.
@@ -1291,15 +1356,7 @@ class Worker:
                     continue
                 text = msg.get("message", "")
                 if text:
-                    active = next((s for s in self.agents if s.current_claude), None)
-                    if active:
-                        delivered = await active.current_claude.send_message(text)
-                        if delivered:
-                            await self._emit(f"Injected: {text[:80]}")
-                        else:
-                            logger.warning("Failed to inject message (stdin closed?)")
-                    else:
-                        logger.debug("worker-message: no claude running; dropping")
+                    await self._inject_worker_message(text, msg.get("taskId"))
 
             elif mtype == "worker-outdated":
                 if msg.get("workerId") not in (None, self.cfg.worker_id):
@@ -1328,8 +1385,10 @@ class Worker:
                     task_id,
                     instructions[:80],
                 )
-                # Drop the cached known-id so the puller doesn't reject the
-                # re-queued task as a duplicate after a worker restart.
+                # Remember the id so the idle puller doesn't queue this task a
+                # second time alongside the copy we're about to enqueue (it is
+                # already known unless this worker restarted since the original
+                # assignment).
                 self._known_task_ids.add(task_id)
                 await self.task_queue.put(
                     {
@@ -1917,7 +1976,7 @@ class Worker:
                 if is_followup or is_review:
                     # Pull latest so we don't clobber commits pushed since the
                     # last follow-up or by other workers.
-                    await git_ops.run_git(["fetch", "origin", branch], cwd=wt_path)
+                    await git_ops.run_git(["fetch", "origin", branch], cwd=wt_path, token=token)
                     await git_ops.run_git(["reset", "--hard", f"origin/{branch}"], cwd=wt_path)
                 worktree_entries.append((repo_full, repo_path, wt_path))
                 if primary_wt is None:
@@ -1929,7 +1988,7 @@ class Worker:
                 # new worktree starts at the latest remote commit — no separate pull needed.
                 # Pull latest so we don't clobber commits pushed since the last follow-up
                 # or by other workers.
-                ok = await git_ops.attach_worktree(repo_path, wt_path, branch)
+                ok = await git_ops.attach_worktree(repo_path, wt_path, branch, token)
                 if not ok:
                     # Branch never reached origin (e.g. original task failed before push).
                     # Fall back to creating a fresh branch so the follow-up can still run.
@@ -1944,7 +2003,7 @@ class Worker:
                         f"Branch not found on origin; creating fresh branch {branch[:50]}",
                         level=LEVEL_WORKER,
                     )
-                    ok = await git_ops.create_worktree(repo_path, wt_path, branch)
+                    ok = await git_ops.create_worktree(repo_path, wt_path, branch, token)
             elif is_review and pr_repo and repo_full.lower() == pr_repo.lower():
                 # Check out the PR's own branch via `gh pr checkout` instead of
                 # `git checkout -b` — review tasks read an existing PR, they
@@ -1957,7 +2016,9 @@ class Worker:
                     repo_full,
                     wt_path,
                 )
-                ok = await git_ops.checkout_pr_worktree(repo_path, wt_path, pr_number, repo_full)
+                ok = await git_ops.checkout_pr_worktree(
+                    repo_path, wt_path, pr_number, repo_full, token
+                )
             else:
                 if is_review:
                     logger.warning(
@@ -1968,7 +2029,7 @@ class Worker:
                         pr_repo,
                     )
                 logger.info("Task %s: creating worktree %s on branch %s", task_id, wt_path, branch)
-                ok = await git_ops.create_worktree(repo_path, wt_path, branch)
+                ok = await git_ops.create_worktree(repo_path, wt_path, branch, token)
             if ok:
                 logger.info("Task %s: worktree ready at %s", task_id, wt_path)
                 await emit(f"Worktree ready: {repo_name}", level=LEVEL_WORKER)
@@ -1984,6 +2045,13 @@ class Worker:
             await emit("✗ No worktrees — aborting.", level=LEVEL_WORKER)
             await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
             await self._set_state("error", agent)
+            # Return the slot to idle like every other abort path. An agent left
+            # in "error" is invisible to the backend's follow-up routing (it
+            # selects on state == "idle"), and the only thing that would clear
+            # the state is another task — which it can no longer be given. One
+            # repo that reliably fails to clone would otherwise retire the
+            # worker's slots one at a time.
+            await self._set_state("idle", agent)
             return
 
         await self._task_update(task_id, agent=agent, branch=branch, worktreePath=primary_wt)

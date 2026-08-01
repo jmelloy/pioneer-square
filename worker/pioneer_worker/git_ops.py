@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
+import re
 import time
 from collections.abc import Awaitable, Callable
 
@@ -15,16 +17,44 @@ logger = logging.getLogger(__name__)
 EmitFn = Callable[..., Awaitable[None]]
 _LEVEL = "worker"
 
+# Matches a remote URL carrying inline credentials (https://<userinfo>@host/…).
+_CREDENTIALED_URL_RE = re.compile(r"^(https?://)[^/@]+@")
 
-async def run_git(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
+
+def _auth_env(token: str | None) -> dict[str, str] | None:
+    """Per-invocation git config carrying *token*, or None when there is none.
+
+    The token travels as an ``http.extraHeader`` supplied through git's
+    ``GIT_CONFIG_*`` environment protocol, which is scoped to the single git
+    process: it is never written to the repo's config (as a credentialed clone
+    URL would be) and never appears in argv (as an authenticated push URL
+    does). The header is scoped to github.com so it can't ride along on a
+    redirect to another host.
+    """
+    if not token:
+        return None
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraHeader",
+        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
+    }
+
+
+async def run_git(
+    args: list[str], cwd: str | None = None, token: str | None = None
+) -> tuple[int, str, str]:
+    """Run a git command. *token*, when given, authenticates this call only."""
     logger.debug("git %s (cwd=%s)", " ".join(args), cwd or os.getcwd())
     started = time.monotonic()
+    auth = _auth_env(token)
     proc = await asyncio.create_subprocess_exec(
         "git",
         *args,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env={**os.environ, **auth} if auth else None,
     )
     stdout, stderr = await proc.communicate()
     rc = proc.returncode if proc.returncode is not None else -1
@@ -42,8 +72,44 @@ async def run_git(args: list[str], cwd: str | None = None) -> tuple[int, str, st
     return rc, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
+async def scrub_remote_credentials(repo_path: str) -> bool:
+    """Rewrite ``origin`` to a credential-free URL if it carries inline userinfo.
+
+    Clones made before credentials moved to a per-invocation header persisted
+    ``https://<token>@github.com/…`` in ``.git/config``. Those clones keep using
+    that one token for every later fetch no matter who the fetch is for, so the
+    URL is rewritten in place the first time we touch such a repo. Returns True
+    when a rewrite happened.
+    """
+    # `config --get` returns the literal stored value; `remote get-url` would
+    # apply any insteadOf rewrite, and writing that back would replace the
+    # canonical URL with a rewritten one.
+    rc, url, _ = await run_git(["config", "--get", "remote.origin.url"], cwd=repo_path)
+    if rc != 0:
+        return False
+    url = url.strip()
+    if not _CREDENTIALED_URL_RE.match(url):
+        return False
+    clean = _CREDENTIALED_URL_RE.sub(r"\1", url)
+    rc, _, _ = await run_git(["remote", "set-url", "origin", clean], cwd=repo_path)
+    if rc == 0:
+        # Log the cleaned URL only — the original one contains the credential.
+        logger.warning(
+            "Removed embedded credentials from origin URL of %s (now %s)", repo_path, clean
+        )
+        return True
+    return False
+
+
 async def ensure_repo(repos_dir: str, repo_full: str, token: str | None = None) -> str | None:
-    """Clone repo if absent, otherwise fast-forward to origin/HEAD. Returns local path."""
+    """Clone repo if absent, otherwise fast-forward to origin/HEAD. Returns local path.
+
+    *token* authenticates this call only. It is deliberately NOT baked into the
+    ``origin`` URL: a persisted credential is used by every later fetch on this
+    shared clone regardless of which user the fetch is for, so the first caller's
+    token would silently serve everyone else's tasks — and outlive its own
+    validity.
+    """
     parts = repo_full.split("/", 1)
     if len(parts) != 2:
         logger.error("ensure_repo: malformed repo name %r", repo_full)
@@ -51,32 +117,31 @@ async def ensure_repo(repos_dir: str, repo_full: str, token: str | None = None) 
     owner, name = parts
     local_path = os.path.join(repos_dir, owner, name)
 
-    remote_url = (
-        f"https://{token}@github.com/{repo_full}.git"
-        if token
-        else f"https://github.com/{repo_full}.git"
-    )
+    remote_url = f"https://github.com/{repo_full}.git"
 
     if not os.path.exists(os.path.join(local_path, ".git")):
         logger.info("Cloning %s into %s", repo_full, local_path)
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        rc, _, _ = await run_git(["clone", remote_url, local_path])
+        rc, _, _ = await run_git(["clone", remote_url, local_path], token=token)
         if rc != 0:
             logger.error("Clone failed for %s (rc=%d)", repo_full, rc)
             return None
         logger.info("Clone done: %s", repo_full)
     else:
+        await scrub_remote_credentials(local_path)
         logger.info("Fetching latest for %s at %s", repo_full, local_path)
-        await run_git(["fetch", "origin"], cwd=local_path)
+        await run_git(["fetch", "origin"], cwd=local_path, token=token)
         await run_git(["merge", "--ff-only", "origin/HEAD"], cwd=local_path)
 
     return local_path
 
 
-async def create_worktree(repo_path: str, wt_path: str, branch: str) -> bool:
+async def create_worktree(
+    repo_path: str, wt_path: str, branch: str, token: str | None = None
+) -> bool:
     logger.info("Creating worktree at %s on branch %s (from %s)", wt_path, branch, repo_path)
     os.makedirs(os.path.dirname(wt_path), exist_ok=True)
-    await run_git(["fetch", "origin"], cwd=repo_path)
+    await run_git(["fetch", "origin"], cwd=repo_path, token=token)
     rc, _, _ = await run_git(
         ["worktree", "add", "-b", branch, wt_path, "origin/HEAD"],
         cwd=repo_path,
@@ -86,7 +151,9 @@ async def create_worktree(repo_path: str, wt_path: str, branch: str) -> bool:
     return rc == 0
 
 
-async def attach_worktree(repo_path: str, wt_path: str, branch: str) -> bool:
+async def attach_worktree(
+    repo_path: str, wt_path: str, branch: str, token: str | None = None
+) -> bool:
     """Create a worktree that checks out an *existing* branch.
 
     Used when continuing a task on a branch the original worker already
@@ -98,7 +165,7 @@ async def attach_worktree(repo_path: str, wt_path: str, branch: str) -> bool:
         "Attaching worktree at %s to existing branch %s (from %s)", wt_path, branch, repo_path
     )
     os.makedirs(os.path.dirname(wt_path), exist_ok=True)
-    await run_git(["fetch", "origin", branch], cwd=repo_path)
+    await run_git(["fetch", "origin", branch], cwd=repo_path, token=token)
     # Prefer attaching to the local branch ref if it exists; otherwise fall
     # back to creating a tracking branch from origin/<branch>.
     rc, _, _ = await run_git(["worktree", "add", wt_path, branch], cwd=repo_path)
@@ -166,7 +233,7 @@ async def get_pr_head_branch(repo_full: str, pr_number: int | str) -> str | None
 
 
 async def checkout_pr_worktree(
-    repo_path: str, wt_path: str, pr_number: int | str, repo_full: str
+    repo_path: str, wt_path: str, pr_number: int | str, repo_full: str, token: str | None = None
 ) -> bool:
     """Create a worktree checked out to an existing PR's branch via ``gh pr checkout``.
 
@@ -179,7 +246,7 @@ async def checkout_pr_worktree(
     logger.info("Checking out PR #%s (%s) into worktree %s", pr_number, repo_full, wt_path)
     if parent := os.path.dirname(wt_path):
         os.makedirs(parent, exist_ok=True)
-    await run_git(["fetch", "origin"], cwd=repo_path)
+    await run_git(["fetch", "origin"], cwd=repo_path, token=token)
     rc, _, _ = await run_git(["worktree", "add", "--detach", wt_path, "origin/HEAD"], cwd=repo_path)
     if rc != 0:
         logger.error("Detached worktree add failed at %s (rc=%d)", wt_path, rc)
@@ -226,7 +293,8 @@ async def pull_repos(
         if not os.path.exists(os.path.join(local_path, ".git")):
             logger.debug("pull_repos: %s not cloned yet — will clone on demand", repo_full)
             continue
-        rc, _, err = await run_git(["fetch", "origin"], cwd=local_path)
+        await scrub_remote_credentials(local_path)
+        rc, _, err = await run_git(["fetch", "origin"], cwd=local_path, token=token)
         await run_git(["merge", "--ff-only", "origin/HEAD"], cwd=local_path)
         if rc == 0:
             logger.info("pull_repos: pulled %s", repo_full)

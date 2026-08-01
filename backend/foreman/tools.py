@@ -2173,9 +2173,20 @@ async def _exec_one_tool(
             elif tu.name == "message_worker":
                 wid = inp["worker_id"]
                 msg = inp["message"]
+                target_task_id = inp.get("task_id")
                 await emit_terminal_line(guild_id, wid, f"[foreman] {msg}")
-                await broadcast_msg(guild_id, WorkerMessageMsg(workerId=wid, message=msg))
-                result_text = f"Message delivered to {wid}."
+                await broadcast_msg(
+                    guild_id,
+                    WorkerMessageMsg(workerId=wid, message=msg, taskId=target_task_id),
+                )
+                result_text = (
+                    f"Message sent to {wid} for task {target_task_id}."
+                    if target_task_id
+                    else (
+                        f"Message sent to {wid}. Without a task_id the worker only delivers it "
+                        "when exactly one of its agents is running."
+                    )
+                )
 
             elif tu.name == "redirect_task":
                 task_id = inp["task_id"]
