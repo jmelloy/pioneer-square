@@ -543,6 +543,55 @@ def test_spawn_worker_guild_duplicate_key_prefers_nonempty(client, monkeypatch):
     assert captured_env.get("AWS_BEARER_TOKEN_BEDROCK") == "real-token"
 
 
+def test_spawn_worker_falls_back_to_guild_defaults(client, monkeypatch):
+    """POST /spawn-worker with repos/tools/agent_count omitted resolves them
+    from the guild's spawn-defaults baseline (routes/workers.py -> spawn_config
+    .resolve_spawn), the same fallback the foreman's spawn_worker tool gets —
+    see test_foreman.py::test_spawn_worker_falls_back_to_guild_defaults."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-sd-fallback")
+    put_resp = test_client.put(
+        "/guilds/guild-sd-fallback/spawn-defaults",
+        headers=_auth(db_url),
+        json={"repos": ["baseline/repo"], "tools": ["claude"], "agent_count": 2},
+    )
+    assert put_resp.status_code == 200
+
+    import worker_runtime
+
+    captured_env: dict = {}
+    captured_guild_id: dict = {}
+
+    async def fake_check_runtime_available():
+        return None
+
+    async def fake_start_worker_container(*, env, guild_id):
+        captured_env.update(env)
+        captured_guild_id["guild_id"] = guild_id
+        return worker_runtime.SpawnedWorker(
+            handle="fake-handle", short_id="fakehandle12", runtime="docker"
+        )
+
+    monkeypatch.setattr(worker_runtime, "check_runtime_available", fake_check_runtime_available)
+    monkeypatch.setattr(worker_runtime, "start_worker_container", fake_start_worker_container)
+
+    resp = test_client.post(
+        "/guilds/guild-sd-fallback/spawn-worker",
+        headers=_auth(db_url),
+        json={"repos": []},
+    )
+    assert resp.status_code == 200
+    assert captured_env.get("PIONEER_REPOS") == "baseline/repo"
+    assert captured_env.get("PIONEER_TOOLS") == "claude"
+    assert captured_env.get("PIONEER_MAX_AGENTS") == "2"
+
+    # The pre-registered Worker row also reflects the resolved (not the empty
+    # request) repos.
+    workers = _workers_for_guild(db_url, "guild-sd-fallback")
+    assert len(workers) == 1
+    assert json.loads(workers[0].repos) == ["baseline/repo"]
+
+
 def test_spawn_worker_rejects_invalid_exclude_env_key(client):
     test_client, db_url = client
     insert_guild(db_url, "guild-cred5")

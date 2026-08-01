@@ -202,6 +202,17 @@ async def spawn_worker_container(
     Uses the runtime selected by ``worker_runtime``: the mounted Docker socket
     in docker-compose/local dev, or ECS RunTask when the backend runs on
     Fargate (ECS_CLUSTER_NAME + ECS_WORKER_TASK_DEFINITION set).
+
+    Guild settings passthrough (user-initiated spawn path): SPA spawn form ->
+    POST here -> ``resolve_spawn`` merges guild baseline + this user's
+    spawn_settings override + this request's own fields (SpawnLayer, highest
+    precedence) -> ``build_spawn_worker_env`` turns the merged result into the
+    container's env vars -> ``worker_runtime.start_worker_container``. Nothing
+    here is dropped: repos/tools/agent_count/env_vars all flow through
+    ``resolved``. The parallel user path is the Discord ``/worker-spawn``
+    command (routes/discord.py::_cmd_worker_spawn), which calls
+    ``foreman.tools.spawn_worker`` directly — that function resolves through
+    the same ``resolve_spawn`` so both entry points share one settings path.
     """
     try:
         await worker_runtime.check_runtime_available()

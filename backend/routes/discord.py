@@ -670,6 +670,14 @@ async def _cmd_worker_spawn(interaction: dict) -> None:
     ``worker_lifecycle.WORKER_SPAWN_COOLDOWN`` (default 5 min), to guard
     against accidental spam and the resource waste of repeated container
     starts — see ``worker_lifecycle.check_worker_spawn_cooldown``.
+
+    Guild settings passthrough (user-initiated spawn path): Discord slash
+    command -> this handler -> ``spawn_worker(inp, guild_id, guild_pk, db,
+    user_id=ps_user_id)``. Passing ``user_id`` is what lets ``spawn_worker``
+    resolve this user's spawn_settings override layered over the guild
+    baseline via ``resolve_spawn`` (same resolution ``spawn_worker_container``
+    uses for the REST/UI path in routes/workers.py) instead of falling back to
+    an unattributed, baseline-only spawn.
     """
     token = interaction.get("token", "")
     data = interaction.get("data", {})
