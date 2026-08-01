@@ -60,6 +60,7 @@ from ws_types import (
     TaskUpdateMsg,
     WorkerMessageMsg,
     WorkerShutdownMsg,
+    WorkerStateMsg,
 )
 
 logger = logging.getLogger(__name__)
@@ -1191,7 +1192,7 @@ async def spawn_worker(
             id=worker_id,
             guild_id=guild_pk or 0,
             repos=json.dumps(repos),
-            state="offline",
+            state="launching",
             created_at=created_at,
             auth_token=auth_token,
             name=worker_name,
@@ -1199,6 +1200,9 @@ async def spawn_worker(
         )
     )
     await db.commit()
+    await broadcast_msg(
+        guild_id, WorkerStateMsg(workerId=worker_id, state="launching", name=worker_name)
+    )
 
     # Worker-facing env vars come from the resolved spawn_settings (guild
     # baseline + user override), already merged in spawn_config. tool_env_vars
@@ -1250,6 +1254,9 @@ async def spawn_worker(
             update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
         )
         await db.commit()
+        await broadcast_msg(
+            guild_id, WorkerStateMsg(workerId=worker_id, state="spawn_failed", name=worker_name)
+        )
         sdk = "boto3" if worker_runtime.ecs_enabled() else "Docker SDK"
         return (
             f"Worker pre-registered as {worker_id} but the {sdk} is not "
@@ -1263,6 +1270,9 @@ async def spawn_worker(
             update(Worker).where(col(Worker.id) == worker_id).values(state="spawn_failed")
         )
         await db.commit()
+        await broadcast_msg(
+            guild_id, WorkerStateMsg(workerId=worker_id, state="spawn_failed", name=worker_name)
+        )
         return (f"Worker pre-registered as {worker_id} but failed to start container: {exc}"), True
 
 
