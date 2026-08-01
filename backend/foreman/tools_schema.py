@@ -165,6 +165,18 @@ FOREMAN_TOOLS = [
                         "list is appropriate."
                     ),
                 },
+                "extra_flags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional extra CLI flags to append to this task's worker-tool "
+                        "invocation, e.g. ['--thinking', 'high'] for pi, ['-c', "
+                        "'key=value'] for codex, or model-tuning flags for claude. "
+                        "Passed through as discrete argv entries, never shell-"
+                        "interpolated. Flags that try to re-enable a sandbox/permission "
+                        "bypass (e.g. --dangerously-*) are stripped."
+                    ),
+                },
             },
             "required": ["worker_id", "description", "tier"],
         },
@@ -235,6 +247,18 @@ FOREMAN_TOOLS = [
                         "Optional: provider override for pi follow-ups (e.g. "
                         "'anthropic', 'openai', 'google'). Ignored for claude and "
                         "codex. Defaults to the task's current provider."
+                    ),
+                },
+                "extra_flags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional: extra CLI flags to append to this follow-up's "
+                        "worker-tool invocation, replacing the task's current extra "
+                        "flags (if any). Omit to keep the task's existing extra flags. "
+                        "Pass an empty list to clear them. Same rules as assign_task's "
+                        "extra_flags — discrete argv entries, sandbox-bypass flags "
+                        "stripped."
                     ),
                 },
             },

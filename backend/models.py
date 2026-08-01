@@ -361,6 +361,14 @@ class Task(SQLModel, table=True):
     # (Claude, codex, or pi). Lets send_followup resume the same session when
     # redispatched to the original worker. NULL if the agent didn't report one.
     claude_session_id: str | None = None
+    # Foreman-chosen extra CLI flags for this task's worker-tool invocation
+    # (e.g. ["--thinking", "high"] for pi, ["-c", "key=value"] for codex),
+    # JSON-encoded list of strings. Set via assign_task/send_followup's
+    # extra_flags param; NULL when the foreman didn't specify any. Forwarded
+    # to the runner as a literal argv list, never shell-interpolated — see
+    # foreman/tools.py::_sanitize_extra_cli_flags for the denylist applied
+    # before it's persisted.
+    extra_cli_flags: str | None = None
 
 
 class GithubToken(SQLModel, table=True):

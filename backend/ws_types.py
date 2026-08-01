@@ -132,6 +132,9 @@ class TaskAssignedMsg(_WS):
     prNumber: int | None = None
     prRepo: str | None = None
     repos: list[str] | None = None
+    # Foreman-chosen extra CLI flags forwarded to the worker-tool invocation
+    # (e.g. ["--thinking", "high"]). None when the foreman didn't specify any.
+    extraCliFlags: list[str] | None = None
 
 
 class TaskCreatedMsg(_WS):
@@ -191,6 +194,9 @@ class TaskFollowupMsg(_WS):
     # Prior agent session ID, only set when this follow-up is dispatched back
     # to the same worker that ran the task (see send_followup in foreman/tools.py).
     sessionId: str | None = None
+    # Foreman-chosen extra CLI flags forwarded to the worker-tool invocation
+    # (e.g. ["--thinking", "high"]). None when the foreman didn't specify any.
+    extraCliFlags: list[str] | None = None
 
 
 class TaskFollowupDoneMsg(_WS):

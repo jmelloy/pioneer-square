@@ -1391,6 +1391,37 @@ async def _resolve_bedrock_model_id(db, provider: str | None, model: str | None)
     return model
 
 
+_EXTRA_CLI_FLAGS_DENYLIST_PREFIXES = ("--dangerously", "--yolo", "--no-sandbox")
+_EXTRA_CLI_FLAGS_MAX_COUNT = 10
+
+
+def _sanitize_extra_cli_flags(raw: object) -> list[str]:
+    """Validate assign_task/send_followup's ``extra_flags`` before persisting it.
+
+    Flags are always forwarded to the worker tool as discrete argv entries
+    (never shell-interpolated — see the runners in worker/pioneer_worker/), so
+    shell injection isn't a risk here. This instead guards against the
+    foreman re-enabling a sandbox/permission bypass the runners already
+    control themselves (e.g. claude_runner always passes
+    --dangerously-skip-permissions on its own; the foreman must not be able
+    to layer on more of that class via a task-level override). Non-string
+    entries and denylisted flags are dropped silently; the list is capped so
+    a malformed call can't grow the stored column unbounded.
+    """
+    if not isinstance(raw, list):
+        return []
+    flags: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        if item.lower().startswith(_EXTRA_CLI_FLAGS_DENYLIST_PREFIXES):
+            continue
+        flags.append(item)
+        if len(flags) >= _EXTRA_CLI_FLAGS_MAX_COUNT:
+            break
+    return flags
+
+
 async def _exec_one_tool(
     guild_id: str, tu, user_id: str | None = None, *, own_task_id: str | None = None
 ) -> dict:
@@ -1454,6 +1485,7 @@ async def _exec_one_tool(
                 wid = inp["worker_id"]
                 desc = inp.get("description", "")
                 phase = inp.get("phase", "execute")
+                extra_flags = _sanitize_extra_cli_flags(inp.get("extra_flags"))
                 requested_tool: str | None = inp.get("tool")
                 model = inp.get("model") or None
                 requested_tier: str | None = inp.get("tier") or None
