@@ -253,7 +253,9 @@ async def test_review_phase_checks_out_pr_branch_via_gh(caplog: pytest.LogCaptur
 
     expected_wt_path = os.path.join(tmp, "test-guild", "w-test01", "t-revcheckout", "repo")
     mock_get_branch.assert_awaited_once_with("owner/repo", 42)
-    mock_checkout.assert_awaited_once_with("/tmp/fake-repo", expected_wt_path, 42, "owner/repo")
+    mock_checkout.assert_awaited_once_with(
+        "/tmp/fake-repo", expected_wt_path, 42, "owner/repo", None
+    )
     mock_create_worktree.assert_not_called()
     mock_push.assert_not_called()
 
@@ -315,5 +317,5 @@ async def test_review_prefers_pr_number_over_issue_number():
 
     expected_wt_path = os.path.join(tmp, "test-guild", "w-test01", "t-revpr", "repo")
     mock_get_branch.assert_awaited_once_with("owner/repo", 99)
-    mock_co.assert_awaited_once_with("/tmp/fake-repo", expected_wt_path, 99, "owner/repo")
+    mock_co.assert_awaited_once_with("/tmp/fake-repo", expected_wt_path, 99, "owner/repo", None)
     mock_create_worktree.assert_not_called()

@@ -814,7 +814,7 @@ class TestExecToolsDispatching:
         # which would also match unrelated error text.
         assert re.search(r"\bt-[a-z0-9]{6}\b", results[0]["content"])
         assert "queued" in results[1]["content"].lower()
-        assert "delivered" in results[2]["content"].lower()
+        assert "sent" in results[2]["content"].lower()
 
     async def test_send_followup_defaults_to_first_worker_tool(self, db_session):
         insert_guild(db_session, "g-followup-tooldefault")
@@ -1426,10 +1426,45 @@ class TestExecToolsDispatching:
                     )
                 ],
             )
-        assert "delivered" in results[0]["content"].lower()
+        # "sent", not "delivered": whether it lands is the worker's call — it
+        # only injects when it can identify the agent the message is meant for.
+        assert "sent" in results[0]["content"].lower()
         worker_msgs = [m for m in broadcast_calls if m.type == "worker-message"]
         assert len(worker_msgs) == 1
         assert worker_msgs[0].message == "Hello worker"
+        assert worker_msgs[0].taskId is None
+
+    async def test_message_worker_forwards_the_target_task_id(self, db_session):
+        """A worker runs several agents at once, so the task id has to travel with
+        the message or the worker cannot tell which agent it is for."""
+        insert_guild(db_session, "g-msgwkr-task")
+        broadcast_calls: list = []
+
+        async def fake_broadcast_msg(guild_id, msg):
+            broadcast_calls.append(msg)
+
+        with (
+            patch("foreman.tools.broadcast_msg", new=fake_broadcast_msg),
+            patch("foreman.tools.emit_terminal_line", new_callable=AsyncMock),
+        ):
+            results = await exec_tools(
+                "g-msgwkr-task",
+                [
+                    _fake_tool_use(
+                        "message_worker",
+                        {
+                            "worker_id": "w-msgwkr",
+                            "message": "check the migration",
+                            "task_id": "t-abc123",
+                        },
+                    )
+                ],
+            )
+        assert not results[0].get("is_error")
+        assert "t-abc123" in results[0]["content"]
+        worker_msgs = [m for m in broadcast_calls if m.type == "worker-message"]
+        assert len(worker_msgs) == 1
+        assert worker_msgs[0].taskId == "t-abc123"
 
     async def test_redirect_task_not_found(self, db_session):
         insert_guild(db_session, "g-redirect-missing")

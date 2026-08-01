@@ -8,6 +8,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
 from models import Agent, ClaudeCredentials, Guild, GuildSpawnDefaults, User, Worker
@@ -197,6 +198,63 @@ def test_assign_task_appears_in_list(client):
 # ---------------------------------------------------------------------------
 # Worker shutdown
 # ---------------------------------------------------------------------------
+
+
+def test_message_worker_forwards_the_task_id(client, monkeypatch):
+    """The target task travels with the message.
+
+    A worker runs several agents concurrently, so a message with no task id can
+    only be delivered when exactly one is running — the worker refuses to guess
+    rather than inject one task's instructions into another's session.
+    """
+    test_client, db_url = client
+    insert_guild(db_url, "guild-msg")
+    worker_id = _create_worker(test_client, "guild-msg")
+
+    broadcasts: list = []
+
+    async def fake_broadcast(guild_id, msg, *a, **kw):
+        broadcasts.append(msg)
+
+    monkeypatch.setattr("routes.workers.broadcast_msg", fake_broadcast)
+    monkeypatch.setattr("routes.workers.emit_terminal_line", AsyncMock())
+
+    resp = test_client.post(
+        f"/guilds/guild-msg/workers/{worker_id}/message",
+        headers=_auth(db_url),
+        json={"message": "check the migration", "task_id": "t-abc123"},
+    )
+    assert resp.status_code == 200, resp.text
+    # "sent", not "delivered" — the worker decides whether a running agent matches.
+    assert resp.json()["status"] == "sent"
+    msgs = [m for m in broadcasts if getattr(m, "type", None) == "worker-message"]
+    assert len(msgs) == 1
+    assert msgs[0].taskId == "t-abc123"
+    assert msgs[0].message == "check the migration"
+
+
+def test_message_worker_without_a_task_id_still_sends(client, monkeypatch):
+    """Back-compat: the UI's per-worker message box has no task to name."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-msg2")
+    worker_id = _create_worker(test_client, "guild-msg2")
+
+    broadcasts: list = []
+
+    async def fake_broadcast(guild_id, msg, *a, **kw):
+        broadcasts.append(msg)
+
+    monkeypatch.setattr("routes.workers.broadcast_msg", fake_broadcast)
+    monkeypatch.setattr("routes.workers.emit_terminal_line", AsyncMock())
+
+    resp = test_client.post(
+        f"/guilds/guild-msg2/workers/{worker_id}/message",
+        headers=_auth(db_url),
+        json={"message": "hello"},
+    )
+    assert resp.status_code == 200, resp.text
+    msgs = [m for m in broadcasts if getattr(m, "type", None) == "worker-message"]
+    assert msgs[0].taskId is None
 
 
 def test_shutdown_worker_signals_and_disables(client, monkeypatch):

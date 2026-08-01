@@ -141,6 +141,9 @@ class TaskCreate(BaseModel):
 
 class WorkerMessage(BaseModel):
     message: str
+    # Optional target task. A worker runs several agents at once, so a message
+    # without one is only delivered when exactly one of them is running.
+    task_id: str | None = None
 
 
 @router.post("/guilds/{guild_id}/workers")
@@ -633,8 +636,12 @@ async def message_worker(
         raise HTTPException(status_code=400, detail="Empty message")
 
     await emit_terminal_line(guild_id, worker_id, f"[foreman → worker] {text_msg}")
-    await broadcast_msg(guild_id, WorkerMessageMsg(workerId=worker_id, message=text_msg))
-    return {"status": "delivered"}
+    await broadcast_msg(
+        guild_id,
+        WorkerMessageMsg(workerId=worker_id, message=text_msg, taskId=data.task_id),
+    )
+    # "sent", not "delivered": the worker decides whether a running agent matches.
+    return {"status": "sent"}
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/shutdown")

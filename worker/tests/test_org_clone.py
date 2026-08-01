@@ -336,7 +336,7 @@ async def test_pull_repos_updates_already_cloned_repo(tmp_path):
 
     git_calls: list[list[str]] = []
 
-    async def fake_run_git(args, cwd=None):
+    async def fake_run_git(args, cwd=None, token=None):
         git_calls.append(args)
         return 0, "", ""
 
@@ -366,7 +366,7 @@ async def test_pull_repos_skips_uncloned_but_pulls_cloned(tmp_path):
         ensure_calls.append(repo_full)
         return None
 
-    async def fake_run_git(args, cwd=None):
+    async def fake_run_git(args, cwd=None, token=None):
         git_calls.append(args)
         return 0, "", ""
 
