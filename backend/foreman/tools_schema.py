@@ -690,8 +690,10 @@ FOREMAN_TOOLS = [
             "a duplicate if a worker for the same repos is already online or currently starting. "
             "Spawned workers are automatically shut down after a period of inactivity, so there "
             "is no need to clean up idle workers yourself (shutdown_worker still works for an "
-            "immediate stop). Parameters you omit default to the guild's last successful spawn "
-            "configuration; a guild that has never spawned a worker requires explicit repos."
+            "immediate stop). Parameters you omit fall back to the guild's spawn defaults, which "
+            "are the right baseline for a worker serving the whole guild's queue; a guild with no "
+            "defaults requires explicit repos. Pass parameters explicitly whenever this spawn "
+            "should differ from that baseline."
         ),
         "input_schema": {
             "type": "object",
@@ -701,7 +703,8 @@ FOREMAN_TOOLS = [
                     "items": {"type": "string"},
                     "description": (
                         "Repos the worker should serve, as 'owner/repo'. Optional: defaults to "
-                        "the repos of the guild's last successful spawn."
+                        "the guild's spawn defaults. Set it when the task you are standing this "
+                        "worker up for needs a repo the defaults do not cover."
                     ),
                 },
                 "tools": {
@@ -709,13 +712,16 @@ FOREMAN_TOOLS = [
                     "items": {"type": "string"},
                     "description": (
                         "Optional tool runners to enable on the worker "
-                        "(e.g. ['claude', 'codex']). Defaults to the guild's last spawn, "
+                        "(e.g. ['claude', 'codex']). Defaults to the guild's spawn defaults, "
                         "else claude only."
                     ),
                 },
                 "agent_count": {
                     "type": "integer",
-                    "description": "Optional number of concurrent agent slots (default 4).",
+                    "description": (
+                        "Optional number of concurrent agent slots. Defaults to the guild's "
+                        "spawn default, else 1."
+                    ),
                 },
                 "name": {
                     "type": "string",

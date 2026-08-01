@@ -145,16 +145,29 @@ async def get_foreman_env_vars(
     # worker's container was launched with. A worker principal maps to its
     # Worker.user_id; a member principal is that member; otherwise baseline only.
     user_id: str | None = None
+    excluded: set[str] = set()
     if _caller.startswith("worker:"):
         worker_id = _caller.split(":", 1)[1]
-        user_id = (
-            await db.exec(select(col(Worker.user_id)).where(col(Worker.id) == worker_id))
+        row = (
+            await db.exec(
+                select(col(Worker.user_id), col(Worker.excluded_env_keys)).where(
+                    col(Worker.id) == worker_id
+                )
+            )
         ).one_or_none()
+        if row is not None:
+            user_id, excluded_keys = row
+            # Keys the operator opted this worker's launch out of. Without this
+            # the worker would re-acquire here exactly what was withheld from
+            # its container env.
+            excluded = set(excluded_keys or [])
     elif _caller.startswith("user:"):
         user_id = _caller.split(":", 1)[1]
     resolved = await resolve_spawn(db, guild.id, user_id)
     return {
-        "env_vars": [{"key": k, "value": v} for k, v in resolved.env_vars.items()],
+        "env_vars": [
+            {"key": k, "value": v} for k, v in resolved.env_vars.items() if k not in excluded
+        ],
         "tool_env_vars": {
             tool: [{"key": k, "value": v} for k, v in (kv or {}).items()]
             for tool, kv in resolved.tool_env_vars.items()

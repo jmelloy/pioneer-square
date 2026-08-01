@@ -24,7 +24,7 @@ from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
 from models import ClaudeCredentials, Task, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
-from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, upsert_spawn_row
+from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, row_to_layer, upsert_spawn_row
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -238,10 +238,12 @@ async def spawn_worker_container(
         ),
     )
     # exclude_env_keys drops specific keys from the resolved worker env for this
-    # spawn only (the UI's per-spawn opt-out).
-    if data.exclude_env_keys:
-        for k in set(data.exclude_env_keys):
-            resolved.env_vars.pop(k, None)
+    # spawn only (the UI's per-spawn opt-out). A key the caller also set
+    # explicitly in this request is a deliberate replacement, not an exclusion,
+    # so it survives.
+    excluded_keys = sorted(set(data.exclude_env_keys or []) - set(data.env_vars or {}))
+    for k in excluded_keys:
+        resolved.env_vars.pop(k, None)
 
     # Pre-register the worker so the container inherits a known worker_id and
     # can skip self-registration on startup.
@@ -258,6 +260,9 @@ async def spawn_worker_container(
             auth_token=auth_token,
             name=worker_name,
             user_id=github_user_id,
+            # Recorded so the worker's startup fetch of /foreman/env-vars can't
+            # re-supply what this launch opted out of.
+            excluded_env_keys=excluded_keys or None,
         )
     )
     await db.commit()
@@ -323,23 +328,33 @@ async def get_spawn_credentials(
     ``exclude_env_keys`` on POST /spawn-worker) and the guild's stored Claude
     OAuth credentials. Lets an operator see, before launching, what a worker
     will have access to without exposing the underlying secret values.
+
+    ``guild_env_vars`` is the **guild baseline only**, deliberately not the
+    resolved merge: the spawn form shows the caller's own saved vars separately
+    (in clear text, from /spawn-settings) so they stay editable, and needs the
+    baseline on its own to mark which of them override a guild credential.
+    ``guild_tool_env_vars`` is the same for the guild's per-tool scoped vars.
     """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
-    # The env a worker would actually get for this user, resolved through the
-    # single spawn path (guild baseline + this user's override), masked.
-    resolved = await resolve_spawn(db, guild_pk, github_user_id)
+    baseline = row_to_layer(await get_spawn_row(db, guild_pk, None))
     guild_env_vars = [
         {"key": k, "masked_value": mask_secret(v or "")}
-        for k, v in sorted(resolved.env_vars.items())
+        for k, v in sorted(((baseline.env_vars if baseline else None) or {}).items())
     ]
+    guild_tool_env_vars = {
+        tool: [{"key": k, "masked_value": mask_secret(v or "")} for k, v in sorted(kv.items())]
+        for tool, kv in sorted(((baseline.tool_env_vars if baseline else None) or {}).items())
+        if kv
+    }
     creds_result = await db.exec(
         select(ClaudeCredentials).where(col(ClaudeCredentials.guild_id) == guild_pk)
     )
     creds_row = creds_result.one_or_none()
     return {
         "guild_env_vars": guild_env_vars,
+        "guild_tool_env_vars": guild_tool_env_vars,
         "claude_credentials": {
             "saved": creds_row is not None,
             "updated_at": creds_row.updated_at.isoformat() if creds_row else None,

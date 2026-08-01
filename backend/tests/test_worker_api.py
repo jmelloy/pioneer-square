@@ -337,6 +337,7 @@ def test_get_spawn_credentials_empty(client):
     assert resp.status_code == 200
     assert resp.json() == {
         "guild_env_vars": [],
+        "guild_tool_env_vars": {},
         "claude_credentials": {"saved": False, "updated_at": None},
     }
 
@@ -422,6 +423,147 @@ def test_spawn_worker_excludes_selected_guild_env_keys(client, monkeypatch):
     stored = test_client.get("/guilds/guild-cred4/spawn-credentials", headers=_auth(db_url))
     stored_keys = {e["key"] for e in stored.json()["guild_env_vars"]}
     assert stored_keys == {"ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
+
+
+def test_spawn_worker_exclusion_survives_the_workers_env_refetch(client, monkeypatch):
+    """An excluded key stays excluded after the worker's startup env fetch.
+
+    Withholding it from the container env alone was not enough: the worker
+    re-reads guild + user env from /foreman/env-vars on startup and applies
+    anything it doesn't already have, handing the excluded credential straight
+    back.
+    """
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred4b")
+    _set_guild_env(
+        test_client,
+        db_url,
+        "guild-cred4b",
+        [
+            {"key": "ANTHROPIC_API_KEY", "value": "keep-me", "forward": True},
+            {"key": "OPENAI_API_KEY", "value": "drop-me", "forward": True},
+        ],
+    )
+
+    import worker_runtime
+
+    async def fake_check_runtime_available():
+        return None
+
+    async def fake_start_worker_container(*, env, guild_id):
+        return worker_runtime.SpawnedWorker(
+            handle="fake-handle", short_id="fakehandle12", runtime="docker"
+        )
+
+    monkeypatch.setattr(worker_runtime, "check_runtime_available", fake_check_runtime_available)
+    monkeypatch.setattr(worker_runtime, "start_worker_container", fake_start_worker_container)
+
+    resp = test_client.post(
+        "/guilds/guild-cred4b/spawn-worker",
+        headers=_auth(db_url),
+        json={"repos": ["a/b"], "exclude_env_keys": ["OPENAI_API_KEY"]},
+    )
+    assert resp.status_code == 200, resp.text
+    worker_id = resp.json()["worker_id"]
+
+    with _sync_session(db_url) as session:
+        token = session.scalar(select(col(Worker.auth_token)).where(col(Worker.id) == worker_id))
+
+    got = test_client.get(
+        "/guilds/guild-cred4b/foreman/env-vars",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert got.status_code == 200, got.text
+    keys = {e["key"] for e in got.json()["env_vars"]}
+    assert keys == {"ANTHROPIC_API_KEY"}
+
+
+def test_spawn_worker_explicit_env_var_beats_an_exclusion_of_the_same_key(client, monkeypatch):
+    """Setting a key and excluding it in one request is a replacement, not a
+    removal — the caller's value is the more specific instruction."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred4c")
+    _set_guild_env(
+        test_client,
+        db_url,
+        "guild-cred4c",
+        [{"key": "OPENAI_API_KEY", "value": "guild-value", "forward": True}],
+    )
+
+    import worker_runtime
+
+    captured_env: dict = {}
+
+    async def fake_check_runtime_available():
+        return None
+
+    async def fake_start_worker_container(*, env, guild_id):
+        captured_env.update(env)
+        return worker_runtime.SpawnedWorker(
+            handle="fake-handle", short_id="fakehandle12", runtime="docker"
+        )
+
+    monkeypatch.setattr(worker_runtime, "check_runtime_available", fake_check_runtime_available)
+    monkeypatch.setattr(worker_runtime, "start_worker_container", fake_start_worker_container)
+
+    resp = test_client.post(
+        "/guilds/guild-cred4c/spawn-worker",
+        headers=_auth(db_url),
+        json={
+            "repos": ["a/b"],
+            "env_vars": {"OPENAI_API_KEY": "mine"},
+            "exclude_env_keys": ["OPENAI_API_KEY"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured_env.get("OPENAI_API_KEY") == "mine"
+    with _sync_session(db_url) as session:
+        excluded = session.scalar(
+            select(col(Worker.excluded_env_keys)).where(col(Worker.id) == resp.json()["worker_id"])
+        )
+    assert not excluded
+
+
+def test_get_spawn_credentials_returns_the_guild_baseline_not_the_callers_own_vars(client):
+    """The spawn form needs the guild layer on its own: the caller's own vars come
+    back editable (in the clear) from /spawn-settings, and mixing them into the
+    masked guild list hid them from the form entirely."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred5")
+    _set_guild_env(
+        test_client,
+        db_url,
+        "guild-cred5",
+        [{"key": "GUILD_KEY", "value": "guild-value", "forward": True}],
+    )
+    resp = test_client.put(
+        "/guilds/guild-cred5/spawn-settings",
+        headers=_auth(db_url),
+        json={"envVars": [{"key": "MY_KEY", "value": "mine"}]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    body = test_client.get("/guilds/guild-cred5/spawn-credentials", headers=_auth(db_url)).json()
+    assert [e["key"] for e in body["guild_env_vars"]] == ["GUILD_KEY"]
+
+
+def test_get_spawn_credentials_reports_guild_per_tool_env_keys(client):
+    """Per-tool guild vars are listed (masked) so the form can show what the
+    guild already gives each tool before the user adds an override."""
+    test_client, db_url = client
+    insert_guild(db_url, "guild-cred6")
+    resp = test_client.patch(
+        "/api/guilds/guild-cred6/foreman-config",
+        headers=_auth(db_url),
+        json={"tool_env_vars": {"claude": [{"key": "TOOL_KEY", "value": "tool-secret-value"}]}},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = test_client.get("/guilds/guild-cred6/spawn-credentials", headers=_auth(db_url))
+    assert resp.json()["guild_tool_env_vars"] == {
+        "claude": [{"key": "TOOL_KEY", "masked_value": "to…alue"}]
+    }
+    assert "tool-secret-value" not in resp.text
 
 
 def test_spawn_worker_only_forwards_flagged_guild_env_vars(client, monkeypatch):

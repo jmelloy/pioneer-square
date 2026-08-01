@@ -236,6 +236,12 @@ class Worker(SQLModel, table=True):
     # Primary tool runner this worker is configured for (e.g. 'claude', 'pi', 'codex').
     # NULL on legacy rows; set during worker-register.
     tool: str | None = None
+    # Env var keys the operator opted this worker's launch out of. The keys are
+    # already withheld from the container env; they are recorded here because the
+    # worker re-fetches guild/user env at startup from /foreman/env-vars, which
+    # would otherwise hand back exactly the credentials that were excluded.
+    # NULL/empty = nothing excluded.
+    excluded_env_keys: list | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
     # --- Convenience properties for guild spawn defaults ---
     # These expose the guild's default repos/tools/agent_count via the shared
