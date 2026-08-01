@@ -2313,7 +2313,13 @@ async def _exec_one_tool(
                     )
 
             elif tu.name == "spawn_worker":
-                result_text, is_error = await spawn_worker(inp, guild_id, guild_pk, db)
+                # user_id must be threaded through: it selects this user's
+                # spawn_settings override layer (repos/tools/agent_count/env_vars)
+                # and is stamped on the Worker row, which is what
+                # /guilds/{id}/foreman/env-vars later resolves the worker's
+                # env + per-tool env against. Dropping it silently spawned every
+                # foreman-requested worker off the guild baseline alone.
+                result_text, is_error = await spawn_worker(inp, guild_id, guild_pk, db, user_id)
 
             elif tu.name == "get_task_status":
                 task_id = inp["task_id"]

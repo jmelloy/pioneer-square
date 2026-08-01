@@ -38,6 +38,30 @@
           <div class="settings-content">
             <!-- General: identity + repo selection -->
             <section v-if="activeTab === 'general'" class="settings-section">
+              <!-- Which layer the form is showing, and one click back to either
+                   the guild baseline or this user's last launch. -->
+              <div class="spawn-source">
+                <span class="spawn-source-note">{{ sourceLabel }}</span>
+                <span class="spawn-source-actions">
+                  <button
+                    v-if="hasGuildDefaults && formSource !== 'guild'"
+                    class="spawn-defaults-reset"
+                    type="button"
+                    @click="resetToGuildDefaults"
+                  >
+                    Use guild defaults
+                  </button>
+                  <button
+                    v-if="hasSavedSettings && formSource !== 'saved'"
+                    class="spawn-defaults-reset"
+                    type="button"
+                    @click="restoreSavedSettings"
+                  >
+                    Use last launch
+                  </button>
+                </span>
+              </div>
+
               <div class="settings-field">
                 <label class="spawn-label">Name <span class="spawn-hint">(optional)</span></label>
                 <input
@@ -85,25 +109,14 @@
                         class="spawn-repo-check"
                       />
                       <span class="spawn-repo-name">{{ repo.full_name.split('/')[1] }}</span>
+                      <span v-if="guildDefaultRepos.has(repo.full_name)" class="spawn-badge">
+                        guild
+                      </span>
                     </label>
                   </template>
                 </div>
                 <div v-if="hasGuildDefaults" class="spawn-defaults-row">
-                  <span class="spawn-defaults-note">
-                    {{
-                      usingGuildDefaults
-                        ? 'Prefilled from guild defaults'
-                        : 'Overriding guild defaults'
-                    }}
-                  </span>
-                  <button
-                    v-if="!usingGuildDefaults"
-                    class="spawn-defaults-reset"
-                    type="button"
-                    @click="resetToGuildDefaults"
-                  >
-                    Reset to guild defaults
-                  </button>
+                  <span class="spawn-defaults-note"> Guild default: {{ guildRepoSummary }} </span>
                 </div>
               </div>
             </section>
@@ -126,7 +139,14 @@
                       class="spawn-repo-check"
                     />
                     <span class="spawn-repo-name">{{ tool }}</span>
+                    <span v-if="guildDefaultTools.has(tool)" class="spawn-badge">guild</span>
                   </label>
+                </div>
+                <div v-if="hasGuildDefaults" class="spawn-defaults-row">
+                  <span class="spawn-defaults-note">
+                    Guild default:
+                    {{ guildDefaults?.tools?.length ? guildDefaults.tools.join(', ') : 'none' }}
+                  </span>
                 </div>
               </div>
 
@@ -138,8 +158,18 @@
                   type="number"
                   min="1"
                   max="16"
-                  placeholder="4"
+                  :placeholder="String(guildDefaults?.agent_count ?? 4)"
+                  @input="formSource = 'custom'"
                 />
+                <div class="spawn-defaults-row">
+                  <span class="spawn-defaults-note">
+                    {{
+                      guildDefaults?.agent_count != null
+                        ? `Guild default: ${guildDefaults.agent_count}`
+                        : 'No guild default — the worker decides (4).'
+                    }}
+                  </span>
+                </div>
               </div>
             </section>
 
@@ -160,16 +190,25 @@
                       v-for="cred in credentials!.guild_env_vars"
                       :key="cred.key"
                       class="spawn-repo-row spawn-cred-row"
-                      :class="{ selected: includedKeys[cred.key] !== false }"
+                      :class="{
+                        selected: includedKeys[cred.key] !== false,
+                        'spawn-cred-overridden': overriddenGuildKeys.has(cred.key),
+                      }"
                     >
                       <input
                         type="checkbox"
-                        :checked="includedKeys[cred.key] !== false"
+                        :checked="
+                          includedKeys[cred.key] !== false || overriddenGuildKeys.has(cred.key)
+                        "
+                        :disabled="overriddenGuildKeys.has(cred.key)"
                         @change="toggleCredential(cred.key)"
                         class="spawn-repo-check"
                       />
                       <span class="spawn-repo-name spawn-cred-key">{{ cred.key }}</span>
-                      <span class="spawn-cred-value">{{ cred.masked_value }}</span>
+                      <span v-if="overriddenGuildKeys.has(cred.key)" class="spawn-badge">
+                        overridden below
+                      </span>
+                      <span v-else class="spawn-cred-value">{{ cred.masked_value }}</span>
                     </label>
                     <div class="spawn-repo-row spawn-cred-row spawn-cred-claude">
                       <span
@@ -194,29 +233,35 @@
 
               <div class="settings-field">
                 <label class="spawn-label"
-                  >Env Vars <span class="spawn-hint">(optional)</span></label
+                  >Your Env Vars <span class="spawn-hint">(optional)</span></label
                 >
                 <p class="spawn-env-hint">
-                  Key-value pairs are saved to the server and restored each session.
+                  Your own key-value pairs, saved on launch and restored next time. Reusing a guild
+                  credential's key replaces its value for your workers.
                 </p>
                 <div class="spawn-env-list">
-                  <div v-for="entry in visibleEnvVars" :key="entry.idx" class="spawn-env-row">
+                  <div v-for="(pair, idx) in envVars" :key="idx" class="spawn-env-row">
                     <input
-                      v-model="entry.pair.key"
+                      v-model="pair.key"
                       class="spawn-input spawn-env-input spawn-env-key"
                       placeholder="KEY"
                       type="text"
                     />
                     <span class="spawn-env-sep">=</span>
                     <input
-                      v-model="entry.pair.value"
+                      v-model="pair.value"
                       class="spawn-input spawn-env-input spawn-env-val"
                       placeholder="value"
                       type="text"
                     />
+                    <span
+                      v-if="guildCredKeys.has(pair.key.trim())"
+                      class="spawn-badge spawn-badge--override"
+                      >overrides guild</span
+                    >
                     <button
                       class="spawn-env-remove"
-                      @click="removeEnvVar(entry.idx)"
+                      @click="removeEnvVar(idx)"
                       type="button"
                       title="Remove"
                     >
@@ -252,6 +297,17 @@
                   Passed only to the {{ envToolTab }} CLI — never the other tools. Overrides an Env
                   Var above for this tool.
                 </p>
+                <div v-if="guildToolEnv.length" class="spawn-cred-list spawn-tool-guild-list">
+                  <div
+                    v-for="cred in guildToolEnv"
+                    :key="cred.key"
+                    class="spawn-repo-row spawn-cred-row"
+                  >
+                    <span class="spawn-badge">guild</span>
+                    <span class="spawn-repo-name spawn-cred-key">{{ cred.key }}</span>
+                    <span class="spawn-cred-value">{{ cred.masked_value }}</span>
+                  </div>
+                </div>
                 <div class="spawn-env-list">
                   <div
                     v-for="(pair, idx) in toolEnvVars[envToolTab]"
@@ -353,14 +409,22 @@ interface GuildEnvVarStatus {
 }
 
 interface SpawnCredentials {
+  // The guild baseline only — the caller's own vars come back in clear text
+  // from /spawn-settings so they stay editable here.
   guild_env_vars: GuildEnvVarStatus[]
+  guild_tool_env_vars?: Record<string, GuildEnvVarStatus[]>
   claude_credentials: { saved: boolean; updated_at: string | null }
 }
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 const guildDefaults = ref<GuildSpawnDefaults | null>(null)
-const usingGuildDefaults = ref(false)
+// The caller's own settings from their last launch, kept so they can be
+// restored after an experiment with the guild baseline.
+const savedSettings = ref<SpawnSettings | null>(null)
+// Which layer the form currently shows: the guild baseline, this user's last
+// launch, or values they have since edited.
+const formSource = ref<'guild' | 'saved' | 'custom'>('custom')
 const selectedRepos = ref<string[]>([])
 const name = ref('')
 const selectedTools = ref<string[]>([])
@@ -388,25 +452,47 @@ const hasCredentials = computed(
     (credentials.value.guild_env_vars.length > 0 || credentials.value.claude_credentials.saved),
 )
 
-const excludeEnvKeys = computed(() =>
-  (credentials.value?.guild_env_vars ?? [])
-    .map((c) => c.key)
-    .filter((key) => includedKeys.value[key] === false),
-)
-
 const groupedRepos = computed(() => groupAndSortRepos(ghStore.repos))
 
-// A key that already exists as a guild credential is shown/managed in the Guild
-// Credentials section (with its value, checked by default) — don't also surface a
-// stale blank personal row for it here, and don't let it override the credential.
 const guildCredKeys = computed(
   () => new Set((credentials.value?.guild_env_vars ?? []).map((c) => c.key)),
 )
-const visibleEnvVars = computed(() =>
-  envVars.value
-    .map((pair, idx) => ({ pair, idx }))
-    .filter((e) => !guildCredKeys.value.has(e.pair.key.trim())),
+// Keys this user has given their own value for. The backend layers the user
+// over the guild, so these replace the guild credential for this launch.
+const userEnvKeys = computed(
+  () => new Set(envVars.value.map((e) => e.key.trim()).filter((k) => k !== '')),
 )
+const overriddenGuildKeys = computed(
+  () => new Set([...guildCredKeys.value].filter((k) => userEnvKeys.value.has(k))),
+)
+
+// An overridden key is replaced, not dropped — excluding it would contradict the
+// value the user just typed (and the backend keeps the explicit value anyway).
+const excludeEnvKeys = computed(() =>
+  (credentials.value?.guild_env_vars ?? [])
+    .map((c) => c.key)
+    .filter((key) => includedKeys.value[key] === false && !overriddenGuildKeys.value.has(key)),
+)
+
+// The guild's scoped vars for the tool tab on screen, shown read-only above the
+// user's own overrides for the same tool.
+const guildToolEnv = computed<GuildEnvVarStatus[]>(
+  () => credentials.value?.guild_tool_env_vars?.[envToolTab.value] ?? [],
+)
+
+const guildDefaultRepos = computed(() => new Set(guildDefaults.value?.repos ?? []))
+const guildDefaultTools = computed(() => new Set(guildDefaults.value?.tools ?? []))
+
+const hasSavedSettings = computed(() => {
+  const s = savedSettings.value
+  if (!s) return false
+  return !!(
+    s.repos?.length ||
+    s.tools?.length ||
+    s.envVars?.length ||
+    Object.values(s.toolEnvVars ?? {}).some((p) => p.length)
+  )
+})
 
 async function loadSavedSettings(guildId: string): Promise<SpawnSettings | null> {
   try {
@@ -473,23 +559,46 @@ function validateEnvVars(): string | null {
   return null
 }
 
-/** Apply the guild defaults as the current form values, validating repos against
- *  what GitHub actually returned. Used both for the initial pre-fill (when the
- *  user has no saved overrides) and the explicit "reset to guild defaults" button. */
+/** Keep only repos GitHub actually returned; a fetch failure means we can't
+ *  validate any of them, so none are pre-selected. */
+function availableOnly(repos: string[] | undefined): string[] {
+  if (repoFetchFailed.value) return []
+  const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
+  return (repos ?? []).filter((r) => availableRepoNames.has(r))
+}
+
+/** Apply the guild defaults as the current form values. Used both for the
+ *  initial pre-fill (when the user has no saved settings) and the explicit
+ *  "reset to guild defaults" button. Leaves env vars alone: those are the
+ *  user's own, and the guild's are shown separately in the Environment tab. */
 function applyGuildDefaults(defaults: GuildSpawnDefaults) {
-  if (repoFetchFailed.value) {
-    selectedRepos.value = []
-  } else {
-    const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
-    selectedRepos.value = (defaults.repos ?? []).filter((r) => availableRepoNames.has(r))
-  }
+  selectedRepos.value = availableOnly(defaults.repos)
   selectedTools.value = [...(defaults.tools ?? [])]
   agentCount.value = defaults.agent_count ?? null
-  usingGuildDefaults.value = true
+  formSource.value = 'guild'
+}
+
+/** Apply this user's last-used settings, falling back to the guild baseline for
+ *  anything they never set. */
+function applySavedSettings(saved: SpawnSettings) {
+  if (saved.repos?.length) selectedRepos.value = availableOnly(saved.repos)
+  else selectedRepos.value = availableOnly(guildDefaults.value?.repos)
+  if (saved.tools?.length) selectedTools.value = [...saved.tools]
+  else selectedTools.value = [...(guildDefaults.value?.tools ?? [])]
+  agentCount.value = guildDefaults.value?.agent_count ?? null
+  envVars.value = (saved.envVars ?? []).map((p) => ({ ...p }))
+  for (const tool of AVAILABLE_TOOLS) {
+    toolEnvVars[tool] = (saved.toolEnvVars?.[tool] ?? []).map((p) => ({ ...p }))
+  }
+  formSource.value = 'saved'
 }
 
 function resetToGuildDefaults() {
   if (guildDefaults.value) applyGuildDefaults(guildDefaults.value)
+}
+
+function restoreSavedSettings() {
+  if (savedSettings.value) applySavedSettings(savedSettings.value)
 }
 
 const hasGuildDefaults = computed(
@@ -500,6 +609,21 @@ const hasGuildDefaults = computed(
       guildDefaults.value.agent_count != null),
 )
 
+const guildRepoSummary = computed(() => {
+  const repos = guildDefaults.value?.repos ?? []
+  if (repos.length === 0) return 'none'
+  if (repos.length <= 3) return repos.join(', ')
+  return `${repos.slice(0, 3).join(', ')} +${repos.length - 3} more`
+})
+
+const sourceLabel = computed(() => {
+  if (formSource.value === 'guild') return 'Showing the guild defaults.'
+  if (formSource.value === 'saved') return 'Showing your settings from your last launch.'
+  return hasGuildDefaults.value || hasSavedSettings.value
+    ? 'Showing your edits for this launch.'
+    : 'No guild defaults or saved settings yet — pick repos to launch.'
+})
+
 async function saveSettings(guildId: string) {
   try {
     await api(`/guilds/${guildId}/spawn-settings`, {
@@ -507,12 +631,10 @@ async function saveSettings(guildId: string) {
       json: {
         repos: selectedRepos.value,
         tools: selectedTools.value,
-        // Persist only meaningful, non-duplicating pairs so a stale blank row
-        // can't reappear and shadow a guild credential next session.
-        envVars: envVars.value.filter(
-          (e) =>
-            e.key.trim() !== '' && e.value.trim() !== '' && !guildCredKeys.value.has(e.key.trim()),
-        ),
+        // Persist only meaningful pairs so a stale blank row can't reappear.
+        // A pair whose key matches a guild credential is kept on purpose: it is
+        // this user's deliberate override and must survive to the next launch.
+        envVars: envVars.value.filter((e) => e.key.trim() !== '' && e.value.trim() !== ''),
         toolEnvVars: Object.fromEntries(
           AVAILABLE_TOOLS.map((tool) => [
             tool,
@@ -560,32 +682,18 @@ onMounted(async () => {
     loadCredentials(guild.id)
   }
 
-  const savedHasToolEnv = Object.values(saved?.toolEnvVars ?? {}).some((p) => p.length)
-  if (
-    saved &&
-    (saved.repos?.length || saved.tools?.length || saved.envVars?.length || savedHasToolEnv)
-  ) {
-    // The user has their own saved overrides — those win over the guild baseline.
-    if (saved.repos?.length) {
-      if (repoFetchFailed.value) {
-        // Fetch failed — cannot validate saved repos against available ones.
-        selectedRepos.value = []
-      } else {
-        const availableRepoNames = new Set(ghStore.repos.map((r) => r.full_name))
-        // If fetch succeeded but returned no repos, the filter yields [] — correct.
-        selectedRepos.value = saved.repos.filter((r) => availableRepoNames.has(r))
-      }
-    }
-    if (saved.tools?.length) selectedTools.value = saved.tools
-    if (saved.envVars?.length) envVars.value = saved.envVars
-    for (const tool of AVAILABLE_TOOLS) {
-      toolEnvVars[tool] = (saved.toolEnvVars?.[tool] ?? []).map((p) => ({ ...p }))
-    }
+  savedSettings.value = saved
+
+  if (hasSavedSettings.value) {
+    // The user has settings from a previous launch — those win over the guild
+    // baseline, and "Reset to guild defaults" undoes that.
+    applySavedSettings(saved!)
   } else if (defaults && hasGuildDefaults.value) {
-    // No personal overrides yet — start from the guild's spawn defaults.
+    // Nothing saved yet — start from the guild's spawn defaults.
     applyGuildDefaults(defaults)
   } else {
     selectedRepos.value = repoFetchFailed.value ? [] : [...ghStore.selectedRepos]
+    formSource.value = 'custom'
   }
 })
 
@@ -594,7 +702,7 @@ onBeforeUnmount(() => {
 })
 
 function toggleRepo(fullName: string) {
-  usingGuildDefaults.value = false
+  formSource.value = 'custom'
   const idx = selectedRepos.value.indexOf(fullName)
   if (idx >= 0) {
     selectedRepos.value.splice(idx, 1)
@@ -614,7 +722,7 @@ function orgSomeSelected(owner: string): boolean {
 }
 
 function toggleOrg(owner: string) {
-  usingGuildDefaults.value = false
+  formSource.value = 'custom'
   const repos = groupedRepos.value.find((g) => g.owner === owner)?.repos ?? []
   if (orgAllSelected(owner)) {
     const names = new Set(repos.map((r) => r.full_name))
@@ -635,7 +743,7 @@ function setOrgCheckboxRef(el: HTMLInputElement | null, owner: string) {
 }
 
 function toggleTool(tool: string) {
-  usingGuildDefaults.value = false
+  formSource.value = 'custom'
   const idx = selectedTools.value.indexOf(tool)
   if (idx >= 0) {
     selectedTools.value.splice(idx, 1)
@@ -673,10 +781,10 @@ async function launch() {
   try {
     const envVarsPayload = Object.fromEntries(
       envVars.value
-        // Drop blank keys, blank values (a blank pair sets nothing), and any key
-        // that duplicates a guild credential (that value is the source of truth).
+        // Drop blank keys and blank values (a blank pair sets nothing). A key
+        // that also exists as a guild credential is sent: the backend layers the
+        // caller's value over the guild's, which is the point of an override.
         .filter((e) => e.key.trim() !== '' && e.value.trim() !== '')
-        .filter((e) => !guildCredKeys.value.has(e.key.trim()))
         .map((e) => [e.key.trim(), e.value.trim()]),
     )
     const result = await api<{ worker_id?: string }>(`/guilds/${guild.id}/spawn-worker`, {
@@ -874,10 +982,18 @@ async function launch() {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  /* A long error must wrap onto its own line rather than squeeze the Launch
+     button off the edge — on a phone there is no horizontal slack at all. */
+  flex-wrap: wrap;
   gap: 10px;
   padding: 10px 16px;
   border-top: 1px solid var(--color-brass-dark);
   flex-shrink: 0;
+}
+
+.spawn-panel-footer .spawn-error {
+  flex: 1 1 100%;
+  min-width: 0;
 }
 
 .spawn-success {
@@ -945,6 +1061,7 @@ async function launch() {
 .spawn-launch-btn {
   font-size: 7px;
   padding: 5px 12px;
+  flex-shrink: 0;
 }
 
 .spawn-launch-btn:disabled {
@@ -1078,8 +1195,59 @@ async function launch() {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 2px 0;
+}
+
+.spawn-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 2px;
+  background: var(--color-bg);
+}
+
+.spawn-source-note {
+  font-size: 9px;
+  color: var(--color-text-dim);
+  font-style: italic;
+  min-width: 0;
+}
+
+.spawn-source-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.spawn-badge {
+  font-family: var(--font-mono, monospace);
+  font-size: 8px;
+  color: var(--color-brass);
+  border: 1px solid var(--color-brass-dark);
+  border-radius: 2px;
+  padding: 0 3px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.spawn-badge--override {
+  color: var(--color-teal);
+}
+
+.spawn-cred-overridden .spawn-cred-key {
+  text-decoration: line-through;
+  color: var(--color-text-dim);
+}
+
+.spawn-tool-guild-list {
+  margin-bottom: 4px;
 }
 
 .spawn-defaults-note {
@@ -1217,12 +1385,19 @@ async function launch() {
 @media (max-width: 720px) {
   .settings-overlay {
     padding: 0;
+    /* Fill the overlay instead of centring a fixed-height panel inside it. The
+       old panel sized itself with 100dvh while the overlay is sized by the
+       fixed-position viewport; on iOS Safari those two are not the same box, so
+       a centred panel overflowed top AND bottom and took the footer — with the
+       Launch button — off screen. Sizing off the overlay can't disagree. */
+    align-items: stretch;
+    justify-content: stretch;
   }
 
   .settings-panel {
-    width: 100vw;
-    height: 100dvh;
-    max-height: 100dvh;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
     border: none;
   }
 
@@ -1249,6 +1424,69 @@ async function launch() {
      area on notched phones in a full-screen dialog. */
   .spawn-panel-footer {
     padding-bottom: max(10px, env(safe-area-inset-bottom));
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+  }
+
+  .settings-panel-header {
+    padding-left: max(14px, env(safe-area-inset-left));
+    padding-right: max(14px, env(safe-area-inset-right));
+  }
+
+  .settings-content {
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+    /* Stop a rubber-banding scroll here from dragging the page behind it. */
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* The panel is the whole screen: let the repo list use the space it has
+     rather than capping at a desktop-sized box with its own scrollbar. */
+  .spawn-repo-list {
+    max-height: 46vh;
+  }
+
+  /* A 12px checkbox is well under the ~44px minimum tap target; the row is the
+     real target, so give it height and the box enough size to hit reliably. */
+  .spawn-repo-row {
+    padding: 8px 7px;
+  }
+
+  .spawn-repo-check {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* KEY = VALUE doesn't fit one phone-width line — stack the two inputs, and
+     rule off each pair so the stacked key and value still read as one row. */
+  .spawn-env-row {
+    flex-wrap: wrap;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--color-brass-dark);
+  }
+
+  .spawn-env-row:last-of-type {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  .spawn-env-key {
+    width: auto;
+    flex: 1 1 100%;
+  }
+
+  .spawn-env-sep {
+    display: none;
+  }
+
+  .spawn-env-val {
+    flex: 1 1 auto;
+  }
+
+  .spawn-launch-btn {
+    font-size: 8px;
+    padding: 10px 20px;
   }
 }
 

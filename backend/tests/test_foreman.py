@@ -44,7 +44,15 @@ from foreman.runner import (
     _save_turn,
 )
 from foreman.tools import _spawn_discord_task_assigned, exec_tools, notify_discord_task_assigned
-from helpers import _sync_session, create_db, insert_agent, insert_guild, insert_task, insert_worker
+from helpers import (
+    _sync_session,
+    create_db,
+    insert_agent,
+    insert_guild,
+    insert_member,
+    insert_task,
+    insert_worker,
+)
 from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog, Worker  # noqa: E402
 from sqlalchemy import func, select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
@@ -2347,6 +2355,75 @@ class TestSpawnWorker:
         env = fake_docker_client.containers.run.call_args.kwargs["environment"]
         assert env["PIONEER_REPOS"] == "acme/widgets"
         assert env["PIONEER_MAX_AGENTS"] == "3"
+
+    async def test_spawn_worker_uses_requesting_users_settings(self, db_session):
+        """The foreman tool executor threads user_id through, so the requesting
+        user's spawn_settings override wins over the guild baseline and the new
+        worker row is attributed to them.
+
+        Without it every foreman-requested worker launched off the guild
+        baseline and came up unattributed, which also cost it the per-user env
+        it re-fetches from /foreman/env-vars at startup.
+        """
+        from models import SpawnSettings  # noqa: PLC0415
+
+        insert_guild(db_session, "g-spawn-user")
+        insert_member(db_session, "g-spawn-user", "gh-spawner")
+        with _sync_session(db_session) as session:
+            guild_pk = session.execute(
+                select(col(Guild.id)).where(col(Guild.slug) == "g-spawn-user")
+            ).scalar_one()
+            session.add(
+                SpawnSettings(
+                    guild_id=guild_pk,
+                    user_id=None,
+                    repos='["acme/baseline"]',
+                    tools='["claude"]',
+                    agent_count=3,
+                    env_vars={"SHARED": "guild"},
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            session.add(
+                SpawnSettings(
+                    guild_id=guild_pk,
+                    user_id="gh-spawner",
+                    repos='["acme/mine"]',
+                    tools='["pi"]',
+                    env_vars={"SHARED": "user", "USER_ONLY": "u"},
+                    updated_at=datetime.now(UTC),
+                )
+            )
+            session.commit()
+
+        fake_container = SimpleNamespace(id="abcdef0123456789")
+        fake_docker_client = MagicMock()
+        fake_docker_client.containers.get.side_effect = Exception("not found")
+        fake_docker_client.containers.run.return_value = fake_container
+
+        with (
+            patch("worker_runtime._get_docker_client", AsyncMock(return_value=fake_docker_client)),
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+        ):
+            results = await exec_tools(
+                "g-spawn-user",
+                [_fake_tool_use("spawn_worker", {})],
+                user_id="gh-spawner",
+            )
+        assert results[0].get("is_error") is not True, results[0]["content"]
+
+        env = fake_docker_client.containers.run.call_args.kwargs["environment"]
+        assert env["PIONEER_REPOS"] == "acme/mine"  # user override, not baseline
+        assert env["PIONEER_TOOLS"] == "pi"
+        assert env["PIONEER_MAX_AGENTS"] == "3"  # unset by the user -> baseline
+        assert env["SHARED"] == "user"  # user layer wins key-by-key
+        assert env["USER_ONLY"] == "u"
+
+        with _sync_session(db_session) as session:
+            owner = session.execute(
+                select(col(Worker.user_id)).where(col(Worker.guild_id) == guild_pk)
+            ).scalar_one()
+        assert owner == "gh-spawner"
 
     async def test_spawn_worker_errors_without_repos_or_defaults(self, db_session):
         """No repos in the call and no recorded defaults → clear error, no container."""
