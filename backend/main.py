@@ -372,6 +372,15 @@ async def lifespan(app: FastAPI):
                 await db.commit()
 
     asyncio.ensure_future(_startup_refresh_catalog())
+
+    # Sync Discord slash commands on every startup so command definitions stay
+    # in sync with the deployed codebase. No-op when Discord env vars are unset.
+    from discord.command_sync import (
+        sync_slash_commands_on_startup as _sync_discord_commands,  # noqa: PLC0415
+    )
+
+    asyncio.ensure_future(_sync_discord_commands())
+
     sweeper = spawn(_stale_worker_sweeper(), name="stale-worker-sweeper")
     # Reap backend-spawned workers that have been idle past the configured
     # timeout (PIONEER_WORKER_IDLE_TIMEOUT) — see worker_lifecycle.
