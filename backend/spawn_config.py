@@ -173,6 +173,4 @@ async def resolve_spawn(
                 )
             )
         ).one_or_none()
-    return merge_layers(
-        [row_to_layer(guild_row), row_to_layer(user_row), profile_layer, call]
-    )
+    return merge_layers([row_to_layer(guild_row), row_to_layer(user_row), profile_layer, call])

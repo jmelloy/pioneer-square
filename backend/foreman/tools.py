@@ -1161,9 +1161,7 @@ async def spawn_worker(
     profile_name: str | None = inp.get("profile")
     if profile_name:
         if guild_pk is None:
-            return (
-                f"spawn_worker: profile {profile_name!r} requires a registered guild."
-            ), True
+            return (f"spawn_worker: profile {profile_name!r} requires a registered guild."), True
         profile = await resolve_profile(db, guild_pk, user_id, profile_name)
         if profile is None:
             return (

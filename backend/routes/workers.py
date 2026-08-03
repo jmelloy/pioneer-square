@@ -788,7 +788,8 @@ async def create_spawn_profile(
         role = await ensure_membership(db, guild_id, github_user_id)
         if role != "owner":
             raise HTTPException(
-                status_code=403, detail="Creating a guild-wide spawn profile requires the owner role"
+                status_code=403,
+                detail="Creating a guild-wide spawn profile requires the owner role",
             )
     user_id = github_user_id if data.scope == "user" else None
     try:
@@ -807,7 +808,8 @@ async def create_spawn_profile(
     except IntegrityError:
         await db.rollback()
         raise HTTPException(
-            status_code=409, detail=f"A {data.scope} spawn profile named {data.name!r} already exists."
+            status_code=409,
+            detail=f"A {data.scope} spawn profile named {data.name!r} already exists.",
         )
     return _spawn_profile_payload(row)
 
@@ -831,7 +833,8 @@ async def update_spawn_profile(
         role = await ensure_membership(db, guild_id, github_user_id)
         if role != "owner":
             raise HTTPException(
-                status_code=403, detail="Modifying a guild-wide spawn profile requires the owner role"
+                status_code=403,
+                detail="Modifying a guild-wide spawn profile requires the owner role",
             )
     elif row.user_id != github_user_id:
         raise HTTPException(status_code=403, detail="Not your spawn profile")
@@ -840,7 +843,9 @@ async def update_spawn_profile(
         row = await update_profile(db, row, **fields)
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=409, detail="A spawn profile with that name already exists.")
+        raise HTTPException(
+            status_code=409, detail="A spawn profile with that name already exists."
+        )
     return _spawn_profile_payload(row)
 
 
@@ -862,7 +867,8 @@ async def delete_spawn_profile(
         role = await ensure_membership(db, guild_id, github_user_id)
         if role != "owner":
             raise HTTPException(
-                status_code=403, detail="Modifying a guild-wide spawn profile requires the owner role"
+                status_code=403,
+                detail="Modifying a guild-wide spawn profile requires the owner role",
             )
     elif row.user_id != github_user_id:
         raise HTTPException(status_code=403, detail="Not your spawn profile")
