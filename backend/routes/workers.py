@@ -18,14 +18,25 @@ import string
 from datetime import UTC, datetime
 
 import worker_runtime
-from auth_deps import get_guild_pk, require_member
+from auth_deps import ensure_membership, get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line
 from fastapi import APIRouter, Depends, HTTPException
-from models import Task, Worker, live_tasks_filter
+from models import VALID_TOOLS, Task, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, row_to_layer, upsert_spawn_row
+from spawn_profiles import (
+    BUILTIN_PROFILES,
+    as_layer,
+    create_profile,
+    delete_profile,
+    get_profile_row,
+    list_profiles,
+    resolve_profile,
+    update_profile,
+)
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
@@ -66,7 +77,12 @@ _MAX_ENV_VALUE_LEN = 4096
 
 
 class SpawnWorkerRequest(BaseModel):
-    repos: list[str]
+    # Optional named spawn profile (built-in or guild/user-defined via
+    # /spawn-profiles) providing the tool/provider/repos/agent_count
+    # defaults for this spawn; any field also set explicitly below overrides
+    # the profile's value. See spawn_profiles.py.
+    profile: str | None = None
+    repos: list[str] = []
     name: str | None = None
     tools: list[str] | None = None
     agent_count: int | None = None
@@ -107,6 +123,113 @@ class SpawnWorkerRequest(BaseModel):
                     f"Invalid env var key: {key!r}. Keys must match ^[A-Za-z_][A-Za-z0-9_]*$"
                 )
         return v
+
+
+class SpawnProfileCreate(BaseModel):
+    """Create a named spawn profile, guild-wide or scoped to the caller."""
+
+    name: str
+    description: str | None = None
+    tool: str = "claude"
+    provider: str | None = None
+    credentials_source: str | None = None
+    default_agent_count: int | None = None
+    default_repos: list[str] = []
+    # "guild" (default): visible to every guild member. "user": only the
+    # caller's own profile, overriding a guild profile of the same name for them.
+    scope: str = "guild"
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name must not be empty")
+        return v
+
+    @field_validator("tool")
+    @classmethod
+    def validate_tool(cls, v: str) -> str:
+        if v not in VALID_TOOLS:
+            raise ValueError(f"tool must be one of {VALID_TOOLS}")
+        return v
+
+    @field_validator("scope")
+    @classmethod
+    def validate_scope(cls, v: str) -> str:
+        if v not in ("guild", "user"):
+            raise ValueError("scope must be 'guild' or 'user'")
+        return v
+
+    @field_validator("default_agent_count")
+    @classmethod
+    def validate_agent_count(cls, v: int | None) -> int | None:
+        if v is not None and not (1 <= v <= 16):
+            raise ValueError("default_agent_count must be between 1 and 16")
+        return v
+
+
+class SpawnProfileUpdate(BaseModel):
+    """Partial update — only the fields present in the request body change."""
+
+    name: str | None = None
+    description: str | None = None
+    tool: str | None = None
+    provider: str | None = None
+    credentials_source: str | None = None
+    default_agent_count: int | None = None
+    default_repos: list[str] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            raise ValueError("name must not be empty")
+        return v.strip() if v is not None else v
+
+    @field_validator("tool")
+    @classmethod
+    def validate_tool(cls, v: str | None) -> str | None:
+        if v is not None and v not in VALID_TOOLS:
+            raise ValueError(f"tool must be one of {VALID_TOOLS}")
+        return v
+
+    @field_validator("default_agent_count")
+    @classmethod
+    def validate_agent_count(cls, v: int | None) -> int | None:
+        if v is not None and not (1 <= v <= 16):
+            raise ValueError("default_agent_count must be between 1 and 16")
+        return v
+
+
+def _spawn_profile_payload(row) -> dict:
+    return {
+        "id": row.id,
+        "name": row.name,
+        "description": row.description,
+        "tool": row.tool,
+        "provider": row.provider,
+        "credentials_source": row.credentials_source,
+        "default_agent_count": row.default_agent_count,
+        "default_repos": json.loads(row.default_repos) if row.default_repos else [],
+        "scope": "user" if row.user_id else "guild",
+        "builtin": False,
+    }
+
+
+def _builtin_profile_payload(name: str, p) -> dict:
+    return {
+        "id": name,
+        "name": name,
+        "description": p.description,
+        "tool": p.tool,
+        "provider": p.provider,
+        "credentials_source": p.credentials_source,
+        "default_agent_count": p.default_agent_count,
+        "default_repos": list(p.default_repos or ()),
+        "scope": "guild",
+        "builtin": True,
+    }
 
 
 class SaveSpawnDefaultsRequest(BaseModel):
@@ -227,9 +350,20 @@ async def spawn_worker_container(
             ),
         )
 
-    # One resolution path (see spawn_config): request args override this user's
-    # spawn_settings override over the guild baseline. The empty-value guard and
-    # the guild/user env merge all live in resolve_spawn now.
+    profile_layer = None
+    if data.profile:
+        profile = await resolve_profile(db, guild_pk, github_user_id, data.profile)
+        if profile is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No spawn profile named {data.profile!r} for this guild/user.",
+            )
+        profile_layer = as_layer(profile)
+
+    # One resolution path (see spawn_config): request args override the
+    # profile (if any) override this user's spawn_settings override over the
+    # guild baseline. The empty-value guard and the guild/user env merge all
+    # live in resolve_spawn now.
     resolved = await resolve_spawn(
         db,
         guild_pk,
@@ -240,6 +374,7 @@ async def spawn_worker_container(
             agent_count=data.agent_count,
             env_vars=data.env_vars or None,
         ),
+        profile_layer=profile_layer,
     )
     # exclude_env_keys drops specific keys from the resolved worker env for this
     # spawn only (the UI's per-spawn opt-out). A key the caller also set
@@ -610,6 +745,129 @@ async def save_spawn_defaults(
         agent_count=data.agent_count,
     )
     return _spawn_defaults_payload(row)
+
+
+@router.get("/guilds/{guild_id}/spawn-profiles")
+async def list_spawn_profiles(
+    guild_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """List profiles selectable by this caller: built-ins, the guild's custom
+
+    profiles, and the caller's own. A user-scoped profile shadows a
+    guild-scoped one of the same name (matching ``spawn_profiles.resolve_profile``).
+    """
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    rows = await list_profiles(db, guild_pk, github_user_id)
+    by_name = {name: _builtin_profile_payload(name, p) for name, p in BUILTIN_PROFILES.items()}
+    for row in rows:
+        by_name[row.name] = _spawn_profile_payload(row)
+    return sorted(by_name.values(), key=lambda p: p["name"])
+
+
+@router.post("/guilds/{guild_id}/spawn-profiles")
+async def create_spawn_profile(
+    guild_id: str,
+    data: SpawnProfileCreate,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Create a custom spawn profile.
+
+    Guild-scoped profiles (``scope: "guild"``, the default) require the owner
+    role, since they're visible to and usable by every member. A caller may
+    always create their own ``scope: "user"`` profile.
+    """
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    if data.scope == "guild":
+        role = await ensure_membership(db, guild_id, github_user_id)
+        if role != "owner":
+            raise HTTPException(
+                status_code=403, detail="Creating a guild-wide spawn profile requires the owner role"
+            )
+    user_id = github_user_id if data.scope == "user" else None
+    try:
+        row = await create_profile(
+            db,
+            guild_pk,
+            user_id,
+            name=data.name,
+            description=data.description,
+            tool=data.tool,
+            provider=data.provider,
+            credentials_source=data.credentials_source,
+            default_agent_count=data.default_agent_count,
+            default_repos=data.default_repos,
+        )
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail=f"A {data.scope} spawn profile named {data.name!r} already exists."
+        )
+    return _spawn_profile_payload(row)
+
+
+@router.patch("/guilds/{guild_id}/spawn-profiles/{profile_id}")
+async def update_spawn_profile(
+    guild_id: str,
+    profile_id: str,
+    data: SpawnProfileUpdate,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Update a custom spawn profile. Built-in profiles are not rows and 404 here."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    row = await get_profile_row(db, guild_pk, profile_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Spawn profile not found")
+    if row.user_id is None:
+        role = await ensure_membership(db, guild_id, github_user_id)
+        if role != "owner":
+            raise HTTPException(
+                status_code=403, detail="Modifying a guild-wide spawn profile requires the owner role"
+            )
+    elif row.user_id != github_user_id:
+        raise HTTPException(status_code=403, detail="Not your spawn profile")
+    fields = {k: getattr(data, k) for k in data.model_fields_set}
+    try:
+        row = await update_profile(db, row, **fields)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="A spawn profile with that name already exists.")
+    return _spawn_profile_payload(row)
+
+
+@router.delete("/guilds/{guild_id}/spawn-profiles/{profile_id}")
+async def delete_spawn_profile(
+    guild_id: str,
+    profile_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Delete a custom spawn profile. Built-in profiles are not rows and 404 here."""
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    row = await get_profile_row(db, guild_pk, profile_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Spawn profile not found")
+    if row.user_id is None:
+        role = await ensure_membership(db, guild_id, github_user_id)
+        if role != "owner":
+            raise HTTPException(
+                status_code=403, detail="Modifying a guild-wide spawn profile requires the owner role"
+            )
+    elif row.user_id != github_user_id:
+        raise HTTPException(status_code=403, detail="Not your spawn profile")
+    await delete_profile(db, row)
+    return {"status": "deleted"}
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/message")
