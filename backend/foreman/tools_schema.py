@@ -442,6 +442,42 @@ FOREMAN_TOOLS = [
         },
     },
     {
+        "name": "create_pr",
+        "description": (
+            "Open a GitHub pull request for a task's already-pushed branch. Workers only "
+            "commit and push — they never open a PR on their own. Call this explicitly once "
+            "you've reviewed the task (get_task_status, diff, logs) and decided the work is "
+            "ready for a PR. Do not call this for plan-phase or review-phase tasks, or before "
+            "the branch has been pushed (state must be past 'working')."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID (t-xxxxxx) whose pushed branch should become a PR.",
+                },
+                "repo": {
+                    "type": "string",
+                    "description": "owner/repo the branch was pushed to.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "PR title. Defaults to the task name/description.",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "PR body in markdown. Defaults to a standard task summary.",
+                },
+                "base": {
+                    "type": "string",
+                    "description": "Base branch to open the PR against. Default: main.",
+                },
+            },
+            "required": ["task_id", "repo"],
+        },
+    },
+    {
         "name": "create_github_issue",
         "description": (
             "Create a new GitHub issue to track work before assigning it to a worker. "
