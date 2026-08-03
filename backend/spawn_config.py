@@ -138,9 +138,20 @@ async def upsert_spawn_row(db, guild_pk: int, user_id: str | None = None, **fiel
 
 
 async def resolve_spawn(
-    db, guild_pk: int, user_id: str | None, call: SpawnLayer | None = None
+    db,
+    guild_pk: int,
+    user_id: str | None,
+    call: SpawnLayer | None = None,
+    profile_layer: SpawnLayer | None = None,
 ) -> ResolvedSpawn:
-    """Load the guild baseline + user override rows and merge with optional call args."""
+    """Load the guild baseline + user override rows and merge with optional layers.
+
+    Precedence, low -> high: guild baseline row < user override row <
+    *profile_layer* < *call*. A profile (see spawn_profiles.py) is a named
+    preset the caller opted into for this spawn, so it outranks the standing
+    guild/user spawn_settings — but the call's own explicit repos/tools/
+    agent_count/etc. are the most specific ask and still win over the profile.
+    """
     from models import SpawnSettings  # noqa: PLC0415 — avoid circular import at module load
     from sqlmodel import col, select  # noqa: PLC0415
 
@@ -162,4 +173,4 @@ async def resolve_spawn(
                 )
             )
         ).one_or_none()
-    return merge_layers([row_to_layer(guild_row), row_to_layer(user_row), call])
+    return merge_layers([row_to_layer(guild_row), row_to_layer(user_row), profile_layer, call])

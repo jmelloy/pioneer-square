@@ -1153,22 +1153,37 @@ async def spawn_worker(
     Returns (result_text, is_error).
     """
     from spawn_config import SpawnLayer, merge_layers, resolve_spawn  # noqa: PLC0415
+    from spawn_profiles import as_layer, resolve_profile  # noqa: PLC0415
 
     custom_name: str | None = inp.get("name")
 
-    # One resolution path: call args over *user_id*'s spawn_settings (when a
-    # user is named) over the guild baseline (see spawn_config). Anything the
-    # call omits falls back down the layers, so "spawn a worker" works without
-    # restating config.
+    profile_layer = None
+    profile_name: str | None = inp.get("profile")
+    if profile_name:
+        if guild_pk is None:
+            return (f"spawn_worker: profile {profile_name!r} requires a registered guild."), True
+        profile = await resolve_profile(db, guild_pk, user_id, profile_name)
+        if profile is None:
+            return (
+                f"spawn_worker: no spawn profile named {profile_name!r}. Built-ins: "
+                "claude-default, claude-aws, codex-api, codex-aws, pi-aws. Check "
+                "GET /guilds/{guild_id}/spawn-profiles for guild/user-defined profiles."
+            ), True
+        profile_layer = as_layer(profile)
+
+    # One resolution path: call args over the profile (if any) over
+    # *user_id*'s spawn_settings (when a user is named) over the guild
+    # baseline (see spawn_config). Anything the call omits falls back down
+    # the layers, so "spawn a worker" works without restating config.
     call = SpawnLayer(
         repos=inp.get("repos") or None,
         tools=inp.get("tools") or None,
         agent_count=inp.get("agent_count"),
     )
     resolved = (
-        await resolve_spawn(db, guild_pk, user_id, call)
+        await resolve_spawn(db, guild_pk, user_id, call, profile_layer=profile_layer)
         if guild_pk is not None
-        else merge_layers([call])
+        else merge_layers([profile_layer, call])
     )
     repos = resolved.repos
     tools_list = resolved.tools

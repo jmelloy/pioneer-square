@@ -864,6 +864,77 @@ class SpawnSettings(SQLModel, table=True):
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
+class SpawnProfile(SQLModel, table=True):
+    """A named, reusable spawn-worker configuration ("predefined worker config").
+
+    Unlike spawn_settings (one baseline row + one override row per guild,
+    always in effect), a guild or user may define any number of profiles and
+    select one by name at spawn time — the foreman's ``spawn_worker`` tool and
+    the ``POST /spawn-worker`` endpoint accept a ``profile`` argument that
+    resolves through ``spawn_profiles.resolve_profile``: user-scoped row
+    (``user_id`` set) > guild-scoped row (``user_id`` NULL) > one of the
+    built-in profiles in ``spawn_profiles.BUILTIN_PROFILES`` (claude-default,
+    claude-aws, codex-api, codex-aws, pi-aws). A resolved profile becomes one
+    layer in ``spawn_config.merge_layers``, applied after the guild/user
+    spawn_settings baseline but before the call's own explicit repos/tools/
+    agent_count — so a profile sets sensible defaults for a tool+provider
+    pairing while a caller can still override individual fields per spawn.
+    """
+
+    __tablename__ = "spawn_profiles"  # type: ignore[assignment]
+    __table_args__ = (
+        # A name is unique among a guild's own profiles (user_id NULL) and,
+        # separately, among one user's profiles for that guild. Two partial
+        # unique indexes because NULLs don't collide in a normal unique index.
+        Index(
+            "uq_spawn_profiles_guild_name",
+            "guild_id",
+            "name",
+            unique=True,
+            postgresql_where=text("user_id IS NULL"),
+        ),
+        Index(
+            "uq_spawn_profiles_guild_user_name",
+            "guild_id",
+            "user_id",
+            "name",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL"),
+        ),
+    )
+
+    id: str = Field(primary_key=True)
+    guild_id: int = Field(foreign_key="guilds.id")
+    # NULL = guild-wide profile; set = this user's own profile for the guild.
+    user_id: str | None = Field(default=None, foreign_key="users.id")
+    name: str
+    description: str | None = None
+    # One of VALID_TOOLS ("claude" | "codex" | "pi").
+    tool: str = Field(default="claude", sa_column_kwargs={"server_default": "'claude'"})
+    # Free-form provider tag, e.g. "api-key" | "aws-bedrock". Advisory: it groups
+    # profiles for display and picks the credential contract described by
+    # credentials_source; it does not itself gate anything.
+    provider: str | None = None
+    # How the worker resolves auth for this profile, e.g. "anthropic_api_key",
+    # "aws_bedrock", "openai_api_key" — names an env var group the worker
+    # (or the guild/user's forwarded env_vars) is expected to supply. Purely
+    # descriptive today; see docs/spawn-profiles.md.
+    credentials_source: str | None = None
+    # Concurrent agent slots a spawn using this profile requests; NULL = fall
+    # through to spawn_settings/worker default.
+    default_agent_count: int | None = None
+    # JSON-serialised list of "owner/repo" strings (same encoding as workers.repos).
+    default_repos: str | None = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
 class PushToken(SQLModel, table=True):
     """APNs (or, in the future, FCM) device token registered by the iOS app.
 
