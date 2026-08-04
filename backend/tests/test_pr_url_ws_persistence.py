@@ -202,6 +202,61 @@ def test_task_complete_without_pr_url_leaves_pr_url_null(client):
 # ---------------------------------------------------------------------------
 
 
+def test_join_replay_includes_pr_and_phase(client):
+    """Reconnect replay (handle_join) must carry pr_number/pr_repo/phase.
+
+    A worker that reconnects mid-task gets its pending/working tasks re-sent
+    as task-assigned. Before the fix, that replay dropped prNumber/prRepo/phase,
+    so a reconnecting worker lost track of which PR a "review" task was for and
+    the task silently reverted to phase "execute" on the worker side.
+    """
+    test_client, db_url = client
+    guild_id, worker_id, task_id = "gwspr4", "w-wspr4", "t-wspr4"
+    agent_id = "a-wspr4"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        task_id,
+        worker_id=worker_id,
+        state="working",
+        phase="review",
+        pr_url="https://github.com/owner/repo/pull/7",
+        pr_number=7,
+        pr_repo="owner/repo",
+    )
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+        # The task-assigned replay is sent directly to this socket *before*
+        # the agent-joined broadcast, so collect everything up to and
+        # including agent-joined rather than assuming message order.
+        ws_worker.send_json(
+            {
+                "type": "join",
+                "agentId": agent_id,
+                "agentName": "Test Worker",
+                "agentType": "worker",
+                "workerId": worker_id,
+            }
+        )
+        received = []
+        while True:
+            recv = ws_worker.receive_json()
+            received.append(recv)
+            if recv["type"] == "agent-joined":
+                break
+
+    task_assigned = [m for m in received if m["type"] == "task-assigned"]
+    assert len(task_assigned) == 1
+    msg = task_assigned[0]
+    assert msg["taskId"] == task_id
+    assert msg["phase"] == "review"
+    assert msg["prNumber"] == 7
+    assert msg["prRepo"] == "owner/repo"
+
+
 def test_task_followup_done_persists_pr_url(client):
     """task-followup-done with prUrl writes pr_url, pr_number, pr_repo to the task row."""
     test_client, db_url = client
