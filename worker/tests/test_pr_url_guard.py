@@ -44,12 +44,8 @@ async def _run_execute_task(task: dict):
         patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
         patch("pioneer_worker.worker.git_ops.create_worktree", return_value=True),
         patch("pioneer_worker.worker.git_ops.attach_worktree", return_value=True),
-        patch(
-            "pioneer_worker.worker.github_pr.push_branch", return_value="pushed"
-        ) as mock_push,
-        patch(
-            "pioneer_worker.worker.github_pr.find_existing_pr", return_value=None
-        ) as mock_find,
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value="pushed") as mock_push,
+        patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None) as mock_find,
         patch(
             "pioneer_worker.worker.github_pr.open_pr",
             return_value="https://github.com/owner/repo/pull/999",
