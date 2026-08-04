@@ -15,9 +15,10 @@ DEFAULT_PATHS = ["~/.codex", "~/.claude", "~/.pi"]
 
 
 def _walk(root: Path) -> list[Path]:
-    """Return all regular files under *root* recursively."""
+    """Return all regular files under *root* recursively, excluding tmp/ subdirectories."""
     files: list[Path] = []
-    for dirpath, _dirs, filenames in os.walk(root):
+    for dirpath, dirs, filenames in os.walk(root):
+        dirs[:] = [d for d in dirs if d != "tmp"]
         for name in filenames:
             files.append(Path(dirpath) / name)
     return files
