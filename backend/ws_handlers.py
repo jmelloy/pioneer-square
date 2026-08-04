@@ -469,9 +469,14 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                         description=pt.description or "",
                         tool=pt.tool or "claude",
                         model=pt.model,
+                        modelTier=pt.model_tier,
                         provider=pt.provider,
+                        phase=pt.phase,
+                        parentTaskId=pt.parent_task_id,
                         issueNumber=pt.issue_number,
                         issueRepo=pt.issue_repo,
+                        prNumber=pt.pr_number,
+                        prRepo=pt.pr_repo,
                     ),
                 )
     joined_msg = AgentJoinedMsg(
