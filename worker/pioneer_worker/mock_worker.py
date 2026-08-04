@@ -259,7 +259,7 @@ class MockWorker(Worker):
                 agent=agent,
                 branch=final_branch,
                 prUrl=pr_url,
-                state="awaiting-review",
+                state="awaiting-review" if pr_url else "awaiting-foreman-review",
             )
             if is_followup:
                 await self._send(

@@ -191,6 +191,9 @@ class TaskFollowupMsg(_WS):
     # Prior agent session ID, only set when this follow-up is dispatched back
     # to the same worker that ran the task (see send_followup in foreman/tools.py).
     sessionId: str | None = None
+    # True when the foreman explicitly asked send_followup to open a PR once
+    # this follow-up pushes (#1095 — PR creation is no longer automatic).
+    createPr: bool = False
 
 
 class TaskFollowupDoneMsg(_WS):

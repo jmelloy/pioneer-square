@@ -63,10 +63,11 @@ FOREMAN_TOOLS = [
         "description": (
             "Queue a coding task — the worker host process (w-xxx) spawns an agent subprocess to execute it. "
             "The worker creates a git worktree, runs the chosen coding agent on the description, "
-            "and pushes its work. "
-            "For execute-phase tasks the worker opens a PR; for plan-phase tasks, the "
-            "Foreman should post findings as a comment on the linked GitHub issue instead "
-            "— do NOT open a PR for a document, spec, or outline. "
+            "and pushes its work, then parks in awaiting-foreman-review — it does NOT open a "
+            "PR automatically. Once you've reviewed the pushed branch and decided it's ready, "
+            "call send_followup(create_pr=true) to open the PR. For plan-phase tasks, post "
+            "findings as a comment on the linked GitHub issue instead — do NOT open a PR for "
+            "a document, spec, or outline. "
             "Pass task_id (from create_task) to assign that existing task to a worker instead "
             "of creating a duplicate — this is the preferred flow. "
             "For review-phase tasks (phase='review'), include explicit instructions telling the "
@@ -235,6 +236,18 @@ FOREMAN_TOOLS = [
                         "Optional: provider override for pi follow-ups (e.g. "
                         "'anthropic', 'openai', 'google'). Ignored for claude and "
                         "codex. Defaults to the task's current provider."
+                    ),
+                },
+                "create_pr": {
+                    "type": "boolean",
+                    "description": (
+                        "Optional, default false. PR creation is no longer automatic — a "
+                        "worker only pushes its branch and parks the task in "
+                        "awaiting-foreman-review. Pass true when this follow-up should open "
+                        "a GitHub PR for the branch once it pushes (e.g. once you've decided "
+                        "the work is ready for human/CI review). Once a PR exists, the task "
+                        "moves to awaiting-review and its lifecycle is driven by the GitHub "
+                        "webhook (merge/close) instead of the foreman."
                     ),
                 },
             },

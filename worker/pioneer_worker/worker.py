@@ -1410,6 +1410,7 @@ class Worker:
                         "followup_instructions": instructions,
                         "followup_branch": msg.get("branch", ""),
                         "session_id": msg.get("sessionId"),
+                        "create_pr": bool(msg.get("createPr")),
                     }
                 )
 
@@ -2366,7 +2367,11 @@ class Worker:
                 pr_url = await github_pr.find_existing_pr(
                     branch=branch, worktree_path=primary_wt, token=push_token
                 )
-                if not pr_url and push_result == "pushed":
+                if not pr_url and push_result == "pushed" and task.get("create_pr"):
+                    # PR creation is no longer automatic (#1095) — the branch is
+                    # pushed and the task parks in awaiting-foreman-review. A PR
+                    # is only opened here when the foreman explicitly requests
+                    # one via send_followup(create_pr=true).
                     pr_url = await github_pr.open_pr(
                         task=task,
                         branch=branch,
@@ -2394,12 +2399,17 @@ class Worker:
             }
 
             if success:
+                # A PR only exists here if one was already open (find_existing_pr)
+                # or the foreman explicitly requested one for this follow-up
+                # (create_pr=true) — see the open_pr call above (#1095). With a
+                # PR open, GitHub-webhook-driven review takes over; without one,
+                # the task parks for the foreman to decide the next step.
                 await self._task_update(
                     task_id,
                     success=True,
                     type="task-followup-done" if is_followup else "task-complete",
                     agent=agent,
-                    state="awaiting-review",
+                    state="awaiting-review" if pr_url else "awaiting-foreman-review",
                     **msg,
                 )
 
