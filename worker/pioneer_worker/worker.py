@@ -1855,6 +1855,13 @@ class Worker:
         is_followup = bool(followup_instructions) or task.get("phase") == "followup"
         phase = (task.get("phase") or "execute").lower()
         is_review = phase == "review"
+        # A task can already carry a pr_url without being a followup — e.g. a
+        # reconnect or the idle puller re-fetches it via the REST pending-tasks
+        # path (which dumps every DB column) while its phase is still
+        # "execute". Only send_followup's explicit continuation should push
+        # more commits onto an existing PR branch; anything else risks
+        # duplicate/unintended commits on a branch that may be under review.
+        existing_pr_url = task.get("pr_url") or ""
         # Review tasks act on a PR, identified by the dedicated pr_number/pr_repo
         # fields. Fall back to issue_number/issue_repo for back-compat with the
         # deterministic Discord path (which mirrors the PR number into both).
@@ -2330,6 +2337,14 @@ class Worker:
                 pr_url = await github_pr.find_existing_pr(
                     branch=branch, worktree_path=primary_wt, token=push_token
                 )
+            elif existing_pr_url and not is_followup:
+                # This task already has an open PR but wasn't dispatched via
+                # send_followup — don't auto-commit or push onto that branch.
+                await emit(
+                    f"Task already has PR {existing_pr_url} — skipping auto-commit/push.",
+                    level=LEVEL_WORKER,
+                )
+                pr_url = existing_pr_url
             else:
                 # Push the branch so partial work is visible and a follow-up can
                 # build on it. push_branch returns "pushed" | "nothing" | "failed".
