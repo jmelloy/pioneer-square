@@ -35,22 +35,24 @@ def finalize_soft_delete_at(
     issue_number: int | None,
     issue_state: str | None,
     phase: str | None = None,
+    pr_number: int | None = None,
+    pr_state: str | None = None,
     now: datetime | None = None,
 ) -> datetime | None:
     """When to stamp ``deleted_at`` for a task entering a terminal state.
 
-    Successful *sub-tasks* tied to a still-open issue stay live (return None)
-    until the issue closes — the issue-close webhook/sweep stamps them then. A
+    Successful *sub-tasks* tied to a still-open issue, or a still-open (unmerged)
+    PR, stay live (return None) until that issue/PR closes — the issue-close
+    webhook/sweep stamps them then, and a PR-merge webhook or the foreman's
+    periodic PR-status refresh re-calls finalize_task once the PR lands. A
     ``phase='issue'`` root task IS the issue proxy, not a sub-task, so finalizing
     it means the issue tracking is done: stamp it now. Everything else (failures,
-    cancellations, done tasks with no open issue) is stamped immediately at *now*.
+    cancellations, done tasks with no open issue/PR) is stamped immediately at
+    *now*.
     """
-    if (
-        outcome == "done"
-        and phase != "issue"
-        and issue_number is not None
-        and issue_state != "closed"
-    ):
+    issue_open = issue_number is not None and issue_state != "closed"
+    pr_open = pr_number is not None and pr_state not in ("closed", "merged")
+    if outcome == "done" and phase != "issue" and (issue_open or pr_open):
         return None
     return now if now is not None else datetime.now(UTC)
 

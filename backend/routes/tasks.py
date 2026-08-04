@@ -241,9 +241,9 @@ async def finalize_task_endpoint(
 ):
     """Signal a worker to finalize a task — no more follow-ups.
 
-    Soft-deletes the task now, unless it is tied to a still-open issue: then
-    ``deleted_at`` stays NULL until the issue closes (see
-    ``models.finalize_soft_delete_at``).
+    Soft-deletes the task now, unless it is tied to a still-open issue or a
+    still-open (unmerged) PR: then ``deleted_at`` stays NULL until that issue
+    closes or PR merges/closes (see ``models.finalize_soft_delete_at``).
     """
     guild_pk = await get_guild_pk(db, guild_id)
     if guild_pk is None:
@@ -254,13 +254,25 @@ async def finalize_task_endpoint(
             col(Task.issue_number),
             col(Task.issue_state),
             col(Task.phase),
+            col(Task.pr_repo),
+            col(Task.pr_number),
         ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
     )
     row = result.one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Task not found")
-    worker_id, issue_number, issue_state, phase = row
-    deleted_at = finalize_soft_delete_at("done", issue_number, issue_state, phase)
+    worker_id, issue_number, issue_state, phase, pr_repo, pr_number = row
+    pr_state = None
+    if pr_repo and pr_number is not None:
+        pr_result = await db.exec(
+            select(col(GithubPullRequest.state)).where(
+                col(GithubPullRequest.repo) == pr_repo, col(GithubPullRequest.number) == pr_number
+            )
+        )
+        pr_state = pr_result.one_or_none()
+    deleted_at = finalize_soft_delete_at(
+        "done", issue_number, issue_state, phase, pr_number=pr_number, pr_state=pr_state
+    )
     await db.exec(
         update(Task).where(col(Task.id) == task_id).values(state="done", deleted_at=deleted_at)
     )

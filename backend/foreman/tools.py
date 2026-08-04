@@ -2125,8 +2125,19 @@ async def _exec_one_tool(
                     if not task:
                         result_text = f"Task {task_id} not found."
                     else:
+                        pr_state = None
+                        if task.pr_repo and task.pr_number is not None:
+                            cached_pr = await github_cache.get_pr(
+                                db, task.pr_repo, task.pr_number
+                            )
+                            pr_state = cached_pr.state if cached_pr else None
                         deleted_at = finalize_soft_delete_at(
-                            outcome, task.issue_number, task.issue_state, task.phase
+                            outcome,
+                            task.issue_number,
+                            task.issue_state,
+                            task.phase,
+                            pr_number=task.pr_number,
+                            pr_state=pr_state,
                         )
                         await db.exec(
                             update(Task)
@@ -2184,7 +2195,7 @@ async def _exec_one_tool(
                         result_text = f"Task {task_id} finalized as {outcome}; " + (
                             f"soft-deleted at {deleted_at.isoformat()}."
                             if deleted_at is not None
-                            else "kept live until its issue closes."
+                            else "kept live until its issue/PR closes."
                         )
 
             elif tu.name == "message_worker":

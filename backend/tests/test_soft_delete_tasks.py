@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from helpers import _sync_session, insert_guild, make_auth_token, raw_conn  # noqa: E402
-from models import SOFT_DELETE_GRACE, Task, finalize_soft_delete_at  # noqa: E402
+from models import SOFT_DELETE_GRACE, GithubPullRequest, Task, finalize_soft_delete_at  # noqa: E402
 from sqlalchemy import select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
@@ -115,6 +115,36 @@ def test_issue_root_task_stamps_now_even_with_open_issue():
     """A phase='issue' root IS the issue proxy — finalizing it stamps immediately."""
     now = datetime(2026, 1, 1, tzinfo=UTC)
     assert finalize_soft_delete_at("done", 42, "open", phase="issue", now=now) == now
+
+
+def test_done_with_open_pr_stays_live():
+    """A successful task with a still-open (unmerged) PR is not stamped, even
+    with no linked issue — this is the premature soft-delete regression."""
+    assert finalize_soft_delete_at("done", None, None, pr_number=7, pr_state="open") is None
+    assert finalize_soft_delete_at("done", None, None, pr_number=7, pr_state=None) is None
+
+
+def test_done_with_closed_or_merged_pr_stamps_now():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    assert finalize_soft_delete_at("done", None, None, pr_number=7, pr_state="merged", now=now) == now
+    assert finalize_soft_delete_at("done", None, None, pr_number=7, pr_state="closed", now=now) == now
+
+
+def test_done_with_open_issue_and_closed_pr_stays_live():
+    """Either link being open is enough to keep the task live."""
+    assert (
+        finalize_soft_delete_at("done", 42, "open", pr_number=7, pr_state="merged") is None
+    )
+
+
+def test_issue_root_task_stamps_now_even_with_open_pr():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    assert (
+        finalize_soft_delete_at(
+            "done", None, None, phase="issue", pr_number=7, pr_state="open", now=now
+        )
+        == now
+    )
 
 
 # ---------------------------------------------------------------------------
