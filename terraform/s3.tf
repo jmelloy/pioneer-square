@@ -14,7 +14,7 @@ resource "aws_s3_bucket_versioning" "assets" {
   bucket = aws_s3_bucket.assets.id
 
   versioning_configuration {
-    status = "Enabled"
+    status = "Suspended"  # worker-session logs don't need versioning
   }
 }
 
@@ -48,7 +48,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "assets" {
     filter {}
 
     noncurrent_version_expiration {
-      noncurrent_days = 90
+      noncurrent_days = 15
     }
   }
 }
