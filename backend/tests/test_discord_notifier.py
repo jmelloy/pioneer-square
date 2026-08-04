@@ -1469,7 +1469,21 @@ def test_format_stream_entries_single_tool_call_shows_actual_tool_name():
 
     content, turn_count = discord_notifier._format_stream_entries(entries, 0)
 
-    assert content == "▶ bash: pytest -k test_foo\n  → 3 passed"
+    assert content == "▶ bash: pytest -k test_foo\n||  → 3 passed||"
+    assert turn_count == 0
+
+
+def test_format_stream_entries_wraps_tool_result_output_in_spoiler_tags():
+    """Tool output is spoiler-wrapped (issue #1101) so it's collapsed by default;
+    the tool_use line naming what ran stays plainly visible."""
+    entries = [
+        _entry("▶ edit: notes.md", "tool_use", "Edit"),
+        _entry("  → line one\n  → line two", "tool_result"),
+    ]
+
+    content, turn_count = discord_notifier._format_stream_entries(entries, 0)
+
+    assert content == "▶ edit: notes.md\n||  → line one\n  → line two||"
     assert turn_count == 0
 
 
@@ -1489,12 +1503,12 @@ def test_format_stream_entries_single_tool_call_with_no_result():
 
 
 def test_format_stream_entries_zero_tool_calls_passes_through():
-    """A run of only tool_result entries (no tool_use) also passes through raw."""
+    """A run of only tool_result entries (no tool_use) also passes through, spoiler-wrapped."""
     entries = [_entry("  → stray result", "tool_result")]
 
     content, turn_count = discord_notifier._format_stream_entries(entries, 0)
 
-    assert content == "  → stray result"
+    assert content == "||  → stray result||"
     assert turn_count == 0
 
 
