@@ -5,7 +5,7 @@
       <p class="gsp-intro">
         Named presets a worker spawn can use instead of specifying tool/provider/repos each time
         (see the <code>profile</code> field on Spawn Worker). Built-in profiles ship with the server
-        and can't be edited or deleted.
+        as editable examples — editing one saves your own copy that overrides it.
       </p>
 
       <table class="gsp-table">
@@ -36,16 +36,22 @@
               </span>
             </td>
             <td class="gsp-row-actions">
-              <template v-if="!p.builtin && canEdit(p)">
-                <button class="gsp-icon-btn" title="Edit profile" @click="startEdit(p)">✎</button>
-                <button
-                  class="gsp-icon-btn gsp-icon-btn--danger"
-                  title="Delete profile"
-                  @click="remove(p)"
-                >
-                  ✕
-                </button>
-              </template>
+              <button
+                v-if="canEdit(p)"
+                class="gsp-icon-btn"
+                :title="p.builtin ? 'Edit (saves your own override)' : 'Edit profile'"
+                @click="startEdit(p)"
+              >
+                ✎
+              </button>
+              <button
+                v-if="!p.builtin && canEdit(p)"
+                class="gsp-icon-btn gsp-icon-btn--danger"
+                title="Delete profile"
+                @click="remove(p)"
+              >
+                ✕
+              </button>
             </td>
           </tr>
           <tr v-if="profiles.length === 0">
@@ -143,11 +149,15 @@
 
         <div class="gsp-form-actions">
           <button class="pixel-btn gsp-save-btn" :disabled="saving" @click="save">
-            {{ saving ? 'Saving…' : editingId ? 'Save' : 'Create' }}
+            {{ saving ? 'Saving…' : editingId ? 'Save' : forkingBuiltin ? 'Save Override' : 'Create' }}
           </button>
           <button class="gsp-cancel-btn" :disabled="saving" @click="cancelForm">Cancel</button>
         </div>
         <div v-if="formError" class="gsp-error">{{ formError }}</div>
+        <p v-if="forkingBuiltin" class="gsp-hint">
+          This built-in profile has no editable row of its own — saving creates your own copy
+          that overrides it.
+        </p>
       </div>
     </template>
   </div>
@@ -189,6 +199,7 @@ const canManageGuildScope = computed(() => myRole.value === 'owner')
 
 const showForm = ref(false)
 const editingId = ref<string | null>(null)
+const forkingBuiltin = ref(false)
 const saving = ref(false)
 const formError = ref('')
 
@@ -235,8 +246,11 @@ function truncatedRepos(p: SpawnProfile): string {
 
 // The list already only carries built-ins, this guild's rows, and the caller's
 // own user-scoped rows — so any non-builtin row present belongs to either the
-// guild (needs owner) or the caller.
+// guild (needs owner) or the caller. Built-ins have no row to modify, so
+// "editing" one always saves a new override (guild-scoped ones require owner
+// to save as guild-wide, but anyone can still fork it into a user-scoped copy).
 function canEdit(p: SpawnProfile): boolean {
+  if (p.builtin) return true
   if (p.scope === 'guild') return canManageGuildScope.value
   return true
 }
@@ -255,12 +269,16 @@ function resetForm() {
 
 function startCreate() {
   editingId.value = null
+  forkingBuiltin.value = false
   resetForm()
   showForm.value = true
 }
 
 function startEdit(p: SpawnProfile) {
-  editingId.value = p.id
+  // Built-ins aren't DB rows, so there's nothing to PATCH — editing one
+  // instead saves a new profile of the same name, which shadows it.
+  forkingBuiltin.value = p.builtin
+  editingId.value = p.builtin ? null : p.id
   formName.value = p.name
   formDescription.value = p.description ?? ''
   formTool.value = (p.tool as (typeof AVAILABLE_TOOLS)[number]) ?? 'claude'
@@ -268,7 +286,7 @@ function startEdit(p: SpawnProfile) {
   formCredentialsSource.value = p.credentials_source ?? ''
   formAgentCount.value = p.default_agent_count ?? ''
   formRepos.value = p.default_repos.join(', ')
-  formScope.value = p.scope
+  formScope.value = p.builtin ? (canManageGuildScope.value ? 'guild' : 'user') : p.scope
   formError.value = ''
   showForm.value = true
 }
@@ -276,6 +294,7 @@ function startEdit(p: SpawnProfile) {
 function cancelForm() {
   showForm.value = false
   editingId.value = null
+  forkingBuiltin.value = false
   formError.value = ''
 }
 
@@ -335,6 +354,7 @@ async function save() {
     }
     showForm.value = false
     editingId.value = null
+    forkingBuiltin.value = false
   } catch (e) {
     formError.value = e instanceof ApiError ? e.message : 'Failed to save profile'
   } finally {

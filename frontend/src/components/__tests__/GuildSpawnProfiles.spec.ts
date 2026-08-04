@@ -89,8 +89,55 @@ describe('GuildSpawnProfiles', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('claude-default')
     expect(wrapper.text()).toContain('built-in')
-    // built-in rows have no edit/delete controls
-    expect(wrapper.find('.gsp-icon-btn').exists()).toBe(false)
+    // built-in rows expose an edit control (forks an override) but no delete,
+    // since there's no row to delete
+    expect(wrapper.find('.gsp-icon-btn').exists()).toBe(true)
+    expect(wrapper.find('.gsp-icon-btn--danger').exists()).toBe(false)
+  })
+
+  it('forks a built-in profile into a guild override via POST when an owner edits it', async () => {
+    const post = vi.fn((body: unknown) => ({
+      id: 'sp-abc123',
+      builtin: false,
+      ...(body as Record<string, unknown>),
+    }))
+    mockFetch(
+      { members: [{ user_id: 'u-owner', role: 'owner' }], profiles: [BUILTIN] },
+      { onPost: post },
+    )
+    const wrapper = mountAs('u-owner')
+    await flushPromises()
+
+    await wrapper.find('.gsp-icon-btn').trigger('click')
+    expect(wrapper.find<HTMLInputElement>('input.gsp-input').element.value).toBe('claude-default')
+    await wrapper.find('.gsp-save-btn').trigger('click')
+    await flushPromises()
+
+    expect(post).toHaveBeenCalledOnce()
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'claude-default', tool: 'claude', scope: 'guild' }),
+    )
+  })
+
+  it('lets a non-owner fork a built-in profile into their own user-scoped copy', async () => {
+    const post = vi.fn((body: unknown) => ({
+      id: 'sp-abc123',
+      builtin: false,
+      ...(body as Record<string, unknown>),
+    }))
+    mockFetch(
+      { members: [{ user_id: 'u-member', role: 'member' }], profiles: [BUILTIN] },
+      { onPost: post },
+    )
+    const wrapper = mountAs('u-member')
+    await flushPromises()
+
+    await wrapper.find('.gsp-icon-btn').trigger('click')
+    await wrapper.find('.gsp-save-btn').trigger('click')
+    await flushPromises()
+
+    expect(post).toHaveBeenCalledOnce()
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ name: 'claude-default', scope: 'user' }))
   })
 
   it('lets an owner create a guild-scoped profile', async () => {
