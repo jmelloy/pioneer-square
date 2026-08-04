@@ -1802,6 +1802,7 @@ async def _exec_one_tool(
                 requested_model: str | None = inp.get("model") or None
                 requested_tier: str | None = inp.get("tier") or None
                 requested_provider: str | None = inp.get("provider") or None
+                requested_create_pr = bool(inp.get("create_pr", False))
                 _blocked = _task_mutation_blocked(guild_id, task_id, own_task_id)
                 if _blocked:
                     result_text = _blocked
@@ -2012,6 +2013,7 @@ async def _exec_one_tool(
                                                     "model": requested_model,
                                                     "tier": requested_tier,
                                                     "provider": requested_provider,
+                                                    "create_pr": requested_create_pr,
                                                 }
                                             ),
                                             created_at=datetime.now(UTC),
