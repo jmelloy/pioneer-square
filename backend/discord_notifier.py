@@ -1100,9 +1100,13 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
     instead of dumping every raw tool call and result into the thread. A run with
     at most one tool call carries no useful grouping information, so — like the
     frontend — it passes through as its raw lines (e.g. ``▶ bash: pytest``)
-    instead of collapsing into a generic ``bash × 1`` turn summary. Non-tool
-    lines pass through unchanged. Returns the formatted text and the turn count
-    to carry into the next batch, so numbering stays sequential across flushes.
+    instead of collapsing into a generic ``bash × 1`` turn summary. Its
+    tool_result line (the actual command/tool output) is wrapped in Discord
+    spoiler tags (``||...||``) so the output stays click-to-reveal instead of
+    permanently cluttering the thread — the tool_use line naming what ran
+    stays plainly visible. Non-tool lines pass through unchanged. Returns the
+    formatted text and the turn count to carry into the next batch, so
+    numbering stays sequential across flushes.
     """
     output: list[str] = []
     group: list[_StreamEntry] = []
@@ -1127,7 +1131,16 @@ def _format_stream_entries(entries: list[_StreamEntry], start_turn: int) -> tupl
             # groups (matching the frontend, which also skips grouping these), so
             # turn numbering may skip a number when a single-tool group sits
             # between multi-tool groups.
-            output.extend(entry.line for entry in group)
+            for entry in group:
+                detail = entry.detail or {}
+                if detail.get("toolType") == "tool_result":
+                    # Spoiler-wrap the output so it's collapsed by default in
+                    # Discord (click to reveal) — the tool_use line above it
+                    # already shows what ran, so the output itself is the
+                    # noisy part worth hiding.
+                    output.append(f"||{entry.line}||")
+                else:
+                    output.append(entry.line)
             group = []
             return
         turn_number += 1
