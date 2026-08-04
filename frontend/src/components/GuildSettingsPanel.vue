@@ -269,6 +269,9 @@
           <section v-else-if="activeTab === 'spawn'" class="settings-section">
             <GuildSpawnDefaults v-if="currentGuild" :guild-id="currentGuild.id" />
 
+            <div class="foreman-divider">Spawn Profiles</div>
+            <GuildSpawnProfiles v-if="currentGuild" :guild-id="currentGuild.id" />
+
             <div class="foreman-divider">Worker Tools</div>
             <nav class="foreman-tool-tabs">
               <button
@@ -467,6 +470,7 @@ import { useAuthStore } from '../stores/auth'
 import { useModels } from '../composables/useModels'
 import GuildMembers from './GuildMembers.vue'
 import GuildSpawnDefaults from './GuildSpawnDefaults.vue'
+import GuildSpawnProfiles from './GuildSpawnProfiles.vue'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
