@@ -77,6 +77,16 @@ WORKTREE_SWEEP_INTERVAL_SECONDS = 60 * 60
 # list current if new repos are added or permissions change without a restart.
 REPO_REFRESH_INTERVAL_SECONDS = 20 * 60
 
+# How often to re-fetch the worker's GitHub token from the backend. The
+# backend prefers minting GitHub App installation tokens, which GitHub expires
+# after an hour; a worker process is designed to run for days (see
+# WORKTREE_TTL_SECONDS), so without a periodic re-fetch the cached token goes
+# stale partway through the worker's life and every `gh` CLI call, idle repo
+# pull, and repo-list refresh relying on it starts failing. Well under an
+# hour to leave margin. Task-scoped push/PR tokens are unaffected — those are
+# already re-fetched fresh per task by _task_github_token.
+GITHUB_TOKEN_REFRESH_INTERVAL_SECONDS = 45 * 60
+
 # Env vars that mean "claude has a way to authenticate". A direct key, an OAuth
 # token, a proxy auth token, or a gateway flag that makes claude authenticate
 # through the cloud provider's own credentials instead (this deployment runs
@@ -188,6 +198,15 @@ class Worker:
         # Monotonic timestamp of the last successful GitHub repo-list refresh.
         # 0 means never refreshed; _idle_puller compares against this.
         self._last_repo_refresh: float = 0.0
+        # Monotonic timestamp of the last GitHub token fetch/refresh; compared
+        # against GITHUB_TOKEN_REFRESH_INTERVAL_SECONDS by _idle_puller.
+        self._last_github_token_refresh: float = 0.0
+        # True once this worker has fetched its GitHub token from the backend
+        # itself (see _fetch_github_token_if_needed). Only a backend-fetched
+        # token is safe to periodically overwrite — a statically configured
+        # one (config file / PIONEER_GITHUB_TOKEN / GITHUB_TOKEN env var) is
+        # left alone since the backend endpoint may return an unrelated token.
+        self._github_token_dynamic: bool = False
         # Merged repo list for worker-register broadcasts (static config repos
         # plus API-discovered repos). Never used for task execution — only for
         # telling the backend/UI how many repos this worker can see.
@@ -289,33 +308,59 @@ class Worker:
             logger.warning("Usage report for task %s failed: %s", task_id, exc)
 
     async def _fetch_github_token_if_needed(self) -> None:
+        """Startup entry point: fetch a token from the backend only if none is configured.
+
+        A statically configured token (config file / PIONEER_GITHUB_TOKEN /
+        GITHUB_TOKEN env var) already lives in self.cfg.github_token by the
+        time this runs (see config.load_config), so the fetch is skipped and
+        the token is never periodically refreshed — see _refresh_github_token.
+        """
         if not self.cfg.github_token:
-            try:
-                async with await self._http(authed=True) as client:
-                    resp = await client.get(
-                        "/auth/github/token",
-                        params={"guild_id": self.cfg.guild_id},
-                    )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    self.cfg.github_token = data.get("access_token")
-                    logger.info("Fetched GitHub token for user %s", data.get("username"))
-                    # When the backend is App-authenticated it also returns the
-                    # bot's git author identity; set it so commits attribute to
-                    # the App rather than the push token's default identity.
-                    name = data.get("git_author_name")
-                    email = data.get("git_author_email")
-                    if name and email:
-                        await git_ops.set_git_identity(name, email)
-                        logger.info("Git author identity set to %s <%s>", name, email)
-                else:
-                    logger.warning("No GitHub token from backend (status %d)", resp.status_code)
-            except Exception as exc:
-                logger.warning("Could not fetch GitHub token: %s", exc)
+            await self._refresh_github_token()
+            self._github_token_dynamic = self.cfg.github_token is not None
 
         if self.cfg.github_token and not os.environ.get("GITHUB_TOKEN"):
             os.environ["GITHUB_TOKEN"] = self.cfg.github_token
             logger.info("GITHUB_TOKEN set in environment for gh CLI and subprocesses")
+
+    async def _refresh_github_token(self) -> None:
+        """Fetch the guild's current GitHub token from the backend and cache it.
+
+        Called once at startup by _fetch_github_token_if_needed, and then
+        periodically from _idle_puller (gated on _github_token_dynamic) so a
+        long-lived worker keeps a valid token — see
+        GITHUB_TOKEN_REFRESH_INTERVAL_SECONDS. Unlike the startup path, this
+        unconditionally overwrites both self.cfg.github_token and the
+        GITHUB_TOKEN env var so `gh` CLI calls, idle repo pulls, and repo-list
+        refreshes all pick up the new token immediately.
+        """
+        self._last_github_token_refresh = asyncio.get_event_loop().time()
+        try:
+            async with await self._http(authed=True) as client:
+                resp = await client.get(
+                    "/auth/github/token",
+                    params={"guild_id": self.cfg.guild_id},
+                )
+            if resp.status_code != 200:
+                logger.warning("No GitHub token from backend (status %d)", resp.status_code)
+                return
+            data = resp.json()
+            token = data.get("access_token")
+            if not token:
+                return
+            self.cfg.github_token = token
+            os.environ["GITHUB_TOKEN"] = token
+            logger.info("Refreshed GitHub token for user %s", data.get("username"))
+            # When the backend is App-authenticated it also returns the
+            # bot's git author identity; set it so commits attribute to
+            # the App rather than the push token's default identity.
+            name = data.get("git_author_name")
+            email = data.get("git_author_email")
+            if name and email:
+                await git_ops.set_git_identity(name, email)
+                logger.info("Git author identity set to %s <%s>", name, email)
+        except Exception as exc:
+            logger.warning("Could not fetch GitHub token: %s", exc)
 
     async def _task_github_token(self, task_id: str) -> str | None:
         """Fetch a fresh token to push/PR *task_id* as its triggering user.
@@ -1766,6 +1811,11 @@ class Worker:
             except Exception as exc:
                 logger.warning("Pending-task poll failed: %s", exc)
             now = asyncio.get_event_loop().time()
+            if (
+                self._github_token_dynamic
+                and now - self._last_github_token_refresh > GITHUB_TOKEN_REFRESH_INTERVAL_SECONDS
+            ):
+                await self._refresh_github_token()
             if (
                 self.cfg.github_token
                 and now - self._last_repo_refresh > REPO_REFRESH_INTERVAL_SECONDS
