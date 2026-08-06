@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import LogList from '../LogList.vue'
 import type { LogEntry } from '../../../types'
 
@@ -118,5 +119,40 @@ describe('LogList turn grouping', () => {
     expect(summaries).toHaveLength(2)
     expect(summaries[0].text()).toContain('Turn 1')
     expect(summaries[1].text()).toContain('Turn 2')
+  })
+})
+
+function setScrollMetrics(
+  el: HTMLElement,
+  { scrollTop, scrollHeight, clientHeight }: { scrollTop: number; scrollHeight: number; clientHeight: number },
+) {
+  Object.defineProperty(el, 'scrollHeight', { value: scrollHeight, configurable: true })
+  Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true })
+  el.scrollTop = scrollTop
+}
+
+describe('LogList auto-scroll', () => {
+  it('scrolls to the bottom when new logs arrive while already near the bottom', async () => {
+    const logs = [textLog('one')]
+    const wrapper = mount(LogList, { props: { logs } })
+    const el = wrapper.vm.bodyEl as HTMLElement
+    setScrollMetrics(el, { scrollTop: 40, scrollHeight: 100, clientHeight: 50 })
+
+    await wrapper.setProps({ logs: [...logs, textLog('two')] })
+    await nextTick()
+
+    expect(el.scrollTop).toBe(el.scrollHeight)
+  })
+
+  it('does not scroll when new logs arrive while the user has scrolled away from the bottom', async () => {
+    const logs = [textLog('one')]
+    const wrapper = mount(LogList, { props: { logs } })
+    const el = wrapper.vm.bodyEl as HTMLElement
+    setScrollMetrics(el, { scrollTop: 0, scrollHeight: 1000, clientHeight: 100 })
+
+    await wrapper.setProps({ logs: [...logs, textLog('two')] })
+    await nextTick()
+
+    expect(el.scrollTop).toBe(0)
   })
 })
