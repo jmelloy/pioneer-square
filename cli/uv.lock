@@ -865,7 +865,7 @@ wheels = [
 
 [[package]]
 name = "pioneer-square"
-version = "2026.7.29+4b2e598"
+version = "2026.8.5+69e49d3"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
