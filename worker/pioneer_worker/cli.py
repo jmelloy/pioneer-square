@@ -8,6 +8,7 @@ import logging
 import logging.config
 import os
 import sys
+import time
 
 from . import __version__
 from . import config as config_mod
@@ -221,26 +222,50 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {msg}", file=sys.stderr)
         return 2
 
-    if args.mock:
-        log.info(
-            "Starting in MOCK mode (HTTP API on %s:%d)",
-            args.mock_api_host,
-            args.mock_api_port,
-        )
-        worker = MockWorker(
-            cfg,
-            mock_api_port=args.mock_api_port,
-            mock_api_host=args.mock_api_host,
-        )
-    else:
-        worker = Worker(cfg)
-    try:
-        asyncio.run(worker.run())
-    except KeyboardInterrupt:
-        log.info("Interrupted; shutting down")
-        print("\nShutting down.", file=sys.stderr)
-        return 0
-    return 0
+    def _build_worker():
+        if args.mock:
+            log.info(
+                "Starting in MOCK mode (HTTP API on %s:%d)",
+                args.mock_api_host,
+                args.mock_api_port,
+            )
+            return MockWorker(
+                cfg,
+                mock_api_port=args.mock_api_port,
+                mock_api_host=args.mock_api_host,
+            )
+        return Worker(cfg)
+
+    # Worker processes are usually launched as one-off containers/tasks with no
+    # external supervisor to restart them on crash (e.g. ECS RunTask has no
+    # restartPolicy). Treat an unhandled exception from run() as a transient
+    # fault rather than a fatal one: log it with full context and restart in
+    # place with capped exponential backoff, mirroring the same "retry forever,
+    # the process is a long-running daemon" philosophy WSClient already uses for
+    # backend reconnects. cfg.worker_id/auth_token persist across restarts (once
+    # registration succeeds) so a crash-restart resumes the same worker identity
+    # instead of re-registering.
+    crash_count = 0
+    while True:
+        worker = _build_worker()
+        try:
+            asyncio.run(worker.run())
+            return 0
+        except KeyboardInterrupt:
+            log.info("Interrupted; shutting down")
+            print("\nShutting down.", file=sys.stderr)
+            return 0
+        except Exception as exc:
+            crash_count += 1
+            delay = min(300.0, 5.0 * (2 ** min(crash_count - 1, 6)))
+            log.exception(
+                "Worker crashed (crash #%d, worker_id=%s): %s — restarting in %.1fs",
+                crash_count,
+                cfg.worker_id or "<unregistered>",
+                exc,
+                delay,
+            )
+            time.sleep(delay)
 
 
 if __name__ == "__main__":

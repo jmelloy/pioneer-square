@@ -20,6 +20,11 @@ _LEVEL = "worker"
 # Matches a remote URL carrying inline credentials (https://<userinfo>@host/…).
 _CREDENTIALED_URL_RE = re.compile(r"^(https?://)[^/@]+@")
 
+# Guards every git invocation against a hung subprocess — a stalled network
+# fetch/push or a wait on a lock file left by a crashed process would otherwise
+# block the calling agent (or the idle puller / startup clone) forever.
+GIT_TIMEOUT_SECONDS = 300.0
+
 
 def _auth_env(token: str | None) -> dict[str, str] | None:
     """Per-invocation git config carrying *token*, or None when there is none.
@@ -42,9 +47,17 @@ def _auth_env(token: str | None) -> dict[str, str] | None:
 
 
 async def run_git(
-    args: list[str], cwd: str | None = None, token: str | None = None
+    args: list[str],
+    cwd: str | None = None,
+    token: str | None = None,
+    timeout: float = GIT_TIMEOUT_SECONDS,
 ) -> tuple[int, str, str]:
-    """Run a git command. *token*, when given, authenticates this call only."""
+    """Run a git command. *token*, when given, authenticates this call only.
+
+    *timeout* bounds the whole invocation; a git process that hangs (network
+    stall, waiting on a lock file left by a crashed process) is killed rather
+    than left to block the caller indefinitely.
+    """
     logger.debug("git %s (cwd=%s)", " ".join(args), cwd or os.getcwd())
     started = time.monotonic()
     auth = _auth_env(token)
@@ -56,7 +69,23 @@ async def run_git(
         stderr=asyncio.subprocess.PIPE,
         env={**os.environ, **auth} if auth else None,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        elapsed = time.monotonic() - started
+        logger.warning(
+            "git %s timed out after %.1fs (limit %.1fs); killing pid=%s",
+            " ".join(args),
+            elapsed,
+            timeout,
+            proc.pid,
+        )
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        return -1, "", f"git {' '.join(args)} timed out after {timeout:.0f}s"
     rc = proc.returncode if proc.returncode is not None else -1
     elapsed = time.monotonic() - started
     if rc != 0:
@@ -190,7 +219,9 @@ async def set_git_identity(name: str, email: str) -> None:
     await run_git(["config", "--global", "user.email", email])
 
 
-async def run_gh(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
+async def run_gh(
+    args: list[str], cwd: str | None = None, timeout: float = GIT_TIMEOUT_SECONDS
+) -> tuple[int, str, str]:
     logger.debug("gh %s (cwd=%s)", " ".join(args), cwd or os.getcwd())
     proc = await asyncio.create_subprocess_exec(
         "gh",
@@ -199,7 +230,18 @@ async def run_gh(args: list[str], cwd: str | None = None) -> tuple[int, str, str
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        logger.warning(
+            "gh %s timed out after %.1fs; killing pid=%s", " ".join(args), timeout, proc.pid
+        )
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        return -1, "", f"gh {' '.join(args)} timed out after {timeout:.0f}s"
     rc = proc.returncode if proc.returncode is not None else -1
     if rc != 0:
         logger.warning(

@@ -345,3 +345,33 @@ async def test_idle_puller_skips_refresh_before_interval():
             await worker._idle_puller()
 
     worker._refresh_github_repos.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_idle_puller_survives_pull_repos_failure():
+    """A pull_repos error (e.g. a hung/failing git op) must not kill the idle
+    puller task — that would cascade into a full worker-process crash via
+    run()'s FIRST_COMPLETED handling of aux tasks."""
+    worker = _make_worker(repos=["owner/repo1"])
+    worker._fetch_pending_tasks = AsyncMock(return_value=[])
+
+    call_count = 0
+
+    async def fake_wait_for(coro, timeout):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            worker._shutdown_event.set()
+        raise TimeoutError
+
+    with (
+        patch("asyncio.wait_for", side_effect=fake_wait_for),
+        patch(
+            "pioneer_worker.worker.git_ops.pull_repos",
+            new=AsyncMock(side_effect=RuntimeError("boom — simulated git failure")),
+        ) as mock_pull,
+    ):
+        # No exception should escape _idle_puller.
+        await worker._idle_puller()
+
+    mock_pull.assert_awaited()
