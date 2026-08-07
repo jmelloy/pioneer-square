@@ -158,11 +158,26 @@ defineExpose({
   },
 })
 
+// How close to the bottom (in px) counts as "at the bottom" for auto-scroll purposes.
+const BOTTOM_THRESHOLD = 48
+
+function isNearBottom(): boolean {
+  const el = bodyEl.value
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD
+}
+
 watch(
   () => props.logs,
   async () => {
+    // Capture scroll position before new entries are rendered, so it reflects
+    // whether the user was at the bottom prior to this update rather than after
+    // (once new content lands, the pre-update scrollTop no longer looks "at bottom").
+    const shouldStickToBottom = isNearBottom()
     await nextTick()
-    if (bodyEl.value) bodyEl.value.scrollTop = bodyEl.value.scrollHeight
+    if (shouldStickToBottom && bodyEl.value) {
+      bodyEl.value.scrollTop = bodyEl.value.scrollHeight
+    }
   },
   { deep: true },
 )
