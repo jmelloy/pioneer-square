@@ -1152,6 +1152,25 @@ async def github_webhook(
                 name=f"discord.ci-check:{_pr_label}:{check_name}",
             )
 
+    # New commits on a PR branch may address a prior bot review's requested
+    # changes — offer to dismiss that stale review so it stops blocking merge.
+    # Best-effort and gated behind AUTO_DISMISS_CHANGES_REQUESTED (default off);
+    # see foreman.tools.maybe_dismiss_stale_changes_requested_review.
+    if event_type == "pull_request" and action == "synchronize" and repo and pr_number:
+        from foreman.tools import maybe_dismiss_stale_changes_requested_review
+
+        pr_obj = payload.get("pull_request") or {}
+        spawn(
+            maybe_dismiss_stale_changes_requested_review(
+                guild_id,
+                repo,
+                pr_number,
+                pr_obj.get("updated_at"),
+                (pr_obj.get("head") or {}).get("sha"),
+            ),
+            name=f"auto-dismiss-review:{_pr_label}",
+        )
+
     await broadcast_msg(
         guild_id,
         GithubEventMsg(
