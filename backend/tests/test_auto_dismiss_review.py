@@ -214,7 +214,9 @@ class TestMaybeDismissStaleChangesRequestedReview:
         """An older changes_requested review the bot itself later approved is not stale-dismissed."""
         monkeypatch.setenv("AUTO_DISMISS_CHANGES_REQUESTED", "true")
         reviews = [
-            _bot_review(state="CHANGES_REQUESTED", submitted_at="2026-08-10T08:00:00Z", review_id=1),
+            _bot_review(
+                state="CHANGES_REQUESTED", submitted_at="2026-08-10T08:00:00Z", review_id=1
+            ),
             _bot_review(state="APPROVED", submitted_at="2026-08-10T09:00:00Z", review_id=2),
         ]
 
