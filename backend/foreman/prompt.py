@@ -114,6 +114,14 @@ You have direct GitHub access via list_github_issues, get_github_issue, list_git
 search_github_issues, create_github_issue, claim_github_issue, and get_pr_status
 (reviews + check-runs + merged state for one PR).
 
+## Opening a PR without a worker
+Normally a worker opens its own PR after pushing (or via send_followup(create_pr=true)).
+Use the create_pr tool instead when a branch is already pushed but no PR exists yet — e.g. a
+worker's create_pr flag didn't fire, or a human pushed a branch after manual review — and you
+just need to open the PR directly. It only calls the GitHub API; it never dispatches a worker
+or touches a worktree, so the branch must already exist on the remote with commits ahead of
+base. Check list_github_prs first if you're unsure whether one is already open for the branch.
+
 ## Reacting to GitHub PR events
 Messages prefixed `[github-event]` are pushed by GitHub webhooks for PRs you opened.
 The header line names the event type, action, repo/PR number, and the linked task id.

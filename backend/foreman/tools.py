@@ -373,6 +373,68 @@ def _gh_api_post(path: str, token: str, payload: dict, method: str = "POST") -> 
         raise
 
 
+def _create_pr_api(repo: str, token: str, payload: dict) -> dict:
+    """POST /repos/{repo}/pulls and return the created PR's JSON.
+
+    On failure, raises RuntimeError with a message tailored to the common
+    create_pr failure modes (missing branch, no diff between base/head, PR
+    already open, repo not found) instead of surfacing GitHub's generic
+    "Validation Failed" 422 body.
+    """
+    req = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/pulls",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            _record_api_call(f"/repos/{repo}/pulls", resp.status, resp.headers)
+            return data
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        _record_api_call(f"/repos/{repo}/pulls", exc.code, exc.headers)
+        try:
+            body = json.loads(raw) if raw else {}
+        except (ValueError, TypeError):
+            body = {}
+        top_message = body.get("message", "") if isinstance(body, dict) else ""
+        errors = body.get("errors") if isinstance(body, dict) else None
+        errors = errors if isinstance(errors, list) else []
+        error_detail = " ".join(
+            e.get("message", "") for e in errors if isinstance(e, dict) and e.get("message")
+        )
+        combined = f"{top_message} {error_detail}".lower()
+
+        if exc.code == 404:
+            raise RuntimeError(f"Repo {repo!r} not found, or token lacks access to it.") from exc
+        if exc.code == 422 and "already exists" in combined:
+            raise RuntimeError(
+                f"{top_message or error_detail} — a PR for {payload['head']!r} may already be "
+                "open; use list_github_prs or get_pr_status to find it."
+            ) from exc
+        if exc.code == 422 and "no commits" in combined:
+            raise RuntimeError(
+                f"No changes between {payload['base']!r} and {payload['head']!r} "
+                "— nothing to open a PR for."
+            ) from exc
+        if exc.code == 422 and any(e.get("field") == "head" for e in errors):
+            raise RuntimeError(
+                f"Branch {payload['head']!r} not found in {repo} "
+                "— push the branch before calling create_pr."
+            ) from exc
+        if exc.code == 422 and any(e.get("field") == "base" for e in errors):
+            raise RuntimeError(f"Base branch {payload['base']!r} not found in {repo}.") from exc
+        raise RuntimeError(
+            f"GitHub rejected PR creation ({exc.code}): {top_message or error_detail or exc.reason}"
+        ) from exc
+
+
 def _gh_api_diff(path: str, token: str) -> str:
     """GET a GitHub API path and return the raw unified diff text."""
     req = urllib.request.Request(
@@ -2432,6 +2494,7 @@ async def _exec_one_tool(
             "create_github_issue",
             "search_github_issues",
             "get_pr_status",
+            "create_pr",
             "review_pr_internal",
             "analyze_epic",
         ):
@@ -2561,6 +2624,39 @@ async def _exec_one_tool(
                         repo = inp["repo"]
                         num = int(inp["pr_number"])
                         result_text = json.dumps(await fetch_pr_status(repo, num, token))
+
+                    elif tu.name == "create_pr":
+                        repo = inp["repo"]
+                        branch = inp["branch"]
+                        base = inp.get("base") or "main"
+                        pr = await _to_thread(
+                            _create_pr_api,
+                            repo,
+                            token,
+                            {
+                                "title": inp["title"],
+                                "body": inp.get("body", ""),
+                                "head": branch,
+                                "base": base,
+                            },
+                        )
+                        logger.info(
+                            "guild=%s create_pr: repo=%s %s -> %s pr=#%s",
+                            guild_id,
+                            repo,
+                            branch,
+                            base,
+                            pr.get("number"),
+                        )
+                        result_text = json.dumps(
+                            {
+                                "number": pr["number"],
+                                "url": pr["html_url"],
+                                "repo": repo,
+                                "head": branch,
+                                "base": base,
+                            }
+                        )
 
                     elif tu.name == "search_github_issues":
                         repo = inp["repo"]

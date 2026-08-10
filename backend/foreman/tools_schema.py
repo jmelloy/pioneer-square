@@ -494,6 +494,34 @@ FOREMAN_TOOLS = [
         },
     },
     {
+        "name": "create_pr",
+        "description": (
+            "Open a GitHub pull request for a branch that has already been pushed — e.g. after "
+            "a worker's send_followup with a create_pr flag, or after manual review confirms a "
+            "branch is ready. This does not dispatch a worker or touch any worktree; it only "
+            "calls the GitHub API to open the PR. The branch must already exist on the remote "
+            "with commits ahead of base, or this fails — use get_pr_status or list_github_prs "
+            "first if unsure whether a PR already exists for the branch."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/repo"},
+                "branch": {
+                    "type": "string",
+                    "description": "Name of the already-pushed branch containing the changes (head).",
+                },
+                "title": {"type": "string", "description": "Pull request title."},
+                "body": {"type": "string", "description": "Pull request description in markdown."},
+                "base": {
+                    "type": "string",
+                    "description": "Target branch to merge into. Default: main.",
+                },
+            },
+            "required": ["repo", "branch", "title", "body"],
+        },
+    },
+    {
         "name": "search_github_issues",
         "description": (
             "Search GitHub issues and PRs by keyword within a repo. "

@@ -2832,6 +2832,100 @@ class TestExecToolsResultHandling:
         parsed = json.loads(results[0]["content"])
         assert parsed[0]["number"] == 3
 
+    async def test_create_pr_returns_number_and_url(self, db_session):
+        insert_guild(db_session, "g-gh-createpr")
+        fake_pr = {
+            "number": 88,
+            "html_url": "https://github.com/org/repo/pull/88",
+        }
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._create_pr_api", return_value=fake_pr) as mock_create,
+        ):
+            results = await exec_tools(
+                "g-gh-createpr",
+                [
+                    _fake_tool_use(
+                        "create_pr",
+                        {
+                            "repo": "org/repo",
+                            "branch": "feature/x",
+                            "title": "Add X",
+                            "body": "Details",
+                        },
+                    )
+                ],
+            )
+        parsed = json.loads(results[0]["content"])
+        assert parsed["number"] == 88
+        assert parsed["url"] == "https://github.com/org/repo/pull/88"
+        assert parsed["base"] == "main"
+        payload = mock_create.call_args[0][2]
+        assert payload == {
+            "title": "Add X",
+            "body": "Details",
+            "head": "feature/x",
+            "base": "main",
+        }
+
+    async def test_create_pr_honors_explicit_base(self, db_session):
+        insert_guild(db_session, "g-gh-createpr-base")
+        fake_pr = {"number": 5, "html_url": "https://github.com/org/repo/pull/5"}
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch("foreman.tools._create_pr_api", return_value=fake_pr) as mock_create,
+        ):
+            await exec_tools(
+                "g-gh-createpr-base",
+                [
+                    _fake_tool_use(
+                        "create_pr",
+                        {
+                            "repo": "org/repo",
+                            "branch": "feature/y",
+                            "title": "Add Y",
+                            "body": "Details",
+                            "base": "develop",
+                        },
+                    )
+                ],
+            )
+        payload = mock_create.call_args[0][2]
+        assert payload["base"] == "develop"
+
+    async def test_create_pr_friendly_error_propagates(self, db_session):
+        """A RuntimeError raised by _create_pr_api (friendly message) surfaces as the tool error."""
+        insert_guild(db_session, "g-gh-createpr-err")
+        with (
+            patch("foreman.tools.broadcast", new_callable=AsyncMock),
+            patch("foreman.tools._guild_github_token", return_value=("tok", "user")),
+            patch(
+                "foreman.tools._create_pr_api",
+                side_effect=RuntimeError(
+                    "Branch 'feature/z' not found in org/repo — push the branch before calling "
+                    "create_pr."
+                ),
+            ),
+        ):
+            results = await exec_tools(
+                "g-gh-createpr-err",
+                [
+                    _fake_tool_use(
+                        "create_pr",
+                        {
+                            "repo": "org/repo",
+                            "branch": "feature/z",
+                            "title": "Add Z",
+                            "body": "Details",
+                        },
+                    )
+                ],
+            )
+        assert results[0].get("is_error") is True
+        assert "not found in org/repo" in results[0]["content"]
+
     async def test_fetch_devready_dedups_labels_and_filters_linked(self, db_session):
         """Pre-fetch merges label variants (dedup by number) and drops already-linked issues."""
         from foreman.runner import _fetch_devready_issues
@@ -2907,6 +3001,135 @@ class TestExecToolsResultHandling:
         assert isinstance(results[0]["content"], str)
         parsed = json.loads(results[0]["content"])
         assert len(parsed["recent_logs"]) == 50
+
+
+class TestCreatePrApi:
+    """_create_pr_api translates GitHub's generic 422 bodies into specific,
+    foreman-facing error messages for the common create_pr failure modes."""
+
+    @staticmethod
+    def _http_error(code, body_dict, reason="Unprocessable Entity"):
+        import io
+        import urllib.error
+
+        body = json.dumps(body_dict).encode() if body_dict is not None else b""
+        return urllib.error.HTTPError(
+            url="https://api.github.com/repos/org/repo/pulls",
+            code=code,
+            msg=reason,
+            hdrs=None,
+            fp=io.BytesIO(body),
+        )
+
+    def test_success_returns_parsed_json(self):
+        from foreman.tools import _create_pr_api
+
+        fake_pr = {"number": 1, "html_url": "https://github.com/org/repo/pull/1"}
+        fake_resp = MagicMock()
+        fake_resp.read.return_value = json.dumps(fake_pr).encode()
+        fake_resp.status = 201
+        fake_resp.headers = {}
+        fake_resp.__enter__.return_value = fake_resp
+        fake_resp.__exit__.return_value = False
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            result = _create_pr_api(
+                "org/repo", "tok", {"title": "t", "body": "b", "head": "feat", "base": "main"}
+            )
+        assert result == fake_pr
+
+    def test_branch_not_found(self):
+        from foreman.tools import _create_pr_api
+
+        err = self._http_error(
+            422,
+            {
+                "message": "Validation Failed",
+                "errors": [{"resource": "PullRequest", "field": "head", "code": "invalid"}],
+            },
+        )
+        with patch("urllib.request.urlopen", side_effect=err):
+            with pytest.raises(RuntimeError, match="not found in org/repo"):
+                _create_pr_api(
+                    "org/repo",
+                    "tok",
+                    {"title": "t", "body": "b", "head": "no-such-branch", "base": "main"},
+                )
+
+    def test_base_branch_not_found(self):
+        from foreman.tools import _create_pr_api
+
+        err = self._http_error(
+            422,
+            {
+                "message": "Validation Failed",
+                "errors": [{"resource": "PullRequest", "field": "base", "code": "invalid"}],
+            },
+        )
+        with patch("urllib.request.urlopen", side_effect=err):
+            with pytest.raises(RuntimeError, match="Base branch"):
+                _create_pr_api(
+                    "org/repo",
+                    "tok",
+                    {"title": "t", "body": "b", "head": "feat", "base": "no-such-base"},
+                )
+
+    def test_no_commits_between_branches(self):
+        from foreman.tools import _create_pr_api
+
+        err = self._http_error(
+            422,
+            {
+                "message": "Validation Failed",
+                "errors": [
+                    {
+                        "resource": "PullRequest",
+                        "code": "custom",
+                        "message": "No commits between main and feat",
+                    }
+                ],
+            },
+        )
+        with patch("urllib.request.urlopen", side_effect=err):
+            with pytest.raises(RuntimeError, match="No changes between"):
+                _create_pr_api(
+                    "org/repo", "tok", {"title": "t", "body": "b", "head": "feat", "base": "main"}
+                )
+
+    def test_pr_already_exists(self):
+        from foreman.tools import _create_pr_api
+
+        err = self._http_error(
+            422,
+            {
+                "message": "A pull request already exists for org:feat.",
+                "errors": [],
+            },
+        )
+        with patch("urllib.request.urlopen", side_effect=err):
+            with pytest.raises(RuntimeError, match="already exists"):
+                _create_pr_api(
+                    "org/repo", "tok", {"title": "t", "body": "b", "head": "feat", "base": "main"}
+                )
+
+    def test_repo_not_found(self):
+        from foreman.tools import _create_pr_api
+
+        err = self._http_error(404, {"message": "Not Found"}, reason="Not Found")
+        with patch("urllib.request.urlopen", side_effect=err):
+            with pytest.raises(RuntimeError, match="not found, or token lacks access"):
+                _create_pr_api(
+                    "org/repo", "tok", {"title": "t", "body": "b", "head": "feat", "base": "main"}
+                )
+
+    def test_generic_422_falls_back_to_message(self):
+        from foreman.tools import _create_pr_api
+
+        err = self._http_error(422, {"message": "Something else went wrong", "errors": []})
+        with patch("urllib.request.urlopen", side_effect=err):
+            with pytest.raises(RuntimeError, match="Something else went wrong"):
+                _create_pr_api(
+                    "org/repo", "tok", {"title": "t", "body": "b", "head": "feat", "base": "main"}
+                )
 
 
 # ---------------------------------------------------------------------------
