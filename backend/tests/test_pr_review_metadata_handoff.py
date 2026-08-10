@@ -48,7 +48,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module
 from _test_config import TEST_DATABASE_URL
 from foreman.tools import exec_tools
-from helpers import create_db, insert_guild, insert_worker, truncate_all
+from helpers import create_db, insert_guild, insert_worker, make_auth_token, truncate_all
 from models import Task
 from routes.webhooks import _build_foreman_summary
 
@@ -226,3 +226,109 @@ class TestAssignTaskReceivesStructuredPrMetadata:
         assert task.pr_number is None
         assert task.branch is None
         assert task.pr_url is None
+
+
+# ---------------------------------------------------------------------------
+# Deterministic fill — when the Foreman passes pr_repo/pr_number for a review
+# task but omits branch/pr_url/head_sha (an uncompliant but recoverable
+# turn), assign_task must fetch the missing coordinates from GitHub itself
+# rather than persisting nulls and leaving the worker to fail fast.
+# ---------------------------------------------------------------------------
+
+
+class TestAssignTaskFillsMissingPrMetadataFromGitHub:
+    @pytest.mark.asyncio
+    async def test_assign_task_fetches_missing_branch_url_head_sha(self, db_session):
+        guild_id = "g-handoff-fill"
+        worker_id = "w-handoff-fill"
+        make_auth_token(db_session)
+        insert_guild(db_session, guild_id)
+        insert_worker(
+            db_session,
+            guild_id,
+            worker_id,
+            state="idle",
+            tools='["claude"]',
+            repos=f'["{PR_REPO}"]',
+        )
+
+        tu = _tool(
+            "assign_task",
+            {
+                "worker_id": worker_id,
+                "description": f"Review PR #{PR_NUMBER}",
+                "phase": "review",
+                "pr_number": PR_NUMBER,
+                "pr_repo": PR_REPO,
+            },
+        )
+
+        fake_pr = {
+            "html_url": PR_URL,
+            "head": {"ref": PR_BRANCH, "sha": PR_HEAD_SHA},
+        }
+
+        with (
+            patch("foreman.tools.broadcast", new=AsyncMock()) as mock_broadcast,
+            patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+            patch("foreman.tools._gh_api", return_value=fake_pr) as mock_gh_api,
+        ):
+            results = await exec_tools(guild_id, [tu])
+
+        assert not results[0].get("is_error"), f"assign_task failed: {results[0]['content']}"
+        mock_gh_api.assert_called_once_with(f"/repos/{PR_REPO}/pulls/{PR_NUMBER}", "gh_tok_fake")
+
+        content = results[0]["content"]
+        task_id = next(tok for tok in content.split() if tok.startswith("t-"))
+
+        assert mock_broadcast.await_count == 1
+        _, msg = mock_broadcast.await_args.args
+        assert msg["branch"] == PR_BRANCH
+        assert msg["prUrl"] == PR_URL
+        assert msg["headSha"] == PR_HEAD_SHA
+
+        task = await _get_task(task_id)
+        assert task is not None
+        assert task.branch == PR_BRANCH
+        assert task.pr_url == PR_URL
+
+    @pytest.mark.asyncio
+    async def test_assign_task_does_not_fetch_when_metadata_already_complete(self, db_session):
+        """Sanity check: the GitHub fetch is a fallback, not an unconditional
+        refresh — a fully-specified assign_task call must not hit the network."""
+        guild_id = "g-handoff-nofetch"
+        worker_id = "w-handoff-nofetch"
+        make_auth_token(db_session)
+        insert_guild(db_session, guild_id)
+        insert_worker(
+            db_session,
+            guild_id,
+            worker_id,
+            state="idle",
+            tools='["claude"]',
+            repos=f'["{PR_REPO}"]',
+        )
+
+        tu = _tool(
+            "assign_task",
+            {
+                "worker_id": worker_id,
+                "description": f"Review PR #{PR_NUMBER}",
+                "phase": "review",
+                "pr_number": PR_NUMBER,
+                "pr_repo": PR_REPO,
+                "branch": PR_BRANCH,
+                "pr_url": PR_URL,
+                "head_sha": PR_HEAD_SHA,
+            },
+        )
+
+        with (
+            patch("foreman.tools.broadcast", new=AsyncMock()),
+            patch("foreman.tools.emit_terminal_line", new=AsyncMock()),
+            patch("foreman.tools._gh_api") as mock_gh_api,
+        ):
+            results = await exec_tools(guild_id, [tu])
+
+        assert not results[0].get("is_error")
+        mock_gh_api.assert_not_called()

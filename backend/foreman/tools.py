@@ -1591,6 +1591,32 @@ async def _exec_one_tool(
                     if not effective_pr_url:
                         effective_pr_url = existing_pr_url
 
+                # Deterministic fill: if a review task is being assigned with
+                # pr_repo/pr_number but the Foreman omitted branch/pr_url/head_sha,
+                # fetch them from GitHub rather than relying on the LLM to have
+                # passed them — this is what previously produced review tasks with
+                # issue_repo=null/branch=null/pr_url=null (#1125).
+                if phase == "review" and effective_pr_repo and effective_pr_number:
+                    if not effective_branch or not effective_pr_url or not effective_head_sha:
+                        creds = await _guild_github_token(guild_id, user_id)
+                        if creds:
+                            gh_token, _gh_username = creds
+                            try:
+                                pr_data = await _to_thread(
+                                    _gh_api,
+                                    f"/repos/{effective_pr_repo}/pulls/{effective_pr_number}",
+                                    gh_token,
+                                )
+                            except urllib.error.HTTPError:
+                                pr_data = None
+                            if pr_data:
+                                if not effective_branch:
+                                    effective_branch = (pr_data.get("head") or {}).get("ref")
+                                if not effective_pr_url:
+                                    effective_pr_url = pr_data.get("html_url")
+                                if not effective_head_sha:
+                                    effective_head_sha = (pr_data.get("head") or {}).get("sha")
+
                 guild_result = await db.exec(
                     select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
                 )
