@@ -1035,6 +1035,153 @@ async def _supersede_prior_bot_reviews(
 
 
 # ---------------------------------------------------------------------------
+# Auto-dismissal of stale changes_requested reviews on push
+# ---------------------------------------------------------------------------
+
+# Gates dismissing a bot's changes_requested review when the PR branch receives
+# a new push (webhooks.py's pull_request/synchronize handler). Off by default —
+# operators opt in once they trust the heuristic.
+_AUTO_DISMISS_ENV = "AUTO_DISMISS_CHANGES_REQUESTED"
+# When set, an extra commit fetch gates dismissal on the head commit message
+# mentioning one of _FIX_KEYWORDS, rather than dismissing on any push.
+_AUTO_DISMISS_REQUIRE_FIX_KEYWORD_ENV = "AUTO_DISMISS_REQUIRE_FIX_KEYWORD"
+_FIX_KEYWORDS = ("fix", "address", "resolve", "correct")
+
+
+def _auto_dismiss_enabled() -> bool:
+    flag = os.environ.get(_AUTO_DISMISS_ENV, "").strip().lower()
+    return flag in ("1", "true", "yes", "on")
+
+
+def _auto_dismiss_requires_fix_keyword() -> bool:
+    flag = os.environ.get(_AUTO_DISMISS_REQUIRE_FIX_KEYWORD_ENV, "").strip().lower()
+    return flag in ("1", "true", "yes", "on")
+
+
+def _commit_message_mentions_fix(message: str) -> bool:
+    lowered = message.lower()
+    return any(keyword in lowered for keyword in _FIX_KEYWORDS)
+
+
+async def maybe_dismiss_stale_changes_requested_review(
+    guild_id: str,
+    pr_repo: str,
+    pr_number: int,
+    push_updated_at: str | None,
+    head_sha: str | None,
+) -> str | None:
+    """Dismiss this guild's bot's stale ``CHANGES_REQUESTED`` review on *pr_number*.
+
+    Called from the webhook receiver on ``pull_request``/``synchronize`` — the
+    friction this addresses is that a changes_requested review stays blocking
+    even after the author pushes a fix. Gated by ``AUTO_DISMISS_CHANGES_REQUESTED``
+    (default off, see :func:`_auto_dismiss_enabled`). Only ever targets the review
+    belonging to this guild's own bot identity (the GitHub App installation, or
+    the guild owner's token when no App is configured — see
+    :func:`_guild_github_token`) — never a human reviewer's, and only when the
+    review predates *push_updated_at* so an in-flight review can't be raced.
+
+    Returns the bot's login on success, ``None`` when disabled, no eligible
+    review was found, or the GitHub API call failed (logged, never raised —
+    dismissal is best-effort and must not block the rest of the webhook flow).
+    """
+    if not _auto_dismiss_enabled():
+        return None
+    if not push_updated_at:
+        return None
+    try:
+        push_ts = datetime.fromisoformat(push_updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    creds = await _guild_github_token(guild_id)
+    if creds is None:
+        return None
+    token, bot_login = creds
+
+    try:
+        reviews = await _to_thread(
+            _gh_api, f"/repos/{pr_repo}/pulls/{pr_number}/reviews?per_page=50", token
+        )
+    except urllib.error.HTTPError:
+        logger.warning(
+            "auto-dismiss: failed to fetch reviews for %s#%d", pr_repo, pr_number, exc_info=True
+        )
+        return None
+    if not isinstance(reviews, list):
+        return None
+
+    # Only the bot's *latest* review reflects its current (possibly superseded)
+    # state — an older changes_requested review the bot itself later approved
+    # must not be treated as still-blocking.
+    bot_reviews = sorted(
+        (
+            r
+            for r in reviews
+            if isinstance(r, dict)
+            and ((r.get("user") or {}).get("login") or "").lower() == bot_login.lower()
+        ),
+        key=lambda r: r.get("submitted_at") or "",
+    )
+    if not bot_reviews:
+        return None
+    latest = bot_reviews[-1]
+    if (latest.get("state") or "").upper() != "CHANGES_REQUESTED":
+        return None
+
+    submitted_at = latest.get("submitted_at")
+    if not submitted_at:
+        return None
+    try:
+        submitted_ts = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if submitted_ts >= push_ts:
+        return None
+
+    if _auto_dismiss_requires_fix_keyword():
+        if not head_sha:
+            return None
+        try:
+            commit = await _to_thread(_gh_api, f"/repos/{pr_repo}/commits/{head_sha}", token)
+        except urllib.error.HTTPError:
+            return None
+        message = (commit.get("commit") or {}).get("message") or ""
+        if not _commit_message_mentions_fix(message):
+            return None
+
+    review_id = latest.get("id")
+    logger.info(
+        "Dismissing stale changes_requested review for PR #%s (review=%s repo=%s bot=%s)",
+        pr_number,
+        review_id,
+        pr_repo,
+        bot_login,
+    )
+    try:
+        await _to_thread(
+            _gh_api_post,
+            f"/repos/{pr_repo}/pulls/{pr_number}/reviews/{review_id}/dismissals",
+            token,
+            {
+                "message": "Automatically dismissed: new commits were pushed to address this review.",
+                "event": "DISMISS",
+            },
+            "PUT",
+        )
+    except urllib.error.HTTPError:
+        logger.warning(
+            "auto-dismiss: failed to dismiss review %s on %s#%d",
+            review_id,
+            pr_repo,
+            pr_number,
+            exc_info=True,
+        )
+        return None
+    return bot_login
+
+
+# ---------------------------------------------------------------------------
 # A2A agent call helpers
 # ---------------------------------------------------------------------------
 
