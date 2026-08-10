@@ -156,6 +156,23 @@ FOREMAN_TOOLS = [
                     "type": "string",
                     "description": "owner/repo of the PR (for phase='review'; defaults to issue_repo).",
                 },
+                "branch": {
+                    "type": "string",
+                    "description": (
+                        "The PR's head ref (e.g. 'feature-branch'). Optional metadata for "
+                        "phase='review' tasks — the worker re-resolves the actual head branch "
+                        "from pr_number/pr_repo at checkout time, but recording it here lets "
+                        "the task row and logs show which branch was under review."
+                    ),
+                },
+                "pr_url": {
+                    "type": "string",
+                    "description": "Full URL of the pull request (e.g. from the webhook payload).",
+                },
+                "head_sha": {
+                    "type": "string",
+                    "description": "The PR head commit SHA at the time this task was created (informational, for logging).",
+                },
                 "repos": {
                     "type": "array",
                     "items": {"type": "string"},

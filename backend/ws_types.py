@@ -131,6 +131,9 @@ class TaskAssignedMsg(_WS):
     issueRepo: str | None = None
     prNumber: int | None = None
     prRepo: str | None = None
+    branch: str | None = None
+    prUrl: str | None = None
+    headSha: str | None = None
     repos: list[str] | None = None
 
 

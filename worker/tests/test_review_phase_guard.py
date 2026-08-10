@@ -319,3 +319,104 @@ async def test_review_prefers_pr_number_over_issue_number():
     mock_get_branch.assert_awaited_once_with("owner/repo", 99)
     mock_co.assert_awaited_once_with("/tmp/fake-repo", expected_wt_path, 99, "owner/repo", None)
     mock_create_worktree.assert_not_called()
+
+
+# ── metadata handoff preflight guard (issue #1124) ────────────────────────────
+
+
+async def test_review_task_missing_metadata_aborts_before_checkout():
+    """A review task with no pr_repo/pr_number and no issue_repo/issue_number
+    fallback must fail fast, before ever touching git, instead of reaching
+    git_ops.get_pr_head_branch with None arguments and later logging the
+    confusing 'Could not resolve PR branch for review' error (issue #1124:
+    tasks t-b7hmav, t-v1kftf, t-d5d4ru, t-g7d9ja reached the worker with
+    issue_repo=null, branch=null, pr_url=null).
+    """
+    from unittest.mock import patch
+
+    worker = Worker(_make_cfg(repos=["owner/repo"]))
+    worker._joined = True
+    worker._send = AsyncMock()
+    worker._task_update = AsyncMock()
+    worker.cfg.worker_id = "w-test01"
+
+    task = {
+        "id": "t-revnometa",
+        "name": "Review PR",
+        "description": "Review the changes",
+        "phase": "review",
+        "tool": "claude",
+        # No issue_repo/issue_number, no pr_repo/pr_number, no branch/pr_url.
+        "repos": [],
+    }
+    slot = worker.agents[0]
+
+    with (
+        patch("pioneer_worker.worker.git_ops.ensure_repo") as mock_ensure_repo,
+        patch("pioneer_worker.worker.git_ops.get_pr_head_branch") as mock_get_branch,
+    ):
+        await worker._execute_task(task, slot)
+
+    mock_get_branch.assert_not_called()
+    mock_ensure_repo.assert_not_called()
+
+    failed_calls = [
+        c for c in worker._task_update.await_args_list if c.kwargs.get("state") == "failed"
+    ]
+    assert failed_calls, "task must be marked failed when review metadata is missing"
+    assert slot.state == "idle", "slot must return to idle after refusing the task"
+
+
+async def test_review_task_1758_regression_resolves_branch_from_metadata():
+    """Regression test for issue #1124 / PR #1758 (Identity-Digital/dnsid):
+    when assign_task carries pr_repo/pr_number through the metadata handoff,
+    the worker must use them to resolve the PR's head branch rather than
+    aborting with null metadata.
+    """
+    import os
+    import tempfile
+    from unittest.mock import patch
+
+    worker = Worker(_make_cfg(repos=["Identity-Digital/dnsid"]))
+    worker._joined = True
+    worker._send = AsyncMock()
+    worker.cfg.worker_id = "w-test01"
+
+    task = {
+        "id": "t-g7d9ja",
+        "name": "Review PR #1758",
+        "description": "Review the changes in PR #1758",
+        "phase": "review",
+        "tool": "claude",
+        "pr_repo": "Identity-Digital/dnsid",
+        "pr_number": 1758,
+        "pr_head_ref": "wolfgang/issue-1481-provider-budget",
+        "pr_url": "https://github.com/Identity-Digital/dnsid/pull/1758",
+        "head_sha": "7c10afdc25388b3a59588a79cad075f640ce6611",
+        "repos": ["Identity-Digital/dnsid"],
+    }
+    slot = worker.agents[0]
+
+    async def fake_run_claude(desc, *args, **kwargs):
+        return True, "end_turn", "done", None
+
+    with (
+        patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
+        patch(
+            "pioneer_worker.worker.git_ops.get_pr_head_branch",
+            return_value="wolfgang/issue-1481-provider-budget",
+        ) as mock_get_branch,
+        patch("pioneer_worker.worker.git_ops.checkout_pr_worktree", return_value=True),
+        patch("pioneer_worker.worker.git_ops.create_worktree") as mock_create_worktree,
+        patch("pioneer_worker.worker.github_pr.push_branch") as mock_push,
+        patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
+        patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
+        tempfile.TemporaryDirectory() as tmp,
+    ):
+        worker.cfg.work_dir = tmp
+        worker.cfg.repos_dir = tmp
+        await worker._execute_task(task, slot)
+
+    mock_get_branch.assert_awaited_once_with("Identity-Digital/dnsid", 1758)
+    mock_create_worktree.assert_not_called()
+    mock_push.assert_not_called()

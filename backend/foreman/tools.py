@@ -1545,9 +1545,10 @@ async def _exec_one_tool(
                 requested_tier: str | None = inp.get("tier") or None
                 provider = inp.get("provider") or None
                 existing_task_id = inp.get("task_id")
-                existing_linkage: tuple[int | None, str | None, int | None, str | None] | None = (
-                    None
-                )
+                existing_linkage: (
+                    tuple[int | None, str | None, int | None, str | None, str | None, str | None]
+                    | None
+                ) = None
                 if existing_task_id:
                     existing_linkage_result = await db.exec(
                         select(
@@ -1555,6 +1556,8 @@ async def _exec_one_tool(
                             col(Task.issue_repo),
                             col(Task.pr_number),
                             col(Task.pr_repo),
+                            col(Task.branch),
+                            col(Task.pr_url),
                         ).where(col(Task.id) == existing_task_id, col(Task.guild_id) == guild_pk)
                     )
                     existing_linkage = existing_linkage_result.one_or_none()
@@ -1563,12 +1566,17 @@ async def _exec_one_tool(
                 effective_issue_repo = inp.get("issue_repo")
                 effective_pr_number = inp.get("pr_number")
                 effective_pr_repo = inp.get("pr_repo")
+                effective_branch = inp.get("branch")
+                effective_pr_url = inp.get("pr_url")
+                effective_head_sha = inp.get("head_sha")
                 if existing_linkage:
                     (
                         existing_issue_number,
                         existing_issue_repo,
                         existing_pr_number,
                         existing_pr_repo,
+                        existing_branch,
+                        existing_pr_url,
                     ) = existing_linkage
                     if effective_issue_number is None:
                         effective_issue_number = existing_issue_number
@@ -1578,6 +1586,10 @@ async def _exec_one_tool(
                         effective_pr_number = existing_pr_number
                     if not effective_pr_repo:
                         effective_pr_repo = existing_pr_repo
+                    if not effective_branch:
+                        effective_branch = existing_branch
+                    if not effective_pr_url:
+                        effective_pr_url = existing_pr_url
 
                 guild_result = await db.exec(
                     select(col(Guild.primary_repo)).where(col(Guild.id) == guild_pk)
@@ -1741,6 +1753,10 @@ async def _exec_one_tool(
                                     update_values["pr_number"] = effective_pr_number
                                 if effective_pr_repo:
                                     update_values["pr_repo"] = effective_pr_repo
+                                if effective_branch:
+                                    update_values["branch"] = effective_branch
+                                if effective_pr_url:
+                                    update_values["pr_url"] = effective_pr_url
                                 if parent_task_id is not None:
                                     update_values["parent_task_id"] = parent_task_id
                                 await db.exec(
@@ -1757,6 +1773,21 @@ async def _exec_one_tool(
                                 )
                                 task_name = name_result.one_or_none() or desc[:60]
                                 task_id = existing_task_id
+                                logger.info(
+                                    "assign_task enqueue guild=%s task=%s worker=%s phase=%s "
+                                    "issue_repo=%s pr_number=%s pr_repo=%s branch=%s pr_url=%s "
+                                    "head_sha=%s",
+                                    guild_id,
+                                    task_id,
+                                    wid,
+                                    phase,
+                                    effective_issue_repo,
+                                    effective_pr_number,
+                                    effective_pr_repo,
+                                    effective_branch,
+                                    effective_pr_url,
+                                    effective_head_sha,
+                                )
                                 await broadcast(
                                     guild_id,
                                     TaskAssignedMsg(
@@ -1774,6 +1805,9 @@ async def _exec_one_tool(
                                         issueRepo=effective_issue_repo,
                                         prNumber=effective_pr_number,
                                         prRepo=effective_pr_repo,
+                                        branch=effective_branch,
+                                        prUrl=effective_pr_url,
+                                        headSha=effective_head_sha,
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
@@ -1811,6 +1845,8 @@ async def _exec_one_tool(
                                         issue_repo=effective_issue_repo,
                                         pr_number=effective_pr_number,
                                         pr_repo=effective_pr_repo,
+                                        branch=effective_branch,
+                                        pr_url=effective_pr_url,
                                         state="pending",
                                         phase=phase,
                                         parent_task_id=parent_task_id,
@@ -1819,6 +1855,21 @@ async def _exec_one_tool(
                                     )
                                 )
                                 await db.commit()
+                                logger.info(
+                                    "assign_task enqueue guild=%s task=%s worker=%s phase=%s "
+                                    "issue_repo=%s pr_number=%s pr_repo=%s branch=%s pr_url=%s "
+                                    "head_sha=%s",
+                                    guild_id,
+                                    task_id,
+                                    wid,
+                                    phase,
+                                    effective_issue_repo,
+                                    effective_pr_number,
+                                    effective_pr_repo,
+                                    effective_branch,
+                                    effective_pr_url,
+                                    effective_head_sha,
+                                )
                                 await broadcast(
                                     guild_id,
                                     TaskAssignedMsg(
@@ -1836,6 +1887,9 @@ async def _exec_one_tool(
                                         issueRepo=effective_issue_repo,
                                         prNumber=effective_pr_number,
                                         prRepo=effective_pr_repo,
+                                        branch=effective_branch,
+                                        prUrl=effective_pr_url,
+                                        headSha=effective_head_sha,
                                         repos=repos,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )

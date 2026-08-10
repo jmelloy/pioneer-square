@@ -831,6 +831,9 @@ class Worker:
             "issue_repo": body.get("issueRepo"),
             "pr_number": body.get("prNumber"),
             "pr_repo": body.get("prRepo"),
+            "pr_head_ref": body.get("branch"),
+            "pr_url": body.get("prUrl"),
+            "head_sha": body.get("headSha"),
             "repos": body.get("repos") or [],
         }
         if body.get("followupInstructions"):
@@ -1377,6 +1380,18 @@ class Worker:
                     task_id,
                     (msg.get("description") or "")[:80],
                 )
+                logger.info(
+                    "Task %s metadata received: phase=%s issue_repo=%s pr_number=%s "
+                    "pr_repo=%s branch=%s pr_url=%s head_sha=%s",
+                    task_id,
+                    msg.get("phase"),
+                    msg.get("issueRepo"),
+                    msg.get("prNumber"),
+                    msg.get("prRepo"),
+                    msg.get("branch"),
+                    msg.get("prUrl"),
+                    msg.get("headSha"),
+                )
                 self._known_task_ids.add(task_id)
                 await self.task_queue.put(
                     {
@@ -1393,6 +1408,13 @@ class Worker:
                         "issue_repo": msg.get("issueRepo"),
                         "pr_number": msg.get("prNumber"),
                         "pr_repo": msg.get("prRepo"),
+                        # PR head ref/URL/SHA as known at assignment time — informational
+                        # only. Review checkout still re-resolves the head branch live via
+                        # pr_repo/pr_number (see _execute_task) rather than trusting these,
+                        # since the PR may have moved since the webhook fired.
+                        "pr_head_ref": msg.get("branch"),
+                        "pr_url": msg.get("prUrl"),
+                        "head_sha": msg.get("headSha"),
                         "repos": msg.get("repos") or [],
                     }
                 )
@@ -1919,6 +1941,18 @@ class Worker:
             is_followup,
             desc[:120],
         )
+        logger.info(
+            "Task %s metadata at start: phase=%s issue_repo=%s pr_repo=%s pr_number=%s "
+            "pr_head_ref=%s pr_url=%s head_sha=%s",
+            task_id,
+            phase,
+            issue_repo,
+            pr_repo,
+            pr_number,
+            task.get("pr_head_ref"),
+            task.get("pr_url"),
+            task.get("head_sha"),
+        )
         await self._set_state("working", agent)
         await self._task_update(task_id, agent=agent, state="working")
 
@@ -1955,18 +1989,38 @@ class Worker:
 
         name = task.get("name") or desc
         if is_review and not is_followup:
+            # Fail fast, before ever touching git, when the metadata handoff
+            # from assign_task dropped pr_repo/pr_number — this is the
+            # contract review tasks depend on, and a clear error here beats
+            # a confusing later failure when checkout has nothing to act on.
+            if not pr_repo or not pr_number:
+                logger.error(
+                    "Task %s: review task missing required metadata (pr_repo=%s pr_number=%s) "
+                    "— aborting before checkout",
+                    task_id,
+                    pr_repo,
+                    pr_number,
+                )
+                await emit(
+                    "✗ Review task is missing pr_repo/pr_number — the assigning foreman must "
+                    "pass both when calling assign_task(phase='review'). Aborting.",
+                    level=LEVEL_WORKER,
+                )
+                await self._task_update(task_id, agent=agent, state="failed", finishedAt=_now_iso())
+                await self._set_state("error", agent)
+                await self._set_state("idle", agent)
+                return
             # Review tasks must operate on the PR's own branch — never a
             # freshly generated ps/... branch — or the agent won't see
             # the actual PR diff. Never fall back to a generated name here:
-            # doing so would silently review the wrong code.
-            branch = (
-                await git_ops.get_pr_head_branch(pr_repo, pr_number)
-                if pr_repo and pr_number
-                else None
-            )
+            # doing so would silently review the wrong code. Always re-resolve
+            # live via the GitHub API rather than trusting task.get("pr_head_ref"):
+            # the PR may have been force-pushed since the webhook fired.
+            branch = await git_ops.get_pr_head_branch(pr_repo, pr_number)
             if not branch:
                 logger.error(
-                    "Task %s: could not resolve PR branch for review (repo=%s pr=%s)",
+                    "Task %s: could not resolve PR branch for review via GitHub API "
+                    "(repo=%s pr=%s) — metadata was present but the API lookup failed",
                     task_id,
                     pr_repo,
                     pr_number,
