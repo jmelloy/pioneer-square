@@ -592,10 +592,15 @@ def _build_foreman_summary(
         title = (pr.get("title") or "")[:200]
         requested_reviewer = (payload.get("requested_reviewer") or {}).get("login", "")
         pr_url_val = pr.get("html_url") or ""
+        head = pr.get("head") or {}
+        head_ref = head.get("ref") or ""
+        head_sha = head.get("sha") or ""
         detail = (
             f"Review requested from @{requested_reviewer}.\n"
             f"PR title: {title}\n"
             f"PR URL: {pr_url_val}\n"
+            f"PR head branch: {head_ref}\n"
+            f"PR head SHA: {head_sha}\n"
             "Create a review task and assign a worker to perform a full PR review. "
             "The worker must check out the branch, run available tests/lint, and post "
             f"findings via: gh pr review {pr_number} --repo {repo} "
@@ -605,7 +610,12 @@ def _build_foreman_summary(
             "use --comment for minor nits that don't block merging. "
             "Do NOT commit any files. Do NOT open a new PR.\n"
             "If a review task already exists for this PR in the current task list, "
-            "skip task creation to avoid duplicates."
+            "skip task creation to avoid duplicates.\n"
+            "IMPORTANT — metadata handoff: when calling assign_task for this review, pass "
+            f'phase="review", pr_number={pr_number}, pr_repo="{repo}", branch="{head_ref}", '
+            f'pr_url="{pr_url_val}", head_sha="{head_sha}" exactly as given above. These fields '
+            "are required for the worker to resolve and check out the correct PR branch — "
+            "omitting pr_number/pr_repo causes the worker to abort the review."
         )
     elif event_type == "pull_request" and action in {"closed", "reopened"}:
         pr = payload.get("pull_request") or {}
@@ -1197,13 +1207,19 @@ async def github_webhook(
             # Key is PR-scoped so rapid re-requests for the same PR coalesce.
             key = f"{guild_id}:review_requested:{repo}#{pr_number}"
             await _debounce_queue.schedule(key, guild_id, summary, task_user_id, task_id=task_id)
+            pr_obj = payload.get("pull_request") or {}
+            head_obj = pr_obj.get("head") or {}
             logger.info(
-                "github webhook review_requested dispatched guild=%s delivery=%s repo=%s pr=%s reviewer=%s",
+                "github webhook review_requested dispatched guild=%s delivery=%s repo=%s pr=%s "
+                "reviewer=%s branch=%s head_sha=%s pr_url=%s",
                 guild_id,
                 delivery_id,
                 repo,
                 pr_number,
                 requested_reviewer,
+                head_obj.get("ref"),
+                head_obj.get("sha"),
+                pr_obj.get("html_url"),
             )
         else:
             logger.info(
