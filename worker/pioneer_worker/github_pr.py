@@ -96,7 +96,9 @@ async def push_branch(
             cwd=worktree_path,
         )
         if rc_commit != 0:
-            await emit(f"✗ Auto-commit failed: {commit_err.strip()[:120]}", level=_LEVEL)
+            await emit(
+                f"✗ Auto-commit failed on {branch}: {commit_err.strip()[:120]}", level=_LEVEL
+            )
             return "failed"
 
     # Skip the push when the branch has no commits beyond what's already
@@ -133,7 +135,7 @@ async def push_branch(
             push_args = ["push", authed, f"{branch}:{branch}"]
     rc, _, err = await git_ops.run_git(push_args, cwd=worktree_path)
     if rc != 0:
-        await emit(f"✗ Push failed: {err.strip()[:120]}", level=_LEVEL)
+        await emit(f"✗ Push failed for {branch}: {err.strip()[:120]}", level=_LEVEL)
         return "failed"
     await emit(f"✓ Pushed {branch}", level=_LEVEL)
     return "pushed"
