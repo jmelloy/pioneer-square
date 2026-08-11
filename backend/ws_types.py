@@ -121,7 +121,7 @@ class TaskAssignedMsg(_WS):
     taskId: str
     name: str = ""
     description: str = ""
-    tool: str = "claude"
+    tool: str = "pi"
     model: str | None = None
     modelTier: str | None = None
     provider: str | None = None
@@ -183,7 +183,7 @@ class TaskFollowupMsg(_WS):
     taskId: str
     name: str = ""
     description: str = ""
-    tool: str = "claude"
+    tool: str = "pi"
     model: str | None = None
     modelTier: str | None = None
     provider: str | None = None

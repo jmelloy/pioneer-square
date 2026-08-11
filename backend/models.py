@@ -8,7 +8,7 @@ from sqlmodel import Field, SQLModel, col
 # Coding agent runners a worker can be configured with. Single source of
 # truth for the "tool" enum used across worker registration, task dispatch,
 # and the foreman's send_followup/assign_task tool schemas.
-VALID_TOOLS = ("claude", "codex", "pi")
+VALID_TOOLS = ("pi", "claude", "codex")
 
 
 # Grace window: a soft-deleted task stays visible this long after ``deleted_at``
@@ -334,7 +334,7 @@ class Task(SQLModel, table=True):
     # guild_id is the integer FK to guilds.id (renamed from guild_pk).
     guild_id: int = Field(foreign_key="guilds.id")
     description: str
-    tool: str = Field(default="claude", sa_column_kwargs={"server_default": "'claude'"})
+    tool: str = Field(default="pi", sa_column_kwargs={"server_default": "'pi'"})
     model: str | None = None
     provider: str | None = None
     issue_number: int | None = None
@@ -725,7 +725,7 @@ class LlmUsage(SQLModel, table=True):
     task_id: str | None = Field(default=None, foreign_key="tasks.id")
     worker_id: str | None = Field(default=None, foreign_key="workers.id")
     # Tool runner that produced this usage (e.g. "claude", "pi", "codex").
-    tool: str = Field(default="claude", sa_column_kwargs={"server_default": "'claude'"})
+    tool: str = Field(default="pi", sa_column_kwargs={"server_default": "'pi'"})
     # Session id for the run this row came from (e.g. Claude session_id from system:init).
     session_id: str | None = None
     # "api_call" (one assistant message) | "result" (the run's result event).
@@ -910,7 +910,7 @@ class SpawnProfile(SQLModel, table=True):
     name: str
     description: str | None = None
     # One of VALID_TOOLS ("claude" | "codex" | "pi").
-    tool: str = Field(default="claude", sa_column_kwargs={"server_default": "'claude'"})
+    tool: str = Field(default="pi", sa_column_kwargs={"server_default": "'pi'"})
     # Free-form provider tag, e.g. "api-key" | "aws-bedrock". Advisory: it groups
     # profiles for display and picks the credential contract described by
     # credentials_source; it does not itself gate anything.

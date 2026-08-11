@@ -467,7 +467,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
                         taskId=pt.id,
                         name=pt.name or "",
                         description=pt.description or "",
-                        tool=pt.tool or "claude",
+                        tool=pt.tool or "pi",
                         model=pt.model,
                         modelTier=pt.model_tier,
                         provider=pt.provider,
