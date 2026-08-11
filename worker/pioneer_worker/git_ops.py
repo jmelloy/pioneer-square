@@ -61,10 +61,11 @@ async def run_git(
     elapsed = time.monotonic() - started
     if rc != 0:
         logger.warning(
-            "git %s failed rc=%s in %.2fs: %s",
+            "git %s failed rc=%s in %.2fs (repo=%s): %s",
             " ".join(args),
             rc,
             elapsed,
+            cwd or os.getcwd(),
             stderr.decode(errors="replace").strip()[:200],
         )
     else:
@@ -129,7 +130,7 @@ async def ensure_repo(repos_dir: str, repo_full: str, token: str | None = None) 
         logger.info("Clone done: %s", repo_full)
     else:
         await scrub_remote_credentials(local_path)
-        logger.info("Fetching latest for %s at %s", repo_full, local_path)
+        logger.debug("Fetching latest for %s at %s", repo_full, local_path)
         await run_git(["fetch", "origin"], cwd=local_path, token=token)
         await run_git(["merge", "--ff-only", "origin/HEAD"], cwd=local_path)
 
@@ -203,9 +204,10 @@ async def run_gh(args: list[str], cwd: str | None = None) -> tuple[int, str, str
     rc = proc.returncode if proc.returncode is not None else -1
     if rc != 0:
         logger.warning(
-            "gh %s failed rc=%s: %s",
+            "gh %s failed rc=%s (repo=%s): %s",
             " ".join(args),
             rc,
+            cwd or os.getcwd(),
             stderr.decode(errors="replace").strip()[:200],
         )
     return rc, stdout.decode(errors="replace"), stderr.decode(errors="replace")
@@ -282,11 +284,12 @@ async def pull_repos(
     Repos are cloned lazily the first time a task needs them, so this function
     only fast-forwards existing clones rather than triggering upfront clones.
     """
-    logger.info("pull_repos: refreshing %d repo(s)", len(repos))
+    logger.debug("pull_repos: refreshing %d repo(s)", len(repos))
     for repo_full in repos:
         parts = repo_full.split("/", 1)
         if len(parts) != 2:
             logger.warning("pull_repos: skipping malformed repo %r", repo_full)
+            await emit(f"Skipping malformed repo entry: {repo_full!r}", level=_LEVEL)
             continue
         owner, name = parts
         local_path = os.path.join(repos_dir, owner, name)
@@ -297,7 +300,7 @@ async def pull_repos(
         rc, _, err = await run_git(["fetch", "origin"], cwd=local_path, token=token)
         await run_git(["merge", "--ff-only", "origin/HEAD"], cwd=local_path)
         if rc == 0:
-            logger.info("pull_repos: pulled %s", repo_full)
+            logger.debug("pull_repos: pulled %s", repo_full)
             await emit(f"Pulled {repo_full}", level=_LEVEL)
         else:
             logger.warning("pull_repos: fetch warn for %s: %s", repo_full, err.strip()[:120])

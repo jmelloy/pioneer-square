@@ -1629,7 +1629,9 @@ class Worker:
         try:
             api_repos = await github_pr.fetch_accessible_repos(self.cfg.github_token)
         except Exception as exc:
-            logger.warning("GitHub repo refresh failed: %s", exc)
+            logger.warning("GitHub repo refresh failed for org %s: %s", self.cfg.org, exc)
+            if self._joined:
+                await self._emit(f"⚠ GitHub repo list refresh failed for {self.cfg.org}: {exc}")
             return
         if not api_repos:
             logger.debug("GitHub repo refresh returned empty list; skipping update")
