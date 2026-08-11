@@ -130,7 +130,7 @@ class SpawnProfileCreate(BaseModel):
 
     name: str
     description: str | None = None
-    tool: str = "claude"
+    tool: str = "pi"
     provider: str | None = None
     credentials_source: str | None = None
     default_agent_count: int | None = None
@@ -250,7 +250,7 @@ class SaveSpawnDefaultsRequest(BaseModel):
 class TaskCreate(BaseModel):
     description: str
     name: str | None = None
-    tool: str = "claude"  # "claude" | "codex" | "pi"
+    tool: str = "pi"  # "claude" | "codex" | "pi"
     model: str | None = None
     provider: str | None = None
     issue_number: int | None = None
@@ -590,7 +590,7 @@ class EnvVarPair(BaseModel):
 # The worker tools that can carry a per-tool env override, mirroring the guild
 # settings Worker Tools tabs. Unknown tool keys are rejected so the stored map
 # can't grow unbounded from a malformed payload.
-_SPAWN_TOOLS = ("claude", "pi", "codex")
+_SPAWN_TOOLS = ("pi", "claude", "codex")
 
 
 def _validate_env_pairs(pairs: list[EnvVarPair]) -> list[EnvVarPair]:
