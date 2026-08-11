@@ -344,4 +344,43 @@ async def test_idle_puller_skips_refresh_before_interval():
             mock_loop.return_value.time.return_value = fake_time
             await worker._idle_puller()
 
+
+@pytest.mark.asyncio
+async def test_idle_puller_survives_pull_repos_failure():
+    """A git_ops.pull_repos failure (e.g. WS send exhausted retries) must not
+    escape _idle_puller — that would crash the whole worker process and kill
+    every in-flight task, not just the idle pull."""
+    worker = _make_worker(
+        repos=["owner/repo1"],
+        github_token="ghp_token",
+    )
+    worker._fetch_pending_tasks = AsyncMock(return_value=[])
+    worker._refresh_github_repos = AsyncMock()
+    worker._last_repo_refresh = REPO_REFRESH_INTERVAL_SECONDS + 500
+
+    call_count = 0
+
+    async def fake_wait_for(coro, timeout):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            worker._shutdown_event.set()
+        raise TimeoutError
+
+    with (
+        patch("asyncio.wait_for", side_effect=fake_wait_for),
+        patch(
+            "pioneer_worker.worker.git_ops.pull_repos",
+            new=AsyncMock(side_effect=RuntimeError("ws send failed")),
+        ) as mock_pull,
+    ):
+        fake_time = worker._last_repo_refresh + 60
+
+        with patch("asyncio.get_event_loop") as mock_loop:
+            mock_loop.return_value.time.return_value = fake_time
+            # Must not raise despite pull_repos failing.
+            await worker._idle_puller()
+
+    mock_pull.assert_awaited()
+
     worker._refresh_github_repos.assert_not_awaited()
