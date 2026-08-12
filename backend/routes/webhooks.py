@@ -62,6 +62,21 @@ router = APIRouter()
 DEBOUNCE_WINDOW_SECONDS: float = float(os.environ.get("WEBHOOK_DEBOUNCE_SECONDS", "30"))
 
 
+# Minimum time (seconds) between dispatching review_requested for the same
+# (repo, PR number, head sha). GitHub can refire review_requested for a PR
+# that has already been reviewed at the current head commit (e.g. a dismissed
+# review being re-requested, or duplicate webhook delivery), and without a
+# cooldown the foreman would spin up a duplicate review task each time. A new
+# commit changes head sha and always bypasses the cooldown immediately.
+# Enforced via LockService (backend/lock_service.py), which is Postgres-backed
+# so it holds across backend replicas rather than just within one process.
+# Configurable via PR_REVIEW_COOLDOWN_SECONDS (default: 300 seconds / 5 min).
+# Read at call time so monkeypatch.setenv works in tests and the value can
+# change without a restart.
+def _get_pr_review_cooldown_seconds() -> int:
+    return int(float(os.environ.get("PR_REVIEW_COOLDOWN_SECONDS", "300")))
+
+
 # Shared secret for the /foreman/ci-notify endpoint.  GitHub Actions sets
 # Authorization: Bearer <PIONEER_CI_KEY> on each CI completion POST.
 # When empty the endpoint returns 503 (not configured).
@@ -1220,26 +1235,52 @@ async def github_webhook(
             and guild_owner_login
             and requested_reviewer.lower() == guild_owner_login.lower()
         ):
-            summary = _build_foreman_summary(
-                event_type, action, payload, repo, pr_number, task_id or "", sender_login
-            )
-            # Key is PR-scoped so rapid re-requests for the same PR coalesce.
-            key = f"{guild_id}:review_requested:{repo}#{pr_number}"
-            await _debounce_queue.schedule(key, guild_id, summary, task_user_id, task_id=task_id)
             pr_obj = payload.get("pull_request") or {}
             head_obj = pr_obj.get("head") or {}
-            logger.info(
-                "github webhook review_requested dispatched guild=%s delivery=%s repo=%s pr=%s "
-                "reviewer=%s branch=%s head_sha=%s pr_url=%s",
-                guild_id,
-                delivery_id,
-                repo,
-                pr_number,
-                requested_reviewer,
-                head_obj.get("ref"),
-                head_obj.get("sha"),
-                pr_obj.get("html_url"),
+            head_sha = head_obj.get("sha") or ""
+
+            # Cooldown guards against duplicate review tasks when GitHub refires
+            # review_requested for a PR/commit that was already reviewed recently.
+            # Scoped by head sha so a genuinely new commit is reviewed immediately.
+            cooldown_seconds = _get_pr_review_cooldown_seconds()
+            cooldown_key = f"pr_review:{repo}:{pr_number}:{head_sha}"
+            cooldown_acquired = await LockService(db).acquire(
+                cooldown_key, owner=delivery_id, ttl_seconds=cooldown_seconds
             )
+            await db.commit()
+
+            if not cooldown_acquired:
+                logger.info(
+                    "github webhook review_requested skip-cooldown guild=%s delivery=%s repo=%s "
+                    "pr=%s head_sha=%s cooldown_seconds=%s",
+                    guild_id,
+                    delivery_id,
+                    repo,
+                    pr_number,
+                    head_sha,
+                    cooldown_seconds,
+                )
+            else:
+                summary = _build_foreman_summary(
+                    event_type, action, payload, repo, pr_number, task_id or "", sender_login
+                )
+                # Key is PR-scoped so rapid re-requests for the same PR coalesce.
+                key = f"{guild_id}:review_requested:{repo}#{pr_number}"
+                await _debounce_queue.schedule(
+                    key, guild_id, summary, task_user_id, task_id=task_id
+                )
+                logger.info(
+                    "github webhook review_requested dispatched guild=%s delivery=%s repo=%s pr=%s "
+                    "reviewer=%s branch=%s head_sha=%s pr_url=%s",
+                    guild_id,
+                    delivery_id,
+                    repo,
+                    pr_number,
+                    requested_reviewer,
+                    head_obj.get("ref"),
+                    head_sha,
+                    pr_obj.get("html_url"),
+                )
         else:
             logger.info(
                 "github webhook skip-foreman guild=%s delivery=%s event=pull_request/review_requested "
