@@ -1072,6 +1072,122 @@ def test_review_requested_duplicate_delivery_is_idempotent(client):
 
 
 # ---------------------------------------------------------------------------
+# review_requested: cooldown (repo, PR number, head sha)
+# ---------------------------------------------------------------------------
+
+
+def test_review_requested_second_request_within_cooldown_is_skipped(client):
+    """A second review_requested for the same PR/sha within the cooldown window
+    must not dispatch a second review task."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-rr-cd1", owner_user_id="u-rr-cd1")
+    _set_guild_owner_token(db_url, "u-rr-cd1", "guild-bot")
+    _set_webhook_secret(db_url, "gd-rr-cd1", "secret-rr-cd1")
+
+    payload = {
+        "action": "review_requested",
+        "repository": {"full_name": "o/r"},
+        "pull_request": {
+            "number": 30,
+            "html_url": "https://github.com/o/r/pull/30",
+            "title": "T",
+            "head": {"ref": "feature-x", "sha": "sha-cd-1"},
+        },
+        "requested_reviewer": {"login": "guild-bot"},
+        "sender": {"login": "alice"},
+    }
+    body1 = json.dumps(payload).encode()
+    headers1 = _signed_headers("secret-rr-cd1", body1, event="pull_request", delivery="d-rr-cd1-a")
+    # Different delivery id (e.g. a re-request), same PR/sha payload.
+    headers2 = _signed_headers("secret-rr-cd1", body1, event="pull_request", delivery="d-rr-cd1-b")
+
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp1 = test_client.post("/webhooks/github/gd-rr-cd1", content=body1, headers=headers1)
+        resp2 = test_client.post("/webhooks/github/gd-rr-cd1", content=body1, headers=headers2)
+
+    assert resp1.status_code == 202
+    assert resp2.status_code == 202
+    # Cooldown suppresses the second dispatch even though delivery ids differ.
+    assert mock_q.schedule.call_count == 1
+
+
+def test_review_requested_new_head_sha_bypasses_cooldown(client):
+    """A genuinely new commit (different head sha) must be reviewed immediately,
+    even if the previous sha on the same PR is still within its cooldown."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-rr-cd2", owner_user_id="u-rr-cd2")
+    _set_guild_owner_token(db_url, "u-rr-cd2", "guild-bot")
+    _set_webhook_secret(db_url, "gd-rr-cd2", "secret-rr-cd2")
+
+    def _payload(sha: str) -> dict:
+        return {
+            "action": "review_requested",
+            "repository": {"full_name": "o/r"},
+            "pull_request": {
+                "number": 31,
+                "html_url": "https://github.com/o/r/pull/31",
+                "title": "T",
+                "head": {"ref": "feature-y", "sha": sha},
+            },
+            "requested_reviewer": {"login": "guild-bot"},
+            "sender": {"login": "alice"},
+        }
+
+    body1 = json.dumps(_payload("sha-cd-2a")).encode()
+    body2 = json.dumps(_payload("sha-cd-2b")).encode()
+    headers1 = _signed_headers("secret-rr-cd2", body1, event="pull_request", delivery="d-rr-cd2-a")
+    headers2 = _signed_headers("secret-rr-cd2", body2, event="pull_request", delivery="d-rr-cd2-b")
+
+    with patch("routes.webhooks._debounce_queue") as mock_q:
+        mock_q.schedule = AsyncMock()
+        resp1 = test_client.post("/webhooks/github/gd-rr-cd2", content=body1, headers=headers1)
+        resp2 = test_client.post("/webhooks/github/gd-rr-cd2", content=body2, headers=headers2)
+
+    assert resp1.status_code == 202
+    assert resp2.status_code == 202
+    # Different head sha means a new cooldown key — both dispatch.
+    assert mock_q.schedule.call_count == 2
+
+
+def test_review_requested_cooldown_expires_after_configured_window(client):
+    """Once PR_REVIEW_COOLDOWN_SECONDS elapses, a repeat request dispatches again."""
+    test_client, db_url = client
+    insert_guild(db_url, "gd-rr-cd3", owner_user_id="u-rr-cd3")
+    _set_guild_owner_token(db_url, "u-rr-cd3", "guild-bot")
+    _set_webhook_secret(db_url, "gd-rr-cd3", "secret-rr-cd3")
+
+    payload = {
+        "action": "review_requested",
+        "repository": {"full_name": "o/r"},
+        "pull_request": {
+            "number": 32,
+            "html_url": "https://github.com/o/r/pull/32",
+            "title": "T",
+            "head": {"ref": "feature-z", "sha": "sha-cd-3"},
+        },
+        "requested_reviewer": {"login": "guild-bot"},
+        "sender": {"login": "alice"},
+    }
+    body = json.dumps(payload).encode()
+    headers1 = _signed_headers("secret-rr-cd3", body, event="pull_request", delivery="d-rr-cd3-a")
+    headers2 = _signed_headers("secret-rr-cd3", body, event="pull_request", delivery="d-rr-cd3-b")
+
+    with (
+        patch("routes.webhooks._debounce_queue") as mock_q,
+        patch.dict(os.environ, {"PR_REVIEW_COOLDOWN_SECONDS": "0"}),
+    ):
+        mock_q.schedule = AsyncMock()
+        resp1 = test_client.post("/webhooks/github/gd-rr-cd3", content=body, headers=headers1)
+        resp2 = test_client.post("/webhooks/github/gd-rr-cd3", content=body, headers=headers2)
+
+    assert resp1.status_code == 202
+    assert resp2.status_code == 202
+    # Cooldown of 0 seconds is already expired by the time the second request lands.
+    assert mock_q.schedule.call_count == 2
+
+
+# ---------------------------------------------------------------------------
 # _get_guild_owner_github_login
 # ---------------------------------------------------------------------------
 
