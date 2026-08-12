@@ -1348,235 +1348,238 @@ class Worker:
             mtype = msg.get("type")
             logger.debug("WS message: type=%s keys=%s", mtype, list(msg.keys()))
 
-            if not self._joined and mtype not in _PRE_JOIN_ALLOWED:
-                logger.debug("Dropping %s message received before join", mtype)
-                continue
+            try:
+                if not self._joined and mtype not in _PRE_JOIN_ALLOWED:
+                    logger.debug("Dropping %s message received before join", mtype)
+                    continue
 
-            if mtype == "pong":
-                # Generic ping reply from the backend; nothing to do.
-                continue
+                if mtype == "pong":
+                    # Generic ping reply from the backend; nothing to do.
+                    continue
 
-            if mtype == "worker-ping":
-                target = msg.get("workerId")
-                if target and target != self.cfg.worker_id:
+                if mtype == "worker-ping":
+                    target = msg.get("workerId")
+                    if target and target != self.cfg.worker_id:
+                        continue
+                    await self._send(
+                        {
+                            "type": "worker-pong",
+                            "workerId": self.cfg.worker_id,
+                            "timestamp": _now_iso(),
+                        }
+                    )
                     continue
-                await self._send(
-                    {
-                        "type": "worker-pong",
-                        "workerId": self.cfg.worker_id,
-                        "timestamp": _now_iso(),
-                    }
-                )
-                continue
 
-            if mtype == "task-assigned":
-                if msg.get("workerId") != self.cfg.worker_id:
-                    continue
-                task_id = msg.get("taskId")
-                if not task_id or task_id in self._known_task_ids:
-                    continue
-                logger.info(
-                    "Task assigned: %s — %s",
-                    task_id,
-                    (msg.get("description") or "")[:80],
-                )
-                logger.info(
-                    "Task %s metadata received: phase=%s issue_repo=%s pr_number=%s "
-                    "pr_repo=%s branch=%s pr_url=%s head_sha=%s",
-                    task_id,
-                    msg.get("phase"),
-                    msg.get("issueRepo"),
-                    msg.get("prNumber"),
-                    msg.get("prRepo"),
-                    msg.get("branch"),
-                    msg.get("prUrl"),
-                    msg.get("headSha"),
-                )
-                self._known_task_ids.add(task_id)
-                await self.task_queue.put(
-                    {
-                        "id": task_id,
-                        "worker_id": self.cfg.worker_id,
-                        "guild_id": self.cfg.guild_id,
-                        "name": msg.get("name", ""),
-                        "description": msg.get("description", ""),
-                        "tool": msg.get("tool", "claude"),
-                        "model": msg.get("model"),
-                        "provider": msg.get("provider"),
-                        "phase": msg.get("phase", "execute"),
-                        "issue_number": msg.get("issueNumber"),
-                        "issue_repo": msg.get("issueRepo"),
-                        "pr_number": msg.get("prNumber"),
-                        "pr_repo": msg.get("prRepo"),
-                        # PR head ref/URL/SHA as known at assignment time — informational
-                        # only. Review checkout still re-resolves the head branch live via
-                        # pr_repo/pr_number (see _execute_task) rather than trusting these,
-                        # since the PR may have moved since the webhook fired.
-                        "pr_head_ref": msg.get("branch"),
-                        "pr_url": msg.get("prUrl"),
-                        "head_sha": msg.get("headSha"),
-                        "repos": msg.get("repos") or [],
-                    }
-                )
+                if mtype == "task-assigned":
+                    if msg.get("workerId") != self.cfg.worker_id:
+                        continue
+                    task_id = msg.get("taskId")
+                    if not task_id or task_id in self._known_task_ids:
+                        continue
+                    logger.info(
+                        "Task assigned: %s — %s",
+                        task_id,
+                        (msg.get("description") or "")[:80],
+                    )
+                    logger.info(
+                        "Task %s metadata received: phase=%s issue_repo=%s pr_number=%s "
+                        "pr_repo=%s branch=%s pr_url=%s head_sha=%s",
+                        task_id,
+                        msg.get("phase"),
+                        msg.get("issueRepo"),
+                        msg.get("prNumber"),
+                        msg.get("prRepo"),
+                        msg.get("branch"),
+                        msg.get("prUrl"),
+                        msg.get("headSha"),
+                    )
+                    self._known_task_ids.add(task_id)
+                    await self.task_queue.put(
+                        {
+                            "id": task_id,
+                            "worker_id": self.cfg.worker_id,
+                            "guild_id": self.cfg.guild_id,
+                            "name": msg.get("name", ""),
+                            "description": msg.get("description", ""),
+                            "tool": msg.get("tool", "claude"),
+                            "model": msg.get("model"),
+                            "provider": msg.get("provider"),
+                            "phase": msg.get("phase", "execute"),
+                            "issue_number": msg.get("issueNumber"),
+                            "issue_repo": msg.get("issueRepo"),
+                            "pr_number": msg.get("prNumber"),
+                            "pr_repo": msg.get("prRepo"),
+                            # PR head ref/URL/SHA as known at assignment time — informational
+                            # only. Review checkout still re-resolves the head branch live via
+                            # pr_repo/pr_number (see _execute_task) rather than trusting these,
+                            # since the PR may have moved since the webhook fired.
+                            "pr_head_ref": msg.get("branch"),
+                            "pr_url": msg.get("prUrl"),
+                            "head_sha": msg.get("headSha"),
+                            "repos": msg.get("repos") or [],
+                        }
+                    )
 
-            elif mtype == "worker-message":
-                if msg.get("workerId") != self.cfg.worker_id:
-                    continue
-                text = msg.get("message", "")
-                if text:
-                    await self._inject_worker_message(text, msg.get("taskId"))
+                elif mtype == "worker-message":
+                    if msg.get("workerId") != self.cfg.worker_id:
+                        continue
+                    text = msg.get("message", "")
+                    if text:
+                        await self._inject_worker_message(text, msg.get("taskId"))
 
-            elif mtype == "worker-outdated":
-                if msg.get("workerId") not in (None, self.cfg.worker_id):
-                    continue
-                # The backend noticed this worker is running an older version.
-                # Informational only — the worker keeps running its current work.
-                logger.info(
-                    "Backend reports this worker is out of date (%s); continuing",
-                    msg.get("reason", "version mismatch"),
-                )
+                elif mtype == "worker-outdated":
+                    if msg.get("workerId") not in (None, self.cfg.worker_id):
+                        continue
+                    # The backend noticed this worker is running an older version.
+                    # Informational only — the worker keeps running its current work.
+                    logger.info(
+                        "Backend reports this worker is out of date (%s); continuing",
+                        msg.get("reason", "version mismatch"),
+                    )
 
-            elif mtype == "task-followup":
-                if msg.get("workerId") != self.cfg.worker_id:
-                    continue
-                task_id = msg.get("taskId")
-                if not task_id:
-                    continue
-                instructions = msg.get("instructions", "")
-                # The follow-up window inside _execute_task is gone — workers
-                # return to the idle pool right after task-complete. A
-                # follow-up is now a fresh enqueue: reuse the existing
-                # worktree if it's still on disk, otherwise attach one to the
-                # branch the original worker pushed.
-                logger.info(
-                    "Follow-up received for task %s: %s",
-                    task_id,
-                    instructions[:80],
-                )
-                # Remember the id so the idle puller doesn't queue this task a
-                # second time alongside the copy we're about to enqueue (it is
-                # already known unless this worker restarted since the original
-                # assignment).
-                self._known_task_ids.add(task_id)
-                await self.task_queue.put(
-                    {
-                        "id": task_id,
-                        "worker_id": self.cfg.worker_id,
-                        "guild_id": self.cfg.guild_id,
-                        "name": msg.get("name", ""),
-                        "description": msg.get("description", "") or instructions,
-                        "tool": msg.get("tool", "claude"),
-                        "model": msg.get("model"),
-                        "provider": msg.get("provider"),
-                        "phase": msg.get("phase", "execute"),
-                        "issue_number": msg.get("issueNumber"),
-                        "issue_repo": msg.get("issueRepo"),
-                        "pr_number": msg.get("prNumber"),
-                        "pr_repo": msg.get("prRepo"),
-                        "repos": msg.get("repos") or [],
-                        "followup_instructions": instructions,
-                        "followup_branch": msg.get("branch", ""),
-                        "session_id": msg.get("sessionId"),
-                        "create_pr": bool(msg.get("createPr")),
-                    }
-                )
+                elif mtype == "task-followup":
+                    if msg.get("workerId") != self.cfg.worker_id:
+                        continue
+                    task_id = msg.get("taskId")
+                    if not task_id:
+                        continue
+                    instructions = msg.get("instructions", "")
+                    # The follow-up window inside _execute_task is gone — workers
+                    # return to the idle pool right after task-complete. A
+                    # follow-up is now a fresh enqueue: reuse the existing
+                    # worktree if it's still on disk, otherwise attach one to the
+                    # branch the original worker pushed.
+                    logger.info(
+                        "Follow-up received for task %s: %s",
+                        task_id,
+                        instructions[:80],
+                    )
+                    # Remember the id so the idle puller doesn't queue this task a
+                    # second time alongside the copy we're about to enqueue (it is
+                    # already known unless this worker restarted since the original
+                    # assignment).
+                    self._known_task_ids.add(task_id)
+                    await self.task_queue.put(
+                        {
+                            "id": task_id,
+                            "worker_id": self.cfg.worker_id,
+                            "guild_id": self.cfg.guild_id,
+                            "name": msg.get("name", ""),
+                            "description": msg.get("description", "") or instructions,
+                            "tool": msg.get("tool", "claude"),
+                            "model": msg.get("model"),
+                            "provider": msg.get("provider"),
+                            "phase": msg.get("phase", "execute"),
+                            "issue_number": msg.get("issueNumber"),
+                            "issue_repo": msg.get("issueRepo"),
+                            "pr_number": msg.get("prNumber"),
+                            "pr_repo": msg.get("prRepo"),
+                            "repos": msg.get("repos") or [],
+                            "followup_instructions": instructions,
+                            "followup_branch": msg.get("branch", ""),
+                            "session_id": msg.get("sessionId"),
+                            "create_pr": bool(msg.get("createPr")),
+                        }
+                    )
 
-            elif mtype == "task-finalize":
-                # The worker no longer parks waiting for finalize; foreman
-                # drives lifecycle now. Treat finalize as a hint that the
-                # task is closed and the worktree can be released early.
-                if msg.get("workerId") != self.cfg.worker_id:
-                    continue
-                task_id = msg.get("taskId")
-                if not task_id:
-                    continue
-                logger.info("Finalize signal for task %s — releasing worktree", task_id)
-                await self._release_task_worktrees(task_id)
+                elif mtype == "task-finalize":
+                    # The worker no longer parks waiting for finalize; foreman
+                    # drives lifecycle now. Treat finalize as a hint that the
+                    # task is closed and the worktree can be released early.
+                    if msg.get("workerId") != self.cfg.worker_id:
+                        continue
+                    task_id = msg.get("taskId")
+                    if not task_id:
+                        continue
+                    logger.info("Finalize signal for task %s — releasing worktree", task_id)
+                    await self._release_task_worktrees(task_id)
 
-            elif mtype == "task-cancel":
-                if msg.get("workerId") != self.cfg.worker_id:
-                    continue
-                task_id = msg.get("taskId")
-                if not task_id:
-                    continue
-                logger.info("Cancel signal for task %s", task_id)
-                self._cancelled_tasks.add(task_id)
-                # Kill subprocess if this task is currently running
-                active = next((s for s in self.agents if s.current_task_id == task_id), None)
-                if active and active.current_claude:
-                    await active.current_claude.terminate()
-                    logger.info("Terminated subprocess for cancelled task %s", task_id)
-                # Wake the redirect/cancel-aware inner loop if the task is
-                # mid-run; finalize-time cleanup happens through task-finalize.
-                rq = self._redirect_queues.get(task_id)
-                if rq is not None:
-                    await rq.put(_CANCEL_SENTINEL)
-                    logger.info("Signalled redirect queue for cancelled task %s", task_id)
-
-            elif mtype == "worker-shutdown":
-                # Targeted at a specific worker, or broadcast (no workerId) to all.
-                target = msg.get("workerId")
-                if target and target != self.cfg.worker_id:
-                    continue
-                await self._initiate_shutdown("worker-shutdown message")
-
-            elif mtype == "task-redirect":
-                if msg.get("workerId") != self.cfg.worker_id:
-                    continue
-                task_id = msg.get("taskId")
-                instructions = msg.get("instructions", "")
-                if not task_id or not instructions:
-                    continue
-                logger.info("Redirect for task %s: %s", task_id, instructions[:80])
-                active = next((s for s in self.agents if s.current_task_id == task_id), None)
-                if active and active.current_claude:
-                    # Subprocess running — SIGTERM it and queue redirect for the
-                    # in-flight redirect loop, which resumes claude with the
-                    # full prior session id.
-                    await active.current_claude.terminate()
-                    logger.info("Terminated subprocess for redirect of task %s", task_id)
+                elif mtype == "task-cancel":
+                    if msg.get("workerId") != self.cfg.worker_id:
+                        continue
+                    task_id = msg.get("taskId")
+                    if not task_id:
+                        continue
+                    logger.info("Cancel signal for task %s", task_id)
+                    self._cancelled_tasks.add(task_id)
+                    # Kill subprocess if this task is currently running
+                    active = next((s for s in self.agents if s.current_task_id == task_id), None)
+                    if active and active.current_claude:
+                        await active.current_claude.terminate()
+                        logger.info("Terminated subprocess for cancelled task %s", task_id)
+                    # Wake the redirect/cancel-aware inner loop if the task is
+                    # mid-run; finalize-time cleanup happens through task-finalize.
                     rq = self._redirect_queues.get(task_id)
                     if rq is not None:
-                        await rq.put(instructions)
-                else:
-                    rq = self._redirect_queues.get(task_id)
-                    if rq is not None:
-                        # Subprocess just exited — buffer; the redirect loop
-                        # picks the buffered instructions up before returning
-                        # the slot to idle.
-                        await rq.put(instructions)
-                        logger.info(
-                            "task-redirect for %s: buffered for in-flight redirect loop",
-                            task_id,
-                        )
+                        await rq.put(_CANCEL_SENTINEL)
+                        logger.info("Signalled redirect queue for cancelled task %s", task_id)
+
+                elif mtype == "worker-shutdown":
+                    # Targeted at a specific worker, or broadcast (no workerId) to all.
+                    target = msg.get("workerId")
+                    if target and target != self.cfg.worker_id:
+                        continue
+                    await self._initiate_shutdown("worker-shutdown message")
+
+                elif mtype == "task-redirect":
+                    if msg.get("workerId") != self.cfg.worker_id:
+                        continue
+                    task_id = msg.get("taskId")
+                    instructions = msg.get("instructions", "")
+                    if not task_id or not instructions:
+                        continue
+                    logger.info("Redirect for task %s: %s", task_id, instructions[:80])
+                    active = next((s for s in self.agents if s.current_task_id == task_id), None)
+                    if active and active.current_claude:
+                        # Subprocess running — SIGTERM it and queue redirect for the
+                        # in-flight redirect loop, which resumes claude with the
+                        # full prior session id.
+                        await active.current_claude.terminate()
+                        logger.info("Terminated subprocess for redirect of task %s", task_id)
+                        rq = self._redirect_queues.get(task_id)
+                        if rq is not None:
+                            await rq.put(instructions)
                     else:
-                        # Task is no longer running on this worker; treat the
-                        # redirect like a follow-up — re-queue the task with
-                        # the new instructions. The branch field is whatever
-                        # the foreman supplied; an empty string means "use
-                        # the worktree we already have".
-                        logger.info(
-                            "task-redirect for %s outside an active run — re-queueing as follow-up",
-                            task_id,
-                        )
-                        await self.task_queue.put(
-                            {
-                                "id": task_id,
-                                "worker_id": self.cfg.worker_id,
-                                "guild_id": self.cfg.guild_id,
-                                "name": msg.get("name", ""),
-                                "description": msg.get("description", "") or instructions,
-                                "tool": msg.get("tool", "claude"),
-                                "phase": msg.get("phase", "execute"),
-                                "issue_number": msg.get("issueNumber"),
-                                "issue_repo": msg.get("issueRepo"),
-                                "pr_number": msg.get("prNumber"),
-                                "pr_repo": msg.get("prRepo"),
-                                "repos": msg.get("repos") or [],
-                                "followup_instructions": instructions,
-                                "followup_branch": msg.get("branch", ""),
-                            }
-                        )
+                        rq = self._redirect_queues.get(task_id)
+                        if rq is not None:
+                            # Subprocess just exited — buffer; the redirect loop
+                            # picks the buffered instructions up before returning
+                            # the slot to idle.
+                            await rq.put(instructions)
+                            logger.info(
+                                "task-redirect for %s: buffered for in-flight redirect loop",
+                                task_id,
+                            )
+                        else:
+                            # Task is no longer running on this worker; treat the
+                            # redirect like a follow-up — re-queue the task with
+                            # the new instructions. The branch field is whatever
+                            # the foreman supplied; an empty string means "use
+                            # the worktree we already have".
+                            logger.info(
+                                "task-redirect for %s outside an active run — re-queueing as follow-up",
+                                task_id,
+                            )
+                            await self.task_queue.put(
+                                {
+                                    "id": task_id,
+                                    "worker_id": self.cfg.worker_id,
+                                    "guild_id": self.cfg.guild_id,
+                                    "name": msg.get("name", ""),
+                                    "description": msg.get("description", "") or instructions,
+                                    "tool": msg.get("tool", "claude"),
+                                    "phase": msg.get("phase", "execute"),
+                                    "issue_number": msg.get("issueNumber"),
+                                    "issue_repo": msg.get("issueRepo"),
+                                    "pr_number": msg.get("prNumber"),
+                                    "pr_repo": msg.get("prRepo"),
+                                    "repos": msg.get("repos") or [],
+                                    "followup_instructions": instructions,
+                                    "followup_branch": msg.get("branch", ""),
+                                }
+                            )
+            except Exception:
+                logger.exception("Error handling WS message type=%s", mtype)
 
     # ------------------------------------------------------------------ Worktree bookkeeping
 
@@ -1849,12 +1852,15 @@ class Worker:
             if self.task_queue.empty() and all_idle:
                 known = self._known_repos()
                 if known:
-                    await git_ops.pull_repos(
-                        self.cfg.repos_dir,
-                        known,
-                        self.cfg.github_token,
-                        self._emit,
-                    )
+                    try:
+                        await git_ops.pull_repos(
+                            self.cfg.repos_dir,
+                            known,
+                            self.cfg.github_token,
+                            self._emit,
+                        )
+                    except Exception as exc:
+                        logger.warning("Idle repo pull failed: %s", exc)
 
     # ------------------------------------------------------------------ Agent loop
     async def _agent_loop(self, slot: Agent) -> None:

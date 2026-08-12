@@ -185,6 +185,36 @@ async def test_set_state_tracks_state_on_slot():
     assert slot.state == "awaiting-review"
 
 
+async def test_listen_survives_exception_in_message_dispatch():
+    """A bug or bad payload while handling one WS message must not kill the
+    listener — that would crash the whole worker process (see _listen's
+    run() re-raise) and take down every in-flight task, not just drop the
+    one bad message."""
+    worker = Worker(_make_cfg())
+    worker._joined = True
+    sent: list[dict] = []
+    worker._send = AsyncMock(side_effect=lambda p: sent.append(p))
+    worker.task_queue.put = AsyncMock(side_effect=RuntimeError("boom"))
+
+    async def messages():
+        # This message's handling raises via the patched task_queue.put.
+        yield {"type": "task-assigned", "workerId": "w-test01", "taskId": "t-1"}
+        # The listener must keep processing messages afterward.
+        yield {"type": "worker-ping", "workerId": "w-test01", "timestamp": "now"}
+        await asyncio.sleep(3600)
+
+    worker.ws.messages = messages
+
+    task = asyncio.create_task(worker._listen())
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    pongs = [m for m in sent if m.get("type") == "worker-pong"]
+    assert len(pongs) == 1, f"listener died after the first message's exception: {sent}"
+
+
 async def test_worker_ping_replies_with_worker_pong():
     """The worker replies to backend liveness probes with worker-pong."""
     worker = Worker(_make_cfg())
