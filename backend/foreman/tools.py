@@ -2659,6 +2659,14 @@ async def _exec_one_tool(
                             "agent": agent_info,
                             "branch": task.branch,
                             "pr_url": task.pr_url,
+                            "pr_repo": task.pr_repo,
+                            "pr_number": task.pr_number,
+                            "effective_pr_url": task.pr_url
+                            or (
+                                f"https://github.com/{task.pr_repo}/pull/{task.pr_number}"
+                                if task.pr_repo and task.pr_number
+                                else None
+                            ),
                             "created_at": task.created_at,
                             "deleted_at": task.deleted_at,
                             "recent_logs": recent_logs,
