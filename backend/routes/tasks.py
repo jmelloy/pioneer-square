@@ -32,7 +32,13 @@ from sqlalchemy import tuple_, update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from util.tasks import spawn
-from ws_types import TaskCancelMsg, TaskFinalizeMsg, TaskRedirectMsg, TaskUpdateMsg
+from ws_types import (
+    TaskCancelMsg,
+    TaskFinalizeMsg,
+    TaskRedirectMsg,
+    TaskUpdateMsg,
+    WorkerMessageMsg,
+)
 
 router = APIRouter()
 
@@ -43,6 +49,10 @@ class FollowupCreate(BaseModel):
 
 class RedirectCreate(BaseModel):
     instructions: str
+
+
+class TaskMessageCreate(BaseModel):
+    message: str
 
 
 @router.get("/guilds/{guild_id}/tasks")
@@ -68,6 +78,7 @@ async def list_guild_tasks(
             col(Task.name),
             col(Task.description),
             col(Task.tool),
+            col(Task.task_type),
             col(Task.state),
             col(Task.phase),
             col(Task.parent_task_id),
@@ -276,6 +287,41 @@ async def finalize_task_endpoint(
     )
     # Return raw datetime — FastAPI's jsonable_encoder handles ISO-8601 serialisation.
     return {"status": "finalized", "taskId": task_id, "deletedAt": deleted_at}
+
+
+@router.post("/guilds/{guild_id}/tasks/{task_id}/message")
+async def message_task_endpoint(
+    guild_id: str,
+    task_id: str,
+    data: TaskMessageCreate,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Inject a message into a running interactive task."""
+    text_msg = data.message.strip()
+    if not text_msg:
+        raise HTTPException(status_code=400, detail="Empty message")
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+    row = (
+        await db.exec(
+            select(col(Task.worker_id), col(Task.state)).where(
+                col(Task.id) == task_id, col(Task.guild_id) == guild_pk
+            )
+        )
+    ).one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Task not found")
+    worker_id, state = row
+    if not worker_id:
+        raise HTTPException(status_code=400, detail="Task is not assigned to a worker")
+    if state != "working":
+        raise HTTPException(status_code=409, detail=f"Task is {state}, not working")
+    await broadcast_msg(
+        guild_id, WorkerMessageMsg(workerId=worker_id, message=text_msg, taskId=task_id)
+    )
+    return {"status": "sent", "taskId": task_id}
 
 
 @router.post("/guilds/{guild_id}/tasks/{task_id}/cancel")

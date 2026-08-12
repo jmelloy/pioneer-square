@@ -208,6 +208,7 @@ async def run_pi_auto(
         provider=provider,
         resume_session_id=resume_session_id,
         env=env,
+        interactive=False,
     )
     if resume_session_id and not success:
         logger.warning(
@@ -227,8 +228,44 @@ async def run_pi_auto(
             provider=provider,
             resume_session_id=None,
             env=env,
+            interactive=False,
         )
     return success, stop_reason, last_text, session_id
+
+
+async def run_pi_interactive(
+    description: str,
+    cwd: str,
+    *,
+    emit: EmitFn,
+    on_usage: UsageFn | None = None,
+    on_proc: OnProcFn | None = None,
+    pi_path: str = "pi",
+    model: str | None = None,
+    provider: str | None = None,
+    resume_session_id: str | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[bool, str, str, str | None]:
+    """Run pi RPC as a long-lived interactive session.
+
+    Unlike run_pi_auto, this keeps the RPC process open after ``agent_end`` so
+    callers can send additional prompts via the PiProcess returned to
+    ``on_proc``. It returns only when stdin is closed, the process exits, or the
+    caller terminates the process.
+    """
+    return await _run_pi_once(
+        description,
+        cwd,
+        emit=emit,
+        on_usage=on_usage,
+        on_proc=on_proc,
+        pi_path=pi_path,
+        model=model,
+        provider=provider,
+        resume_session_id=resume_session_id,
+        env=env,
+        interactive=True,
+    )
 
 
 async def _run_pi_once(
@@ -243,6 +280,7 @@ async def _run_pi_once(
     provider: str | None,
     resume_session_id: str | None,
     env: dict[str, str] | None = None,
+    interactive: bool = False,
 ) -> tuple[bool, str, str, str | None]:
     """Single pi invocation. See run_pi_auto for the retrying wrapper."""
     cmd = [pi_path]
@@ -426,7 +464,7 @@ async def _run_pi_once(
             # We only send a single prompt; pi RPC mode stays alive waiting
             # for more stdin after the run completes, so stop reading once the
             # agent (or a fatal error) has finished.
-            if saw_agent_end or saw_error:
+            if saw_error or (saw_agent_end and not interactive):
                 break
 
         # Closing stdin signals EOF so the RPC process exits cleanly.

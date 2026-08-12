@@ -36,7 +36,7 @@
       <input
         v-model="runPrompt"
         class="prompt-input"
-        placeholder="Enter task prompt…"
+        :placeholder="promptPlaceholder"
         :disabled="isRunning"
         @keydown.enter.exact="handleRun"
       />
@@ -45,7 +45,7 @@
         class="pixel-btn run-btn"
         :disabled="!runPrompt.trim()"
         @click="handleRun"
-        title="Run agent"
+        title="Start interactive task"
       >
         ▶ RUN
       </button>
@@ -75,6 +75,8 @@ const runError = ref('')
 
 const isRunning = computed(() => ['working', 'thinking', 'busy'].includes(props.agentState ?? ''))
 
+const promptPlaceholder = computed(() => `Start an interactive ${runTool.value} task…`)
+
 const modelPlaceholder = computed(() => {
   if (runTool.value === 'claude') return 'model (default)'
   if (runTool.value === 'codex') return 'model (default)'
@@ -100,13 +102,16 @@ async function handleRun() {
   if (!runPrompt.value.trim() || isRunning.value) return
   runError.value = ''
   try {
-    await agentsStore.runAgent(props.agentId, {
+    const result = await agentsStore.runAgent(props.agentId, {
       tool: runTool.value,
       prompt: runPrompt.value.trim(),
       model: runModel.value.trim(),
       provider: runProvider.value.trim(),
     })
     runPrompt.value = ''
+    if (result && typeof result === 'object' && 'taskId' in result) {
+      agentsStore.openTaskTab(String(result.taskId))
+    }
   } catch (e: unknown) {
     runError.value = e instanceof Error ? e.message : String(e)
   }

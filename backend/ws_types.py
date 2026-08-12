@@ -122,6 +122,8 @@ class TaskAssignedMsg(_WS):
     name: str = ""
     description: str = ""
     tool: str = "pi"
+    taskType: str | None = None
+    targetAgentId: str | None = None
     model: str | None = None
     modelTier: str | None = None
     provider: str | None = None
@@ -143,6 +145,7 @@ class TaskCreatedMsg(_WS):
     name: str
     description: str
     phase: str
+    taskType: str | None = None
     state: str
     createdAt: str
 

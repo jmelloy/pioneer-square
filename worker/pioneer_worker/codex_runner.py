@@ -15,6 +15,27 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 EmitFn = Callable[..., Awaitable[None]]  # emit(line: str, detail: dict | None = None)
+OnProcFn = Callable[["CodexProcess"], None]
+
+
+class CodexProcess:
+    """Live handle the worker holds so it can cancel a running codex turn."""
+
+    def __init__(self, proc: asyncio.subprocess.Process) -> None:
+        self.proc = proc
+        self.session_id: str | None = None
+
+    async def send_message(self, text: str) -> bool:
+        # codex exec is turn-based; interactive task messages are queued by
+        # worker.py and run as the next resumed turn.
+        del text
+        return False
+
+    async def terminate(self) -> None:
+        try:
+            self.proc.terminate()
+        except ProcessLookupError:
+            pass
 
 
 def parse_codex_event(event: dict) -> tuple[str | None, dict | None]:
@@ -84,6 +105,7 @@ async def run_codex_auto(
     model: str | None = None,
     resume_session_id: str | None = None,
     env: dict[str, str] | None = None,
+    on_proc: OnProcFn | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Run codex on *description* in *cwd*. Returns (success, stop_reason, last_text, session_id).
 
@@ -110,6 +132,7 @@ async def run_codex_auto(
         model=model,
         resume_session_id=resume_session_id,
         env=env,
+        on_proc=on_proc,
     )
     if resume_session_id and not success:
         logger.warning(
@@ -128,6 +151,7 @@ async def run_codex_auto(
             model=model,
             resume_session_id=None,
             env=env,
+            on_proc=on_proc,
         )
     return success, stop_reason, last_text, session_id
 
@@ -143,6 +167,7 @@ async def _run_codex_once(
     model: str | None,
     resume_session_id: str | None,
     env: dict[str, str] | None = None,
+    on_proc: OnProcFn | None = None,
 ) -> tuple[bool, str, str, str | None]:
     """Single codex invocation. See run_codex_auto for the retrying wrapper."""
     last_message_file = tempfile.NamedTemporaryFile(
@@ -192,6 +217,9 @@ async def _run_codex_once(
         os.close(slave_fd)
         slave_fd = None
         logger.info("codex subprocess started pid=%s", proc.pid)
+        codex_proc = CodexProcess(proc)
+        if on_proc is not None:
+            on_proc(codex_proc)
 
         async def _drain_stderr() -> None:
             async for raw in proc.stderr:  # type: ignore[union-attr]
@@ -217,6 +245,7 @@ async def _run_codex_once(
                 tid = event.get("thread_id")
                 if tid:
                     session_id = tid
+                    codex_proc.session_id = tid
                     logger.info("codex[%d] thread_id=%s", proc.pid, session_id)
             if etype == "turn.completed":
                 stop_reason = "success"

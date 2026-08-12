@@ -335,6 +335,7 @@ class Task(SQLModel, table=True):
     guild_id: int = Field(foreign_key="guilds.id")
     description: str
     tool: str = Field(default="pi", sa_column_kwargs={"server_default": "'pi'"})
+    task_type: str = Field(default="standard", sa_column_kwargs={"server_default": "'standard'"})
     model: str | None = None
     provider: str | None = None
     issue_number: int | None = None
