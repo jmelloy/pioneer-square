@@ -2560,11 +2560,19 @@ class Worker:
             push_token = await self._task_github_token(task_id)
             if is_review:
                 # Review tasks only read the PR and post a `gh pr review` —
-                # never push commits or auto-commit stray local changes.
+                # never push commits or auto-commit stray local changes. Preserve
+                # the explicit PR metadata assigned by the foreman instead of
+                # relying on branch lookup (which can fail for checked-out PR refs).
                 await emit("Review phase — skipping push (read-only task).", level=LEVEL_WORKER)
-                pr_url = await github_pr.find_existing_pr(
-                    branch=branch, worktree_path=primary_wt, token=push_token
+                pr_url = task.get("pr_url") or (
+                    f"https://github.com/{pr_repo}/pull/{pr_number}"
+                    if pr_repo and pr_number
+                    else None
                 )
+                if not pr_url:
+                    pr_url = await github_pr.find_existing_pr(
+                        branch=branch, worktree_path=primary_wt, token=push_token
+                    )
             else:
                 # Push the branch so partial work is visible and a follow-up can
                 # build on it. push_branch returns "pushed" | "nothing" | "failed".

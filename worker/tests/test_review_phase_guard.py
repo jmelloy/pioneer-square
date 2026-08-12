@@ -319,6 +319,16 @@ async def test_review_prefers_pr_number_over_issue_number():
     mock_get_branch.assert_awaited_once_with("owner/repo", 99)
     mock_co.assert_awaited_once_with("/tmp/fake-repo", expected_wt_path, 99, "owner/repo", None)
     mock_create_worktree.assert_not_called()
+    completion_msgs = [
+        m.args[0]
+        for m in worker._send.await_args_list
+        if m.args and m.args[0].get("taskId") == "t-revpr"
+    ]
+    assert any(
+        m.get("type") == "task-complete"
+        and m.get("prUrl") == "https://github.com/owner/repo/pull/99"
+        for m in completion_msgs
+    ), "review tasks must report a PR URL from pr_repo/pr_number even if branch lookup finds none"
 
 
 # ── metadata handoff preflight guard (issue #1124) ────────────────────────────

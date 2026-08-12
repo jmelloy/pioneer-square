@@ -911,10 +911,16 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
                 .where(col(Task.id) == task_id)
                 .values(pr_url=pr_url, pr_number=pr_number_val, pr_repo=pr_repo_val)
             )
+        reported_state = data.get("state")
+        next_state = (
+            reported_state
+            if reported_state in {"awaiting-review", "awaiting-foreman-review"}
+            else ("awaiting-review" if pr_url else "awaiting-foreman-review")
+        )
         await ctx.db.exec(
             update(Task)
             .where(col(Task.id) == task_id, col(Task.state) == "working")
-            .values(state="awaiting-review")
+            .values(state=next_state)
         )
         await LockService(ctx.db).release(f"task:{task_id}")
         await ctx.db.commit()
@@ -1018,11 +1024,17 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
         if pr_url_fud:
             pr_number_val, pr_repo_val = _parse_pr_url(pr_url_fud)
             pr_update = {"pr_url": pr_url_fud, "pr_number": pr_number_val, "pr_repo": pr_repo_val}
-        # Move to awaiting-review unless task is already terminal.
+        reported_state_fud = data.get("state")
+        next_state_fud = (
+            reported_state_fud
+            if reported_state_fud in {"awaiting-review", "awaiting-foreman-review"}
+            else ("awaiting-review" if pr_url_fud else "awaiting-foreman-review")
+        )
+        # Move to the worker-reported post-run state unless task is already terminal.
         await ctx.db.exec(
             update(Task)
             .where(col(Task.id) == task_id, col(Task.state).not_in(_TERMINAL_STATES))
-            .values(**pr_update, state="awaiting-review")
+            .values(**pr_update, state=next_state_fud)
         )
         if pr_update:
             await ctx.db.exec(
