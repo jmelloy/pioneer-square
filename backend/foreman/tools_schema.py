@@ -768,26 +768,13 @@ FOREMAN_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "profile": {
-                    "type": "string",
-                    "description": (
-                        "Optional named spawn profile to use as the base configuration, e.g. "
-                        "'claude-default', 'claude-aws', 'codex-api', 'codex-aws', 'pi-aws', or "
-                        "a guild/user custom profile. Sets tool/provider/agent_count/repos "
-                        "defaults for that tool+provider pairing; any of repos/tools/agent_count "
-                        "given alongside it still override the profile's values for this spawn. "
-                        "Errors if the name doesn't match a built-in or a profile defined for "
-                        "this guild/user."
-                    ),
-                },
                 "repos": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
                         "Repos the worker should serve, as 'owner/repo'. Optional: defaults to "
-                        "the profile's repos (if any), else the guild's spawn defaults. Set it "
-                        "when the task you are standing this worker up for needs a repo the "
-                        "defaults do not cover."
+                        "the guild's spawn defaults. Set it when the task you are standing this "
+                        "worker up for needs a repo the defaults do not cover."
                     ),
                 },
                 "tools": {
@@ -795,15 +782,15 @@ FOREMAN_TOOLS = [
                     "items": {"type": "string"},
                     "description": (
                         "Optional tool runners to enable on the worker "
-                        "(e.g. ['claude', 'codex']). Defaults to the profile's tool (if any), "
-                        "else the guild's spawn defaults, else claude only."
+                        "(e.g. ['claude', 'codex']). Defaults to the guild's spawn defaults, "
+                        "else claude only."
                     ),
                 },
                 "agent_count": {
                     "type": "integer",
                     "description": (
-                        "Optional number of concurrent agent slots. Defaults to the profile's "
-                        "default_agent_count (if any), else the guild's spawn default, else 1."
+                        "Optional number of concurrent agent slots. Defaults to the guild's "
+                        "spawn default, else 1."
                     ),
                 },
                 "name": {

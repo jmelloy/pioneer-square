@@ -33,6 +33,7 @@ export default defineConfig({
     proxy: {
       '/auth':    { target: backendUrl,   changeOrigin: true },
       '/guilds':  { target: backendUrl,   changeOrigin: true },
+      '/api':     { target: backendUrl,   changeOrigin: true },
       // Intentionally proxies all /discord/* paths (not just /discord/interactions)
       // so any future Discord routes are covered automatically in dev.
       '/discord': { target: backendUrl,   changeOrigin: true },
