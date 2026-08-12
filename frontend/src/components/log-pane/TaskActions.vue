@@ -1,6 +1,33 @@
 <template>
+  <!-- Interactive task: send another prompt into the live Pi RPC session. -->
+  <div v-if="isInteractive && taskState === 'working' && isWorkerTask" class="redirect-panel">
+    <div class="redirect-header">INTERACTIVE AGENT</div>
+    <div class="redirect-row">
+      <textarea
+        v-model="messageText"
+        class="redirect-input"
+        placeholder="Send a message to this interactive session…"
+        rows="2"
+        @keydown.ctrl.enter="sendTaskMessage"
+      />
+    </div>
+    <div class="redirect-actions">
+      <button
+        class="pixel-btn redirect-btn"
+        @click="sendTaskMessage"
+        :disabled="!messageText.trim() || messaging"
+      >
+        {{ messaging ? '…' : '➤ Send' }}
+      </button>
+      <button class="pixel-btn cancel-task-btn" @click="cancelTaskAction" :disabled="cancelling">
+        {{ cancelling ? '…' : '✕ Close' }}
+      </button>
+    </div>
+    <div v-if="cancelError" class="cancel-error redirect-cancel-error">{{ cancelError }}</div>
+  </div>
+
   <!-- Task: redirect panel (active during work) -->
-  <div v-if="taskState === 'working' && isWorkerTask" class="redirect-panel">
+  <div v-if="!isInteractive && taskState === 'working' && isWorkerTask" class="redirect-panel">
     <div class="redirect-header">REDIRECT AGENT</div>
     <div class="redirect-row">
       <textarea
@@ -73,6 +100,7 @@ import { useTasksStore } from '../../stores/tasks'
 const props = defineProps<{
   taskId: string
   taskState?: string
+  taskType?: string
   workerId?: string
 }>()
 
@@ -80,15 +108,18 @@ const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
 
 const isWorkerTask = computed(() => props.workerId && props.workerId !== 'foreman')
+const isInteractive = computed(() => props.taskType === 'interactive')
 
 const _TERMINAL_STATES = new Set(['done', 'failed', 'cancelled', 'error'])
 
 const isTerminalState = computed(() => _TERMINAL_STATES.has(props.taskState || ''))
 
 const showFollowupPanel = computed(
-  () => isWorkerTask.value && (props.taskState === 'awaiting-review' || isTerminalState.value),
+  () =>
+    !isInteractive.value &&
+    isWorkerTask.value &&
+    (props.taskState === 'awaiting-review' || isTerminalState.value),
 )
-
 const followupPanelHeader = computed(() =>
   isTerminalState.value ? 'SEND TO FOREMAN' : 'FOREMAN FOLLOW-UP',
 )
@@ -109,6 +140,8 @@ const redirectText = ref('')
 const cancelling = ref(false)
 const cancelError = ref('')
 const redirecting = ref(false)
+const messaging = ref(false)
+const messageText = ref('')
 
 async function sendFollowupAction() {
   const text = followupText.value.trim()
@@ -145,6 +178,22 @@ async function cancelTaskAction() {
     console.error('Cancel failed', e)
   } finally {
     cancelling.value = false
+  }
+}
+
+async function sendTaskMessage() {
+  const text = messageText.value.trim()
+  if (!text || messaging.value) return
+  const guildId = guildStore.currentGuild?.id
+  if (!guildId) return
+  messaging.value = true
+  try {
+    await tasksStore.messageTask(guildId, props.taskId, text)
+    messageText.value = ''
+  } catch (e) {
+    console.error('Message failed', e)
+  } finally {
+    messaging.value = false
   }
 }
 

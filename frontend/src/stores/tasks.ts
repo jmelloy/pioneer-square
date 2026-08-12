@@ -147,6 +147,13 @@ export const useTasksStore = defineStore('tasks', () => {
     })
   }
 
+  async function messageTask(guildId: string, taskId: string, message: string) {
+    return api(`/guilds/${guildId}/tasks/${taskId}/message`, {
+      method: 'POST',
+      json: { message },
+    })
+  }
+
   function _upsertTask(data: Task) {
     const idx = tasks.value.findIndex((t) => t.id === data.id)
     if (idx >= 0) {
@@ -163,6 +170,7 @@ export const useTasksStore = defineStore('tasks', () => {
         name: data.name,
         description: data.description,
         phase: data.phase,
+        task_type: data.taskType,
         state: data.state,
         worker_id: null,
         created_at: data.createdAt,
@@ -174,6 +182,7 @@ export const useTasksStore = defineStore('tasks', () => {
         name: data.name || (data.description || '').slice(0, 60),
         description: data.description,
         phase: data.phase || 'execute',
+        task_type: data.taskType || 'standard',
         state: 'pending',
         worker_id: data.workerId,
         parent_task_id: data.parentTaskId || null,
@@ -268,6 +277,7 @@ export const useTasksStore = defineStore('tasks', () => {
     finalizeTask,
     cancelTask,
     redirectTask,
+    messageTask,
     handleWebSocketMessage,
     selectTask,
     closeTask,

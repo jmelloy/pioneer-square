@@ -68,12 +68,14 @@ export type TaskState =
 // phase='issue'; plan/execute/review/followup tasks nest under them via
 // parent_task_id. Keep in sync with FOREMAN_TOOLS in backend/foreman/tools_schema.py.
 export type TaskPhase = 'issue' | 'plan' | 'execute' | 'review' | 'followup'
+export type TaskType = 'standard' | 'interactive'
 
 export interface Task {
   id: string
   name?: string
   description?: string
   phase?: TaskPhase
+  task_type?: TaskType
   state: TaskState
   worker_id?: string
   parent_task_id?: string | null
@@ -241,6 +243,7 @@ export interface TaskCreatedWS {
   name?: string
   description?: string
   phase?: TaskPhase
+  taskType?: TaskType
   state: TaskState
   createdAt?: string
 }
@@ -252,6 +255,8 @@ export interface TaskAssignedWS {
   name?: string
   description?: string
   tool?: string
+  taskType?: TaskType
+  targetAgentId?: string | null
   model?: string | null
   provider?: string | null
   phase?: TaskPhase

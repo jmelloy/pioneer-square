@@ -38,6 +38,7 @@
       v-if="kind === 'agent' && agentTask"
       :task-id="agentTask.id"
       :task-state="agentTask.state"
+      :task-type="agentTask.task_type"
       :worker-id="agentTask.worker_id"
     />
     <WorkerActions v-if="kind === 'worker'" :worker-id="id" :worker-state="entityState" />
@@ -45,6 +46,7 @@
       v-if="kind === 'task'"
       :task-id="id"
       :task-state="task.state"
+      :task-type="task.task_type"
       :worker-id="task.worker_id"
     />
   </div>

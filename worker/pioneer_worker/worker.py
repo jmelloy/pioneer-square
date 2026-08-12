@@ -186,6 +186,7 @@ class Worker:
         self._cancelled_tasks: set[str] = set()
         # Per-task redirect-instruction queues (SIGTERM + --resume flow).
         self._redirect_queues: dict[str, asyncio.Queue] = {}
+        self._interactive_queues: dict[str, asyncio.Queue] = {}
         # Worktrees materialised for each task, kept alive within the TTL window
         # so follow-ups can reuse the existing checkout without a re-clone.
         # Keyed by task_id; each entry is a list of (repo_path, wt_path, last_used_monotonic).
@@ -957,6 +958,11 @@ class Worker:
         would inject one task's instructions into an unrelated task's session,
         which is worse than not delivering at all.
         """
+        if task_id and task_id in self._interactive_queues:
+            await self._interactive_queues[task_id].put(text)
+            await self._emit(f"Queued for {task_id}: {text[:80]}")
+            return
+
         running = [s for s in self.agents if s.current_claude]
         if task_id:
             target = next((s for s in running if s.current_task_id == task_id), None)
@@ -1402,6 +1408,8 @@ class Worker:
                             "name": msg.get("name", ""),
                             "description": msg.get("description", ""),
                             "tool": msg.get("tool", "claude"),
+                            "task_type": msg.get("taskType") or msg.get("task_type") or "standard",
+                            "target_agent_id": msg.get("targetAgentId"),
                             "model": msg.get("model"),
                             "provider": msg.get("provider"),
                             "phase": msg.get("phase", "execute"),
@@ -1513,6 +1521,10 @@ class Worker:
                     if rq is not None:
                         await rq.put(_CANCEL_SENTINEL)
                         logger.info("Signalled redirect queue for cancelled task %s", task_id)
+                    iq = self._interactive_queues.get(task_id)
+                    if iq is not None:
+                        await iq.put(_CANCEL_SENTINEL)
+                        logger.info("Signalled interactive queue for cancelled task %s", task_id)
 
                 elif mtype == "worker-shutdown":
                     # Targeted at a specific worker, or broadcast (no workerId) to all.
@@ -1871,6 +1883,11 @@ class Worker:
                 logger.info("Agent %s: shutdown sentinel received; exiting", slot.agent_id)
                 break
             task_id = task.get("id")
+            target_agent_id = task.get("target_agent_id")
+            if target_agent_id and target_agent_id != slot.agent_id:
+                await self.task_queue.put(task)
+                await asyncio.sleep(0.1)
+                continue
             if task_id in self._cancelled_tasks:
                 logger.info("Skipping cancelled task %s", task_id)
                 continue
@@ -1934,6 +1951,8 @@ class Worker:
         # The idle puller path has no followup_instructions (those lived only in
         # the WS message), so we must check phase as well.
         is_followup = bool(followup_instructions) or task.get("phase") == "followup"
+        task_type = (task.get("task_type") or task.get("taskType") or "standard").lower()
+        is_interactive = task_type == "interactive"
         phase = (task.get("phase") or "execute").lower()
         is_review = phase == "review"
         # Review tasks act on a PR, identified by the dedicated pr_number/pr_repo
@@ -2285,6 +2304,109 @@ class Worker:
             # Scoped environment for this tool: shared vars + this tool's own set,
             # with the other tools' credentials deliberately excluded.
             tool_env = self._env_for_tool(tool)
+
+            if is_interactive:
+                interactive_q: asyncio.Queue = asyncio.Queue()
+                self._interactive_queues[task_id] = interactive_q
+                await emit(
+                    f"Interactive {tool} session. Send messages in this task window; "
+                    "cancel to close.",
+                    level=LEVEL_WORKER,
+                )
+                try:
+                    while True:
+                        if tool == "codex":
+                            (
+                                success,
+                                stop_reason,
+                                last_msg,
+                                resume_session_id,
+                            ) = await codex_runner.run_codex_auto(
+                                current_desc,
+                                primary_wt,
+                                emit=emit,
+                                codex_path=self.cfg.codex_path,
+                                codex_args=self.cfg.codex_args,
+                                openai_api_key=self.cfg.openai_api_key,
+                                model=task.get("model") or None,
+                                resume_session_id=resume_session_id,
+                                env=tool_env,
+                                on_proc=_on_proc,
+                            )
+                            agent.current_claude = None
+                        elif tool == "pi":
+                            (
+                                success,
+                                stop_reason,
+                                last_msg,
+                                resume_session_id,
+                            ) = await pi_runner.run_pi_auto(
+                                current_desc,
+                                primary_wt,
+                                emit=emit,
+                                pi_path=self.cfg.pi_path,
+                                model=task.get("model") or self.cfg.pi_model,
+                                provider=(
+                                    task.get("provider")
+                                    or self.cfg.pi_provider
+                                    or self.cfg.provider
+                                ),
+                                on_usage=_collect_usage,
+                                on_proc=_on_proc,
+                                resume_session_id=resume_session_id,
+                                env=tool_env,
+                            )
+                            agent.current_claude = None
+                        else:
+                            (
+                                success,
+                                stop_reason,
+                                last_msg,
+                                resume_session_id,
+                            ) = await claude_runner.run_claude_auto(
+                                current_desc,
+                                primary_wt,
+                                max_turns=self.cfg.claude_max_turns,
+                                emit=emit,
+                                on_proc=_on_proc,
+                                on_usage=_collect_usage,
+                                claude_path=self.cfg.claude_path,
+                                resume_session_id=resume_session_id,
+                                model=task.get("model") or None,
+                                env=tool_env,
+                            )
+                            _capture_session_and_clear()
+
+                        await self._task_update(
+                            task_id,
+                            agent=agent,
+                            state="working",
+                            workerId=self.cfg.worker_id,
+                            agentId=agent.agent_id,
+                            stopReason=stop_reason,
+                            branch=branch,
+                            worktreePath=primary_wt,
+                            sessionId=resume_session_id or "",
+                            lastText=last_msg,
+                        )
+                        if task_id in self._cancelled_tasks:
+                            break
+                        await emit(f"[{tool}] Waiting for your next message…", level=LEVEL_WORKER)
+                        next_msg = await interactive_q.get()
+                        if next_msg is _CANCEL_SENTINEL:
+                            break
+                        current_desc = str(next_msg)
+
+                    await emit("Interactive session closed.", level=LEVEL_WORKER)
+                    await self._task_update(
+                        task_id, agent=agent, state="cancelled", finishedAt=_now_iso()
+                    )
+                    await self._release_task_worktrees(task_id)
+                finally:
+                    self._interactive_queues.pop(task_id, None)
+                    agent.current_claude = None
+                    await self._set_state("idle", agent)
+                return
 
             while True:
                 if tool == "codex":
