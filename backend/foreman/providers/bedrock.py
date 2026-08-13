@@ -480,7 +480,7 @@ def anthropic_messages_to_responses_input(
 
         pending_text: list[str] = []
 
-        def _flush_text(role: str = role) -> None:
+        def _flush_text(role: str = role, pending_text: list[str] = pending_text) -> None:
             if pending_text:
                 items.append({"role": role, "content": "\n".join(pending_text)})
                 pending_text.clear()
