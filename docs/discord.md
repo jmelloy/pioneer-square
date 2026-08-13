@@ -163,8 +163,33 @@ a couple more (account linking, worker management) are covered under
 
 When `DISCORD_BOT_TOKEN` + `DISCORD_CHANNEL_ID` are set, every plain-text line the Foreman AI
 sends to a user (not tool-call traces) is mirrored into Discord. If the line is scoped to a task
-whose PR/issue already has a Discord thread, it posts there; otherwise it posts to the guild's
-main channel — currently there's no separate daily/dated fallback thread. No-op if blank.
+whose PR/issue already has a Discord thread, it posts there; otherwise, when the line has a
+resolvable user, it posts into that user's per-conversation thread (see below); with no task
+thread and no resolvable user (a system-triggered line), it falls back to the guild's main
+channel. No-op if blank.
+
+### Thread-per-conversation
+
+Ad-hoc Foreman chat — not scoped to any task — gets its own Discord thread per `(guild, user)`
+pair instead of cluttering the main channel, keeping each conversation isolated the same way a
+PR/issue or task-stream thread does:
+
+- **Lazy creation** — the first ad-hoc reply for a user in a guild posts a starter message in the
+  resolved channel, then creates a thread named from that reply's content (truncated to ~80
+  chars, prefixed `💬`).
+- **Persistence** — the mapping is stored in `discord_thread_bindings`, keyed
+  `subject_type="conversation"`, `subject_key="<guild-slug>:<user_id>"`.
+- **Reuse & routing** — every later ad-hoc reply for that user reuses the same thread, and a
+  reply typed *in* the thread routes back to that same Foreman conversation
+  (`discord/router.py`), exactly like an issue or task-stream thread.
+- **Auto-archive** — created with an explicit 24h `auto_archive_duration` so an idle conversation
+  archives natively regardless of the channel's own default.
+- **Explicit cleanup** — clearing a user's Foreman history (`POST
+  /guilds/{guild_id}/foreman/clear-context`) also archives their conversation thread, since that
+  is the closest existing "conversation closed" signal.
+
+An @-mention reply (which always targets the channel/DM it came from) and any task-scoped reply
+take priority over this — see `notify_foreman_chat` in `backend/discord_notifier.py`.
 
 ### Live task-stream mirroring
 

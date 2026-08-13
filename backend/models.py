@@ -907,6 +907,8 @@ class DiscordThreadBinding(SQLModel, table=True):
 
     - ``"issue"``         ``"owner/repo#123"``       one thread per GitHub issue/PR
     - ``"task_stream"``   a bare ``task_id``          one thread per task's live output stream
+    - ``"conversation"``  ``"<guild-slug>:<user_id>"`` one thread per user's ad-hoc Foreman
+      conversation in a guild (#1161; thread-per-conversation)
     - ``"foreman_daily"``  ``"<guild-slug>:<date>"``  legacy per-guild-per-day Foreman chat (read-only; no longer created)
 
     ``thread_id`` is also unique: a Discord thread ID Pioneer Square created or

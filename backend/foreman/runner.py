@@ -1130,6 +1130,7 @@ async def _emit_foreman_chat(
     child_task_id: str | None = None,
     discord_task_id: str | None = None,
     discord_channel_id: str | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Broadcast a Foreman -> user narration line and mirror it into Discord.
 
@@ -1152,6 +1153,10 @@ async def _emit_foreman_chat(
     overriding both of the above. Set only for a run triggered by an @-mention
     (see ``discord/router.py``), so the answer goes back to the channel or DM
     the mention came from.
+
+    ``user_id`` is passed through to ``notify_foreman_chat`` so ad-hoc chat
+    (no ``discord_task_id``/``discord_channel_id``) lands in that user's own
+    per-conversation Discord thread (#1161) instead of the flat main channel.
     """
     await broadcast_msg(
         guild_id,
@@ -1165,7 +1170,11 @@ async def _emit_foreman_chat(
     )
     spawn(
         discord_notifier.notify_foreman_chat(
-            guild_id, content, task_id=discord_task_id, channel_id=discord_channel_id
+            guild_id,
+            content,
+            task_id=discord_task_id,
+            channel_id=discord_channel_id,
+            user_id=user_id,
         ),
         name=f"discord.foreman-chat:{guild_id}",
     )
@@ -1377,6 +1386,7 @@ async def _notify_queued_turn_failure(
             child_task_id=turn.task_id if turn.child else None,
             discord_task_id=turn.task_id,
             discord_channel_id=turn.reply_channel_id,
+            user_id=turn.user_id,
         )
     except Exception:
         logger.exception(
@@ -1680,6 +1690,7 @@ async def _run_foreman_ai(
                         child_task_id=_task_id,
                         discord_task_id=_discord_task_id,
                         discord_channel_id=reply_channel_id,
+                        user_id=user_id,
                     )
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
@@ -1895,6 +1906,7 @@ async def _run_foreman_ai(
                         child_task_id=_task_id,
                         discord_task_id=_discord_task_id,
                         discord_channel_id=reply_channel_id,
+                        user_id=user_id,
                     )
             cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
@@ -1905,6 +1917,7 @@ async def _run_foreman_ai(
                 child_task_id=_task_id,
                 discord_task_id=_discord_task_id,
                 discord_channel_id=reply_channel_id,
+                user_id=user_id,
             )
 
         response_text = "\n".join(text_parts).strip()

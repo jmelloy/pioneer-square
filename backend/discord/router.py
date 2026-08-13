@@ -16,13 +16,19 @@ table, keyed on ``(subject_type, subject_key)``):
       threads carried no inbound binding at all, so a reply here was silently
       dropped before ever reaching this router (see
       ``discord/gateway.py:_query_channel_wired``, which now also covers them).
+    - a message in a ``"conversation"`` thread (a per-``(guild, user)``
+      thread-per-conversation for ad-hoc Foreman chat, #1161) is routed with
+      ``task_id=None``, same as a plain wired channel — but the reply lands
+      back in that conversation's own thread (``notify_foreman_chat`` reuses
+      it via the same subject key) instead of the guild's main channel.
     - a message in a ``"foreman_daily"`` thread (a legacy, no-longer-created
       dated Foreman thread — kept only so previously existing threads keep
       routing), or in any other wired channel with no thread binding, is
       general/ad-hoc chat for that Pioneer Square guild — routed with
       ``task_id=None``, so the reply is posted directly to the guild's main
-      configured channel. ``notify_foreman_chat`` never creates a new dated
-      thread; that fallback has been removed.
+      configured channel (or a fresh ``"conversation"`` thread when a
+      *user_id* resolves — see ``notify_foreman_chat``). ``notify_foreman_chat``
+      never creates a new dated thread; that fallback has been removed.
     - one exception to the above: a message that @-mentions the bot user
       (``discord.auth.mentions_bot_user``) or the foreman role
       (``discord.auth.mentions_foreman_role``) always gets a response, in any
@@ -177,6 +183,17 @@ def _resolve_foreman_daily_session(subject_key: str) -> str | None:
     return slug or None
 
 
+def _resolve_conversation_session(subject_key: str) -> str | None:
+    """Return the guild slug encoded in a ``"conversation"`` subject_key ``"slug:user_id"``.
+
+    No task scoping — a per-conversation thread (#1161) is ad-hoc Foreman
+    chat, not tied to any one task, so a reply there routes exactly like a
+    wired channel or a legacy ``"foreman_daily"`` thread: ``task_id=None``.
+    """
+    slug, _, _user_id = subject_key.partition(":")
+    return slug or None
+
+
 async def _resolve_channel_guild(channel_id: str) -> str | None:
     """Return the Pioneer Square guild slug bound to *channel_id* via ``/join-channel``.
 
@@ -237,6 +254,10 @@ async def resolve_session(channel_id: str) -> tuple[str, str | None] | None:
                 return session
         elif subject_type == "foreman_daily":
             slug = _resolve_foreman_daily_session(subject_key)
+            if slug:
+                return (slug, None)
+        elif subject_type == "conversation":
+            slug = _resolve_conversation_session(subject_key)
             if slug:
                 return (slug, None)
 
