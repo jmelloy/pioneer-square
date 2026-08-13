@@ -101,6 +101,7 @@ async def list_discord_accounts(
             col(DiscordAccountLink.discord_username),
             col(DiscordAccountLink.created_at).label("linked_at"),
         )
+        .select_from(GuildMember)
         .join(User, col(User.id) == col(GuildMember.user_id))
         .join(DiscordAccountLink, col(DiscordAccountLink.ps_user_id) == col(User.id))
         .where(col(GuildMember.guild_id) == guild_pk, col(User.is_bot).is_(False))
