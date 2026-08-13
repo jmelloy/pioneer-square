@@ -50,8 +50,8 @@
 import { computed, inject, onMounted, ref } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
-import { useTasksStore } from '../stores/tasks'
 import { useAgentsStore } from '../stores/agents'
+import { useUiStore } from '../stores/ui'
 import TaskTree from './sidebar/TaskTree.vue'
 import WorkerList from './sidebar/WorkerList.vue'
 import IssuesTab from './chat-pane/IssuesTab.vue'
@@ -60,8 +60,8 @@ import type { GitHubIssue } from '../types'
 
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
-const tasksStore = useTasksStore()
 const agentsStore = useAgentsStore()
+const uiStore = useUiStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
 
@@ -77,7 +77,7 @@ onMounted(async () => {
 })
 
 function onOpenTask(taskId: string) {
-  tasksStore.selectTask(taskId)
+  uiStore.selectTask(taskId)
   switchMobileTab('work')
 }
 
@@ -87,7 +87,7 @@ function onSelectIssue(issue: GitHubIssue) {
   if (slashIdx === -1) return
   const owner = issue.repo.slice(0, slashIdx)
   const repo = issue.repo.slice(slashIdx + 1)
-  agentsStore.openIssueTab(owner, repo, issue.number)
+  uiStore.openIssueTab(owner, repo, issue.number)
   switchMobileTab('work')
 }
 </script>

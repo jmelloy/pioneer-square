@@ -20,7 +20,7 @@
             :key="task.id"
             :task="task"
             :depth="0"
-            :selected-task-id="tasksStore.selectedTaskId"
+            :selected-task-id="uiStore.selectedTaskId"
             @open-task="$emit('open-task', $event)"
           />
         </div>
@@ -39,7 +39,7 @@
             :key="task.id"
             :task="task"
             :depth="0"
-            :selected-task-id="tasksStore.selectedTaskId"
+            :selected-task-id="uiStore.selectedTaskId"
             @open-task="$emit('open-task', $event)"
           />
         </div>
@@ -52,6 +52,7 @@
 import { computed, ref, watch } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useTasksStore } from '../../stores/tasks'
+import { useUiStore } from '../../stores/ui'
 import { api } from '../../utils/api'
 import type { TaskTreeData, TaskTreeNode, TreeGroupNode } from '../../types'
 import TaskTreeRow from './TaskTreeRow.vue'
@@ -60,6 +61,7 @@ defineEmits<{ (e: 'open-task', id: string): void }>()
 
 const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
+const uiStore = useUiStore()
 
 function nodeKey(node: TreeGroupNode): string {
   return `${node.type}:${node.repo}#${node.number}`

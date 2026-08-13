@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useGuildStore } from './guild'
+import { useUiStore } from './ui'
 import { api } from '../utils/api'
 import { formatWorkerId } from '../utils/format'
-import { taskTabId } from './tasks'
 import type {
   Agent,
   AgentActivity,
@@ -50,19 +50,10 @@ interface AssignTaskOpts {
   issueRepo?: string | null
 }
 
-export function issueTabId(owner: string, repo: string, number: number): string {
-  return `issue-${owner}/${repo}/${number}`
-}
-
 export const useAgentsStore = defineStore('agents', () => {
+  const uiStore = useUiStore()
   const agents = ref<Agent[]>([])
   const workerLogs = ref<Record<string, LogEntry[]>>({})
-  const selectedWorkerId = ref<string | null>(null)
-  const openedWorkerIds = ref<string[]>([])
-  const selectedAgentId = ref<string | null>(null)
-  const openedAgentIds = ref<string[]>([])
-  const openedIssueKeys = ref<string[]>([])
-  const activeTab = ref<string>('factory')
 
   // Unique workers derived from agent slots
   const workers = computed<Worker[]>(() => {
@@ -171,52 +162,6 @@ export const useAgentsStore = defineStore('agents', () => {
     if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
   }
 
-  function selectWorker(workerId: string | null) {
-    selectedWorkerId.value = workerId
-    if (workerId) {
-      if (!openedWorkerIds.value.includes(workerId)) openedWorkerIds.value.push(workerId)
-      activeTab.value = 'worker-' + workerId
-    }
-  }
-
-  function closeWorker(workerId: string) {
-    const idx = openedWorkerIds.value.indexOf(workerId)
-    if (idx !== -1) openedWorkerIds.value.splice(idx, 1)
-    if (selectedWorkerId.value === workerId) selectedWorkerId.value = null
-    if (activeTab.value === 'worker-' + workerId) activeTab.value = 'factory'
-  }
-
-  function selectAgent(agentId: string | null) {
-    selectedAgentId.value = agentId
-    if (agentId) {
-      if (!openedAgentIds.value.includes(agentId)) openedAgentIds.value.push(agentId)
-      activeTab.value = 'agent-' + agentId
-    }
-  }
-
-  function closeAgent(agentId: string) {
-    const idx = openedAgentIds.value.indexOf(agentId)
-    if (idx !== -1) openedAgentIds.value.splice(idx, 1)
-    if (selectedAgentId.value === agentId) selectedAgentId.value = null
-    if (activeTab.value === 'agent-' + agentId) activeTab.value = 'factory'
-  }
-
-  function openTaskTab(taskId: string) {
-    activeTab.value = taskTabId(taskId)
-  }
-
-  function openIssueTab(owner: string, repo: string, number: number) {
-    const key = issueTabId(owner, repo, number)
-    if (!openedIssueKeys.value.includes(key)) openedIssueKeys.value.push(key)
-    activeTab.value = key
-  }
-
-  function closeIssueTab(key: string) {
-    const idx = openedIssueKeys.value.indexOf(key)
-    if (idx !== -1) openedIssueKeys.value.splice(idx, 1)
-    if (activeTab.value === key) activeTab.value = 'factory'
-  }
-
   function sendMessage(agentId: string, content: string) {
     const guildStore = useGuildStore()
     guildStore.sendMessage({
@@ -297,11 +242,7 @@ export const useAgentsStore = defineStore('agents', () => {
   function clearAgents() {
     agents.value = []
     workerLogs.value = {}
-    selectedWorkerId.value = null
-    openedWorkerIds.value = []
-    selectedAgentId.value = null
-    openedAgentIds.value = []
-    activeTab.value = 'factory'
+    uiStore.resetWorkerAgentSelection()
   }
 
   type RawLog = { line: string; timestamp: string; detail?: unknown }
@@ -367,25 +308,12 @@ export const useAgentsStore = defineStore('agents', () => {
     agents,
     workers,
     workerLogs,
-    selectedWorkerId,
-    openedWorkerIds,
-    selectedAgentId,
-    openedAgentIds,
-    openedIssueKeys,
-    activeTab,
     registerAgent,
     updateAgentState,
     addLog,
     addWorkerLog,
     fetchWorkerLogs,
     fetchAgentLogs,
-    selectWorker,
-    closeWorker,
-    selectAgent,
-    closeAgent,
-    openTaskTab,
-    openIssueTab,
-    closeIssueTab,
     sendMessage,
     runAgent,
     stopAgent,

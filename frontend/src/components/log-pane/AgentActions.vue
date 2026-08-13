@@ -60,11 +60,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useAgentsStore } from '../../stores/agents'
+import { useUiStore } from '../../stores/ui'
 import { useModels } from '../../composables/useModels'
 
 const props = defineProps<{ agentId: string; agentState?: string }>()
 
 const agentsStore = useAgentsStore()
+const uiStore = useUiStore()
 const modelsStore = useModels()
 
 const runTool = ref('claude')
@@ -110,7 +112,7 @@ async function handleRun() {
     })
     runPrompt.value = ''
     if (result && typeof result === 'object' && 'taskId' in result) {
-      agentsStore.openTaskTab(String(result.taskId))
+      uiStore.openTaskTab(String(result.taskId))
     }
   } catch (e: unknown) {
     runError.value = e instanceof Error ? e.message : String(e)
