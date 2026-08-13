@@ -178,7 +178,10 @@ def insert_guild(
             session.execute(
                 pg_insert(GuildMember)
                 .values(guild_id=guild_pk, user_id=owner_user_id, role="owner", created_at=now)
-                .on_conflict_do_nothing(index_elements=["guild_id", "user_id"])
+                .on_conflict_do_nothing(
+                    index_elements=["guild_id", "user_id"],
+                    index_where=col(GuildMember.deleted_at).is_(None),
+                )
             )
 
         session.commit()
@@ -210,6 +213,7 @@ def insert_member(db_url: str, guild_id: str, user_id: str, role: str = "member"
                 .values(guild_id=guild_pk, user_id=user_id, role=role, created_at=now)
                 .on_conflict_do_update(
                     index_elements=["guild_id", "user_id"],
+                    index_where=col(GuildMember.deleted_at).is_(None),
                     set_={"role": pg_insert(GuildMember).excluded.role},
                 )
             )

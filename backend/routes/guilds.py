@@ -19,7 +19,7 @@ from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildInvite, GuildMember, Message, User, Worker
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, select
@@ -432,6 +432,7 @@ async def add_guild_member(
     )
     stmt = stmt.on_conflict_do_update(
         index_elements=["guild_id", "user_id"],
+        index_where=text("deleted_at IS NULL"),
         set_={"role": stmt.excluded.role},
     )
     await db.exec(stmt)

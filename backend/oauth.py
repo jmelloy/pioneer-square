@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from database import get_db
 from fastapi import HTTPException
 from models import GithubToken, GuildInvite, GuildMember, User, UserSession
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 
@@ -229,6 +229,7 @@ async def create_session(code: str, state: str) -> dict:
             )
             member_stmt = member_stmt.on_conflict_do_update(
                 index_elements=["guild_id", "user_id"],
+                index_where=text("deleted_at IS NULL"),
                 set_={"role": member_stmt.excluded.role},
             )
             await db.exec(member_stmt)
