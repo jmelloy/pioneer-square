@@ -22,7 +22,6 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
-import type { WSInbound } from '../types'
 import ChatTab from './chat-pane/ChatTab.vue'
 
 const guildStore = useGuildStore()
@@ -33,16 +32,16 @@ const chatTabRef = ref<InstanceType<typeof ChatTab> | null>(null)
 
 const foreman = computed(() => agentsStore.agents.find((a) => a.type === 'foreman'))
 
-// Poll countdown: epoch ms when next foreman check fires, plus a tick counter
-// to force the computed to re-evaluate every 30 s.
-const nextPollAt = ref<number | null>(null)
+// Poll countdown: guildStore.nextPollAt holds the epoch ms when the next foreman
+// check fires (set from foreman-poll-status WS frames); pollTick forces this
+// computed to re-evaluate every 30 s so the "Xm" label keeps counting down.
 const pollTick = ref(0)
 let pollCountdownTimer: ReturnType<typeof setInterval> | null = null
 
 const pollLabel = computed(() => {
   void pollTick.value // subscribe so re-render fires on each tick
-  if (nextPollAt.value === null) return ''
-  const remaining = Math.max(0, Math.ceil((nextPollAt.value - Date.now()) / 1000))
+  if (guildStore.nextPollAt === null) return ''
+  const remaining = Math.max(0, Math.ceil((guildStore.nextPollAt - Date.now()) / 1000))
   if (remaining <= 0) return 'checking...'
   const mins = Math.ceil(remaining / 60)
   return `next check in ${mins}m`
@@ -52,50 +51,13 @@ function toggleMinimize() {
   minimized.value = !minimized.value
 }
 
-function handleTaskEvent(data: WSInbound) {
-  if (data.type === 'task-complete') {
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: data.prUrl
-        ? `✓ ${agentsStore.workerDisplayName(data.workerId)} done — PR: ${data.prUrl}`
-        : `✓ ${agentsStore.workerDisplayName(data.workerId)} finished (no PR)`,
-      prUrl: data.prUrl || null,
-      createdAt: new Date().toISOString(),
-    })
-  } else if (data.type === 'needs-input') {
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: `⚠ ${agentsStore.workerDisplayName(data.workerId)} needs attention on: "${data.description}"`,
-      createdAt: new Date().toISOString(),
-    })
-  } else if (data.type === 'task-assigned') {
-    const taskName = (data.name || data.description || '').slice(0, 60)
-    guildStore.messages.push({
-      type: 'chat',
-      from: 'system',
-      to: 'user',
-      content: `→ ${agentsStore.workerDisplayName(data.workerId)} assigned: ${taskName}`,
-      createdAt: new Date().toISOString(),
-    })
-  } else if (data.type === 'foreman-poll-status') {
-    const secs = typeof data.nextCheckIn === 'number' ? data.nextCheckIn : null
-    nextPollAt.value = secs !== null ? Date.now() + secs * 1000 : null
-  }
-}
-
 onMounted(() => {
-  guildStore.addMessageHandler(handleTaskEvent)
   pollCountdownTimer = setInterval(() => {
     pollTick.value++
   }, 30_000)
 })
 
 onUnmounted(() => {
-  guildStore.removeMessageHandler(handleTaskEvent)
   if (pollCountdownTimer !== null) {
     clearInterval(pollCountdownTimer)
     pollCountdownTimer = null

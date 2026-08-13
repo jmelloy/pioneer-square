@@ -15,14 +15,7 @@
         </div>
 
         <div v-if="isExpanded(nodeKey(node))" class="group-tasks">
-          <TaskTreeRow
-            v-for="task in node.tasks"
-            :key="task.id"
-            :task="task"
-            :depth="0"
-            :selected-task-id="uiStore.selectedTaskId"
-            @open-task="$emit('open-task', $event)"
-          />
+          <TaskTreeRow v-for="task in node.tasks" :key="task.id" :task="task" :depth="0" />
         </div>
       </div>
 
@@ -34,14 +27,7 @@
           <span class="group-count">{{ countTasks(treeData!.ungrouped) }}</span>
         </div>
         <div v-if="isExpanded('__ungrouped__')" class="group-tasks">
-          <TaskTreeRow
-            v-for="task in treeData!.ungrouped"
-            :key="task.id"
-            :task="task"
-            :depth="0"
-            :selected-task-id="uiStore.selectedTaskId"
-            @open-task="$emit('open-task', $event)"
-          />
+          <TaskTreeRow v-for="task in treeData!.ungrouped" :key="task.id" :task="task" :depth="0" />
         </div>
       </div>
     </template>
@@ -52,16 +38,12 @@
 import { computed, ref, watch } from 'vue'
 import { useGuildStore } from '../../stores/guild'
 import { useTasksStore } from '../../stores/tasks'
-import { useUiStore } from '../../stores/ui'
 import { api } from '../../utils/api'
 import type { TaskTreeData, TaskTreeNode, TreeGroupNode } from '../../types'
 import TaskTreeRow from './TaskTreeRow.vue'
 
-defineEmits<{ (e: 'open-task', id: string): void }>()
-
 const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
-const uiStore = useUiStore()
 
 function nodeKey(node: TreeGroupNode): string {
   return `${node.type}:${node.repo}#${node.number}`

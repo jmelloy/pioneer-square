@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '../utils/api'
+import { useUiStore } from './ui'
 import type { GitHubIssue, GitHubRepo } from '../types'
 
 const GH_API = 'https://api.github.com'
@@ -45,6 +46,10 @@ function _readStoredRepos(): string[] {
   }
 }
 
+export function issueTabId(owner: string, repo: string, number: number): string {
+  return `issue-${owner}/${repo}/${number}`
+}
+
 export const useGitHubStore = defineStore('github', () => {
   const token = ref<string>(localStorage.getItem('gh_token') || '')
   const selectedRepos = ref<string[]>(_readStoredRepos())
@@ -52,8 +57,22 @@ export const useGitHubStore = defineStore('github', () => {
   const issues = ref<GitHubIssue[]>([])
   const loading = ref(false)
   const error = ref('')
+  const openedIssueKeys = ref<string[]>([])
 
   const isConfigured = computed(() => !!token.value)
+
+  function openIssueTab(owner: string, repo: string, number: number) {
+    const key = issueTabId(owner, repo, number)
+    if (!openedIssueKeys.value.includes(key)) openedIssueKeys.value.push(key)
+    useUiStore().activeTab = key
+  }
+
+  function closeIssueTab(key: string) {
+    const idx = openedIssueKeys.value.indexOf(key)
+    if (idx !== -1) openedIssueKeys.value.splice(idx, 1)
+    const uiStore = useUiStore()
+    if (uiStore.activeTab === key) uiStore.activeTab = 'factory'
+  }
 
   // Called after the OAuth callback redirects back with query params.
   function restoreGitHubToken(params: URLSearchParams) {
@@ -206,6 +225,7 @@ export const useGitHubStore = defineStore('github', () => {
     issues,
     loading,
     error,
+    openedIssueKeys,
     isConfigured,
     restoreGitHubToken,
     fetchRepos,
@@ -214,6 +234,8 @@ export const useGitHubStore = defineStore('github', () => {
     fetchIssueDetail,
     postComment,
     updateIssue,
+    openIssueTab,
+    closeIssueTab,
     logout,
   }
 })

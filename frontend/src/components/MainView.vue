@@ -47,7 +47,7 @@
       </button>
       <!-- Issue tabs -->
       <button
-        v-for="key in uiStore.openedIssueKeys"
+        v-for="key in ghStore.openedIssueKeys"
         :key="key"
         class="tab issue-tab"
         :class="{ active: uiStore.activeTab === key }"
@@ -88,6 +88,7 @@ import { computed, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
 import { useUiStore, taskTabId } from '../stores/ui'
+import { useGitHubStore } from '../stores/github'
 import FactoryFloor from './FactoryFloor.vue'
 import LogPane from './LogPane.vue'
 import IssueViewer from './IssueViewer.vue'
@@ -95,6 +96,7 @@ import IssueViewer from './IssueViewer.vue'
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
 const uiStore = useUiStore()
+const ghStore = useGitHubStore()
 
 // Parse "issue-owner/repo/123" → { owner, repo, issueNumber }
 function parseIssueKey(key: string): { owner: string; repo: string; issueNumber: number } {
@@ -158,7 +160,7 @@ function onTabClick(event: MouseEvent, taskId: string) {
 
 function onIssueTabClick(event: MouseEvent, key: string) {
   if ((event.target as HTMLElement).closest('.tab-close')) {
-    uiStore.closeIssueTab(key)
+    ghStore.closeIssueTab(key)
   } else {
     uiStore.activeTab = key
   }

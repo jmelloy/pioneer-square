@@ -150,46 +150,69 @@ describe('useGuildStore', () => {
       expect(onMessage).toHaveBeenCalledWith({ type: 'agent-state', state: 'idle' })
     })
 
-    it('fans out messages to all registered handlers', () => {
+    it('pushes a system message on task-complete with a PR', () => {
       const store = useGuildStore()
-      const h1 = vi.fn()
-      const h2 = vi.fn()
-      store.addMessageHandler(h1)
-      store.addMessageHandler(h2)
-
       store.connectWebSocket('g-1')
-      FakeWebSocket.instances[0].simulateMessage({ type: 'task-update', taskId: 't-1' })
-
-      expect(h1).toHaveBeenCalledOnce()
-      expect(h2).toHaveBeenCalledOnce()
-    })
-
-    it('isolates a throwing handler from other handlers', () => {
-      const store = useGuildStore()
-      const bad = vi.fn(() => {
-        throw new Error('boom')
+      FakeWebSocket.instances[0].simulateMessage({
+        type: 'task-complete',
+        taskId: 't-1',
+        workerId: 'w-1',
+        prUrl: 'https://example.com/pr/1',
       })
-      const good = vi.fn()
-      store.addMessageHandler(bad)
-      store.addMessageHandler(good)
 
-      store.connectWebSocket('g-1')
-      FakeWebSocket.instances[0].simulateMessage({ type: 'task-update' })
-
-      expect(bad).toHaveBeenCalled()
-      expect(good).toHaveBeenCalled()
+      expect(store.messages).toHaveLength(1)
+      expect(store.messages[0]).toMatchObject({
+        type: 'chat',
+        from: 'system',
+        prUrl: 'https://example.com/pr/1',
+      })
+      expect(store.messages[0].content).toContain('https://example.com/pr/1')
     })
 
-    it('removeMessageHandler stops further dispatch to that handler', () => {
+    it('pushes a system message on needs-input', () => {
       const store = useGuildStore()
-      const h = vi.fn()
-      store.addMessageHandler(h)
-      store.removeMessageHandler(h)
-
       store.connectWebSocket('g-1')
-      FakeWebSocket.instances[0].simulateMessage({ type: 'task-update' })
+      FakeWebSocket.instances[0].simulateMessage({
+        type: 'needs-input',
+        workerId: 'w-1',
+        description: 'pick a branch name',
+      })
 
-      expect(h).not.toHaveBeenCalled()
+      expect(store.messages).toHaveLength(1)
+      expect(store.messages[0].content).toContain('pick a branch name')
+    })
+
+    it('pushes a system message on task-assigned', () => {
+      const store = useGuildStore()
+      store.connectWebSocket('g-1')
+      FakeWebSocket.instances[0].simulateMessage({
+        type: 'task-assigned',
+        taskId: 't-1',
+        workerId: 'w-1',
+        name: 'Fix the thing',
+      })
+
+      expect(store.messages).toHaveLength(1)
+      expect(store.messages[0].content).toContain('Fix the thing')
+    })
+
+    it('sets nextPollAt from foreman-poll-status', () => {
+      const store = useGuildStore()
+      store.connectWebSocket('g-1')
+      const before = Date.now()
+      FakeWebSocket.instances[0].simulateMessage({ type: 'foreman-poll-status', nextCheckIn: 60 })
+
+      expect(store.nextPollAt).not.toBeNull()
+      expect(store.nextPollAt as number).toBeGreaterThanOrEqual(before + 60_000)
+    })
+
+    it('clears nextPollAt when foreman-poll-status omits nextCheckIn', () => {
+      const store = useGuildStore()
+      store.connectWebSocket('g-1')
+      FakeWebSocket.instances[0].simulateMessage({ type: 'foreman-poll-status', nextCheckIn: 60 })
+      FakeWebSocket.instances[0].simulateMessage({ type: 'foreman-poll-status' })
+
+      expect(store.nextPollAt).toBeNull()
     })
   })
 

@@ -28,7 +28,7 @@
     </div>
 
     <div class="tab-content">
-      <TaskTree v-if="activeTab === 'tasks'" @open-task="onOpenTask" />
+      <TaskTree v-if="activeTab === 'tasks'" />
       <WorkerList v-if="activeTab === 'workers'" />
       <IssuesTab
         v-if="activeTab === 'issues' && ghStore.isConfigured"
@@ -47,7 +47,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useAgentsStore } from '../stores/agents'
@@ -76,10 +76,12 @@ onMounted(async () => {
   }
 })
 
-function onOpenTask(taskId: string) {
-  uiStore.selectTask(taskId)
-  switchMobileTab('work')
-}
+watch(
+  () => uiStore.selectedTaskId,
+  (id) => {
+    if (id) switchMobileTab('work')
+  },
+)
 
 function onSelectIssue(issue: GitHubIssue) {
   // Parse owner/repo from issue.repo ("owner/repo" format)
@@ -87,7 +89,7 @@ function onSelectIssue(issue: GitHubIssue) {
   if (slashIdx === -1) return
   const owner = issue.repo.slice(0, slashIdx)
   const repo = issue.repo.slice(slashIdx + 1)
-  uiStore.openIssueTab(owner, repo, issue.number)
+  ghStore.openIssueTab(owner, repo, issue.number)
   switchMobileTab('work')
 }
 </script>

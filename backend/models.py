@@ -55,7 +55,25 @@ def finalize_soft_delete_at(
     return now if now is not None else datetime.now(UTC)
 
 
-class Guild(SQLModel, table=True):
+class SoftDeleteMixin(SQLModel):
+    """Adds a nullable ``deleted_at`` timestamp for soft-delete semantics.
+
+    NULL means the row is live; a non-NULL value records the UTC instant it
+    was soft-deleted. Plain ``unique=True`` constraints don't mix with soft
+    deletes — reusing a key after its row is soft-deleted would violate the
+    constraint — so tables with a natural key must replace it with a partial
+    unique index scoped to ``deleted_at IS NULL`` (see ``Guild.__table_args__``
+    for the pattern). Mix this in ahead of ``SQLModel`` in the base list, e.g.
+    ``class Foo(SoftDeleteMixin, SQLModel, table=True)``.
+    """
+
+    # NOTE: sa_type (not sa_column) is required here — sa_column would hand every
+    # subclass the *same* Column instance, and SQLAlchemy refuses to attach one
+    # Column object to more than one Table.
+    deleted_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class Guild(SoftDeleteMixin, SQLModel, table=True):
     __tablename__ = "guilds"  # type: ignore[assignment]
     __table_args__ = (
         Index(
@@ -86,11 +104,6 @@ class Guild(SQLModel, table=True):
     version: str | None = None
     # Per-guild foreman AI configuration. NULL = use process defaults.
     foreman_config: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
-    # UTC instant at which this guild is considered soft-deleted.
-    # NULL = active; partial unique index enforces one active row per slug.
-    deleted_at: datetime | None = Field(
-        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
-    )
 
 
 class Agent(SQLModel, table=True):
@@ -320,7 +333,7 @@ class Worker(SQLModel, table=True):
         return worker
 
 
-class Task(SQLModel, table=True):
+class Task(SoftDeleteMixin, SQLModel, table=True):
     __tablename__ = "tasks"  # type: ignore[assignment]
     __table_args__ = (
         Index("ix_tasks_guild_id_deleted_at_created_at", "guild_id", "deleted_at", "created_at"),
@@ -355,11 +368,6 @@ class Task(SQLModel, table=True):
     name: str | None = None
     parent_task_id: str | None = None
     phase: str | None = Field(default="execute", sa_column_kwargs={"server_default": "'execute'"})
-    # UTC instant at which this task was soft-deleted. NULL = live; once it is
-    # stamped, list/get queries hide the row after `SOFT_DELETE_GRACE` elapses.
-    deleted_at: datetime | None = Field(
-        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
-    )
     # github_user_id of the human who initiated this task. Used to route
     # worker-driven foreman events (task-complete, etc.) back to the originator's
     # foreman thread in multi-user guilds. NULL on legacy/system tasks.
@@ -427,15 +435,19 @@ class User(SQLModel, table=True):
     bot_metadata: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
 
-class GuildMember(SQLModel, table=True):
+class GuildMember(SoftDeleteMixin, SQLModel, table=True):
     __tablename__ = "guild_members"  # type: ignore[assignment]
     __table_args__ = (
         Index("ix_guild_members_guild_id_role", "guild_id", "role"),
+        # Partial unique index (not a plain unique constraint): a removed
+        # member is soft-deleted rather than dropped, and re-adding them
+        # later must be allowed to reuse the (guild_id, user_id) pair.
         Index(
-            "uq_guild_members_guild_id_user_id",
+            "uq_guild_members_guild_id_user_id_active",
             "guild_id",
             "user_id",
             unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
@@ -925,7 +937,7 @@ class DiscordThreadBinding(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
-class DiscordChannelGuild(SQLModel, table=True):
+class DiscordChannelGuild(SoftDeleteMixin, SQLModel, table=True):
     """Binds a Discord channel to a Pioneer Square guild for event routing.
 
     Populated by the ``/join-channel`` slash command (and removed by
@@ -936,11 +948,15 @@ class DiscordChannelGuild(SQLModel, table=True):
 
     __tablename__ = "discord_channel_guilds"  # type: ignore[assignment]
     __table_args__ = (
+        # Partial unique index: leaving a channel soft-deletes the binding,
+        # and re-joining the same channel later must be allowed to reuse the
+        # (discord_guild_id, discord_channel_id) pair.
         Index(
-            "uq_discord_channel_guilds_guild_channel",
+            "uq_discord_channel_guilds_guild_channel_active",
             "discord_guild_id",
             "discord_channel_id",
             unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
@@ -972,7 +988,7 @@ class DiscordPendingConnect(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
-class DiscordAccountLink(SQLModel, table=True):
+class DiscordAccountLink(SoftDeleteMixin, SQLModel, table=True):
     """Links a Discord user to a Pioneer Square user account.
 
     Created by redeeming a ``/connect-account`` token via
@@ -982,10 +998,21 @@ class DiscordAccountLink(SQLModel, table=True):
     """
 
     __tablename__ = "discord_account_links"  # type: ignore[assignment]
+    __table_args__ = (
+        # Partial unique index: unlinking soft-deletes the row, and
+        # re-linking the same Discord account later must be allowed to reuse
+        # discord_user_id.
+        Index(
+            "uq_discord_account_links_discord_user_id_active",
+            "discord_user_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     ps_user_id: str = Field(foreign_key="users.id")
-    discord_user_id: str = Field(unique=True)
+    discord_user_id: str
     discord_username: str
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 

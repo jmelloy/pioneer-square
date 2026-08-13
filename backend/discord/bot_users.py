@@ -27,6 +27,7 @@ import logging
 from datetime import UTC, datetime
 
 from models import DiscordAccountLink, GuildMember, User
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 
@@ -123,6 +124,7 @@ async def ensure_bot_user(
         )
         link_stmt = link_stmt.on_conflict_do_update(
             index_elements=["discord_user_id"],
+            index_where=text("deleted_at IS NULL"),
             set_={
                 "ps_user_id": link_stmt.excluded.ps_user_id,
                 "discord_username": link_stmt.excluded.discord_username,
@@ -137,7 +139,10 @@ async def ensure_bot_user(
                 role=parent_role,
                 created_at=now,
             )
-            member_stmt = member_stmt.on_conflict_do_nothing(index_elements=["guild_id", "user_id"])
+            member_stmt = member_stmt.on_conflict_do_nothing(
+                index_elements=["guild_id", "user_id"],
+                index_where=text("deleted_at IS NULL"),
+            )
             await db.exec(member_stmt)
 
         await db.commit()

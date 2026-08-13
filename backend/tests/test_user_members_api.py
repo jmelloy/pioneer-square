@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import oauth as oauth_module
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
 from models import Guild, GuildInvite, GuildMember, User
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col
 
@@ -443,6 +443,7 @@ def test_pending_invite_accepted_on_login(client):
             )
             .on_conflict_do_update(
                 index_elements=["guild_id", "user_id"],
+                index_where=text("deleted_at IS NULL"),
                 set_={"role": pg_insert(GuildMember).excluded.role},
             )
         )

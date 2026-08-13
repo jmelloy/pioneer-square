@@ -5,14 +5,11 @@ export function taskTabId(id: string): string {
   return 'task-' + id
 }
 
-export function issueTabId(owner: string, repo: string, number: number): string {
-  return `issue-${owner}/${repo}/${number}`
-}
-
 // Single source of truth for "what's open/selected" across the main-content
 // tab bar and sidebar. Previously this was split across agents.ts (worker/agent
 // tabs) and tasks.ts (task tabs), which forced components to join by id across
-// two stores and let the two copies of tab-close logic drift apart.
+// two stores and let the two copies of tab-close logic drift apart. Issue tabs
+// are tracked separately in the github store, which owns issue-specific state.
 export const useUiStore = defineStore('ui', () => {
   const activeTab = ref<string>('factory')
 
@@ -22,7 +19,6 @@ export const useUiStore = defineStore('ui', () => {
   const openedAgentIds = ref<string[]>([])
   const selectedTaskId = ref<string | null>(null)
   const openedTaskIds = ref<string[]>([])
-  const openedIssueKeys = ref<string[]>([])
 
   function selectWorker(workerId: string | null) {
     selectedWorkerId.value = workerId
@@ -72,18 +68,6 @@ export const useUiStore = defineStore('ui', () => {
     activeTab.value = taskTabId(taskId)
   }
 
-  function openIssueTab(owner: string, repo: string, number: number) {
-    const key = issueTabId(owner, repo, number)
-    if (!openedIssueKeys.value.includes(key)) openedIssueKeys.value.push(key)
-    activeTab.value = key
-  }
-
-  function closeIssueTab(key: string) {
-    const idx = openedIssueKeys.value.indexOf(key)
-    if (idx !== -1) openedIssueKeys.value.splice(idx, 1)
-    if (activeTab.value === key) activeTab.value = 'factory'
-  }
-
   // Resets worker/agent selection and the main tab, e.g. on guild switch.
   function resetWorkerAgentSelection() {
     selectedWorkerId.value = null
@@ -107,7 +91,6 @@ export const useUiStore = defineStore('ui', () => {
     openedAgentIds,
     selectedTaskId,
     openedTaskIds,
-    openedIssueKeys,
     selectWorker,
     closeWorker,
     selectAgent,
@@ -115,8 +98,6 @@ export const useUiStore = defineStore('ui', () => {
     selectTask,
     closeTask,
     openTaskTab,
-    openIssueTab,
-    closeIssueTab,
     resetWorkerAgentSelection,
     resetTaskSelection,
   }
