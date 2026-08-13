@@ -3,12 +3,12 @@
     <div
       class="task-row"
       :class="{
-        selected: selectedTaskId === task.id,
+        selected: isSelected,
         'has-indent': depth > 0,
         'issue-root-row': isIssueRoot,
       }"
       :style="{ paddingLeft: `${10 + depth * 14}px` }"
-      @click="$emit('open-task', task.id)"
+      @click="tasksStore.selectTask(task.id)"
     >
       <span
         v-if="task.children.length && !isIssueRoot"
@@ -62,32 +62,26 @@
     </div>
 
     <template v-if="(isIssueRoot || expanded) && task.children.length">
-      <TaskTreeRow
-        v-for="child in task.children"
-        :key="child.id"
-        :task="child"
-        :depth="depth + 1"
-        :selected-task-id="selectedTaskId"
-        @open-task="$emit('open-task', $event)"
-      />
+      <TaskTreeRow v-for="child in task.children" :key="child.id" :task="child" :depth="depth + 1" />
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useTasksStore } from '../../stores/tasks'
 import type { TaskTreeNode } from '../../types'
 
 const props = defineProps<{
   task: TaskTreeNode
   depth: number
-  selectedTaskId: string | null
 }>()
 
-defineEmits<{ (e: 'open-task', id: string): void }>()
+const tasksStore = useTasksStore()
 
 const ACTIVE_STATES = new Set(['pending', 'planning', 'working', 'followup'])
 const expanded = ref(true)
+const isSelected = computed(() => tasksStore.selectedTaskId === props.task.id)
 
 // Root task of an issue-rooted subtree — never assigned to a worker, has no
 // branch/PR, so it gets a dedicated GH-issue-link treatment instead of the
