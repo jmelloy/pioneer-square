@@ -50,8 +50,8 @@
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
-import { useTasksStore } from '../stores/tasks'
 import { useAgentsStore } from '../stores/agents'
+import { useUiStore } from '../stores/ui'
 import TaskTree from './sidebar/TaskTree.vue'
 import WorkerList from './sidebar/WorkerList.vue'
 import IssuesTab from './chat-pane/IssuesTab.vue'
@@ -60,8 +60,8 @@ import type { GitHubIssue } from '../types'
 
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
-const tasksStore = useTasksStore()
 const agentsStore = useAgentsStore()
+const uiStore = useUiStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
 
@@ -77,7 +77,7 @@ onMounted(async () => {
 })
 
 watch(
-  () => tasksStore.selectedTaskId,
+  () => uiStore.selectedTaskId,
   (id) => {
     if (id) switchMobileTab('work')
   },

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useTasksStore } from '../tasks'
+import { useUiStore } from '../ui'
 
 // Mirrors SOFT_DELETE_GRACE_MS in ../tasks: a row stays visible this long after deleted_at.
 const GRACE_MS = 4 * 60 * 60 * 1000
@@ -292,39 +293,22 @@ describe('useTasksStore', () => {
     })
   })
 
-  describe('selectTask / closeTask / clearTasks', () => {
-    it('selectTask tracks selectedTaskId and openedTaskIds (no duplicates)', () => {
+  // Selection/tab state (selectTask/closeTask/selectedTaskId/openedTaskIds) now
+  // lives in the ui store — see ui.spec.ts. clearTasks still delegates to it.
+  describe('clearTasks', () => {
+    it('resets tasks, taskLogs, and delegates selection reset to the ui store', () => {
       const store = useTasksStore()
-      store.selectTask('t-1')
-      store.selectTask('t-1')
-      store.selectTask('t-2')
-
-      expect(store.selectedTaskId).toBe('t-2')
-      expect(store.openedTaskIds).toEqual(['t-1', 't-2'])
-    })
-
-    it('closeTask removes id and clears selectedTaskId if matching', () => {
-      const store = useTasksStore()
-      store.selectTask('t-1')
-      store.selectTask('t-2')
-      store.closeTask('t-2')
-
-      expect(store.openedTaskIds).toEqual(['t-1'])
-      expect(store.selectedTaskId).toBeNull()
-    })
-
-    it('clearTasks resets all state', () => {
-      const store = useTasksStore()
+      const uiStore = useUiStore()
       store.tasks.push({ id: 't-1', state: 'pending' })
       store.taskLogs['t-1'] = [{ line: 'x', timestamp: '', detail: null }]
-      store.selectTask('t-1')
+      uiStore.selectTask('t-1')
 
       store.clearTasks()
 
       expect(store.tasks).toEqual([])
       expect(store.taskLogs).toEqual({})
-      expect(store.selectedTaskId).toBeNull()
-      expect(store.openedTaskIds).toEqual([])
+      expect(uiStore.selectedTaskId).toBeNull()
+      expect(uiStore.openedTaskIds).toEqual([])
     })
   })
 

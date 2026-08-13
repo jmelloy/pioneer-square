@@ -3,8 +3,8 @@
     <div class="tab-bar">
       <button
         class="tab"
-        :class="{ active: agentsStore.activeTab === 'factory' }"
-        @click="agentsStore.activeTab = 'factory'"
+        :class="{ active: uiStore.activeTab === 'factory' }"
+        @click="uiStore.activeTab = 'factory'"
       >
         <span class="tab-icon">⚙</span>
         <span class="tab-label">Factory Floor</span>
@@ -14,7 +14,7 @@
         v-for="agent in visibleAgentTabs"
         :key="'agent-' + agent.id"
         class="tab worker-tab"
-        :class="{ active: agentsStore.activeTab === 'agent-' + agent.id }"
+        :class="{ active: uiStore.activeTab === 'agent-' + agent.id }"
         @click="onAgentTabClick($event, agent.id)"
       >
         <span class="state-dot" :class="agent.state"></span>
@@ -26,7 +26,7 @@
         v-for="worker in visibleWorkerTabs"
         :key="'worker-' + worker.id"
         class="tab worker-tab"
-        :class="{ active: agentsStore.activeTab === 'worker-' + worker.id }"
+        :class="{ active: uiStore.activeTab === 'worker-' + worker.id }"
         @click="onWorkerTabClick($event, worker.id)"
       >
         <span class="state-dot" :class="worker.state"></span>
@@ -38,7 +38,7 @@
         v-for="task in visibleTaskTabs"
         :key="taskTabId(task.id)"
         class="tab task-tab"
-        :class="{ active: agentsStore.activeTab === taskTabId(task.id) }"
+        :class="{ active: uiStore.activeTab === taskTabId(task.id) }"
         @click="onTabClick($event, task.id)"
       >
         <span class="task-dot" :class="'task-dot-' + task.state.replace(/[^a-z]/g, '-')"></span>
@@ -50,7 +50,7 @@
         v-for="key in ghStore.openedIssueKeys"
         :key="key"
         class="tab issue-tab"
-        :class="{ active: agentsStore.activeTab === key }"
+        :class="{ active: uiStore.activeTab === key }"
         @click="onIssueTabClick($event, key)"
       >
         <span class="issue-dot">⊙</span>
@@ -59,25 +59,25 @@
       </button>
     </div>
     <div class="tab-content">
-      <FactoryFloor v-if="agentsStore.activeTab === 'factory'" />
+      <FactoryFloor v-if="uiStore.activeTab === 'factory'" />
       <LogPane
-        v-else-if="agentsStore.activeTab.startsWith('agent-')"
+        v-else-if="uiStore.activeTab.startsWith('agent-')"
         kind="agent"
-        :id="agentsStore.activeTab.slice(6)"
+        :id="uiStore.activeTab.slice(6)"
       />
       <LogPane
-        v-else-if="agentsStore.activeTab.startsWith('worker-')"
+        v-else-if="uiStore.activeTab.startsWith('worker-')"
         kind="worker"
-        :id="agentsStore.activeTab.slice(7)"
+        :id="uiStore.activeTab.slice(7)"
       />
       <LogPane
-        v-else-if="agentsStore.activeTab.startsWith('task-')"
+        v-else-if="uiStore.activeTab.startsWith('task-')"
         kind="task"
-        :id="agentsStore.activeTab.slice(5)"
+        :id="uiStore.activeTab.slice(5)"
       />
       <IssueViewer
-        v-else-if="agentsStore.activeTab.startsWith('issue-')"
-        v-bind="parseIssueKey(agentsStore.activeTab)"
+        v-else-if="uiStore.activeTab.startsWith('issue-')"
+        v-bind="parseIssueKey(uiStore.activeTab)"
       />
     </div>
   </div>
@@ -86,7 +86,8 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents'
-import { useTasksStore, taskTabId } from '../stores/tasks'
+import { useTasksStore } from '../stores/tasks'
+import { useUiStore, taskTabId } from '../stores/ui'
 import { useGitHubStore } from '../stores/github'
 import FactoryFloor from './FactoryFloor.vue'
 import LogPane from './LogPane.vue'
@@ -94,6 +95,7 @@ import IssueViewer from './IssueViewer.vue'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
+const uiStore = useUiStore()
 const ghStore = useGitHubStore()
 
 // Parse "issue-owner/repo/123" → { owner, repo, issueNumber }
@@ -114,50 +116,45 @@ function issueTabLabel(key: string): string {
 }
 
 const visibleAgentTabs = computed(() =>
-  agentsStore.openedAgentIds
-    .map((id) => agentsStore.agents.find((a) => a.id === id))
-    .filter(Boolean),
+  uiStore.openedAgentIds.map((id) => agentsStore.agents.find((a) => a.id === id)).filter(Boolean),
 )
 
 const visibleWorkerTabs = computed(() =>
-  agentsStore.openedWorkerIds
-    .map((id) => agentsStore.workers.find((w) => w.id === id))
-    .filter(Boolean),
+  uiStore.openedWorkerIds.map((id) => agentsStore.workers.find((w) => w.id === id)).filter(Boolean),
 )
 
 const visibleTaskTabs = computed(() =>
-  tasksStore.openedTaskIds.map((id) => tasksStore.tasks.find((t) => t.id === id)).filter(Boolean),
+  uiStore.openedTaskIds.map((id) => tasksStore.tasks.find((t) => t.id === id)).filter(Boolean),
 )
 
 watch(
-  () => tasksStore.selectedTaskId,
+  () => uiStore.selectedTaskId,
   (id) => {
-    if (id) agentsStore.openTaskTab(id)
+    if (id) uiStore.openTaskTab(id)
   },
 )
 
 function onWorkerTabClick(event: MouseEvent, workerId: string) {
   if ((event.target as HTMLElement).closest('.tab-close')) {
-    agentsStore.closeWorker(workerId)
+    uiStore.closeWorker(workerId)
   } else {
-    agentsStore.activeTab = 'worker-' + workerId
+    uiStore.activeTab = 'worker-' + workerId
   }
 }
 
 function onAgentTabClick(event: MouseEvent, agentId: string) {
   if ((event.target as HTMLElement).closest('.tab-close')) {
-    agentsStore.closeAgent(agentId)
+    uiStore.closeAgent(agentId)
   } else {
-    agentsStore.activeTab = 'agent-' + agentId
+    uiStore.activeTab = 'agent-' + agentId
   }
 }
 
 function onTabClick(event: MouseEvent, taskId: string) {
   if ((event.target as HTMLElement).closest('.tab-close')) {
-    tasksStore.closeTask(taskId)
-    if (agentsStore.activeTab === taskTabId(taskId)) agentsStore.activeTab = 'factory'
+    uiStore.closeTask(taskId)
   } else {
-    agentsStore.openTaskTab(taskId)
+    uiStore.openTaskTab(taskId)
   }
 }
 
@@ -165,7 +162,7 @@ function onIssueTabClick(event: MouseEvent, key: string) {
   if ((event.target as HTMLElement).closest('.tab-close')) {
     ghStore.closeIssueTab(key)
   } else {
-    agentsStore.activeTab = key
+    uiStore.activeTab = key
   }
 }
 </script>

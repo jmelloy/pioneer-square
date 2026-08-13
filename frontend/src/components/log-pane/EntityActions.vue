@@ -305,6 +305,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useAgentsStore } from '../../stores/agents'
 import { useGuildStore } from '../../stores/guild'
 import { useTasksStore } from '../../stores/tasks'
+import { useUiStore } from '../../stores/ui'
 import { useModels } from '../../composables/useModels'
 import { api } from '../../utils/api'
 
@@ -326,6 +327,7 @@ const agentsStore = useAgentsStore()
 const modelsStore = useModels()
 const guildStore = useGuildStore()
 const tasksStore = useTasksStore()
+const uiStore = useUiStore()
 
 /* ------------------------------------------------------------------ */
 /* Agent: run bar                                                      */
@@ -374,7 +376,7 @@ async function handleRun() {
     })
     runPrompt.value = ''
     if (result && typeof result === 'object' && 'taskId' in result) {
-      agentsStore.openTaskTab(String(result.taskId))
+      uiStore.openTaskTab(String(result.taskId))
     }
   } catch (e: unknown) {
     runError.value = e instanceof Error ? e.message : String(e)

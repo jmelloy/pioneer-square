@@ -19,7 +19,7 @@
     />
 
     <template v-for="worker in onlineWorkers" :key="worker.id">
-      <div class="worker-row" :class="worker.state" @click="agentsStore.selectWorker(worker.id)">
+      <div class="worker-row" :class="worker.state" @click="uiStore.selectWorker(worker.id)">
         <span class="worker-dot" :class="'wdot-' + worker.state"></span>
         <span class="worker-row-name">{{ worker.name }}</span>
         <span class="worker-row-state">{{ worker.state }}</span>
@@ -28,9 +28,9 @@
         v-for="agent in agentsForWorker(worker.id)"
         :key="agent.id"
         class="agent-row"
-        :class="{ selected: agentsStore.selectedAgentId === agent.id }"
+        :class="{ selected: uiStore.selectedAgentId === agent.id }"
         title="Open agent tab"
-        @click.stop="agentsStore.selectAgent(agent.id)"
+        @click.stop="uiStore.selectAgent(agent.id)"
       >
         <span class="agent-dot" :class="'wdot-' + agent.state"></span>
         <span class="agent-row-name">{{ agent.name }}</span>
@@ -53,10 +53,12 @@
 import { ref, computed } from 'vue'
 import { useAgentsStore } from '../../stores/agents'
 import { useTasksStore } from '../../stores/tasks'
+import { useUiStore } from '../../stores/ui'
 import SpawnWorkerForm from './SpawnWorkerForm.vue'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
+const uiStore = useUiStore()
 
 const showSpawnForm = ref(false)
 
@@ -77,8 +79,8 @@ function currentTaskForWorker(workerId: string) {
 function openAgentTask(workerId: string) {
   const task = currentTaskForWorker(workerId)
   if (task) {
-    tasksStore.selectTask(task.id)
-    agentsStore.openTaskTab(task.id)
+    uiStore.selectTask(task.id)
+    uiStore.openTaskTab(task.id)
   }
 }
 </script>

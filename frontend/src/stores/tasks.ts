@@ -1,11 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { useUiStore } from './ui'
 import { api } from '../utils/api'
 import type { LogEntry, Task, TaskState, WSInbound } from '../types'
-
-export function taskTabId(id: string): string {
-  return 'task-' + id
-}
 
 // Cap on setTimeout delay to avoid the 32-bit overflow that fires the timer
 // immediately on long horizons (e.g. a 3-day finalize window).
@@ -40,10 +37,9 @@ const STATE_COLORS: Record<string, string> = {
 }
 
 export const useTasksStore = defineStore('tasks', () => {
+  const uiStore = useUiStore()
   const tasks = ref<Task[]>([])
   const taskLogs = ref<Record<string, LogEntry[]>>({})
-  const selectedTaskId = ref<string | null>(null)
-  const openedTaskIds = ref<string[]>([])
 
   // Per-task timers that drop the row when its soft-delete window elapses.
   const _expiryTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -52,7 +48,7 @@ export const useTasksStore = defineStore('tasks', () => {
     const idx = tasks.value.findIndex((t) => t.id === taskId)
     if (idx >= 0) tasks.value.splice(idx, 1)
     delete taskLogs.value[taskId]
-    closeTask(taskId)
+    uiStore.closeTask(taskId)
     const timer = _expiryTimers.get(taskId)
     if (timer) {
       clearTimeout(timer)
@@ -224,24 +220,10 @@ export const useTasksStore = defineStore('tasks', () => {
     }
   }
 
-  function selectTask(taskId: string | null) {
-    selectedTaskId.value = taskId
-    if (taskId && !openedTaskIds.value.includes(taskId)) {
-      openedTaskIds.value.push(taskId)
-    }
-  }
-
-  function closeTask(taskId: string) {
-    const idx = openedTaskIds.value.indexOf(taskId)
-    if (idx !== -1) openedTaskIds.value.splice(idx, 1)
-    if (selectedTaskId.value === taskId) selectedTaskId.value = null
-  }
-
   function clearTasks() {
     tasks.value = []
     taskLogs.value = {}
-    selectedTaskId.value = null
-    openedTaskIds.value = []
+    uiStore.resetTaskSelection()
     for (const timer of _expiryTimers.values()) clearTimeout(timer)
     _expiryTimers.clear()
   }
@@ -269,8 +251,6 @@ export const useTasksStore = defineStore('tasks', () => {
     tasks,
     liveTasks,
     taskLogs,
-    selectedTaskId,
-    openedTaskIds,
     fetchTasks,
     fetchTaskLogs,
     sendFollowup,
@@ -279,8 +259,6 @@ export const useTasksStore = defineStore('tasks', () => {
     redirectTask,
     messageTask,
     handleWebSocketMessage,
-    selectTask,
-    closeTask,
     clearTasks,
     stateLabel,
     stateColor,

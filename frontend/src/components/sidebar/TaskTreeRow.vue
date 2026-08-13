@@ -8,7 +8,7 @@
         'issue-root-row': isIssueRoot,
       }"
       :style="{ paddingLeft: `${10 + depth * 14}px` }"
-      @click="tasksStore.selectTask(task.id)"
+      @click="uiStore.selectTask(task.id)"
     >
       <span
         v-if="task.children.length && !isIssueRoot"
@@ -69,7 +69,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useTasksStore } from '../../stores/tasks'
+import { useUiStore } from '../../stores/ui'
 import type { TaskTreeNode } from '../../types'
 
 const props = defineProps<{
@@ -77,11 +77,11 @@ const props = defineProps<{
   depth: number
 }>()
 
-const tasksStore = useTasksStore()
+const uiStore = useUiStore()
 
 const ACTIVE_STATES = new Set(['pending', 'planning', 'working', 'followup'])
 const expanded = ref(true)
-const isSelected = computed(() => tasksStore.selectedTaskId === props.task.id)
+const isSelected = computed(() => uiStore.selectedTaskId === props.task.id)
 
 // Root task of an issue-rooted subtree — never assigned to a worker, has no
 // branch/PR, so it gets a dedicated GH-issue-link treatment instead of the

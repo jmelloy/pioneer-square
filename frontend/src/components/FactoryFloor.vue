@@ -84,12 +84,14 @@
 import { computed, reactive, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
+import { useUiStore } from '../stores/ui'
 import AgentAvatar from './AgentAvatar.vue'
 import layout from './factory-layout.json'
 import type { Agent, Task } from '../types'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
+const uiStore = useUiStore()
 const agents = computed(() => agentsStore.agents.filter((a) => a.state !== 'offline'))
 
 // Flip to true to render the walkable polygon + POI markers while tuning.
@@ -362,7 +364,7 @@ function stateLabel(state: string) {
 }
 
 function onAgentTap(agentId: string) {
-  agentsStore.selectAgent(agentId)
+  uiStore.selectAgent(agentId)
 }
 </script>
 

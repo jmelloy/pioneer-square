@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api } from '../utils/api'
-import { useAgentsStore } from './agents'
+import { useUiStore } from './ui'
 import type { GitHubIssue, GitHubRepo } from '../types'
 
 const GH_API = 'https://api.github.com'
@@ -64,14 +64,14 @@ export const useGitHubStore = defineStore('github', () => {
   function openIssueTab(owner: string, repo: string, number: number) {
     const key = issueTabId(owner, repo, number)
     if (!openedIssueKeys.value.includes(key)) openedIssueKeys.value.push(key)
-    useAgentsStore().activeTab = key
+    useUiStore().activeTab = key
   }
 
   function closeIssueTab(key: string) {
     const idx = openedIssueKeys.value.indexOf(key)
     if (idx !== -1) openedIssueKeys.value.splice(idx, 1)
-    const agentsStore = useAgentsStore()
-    if (agentsStore.activeTab === key) agentsStore.activeTab = 'factory'
+    const uiStore = useUiStore()
+    if (uiStore.activeTab === key) uiStore.activeTab = 'factory'
   }
 
   // Called after the OAuth callback redirects back with query params.
