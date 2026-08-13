@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,11 +12,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from foreman.providers.bedrock import (
     BedrockNativeClient,
+    BedrockResponsesClient,
     anthropic_messages_to_converse,
+    anthropic_messages_to_responses_input,
     anthropic_tool_choice_to_converse,
+    anthropic_tool_choice_to_responses,
     anthropic_tools_to_converse,
+    anthropic_tools_to_responses,
     converse_response_to_anthropic,
     is_native_bedrock_model,
+    is_responses_api_model,
+    responses_output_to_anthropic,
 )
 
 # ---------------------------------------------------------------------------
@@ -381,6 +387,327 @@ async def test_bedrock_native_client_create_without_boto3_raises():
         with pytest.raises(ImportError):
             await client.messages.with_raw_response.create(
                 model="amazon.nova-pro-v1:0",
+                max_tokens=100,
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+
+# ---------------------------------------------------------------------------
+# is_responses_api_model
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai.gpt-oss-120b",
+        "openai.gpt-oss-20b",
+        "us.openai.gpt-oss-120b",
+        "OPENAI.GPT-OSS-20B",
+    ],
+)
+def test_is_responses_api_model_true(model):
+    assert is_responses_api_model(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "amazon.nova-pro-v1:0",
+        "moonshotai.kimi-k2-instruct",
+        "anthropic.claude-sonnet-4-6-20251001-v1:0",
+        "openai.gpt-oss-safeguard-120b",
+        "openai.gpt-oss-safeguard-20b",
+        "claude-sonnet-4-6",
+    ],
+)
+def test_is_responses_api_model_false(model):
+    assert is_responses_api_model(model) is False
+
+
+# ---------------------------------------------------------------------------
+# Anthropic <-> Responses API translation
+# ---------------------------------------------------------------------------
+
+
+def test_anthropic_messages_to_responses_input_text_only():
+    items = anthropic_messages_to_responses_input(
+        [{"type": "text", "text": "be helpful"}],
+        [{"role": "user", "content": "hello"}],
+    )
+    assert items == [
+        {"role": "system", "content": "be helpful"},
+        {"role": "user", "content": "hello"},
+    ]
+
+
+def test_anthropic_messages_to_responses_input_tool_use_and_result():
+    items = anthropic_messages_to_responses_input(
+        None,
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "let me check"},
+                    {"type": "tool_use", "id": "t1", "name": "search", "input": {"q": "x"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "result"}],
+            },
+        ],
+    )
+    assert items == [
+        {"role": "assistant", "content": "let me check"},
+        {"type": "function_call", "call_id": "t1", "name": "search", "arguments": '{"q": "x"}'},
+        {"type": "function_call_output", "call_id": "t1", "output": "result"},
+    ]
+
+
+def test_anthropic_tools_to_responses():
+    tools = anthropic_tools_to_responses(
+        [{"name": "search", "description": "search the web", "input_schema": {"type": "object"}}]
+    )
+    assert tools == [
+        {
+            "type": "function",
+            "name": "search",
+            "description": "search the web",
+            "parameters": {"type": "object"},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "tool_choice,expected",
+    [
+        ({"type": "auto"}, "auto"),
+        ({"type": "any"}, "required"),
+        ({"type": "none"}, "none"),
+        ({"type": "tool", "name": "search"}, {"type": "function", "name": "search"}),
+        (None, None),
+    ],
+)
+def test_anthropic_tool_choice_to_responses(tool_choice, expected):
+    assert anthropic_tool_choice_to_responses(tool_choice) == expected
+
+
+def test_responses_output_to_anthropic_text():
+    response = {
+        "id": "resp_1",
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hi there"}],
+            }
+        ],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    result = responses_output_to_anthropic(response, "openai.gpt-oss-120b")
+    assert result["content"] == [{"type": "text", "text": "hi there"}]
+    assert result["stop_reason"] == "end_turn"
+    assert result["usage"] == {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+
+
+def test_responses_output_to_anthropic_function_call():
+    response = {
+        "id": "resp_2",
+        "status": "completed",
+        "output": [
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "search",
+                "arguments": '{"q": "x"}',
+            }
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    result = responses_output_to_anthropic(response, "openai.gpt-oss-120b")
+    assert result["content"] == [
+        {"type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "x"}}
+    ]
+    assert result["stop_reason"] == "tool_use"
+
+
+def test_responses_output_to_anthropic_incomplete_max_tokens():
+    response = {
+        "id": "resp_3",
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "cut off"}],
+            }
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    result = responses_output_to_anthropic(response, "openai.gpt-oss-120b")
+    assert result["stop_reason"] == "max_tokens"
+
+
+# ---------------------------------------------------------------------------
+# BedrockResponsesClient.create — mocked httpx
+# ---------------------------------------------------------------------------
+
+
+async def test_bedrock_responses_client_create_success_bearer_token():
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.headers = {"x-request-id": "req-abc"}
+    fake_response.json.return_value = {
+        "id": "resp_1",
+        "status": "completed",
+        "model": "openai.gpt-oss-120b",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "hello from gpt-oss"}],
+            }
+        ],
+        "usage": {"input_tokens": 7, "output_tokens": 3},
+    }
+    fake_response.raise_for_status = MagicMock()
+
+    fake_http_client = MagicMock()
+    fake_http_client.post = AsyncMock(return_value=fake_response)
+    fake_http_client.__aenter__ = AsyncMock(return_value=fake_http_client)
+    fake_http_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("foreman.providers.bedrock.httpx.AsyncClient", return_value=fake_http_client):
+        client = BedrockResponsesClient(
+            region="us-east-1", extra_env={"AWS_BEARER_TOKEN_BEDROCK": "tok-abc"}
+        )
+        raw = await client.messages.with_raw_response.create(
+            model="openai.gpt-oss-120b",
+            max_tokens=100,
+            system=[{"type": "text", "text": "be helpful"}],
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    parsed = raw.parse()
+    assert parsed.content[0].text == "hello from gpt-oss"
+    assert parsed.stop_reason == "end_turn"
+    assert parsed.usage.input_tokens == 7
+    assert parsed.usage.output_tokens == 3
+    assert raw.headers.get("request-id") == "req-abc"
+
+    fake_http_client.post.assert_called_once()
+    call_args = fake_http_client.post.call_args
+    assert call_args.args[0] == "https://bedrock-mantle.us-east-1.api.aws/v1/responses"
+    body = call_args.kwargs["json"]
+    assert body["model"] == "openai.gpt-oss-120b"
+    assert body["max_output_tokens"] == 100
+    assert body["store"] is False
+    assert body["input"][0] == {"role": "system", "content": "be helpful"}
+    headers = call_args.kwargs["headers"]
+    assert headers["Authorization"] == "Bearer tok-abc"
+
+
+async def test_bedrock_responses_client_includes_tools():
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.headers = {}
+    fake_response.json.return_value = {
+        "id": "resp_2",
+        "status": "completed",
+        "output": [],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    fake_response.raise_for_status = MagicMock()
+
+    fake_http_client = MagicMock()
+    fake_http_client.post = AsyncMock(return_value=fake_response)
+    fake_http_client.__aenter__ = AsyncMock(return_value=fake_http_client)
+    fake_http_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("foreman.providers.bedrock.httpx.AsyncClient", return_value=fake_http_client):
+        client = BedrockResponsesClient(
+            region="us-east-1", extra_env={"AWS_BEARER_TOKEN_BEDROCK": "tok-abc"}
+        )
+        await client.messages.with_raw_response.create(
+            model="openai.gpt-oss-120b",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"name": "search", "description": "search", "input_schema": {}}],
+            tool_choice={"type": "auto"},
+        )
+
+    body = fake_http_client.post.call_args.kwargs["json"]
+    assert body["tools"] == [
+        {"type": "function", "name": "search", "description": "search", "parameters": {}}
+    ]
+    assert body["tool_choice"] == "auto"
+
+
+async def test_bedrock_responses_client_sigv4_when_no_bearer_token():
+    """Without a bearer token, the request must be SigV4-signed via botocore
+    rather than sent unauthenticated."""
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.headers = {}
+    fake_response.json.return_value = {
+        "id": "resp_3",
+        "status": "completed",
+        "output": [],
+        "usage": {"input_tokens": 1, "output_tokens": 1},
+    }
+    fake_response.raise_for_status = MagicMock()
+
+    fake_http_client = MagicMock()
+    fake_http_client.post = AsyncMock(return_value=fake_response)
+    fake_http_client.__aenter__ = AsyncMock(return_value=fake_http_client)
+    fake_http_client.__aexit__ = AsyncMock(return_value=False)
+
+    fake_credentials = MagicMock()
+    fake_session = MagicMock()
+    fake_session.get_credentials.return_value = fake_credentials
+
+    with (
+        patch("foreman.providers.bedrock.httpx.AsyncClient", return_value=fake_http_client),
+        patch("foreman.providers.bedrock.boto3") as fake_boto3,
+        patch("botocore.auth.SigV4Auth.add_auth") as fake_add_auth,
+    ):
+        fake_boto3.Session.return_value = fake_session
+
+        def _sign(request):
+            request.headers["Authorization"] = "AWS4-HMAC-SHA256 Credential=fake"
+
+        fake_add_auth.side_effect = _sign
+
+        client = BedrockResponsesClient(region="us-east-1", extra_env={})
+        await client.messages.with_raw_response.create(
+            model="openai.gpt-oss-120b",
+            max_tokens=100,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    headers = fake_http_client.post.call_args.kwargs["headers"]
+    assert headers["Authorization"].startswith("AWS4-HMAC-SHA256")
+    fake_add_auth.assert_called_once()
+
+
+async def test_bedrock_responses_client_no_credentials_raises():
+    fake_session = MagicMock()
+    fake_session.get_credentials.return_value = None
+
+    with patch("foreman.providers.bedrock.boto3") as fake_boto3:
+        fake_boto3.Session.return_value = fake_session
+        client = BedrockResponsesClient(region="us-east-1", extra_env={})
+        with pytest.raises(ValueError):
+            await client.messages.with_raw_response.create(
+                model="openai.gpt-oss-120b",
                 max_tokens=100,
                 messages=[{"role": "user", "content": "hi"}],
             )

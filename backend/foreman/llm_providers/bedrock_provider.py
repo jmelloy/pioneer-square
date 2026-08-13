@@ -1,13 +1,14 @@
 """Amazon Bedrock provider adapter.
 
-Covers both Claude-on-Bedrock (Anthropic Messages API via
-``AsyncAnthropicBedrock``) and native foundation models -- Amazon Nova, Kimi
-K2, ... -- that only speak Bedrock's Converse API (see
-``backend/foreman/providers/bedrock.py``). Client construction mirrors
-``foreman.llm.make_anthropic_client``'s Bedrock branch exactly (same kwargs,
-same credential precedence); chat completions reuse ``foreman.llm.call_anthropic``
-since both client types expose the same ``.messages.with_raw_response.create``
-surface.
+Covers Claude-on-Bedrock (Anthropic Messages API via ``AsyncAnthropicBedrock``),
+native foundation models -- Amazon Nova, Kimi K2, ... -- that only speak
+Bedrock's Converse API, and OpenAI gpt-oss models that speak OpenAI's
+Responses API over the separate ``bedrock-mantle`` endpoint (see
+``backend/foreman/providers/bedrock.py`` for all three). Client construction
+mirrors ``foreman.llm.make_anthropic_client``'s Bedrock branch exactly (same
+kwargs, same credential precedence); chat completions reuse
+``foreman.llm.call_anthropic`` since all three client types expose the same
+``.messages.with_raw_response.create`` surface.
 """
 
 from __future__ import annotations
@@ -41,13 +42,14 @@ class BedrockProvider(LLMProvider):
     ) -> Any:
         """Build a Bedrock client.
 
-        Returns a ``BedrockNativeClient`` (Converse API) for non-Anthropic
-        foundation models, otherwise an ``AsyncAnthropicBedrock`` (Messages
-        API). ``anthropic_module`` is the imported ``anthropic`` package,
-        accepted as a parameter for the same reason as in
-        ``AnthropicProvider.create_client``. ``default_region`` and
-        ``credential_logger`` let ``foreman.llm.make_anthropic_client`` forward
-        its own patchable module-level ``_BEDROCK_REGION`` /
+        Returns a ``BedrockResponsesClient`` (OpenAI Responses API, via
+        bedrock-mantle) for models that speak it, a ``BedrockNativeClient``
+        (Converse API) for other non-Anthropic foundation models, otherwise an
+        ``AsyncAnthropicBedrock`` (Messages API). ``anthropic_module`` is the
+        imported ``anthropic`` package, accepted as a parameter for the same
+        reason as in ``AnthropicProvider.create_client``. ``default_region``
+        and ``credential_logger`` let ``foreman.llm.make_anthropic_client``
+        forward its own patchable module-level ``_BEDROCK_REGION`` /
         ``_log_bedrock_credentials`` through unchanged, rather than this
         adapter re-reading ``os.environ`` or re-probing boto3 credentials
         itself.
@@ -57,11 +59,18 @@ class BedrockProvider(LLMProvider):
         so there is no safe default to fall back to.
         """
         try:
-            from foreman.providers.bedrock import BedrockNativeClient, is_native_bedrock_model
+            from foreman.providers.bedrock import (
+                BedrockNativeClient,
+                BedrockResponsesClient,
+                is_native_bedrock_model,
+                is_responses_api_model,
+            )
         except ImportError:  # pragma: no cover - exercised under the proxy's import layout
             from backend.foreman.providers.bedrock import (
                 BedrockNativeClient,
+                BedrockResponsesClient,
                 is_native_bedrock_model,
+                is_responses_api_model,
             )
 
         resolved_model = model or env.get("FOREMAN_BEDROCK_MODEL")
@@ -82,6 +91,19 @@ class BedrockProvider(LLMProvider):
             region or env.get("AWS_DEFAULT_REGION") or env.get("AWS_REGION") or default_region
         )
         resolved_profile = aws_profile or env.get("AWS_PROFILE") or None
+
+        if is_responses_api_model(resolved_model):
+            logger.info(
+                "Foreman using Amazon Bedrock Responses API (bedrock-mantle, region=%s, "
+                "profile=%s, auth=%s, model=%s)",
+                resolved_region,
+                resolved_profile,
+                "bearer-token" if env.get("AWS_BEARER_TOKEN_BEDROCK") else "sigv4",
+                resolved_model,
+            )
+            return BedrockResponsesClient(
+                region=resolved_region, extra_env=env, aws_profile=resolved_profile
+            )
 
         if is_native_bedrock_model(resolved_model):
             logger.info(

@@ -1,19 +1,30 @@
-"""Amazon Bedrock support for non-Anthropic foundation models (Amazon Nova, Kimi K2, ...).
+"""Amazon Bedrock support for non-Anthropic foundation models (Amazon Nova, Kimi K2,
+OpenAI gpt-oss, ...).
 
 Claude-on-Bedrock is served through the Anthropic SDK's ``AsyncAnthropicBedrock``
 client (see ``backend/foreman/llm.py``) because it already speaks the Anthropic
 Messages API shape end to end. Bedrock also hosts foundation models with their
-own wire format — Amazon Nova, Kimi K2, and others — that the Anthropic SDK
-cannot call; those only speak the Bedrock Runtime Converse API. This module is
-the one place that calls it, translating requests/responses to and from the
-Anthropic Messages shape so the rest of the codebase (history storage,
-tool-use parsing, ``foreman.llm.call_anthropic``) never has to know which wire
-format actually served the request — the same boundary ``call_openai_compatible``
-draws for OpenAI-compatible endpoints.
+own wire format that the Anthropic SDK cannot call, via two different
+endpoints:
 
-``BedrockNativeClient`` below exposes just enough of the Anthropic SDK client
-surface (``.messages.with_raw_response.create(**kwargs)``) for
-``foreman.llm.call_anthropic`` to use it unmodified: ``make_anthropic_client()``
+- Amazon Nova, Kimi K2, and others only speak the Bedrock Runtime **Converse**
+  API (``bedrock-runtime``). ``BedrockNativeClient`` calls it.
+- OpenAI's gpt-oss-120b/20b (and, per AWS, more models over time) additionally
+  speak OpenAI's own **Responses** API, served from a distinct endpoint/quota
+  family called Bedrock Mantle (``bedrock-mantle``) rather than
+  ``bedrock-runtime``. ``BedrockResponsesClient`` calls it. See
+  ``is_responses_api_model`` below for how model support is determined and why
+  it's a hardcoded allowlist rather than something queried at runtime.
+
+Both client classes translate requests/responses to and from the Anthropic
+Messages shape so the rest of the codebase (history storage, tool-use parsing,
+``foreman.llm.call_anthropic``) never has to know which wire format actually
+served the request — the same boundary ``call_openai_compatible`` draws for
+generic OpenAI-compatible endpoints.
+
+Both expose just enough of the Anthropic SDK client surface
+(``.messages.with_raw_response.create(**kwargs)``) for
+``foreman.llm.call_anthropic`` to use them unmodified: ``make_anthropic_client()``
 returns one of these instead of ``AsyncAnthropicBedrock`` when the configured
 model is a native (non-Anthropic) Bedrock model, and everything downstream
 proceeds exactly as it does for Claude-on-Bedrock.
@@ -22,11 +33,14 @@ proceeds exactly as it does for Claude-on-Bedrock.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
+
+import httpx
 
 try:
     # Absolute import works when backend/ itself is on sys.path (embedded
@@ -68,6 +82,36 @@ def is_native_bedrock_model(model: str) -> bool:
     that must be called via the Converse API rather than AsyncAnthropicBedrock."""
     stripped = _REGION_PREFIX_RE.sub("", model.lower())
     return stripped.startswith(_NATIVE_MODEL_PREFIXES)
+
+
+# Models that additionally speak OpenAI's Responses API over the bedrock-mantle
+# endpoint (see is_responses_api_model). Deliberately a hardcoded allowlist,
+# not something derived from ListFoundationModels/GetFoundationModel: as of
+# this writing, neither API returns which OpenAI-compatible wire format(s) a
+# model supports (Chat Completions vs. Responses vs. Converse vs. Invoke) —
+# that metadata (fields like inferenceTypesSupported, responseStreamingSupported,
+# inputModalities/outputModalities, customizationsSupported) covers inference
+# type and modality, not API-family compatibility. The only place AWS
+# publishes that is a static docs table:
+# https://docs.aws.amazon.com/bedrock/latest/userguide/models-api-compatibility.html
+# So this list has to be maintained by hand and revisited if AWS starts
+# surfacing it as queryable model metadata.
+_RESPONSES_API_MODEL_PREFIXES = ("openai.gpt-oss-120b", "openai.gpt-oss-20b")
+# The GPT OSS *Safeguard* variants support Chat Completions but, per the same
+# table, not the Responses API — excluded explicitly rather than relying on
+# _RESPONSES_API_MODEL_PREFIXES not matching them (both prefixes are
+# substrings of the safeguard model IDs, e.g. "openai.gpt-oss-safeguard-120b").
+_RESPONSES_API_EXCLUDED_SUBSTRING = "safeguard"
+
+
+def is_responses_api_model(model: str) -> bool:
+    """True when *model* must be called via Bedrock's OpenAI-compatible
+    Responses API (the ``bedrock-mantle`` endpoint) rather than the Converse
+    API or AsyncAnthropicBedrock."""
+    stripped = _REGION_PREFIX_RE.sub("", model.lower())
+    if _RESPONSES_API_EXCLUDED_SUBSTRING in stripped:
+        return False
+    return stripped.startswith(_RESPONSES_API_MODEL_PREFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -394,4 +438,320 @@ class BedrockNativeClient:
         response_dict = converse_response_to_anthropic(response, model)
         parsed = _response_dict_to_namespace(response_dict)
         request_id = (response.get("ResponseMetadata") or {}).get("RequestId")
+        return _RawConverseResponse(parsed, request_id)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages <-> OpenAI Responses API translation (bedrock-mantle)
+# ---------------------------------------------------------------------------
+#
+# The Responses API is not the same wire shape as OpenAI's own Chat
+# Completions endpoint (which foreman.llm.call_openai_compatible already
+# handles): request messages live in a top-level `input` array rather than
+# `messages`, a tool call/result round-trip is a pair of sibling `input` items
+# (`function_call` / `function_call_output`) rather than a `tool_calls` field
+# on an assistant message plus a `role: "tool"` message, tool schemas are flat
+# (`{"type": "function", "name", ...}`) rather than nested under a `function`
+# key, and the token-limit param is `max_output_tokens` not `max_tokens`. See
+# https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-mantle.html
+
+
+def anthropic_messages_to_responses_input(
+    system: list[dict[str, Any]] | None, messages: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Convert an Anthropic system+messages pair into the Responses API's `input` array.
+
+    Anthropic `tool_use` blocks become `function_call` items and `tool_result`
+    blocks become `function_call_output` items — sibling entries in `input`,
+    not content nested inside a message the way both the Anthropic Messages
+    API and OpenAI's Chat Completions format represent them.
+    """
+    items: list[dict[str, Any]] = []
+    system_text = "\n".join(b.get("text", "") for b in (system or []) if b.get("text"))
+    if system_text:
+        items.append({"role": "system", "content": system_text})
+
+    for msg in messages or []:
+        role = msg.get("role")
+        content = msg.get("content")
+        if not isinstance(content, list):
+            items.append({"role": role, "content": str(content or "")})
+            continue
+
+        pending_text: list[str] = []
+
+        def _flush_text(role: str = role, pending_text: list[str] = pending_text) -> None:
+            if pending_text:
+                items.append({"role": role, "content": "\n".join(pending_text)})
+                pending_text.clear()
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                pending_text.append(str(block.get("text") or ""))
+            elif btype == "tool_use":
+                _flush_text()
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": block.get("id") or "",
+                        "name": block.get("name") or "",
+                        "arguments": json.dumps(block.get("input") or {}),
+                    }
+                )
+            elif btype == "tool_result":
+                _flush_text()
+                result_content = block.get("content")
+                if isinstance(result_content, list):
+                    output = "\n".join(
+                        rc.get("text", "") for rc in result_content if isinstance(rc, dict)
+                    )
+                else:
+                    output = str(result_content or "")
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": block.get("tool_use_id") or "",
+                        "output": output,
+                    }
+                )
+        _flush_text()
+    return items
+
+
+def anthropic_tools_to_responses(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Anthropic tool schemas into the Responses API's flat function
+    shape — `parameters` is top-level, unlike Chat Completions' nested
+    `{"type": "function", "function": {...}}`."""
+    return [
+        {
+            "type": "function",
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool.get("input_schema") or {},
+        }
+        for tool in tools
+    ]
+
+
+def anthropic_tool_choice_to_responses(tool_choice: dict[str, Any] | None) -> Any:
+    """Convert an Anthropic tool_choice into the Responses API's `tool_choice`."""
+    if not tool_choice:
+        return None
+    choice_type = tool_choice.get("type")
+    if choice_type == "auto":
+        return "auto"
+    if choice_type == "any":
+        return "required"
+    if choice_type == "none":
+        return "none"
+    if choice_type == "tool":
+        return {"type": "function", "name": tool_choice.get("name") or ""}
+    return None
+
+
+def _parse_responses_tool_arguments(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"_raw_arguments": raw}
+    return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+
+def responses_output_to_anthropic(response: dict[str, Any], model: str) -> dict[str, Any]:
+    """Convert a Responses API response into an Anthropic Messages API
+    response dict, so callers only ever handle one response shape."""
+    content_blocks: list[dict[str, Any]] = []
+    has_function_call = False
+    for item in response.get("output") or []:
+        item_type = item.get("type")
+        if item_type == "message":
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") in ("output_text", "text"):
+                    content_blocks.append({"type": "text", "text": part.get("text") or ""})
+        elif item_type == "function_call":
+            has_function_call = True
+            content_blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": item.get("call_id") or item.get("id") or "",
+                    "name": item.get("name") or "",
+                    "input": _parse_responses_tool_arguments(item.get("arguments")),
+                }
+            )
+
+    if has_function_call:
+        stop_reason = "tool_use"
+    elif response.get("status") == "incomplete":
+        reason = (response.get("incomplete_details") or {}).get("reason")
+        stop_reason = "max_tokens" if reason == "max_output_tokens" else "end_turn"
+    else:
+        stop_reason = "end_turn"
+
+    usage = response.get("usage") or {}
+    return {
+        "id": response.get("id") or f"resp_{id(response)}",
+        "type": "message",
+        "role": "assistant",
+        "model": response.get("model") or model,
+        "content": content_blocks,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": usage.get("input_tokens", 0) or 0,
+            "output_tokens": usage.get("output_tokens", 0) or 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        },
+    }
+
+
+def _mantle_base_url(region: str) -> str:
+    return f"https://bedrock-mantle.{region}.api.aws/v1"
+
+
+def _responses_api_auth_headers(
+    *,
+    region: str,
+    extra_env: Mapping[str, str] | None,
+    aws_profile: str | None,
+    method: str,
+    url: str,
+    body: dict[str, Any],
+) -> dict[str, str]:
+    """Build auth headers for a bedrock-mantle request.
+
+    AWS documents two auth modes for this endpoint: a Bedrock API key (bearer
+    token — "required for OpenAI SDK") or AWS credentials ("supported for HTTP
+    requests"). We prefer the bearer token, reusing the same
+    AWS_BEARER_TOKEN_BEDROCK env var the bedrock-runtime path already honors
+    (see _get_client above) since it's the same underlying Bedrock API-key
+    mechanism; when it's absent we fall back to signing the request with
+    SigV4 via botocore, mirroring boto3's own credential precedence (explicit
+    keys, then a named profile, then the default chain). The SigV4 signing
+    name ("bedrock") is inferred from Bedrock's other services — AWS's docs
+    don't spell out bedrock-mantle's signing name explicitly — so the bearer
+    token path is the better-verified of the two.
+    """
+    env: Mapping[str, str] = extra_env if extra_env is not None else os.environ
+    headers = {"Content-Type": "application/json"}
+    bearer_token = env.get("AWS_BEARER_TOKEN_BEDROCK")
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+        return headers
+
+    if not HAS_BOTO3 or boto3 is None:
+        raise ImportError("boto3 is not installed; add it to requirements.txt for Bedrock support")
+
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+
+    access_key = env.get("AWS_ACCESS_KEY_ID")
+    secret_key = env.get("AWS_SECRET_ACCESS_KEY")
+    session_token = env.get("AWS_SESSION_TOKEN")
+    session_kwargs: dict[str, Any] = {"region_name": region}
+    if access_key and secret_key:
+        session_kwargs["aws_access_key_id"] = access_key
+        session_kwargs["aws_secret_access_key"] = secret_key
+        if session_token:
+            session_kwargs["aws_session_token"] = session_token
+    elif aws_profile:
+        session_kwargs["profile_name"] = aws_profile
+    session = boto3.Session(**session_kwargs)
+    credentials = session.get_credentials()
+    if credentials is None:
+        raise ValueError(
+            "No AWS credentials or AWS_BEARER_TOKEN_BEDROCK available to call the "
+            "bedrock-mantle Responses API endpoint."
+        )
+
+    aws_request = AWSRequest(method=method, url=url, data=json.dumps(body), headers=headers)
+    SigV4Auth(credentials, "bedrock", region).add_auth(aws_request)
+    headers.update(dict(aws_request.headers.items()))
+    return headers
+
+
+class BedrockResponsesClient:
+    """Adapter exposing ``.messages.with_raw_response.create(**kwargs)`` —
+    backed by Amazon Bedrock's OpenAI-compatible Responses API (the
+    ``bedrock-mantle`` endpoint) — for foundation models that speak the
+    Responses wire format but not Bedrock's own Converse API, currently
+    OpenAI's gpt-oss-120b/20b (see ``is_responses_api_model``). Returned by
+    ``make_anthropic_client()``/``BedrockProvider.create_client()`` in place
+    of ``BedrockNativeClient``/``AsyncAnthropicBedrock`` for those models.
+
+    bedrock-mantle is a distinct endpoint and quota family from
+    bedrock-runtime, reached over plain HTTPS rather than boto3's
+    ``bedrock-runtime`` client, so this class speaks httpx directly instead of
+    going through ``_get_client``'s boto3 session cache.
+
+    Every request sets ``store=False``: the Responses API's server-side
+    conversation state (``previous_response_id``) is an alternative to
+    resending full history, but this codebase already reconstructs and sends
+    full message history itself on every turn (see ``foreman.llm.call_anthropic``
+    and its callers), so opting into 30-day server-side retention would add
+    an unused, silent data-retention footprint rather than any behavior this
+    codebase relies on.
+    """
+
+    def __init__(
+        self,
+        region: str,
+        extra_env: Mapping[str, str] | None = None,
+        aws_profile: str | None = None,
+    ):
+        self._region = region
+        self._extra_env = extra_env
+        self._aws_profile = aws_profile
+        self.messages = SimpleNamespace(with_raw_response=self)
+
+    async def create(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        system: list[dict[str, Any]] | None = None,
+        messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: dict[str, Any] | None = None,
+    ) -> _RawConverseResponse:
+        body: dict[str, Any] = {
+            "model": model,
+            "input": anthropic_messages_to_responses_input(system, messages),
+            "max_output_tokens": max_tokens,
+            "store": False,
+        }
+        if tools:
+            body["tools"] = anthropic_tools_to_responses(tools)
+            responses_choice = anthropic_tool_choice_to_responses(tool_choice)
+            if responses_choice is not None:
+                body["tool_choice"] = responses_choice
+
+        url = f"{_mantle_base_url(self._region)}/responses"
+        headers = _responses_api_auth_headers(
+            region=self._region,
+            extra_env=self._extra_env,
+            aws_profile=self._aws_profile,
+            method="POST",
+            url=url,
+            body=body,
+        )
+
+        with track_api_call("bedrock-mantle", model, method="POST /v1/responses") as call:
+            async with httpx.AsyncClient(timeout=120.0) as http_client:
+                http_response = await http_client.post(url, json=body, headers=headers)
+                call.status_code = http_response.status_code
+                http_response.raise_for_status()
+                response_json = http_response.json()
+            usage = response_json.get("usage") or {}
+            call.input_tokens = usage.get("input_tokens")
+            call.output_tokens = usage.get("output_tokens")
+
+        response_dict = responses_output_to_anthropic(response_json, model)
+        parsed = _response_dict_to_namespace(response_dict)
+        request_id = http_response.headers.get("x-request-id") or response_json.get("id")
         return _RawConverseResponse(parsed, request_id)

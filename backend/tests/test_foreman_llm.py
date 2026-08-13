@@ -500,6 +500,42 @@ class TestMakeAnthropicClientNativeBedrockModel:
         mock_mod.AsyncAnthropicBedrock.assert_called_once()
 
 
+class TestMakeAnthropicClientResponsesApiModel:
+    """OpenAI gpt-oss-120b/20b speak the Responses API (bedrock-mantle), not
+    the Converse API or AsyncAnthropicBedrock, and must dispatch to
+    BedrockResponsesClient."""
+
+    def test_gpt_oss_model_returns_bedrock_responses_client(self, monkeypatch):
+        monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
+        import foreman.llm as llm_mod
+        from foreman.providers.bedrock import BedrockResponsesClient
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        client = llm_mod.make_anthropic_client(model="openai.gpt-oss-120b")
+        assert isinstance(client, BedrockResponsesClient)
+        mock_mod.AsyncAnthropicBedrock.assert_not_called()
+
+    def test_gpt_oss_safeguard_model_is_not_routed_to_responses_client(self, monkeypatch):
+        """The Safeguard variants support Chat Completions but not the
+        Responses API (per AWS's per-model compatibility table) — they must
+        not be routed to BedrockResponsesClient. Not otherwise a native
+        Bedrock model either, so this exercises the same generic
+        AsyncAnthropicBedrock fallback as any unrecognized model ID."""
+        monkeypatch.setenv("FOREMAN_PROVIDER", "bedrock")
+        import foreman.llm as llm_mod
+        from foreman.providers.bedrock import BedrockNativeClient, BedrockResponsesClient
+
+        mock_mod = _make_mock_anthropic()
+        monkeypatch.setattr(llm_mod, "_anthropic_mod", mock_mod)
+        monkeypatch.setattr(llm_mod, "HAS_ANTHROPIC", True)
+        client = llm_mod.make_anthropic_client(model="openai.gpt-oss-safeguard-120b")
+        assert not isinstance(client, BedrockResponsesClient)
+        assert not isinstance(client, BedrockNativeClient)
+        mock_mod.AsyncAnthropicBedrock.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # OpenAI-compatible translation (issue #826: shared with the standalone proxy,
 # which has no translation logic of its own — see foreman/tests/test_runner.py)
