@@ -43,12 +43,21 @@
 
           <!-- Worker Settings — spawn defaults + per-worker-tool model/env config -->
           <section v-else-if="activeTab === 'spawn'" class="settings-section">
-            <GuildWorkerSettings v-if="currentGuild" :guild-id="currentGuild.id" :config="foremanConfig" />
+            <GuildWorkerSettings
+              v-if="currentGuild"
+              :guild-id="currentGuild.id"
+              :config="foremanConfig"
+            />
           </section>
 
           <!-- Members -->
           <section v-else-if="activeTab === 'members'" class="settings-section">
             <GuildMembers v-if="currentGuild" :guild-id="currentGuild.id" />
+          </section>
+
+          <!-- Discord — connected accounts, auto-provisioned bots, channel routing -->
+          <section v-else-if="activeTab === 'discord'" class="settings-section">
+            <GuildDiscordSettings v-if="currentGuild" :guild-id="currentGuild.id" />
           </section>
         </div>
       </div>
@@ -64,6 +73,7 @@ import GuildGeneralSettings from './GuildGeneralSettings.vue'
 import GuildForemanSettings from './GuildForemanSettings.vue'
 import GuildWorkerSettings from './GuildWorkerSettings.vue'
 import GuildMembers from './GuildMembers.vue'
+import GuildDiscordSettings from './GuildDiscordSettings.vue'
 
 const emit = defineEmits<{ close: [] }>()
 
@@ -76,6 +86,7 @@ const TABS = [
   { id: 'foreman', label: 'Foreman' },
   { id: 'spawn', label: 'Worker Settings' },
   { id: 'members', label: 'Members' },
+  { id: 'discord', label: 'Discord' },
 ] as const
 const activeTab = ref<(typeof TABS)[number]['id']>('general')
 
