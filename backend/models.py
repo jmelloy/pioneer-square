@@ -155,6 +155,71 @@ class Message(SQLModel, table=True):
     source: str | None = Field(default="web")
 
 
+class Conversation(SQLModel, table=True):
+    """A logical conversation between a user and the Foreman within a guild.
+
+    Anchor row a :class:`Thread` points at via ``conversation_id``. Part of
+    the thread-per-conversation architecture (epic #1160): today the
+    per-(guild, user) Foreman turn history (``ForemanTurn``) is looked up
+    directly by guild+user with no anchor row of its own; ``Conversation``
+    gives the Discord-thread integration a stable id to bind to instead of
+    keying threads on the raw (guild, user) pair.
+    """
+
+    __tablename__ = "conversations"  # type: ignore[assignment]
+    __table_args__ = (Index("ix_conversations_guild_id_user_id", "guild_id", "user_id"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    guild_id: int = Field(foreign_key="guilds.id")
+    # github_user_id of the human on this conversation. NULL for
+    # system/foreman-initiated conversations with no single human owner.
+    user_id: str | None = None
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+# Valid Thread.status values. "active" threads accept new messages, "archived"
+# threads are read-only in Discord but still resolvable by the backend,
+# "closed" threads are done and eligible for eventual soft-delete cleanup.
+THREAD_STATUSES = ("active", "archived", "closed")
+
+
+class Thread(SoftDeleteMixin, SQLModel, table=True):
+    """A Discord thread bound to one :class:`Conversation`.
+
+    Part of the thread-per-conversation architecture (epic #1160): each
+    conversation gets its own dedicated Discord thread instead of sharing a
+    flat channel, so follow-ups stay isolated and the main channel stays
+    clean. Distinct from ``DiscordThreadBinding`` (a static
+    subject-type/subject-key -> thread-id lookup with no lifecycle of its
+    own) — a ``Thread`` here carries an explicit ``status`` that the
+    periodic foreman sweep advances over time (see
+    ``foreman/thread_maintenance.py``).
+    """
+
+    __tablename__ = "threads"  # type: ignore[assignment]
+    __table_args__ = (
+        Index(
+            "uq_threads_discord_thread_id_active",
+            "discord_thread_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL AND discord_thread_id IS NOT NULL"),
+        ),
+        Index("ix_threads_conversation_id", "conversation_id"),
+        Index("ix_threads_status", "status"),
+    )
+
+    id: str = Field(primary_key=True)
+    conversation_id: int = Field(foreign_key="conversations.id", index=True)
+    # Discord's thread channel ID. NULL until the Discord bot side (#1161)
+    # actually creates the thread and reports its id back.
+    discord_thread_id: str | None = None
+    name: str | None = None
+    status: str = Field(default="active", sa_column_kwargs={"server_default": "'active'"})
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class ExternalA2ARequest(SQLModel, table=True):
     """Replay guard and authentication audit for accepted DNSid A2A requests."""
 
@@ -380,6 +445,12 @@ class Task(SoftDeleteMixin, SQLModel, table=True):
     # (Claude, codex, or pi). Lets send_followup resume the same session when
     # redispatched to the original worker. NULL if the agent didn't report one.
     claude_session_id: str | None = None
+    # Conversation thread this task was created from (thread-per-conversation
+    # integration, epic #1160). When set, Discord notifications for this task
+    # route into the thread's discord_thread_id instead of resolving/creating
+    # a separate task-stream thread. NULL for tasks not tied to a specific
+    # conversation thread (e.g. issue pickups, webhook-triggered work).
+    thread_id: str | None = Field(default=None, foreign_key="threads.id", index=True)
 
 
 class GithubToken(SQLModel, table=True):
