@@ -15,6 +15,7 @@ from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
 from models import DiscordAccountLink, DiscordPendingConnect
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -57,6 +58,7 @@ async def connect_discord_account(
     )
     stmt = stmt.on_conflict_do_update(
         index_elements=["discord_user_id"],
+        index_where=text("deleted_at IS NULL"),
         set_={
             "ps_user_id": stmt.excluded.ps_user_id,
             "discord_username": stmt.excluded.discord_username,
