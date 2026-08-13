@@ -512,3 +512,17 @@ async def stop_gateway() -> None:
     except (asyncio.CancelledError, Exception):
         pass
     _gateway_task = None
+
+
+def gateway_status() -> dict:
+    """Best-effort snapshot of the Gateway task for admin/status surfaces.
+
+    ``running`` reflects whether the background task is alive, not whether it
+    has completed the Discord handshake (READY) — the client reconnects with
+    its own backoff on drops, so a momentarily-reconnecting gateway still
+    reports ``running=True``.
+    """
+    return {
+        "enabled": _gateway_enabled(),
+        "running": _gateway_task is not None and not _gateway_task.done(),
+    }
