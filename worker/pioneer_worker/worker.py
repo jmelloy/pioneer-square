@@ -2062,7 +2062,16 @@ class Worker:
         else:
             # On follow-ups we must continue on the existing branch — the original
             # worker pushed it and the foreman wants the same PR updated.
-            branch = followup_branch or f"ps/{_slug(name)}-{task_id}"
+            if followup_branch:
+                branch = followup_branch
+            else:
+                # Prefer the linked GitHub issue number as the branch prefix
+                # (e.g. "1158/...") so the branch is traceable to its issue at
+                # a glance; fall back to the generic "ps/" prefix when the
+                # task has no linked issue.
+                issue_number = task.get("issue_number")
+                branch_prefix = str(issue_number) if issue_number else "ps"
+                branch = f"{branch_prefix}/{_slug(name)}-{task_id}"
         work_dir = os.path.join(self.cfg.work_dir, self.cfg.guild_id, self.cfg.worker_id, task_id)
         logger.info(
             "Task %s branch=%s work_dir=%s followup=%s", task_id, branch, work_dir, is_followup
