@@ -323,5 +323,7 @@ and sends it as `Authorization: Bearer <token>` on REST calls. Workers fetch the
 | `tasks.ts` | Task list, task logs (in-memory + fetched), WS event handler |
 | `github.ts` | GitHub issue/PR fetching for the UI |
 
-`guild.ts` is the WS fan-out point — other stores register handlers via `addMessageHandler` and
-process events they care about.
+`guild.ts` owns the WebSocket connection. Each store — including `guild.ts` itself — implements a
+`handleWebSocketMessage(data)` switch over the message types it cares about; `AppView.vue` wires
+the `agents`/`tasks`/`usage` stores' handlers into `connectWebSocket`'s per-call callback, while
+`guild.ts` calls its own handler directly from its `onmessage`.
