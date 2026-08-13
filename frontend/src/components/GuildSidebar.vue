@@ -87,7 +87,7 @@ function onSelectIssue(issue: GitHubIssue) {
   if (slashIdx === -1) return
   const owner = issue.repo.slice(0, slashIdx)
   const repo = issue.repo.slice(slashIdx + 1)
-  agentsStore.openIssueTab(owner, repo, issue.number)
+  ghStore.openIssueTab(owner, repo, issue.number)
   switchMobileTab('work')
 }
 </script>
