@@ -33,21 +33,14 @@
 
     <LogList ref="logListRef" :logs="logs" />
 
-    <AgentActions v-if="kind === 'agent'" :agent-id="id" :agent-state="entityState" />
-    <TaskActions
-      v-if="kind === 'agent' && agentTask"
-      :task-id="agentTask.id"
-      :task-state="agentTask.state"
-      :task-type="agentTask.task_type"
-      :worker-id="agentTask.worker_id"
-    />
-    <WorkerActions v-if="kind === 'worker'" :worker-id="id" :worker-state="entityState" />
-    <TaskActions
-      v-if="kind === 'task'"
-      :task-id="id"
-      :task-state="task.state"
-      :task-type="task.task_type"
-      :worker-id="task.worker_id"
+    <EntityActions
+      :kind="kind"
+      :id="id"
+      :entity-state="entityState"
+      :task-id="kind === 'task' ? id : agentTask?.id"
+      :task-state="kind === 'task' ? task.state : agentTask?.state"
+      :task-type="kind === 'task' ? task.task_type : agentTask?.task_type"
+      :task-worker-id="kind === 'task' ? task.worker_id : agentTask?.worker_id"
     />
   </div>
 </template>
@@ -60,10 +53,8 @@ import { useGuildStore } from '../stores/guild'
 import type { LogEntry, Task } from '../types'
 import PaneHeader from './log-pane/PaneHeader.vue'
 import LogList from './log-pane/LogList.vue'
-import AgentActions from './log-pane/AgentActions.vue'
-import WorkerActions from './log-pane/WorkerActions.vue'
+import EntityActions from './log-pane/EntityActions.vue'
 import TaskHeader from './log-pane/TaskHeader.vue'
-import TaskActions from './log-pane/TaskActions.vue'
 import UsagePanel from './log-pane/UsagePanel.vue'
 
 const TASK_INFO_STORAGE_KEY = 'taskInfoPaneCollapsed'
