@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useAuthStore } from './auth'
+import { useAgentsStore } from './agents'
 import { api } from '../utils/api'
 import type { ChatMessage, Guild, WSInbound, WSOutbound } from '../types'
 
@@ -12,10 +13,11 @@ export const useGuildStore = defineStore('guild', () => {
   const isConnected = ref(false)
   const messages = ref<ChatMessage[]>([])
   const reconnectAttempt = ref(0)
+  // Epoch ms when the next foreman poll check fires, from foreman-poll-status frames.
+  const nextPollAt = ref<number | null>(null)
   let ws: WebSocket | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let manualClose = false
-  const messageHandlers = ref<MessageHandler[]>([])
 
   const MAX_RETRIES = 10
   const BASE_DELAY_MS = 1000
@@ -116,35 +118,8 @@ export const useGuildStore = defineStore('guild', () => {
         return
       }
       try {
-        if (data.type === 'chat') {
-          const chatMsg = data as ChatMessage
-          if ((chatMsg.from || chatMsg.from_agent) !== 'github') {
-            // Replace any matching optimistic local entry instead of duplicating
-            const localIdx = messages.value.findIndex(
-              (m) => m._local && m.from === chatMsg.from && m.content === chatMsg.content,
-            )
-            if (localIdx !== -1) {
-              messages.value.splice(localIdx, 1, chatMsg)
-            } else {
-              messages.value.push(chatMsg)
-            }
-          }
-        }
-        if (data.type === 'guild-updated') {
-          if (currentGuild.value && currentGuild.value.id === data.id) {
-            currentGuild.value = { ...currentGuild.value, name: data.name }
-          }
-          const idx = guilds.value.findIndex((g) => g.id === data.id)
-          if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name: data.name }
-        }
+        handleWebSocketMessage(data)
         if (onMessage) onMessage(data)
-        messageHandlers.value.forEach((h) => {
-          try {
-            h(data)
-          } catch (err) {
-            console.error('WS message handler error', err)
-          }
-        })
       } catch (e) {
         console.error('Error processing WS message', e)
       }
@@ -213,12 +188,61 @@ export const useGuildStore = defineStore('guild', () => {
     }
   }
 
-  function addMessageHandler(handler: MessageHandler) {
-    messageHandlers.value.push(handler)
-  }
-
-  function removeMessageHandler(handler: MessageHandler) {
-    messageHandlers.value = messageHandlers.value.filter((h) => h !== handler)
+  function handleWebSocketMessage(data: WSInbound) {
+    if (data.type === 'chat') {
+      const chatMsg = data as ChatMessage
+      if ((chatMsg.from || chatMsg.from_agent) !== 'github') {
+        // Replace any matching optimistic local entry instead of duplicating
+        const localIdx = messages.value.findIndex(
+          (m) => m._local && m.from === chatMsg.from && m.content === chatMsg.content,
+        )
+        if (localIdx !== -1) {
+          messages.value.splice(localIdx, 1, chatMsg)
+        } else {
+          messages.value.push(chatMsg)
+        }
+      }
+    } else if (data.type === 'guild-updated') {
+      if (currentGuild.value && currentGuild.value.id === data.id) {
+        currentGuild.value = { ...currentGuild.value, name: data.name }
+      }
+      const idx = guilds.value.findIndex((g) => g.id === data.id)
+      if (idx !== -1) guilds.value[idx] = { ...guilds.value[idx], name: data.name }
+    } else if (data.type === 'task-complete') {
+      const agentsStore = useAgentsStore()
+      messages.value.push({
+        type: 'chat',
+        from: 'system',
+        to: 'user',
+        content: data.prUrl
+          ? `✓ ${agentsStore.workerDisplayName(data.workerId)} done — PR: ${data.prUrl}`
+          : `✓ ${agentsStore.workerDisplayName(data.workerId)} finished (no PR)`,
+        prUrl: data.prUrl || null,
+        createdAt: new Date().toISOString(),
+      })
+    } else if (data.type === 'needs-input') {
+      const agentsStore = useAgentsStore()
+      messages.value.push({
+        type: 'chat',
+        from: 'system',
+        to: 'user',
+        content: `⚠ ${agentsStore.workerDisplayName(data.workerId)} needs attention on: "${data.description}"`,
+        createdAt: new Date().toISOString(),
+      })
+    } else if (data.type === 'task-assigned') {
+      const agentsStore = useAgentsStore()
+      const taskName = (data.name || data.description || '').slice(0, 60)
+      messages.value.push({
+        type: 'chat',
+        from: 'system',
+        to: 'user',
+        content: `→ ${agentsStore.workerDisplayName(data.workerId)} assigned: ${taskName}`,
+        createdAt: new Date().toISOString(),
+      })
+    } else if (data.type === 'foreman-poll-status') {
+      const secs = typeof data.nextCheckIn === 'number' ? data.nextCheckIn : null
+      nextPollAt.value = secs !== null ? Date.now() + secs * 1000 : null
+    }
   }
 
   return {
@@ -227,6 +251,7 @@ export const useGuildStore = defineStore('guild', () => {
     isConnected,
     reconnectAttempt,
     messages,
+    nextPollAt,
     loadGuilds,
     createGuild,
     renameGuild,
@@ -235,7 +260,6 @@ export const useGuildStore = defineStore('guild', () => {
     connectWebSocket,
     disconnectWebSocket,
     sendMessage,
-    addMessageHandler,
-    removeMessageHandler,
+    handleWebSocketMessage,
   }
 })
