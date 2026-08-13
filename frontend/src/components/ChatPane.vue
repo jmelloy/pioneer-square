@@ -22,7 +22,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useAgentsStore } from '../stores/agents'
-import type { GitHubIssue, WSInbound } from '../types'
+import type { WSInbound } from '../types'
 import ChatTab from './chat-pane/ChatTab.vue'
 
 const guildStore = useGuildStore()
@@ -51,14 +51,6 @@ const pollLabel = computed(() => {
 function toggleMinimize() {
   minimized.value = !minimized.value
 }
-
-function selectIssue(issue: GitHubIssue) {
-  const msg = `Work on issue #${issue.number} in ${issue.repo}: "${issue.title}"`
-  chatTabRef.value?.setInput(msg)
-  chatTabRef.value?.focusInput()
-}
-
-defineExpose({ selectIssue })
 
 function handleTaskEvent(data: WSInbound) {
   if (data.type === 'task-complete') {

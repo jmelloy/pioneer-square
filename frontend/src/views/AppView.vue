@@ -45,7 +45,6 @@ import MainView from '../components/MainView.vue'
 import ChatPane from '../components/ChatPane.vue'
 import TopBar from '../components/TopBar.vue'
 import DebugSidebar from '../components/DebugSidebar.vue'
-import type { GitHubIssue } from '../types'
 
 const props = defineProps<{ guildId?: string }>()
 
@@ -55,7 +54,6 @@ provide('switchMobileTab', (tab: 'tasks' | 'work' | 'chat') => {
 })
 
 const chatPaneRef = ref<InstanceType<typeof ChatPane> | null>(null)
-provide('selectIssue', (issue: GitHubIssue) => chatPaneRef.value?.selectIssue(issue))
 
 const showDebug = ref(false)
 
