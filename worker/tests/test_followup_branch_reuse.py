@@ -284,3 +284,114 @@ async def test_new_task_branch_contains_full_task_id_not_truncated():
     assert branch.endswith(f"-{task_id}"), (
         f"Branch name must end with the full '-{task_id}' suffix, got {branch!r}"
     )
+
+
+async def test_new_task_branch_uses_linked_issue_number_as_prefix():
+    """Regression test for issue #1158: when a new task is linked to a GitHub
+    issue, the generated branch must be prefixed with the issue number (e.g.
+    ``1158/...``) instead of the generic ``ps/`` prefix.
+    """
+    worker = Worker(_make_cfg())
+    worker._joined = True
+    worker._send = AsyncMock()
+    slot = worker.agents[0]
+
+    task_id = "t-iss123"
+    task = {
+        "id": task_id,
+        "name": "Fix the thing",
+        "description": "Implement the fix described in the issue",
+        "phase": "execute",
+        "tool": "claude",
+        "repos": ["owner/repo"],
+        "issue_number": 1158,
+        "issue_repo": "owner/repo",
+        # No branch, no followup_branch, no followup_instructions
+    }
+
+    created_branches: list[str] = []
+
+    async def fake_create(repo_path: str, wt_path: str, branch: str, token=None) -> bool:
+        created_branches.append(branch)
+        return True
+
+    async def fake_run_claude(desc, *args, **kwargs):
+        return True, "end_turn", "done", None
+
+    with (
+        patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
+        patch("pioneer_worker.worker.git_ops.create_worktree", side_effect=fake_create),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch(
+            "pioneer_worker.worker.github_pr.open_pr",
+            return_value="https://github.com/o/r/pull/1",
+        ),
+        patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
+        patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
+        tempfile.TemporaryDirectory() as tmp,
+    ):
+        worker.cfg.work_dir = tmp
+        worker.cfg.repos_dir = tmp
+        await worker._execute_task(task, slot)
+
+    assert created_branches, "create_worktree should have been called for a new task"
+    branch = created_branches[0]
+    assert branch.startswith("1158/"), (
+        f"Branch for a task linked to issue #1158 should start with '1158/', got {branch!r}"
+    )
+    assert branch.endswith(f"-{task_id}"), (
+        f"Branch name must end with the full '-{task_id}' suffix, got {branch!r}"
+    )
+
+
+async def test_new_task_without_linked_issue_falls_back_to_ps_prefix():
+    """When a new task has no linked GitHub issue, branch generation must
+    fall back to the generic ``ps/`` prefix rather than erroring out.
+    """
+    worker = Worker(_make_cfg())
+    worker._joined = True
+    worker._send = AsyncMock()
+    slot = worker.agents[0]
+
+    task_id = "t-noiss1"
+    task = {
+        "id": task_id,
+        "name": "Do something unrelated to any issue",
+        "description": "No issue linked here",
+        "phase": "execute",
+        "tool": "claude",
+        "repos": ["owner/repo"],
+        "issue_number": None,
+        # No branch, no followup_branch, no followup_instructions
+    }
+
+    created_branches: list[str] = []
+
+    async def fake_create(repo_path: str, wt_path: str, branch: str, token=None) -> bool:
+        created_branches.append(branch)
+        return True
+
+    async def fake_run_claude(desc, *args, **kwargs):
+        return True, "end_turn", "done", None
+
+    with (
+        patch("pioneer_worker.worker.git_ops.ensure_repo", return_value="/tmp/fake-repo"),
+        patch("pioneer_worker.worker.git_ops.create_worktree", side_effect=fake_create),
+        patch("pioneer_worker.worker.github_pr.push_branch", return_value=True),
+        patch(
+            "pioneer_worker.worker.github_pr.open_pr",
+            return_value="https://github.com/o/r/pull/1",
+        ),
+        patch("pioneer_worker.worker.github_pr.find_existing_pr", return_value=None),
+        patch("pioneer_worker.worker.claude_runner.run_claude_auto", side_effect=fake_run_claude),
+        tempfile.TemporaryDirectory() as tmp,
+    ):
+        worker.cfg.work_dir = tmp
+        worker.cfg.repos_dir = tmp
+        await worker._execute_task(task, slot)
+
+    assert created_branches, "create_worktree should have been called for a new task"
+    branch = created_branches[0]
+    assert branch.startswith("ps/"), (
+        f"Branch for a task with no linked issue should fall back to 'ps/', got {branch!r}"
+    )
