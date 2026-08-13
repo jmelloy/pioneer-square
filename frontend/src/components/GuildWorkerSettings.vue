@@ -61,7 +61,7 @@
   <template v-else-if="workerSubTab === 'pi'">
     <div class="foreman-field">
       <label class="foreman-field-label">Provider Override</label>
-      <select v-model="config.piDefaultProvider.value" class="settings-input">
+      <select v-model="piDefaultProvider" class="settings-input">
         <option value="">default (anthropic)</option>
         <option v-for="p in config.modelsStore.providers" :key="p.id" :value="p.id">
           {{ p.name }}
@@ -71,13 +71,11 @@
     <div class="foreman-field">
       <label class="foreman-field-label">Model Override</label>
       <input
-        v-model="config.piDefaultModel.value"
+        v-model="piDefaultModel"
         class="settings-input"
         list="pi-model-hints"
         :placeholder="
-          config.piDefaultProvider.value === 'bedrock'
-            ? 'inference-profile ARN'
-            : 'e.g. claude-sonnet-4-6'
+          piDefaultProvider === 'bedrock' ? 'inference-profile ARN' : 'e.g. claude-sonnet-4-6'
         "
         autocomplete="off"
       />
@@ -99,7 +97,7 @@
     <div class="foreman-field">
       <label class="foreman-field-label">Default Model</label>
       <input
-        v-model="config.codexDefaultModel.value"
+        v-model="codexDefaultModel"
         class="settings-input"
         placeholder="e.g. gpt-5-codex"
         autocomplete="off"
@@ -180,7 +178,12 @@ import { ref, computed } from 'vue'
 import type { ForemanConfig } from '../composables/useForemanConfig'
 import GuildSpawnDefaults from './GuildSpawnDefaults.vue'
 
-defineProps<{ guildId: string; config: ForemanConfig }>()
+const props = defineProps<{ guildId: string; config: ForemanConfig }>()
+
+// Destructured out of the prop (rather than accessed as config.x.value) so
+// mutating these refs isn't flagged as a prop mutation — they're shared state
+// owned by the composable, not this prop.
+const { piDefaultProvider, piDefaultModel, codexDefaultModel } = props.config
 
 // Worker Settings sub-tabs: General (vars every tool receives) + one override
 // tab per worker tool.
