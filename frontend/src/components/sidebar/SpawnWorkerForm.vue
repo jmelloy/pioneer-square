@@ -1,5 +1,5 @@
 <template>
-  <div class="settings-overlay" @mousedown.self="close">
+  <div class="settings-overlay" :style="viewportStyle" @mousedown.self="close">
     <div
       class="settings-panel spawn-panel"
       role="dialog"
@@ -639,8 +639,26 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') close()
 }
 
+// iOS Safari keeps `position: fixed` boxes pinned to the full layout
+// viewport when the on-screen keyboard opens — only the visual viewport
+// shrinks. Left alone, this overlay stays full-height behind the keyboard
+// and drags the footer (with the Launch button) off-screen under it the
+// moment a field like Name or an env var is focused. Tracking
+// visualViewport's size/offset keeps the overlay matched to what's
+// actually visible so the footer stays above the keyboard.
+const viewportStyle = ref<{ height: string; top: string } | undefined>(undefined)
+
+function syncViewport() {
+  const vv = window.visualViewport
+  if (!vv) return
+  viewportStyle.value = { height: `${vv.height}px`, top: `${vv.offsetTop}px` }
+}
+
 onMounted(async () => {
   document.addEventListener('keydown', onKeydown)
+  syncViewport()
+  window.visualViewport?.addEventListener('resize', syncViewport)
+  window.visualViewport?.addEventListener('scroll', syncViewport)
 
   const guild = guildStore.currentGuild
 
