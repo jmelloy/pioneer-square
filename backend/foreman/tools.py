@@ -28,6 +28,7 @@ from db import github_cache
 from events import broadcast, broadcast_msg, emit_terminal_line
 from foreman.constants import _TERMINAL_STATES
 from foreman.message_utils import _json_default, truncate_tool_result
+from foreman.thread_service import get_or_create_active_thread
 from foreman.tools_schema import (
     FOREMAN_TOOLS,  # noqa: F401 — re-exported for test compatibility
 )
@@ -1634,6 +1635,17 @@ async def _exec_one_tool(
                     random.choices(string.ascii_lowercase + string.digits, k=6)
                 )
                 created_at = datetime.now(UTC)
+                # Route this task back to the conversation thread it was
+                # created from (#1167) — reuses the thread ws_handlers'
+                # _trigger_foreman already created/touched for this message;
+                # falls back to None for system/webhook-triggered work with
+                # no human user_id.
+                thread_id: str | None = None
+                if guild_pk is not None and user_id:
+                    thread, _created = await get_or_create_active_thread(
+                        db, guild_pk, user_id, name_hint=name
+                    )
+                    thread_id = thread.id
                 db.add(
                     Task(
                         id=task_id,
@@ -1650,6 +1662,7 @@ async def _exec_one_tool(
                         pr_repo=inp.get("pr_repo"),
                         created_at=created_at,
                         user_id=user_id,
+                        thread_id=thread_id,
                     )
                 )
                 await db.commit()
@@ -1662,6 +1675,7 @@ async def _exec_one_tool(
                         phase=phase,
                         state="pending",
                         createdAt=created_at.isoformat(),
+                        threadId=thread_id,
                     ).model_dump(by_alias=True, exclude_none=True),
                 )
                 result_text = (
@@ -1962,6 +1976,14 @@ async def _exec_one_tool(
                                     random.choices(string.ascii_lowercase + string.digits, k=6)
                                 )
                                 created_at = datetime.now(UTC)
+                                # Route this task back to the conversation
+                                # thread it was created from (#1167).
+                                thread_id: str | None = None
+                                if guild_pk is not None and user_id:
+                                    assign_thread, _created = await get_or_create_active_thread(
+                                        db, guild_pk, user_id, name_hint=name
+                                    )
+                                    thread_id = assign_thread.id
                                 db.add(
                                     Task(
                                         id=task_id,
@@ -1984,6 +2006,7 @@ async def _exec_one_tool(
                                         parent_task_id=parent_task_id,
                                         created_at=created_at,
                                         user_id=user_id,
+                                        thread_id=thread_id,
                                     )
                                 )
                                 await db.commit()

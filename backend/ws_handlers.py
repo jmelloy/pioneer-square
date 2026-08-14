@@ -32,6 +32,7 @@ from foreman.classify import is_human_event
 from foreman.github_url_parser import parse_github_urls
 from foreman.proxy import fail_pending_for_websocket, resolve_foreman_api_response
 from foreman.runner import ensure_poll_loop, reset_foreman_poll, run_foreman_ai
+from foreman.thread_service import ensure_conversation_thread
 from foreman.tools import maybe_post_plan_comment
 from lock_service import LockService
 from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
@@ -211,6 +212,17 @@ async def _trigger_foreman(
     # See foreman.classify for the human/automated event classification shared
     # with routes.tasks.create_task_followup's REST follow-up path.
     is_human = is_human_event(event)
+
+    # Foreman-owned thread lifecycle (#1167): a brand-new human message with
+    # no task_id yet is the start (or continuation) of a conversation — the
+    # Foreman creates/reuses that conversation's Thread here, as a side
+    # effect of handling the message, never something Discord or the
+    # frontend originates. Worker-driven events (task-complete, etc.) already
+    # carry an existing task_id whose Thread was stamped at task-creation
+    # time (see foreman.tools' create_task/assign_task), so nothing to do here.
+    if is_human and task_id is None and user_id:
+        await ensure_conversation_thread(guild_id, user_id, human_message)
+
     spawn(
         run_foreman_ai(
             guild_id,
