@@ -22,7 +22,13 @@ Protocol handled, per https://discord.com/developers/docs/topics/gateway:
     HEARTBEAT_ACK (op 11)    -> mark the last heartbeat as acknowledged
     DISPATCH (op 0)          -> READY stores session_id/resume url; MESSAGE_CREATE
                                  is filtered and queued; GUILD_MEMBER_ADD sends a
-                                 welcome DM (see ``discord_notifier.send_welcome_dm``)
+                                 welcome DM (see ``discord_notifier.send_welcome_dm``);
+                                 THREAD_UPDATE/THREAD_DELETE mirror archive/lock/delete
+                                 state onto our ``Thread`` row (see ``_sync_thread_status``
+                                 — thread-per-conversation architecture, #1160/#1163;
+                                 this is the Gateway-based equivalent of a webhook handler
+                                 for Discord thread events, since Discord delivers thread
+                                 lifecycle changes over the Gateway, not HTTP webhooks)
     RECONNECT (op 7)         -> close and reconnect, attempting RESUME
     INVALID_SESSION (op 9)   -> RESUME if resumable, otherwise fresh IDENTIFY
 
@@ -70,6 +76,7 @@ import logging
 import os
 import random
 import time
+from datetime import UTC, datetime
 
 import websockets
 from discord.auth import mentions_bot_user, mentions_foreman_role
@@ -83,6 +90,8 @@ _GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
 # | DIRECT_MESSAGES (1 << 12) | MESSAGE_CONTENT (1 << 15)
 # DIRECT_MESSAGES is required so a DM's MESSAGE_CREATE reaches the bot at
 # all — otherwise a foreman-role mention typed into a DM would never arrive.
+# GUILDS (already included below) also covers THREAD_UPDATE/THREAD_DELETE —
+# both are unprivileged and need no extra intent bit.
 _INTENTS = 33283 | 4096
 
 # Gateway opcodes.
@@ -162,6 +171,50 @@ async def _is_channel_wired(channel_id: str) -> bool:
     wired = await _query_channel_wired(channel_id)
     _channel_wired_cache[channel_id] = (wired, now + _CHANNEL_WIRED_CACHE_TTL)
     return wired
+
+
+async def _sync_thread_status(
+    discord_thread_id: str, status: str, *, soft_delete: bool = False
+) -> None:
+    """Mirror a Discord thread's archived/deleted state onto our ``Thread`` row.
+
+    Webhook-equivalent handler for Discord thread lifecycle events
+    (thread-per-conversation architecture, #1160/#1163) — Discord bots
+    receive thread changes over the Gateway (``THREAD_UPDATE``/
+    ``THREAD_DELETE``), not an HTTP webhook, so this is the inbound sync point
+    for those events. No-op if no ``Thread`` row is bound to
+    *discord_thread_id* (e.g. a thread Pioneer Square doesn't own). Never
+    raises — DB errors are logged and swallowed, matching every other Gateway
+    handler in this module.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Thread  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(Thread).where(
+                    col(Thread.discord_thread_id) == discord_thread_id,
+                    col(Thread.deleted_at).is_(None),
+                )
+            )
+            thread = result.first()
+            if thread is None:
+                return
+            now = datetime.now(UTC)
+            thread.status = status
+            thread.updated_at = now
+            if soft_delete:
+                thread.deleted_at = now
+            db.add(thread)
+            await db.commit()
+    except Exception:
+        logger.warning(
+            "discord gateway: failed to sync thread status discord_thread_id=%s",
+            discord_thread_id,
+            exc_info=True,
+        )
 
 
 async def _query_channel_wired(channel_id: str) -> bool:
@@ -430,6 +483,10 @@ class GatewayClient:
             await self._handle_message_create(payload)
         elif event_type == "GUILD_MEMBER_ADD":
             await self._handle_guild_member_add(payload)
+        elif event_type == "THREAD_UPDATE":
+            await self._handle_thread_update(payload)
+        elif event_type == "THREAD_DELETE":
+            await self._handle_thread_delete(payload)
 
     async def _handle_message_create(self, message: dict) -> None:
         author = message.get("author") or {}
@@ -471,6 +528,32 @@ class GatewayClient:
         username = user.get("global_name") or user.get("username")
 
         await send_welcome_dm(user_id, username)
+
+    async def _handle_thread_update(self, payload: dict) -> None:
+        """Mirror a Discord thread's archive/lock state onto our ``Thread`` row.
+
+        ``payload`` is the full updated thread (channel) object; archived
+        status lives under ``thread_metadata.archived`` per Discord's API. A
+        locked-but-not-archived thread is treated the same as archived (both
+        mean "no longer accepting new messages" from our side).
+        """
+        thread_discord_id = payload.get("id")
+        metadata = payload.get("thread_metadata") or {}
+        archived = metadata.get("archived")
+        locked = metadata.get("locked")
+        if not thread_discord_id or archived is None:
+            return
+        await _sync_thread_status(thread_discord_id, "archived" if archived or locked else "active")
+
+    async def _handle_thread_delete(self, payload: dict) -> None:
+        """Soft-delete our ``Thread`` row when its Discord thread is deleted.
+
+        ``payload`` is a partial channel object (just id/guild_id/parent_id/type).
+        """
+        thread_discord_id = payload.get("id")
+        if not thread_discord_id:
+            return
+        await _sync_thread_status(thread_discord_id, "closed", soft_delete=True)
 
 
 _gateway_task: asyncio.Task | None = None

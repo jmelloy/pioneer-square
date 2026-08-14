@@ -987,6 +987,13 @@ async def _poll_loop(guild_id: str) -> None:
             # shows indefinitely-stale status just because its tasks finished.
             await _refresh_stale_github_links(guild_id)
 
+            # Thread-per-conversation health sweep (#1160/#1163): auto-archive
+            # idle threads, auto-close idle-archived threads, and unlink dead
+            # threads from non-terminal tasks. Best effort — never raises.
+            from foreman.thread_maintenance import sweep_threads
+
+            await sweep_threads(guild_id)
+
             if active_tasks:
                 task_summary = "; ".join(f"{t['id']} ({t['state']})" for t in active_tasks)
                 pr_tasks = [t for t in active_tasks if t.get("pr_url")]
