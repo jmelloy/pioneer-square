@@ -53,7 +53,7 @@ from helpers import (
     insert_task,
     insert_worker,
 )
-from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog, Worker  # noqa: E402
+from models import ForemanTurn, Guild, Lock, Task, TaskEvent, TaskLog, Thread, Worker  # noqa: E402
 from sqlalchemy import func, select, update  # noqa: E402
 from sqlmodel import col  # noqa: E402
 
@@ -444,6 +444,64 @@ class TestExecToolsDispatching:
         with _sync_session(db_session) as session:
             user_id = session.scalar(select(col(Task.user_id)).where(col(Task.id) == task_id))
         assert user_id == "gh-user-99"
+
+    async def test_create_task_stamps_thread_id(self, db_session):
+        """A task created on behalf of a human user must be routed back to
+        that user's conversation Thread (#1167) — the single place a human
+        sees everything that came from what they asked for."""
+        insert_guild(db_session, "g-thread-stamp")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-thread-stamp",
+                [_fake_tool_use("create_task", {"name": "Threaded", "description": "task"})],
+                user_id="gh-user-thread",
+            )
+        task_id = _extract_task_id(results[0]["content"])
+
+        with _sync_session(db_session) as session:
+            task = session.get(Task, task_id)
+            assert task.thread_id is not None
+            thread = session.get(Thread, task.thread_id)
+            assert thread is not None
+            assert thread.status == "active"
+
+    async def test_create_task_no_thread_without_user_id(self, db_session):
+        """System/webhook-triggered task creation carries no human user_id, so
+        there is no conversation to route the task back to."""
+        insert_guild(db_session, "g-thread-nouser")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-thread-nouser",
+                [_fake_tool_use("create_task", {"name": "Systemic", "description": "task"})],
+            )
+        task_id = _extract_task_id(results[0]["content"])
+
+        with _sync_session(db_session) as session:
+            task = session.get(Task, task_id)
+        assert task.thread_id is None
+
+    async def test_assign_task_new_stamps_thread_id(self, db_session):
+        insert_guild(db_session, "g-thread-stamp-assign")
+        _insert_worker(db_session, "g-thread-stamp-assign", "w-stamp2")
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock):
+            results = await exec_tools(
+                "g-thread-stamp-assign",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-stamp2", "description": "do it"},
+                    )
+                ],
+                user_id="gh-user-thread-2",
+            )
+        content = results[0]["content"]
+        task_id = next(tok for tok in content.split() if tok.startswith("t-"))
+
+        with _sync_session(db_session) as session:
+            task = session.get(Task, task_id)
+            assert task.thread_id is not None
+            thread = session.get(Thread, task.thread_id)
+            assert thread is not None
 
     async def test_create_task_custom_phase(self, db_session):
         insert_guild(db_session, "g-planphase")

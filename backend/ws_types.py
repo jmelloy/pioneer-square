@@ -137,6 +137,9 @@ class TaskAssignedMsg(_WS):
     prUrl: str | None = None
     headSha: str | None = None
     repos: list[str] | None = None
+    # Conversation thread this task was created from (#1167). None for tasks
+    # not tied to a Foreman-owned thread (issue pickups, webhook-triggered work).
+    threadId: str | None = None
 
 
 class TaskCreatedMsg(_WS):
@@ -148,6 +151,9 @@ class TaskCreatedMsg(_WS):
     taskType: str | None = None
     state: str
     createdAt: str
+    # Conversation thread this task was created from (#1167). None for tasks
+    # not tied to a Foreman-owned thread (issue pickups, webhook-triggered work).
+    threadId: str | None = None
 
 
 class TaskUpdateMsg(_WS):
@@ -336,6 +342,34 @@ class GuildUpdatedMsg(_WS):
     version: str | None = None
 
 
+class ThreadCreatedMsg(_WS):
+    """A Foreman-owned conversation thread was created (#1167).
+
+    Broadcast the first time the Foreman handles a message for a
+    conversation with no active thread yet — thread creation is always a
+    side effect of the Foreman handling a message, never something a
+    downstream mirror (Discord, frontend) originates itself.
+    """
+
+    type: Literal["thread-created"] = "thread-created"
+    threadId: str
+    conversationId: int
+    userId: str | None = None
+    name: str | None = None
+    status: str
+    createdAt: str
+
+
+class ThreadUpdatedMsg(_WS):
+    """A thread's lifecycle state changed — patch-style, like ``TaskUpdateMsg``."""
+
+    type: Literal["thread-updated"] = "thread-updated"
+    threadId: str
+    status: str | None = None
+    discordThreadId: str | None = None
+    deletedAt: str | None = None
+
+
 class GithubEventMsg(_WS):
     type: Literal["github-event"] = "github-event"
     deliveryId: str | None = None
@@ -465,6 +499,8 @@ OutboundWSMessage = Annotated[
     | GuildUpdatedMsg
     | GithubEventMsg
     | ClaudeUsageMsg
+    | ThreadCreatedMsg
+    | ThreadUpdatedMsg
     | OfferMsg
     | AnswerMsg
     | IceCandidateMsg,
