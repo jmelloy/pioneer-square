@@ -172,9 +172,7 @@ class TestSweepThreads:
 
         with (
             patch("discord_notifier.is_configured", return_value=True),
-            patch(
-                "discord_notifier.notify", new_callable=AsyncMock
-            ) as mock_notify,
+            patch("discord_notifier.notify", new_callable=AsyncMock) as mock_notify,
         ):
             await thread_maintenance.sweep_threads("g-sweep-notify")
 
@@ -189,9 +187,7 @@ class TestSweepThreads:
 
         with (
             patch("discord_notifier.is_configured", return_value=True),
-            patch(
-                "discord_notifier.notify", new_callable=AsyncMock
-            ) as mock_notify,
+            patch("discord_notifier.notify", new_callable=AsyncMock) as mock_notify,
         ):
             await thread_maintenance.sweep_threads("g-sweep-quiet")
 
