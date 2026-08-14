@@ -28,6 +28,7 @@ import string
 from datetime import UTC, datetime
 from typing import Literal
 
+import discord_notifier
 from auth_deps import get_guild_pk, require_member, require_worker_or_member_path
 from database import get_db_dep
 from events import broadcast_msg
@@ -43,6 +44,7 @@ from pydantic import BaseModel
 from sqlalchemy import update
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from util.tasks import spawn
 from ws_types import ChatMsg, TaskCreatedMsg, TaskUpdateMsg
 
 router = APIRouter()
@@ -105,6 +107,13 @@ async def clear_foreman_context(
         guild_id,
         github_user_id,
         removed,
+    )
+    # Clearing history is the closest existing "conversation closed" signal —
+    # archive this user's per-conversation Discord thread (#1161) to match.
+    # Fire-and-forget: Discord API latency must not block the response.
+    spawn(
+        discord_notifier.archive_conversation_thread(guild_id, github_user_id),
+        name=f"discord.archive-conversation:{guild_id}",
     )
     return {"status": "cleared", "removed": removed}
 

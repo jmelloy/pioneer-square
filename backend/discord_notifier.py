@@ -85,6 +85,22 @@ Phase 7 — CI check debounce/combine
     (PR opened/merged/closed, reviews) are unaffected and keep posting
     immediately at normal priority.
 
+Phase 8 — thread-per-conversation (#1161)
+    ``notify_foreman_chat`` routes ad-hoc Foreman chat (no ``task_id`` with a
+    linked thread) into a per-``(guild_id, user_id)`` ``"conversation"``
+    thread instead of the flat main channel, lazily created on first use and
+    named from that first reply (``_ensure_conversation_thread``). Falls back
+    to the flat channel only when no *user_id* is resolvable (a
+    system-triggered line with nobody to key the thread on). Threads carry an
+    explicit ``auto_archive_duration`` (``_CONVERSATION_AUTO_ARCHIVE_MINUTES``)
+    so Discord natively archives an idle conversation rather than relying on
+    the channel's own default. ``archive_conversation_thread`` explicitly
+    archives a user's conversation thread when their history is cleared (see
+    ``routes/foreman.py:clear_foreman_context``) — the closest existing
+    "conversation closed" signal. Inbound replies in a conversation thread
+    route back through the same ``discord_thread_bindings`` table as every
+    other kind (see ``discord/router.py``'s ``"conversation"`` handling).
+
 Required bot permissions: ``SEND_MESSAGES``, ``CREATE_PUBLIC_THREADS``, ``MANAGE_THREADS``.
 
 Usage::
@@ -322,10 +338,15 @@ async def _resolve_channel_for_guild(ps_guild_slug: str | None) -> str | None:
 
 _SUBJECT_ISSUE = "issue"
 _SUBJECT_TASK_STREAM = "task_stream"
+_SUBJECT_CONVERSATION = "conversation"
 
 
 def _issue_subject_key(issue_repo: str, issue_number: int) -> str:
     return f"{issue_repo}#{issue_number}"
+
+
+def _conversation_subject_key(guild_id: str, user_id: str) -> str:
+    return f"{guild_id}:{user_id}"
 
 
 async def _lookup_thread(subject_type: str, subject_key: str) -> str | None:
@@ -389,18 +410,27 @@ async def _get_or_create_thread(
     subject_key: str,
     channel: str | None,
     thread_name: str | Callable[[], Awaitable[str]],
+    *,
+    auto_archive_duration: int | None = None,
 ) -> str | None:
     """Return the Discord thread_id bound to *subject_type*/*subject_key*, creating it if needed.
 
-    Shared by every thread-aware path — PR/issue narration (``_ensure_thread``)
-    and task live-stream mirroring (``_ensure_task_thread``) both used to carry
-    their own copy-pasted lookup/create/save trio against separate tables; this
-    is the one lookup-or-create the whole module now goes through.
+    Shared by every thread-aware path — PR/issue narration (``_ensure_thread``),
+    task live-stream mirroring (``_ensure_task_thread``), and per-conversation
+    Foreman chat (``_ensure_conversation_thread``) all used to carry (or would
+    otherwise carry) their own copy-pasted lookup/create/save trio against
+    separate tables; this is the one lookup-or-create the whole module goes
+    through.
 
     *thread_name* may be a plain string or a zero-arg async callable — the
     callable form lets a caller defer expensive name-building (e.g. a DB
     lookup for a task's description) until it's known the thread doesn't
     already exist.
+
+    *auto_archive_duration* (minutes; Discord accepts 60/1440/4320/10080) is
+    passed straight through to thread creation when given, so a caller can
+    opt into a shorter native inactivity-archive window than the channel's
+    default instead of relying on it implicitly.
 
     Returns None when *channel* is not resolved (and no thread exists yet), or
     on Discord API error. Never raises.
@@ -413,7 +443,9 @@ async def _get_or_create_thread(
         return None
 
     name = await thread_name() if callable(thread_name) else thread_name
-    new_thread_id = await _create_thread_in_channel(channel, name)
+    new_thread_id = await _create_thread_in_channel(
+        channel, name, auto_archive_duration=auto_archive_duration
+    )
     if not new_thread_id:
         return None
 
@@ -423,7 +455,9 @@ async def _get_or_create_thread(
     return await _lookup_thread(subject_type, subject_key) or new_thread_id
 
 
-async def _create_thread_in_channel(channel: str, thread_name: str) -> str | None:
+async def _create_thread_in_channel(
+    channel: str, thread_name: str, *, auto_archive_duration: int | None = None
+) -> str | None:
     """Create a new thread in *channel*, anchored by a starter message.
 
     For standard text channels, thread creation requires a starter message first:
@@ -444,10 +478,13 @@ async def _create_thread_in_channel(channel: str, thread_name: str) -> str | Non
         logger.warning("discord: starter message returned no id for channel=%s", channel)
         return None
 
+    thread_payload: dict = {"name": thread_name[:100]}
+    if auto_archive_duration is not None:
+        thread_payload["auto_archive_duration"] = auto_archive_duration
     data = await _bot_request(
         "post",
         f"/channels/{channel}/messages/{message_id}/threads",
-        {"name": thread_name[:100]},
+        thread_payload,
     )
     if not data:
         return None
@@ -713,6 +750,62 @@ async def send_welcome_dm(discord_user_id: str, username: str | None = None) -> 
 # Discord's hard cap on a single message's content length.
 _MAX_MESSAGE_LENGTH = 2000
 
+# Native Discord inactivity auto-archive window for per-conversation threads
+# (minutes; Discord only accepts 60/1440/4320/10080). 24h keeps a quiet
+# conversation's thread around for a same-day follow-up without leaving
+# long-abandoned threads open indefinitely.
+_CONVERSATION_AUTO_ARCHIVE_MINUTES = 1440
+
+# Thread name cap, well under Discord's 100-char limit, leaving room for the
+# "💬 " prefix and a trailing ellipsis.
+_CONVERSATION_THREAD_NAME_SNIPPET_LEN = 80
+
+
+def _conversation_thread_name(content: str) -> str:
+    """Build a per-conversation thread name from the Foreman's opening reply.
+
+    Collapses whitespace/newlines and truncates to a single line so a
+    multi-paragraph first reply doesn't produce an unreadable thread title.
+    """
+    snippet = " ".join(content.split())
+    if len(snippet) > _CONVERSATION_THREAD_NAME_SNIPPET_LEN:
+        snippet = snippet[: _CONVERSATION_THREAD_NAME_SNIPPET_LEN - 1].rstrip() + "…"
+    return f"💬 {snippet}" if snippet else "💬 Conversation"
+
+
+async def _ensure_conversation_thread(
+    guild_id: str, user_id: str, channel: str, content: str
+) -> str | None:
+    """Return the Discord thread_id for *user_id*'s ad-hoc Foreman conversation
+    in *guild_id*, creating it (named from *content*) if needed.
+    """
+    return await _get_or_create_thread(
+        _SUBJECT_CONVERSATION,
+        _conversation_subject_key(guild_id, user_id),
+        channel,
+        _conversation_thread_name(content),
+        auto_archive_duration=_CONVERSATION_AUTO_ARCHIVE_MINUTES,
+    )
+
+
+async def archive_conversation_thread(guild_id: str, user_id: str) -> None:
+    """Archive *user_id*'s per-conversation Discord thread in *guild_id*, if one exists.
+
+    Called when that conversation's history is cleared (see
+    ``routes/foreman.py:clear_foreman_context``) — the closest existing signal
+    for "this conversation is over" in the conversation state machine, so the
+    thread doesn't sit around implying the conversation is still live. Silent
+    no-op if no thread was ever created, or the bot isn't configured. Never
+    raises (``archive_thread`` itself never raises).
+    """
+    if not bot_token():
+        return
+    thread_id = await _lookup_thread(
+        _SUBJECT_CONVERSATION, _conversation_subject_key(guild_id, user_id)
+    )
+    if thread_id:
+        await archive_thread(thread_id)
+
 
 async def _post_foreman_chat_line(thread_id: str, content: str) -> None:
     """POST *content* to *thread_id*, applying the shared length guardrail.
@@ -733,6 +826,7 @@ async def notify_foreman_chat(
     content: str,
     task_id: str | None = None,
     channel_id: str | None = None,
+    user_id: str | None = None,
 ) -> None:
     """Mirror a Foreman → user chat line into Discord.
 
@@ -744,9 +838,18 @@ async def notify_foreman_chat(
 
     Otherwise, when *task_id* is given and its canonical issue/PR (see
     ``_canonical_coords``) already has a thread in ``discord_threads``, the
-    line is posted there. In every other case — no *task_id*, or no linked
-    thread yet — the line is posted directly to the guild's main configured
-    Discord channel; there is no dated/daily fallback thread.
+    line is posted there — this lookup never *creates* a thread (see
+    ``notify_existing_thread``'s docstring for why).
+
+    Otherwise, when *user_id* is given, the line is posted to that user's
+    per-conversation thread in *guild_id* (``"conversation"`` subject,
+    ``_ensure_conversation_thread``), created on first use and named from
+    this call's *content* — the thread-per-conversation model (#1161): ad-hoc
+    Foreman chat no longer clutters the main channel.
+
+    In every other case — no *task_id* with a linked thread, and no
+    *user_id* (e.g. a system-triggered line with no resolvable user) — the
+    line is posted directly to the guild's main configured Discord channel.
 
     The message is only ever posted to one destination. Silent no-op when
     the bot token or channel are not configured, or when *content* is
@@ -772,6 +875,13 @@ async def notify_foreman_chat(
             if task_thread_id:
                 await _post_foreman_chat_line(task_thread_id, content)
                 return
+    elif user_id:
+        conversation_thread_id = await _ensure_conversation_thread(
+            guild_id, user_id, channel, content
+        )
+        if conversation_thread_id:
+            await _post_foreman_chat_line(conversation_thread_id, content)
+            return
 
     await _post_foreman_chat_line(channel, content)
 
