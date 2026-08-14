@@ -45,6 +45,18 @@
         <span class="tab-label">{{ task.name || task.id }}</span>
         <span class="tab-close">×</span>
       </button>
+      <!-- Thread tabs — only shown when explicitly opened -->
+      <button
+        v-for="thread in visibleThreadTabs"
+        :key="threadTabId(thread.id)"
+        class="tab thread-tab"
+        :class="{ active: uiStore.activeTab === threadTabId(thread.id) }"
+        @click="onThreadTabClick($event, thread.id)"
+      >
+        <span class="thread-dot" :class="'thread-dot-' + thread.status"></span>
+        <span class="tab-label">{{ thread.name || thread.id }}</span>
+        <span class="tab-close">×</span>
+      </button>
       <!-- Issue tabs -->
       <button
         v-for="key in ghStore.openedIssueKeys"
@@ -75,6 +87,10 @@
         kind="task"
         :id="uiStore.activeTab.slice(5)"
       />
+      <ThreadDetailPanel
+        v-else-if="uiStore.activeTab.startsWith('thread-')"
+        :id="uiStore.activeTab.slice(7)"
+      />
       <IssueViewer
         v-else-if="uiStore.activeTab.startsWith('issue-')"
         v-bind="parseIssueKey(uiStore.activeTab)"
@@ -87,14 +103,17 @@
 import { computed, watch } from 'vue'
 import { useAgentsStore } from '../stores/agents'
 import { useTasksStore } from '../stores/tasks'
-import { useUiStore, taskTabId } from '../stores/ui'
+import { useThreadsStore } from '../stores/threads'
+import { useUiStore, taskTabId, threadTabId } from '../stores/ui'
 import { useGitHubStore } from '../stores/github'
 import FactoryFloor from './FactoryFloor.vue'
 import LogPane from './LogPane.vue'
 import IssueViewer from './IssueViewer.vue'
+import ThreadDetailPanel from './ThreadDetailPanel.vue'
 
 const agentsStore = useAgentsStore()
 const tasksStore = useTasksStore()
+const threadsStore = useThreadsStore()
 const uiStore = useUiStore()
 const ghStore = useGitHubStore()
 
@@ -127,6 +146,12 @@ const visibleTaskTabs = computed(() =>
   uiStore.openedTaskIds.map((id) => tasksStore.tasks.find((t) => t.id === id)).filter(Boolean),
 )
 
+const visibleThreadTabs = computed(() =>
+  uiStore.openedThreadIds
+    .map((id) => threadsStore.threads.find((t) => t.id === id))
+    .filter(Boolean),
+)
+
 watch(
   () => uiStore.selectedTaskId,
   (id) => {
@@ -155,6 +180,14 @@ function onTabClick(event: MouseEvent, taskId: string) {
     uiStore.closeTask(taskId)
   } else {
     uiStore.openTaskTab(taskId)
+  }
+}
+
+function onThreadTabClick(event: MouseEvent, threadId: string) {
+  if ((event.target as HTMLElement).closest('.tab-close')) {
+    uiStore.closeThread(threadId)
+  } else {
+    uiStore.openThreadTab(threadId)
   }
 }
 
@@ -258,6 +291,27 @@ function onIssueTabClick(event: MouseEvent, key: string) {
   border-left: 1px solid rgba(255, 204, 0, 0.2);
 }
 
+.thread-tab {
+  border-left: 1px solid rgba(0, 187, 170, 0.2);
+}
+
+.thread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.thread-dot-active {
+  background: var(--color-green);
+}
+.thread-dot-archived {
+  background: var(--color-amber);
+}
+.thread-dot-closed {
+  background: var(--color-text-dim);
+}
+
 .issue-tab {
   border-left: 1px solid rgba(0, 187, 170, 0.2);
 }
@@ -288,7 +342,9 @@ function onIssueTabClick(event: MouseEvent, key: string) {
 .worker-tab:hover .tab-close,
 .worker-tab.active .tab-close,
 .task-tab:hover .tab-close,
-.task-tab.active .tab-close {
+.task-tab.active .tab-close,
+.thread-tab:hover .tab-close,
+.thread-tab.active .tab-close {
   opacity: 1;
 }
 
@@ -306,7 +362,8 @@ function onIssueTabClick(event: MouseEvent, key: string) {
     min-height: 44px;
   }
   .worker-tab .tab-close,
-  .task-tab .tab-close {
+  .task-tab .tab-close,
+  .thread-tab .tab-close {
     opacity: 1;
     font-size: 16px;
     padding: 6px 8px;
