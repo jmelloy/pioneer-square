@@ -1915,9 +1915,13 @@ async def _exec_one_tool(
                                 )
                                 await db.commit()
                                 name_result = await db.exec(
-                                    select(col(Task.name)).where(col(Task.id) == existing_task_id)
+                                    select(col(Task.name), col(Task.thread_id)).where(
+                                        col(Task.id) == existing_task_id
+                                    )
                                 )
-                                task_name = name_result.one_or_none() or desc[:60]
+                                name_row = name_result.first()
+                                task_name = (name_row[0] if name_row else None) or desc[:60]
+                                existing_thread_id = name_row[1] if name_row else None
                                 task_id = existing_task_id
                                 logger.info(
                                     "assign_task enqueue guild=%s task=%s worker=%s phase=%s "
@@ -1955,6 +1959,7 @@ async def _exec_one_tool(
                                         prUrl=effective_pr_url,
                                         headSha=effective_head_sha,
                                         repos=repos,
+                                        threadId=existing_thread_id,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
                                 _spawn_discord_task_assigned(
@@ -2046,6 +2051,7 @@ async def _exec_one_tool(
                                         prUrl=effective_pr_url,
                                         headSha=effective_head_sha,
                                         repos=repos,
+                                        threadId=thread_id,
                                     ).model_dump(by_alias=True, exclude_none=True),
                                 )
                                 _spawn_discord_task_assigned(
