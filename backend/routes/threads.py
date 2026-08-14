@@ -19,17 +19,45 @@ from datetime import UTC, datetime
 
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
+from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
-from models import THREAD_STATUSES, Conversation, Thread
+from models import THREAD_STATUSES, Conversation, DiscordChannelGuild, Thread
 from pydantic import BaseModel
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from ws_types import ThreadUpdateMsg
 
 router = APIRouter()
 
 
 def _new_thread_id() -> str:
     return "th-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+
+
+async def resolve_discord_guild_id(db: AsyncSession, ps_guild_slug: str) -> str | None:
+    """Return the Discord server (guild) snowflake bound to *ps_guild_slug*, if any.
+
+    Mirrors ``discord_notifier._resolve_channel_for_guild``'s lookup but returns the
+    server id rather than a channel id — needed to build a
+    ``https://discord.com/channels/{guild}/{thread}`` deep link. Multiple channels
+    (and thus potentially multiple Discord servers) can be bound to one PS guild;
+    the first-registered one wins, same tie-break as that lookup.
+    """
+    rows = (
+        await db.exec(
+            select(DiscordChannelGuild.discord_guild_id)
+            .where(col(DiscordChannelGuild.ps_guild_id) == ps_guild_slug)
+            .order_by(col(DiscordChannelGuild.created_at).asc())
+        )
+    ).all()
+    return rows[0] if rows else None
+
+
+def discord_thread_url(discord_guild_id: str | None, discord_thread_id: str | None) -> str | None:
+    """Build a Discord deep link to a thread, or None if either id is missing."""
+    if not discord_guild_id or not discord_thread_id:
+        return None
+    return f"https://discord.com/channels/{discord_guild_id}/{discord_thread_id}"
 
 
 class ThreadCreate(BaseModel):
@@ -48,17 +76,20 @@ class ThreadOut(BaseModel):
     discord_thread_id: str | None
     name: str | None
     status: str
+    discord_url: str | None
     created_at: datetime
     updated_at: datetime
 
 
-def _to_out(thread: Thread) -> ThreadOut:
+async def _to_out(db: AsyncSession, guild_id: str, thread: Thread) -> ThreadOut:
+    discord_guild_id = await resolve_discord_guild_id(db, guild_id)
     return ThreadOut(
         id=thread.id,
         conversation_id=thread.conversation_id,
         discord_thread_id=thread.discord_thread_id,
         name=thread.name,
         status=thread.status,
+        discord_url=discord_thread_url(discord_guild_id, thread.discord_thread_id),
         created_at=thread.created_at,
         updated_at=thread.updated_at,
     )
@@ -120,7 +151,7 @@ async def create_thread(
     db.add(thread)
     await db.commit()
     await db.refresh(thread)
-    return _to_out(thread)
+    return await _to_out(db, guild_id, thread)
 
 
 async def _get_thread_in_guild(db: AsyncSession, guild_id: str, thread_id: str) -> Thread:
@@ -143,16 +174,37 @@ async def _get_thread_in_guild(db: AsyncSession, guild_id: str, thread_id: str) 
 
 
 async def _set_status(
-    guild_id: str, thread_id: str, new_status: str, github_user_id: str, db: AsyncSession
+    guild_id: str,
+    thread_id: str,
+    new_status: str,
+    github_user_id: str,
+    db: AsyncSession,
+    *,
+    soft_delete: bool = False,
 ) -> ThreadOut:
     assert new_status in THREAD_STATUSES
     thread = await _get_thread_in_guild(db, guild_id, thread_id)
+    now = datetime.now(UTC)
     thread.status = new_status
-    thread.updated_at = datetime.now(UTC)
+    thread.updated_at = now
+    if soft_delete:
+        thread.deleted_at = now
     db.add(thread)
     await db.commit()
     await db.refresh(thread)
-    return _to_out(thread)
+    out = await _to_out(db, guild_id, thread)
+    await broadcast_msg(
+        guild_id,
+        ThreadUpdateMsg(
+            threadId=out.id,
+            status=out.status,
+            name=out.name,
+            discordThreadId=out.discord_thread_id,
+            discordUrl=out.discord_url,
+            deletedAt=thread.deleted_at.isoformat() if thread.deleted_at else None,
+        ),
+    )
+    return out
 
 
 @router.patch("/api/guilds/{guild_id}/threads/{thread_id}/archive", response_model=ThreadOut)
@@ -177,6 +229,22 @@ async def close_thread(
     return await _set_status(guild_id, thread_id, "closed", github_user_id, db)
 
 
+@router.delete("/api/guilds/{guild_id}/threads/{thread_id}", response_model=ThreadOut)
+async def delete_thread(
+    guild_id: str,
+    thread_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Soft-delete a thread (``deleted_at`` stamp; excluded from get/list from here on).
+
+    Distinct from ``close``: a closed thread still shows up as history, a deleted
+    one doesn't. Marks ``status="closed"`` too so any stale in-flight reference
+    (e.g. a cached frontend row) reads the terminal state consistently.
+    """
+    return await _set_status(guild_id, thread_id, "closed", github_user_id, db, soft_delete=True)
+
+
 @router.get("/api/guilds/{guild_id}/threads/{thread_id}", response_model=ThreadOut)
 async def get_thread(
     guild_id: str,
@@ -184,7 +252,7 @@ async def get_thread(
     github_user_id: str = Depends(require_member()),
     db: AsyncSession = Depends(get_db_dep),
 ):
-    return _to_out(await _get_thread_in_guild(db, guild_id, thread_id))
+    return await _to_out(db, guild_id, await _get_thread_in_guild(db, guild_id, thread_id))
 
 
 @router.get("/api/guilds/{guild_id}/threads", response_model=list[ThreadOut])
@@ -208,4 +276,4 @@ async def list_threads(
             raise HTTPException(status_code=400, detail=f"Invalid status: {status!r}")
         stmt = stmt.where(col(Thread.status) == status)
     result = await db.exec(stmt.limit(200))
-    return [_to_out(t) for t in result.all()]
+    return [await _to_out(db, guild_id, t) for t in result.all()]
