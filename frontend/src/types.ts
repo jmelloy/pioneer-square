@@ -106,6 +106,22 @@ export interface TaskTreeData {
   ungrouped: TaskTreeNode[]
 }
 
+// Mirrors backend/routes/threads.py ThreadOut. A Thread binds one Conversation
+// to a Discord thread with an explicit lifecycle (thread-per-conversation
+// architecture, epic #1160). discord_thread_id is null until the Discord bot
+// side creates the actual thread and reports its id back.
+export type ThreadStatus = 'active' | 'archived' | 'closed'
+
+export interface ConversationThread {
+  id: string
+  conversation_id: number
+  discord_thread_id: string | null
+  name: string | null
+  status: ThreadStatus
+  created_at: string
+  updated_at: string
+}
+
 export interface Guild {
   id: string
   name?: string

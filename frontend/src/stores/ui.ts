@@ -5,6 +5,10 @@ export function taskTabId(id: string): string {
   return 'task-' + id
 }
 
+export function threadTabId(id: string): string {
+  return 'thread-' + id
+}
+
 // Single source of truth for "what's open/selected" across the main-content
 // tab bar and sidebar. Previously this was split across agents.ts (worker/agent
 // tabs) and tasks.ts (task tabs), which forced components to join by id across
@@ -19,6 +23,8 @@ export const useUiStore = defineStore('ui', () => {
   const openedAgentIds = ref<string[]>([])
   const selectedTaskId = ref<string | null>(null)
   const openedTaskIds = ref<string[]>([])
+  const selectedThreadId = ref<string | null>(null)
+  const openedThreadIds = ref<string[]>([])
 
   function selectWorker(workerId: string | null) {
     selectedWorkerId.value = workerId
@@ -68,6 +74,24 @@ export const useUiStore = defineStore('ui', () => {
     activeTab.value = taskTabId(taskId)
   }
 
+  function selectThread(threadId: string | null) {
+    selectedThreadId.value = threadId
+    if (threadId && !openedThreadIds.value.includes(threadId)) {
+      openedThreadIds.value.push(threadId)
+    }
+  }
+
+  function closeThread(threadId: string) {
+    const idx = openedThreadIds.value.indexOf(threadId)
+    if (idx !== -1) openedThreadIds.value.splice(idx, 1)
+    if (selectedThreadId.value === threadId) selectedThreadId.value = null
+    if (activeTab.value === threadTabId(threadId)) activeTab.value = 'factory'
+  }
+
+  function openThreadTab(threadId: string) {
+    activeTab.value = threadTabId(threadId)
+  }
+
   // Resets worker/agent selection and the main tab, e.g. on guild switch.
   function resetWorkerAgentSelection() {
     selectedWorkerId.value = null
@@ -83,6 +107,12 @@ export const useUiStore = defineStore('ui', () => {
     openedTaskIds.value = []
   }
 
+  // Resets thread selection, e.g. on guild switch or unmount.
+  function resetThreadSelection() {
+    selectedThreadId.value = null
+    openedThreadIds.value = []
+  }
+
   return {
     activeTab,
     selectedWorkerId,
@@ -91,6 +121,8 @@ export const useUiStore = defineStore('ui', () => {
     openedAgentIds,
     selectedTaskId,
     openedTaskIds,
+    selectedThreadId,
+    openedThreadIds,
     selectWorker,
     closeWorker,
     selectAgent,
@@ -98,7 +130,11 @@ export const useUiStore = defineStore('ui', () => {
     selectTask,
     closeTask,
     openTaskTab,
+    selectThread,
+    closeThread,
+    openThreadTab,
     resetWorkerAgentSelection,
     resetTaskSelection,
+    resetThreadSelection,
   }
 })
