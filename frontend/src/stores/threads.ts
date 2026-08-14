@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useUiStore } from './ui'
 import { api } from '../utils/api'
-import type { ConversationThread, ThreadStatus } from '../types'
+import type { ConversationThread, ThreadStatus, WSInbound } from '../types'
 
 const STATUS_LABELS: Record<ThreadStatus, string> = {
   active: 'active',
@@ -16,10 +16,12 @@ const STATUS_COLORS: Record<ThreadStatus, string> = {
   closed: 'dim',
 }
 
-// Thread-per-conversation architecture (epic #1160, issue #1162). Wraps the
-// routes in backend/routes/threads.py; there is no WS event for thread
-// lifecycle changes yet, so this store is REST-only (unlike tasks.ts, which
-// also has a handleWebSocketMessage).
+// Foreman-owned thread lifecycle (epic #1160, issue #1167). A Thread is
+// created/reused server-side as a side effect of the Foreman handling a
+// message (backend/foreman/thread_service.py) — this store never originates
+// a thread itself, it only reads REST snapshots and applies WS pushes
+// (thread-created/thread-updated), matching the agents/tasks/usage store
+// pattern.
 export const useThreadsStore = defineStore('threads', () => {
   const uiStore = useUiStore()
   const threads = ref<ConversationThread[]>([])
@@ -49,18 +51,6 @@ export const useThreadsStore = defineStore('threads', () => {
     return thread
   }
 
-  async function createThread(
-    guildId: string,
-    body: { name?: string; conversation_id?: number; user_id?: string } = {},
-  ) {
-    const thread = await api<ConversationThread>(`/api/guilds/${guildId}/threads`, {
-      method: 'POST',
-      json: body,
-    })
-    _upsertThread(thread)
-    return thread
-  }
-
   async function archiveThread(guildId: string, threadId: string) {
     const thread = await api<ConversationThread>(
       `/api/guilds/${guildId}/threads/${threadId}/archive`,
@@ -79,6 +69,35 @@ export const useThreadsStore = defineStore('threads', () => {
     return thread
   }
 
+  function handleWebSocketMessage(data: WSInbound) {
+    if (data.type === 'thread-created') {
+      _upsertThread({
+        id: data.threadId,
+        conversation_id: data.conversationId,
+        discord_thread_id: null,
+        name: data.name ?? null,
+        status: data.status,
+        created_at: data.createdAt,
+        updated_at: data.createdAt,
+      })
+    } else if (data.type === 'thread-updated') {
+      const idx = threads.value.findIndex((t) => t.id === data.threadId)
+      if (idx < 0) return
+      if (data.deletedAt) {
+        threads.value.splice(idx, 1)
+        if (uiStore.selectedThreadId === data.threadId) uiStore.closeThread(data.threadId)
+        return
+      }
+      const thread = threads.value[idx]
+      threads.value[idx] = {
+        ...thread,
+        status: data.status ?? thread.status,
+        discord_thread_id: data.discordThreadId ?? thread.discord_thread_id,
+        updated_at: new Date().toISOString(),
+      }
+    }
+  }
+
   function clearThreads() {
     threads.value = []
     uiStore.resetThreadSelection()
@@ -95,9 +114,9 @@ export const useThreadsStore = defineStore('threads', () => {
     threads,
     fetchThreads,
     fetchThread,
-    createThread,
     archiveThread,
     closeThread,
+    handleWebSocketMessage,
     clearThreads,
     statusLabel,
     statusColor,

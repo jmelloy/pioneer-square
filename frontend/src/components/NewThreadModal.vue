@@ -3,22 +3,23 @@
     <div class="modal">
       <div class="modal-header">NEW THREAD</div>
       <div class="modal-body">
-        <label class="field-label">Thread Name (optional)</label>
+        <label class="field-label">Starting Message</label>
         <input
-          v-model="name"
+          v-model="message"
           class="field-input"
-          placeholder="e.g. Deploy pipeline questions"
-          @keydown.enter="$emit('create', name)"
-          ref="nameInput"
+          placeholder="e.g. Can you look into the deploy pipeline failing?"
+          @keydown.enter="onCreate"
+          ref="messageInput"
         />
         <p class="field-hint">
-          Starts a new conversation thread with the Foreman. A Discord thread is created
-          automatically once the bot picks it up.
+          Sends this message to the Foreman, which creates a new conversation thread as a
+          result. Discord is just one possible mirror of the conversation — not where it
+          starts.
         </p>
       </div>
       <div class="modal-footer">
         <button class="pixel-btn cancel-btn" @click="$emit('close')">Cancel</button>
-        <button class="pixel-btn" @click="$emit('create', name)" :disabled="creating">
+        <button class="pixel-btn" @click="onCreate" :disabled="creating || !message.trim()">
           {{ creating ? 'Creating...' : 'CREATE' }}
         </button>
       </div>
@@ -30,17 +31,23 @@
 import { ref, onMounted, nextTick } from 'vue'
 
 defineProps<{ creating: boolean }>()
-defineEmits<{
+const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'create', name: string): void
+  (e: 'create', message: string): void
 }>()
 
-const name = ref('')
-const nameInput = ref<HTMLInputElement | null>(null)
+const message = ref('')
+const messageInput = ref<HTMLInputElement | null>(null)
+
+function onCreate() {
+  const text = message.value.trim()
+  if (!text) return
+  emit('create', text)
+}
 
 onMounted(async () => {
   await nextTick()
-  nameInput.value?.focus()
+  messageInput.value?.focus()
 })
 </script>
 

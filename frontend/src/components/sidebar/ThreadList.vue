@@ -39,6 +39,12 @@ import type { ThreadStatus } from '../../types'
 import ThreadListRow from './ThreadListRow.vue'
 import NewThreadModal from '../NewThreadModal.vue'
 
+// Thread creation is Foreman-owned (#1167): there's no "create thread" REST
+// call, only "send the Foreman a message" — a new Thread is created
+// server-side as a side effect and pushed back over WS as thread-created.
+// If the conversation already has an active thread it gets reused instead of
+// a fresh one, so a genuinely new thread first archives it (see onCreate).
+
 const FILTER_OPTIONS: Array<{ value: ThreadStatus | undefined; label: string }> = [
   { value: undefined, label: 'All' },
   { value: 'active', label: 'Active' },
@@ -56,6 +62,9 @@ const loading = ref(false)
 const statusFilter = ref<ThreadStatus | undefined>(undefined)
 const showNewModal = ref(false)
 const creating = ref(false)
+// Set while we're waiting for the thread-created push that should follow the
+// starter message sent by onCreate, so we know to auto-navigate to it.
+const awaitingNewThread = ref(false)
 
 async function load() {
   const guildId = guildStore.currentGuild?.id
@@ -73,20 +82,57 @@ function setFilter(value: ThreadStatus | undefined) {
   load()
 }
 
-async function onCreate(name: string) {
+async function onCreate(message: string) {
   const guildId = guildStore.currentGuild?.id
   if (!guildId || creating.value) return
   creating.value = true
   try {
-    const thread = await threadsStore.createThread(guildId, { name: name.trim() || undefined })
+    // The Foreman reuses the conversation's current active thread rather than
+    // starting a new one — archive it first so this message starts fresh.
+    const active = threadsStore.threads.find((t) => t.status === 'active')
+    if (active) {
+      try {
+        await threadsStore.archiveThread(guildId, active.id)
+      } catch (e) {
+        console.error('Failed to archive active thread before starting a new one', e)
+      }
+    }
+
+    const sent = guildStore.sendMessage({
+      type: 'chat',
+      from: 'user',
+      to: 'foreman',
+      content: message,
+    })
+    if (sent) {
+      guildStore.messages.push({
+        type: 'chat',
+        from: 'user',
+        to: 'foreman',
+        content: message,
+        createdAt: new Date().toISOString(),
+        _local: true,
+      })
+      awaitingNewThread.value = true
+      switchMobileTab('chat')
+    }
     showNewModal.value = false
-    uiStore.selectThread(thread.id)
-    uiStore.openThreadTab(thread.id)
-    switchMobileTab('work')
   } finally {
     creating.value = false
   }
 }
+
+// Once the thread-created push for the message above lands, jump straight to it.
+watch(
+  () => threadsStore.threads[0]?.id,
+  (newestId) => {
+    if (!awaitingNewThread.value || !newestId) return
+    awaitingNewThread.value = false
+    uiStore.selectThread(newestId)
+    uiStore.openThreadTab(newestId)
+    switchMobileTab('work')
+  },
+)
 
 onMounted(load)
 

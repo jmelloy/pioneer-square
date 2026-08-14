@@ -86,6 +86,11 @@ export interface Task {
   issue_repo?: string | null
   created_at?: string
   deleted_at?: string | null
+  // Conversation thread this task was created from (#1167). Only populated
+  // for tasks learned about over the live WebSocket connection this session
+  // (task-created/task-assigned carry it) — the REST task list does not
+  // return it yet, so tasks fetched on page load won't have it set.
+  thread_id?: string | null
 }
 
 export interface TaskTreeNode extends Task {
@@ -106,10 +111,12 @@ export interface TaskTreeData {
   ungrouped: TaskTreeNode[]
 }
 
-// Mirrors backend/routes/threads.py ThreadOut. A Thread binds one Conversation
-// to a Discord thread with an explicit lifecycle (thread-per-conversation
-// architecture, epic #1160). discord_thread_id is null until the Discord bot
-// side creates the actual thread and reports its id back.
+// Mirrors backend/routes/threads.py ThreadOut. A Thread is a Foreman-owned
+// conversation construct (backend/foreman/thread_service.py, #1167): the
+// Foreman creates/reuses it as a side effect of handling a message, never
+// something a downstream mirror originates. Discord is one such mirror —
+// discord_thread_id is null until the Discord bot side creates the actual
+// thread and reports its id back; other future mirrors are possible.
 export type ThreadStatus = 'active' | 'archived' | 'closed'
 
 export interface ConversationThread {
@@ -262,6 +269,9 @@ export interface TaskCreatedWS {
   taskType?: TaskType
   state: TaskState
   createdAt?: string
+  // Conversation thread this task was created from (#1167). None for tasks
+  // not tied to a Foreman-owned thread (issue pickups, webhook-triggered work).
+  threadId?: string | null
 }
 
 export interface TaskAssignedWS {
@@ -277,6 +287,7 @@ export interface TaskAssignedWS {
   provider?: string | null
   phase?: TaskPhase
   parentTaskId?: string | null
+  threadId?: string | null
 }
 
 export interface TaskUpdateWS {
@@ -340,6 +351,29 @@ export interface ClaudeUsageWS {
   stopReason?: string | null
 }
 
+// A Foreman-owned conversation thread was created (#1167) — broadcast the
+// first time the Foreman handles a message for a conversation with no
+// active thread yet. Mirrors backend ws_types.ThreadCreatedMsg.
+export interface ThreadCreatedWS {
+  type: 'thread-created'
+  threadId: string
+  conversationId: number
+  userId?: string | null
+  name?: string | null
+  status: ThreadStatus
+  createdAt: string
+}
+
+// A thread's lifecycle state changed — patch-style, like TaskUpdateWS.
+// Mirrors backend ws_types.ThreadUpdatedMsg.
+export interface ThreadUpdatedWS {
+  type: 'thread-updated'
+  threadId: string
+  status?: ThreadStatus
+  discordThreadId?: string | null
+  deletedAt?: string | null
+}
+
 export type WSInbound =
   | ChatWS
   | GuildUpdatedWS
@@ -354,6 +388,8 @@ export type WSInbound =
   | NeedsInputWS
   | ForemanPollStatusWS
   | ClaudeUsageWS
+  | ThreadCreatedWS
+  | ThreadUpdatedWS
 
 // Outbound: producer-side; we accept any object with a `type`.
 export interface WSOutbound {

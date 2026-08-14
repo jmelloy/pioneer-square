@@ -6,6 +6,9 @@
   >
     <span class="thread-dot" :class="'dot-' + thread.status"></span>
     <span class="thread-name">{{ thread.name || thread.id }}</span>
+    <span v-if="thread.discord_thread_id" class="discord-mirror-icon" title="Mirrored to Discord">
+      ⇄
+    </span>
     <span class="status-pill" :class="'status-' + thread.status">
       {{ threadsStore.statusLabel(thread.status) }}
     </span>
@@ -75,6 +78,12 @@ const isSelected = computed(() => uiStore.selectedThreadId === props.thread.id)
   text-overflow: ellipsis;
   flex: 1;
   min-width: 0;
+}
+
+.discord-mirror-icon {
+  font-size: 10px;
+  color: var(--color-teal);
+  flex-shrink: 0;
 }
 
 .status-pill {

@@ -18,11 +18,9 @@
       <div class="pane-subheader">
         <span class="sub-field">conversation #{{ thread.conversation_id }}</span>
         <span v-if="thread.discord_thread_id" class="sub-field discord-chip">
-          discord thread: {{ thread.discord_thread_id }}
+          ⇄ mirrored to Discord thread {{ thread.discord_thread_id }}
         </span>
-        <span v-else class="sub-field discord-pending">
-          discord thread not yet created
-        </span>
+        <span v-else class="sub-field discord-pending"> no Discord mirror yet </span>
         <span class="sub-time-group">
           <span class="sub-time">created {{ formatRelative(thread.created_at) }}</span>
           <span class="sub-time">updated {{ formatRelative(thread.updated_at) }}</span>
@@ -31,9 +29,43 @@
 
       <div class="body">
         <p class="hint">
-          Messages aren't linked to individual threads yet — this panel shows thread lifecycle
-          and metadata. Use the Foreman comms pane for the full conversation history.
+          This thread is a Foreman conversation — Discord is just one surface it can be
+          mirrored to, not the source. Use the Foreman comms pane for the full message
+          history; below is the task/follow-up/PR activity the Foreman has created while
+          handling this conversation.
         </p>
+
+        <h3 class="section-title">Linked Activity</h3>
+        <p v-if="linkedTasks.length === 0" class="hint">
+          No tasks linked to this thread yet
+          <template v-if="hasUnattributedTasks">
+            (tasks fetched before this session's WebSocket connection don't carry thread
+            links yet)</template
+          >.
+        </p>
+        <ul v-else class="activity-list">
+          <li
+            v-for="task in linkedTasks"
+            :key="task.id"
+            class="activity-row"
+            @click="openTask(task.id)"
+          >
+            <span class="activity-state" :class="'state-' + tasksStore.stateColor(task.state)">
+              {{ tasksStore.stateLabel(task.state) }}
+            </span>
+            <span class="activity-name">{{ task.name || task.description || task.id }}</span>
+            <a
+              v-if="task.pr_url"
+              :href="task.pr_url"
+              target="_blank"
+              rel="noopener"
+              class="activity-pr-link"
+              @click.stop
+            >
+              PR
+            </a>
+          </li>
+        </ul>
       </div>
 
       <div class="actions">

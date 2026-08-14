@@ -170,6 +170,7 @@ export const useTasksStore = defineStore('tasks', () => {
         state: data.state,
         worker_id: null,
         created_at: data.createdAt,
+        thread_id: data.threadId ?? null,
       })
     } else if (data.type === 'task-assigned') {
       const existing = tasks.value.find((t) => t.id === data.taskId)
@@ -182,6 +183,7 @@ export const useTasksStore = defineStore('tasks', () => {
         state: 'pending',
         worker_id: data.workerId,
         parent_task_id: data.parentTaskId || null,
+        ...(data.threadId !== undefined ? { thread_id: data.threadId } : {}),
         ...(existing ? {} : { created_at: new Date().toISOString() }),
       })
     } else if (data.type === 'task-update') {
