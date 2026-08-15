@@ -603,6 +603,17 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
     to_agent = data.get("to", "foreman")
     content = data.get("content", "")
     created_at = datetime.now(UTC)
+
+    # Resolve (and, for the human -> foreman turn that starts/continues a
+    # conversation, create) the Thread this message belongs to *before*
+    # persisting it, so the row is threaded from the moment it lands — mirrors
+    # the get-or-create call ``_trigger_foreman`` makes further down for
+    # routing purposes; both share the same idempotent entry point.
+    thread_id: str | None = None
+    if from_agent == "user" and to_agent == "foreman" and content and ctx.ws_user_id:
+        thread = await ensure_conversation_thread(ctx.guild_id, ctx.ws_user_id, content)
+        thread_id = thread.id if thread else None
+
     ctx.db.add(
         Message(
             guild_id=ctx.guild_pk or 0,  # guild_pk is set during connection setup
@@ -612,6 +623,7 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
             message_type="chat",
             created_at=created_at,
             user_id=ctx.ws_user_id if from_agent == "user" else None,
+            thread_id=thread_id,
         )
     )
     await ctx.db.commit()
@@ -623,6 +635,7 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
             content=content,
             createdAt=created_at.isoformat(),
             userId=ctx.ws_user_id if ctx.ws_user_id and from_agent == "user" else None,
+            threadId=thread_id,
         ),
     )
     if not (from_agent == "user" and to_agent == "foreman" and content):

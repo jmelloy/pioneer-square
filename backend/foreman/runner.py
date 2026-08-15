@@ -51,6 +51,7 @@ from foreman.prompt import (
 from foreman.proxy import call_foreman_api_proxy, has_foreman_proxy
 from foreman.tools import exec_tools
 from foreman.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
+from foreman.thread_service import resolve_thread_id
 from models import (
     Agent,
     ApiRequestLog,
@@ -1138,6 +1139,7 @@ async def _emit_foreman_chat(
     discord_task_id: str | None = None,
     discord_channel_id: str | None = None,
     user_id: str | None = None,
+    thread_id: str | None = None,
 ) -> None:
     """Broadcast a Foreman -> user narration line and mirror it into Discord.
 
@@ -1173,6 +1175,7 @@ async def _emit_foreman_chat(
             content=content,
             createdAt=created_at,
             taskId=child_task_id,
+            threadId=thread_id,
         ),
     )
     spawn(
@@ -1513,6 +1516,16 @@ async def _run_foreman_ai(
         # thread using the incoming ``task_id`` even though the turn isn't
         # tagged as child history. See docs/foreman-per-task-context.md.
         _discord_task_id: str | None = _task_id or task_id
+
+        # Foreman-owned conversation thread (#1167) this run's messages belong
+        # to — resolved once per turn and reused for every Message row/ChatMsg
+        # broadcast this run makes. Prefers the task's thread (via
+        # ``_discord_task_id``, same task used for Discord routing above), else
+        # falls back to the user's current active thread. Read-only: never
+        # creates a thread — see ``resolve_thread_id``.
+        _thread_id: str | None = await resolve_thread_id(
+            db, guild_pk_val, task_id=_discord_task_id, user_id=user_id
+        )
     except Exception:
         await db.close()
         raise

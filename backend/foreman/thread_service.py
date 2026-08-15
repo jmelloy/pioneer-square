@@ -115,6 +115,43 @@ async def get_or_create_active_thread(
     return thread, True
 
 
+async def resolve_thread_id(
+    db: AsyncSession, guild_pk: int, *, task_id: str | None = None, user_id: str | None = None
+) -> str | None:
+    """Best-effort, read-only lookup of the Thread a new message belongs to.
+
+    Used to stamp ``Message.thread_id`` at persist time (#1175) so the frontend
+    can show each thread its own conversation history. Prefers *task_id*'s
+    thread (stamped once at task-creation time — see ``foreman/tools.py``) since
+    that's an explicit, stable binding; otherwise falls back to *user_id*'s
+    current active thread, if one already exists. Never creates a thread — that
+    side effect belongs exclusively to ``ensure_conversation_thread``/
+    ``get_or_create_active_thread``, so a message sent before any thread exists
+    for its conversation (e.g. the very first human line, or a purely
+    automated/system message) is simply left unthreaded.
+    """
+    if task_id:
+        result = await db.exec(select(col(Task.thread_id)).where(col(Task.id) == task_id))
+        thread_id = result.first()
+        if thread_id:
+            return thread_id
+    if user_id:
+        result = await db.exec(
+            select(col(Thread.id))
+            .join(Conversation, col(Thread.conversation_id) == col(Conversation.id))
+            .where(
+                col(Conversation.guild_id) == guild_pk,
+                col(Conversation.user_id) == user_id,
+                col(Thread.status) == "active",
+                col(Thread.deleted_at).is_(None),
+            )
+            .order_by(col(Thread.updated_at).desc())
+            .limit(1)
+        )
+        return result.first()
+    return None
+
+
 async def get_thread_for_task(db: AsyncSession, task: Task) -> Thread | None:
     """Return the :class:`Thread` a task was created from, or None."""
     if not task.thread_id:
