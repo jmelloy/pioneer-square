@@ -59,10 +59,62 @@ _TOOL_ACTIVITY: dict[str, str] = {
     "NotebookEdit": "editing",
     "WebSearch": "searching",
     "WebFetch": "fetching",
+    "ToolSearch": "searching",
+    "Monitor": "reading",
+    "ScheduleWakeup": "planning",
+    "Skill": "planning",
     "Agent": "planning",
     "TodoWrite": "planning",
     "TodoRead": "reading",
 }
+
+
+def _stringify_tool_result_content(content: object) -> str:
+    """Return a displayable string for Claude tool_result content.
+
+    Recent Claude Code versions can return a list of content blocks here, not
+    just a string.  Most list blocks are ``text``, but background/monitor-style
+    tools can return lightweight ``tool_reference`` blocks; preserve those as a
+    concise marker instead of silently dropping the result.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return "" if content is None else json.dumps(content, ensure_ascii=False)
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            parts.append(str(block))
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text = block.get("text", "")
+            if isinstance(text, str):
+                parts.append(text)
+        elif btype == "tool_reference":
+            name = block.get("tool_name") or block.get("name") or "tool"
+            parts.append(f"[tool reference: {name}]")
+        else:
+            parts.append(json.dumps(block, ensure_ascii=False))
+    return "\n".join(part for part in parts if part)
+
+
+def _claude_json_detail(event: dict, *, block: dict | None = None) -> dict:
+    detail: dict = {"toolType": "claude_json", "event": event}
+    if block is not None:
+        detail["block"] = block
+    return detail
+
+
+def _claude_json_summary(event: dict, *, block: dict | None = None) -> str:
+    etype = event.get("type") or "event"
+    subtype = event.get("subtype")
+    label = f"{etype}:{subtype}" if subtype else str(etype)
+    if block is not None:
+        btype = block.get("type") or "block"
+        label = f"{label}.{btype}"
+    return f"[claude-json] {label}"
 
 
 def parse_claude_event(event: dict) -> list[tuple[str, dict | None]]:
@@ -72,11 +124,18 @@ def parse_claude_event(event: dict) -> list[tuple[str, dict | None]]:
     is available on click without bloating the terminal-output stream.
     The detail dict includes an 'activity' key so the worker can track what
     Claude is currently doing and send granular agent-state updates.
+
+    Unknown JSON events/blocks are still forwarded with their raw JSON under
+    detail['event'] (and detail['block'] for content blocks) so frontend/backend
+    logs don't silently lose new Claude Code stream shapes.
     """
     t = event.get("type")
     if t == "assistant":
         pairs: list[tuple[str, dict | None]] = []
         for blk in event.get("message", {}).get("content", []):
+            if not isinstance(blk, dict):
+                pairs.append((_claude_json_summary(event), _claude_json_detail(event)))
+                continue
             btype = blk.get("type")
             if btype == "text":
                 txt = blk.get("text", "").strip()
@@ -125,34 +184,50 @@ def parse_claude_event(event: dict) -> list[tuple[str, dict | None]]:
                 if activity:
                     detail["activity"] = activity
                 pairs.append((summary, detail))
+            else:
+                pairs.append(
+                    (_claude_json_summary(event, block=blk), _claude_json_detail(event, block=blk))
+                )
         return pairs
     if t == "user":
         pairs = []
-        for blk in event.get("message", {}).get("content", []):
-            if blk.get("type") == "tool_result":
-                content = blk.get("content", "")
-                if isinstance(content, list):
-                    content = "\n".join(
-                        b.get("text", "") for b in content if b.get("type") == "text"
-                    )
-                if isinstance(content, str) and content.strip():
+        content_blocks = event.get("message", {}).get("content", [])
+        if isinstance(content_blocks, str):
+            return [(_claude_json_summary(event), _claude_json_detail(event))]
+        for blk in content_blocks:
+            if isinstance(blk, dict) and blk.get("type") == "tool_result":
+                content = _stringify_tool_result_content(blk.get("content", ""))
+                if content.strip():
                     lines = content.strip().splitlines()
                     summary = _summarize_lines(lines)
                     detail = {"toolType": "tool_result", "output": content}
                     pairs.append((summary, detail))
+                else:
+                    pairs.append(
+                        (
+                            _claude_json_summary(event, block=blk),
+                            _claude_json_detail(event, block=blk),
+                        )
+                    )
+            elif isinstance(blk, dict):
+                pairs.append(
+                    (_claude_json_summary(event, block=blk), _claude_json_detail(event, block=blk))
+                )
+            else:
+                pairs.append((_claude_json_summary(event), _claude_json_detail(event)))
         return pairs
     if t == "result":
         subtype = event.get("subtype", "success")
         turns = event.get("num_turns", 0)
-        cost = event.get("cost_usd")
-        cost_str = f" (${cost:.4f})" if cost else ""
+        cost = event.get("cost_usd", event.get("total_cost_usd"))
+        cost_str = f" (${cost:.4f})" if isinstance(cost, int | float) and cost else ""
         if subtype == "success":
             return [(f"✓ Done in {turns} turns{cost_str}", None)]
         return [(f"✗ {subtype}: {event.get('error', '')}", None)]
     if t == "system" and event.get("subtype") == "init":
         tools = event.get("tools", [])
         return [(f"[claude] tools: {', '.join(tools[:6])}", None)]
-    return []
+    return [(_claude_json_summary(event), _claude_json_detail(event))]
 
 
 class ClaudeProcess:
