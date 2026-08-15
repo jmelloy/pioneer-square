@@ -24,6 +24,7 @@ from events import (
     agent_owners,
     broadcast,
     broadcast_msg,
+    emit_terminal_line,
     foreman_connections,
     send_ws_message,
 )
@@ -35,7 +36,7 @@ from foreman.runner import ensure_poll_loop, reset_foreman_poll, run_foreman_ai
 from foreman.thread_service import ensure_conversation_thread
 from foreman.tools import maybe_post_plan_comment
 from lock_service import LockService
-from models import Agent, Message, Task, TaskEvent, TaskLog, User, Worker
+from models import Agent, Message, Task, TaskEvent, User, Worker
 from pydantic import ValidationError
 from sqlalchemy import delete, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -61,7 +62,6 @@ from ws_types import (
     TaskCompleteMsg,
     TaskFollowupDoneMsg,
     TaskUpdateMsg,
-    TerminalOutputMsg,
     parse_inbound_message,
 )
 
@@ -645,37 +645,15 @@ async def handle_terminal_output(ctx: WSContext, data: dict) -> None:
     task_id = data.get("taskId")
     detail = data.get("detail")
     level = data.get("level")
-    created_at = datetime.now(UTC)
-    worker_id_for_log = msg_worker_id
-    if worker_id_for_log is None and msg_agent_id:
-        result = await ctx.db.exec(
-            select(col(Agent.worker_id)).where(col(Agent.id) == msg_agent_id)
-        )
-        worker_id_for_log = result.one_or_none()
-    if line:
-        ctx.db.add(
-            TaskLog(
-                task_id=task_id or None,
-                timestamp=created_at,
-                line=line,
-                worker_id=worker_id_for_log,
-                agent_id=msg_agent_id,
-                data=json.dumps(detail) if detail else None,
-                level=level,
-            )
-        )
-        await ctx.db.commit()
-    await broadcast_msg(
+    await emit_terminal_line(
         ctx.guild_id,
-        TerminalOutputMsg(
-            agentId=msg_agent_id,
-            workerId=worker_id_for_log,
-            taskId=task_id,
-            line=line,
-            timestamp=created_at.isoformat(),
-            detail=detail if detail else None,
-            level=level if level else None,
-        ),
+        msg_agent_id,
+        line,
+        worker_id=msg_worker_id,
+        task_id=task_id,
+        detail=detail,
+        level=level,
+        db=ctx.db,
     )
     # Mirror agent/Claude output into the task's own Discord stream thread as a
     # low-priority feed (opt-in via DISCORD_STREAM_TASKS). Buffered internally,
