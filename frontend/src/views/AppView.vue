@@ -39,6 +39,7 @@ import { useAgentsStore } from '../stores/agents'
 import { useAuthStore } from '../stores/auth'
 import { useGitHubStore } from '../stores/github'
 import { useTasksStore } from '../stores/tasks'
+import { useThreadsStore } from '../stores/threads'
 import { useUsageStore } from '../stores/usage'
 import GuildSidebar from '../components/GuildSidebar.vue'
 import MainView from '../components/MainView.vue'
@@ -63,6 +64,7 @@ const agentsStore = useAgentsStore()
 const authStore = useAuthStore()
 const ghStore = useGitHubStore()
 const tasksStore = useTasksStore()
+const threadsStore = useThreadsStore()
 const usageStore = useUsageStore()
 
 async function initGuild(guildId: string) {
@@ -84,14 +86,16 @@ async function initGuild(guildId: string) {
 
   agentsStore.clearAgents()
   tasksStore.clearTasks()
+  threadsStore.clearThreads()
   usageStore.clearUsage()
   const guild = await guildStore.joinGuild(guildId)
   if (!guild) {
     router.replace('/')
     return
   }
-  // Load existing tasks for this guild
+  // Load existing tasks and threads for this guild
   await tasksStore.fetchTasks(guildId)
+  threadsStore.fetchThreads(guildId)
   usageStore.fetchUsage(guildId)
 
   if (guild.agents) {
@@ -114,6 +118,7 @@ async function initGuild(guildId: string) {
   guildStore.connectWebSocket(guildId, (data) => {
     agentsStore.handleWebSocketMessage(data)
     tasksStore.handleWebSocketMessage(data)
+    threadsStore.handleWebSocketMessage(data)
     usageStore.handleWebSocketMessage(data)
   })
 
@@ -143,6 +148,7 @@ onMounted(async () => {
 onUnmounted(() => {
   guildStore.disconnectWebSocket()
   tasksStore.clearTasks()
+  threadsStore.clearThreads()
   usageStore.clearUsage()
   document.title = 'Pioneer Square'
 })
