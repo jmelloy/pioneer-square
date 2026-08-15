@@ -704,6 +704,7 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
         return
     repos = data.get("repos") or []
     tools = data.get("tools") or []
+    models = data.get("models") or {}
     user_ident = data.get("user")
     provider = data.get("provider") or None
     tool = data.get("tool") or None
@@ -711,6 +712,7 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     update_vals: dict = {
         "repos": json.dumps(repos),
         "tools": json.dumps(tools),
+        "available_models": models if isinstance(models, dict) else {},
         "provider": provider,
         "tool": tool,
         "hostname": hostname,
@@ -740,10 +742,17 @@ async def handle_worker_register(ctx: WSContext, data: dict) -> None:
     agent_count = count_res.one()
     tools_suffix = f" tools={tools_str}" if tools_str else ""
     provider_suffix = f" provider={provider}" if provider else ""
+    model_suffix = ""
+    if isinstance(models, dict) and models:
+        counts = {
+            tool_name: len(rows) for tool_name, rows in models.items() if isinstance(rows, list)
+        }
+        if counts:
+            model_suffix = " models=" + ",".join(f"{k}:{v}" for k, v in sorted(counts.items()))
     await _trigger_foreman(
         ctx.guild_id,
         "worker-online",
-        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}{tools_suffix}{provider_suffix}",
+        f"[worker-online] worker_id={worker_id} repos={repos_str} agent_count={agent_count}{tools_suffix}{provider_suffix}{model_suffix}",
         task_name=f"foreman.worker-online:{worker_id}",
     )
 

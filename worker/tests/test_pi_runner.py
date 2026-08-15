@@ -8,7 +8,12 @@ import os
 import sys
 
 import pytest
-from pioneer_worker.pi_runner import parse_pi_event, pi_provider_arg, run_pi_auto
+from pioneer_worker.pi_runner import (
+    parse_pi_event,
+    parse_pi_model_rows,
+    pi_provider_arg,
+    run_pi_auto,
+)
 
 # ---------------------------------------------------------------------------
 # pi_provider_arg — pioneer provider id -> pi CLI provider name
@@ -30,6 +35,39 @@ def test_pi_provider_arg_none():
 
 
 # ---------------------------------------------------------------------------
+# parse_pi_model_rows
+# ---------------------------------------------------------------------------
+
+
+def test_parse_pi_model_rows_current_table():
+    output = """provider        model                         context  max-out  thinking  images
+amazon-bedrock  us.anthropic.claude-haiku     200K     64K      yes       yes
+openai-codex    gpt-5.5                       272K     128K     yes       yes
+Warning: ignored
+"""
+    assert parse_pi_model_rows(output) == [
+        {
+            "provider": "amazon-bedrock",
+            "id": "us.anthropic.claude-haiku",
+            "name": "us.anthropic.claude-haiku",
+            "context": "200K",
+            "maxOutput": "64K",
+            "thinking": True,
+            "images": True,
+        },
+        {
+            "provider": "openai-codex",
+            "id": "gpt-5.5",
+            "name": "gpt-5.5",
+            "context": "272K",
+            "maxOutput": "128K",
+            "thinking": True,
+            "images": True,
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
 # parse_pi_event
 # ---------------------------------------------------------------------------
 
@@ -48,6 +86,26 @@ def test_parse_message_update_full_text():
     text, _, last = parse_pi_event(event, "")
     assert text == "Hello world"
     assert last == "Hello world"
+
+
+def test_parse_message_update_current_rpc_text_delta():
+    event = {
+        "type": "message_update",
+        "assistantMessageEvent": {"type": "text_delta", "delta": "Hello"},
+    }
+    text, _, last = parse_pi_event(event, "")
+    assert text == "Hello"
+    assert last == "Hello"
+
+
+def test_parse_message_end_current_rpc_final_text_no_duplicate():
+    event = {
+        "type": "message_end",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]},
+    }
+    text, _, last = parse_pi_event(event, "Hello")
+    assert text is None
+    assert last == "Hello"
 
 
 def test_parse_message_update_delta_only():
@@ -235,6 +293,72 @@ sys.exit(0)
     assert session_id is None  # no session event emitted by this fake
     for line in emitted:
         assert not line.endswith("\n"), f"trailing newline in emitted line: {line!r}"
+
+
+async def test_run_pi_auto_current_rpc_text_delta_success(tmp_path) -> None:
+    """Current pi RPC streams text in assistantMessageEvent.text_delta, not message.content."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+print(json.dumps({{"type": "response", "command": "prompt", "success": True}}), flush=True)
+print(json.dumps({{"type": "agent_start"}}), flush=True)
+print(json.dumps({{"type": "message_start", "message": {{"role": "assistant", "content": []}}}}), flush=True)
+print(json.dumps({{"type": "message_update", "assistantMessageEvent": {{"type": "text_delta", "delta": "Task "}}}}), flush=True)
+print(json.dumps({{"type": "message_update", "assistantMessageEvent": {{"type": "text_delta", "delta": "done"}}}}), flush=True)
+print(json.dumps({{"type": "message_end", "message": {{"role": "assistant", "content": [{{"type": "text", "text": "Task done"}}]}}}}), flush=True)
+print(json.dumps({{"type": "agent_end"}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str, detail: dict | None = None) -> None:
+        emitted.append(line)
+
+    success, stop_reason, last_text, _session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    assert success is True
+    assert stop_reason == "success"
+    assert "Task done" in "".join(emitted)
+    assert last_text == "Task done"
+
+
+async def test_run_pi_auto_current_rpc_message_error_is_failure(tmp_path) -> None:
+    """Current pi RPC reports provider failures as assistant messages with stopReason=error."""
+    fake_pi = tmp_path / "fake-pi"
+    fake_pi.write_text(
+        f"""#!{sys.executable}
+import json, sys
+msg = {{"role": "assistant", "content": [], "stopReason": "error", "errorMessage": "provider exploded"}}
+print(json.dumps({{"type": "response", "command": "prompt", "success": True}}), flush=True)
+print(json.dumps({{"type": "agent_start"}}), flush=True)
+print(json.dumps({{"type": "message_start", "message": msg}}), flush=True)
+print(json.dumps({{"type": "message_end", "message": msg}}), flush=True)
+print(json.dumps({{"type": "agent_end", "messages": [msg]}}), flush=True)
+sys.exit(0)
+""",
+        encoding="utf-8",
+    )
+    fake_pi.chmod(0o755)
+
+    emitted: list[str] = []
+
+    async def emit(line: str, detail: dict | None = None) -> None:
+        emitted.append(line)
+
+    success, stop_reason, _last_text, _session_id = await run_pi_auto(
+        "do the work", str(tmp_path), emit=emit, pi_path=os.fspath(fake_pi)
+    )
+
+    assert success is False
+    assert stop_reason == "error_during_execution"
+    assert any("provider exploded" in line for line in emitted)
 
 
 async def test_run_pi_auto_publishes_proc_handle(tmp_path) -> None:
@@ -846,6 +970,20 @@ async def test_parse_pi_usage_zero_input_tokens_not_ignored() -> None:
     assert result is not None
     assert result["input_tokens"] == 0
     assert result["output_tokens"] == 5
+
+
+async def test_parse_pi_usage_current_rpc_fields() -> None:
+    """Current pi RPC uses input/output/cacheRead/cacheWrite inside usage."""
+    from pioneer_worker.pi_runner import _parse_pi_usage
+
+    event = {"usage": {"input": 10, "output": 3, "cacheRead": 2, "cacheWrite": 1}}
+    result = _parse_pi_usage(event)
+    assert result == {
+        "input_tokens": 10,
+        "output_tokens": 3,
+        "cache_read_input_tokens": 2,
+        "cache_creation_input_tokens": 1,
+    }
 
 
 async def test_run_pi_auto_no_double_error_when_saw_error(tmp_path) -> None:
