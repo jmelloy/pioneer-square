@@ -16,10 +16,9 @@ const STATUS_COLORS: Record<ThreadStatus, string> = {
   closed: 'dim',
 }
 
-// Thread-per-conversation architecture (epic #1160, issue #1162). Wraps the
-// routes in backend/routes/threads.py; there is no WS event for thread
-// lifecycle changes yet, so this store is REST-only (unlike tasks.ts, which
-// also has a handleWebSocketMessage).
+// Thread-per-conversation architecture (epic #1160, issue #1169). Wraps the
+// routes in backend/routes/threads.py and handles live WebSocket push events
+// (thread-created, thread-updated) matching the pattern used by agents/tasks/usage stores.
 export const useThreadsStore = defineStore('threads', () => {
   const uiStore = useUiStore()
   const threads = ref<ConversationThread[]>([])
@@ -79,6 +78,42 @@ export const useThreadsStore = defineStore('threads', () => {
     return thread
   }
 
+  /**
+   * Handle incoming WebSocket messages for thread lifecycle events.
+   * Mirrors the pattern used by agents.ts and tasks.ts stores.
+   */
+
+  function handleWebSocketMessage(data: any) {
+    switch (data.type) {
+      case 'thread-created': {
+        const thread: ConversationThread = {
+          id: data.threadId,
+          conversation_id: data.conversationId,
+          discord_thread_id: null,
+          name: data.name || null,
+          status: data.status || 'active',
+          created_at: data.createdAt || new Date().toISOString(),
+          updated_at: data.createdAt || new Date().toISOString(),
+        }
+        _upsertThread(thread)
+        break
+      }
+      case 'thread-updated': {
+        const idx = threads.value.findIndex((t) => t.id === data.threadId)
+        if (idx >= 0) {
+          const existing = threads.value[idx]
+          threads.value[idx] = {
+            ...existing,
+            ...(data.status != null && { status: data.status }),
+            ...(data.discordThreadId != null && { discord_thread_id: data.discordThreadId }),
+            updated_at: new Date().toISOString(),
+          }
+        }
+        break
+      }
+    }
+  }
+
   function clearThreads() {
     threads.value = []
     uiStore.resetThreadSelection()
@@ -99,6 +134,7 @@ export const useThreadsStore = defineStore('threads', () => {
     archiveThread,
     closeThread,
     clearThreads,
+    handleWebSocketMessage,
     statusLabel,
     statusColor,
   }
