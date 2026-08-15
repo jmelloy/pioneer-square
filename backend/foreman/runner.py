@@ -49,9 +49,9 @@ from foreman.prompt import (
     build_system_prompt,
 )
 from foreman.proxy import call_foreman_api_proxy, has_foreman_proxy
+from foreman.thread_service import resolve_thread_id
 from foreman.tools import exec_tools
 from foreman.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
-from foreman.thread_service import resolve_thread_id
 from models import (
     Agent,
     ApiRequestLog,
@@ -1711,6 +1711,7 @@ async def _run_foreman_ai(
                         discord_task_id=_discord_task_id,
                         discord_channel_id=reply_channel_id,
                         user_id=user_id,
+                        thread_id=_thread_id,
                     )
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
@@ -1733,6 +1734,7 @@ async def _run_foreman_ai(
                         toolId=tu.id,
                         createdAt=_now.isoformat(),
                         taskId=_task_id,
+                        threadId=_thread_id,
                     ),
                 )
 
@@ -1768,6 +1770,7 @@ async def _run_foreman_ai(
                         isError=result.get("is_error", False),
                         createdAt=_now.isoformat(),
                         taskId=_task_id,
+                        threadId=_thread_id,
                     ),
                 )
 
@@ -1792,6 +1795,7 @@ async def _run_foreman_ai(
                             ),
                             created_at=_tool_use_ts,
                             task_id=_task_id,
+                            thread_id=_thread_id,
                         )
                     )
                 for result in trimmed:
@@ -1811,6 +1815,7 @@ async def _run_foreman_ai(
                             ),
                             created_at=_now,
                             task_id=_task_id,
+                            thread_id=_thread_id,
                         )
                     )
                 await db.commit()
@@ -1927,6 +1932,7 @@ async def _run_foreman_ai(
                         discord_task_id=_discord_task_id,
                         discord_channel_id=reply_channel_id,
                         user_id=user_id,
+                        thread_id=_thread_id,
                     )
             cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
             text_parts.append(cap_note)
@@ -1938,6 +1944,7 @@ async def _run_foreman_ai(
                 discord_task_id=_discord_task_id,
                 discord_channel_id=reply_channel_id,
                 user_id=user_id,
+                thread_id=_thread_id,
             )
 
         response_text = "\n".join(text_parts).strip()
@@ -1954,6 +1961,7 @@ async def _run_foreman_ai(
                     task_id=_task_id,
                     user_id=user_id,
                     source="a2a" if user_id and "." in user_id else "web",
+                    thread_id=_thread_id,
                 )
             )
             await db.commit()

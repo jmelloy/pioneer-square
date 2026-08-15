@@ -20,8 +20,9 @@ from datetime import UTC, datetime
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from fastapi import APIRouter, Depends, HTTPException
-from models import THREAD_STATUSES, Conversation, Thread
+from models import THREAD_STATUSES, Conversation, Message, Thread
 from pydantic import BaseModel
+from routes.guilds import _message_dict
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -185,6 +186,31 @@ async def get_thread(
     db: AsyncSession = Depends(get_db_dep),
 ):
     return _to_out(await _get_thread_in_guild(db, guild_id, thread_id))
+
+
+@router.get("/api/guilds/{guild_id}/threads/{thread_id}/messages")
+async def list_thread_messages(
+    guild_id: str,
+    thread_id: str,
+    github_user_id: str = Depends(require_member()),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Return this thread's own message history, oldest first (#1175).
+
+    Mirrors the guild-wide history query in ``routes.guilds.get_guild`` — same
+    ``_message_dict`` serialization, same 100-row cap — but scoped to
+    ``Message.thread_id`` instead of the whole guild, so the thread pane can
+    show its own conversation instead of the flat comms feed.
+    """
+    await _get_thread_in_guild(db, guild_id, thread_id)
+    result = await db.exec(
+        select(Message)
+        .where(col(Message.thread_id) == thread_id)
+        .order_by(col(Message.created_at).desc(), col(Message.id).desc())
+        .limit(100)
+    )
+    messages = result.all()
+    return [_message_dict(m) for m in reversed(messages)]
 
 
 @router.get("/api/guilds/{guild_id}/threads", response_model=list[ThreadOut])

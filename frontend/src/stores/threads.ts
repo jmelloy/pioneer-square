@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useUiStore } from './ui'
 import { api } from '../utils/api'
-import type { ConversationThread, ThreadStatus } from '../types'
+import type { ChatMessage, ConversationThread, ThreadStatus } from '../types'
 
 const STATUS_LABELS: Record<ThreadStatus, string> = {
   active: 'active',
@@ -46,6 +46,18 @@ export const useThreadsStore = defineStore('threads', () => {
     const thread = await api<ConversationThread>(`/api/guilds/${guildId}/threads/${threadId}`)
     _upsertThread(thread)
     return thread
+  }
+
+  // Thread's own message history (#1175), oldest first — separate from the
+  // guild-wide `guildStore.messages` feed so ThreadDetailPanel can show just
+  // this conversation instead of the flat comms pane.
+  async function fetchThreadMessages(guildId: string, threadId: string): Promise<ChatMessage[]> {
+    try {
+      return await api<ChatMessage[]>(`/api/guilds/${guildId}/threads/${threadId}/messages`)
+    } catch (e) {
+      console.error('Failed to fetch thread messages', e)
+      return []
+    }
   }
 
   async function createThread(
@@ -130,6 +142,7 @@ export const useThreadsStore = defineStore('threads', () => {
     threads,
     fetchThreads,
     fetchThread,
+    fetchThreadMessages,
     createThread,
     archiveThread,
     closeThread,
