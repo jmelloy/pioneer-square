@@ -184,14 +184,55 @@ def _resolve_foreman_daily_session(subject_key: str) -> str | None:
 
 
 def _resolve_conversation_session(subject_key: str) -> str | None:
-    """Return the guild slug encoded in a ``"conversation"`` subject_key ``"slug:user_id"``.
+    """Return the guild slug for a ``"conversation"`` subject_key.
 
-    No task scoping — a per-conversation thread (#1161) is ad-hoc Foreman
-    chat, not tied to any one task, so a reply there routes exactly like a
-    wired channel or a legacy ``"foreman_daily"`` thread: ``task_id=None``.
+    Handles two key formats:
+    - Legacy: ``"slug:user_id"`` (from ``_ensure_conversation_thread``)
+    - Foreman-managed (#1168): a bare thread_id like ``"th-abc123"``
+      (from ``discord/thread_mirror.on_thread_created``) — requires async
+      DB lookup, so returns None here and is handled by the async fallback
+      in ``resolve_session``.
+
+    No task scoping — a per-conversation thread is ad-hoc Foreman
+    chat, not tied to any one task.
     """
+    if subject_key.startswith("th-"):
+        # Foreman-managed thread: can't resolve synchronously, handled by
+        # _resolve_foreman_thread_session in the async caller.
+        return None
     slug, _, _user_id = subject_key.partition(":")
     return slug or None
+
+
+async def _resolve_foreman_thread_session(thread_id: str) -> str | None:
+    """Return the guild slug for a Foreman-managed thread_id (#1168).
+
+    Resolves Thread -> Conversation -> Guild to find the guild slug.
+    Never raises.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Conversation, Guild, Thread  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(col(Guild.slug))
+                .join(Conversation, col(Conversation.guild_id) == col(Guild.id))
+                .join(Thread, col(Thread.conversation_id) == col(Conversation.id))
+                .where(
+                    col(Thread.id) == thread_id,
+                    col(Thread.deleted_at).is_(None),
+                )
+            )
+            return result.first()
+    except Exception:
+        logger.warning(
+            "discord router: foreman thread session lookup failed thread=%s",
+            thread_id,
+            exc_info=True,
+        )
+        return None
 
 
 async def _resolve_channel_guild(channel_id: str) -> str | None:
@@ -260,6 +301,11 @@ async def resolve_session(channel_id: str) -> tuple[str, str | None] | None:
             slug = _resolve_conversation_session(subject_key)
             if slug:
                 return (slug, None)
+            # Foreman-managed thread binding (#1168): async guild lookup
+            if subject_key.startswith("th-"):
+                slug = await _resolve_foreman_thread_session(subject_key)
+                if slug:
+                    return (slug, None)
 
     guild_slug = await _resolve_channel_guild(channel_id)
     return (guild_slug, None) if guild_slug else None

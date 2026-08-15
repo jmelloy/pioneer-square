@@ -23,9 +23,9 @@ Protocol handled, per https://discord.com/developers/docs/topics/gateway:
     DISPATCH (op 0)          -> READY stores session_id/resume url; MESSAGE_CREATE
                                  is filtered and queued; GUILD_MEMBER_ADD sends a
                                  welcome DM (see ``discord_notifier.send_welcome_dm``);
-                                 THREAD_UPDATE/THREAD_DELETE mirror archive/lock/delete
-                                 state onto our ``Thread`` row (see ``_sync_thread_status``
-                                 — thread-per-conversation architecture, #1160/#1163;
+                                 THREAD_UPDATE/THREAD_DELETE relay archive/lock/delete
+                                 events inward (see ``discord.thread_mirror.relay_discord_thread_event``
+                                 — thread-per-conversation architecture, #1160/#1163/#1168;
                                  this is the Gateway-based equivalent of a webhook handler
                                  for Discord thread events, since Discord delivers thread
                                  lifecycle changes over the Gateway, not HTTP webhooks)
@@ -176,16 +176,13 @@ async def _is_channel_wired(channel_id: str) -> bool:
 async def _sync_thread_status(
     discord_thread_id: str, status: str, *, soft_delete: bool = False
 ) -> None:
-    """Mirror a Discord thread's archived/deleted state onto our ``Thread`` row.
+    """DEPRECATED (issue #1168): no longer called.
 
-    Webhook-equivalent handler for Discord thread lifecycle events
-    (thread-per-conversation architecture, #1160/#1163) — Discord bots
-    receive thread changes over the Gateway (``THREAD_UPDATE``/
-    ``THREAD_DELETE``), not an HTTP webhook, so this is the inbound sync point
-    for those events. No-op if no ``Thread`` row is bound to
-    *discord_thread_id* (e.g. a thread Pioneer Square doesn't own). Never
-    raises — DB errors are logged and swallowed, matching every other Gateway
-    handler in this module.
+    Retained temporarily for backward compatibility with any external
+    callers. The gateway handlers now use
+    ``discord.thread_mirror.relay_discord_thread_event`` instead, which
+    does NOT write Discord state onto the Foreman Thread row — the Foreman
+    owns thread lifecycle, Discord merely mirrors it.
     """
     try:
         from database import AsyncSessionLocal  # noqa: PLC0415
@@ -530,30 +527,37 @@ class GatewayClient:
         await send_welcome_dm(user_id, username)
 
     async def _handle_thread_update(self, payload: dict) -> None:
-        """Mirror a Discord thread's archive/lock state onto our ``Thread`` row.
+        """Relay Discord thread archive/lock events inward (issue #1168).
 
-        ``payload`` is the full updated thread (channel) object; archived
-        status lives under ``thread_metadata.archived`` per Discord's API. A
-        locked-but-not-archived thread is treated the same as archived (both
-        mean "no longer accepting new messages" from our side).
+        Replaces the old approach that treated Discord as authoritative and
+        wrote state directly onto the Foreman Thread row. Now delegates to
+        ``discord.thread_mirror.relay_discord_thread_event`` which logs the
+        event for observability but does NOT change Foreman state — the
+        Foreman owns thread lifecycle, Discord merely mirrors it.
         """
+        from discord.thread_mirror import relay_discord_thread_event  # noqa: PLC0415
+
         thread_discord_id = payload.get("id")
         metadata = payload.get("thread_metadata") or {}
         archived = metadata.get("archived")
         locked = metadata.get("locked")
         if not thread_discord_id or archived is None:
             return
-        await _sync_thread_status(thread_discord_id, "archived" if archived or locked else "active")
+        status = "archived" if archived or locked else "active"
+        await relay_discord_thread_event(thread_discord_id, status)
 
     async def _handle_thread_delete(self, payload: dict) -> None:
-        """Soft-delete our ``Thread`` row when its Discord thread is deleted.
+        """Relay Discord thread deletion inward (issue #1168).
 
-        ``payload`` is a partial channel object (just id/guild_id/parent_id/type).
+        Does NOT soft-delete the Foreman Thread row — Discord is not
+        authoritative. The event is relayed for observability only.
         """
+        from discord.thread_mirror import relay_discord_thread_event  # noqa: PLC0415
+
         thread_discord_id = payload.get("id")
         if not thread_discord_id:
             return
-        await _sync_thread_status(thread_discord_id, "closed", soft_delete=True)
+        await relay_discord_thread_event(thread_discord_id, "closed", soft_delete=True)
 
 
 _gateway_task: asyncio.Task | None = None

@@ -126,12 +126,15 @@ async def get_thread_for_task(db: AsyncSession, task: Task) -> Thread | None:
 
 
 async def broadcast_thread_updated(db: AsyncSession, thread: Thread) -> None:
-    """Broadcast a ``thread-updated`` WS event to *thread*'s guild.
+    """Broadcast a ``thread-updated`` WS event and mirror to Discord.
 
     Resolves the guild slug via Thread -> Conversation -> Guild. Best
     effort — swallows and logs lookup/broadcast failures so a WS hiccup
     never blocks the caller's own transition, matching every other
     Gateway/sweep handler in this codebase.
+
+    Also triggers the Discord thread mirror (issue #1168) to archive/
+    un-archive the corresponding Discord thread when Foreman changes status.
     """
     try:
         from models import Guild  # noqa: PLC0415 — avoid import cycle at module load
@@ -153,6 +156,22 @@ async def broadcast_thread_updated(db: AsyncSession, thread: Thread) -> None:
                 deletedAt=thread.deleted_at.isoformat() if thread.deleted_at else None,
             ).model_dump(by_alias=True, exclude_none=True),
         )
+
+        # Mirror status change to Discord (issue #1168)
+        try:
+            from discord.thread_mirror import on_thread_updated  # noqa: PLC0415
+
+            await on_thread_updated(
+                thread_id=thread.id,
+                status=thread.status,
+                deleted_at=thread.deleted_at.isoformat() if thread.deleted_at else None,
+            )
+        except Exception:
+            logger.warning(
+                "thread_service: Discord mirror update failed thread=%s",
+                thread.id,
+                exc_info=True,
+            )
     except Exception:
         logger.warning(
             "thread_service: failed to broadcast thread-updated thread=%s", thread.id, exc_info=True
@@ -210,6 +229,25 @@ async def ensure_conversation_thread(
         except Exception:
             logger.warning(
                 "thread_service: failed to broadcast thread-created thread=%s",
+                thread.id,
+                exc_info=True,
+            )
+
+        # Mirror to Discord (issue #1168): create a Discord thread only
+        # in response to the Foreman creating one — never independently.
+        try:
+            from discord.thread_mirror import on_thread_created  # noqa: PLC0415
+
+            await on_thread_created(
+                thread_id=thread.id,
+                conversation_id=thread.conversation_id,
+                guild_slug=guild_slug,
+                name=thread.name,
+                user_id=user_id,
+            )
+        except Exception:
+            logger.warning(
+                "thread_service: Discord mirror failed for thread=%s",
                 thread.id,
                 exc_info=True,
             )

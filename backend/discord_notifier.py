@@ -876,6 +876,14 @@ async def notify_foreman_chat(
                 await _post_foreman_chat_line(task_thread_id, content)
                 return
     elif user_id:
+        # Issue #1168: prefer the Foreman Thread model's discord_thread_id
+        # (set by discord/thread_mirror.py when the thread was created).
+        # Falls back to the legacy _ensure_conversation_thread only when no
+        # Foreman-managed Discord thread exists yet.
+        foreman_discord_thread = await _lookup_foreman_thread_for_user(guild_id, user_id)
+        if foreman_discord_thread:
+            await _post_foreman_chat_line(foreman_discord_thread, content)
+            return
         conversation_thread_id = await _ensure_conversation_thread(
             guild_id, user_id, channel, content
         )
@@ -884,6 +892,46 @@ async def notify_foreman_chat(
             return
 
     await _post_foreman_chat_line(channel, content)
+
+
+async def _lookup_foreman_thread_for_user(guild_slug: str, user_id: str) -> str | None:
+    """Return the Discord thread ID from the Foreman's active Thread for this user.
+
+    Queries the Foreman's Thread/Conversation model (#1167/#1168) to find
+    the active thread's ``discord_thread_id`` — set by
+    ``discord/thread_mirror.on_thread_created`` when the Foreman first
+    created the thread. Returns None if no active thread or no Discord
+    mirror exists. Never raises.
+    """
+    try:
+        from database import AsyncSessionLocal  # noqa: PLC0415
+        from models import Conversation, Guild, Thread  # noqa: PLC0415
+        from sqlmodel import col, select  # noqa: PLC0415
+
+        async with AsyncSessionLocal() as db:
+            result = await db.exec(
+                select(Thread.discord_thread_id)
+                .join(Conversation, col(Conversation.id) == col(Thread.conversation_id))
+                .join(Guild, col(Guild.id) == col(Conversation.guild_id))
+                .where(
+                    col(Guild.slug) == guild_slug,
+                    col(Conversation.user_id) == user_id,
+                    col(Thread.status) == "active",
+                    col(Thread.deleted_at).is_(None),
+                    col(Thread.discord_thread_id).is_not(None),
+                )
+                .order_by(col(Thread.updated_at).desc())
+                .limit(1)
+            )
+            return result.first()
+    except Exception:
+        logger.warning(
+            "discord: foreman thread lookup failed guild=%s user=%s",
+            guild_slug,
+            user_id,
+            exc_info=True,
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
