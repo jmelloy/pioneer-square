@@ -1313,6 +1313,22 @@ class Worker:
             if first_exc is not None:
                 raise first_exc
         finally:
+            if self.cfg.s3_bucket:
+                with anyio.CancelScope(shield=True):
+                    try:
+                        logger.info("Running final S3 sync before shutdown")
+                        await asyncio.wait_for(
+                            s3_uploader.sync_paths(
+                                bucket=self.cfg.s3_bucket,
+                                prefix=self.cfg.s3_prefix,
+                                paths=self.cfg.s3_paths,
+                            ),
+                            timeout=60.0,
+                        )
+                    except TimeoutError:
+                        logger.warning("Final S3 sync timed out after 60s")
+                    except Exception as exc:
+                        logger.warning("Final S3 sync failed: %s", exc)
             with anyio.CancelScope(shield=True):
                 await self._notify_offline()
             logger.info("Worker shutting down; closing WebSocket")
