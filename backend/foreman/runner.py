@@ -1138,26 +1138,19 @@ async def _emit_foreman_chat(
     discord_task_id: str | None = None,
     discord_channel_id: str | None = None,
     user_id: str | None = None,
-    db=None,
-    guild_pk: int | None = None,
 ) -> None:
-    """Broadcast a Foreman -> user narration line, persist it, and mirror it into Discord.
+    """Broadcast a Foreman -> user narration line and mirror it into Discord.
 
     Every plain-text line the Foreman sends to the user (not tool_use/tool_result
-    traces) goes through here so the persisted ``messages`` row, the Discord
-    thread mirror, and the live WS chat stream never drift apart — one call
-    here is one line in all three places, rather than the live stream sending
-    each block as its own WS message while a separate, later step persists all
-    of a turn's blocks as a single concatenated row (which made a page reload
-    show different chat groupings than what was seen live).
+    traces) goes through here so the Discord thread mirror in discord_notifier
+    stays in sync with the WS chat stream.
 
     The two ids are deliberately separate (see docs/foreman-per-task-context.md):
 
-    - ``child_task_id`` tags the WS ``ChatMsg`` (and the persisted row's
-      ``task_id``) so the frontend can badge lines produced inside a per-task
-      child context. It is None for parent runs even when the run concerns a
-      task (e.g. a human chatting in a task's Discord thread stays on the
-      parent conversation).
+    - ``child_task_id`` tags the WS ``ChatMsg`` so the frontend can badge lines
+      produced inside a per-task child context. It is None for parent runs even
+      when the run concerns a task (e.g. a human chatting in a task's Discord
+      thread stays on the parent conversation).
     - ``discord_task_id`` routes the Discord mirror to that task's thread. It is
       set whenever the run concerns a task — including the parent-context reply
       to a message posted in a task thread — so the reply always lands back in
@@ -1171,10 +1164,6 @@ async def _emit_foreman_chat(
     ``user_id`` is passed through to ``notify_foreman_chat`` so ad-hoc chat
     (no ``discord_task_id``/``discord_channel_id``) lands in that user's own
     per-conversation Discord thread (#1161) instead of the flat main channel.
-
-    ``db``/``guild_pk`` are optional so callers without an open session (e.g.
-    the offline/error notices broadcast directly via ``ChatMsg``) can skip
-    persistence; every in-run caller passes both.
     """
     await broadcast_msg(
         guild_id,
@@ -1186,21 +1175,6 @@ async def _emit_foreman_chat(
             taskId=child_task_id,
         ),
     )
-    if db is not None and guild_pk is not None:
-        db.add(
-            Message(
-                guild_id=guild_pk,
-                from_agent="foreman",
-                to_agent="user",
-                content=content,
-                message_type="chat",
-                created_at=datetime.fromisoformat(created_at),
-                task_id=child_task_id,
-                user_id=user_id,
-                source="a2a" if user_id and "." in user_id else "web",
-            )
-        )
-        await db.commit()
     spawn(
         discord_notifier.notify_foreman_chat(
             guild_id,
@@ -1634,6 +1608,7 @@ async def _run_foreman_ai(
             guild_id, guild_cfg
         )
 
+        text_parts = []
         for round_num in range(cfg_max_rounds):
             messages = prune_history(messages)
             messages = strip_orphaned_tool_results(messages)
@@ -1714,6 +1689,7 @@ async def _run_foreman_ai(
             _now = datetime.now(UTC)
             for b in resp.content:
                 if b.type == "text" and b.text.strip():
+                    text_parts.append(b.text.strip())
                     await _emit_foreman_chat(
                         guild_id,
                         b.text.strip(),
@@ -1722,8 +1698,6 @@ async def _run_foreman_ai(
                         discord_task_id=_discord_task_id,
                         discord_channel_id=reply_channel_id,
                         user_id=user_id,
-                        db=db,
-                        guild_pk=guild_pk_val,
                     )
 
             tool_uses = [b for b in resp.content if b.type == "tool_use"]
@@ -1931,6 +1905,7 @@ async def _run_foreman_ai(
             _now = datetime.now(UTC).isoformat()
             for b in wrap_resp.content:
                 if b.type == "text" and b.text.strip():
+                    text_parts.append(b.text.strip())
                     await _emit_foreman_chat(
                         guild_id,
                         b.text.strip(),
@@ -1939,10 +1914,9 @@ async def _run_foreman_ai(
                         discord_task_id=_discord_task_id,
                         discord_channel_id=reply_channel_id,
                         user_id=user_id,
-                        db=db,
-                        guild_pk=guild_pk_val,
                     )
             cap_note = f"_(Foreman hit {cfg_max_rounds}-round safety cap and stopped.)_"
+            text_parts.append(cap_note)
             await _emit_foreman_chat(
                 guild_id,
                 cap_note,
@@ -1951,9 +1925,25 @@ async def _run_foreman_ai(
                 discord_task_id=_discord_task_id,
                 discord_channel_id=reply_channel_id,
                 user_id=user_id,
-                db=db,
-                guild_pk=guild_pk_val,
             )
+
+        response_text = "\n".join(text_parts).strip()
+        if response_text:
+            now = datetime.now(UTC)
+            db.add(
+                Message(
+                    guild_id=guild_pk_val,
+                    from_agent="foreman",
+                    to_agent="user",
+                    content=response_text,
+                    message_type="chat",
+                    created_at=now,
+                    task_id=_task_id,
+                    user_id=user_id,
+                    source="a2a" if user_id and "." in user_id else "web",
+                )
+            )
+            await db.commit()
 
     except Exception as exc:
         now = datetime.now(UTC).isoformat()

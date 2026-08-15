@@ -99,65 +99,29 @@ async def broadcast_msg(guild_id: str, message: "_WS", exclude: WebSocket | None
     await broadcast(guild_id, message.model_dump(by_alias=True), exclude)
 
 
-async def emit_terminal_line(
-    guild_id: str,
-    agent_id: str | None = None,
-    line: str = "",
-    *,
-    worker_id: str | None = None,
-    task_id: str | None = None,
-    detail: Any = None,
-    level: str | None = None,
-    db: Any = None,
-) -> None:
-    """Broadcast and persist a terminal output line.
-
-    Single source of truth for "a line of agent/worker output happened" — both
-    the inbound ``terminal-output`` WS handler (``ws_handlers.handle_terminal_output``)
-    and backend-internal callers that synthesize a line (foreman tool messages,
-    worker-lifecycle events, operator actions) go through here so persistence
-    (``task_logs``) and broadcast (``TerminalOutputMsg``) can never drift apart.
-
-    Pass an existing ``db`` session (e.g. a WS handler's per-connection
-    ``ctx.db``) to participate in that session; otherwise a short-lived one is
-    opened and closed here.
-    """
+async def emit_terminal_line(guild_id: str, agent_id: str, line: str):
+    """Broadcast and persist a terminal output line."""
     from ws_types import TerminalOutputMsg
 
     now = datetime.now(UTC)
-    resolved_worker_id = worker_id
-    owns_db = db is None
-    if owns_db:
+    await broadcast_msg(
+        guild_id,
+        TerminalOutputMsg(agentId=agent_id, line=line, timestamp=now.isoformat()),
+    )
+    if line:
         db = await get_db()
-    try:
-        if resolved_worker_id is None and agent_id:
+        try:
             result = await db.exec(select(col(Agent.worker_id)).where(col(Agent.id) == agent_id))
-            resolved_worker_id = result.one_or_none()
-        await broadcast_msg(
-            guild_id,
-            TerminalOutputMsg(
-                agentId=agent_id,
-                workerId=resolved_worker_id,
-                taskId=task_id,
-                line=line,
-                timestamp=now.isoformat(),
-                detail=detail if detail else None,
-                level=level if level else None,
-            ),
-        )
-        if line:
+            worker_id_for_log = result.one_or_none()
             db.add(
                 TaskLog(
-                    task_id=task_id or None,
+                    task_id=None,
                     timestamp=now,
                     line=line,
-                    worker_id=resolved_worker_id,
+                    worker_id=worker_id_for_log,
                     agent_id=agent_id,
-                    data=json.dumps(detail) if detail else None,
-                    level=level,
                 )
             )
             await db.commit()
-    finally:
-        if owns_db:
+        finally:
             await db.close()
