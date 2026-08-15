@@ -214,6 +214,9 @@ class Worker:
         self._broadcast_repos: list[str] = list(cfg.repos)
         # Available tool runners detected at startup (e.g. ["claude", "codex", "pi"]).
         self._available_tools: list[str] = []
+        # Per-tool live model catalogs detected at startup. Currently populated
+        # for pi from `pi --list-models`, which is credential/env dependent.
+        self._tool_models: dict[str, list[dict]] = {}
         # Per-tool env vars (claude/pi/codex). Kept OUT of os.environ so one tool's
         # credentials never leak into another's subprocess; merged over os.environ
         # only when spawning that specific tool. See _env_for_tool.
@@ -747,20 +750,12 @@ class Worker:
         return status == "ok"
 
     async def _pi_has_models(self) -> bool:
-        """Return True if `pi --list-models` prints at least one model row.
-
-        pi --list-models doesn't authenticate, but it only lists providers whose
-        credentials/config are present in the environment, so a non-empty
-        catalog means pi has something usable. A timeout guards a hung
-        subprocess (it may do startup network fetches).
-        """
+        """Load the live pi model catalog and return True if any model is usable."""
         try:
-            proc = await asyncio.create_subprocess_exec(
-                self.cfg.pi_path,
-                "--list-models",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+            models = await pi_runner.list_pi_models(
+                pi_path=self.cfg.pi_path,
                 env=self._env_for_tool("pi"),
+                timeout=20.0,
             )
         except FileNotFoundError as exc:
             logger.warning("pi binary not found at %r: %s", self.cfg.pi_path, exc)
@@ -768,30 +763,12 @@ class Worker:
         except Exception as exc:
             logger.warning("pi --list-models spawn failed: %s", exc)
             return False
-
-        try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
-        except TimeoutError:
-            logger.warning("pi --list-models timed out after 20s; killing pid=%s", proc.pid)
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
-            return False
-
-        if proc.returncode != 0:
-            logger.warning("pi --list-models rc=%d", proc.returncode)
-            return False
-        # First line is the "provider model ..." header; any data row means a
-        # provider is configured. "Warning:" lines don't count as models.
-        rows = [
-            ln
-            for ln in stdout.decode(errors="replace").splitlines()
-            if ln.strip() and not ln.startswith(("provider", "Warning"))
-        ]
-        logger.info("pi --list-models returned %d model rows", len(rows))
-        return bool(rows)
+        if models:
+            self._tool_models["pi"] = models
+        else:
+            self._tool_models.pop("pi", None)
+        logger.info("pi --list-models returned %d model rows", len(models))
+        return bool(models)
 
     # ------------------------------------------------------------------ Control API
     def _status_snapshot(self) -> dict:
@@ -1048,6 +1025,7 @@ class Worker:
             "workerId": self.cfg.worker_id,
             "repos": self._broadcast_repos,
             "tools": self._available_tools,
+            "models": self._tool_models,
             "hostname": socket.gethostname(),
         }
         if self.cfg.user:
