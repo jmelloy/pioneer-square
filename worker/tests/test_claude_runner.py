@@ -597,3 +597,25 @@ async def test_run_claude_auto_no_usage_callback_is_optional():
         )
     assert success is True
     assert stop_reason == "success"
+
+
+async def test_run_claude_auto_max_turns_is_failure_even_with_zero_exit():
+    events = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "still working"}]}},
+        {"type": "result", "subtype": "max_turns", "num_turns": 10},
+    ]
+    lines = [(json.dumps(e) + "\n").encode() for e in events]
+
+    async def _emit(text, detail=None):
+        return None
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc(lines)
+
+    with patch("asyncio.create_subprocess_exec", _fake_exec):
+        success, stop_reason, last_text, _sid = await run_claude_auto(
+            "do it", "/tmp", max_turns=10, emit=_emit
+        )
+    assert success is False
+    assert stop_reason == "max_turns"
+    assert last_text == "still working"

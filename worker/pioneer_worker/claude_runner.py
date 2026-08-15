@@ -495,7 +495,8 @@ async def run_claude_auto(
                 "claude[%d] produced no stdout events — check stderr above and PATH/auth",
                 proc.pid,
             )
-        return exit_code == 0, stop_reason, last_text, session_id
+        success = exit_code == 0 and stop_reason == "success"
+        return success, stop_reason, last_text, session_id
     except FileNotFoundError as exc:
         if not os.path.exists(claude_path):
             logger.error("claude executable not found: %r", claude_path)
