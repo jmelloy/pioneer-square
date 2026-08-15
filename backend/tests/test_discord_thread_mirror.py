@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -149,29 +148,33 @@ class TestOnThreadUpdated:
 class TestRelayDiscordThreadEvent:
     """Test relay_discord_thread_event does NOT change Foreman state."""
 
-    async def test_does_not_modify_foreman_thread_status(self, db_session):
-        """Relay logs the event but leaves Thread.status unchanged."""
-        from models import Conversation, Thread
+    async def test_does_not_modify_foreman_thread_status(self):
+        """Relay logs the event but leaves Thread.status unchanged.
 
-        now = datetime.now(UTC)
-        conv = Conversation(guild_id=1, user_id="u1", created_at=now, updated_at=now)
-        db_session.add(conv)
-        await db_session.flush()
+        We mock the DB layer and verify that relay_discord_thread_event never
+        writes back to the Thread row — it only reads and logs.
+        """
+        mock_thread = AsyncMock()
+        mock_thread.id = "th-relay-test"
+        mock_thread.status = "active"
+        mock_thread.discord_thread_id = "discord-999"
 
-        thread = Thread(
-            id="th-relay-test",
-            conversation_id=conv.id,
-            discord_thread_id="discord-999",
-            status="active",
-            created_at=now,
-            updated_at=now,
-        )
-        db_session.add(thread)
-        await db_session.commit()
+        mock_result = AsyncMock()
+        mock_result.first.return_value = mock_thread
 
-        # Relay an "archived" event from Discord
-        await relay_discord_thread_event("discord-999", "archived")
+        mock_db = AsyncMock()
+        mock_db.exec = AsyncMock(return_value=mock_result)
+        mock_db.commit = AsyncMock()
 
-        # Refresh and verify status is STILL "active" — Discord is not authoritative
-        await db_session.refresh(thread)
-        assert thread.status == "active"
+        mock_session_cls = AsyncMock()
+        mock_session_cls.__aenter__ = AsyncMock(return_value=mock_db)
+        mock_session_cls.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("database.AsyncSessionLocal", return_value=mock_session_cls):
+            # Relay an "archived" event from Discord
+            await relay_discord_thread_event("discord-999", "archived")
+
+        # Verify: no commit was called (no state mutation)
+        mock_db.commit.assert_not_called()
+        # Thread status was never reassigned
+        assert mock_thread.status == "active"
