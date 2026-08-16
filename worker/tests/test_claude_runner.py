@@ -234,6 +234,16 @@ def test_parse_assistant_multi_block():
     assert pairs[1] == ("Second", None)
 
 
+def test_parse_assistant_unknown_block_forwarded_as_json_detail():
+    block = {"type": "new_block", "value": 1}
+    event = {"type": "assistant", "message": {"content": [block]}}
+    pairs = parse_claude_event(event)
+    assert pairs[0][0] == "[claude-json] assistant.new_block"
+    assert pairs[0][1]["toolType"] == "claude_json"
+    assert pairs[0][1]["event"] == event
+    assert pairs[0][1]["block"] == block
+
+
 # ---------------------------------------------------------------------------
 # parse_claude_event — user (tool_result) messages
 # ---------------------------------------------------------------------------
@@ -270,6 +280,55 @@ def test_parse_user_tool_result_list_content():
     assert "result text" in pairs[0][1]["output"]
 
 
+def test_parse_user_tool_result_tool_reference_content():
+    event = {
+        "type": "user",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_result",
+                    "content": [{"type": "tool_reference", "tool_name": "Monitor"}],
+                }
+            ]
+        },
+    }
+    pairs = parse_claude_event(event)
+    assert len(pairs) == 1
+    assert "tool reference: Monitor" in pairs[0][0]
+    assert pairs[0][1]["output"] == "[tool reference: Monitor]"
+
+
+def test_parse_user_tool_result_unknown_list_block_content():
+    event = {
+        "type": "user",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_result",
+                    "content": [{"type": "custom", "value": 1}],
+                }
+            ]
+        },
+    }
+    pairs = parse_claude_event(event)
+    assert len(pairs) == 1
+    assert '"type": "custom"' in pairs[0][1]["output"]
+
+
+def test_parse_user_tool_result_forwards_non_dict_blocks_as_json_detail():
+    event = {"type": "user", "message": {"content": ["plain string"]}}
+    pairs = parse_claude_event(event)
+    assert pairs[0][0] == "[claude-json] user"
+    assert pairs[0][1]["event"] == event
+
+
+def test_parse_user_string_content_forwarded_as_json_detail():
+    event = {"type": "user", "message": {"content": "plain prompt"}}
+    pairs = parse_claude_event(event)
+    assert pairs[0][0] == "[claude-json] user"
+    assert pairs[0][1]["event"] == event
+
+
 def test_parse_user_tool_result_summarized_line_keeps_full_output_in_detail():
     """Line is summarized (#781) middle-elided, but detail['output'] keeps the full text."""
     lines = [f"line {i}" for i in range(50)]
@@ -286,12 +345,14 @@ def test_parse_user_tool_result_summarized_line_keeps_full_output_in_detail():
     assert detail["output"] == full_output  # full content preserved untruncated
 
 
-def test_parse_user_tool_result_empty_skipped():
+def test_parse_user_tool_result_empty_forwarded_as_json_detail():
     event = {
         "type": "user",
         "message": {"content": [{"type": "tool_result", "content": ""}]},
     }
-    assert parse_claude_event(event) == []
+    pairs = parse_claude_event(event)
+    assert pairs[0][0] == "[claude-json] user.tool_result"
+    assert pairs[0][1]["event"] == event
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +368,12 @@ def test_parse_result_success():
 
 def test_parse_result_success_with_cost():
     event = {"type": "result", "subtype": "success", "num_turns": 2, "cost_usd": 0.0123}
+    pairs = parse_claude_event(event)
+    assert "$0.0123" in pairs[0][0]
+
+
+def test_parse_result_success_with_total_cost():
+    event = {"type": "result", "subtype": "success", "num_turns": 2, "total_cost_usd": 0.0123}
     pairs = parse_claude_event(event)
     assert "$0.0123" in pairs[0][0]
 
@@ -343,9 +410,12 @@ def test_parse_system_init_lists_tools():
     assert "Read" in text
 
 
-def test_parse_system_other_subtype_ignored():
+def test_parse_system_other_subtype_forwarded_as_json_detail():
     event = {"type": "system", "subtype": "other"}
-    assert parse_claude_event(event) == []
+    pairs = parse_claude_event(event)
+    assert pairs[0][0] == "[claude-json] system:other"
+    assert pairs[0][1]["toolType"] == "claude_json"
+    assert pairs[0][1]["event"] == event
 
 
 # ---------------------------------------------------------------------------
@@ -353,12 +423,17 @@ def test_parse_system_other_subtype_ignored():
 # ---------------------------------------------------------------------------
 
 
-def test_parse_unknown_type_returns_empty():
-    assert parse_claude_event({"type": "something_new"}) == []
+def test_parse_unknown_type_forwarded_as_json_detail():
+    event = {"type": "something_new", "payload": {"x": 1}}
+    pairs = parse_claude_event(event)
+    assert pairs[0][0] == "[claude-json] something_new"
+    assert pairs[0][1]["event"] == event
 
 
-def test_parse_empty_event_returns_empty():
-    assert parse_claude_event({}) == []
+def test_parse_empty_event_forwarded_as_json_detail():
+    pairs = parse_claude_event({})
+    assert pairs[0][0] == "[claude-json] event"
+    assert pairs[0][1]["event"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -522,3 +597,25 @@ async def test_run_claude_auto_no_usage_callback_is_optional():
         )
     assert success is True
     assert stop_reason == "success"
+
+
+async def test_run_claude_auto_max_turns_is_failure_even_with_zero_exit():
+    events = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "still working"}]}},
+        {"type": "result", "subtype": "max_turns", "num_turns": 10},
+    ]
+    lines = [(json.dumps(e) + "\n").encode() for e in events]
+
+    async def _emit(text, detail=None):
+        return None
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc(lines)
+
+    with patch("asyncio.create_subprocess_exec", _fake_exec):
+        success, stop_reason, last_text, _sid = await run_claude_auto(
+            "do it", "/tmp", max_turns=10, emit=_emit
+        )
+    assert success is False
+    assert stop_reason == "max_turns"
+    assert last_text == "still working"

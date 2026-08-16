@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import socket
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,14 @@ def _md5_hex(path: Path) -> str:
     return h.hexdigest()
 
 
-def _already_uploaded(s3, bucket: str, key: str, local_file: Path) -> bool:
-    """Return True if S3 already has this file with the same content (ETag == MD5)."""
+def _file_signature(path: Path) -> tuple[int, int]:
+    """Return fields that change when a file is modified or appended to."""
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
+
+
+def _remote_etag_matches(s3, bucket: str, key: str, local_md5: str) -> bool:
+    """Return True if S3 already has content with the given MD5 hash."""
     from botocore.exceptions import ClientError
 
     try:
@@ -48,7 +55,40 @@ def _already_uploaded(s3, bucket: str, key: str, local_file: Path) -> bool:
     # to a plain MD5. Upload unconditionally in that case.
     if "-" in remote_etag:
         return False
-    return remote_etag == _md5_hex(local_file)
+    return remote_etag == local_md5
+
+
+def _sync_one_file(s3, bucket: str, key: str, local_file: Path) -> str:
+    """Upload one file if needed, but never treat an actively changing file as synced.
+
+    Session logs are often appended while the periodic sync is running.  The old
+    implementation could hash a half-written local file, skip because S3 matched
+    that old hash, and then leave the later appended bytes behind until a future
+    sync.  It could also upload a snapshot that became stale during upload.  We
+    require the file's size/mtime to remain stable across hashing and upload;
+    otherwise we retry briefly and leave it for the next sync.
+    """
+    for attempt in range(3):
+        before = _file_signature(local_file)
+        local_md5 = _md5_hex(local_file)
+        after_hash = _file_signature(local_file)
+        if before != after_hash:
+            logger.debug("S3 sync: %s changed while hashing; retrying", local_file)
+            time.sleep(0.1 * (attempt + 1))
+            continue
+
+        if _remote_etag_matches(s3, bucket, key, local_md5):
+            return "skipped"
+
+        s3.upload_file(str(local_file), bucket, key)
+        after_upload = _file_signature(local_file)
+        if before == after_upload:
+            return "uploaded"
+
+        logger.debug("S3 sync: %s changed during upload; retrying", local_file)
+        time.sleep(0.1 * (attempt + 1))
+
+    return "changed"
 
 
 def _sync_paths_sync(*, bucket: str, prefix: str, paths: list[str]) -> None:
@@ -69,27 +109,30 @@ def _sync_paths_sync(*, bucket: str, prefix: str, paths: list[str]) -> None:
         # hostname disambiguates uploads from different worker machines.
         parts = [p for p in [prefix.rstrip("/"), hostname, src.name] if p]
         key_prefix = "/".join(parts)
-        uploaded = skipped = 0
+        uploaded = skipped = changed = 0
 
         for local_file in _walk(src):
             rel = local_file.relative_to(src)
             s3_key = f"{key_prefix}/{rel.as_posix()}"
             try:
-                if _already_uploaded(s3, bucket, s3_key, local_file):
+                result = _sync_one_file(s3, bucket, s3_key, local_file)
+                if result == "uploaded":
+                    uploaded += 1
+                elif result == "skipped":
                     skipped += 1
-                    continue
-                s3.upload_file(str(local_file), bucket, s3_key)
-                uploaded += 1
-            except (BotoCoreError, ClientError) as exc:
+                else:
+                    changed += 1
+            except (OSError, BotoCoreError, ClientError) as exc:
                 logger.warning("S3 upload failed for %s → %s: %s", local_file, s3_key, exc)
 
         logger.info(
-            "S3 sync: %s → s3://%s/%s (uploaded=%d skipped=%d)",
+            "S3 sync: %s → s3://%s/%s (uploaded=%d skipped=%d changed=%d)",
             src,
             bucket,
             key_prefix,
             uploaded,
             skipped,
+            changed,
         )
 
 

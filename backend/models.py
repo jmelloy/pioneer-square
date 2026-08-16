@@ -329,6 +329,9 @@ class Worker(SQLModel, table=True):
     # HTTP self-registration and refreshed on every worker-register WS message.
     # NULL on legacy rows and rows created before the worker process reports in.
     hostname: str | None = None
+    # Live model catalogs reported by this worker, keyed by tool name. Currently
+    # populated for pi from `pi --list-models`; credential/env dependent.
+    available_models: dict | None = Field(default=None, sa_column=Column(JSON, nullable=True))
 
     # --- Convenience properties for guild spawn defaults ---
     # These expose the guild's default repos/tools/agent_count via the shared

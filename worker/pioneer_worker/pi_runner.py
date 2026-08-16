@@ -30,6 +30,72 @@ UsageFn = Callable[[dict], Awaitable[None]]  # on_usage(record: dict)
 OnProcFn = Callable[["PiProcess"], None]  # on_proc(proc) — worker's live-handle callback
 
 
+def parse_pi_model_rows(output: str) -> list[dict]:
+    """Parse `pi --list-models` tabular output into model records.
+
+    The command has no JSON mode today; it prints whitespace-separated columns:
+    provider model context max-out thinking images. Provider/model ids do not
+    contain spaces, so split() is sufficient and keeps this tolerant of column
+    width changes.
+    """
+    rows: list[dict] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("provider", "Warning")):
+            continue
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        provider, model, context, max_out, thinking, images = parts[:6]
+        rows.append(
+            {
+                "provider": provider,
+                "id": model,
+                "name": model,
+                "context": context,
+                "maxOutput": max_out,
+                "thinking": thinking.lower() == "yes",
+                "images": images.lower() == "yes",
+            }
+        )
+    return rows
+
+
+async def list_pi_models(
+    *,
+    pi_path: str = "pi",
+    env: dict[str, str] | None = None,
+    timeout: float = 20.0,
+) -> list[dict]:
+    """Return models visible to the current pi environment.
+
+    Pi filters this list to providers with usable local credentials/config, so
+    callers should run it inside the worker environment they intend to use for
+    actual pi tasks.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        pi_path,
+        "--list-models",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        env=env,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        logger.warning("pi --list-models timed out after %ss; killing pid=%s", timeout, proc.pid)
+        try:
+            proc.kill()
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        return []
+    if proc.returncode != 0:
+        logger.warning("pi --list-models rc=%d", proc.returncode)
+        return []
+    return parse_pi_model_rows(stdout.decode(errors="replace"))
+
+
 def _signal_group(proc: asyncio.subprocess.Process, sig: signal.Signals) -> None:
     """Signal pi's whole process group, not just pi's own pid.
 
@@ -96,26 +162,67 @@ def _result_text(result: dict) -> str:
 def _parse_pi_usage(event: dict) -> dict | None:
     """Extract token counts from a pi event's usage block, if present.
 
-    Pi may use camelCase or snake_case field names depending on version.
+    Pi has emitted several shapes over time:
+    - camelCase: inputTokens/outputTokens/cacheReadInputTokens/cacheCreationInputTokens
+    - snake_case: input_tokens/output_tokens/cache_read_input_tokens/cache_creation_input_tokens
+    - current RPC: input/output/cacheRead/cacheWrite plus cost nested under usage.cost
     Returns None when no usage block is found.
     """
     usage = event.get("usage") or event.get("tokenUsage")
     if not isinstance(usage, dict):
         return None
     v = usage.get("inputTokens")
-    input_tokens = v if v is not None else usage.get("input_tokens", 0)
+    input_tokens = v if v is not None else usage.get("input_tokens", usage.get("input", 0))
     v = usage.get("outputTokens")
-    output_tokens = v if v is not None else usage.get("output_tokens", 0)
+    output_tokens = v if v is not None else usage.get("output_tokens", usage.get("output", 0))
     v = usage.get("cacheReadInputTokens")
-    cache_read = v if v is not None else usage.get("cache_read_input_tokens", 0)
+    cache_read = (
+        v if v is not None else usage.get("cache_read_input_tokens", usage.get("cacheRead", 0))
+    )
     v = usage.get("cacheCreationInputTokens")
-    cache_creation = v if v is not None else usage.get("cache_creation_input_tokens", 0)
+    cache_creation = (
+        v if v is not None else usage.get("cache_creation_input_tokens", usage.get("cacheWrite", 0))
+    )
     return {
         "input_tokens": int(input_tokens),
         "output_tokens": int(output_tokens),
         "cache_read_input_tokens": int(cache_read),
         "cache_creation_input_tokens": int(cache_creation),
     }
+
+
+def _event_model(event: dict) -> str | None:
+    model = event.get("model")
+    if model:
+        return model
+    msg = event.get("message")
+    if isinstance(msg, dict):
+        return msg.get("model")
+    messages = event.get("messages")
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("model"):
+                return msg.get("model")
+    return None
+
+
+def _event_cost_usd(event: dict):
+    cost = event.get("cost_usd") or event.get("costUsd")
+    if cost is not None:
+        return cost
+    usage = event.get("usage")
+    if isinstance(usage, dict):
+        nested = usage.get("cost")
+        if isinstance(nested, dict) and nested.get("total") is not None:
+            return nested.get("total")
+    messages = event.get("messages")
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            if isinstance(msg, dict):
+                cost = _event_cost_usd(msg)
+                if cost is not None:
+                    return cost
+    return None
 
 
 def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, dict | None, str]:
@@ -128,12 +235,24 @@ def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, dict | None
     """
     t = event.get("type")
     if t == "message_update":
+        # Current pi RPC streams assistant deltas under assistantMessageEvent;
+        # older versions repeated the full assistant message under message.content.
+        ame = event.get("assistantMessageEvent", {})
+        if ame.get("type") == "text_delta":
+            delta = ame.get("delta", "")
+            return (delta if delta.strip() else None), None, last_text + delta
+        if ame.get("type") == "text_end":
+            full = ame.get("content", "")
+            delta = full[len(last_text) :]
+            return (delta if delta.strip() else None), None, full
         full = ""
         for blk in event.get("message", {}).get("content", []):
             if isinstance(blk, dict) and blk.get("type") == "text":
                 full += blk.get("text", "")
-        delta = full[len(last_text) :]
-        return (delta if delta.strip() else None), None, full
+        if full:
+            delta = full[len(last_text) :]
+            return (delta if delta.strip() else None), None, full
+        return None, None, last_text
     if t == "tool_execution_start":
         name = event.get("toolName", "")
         inp = event.get("args", {})
@@ -157,6 +276,17 @@ def parse_pi_event(event: dict, last_text: str) -> tuple[str | None, dict | None
         prefix = "  ✗ " if event.get("isError") else "  → "
         detail = {"toolType": "tool_result", "output": out}
         return f"{prefix}{preview}", detail, last_text
+    if t == "message_end" and event.get("message", {}).get("role") == "assistant":
+        # If a provider/version only emits the finalized assistant message,
+        # still capture and display the text. When text_delta already streamed,
+        # delta will be empty and nothing is re-emitted.
+        full = ""
+        for blk in event.get("message", {}).get("content", []):
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                full += blk.get("text", "")
+        if full:
+            delta = full[len(last_text) :]
+            return (delta if delta.strip() else None), None, full
     if t == "agent_start":
         return "[pi] agent started", None, last_text
     return None, None, last_text
@@ -413,12 +543,20 @@ async def _run_pi_once(
                 accumulated = ""
                 # Emit final usage record if pi includes cost/token data here.
                 if on_usage is not None:
-                    usage_data = _parse_pi_usage(event)
-                    cost = event.get("cost_usd") or event.get("costUsd")
+                    usage_event = event
+                    if not _parse_pi_usage(usage_event):
+                        messages = event.get("messages")
+                        if isinstance(messages, list):
+                            for msg in reversed(messages):
+                                if isinstance(msg, dict) and isinstance(msg.get("usage"), dict):
+                                    usage_event = msg
+                                    break
+                    usage_data = _parse_pi_usage(usage_event)
+                    cost = _event_cost_usd(event)
                     if usage_data or cost is not None:
                         rec: dict = {
                             "kind": "result",
-                            "model": event.get("model"),
+                            "model": _event_model(event),
                             "cost_usd": cost,
                             "stop_reason": "success",
                             **(usage_data or {}),
@@ -437,10 +575,18 @@ async def _run_pi_once(
                         await on_usage(
                             {
                                 "kind": "api_call",
-                                "model": event.get("model"),
+                                "model": _event_model(event),
                                 **usage_data,
                             }
                         )
+            if etype in ("message_start", "message_end", "turn_end"):
+                msg = event.get("message")
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    error_msg = msg.get("errorMessage")
+                    if msg.get("stopReason") == "error" or error_msg:
+                        saw_error = True
+                        await _flush_text_buf()
+                        await emit(f"[pi] ✗ {error_msg or 'assistant message failed'}")
             text, detail, accumulated = parse_pi_event(event, accumulated)
             if etype == "message_update":
                 # Buffer streaming text; emit only at newline boundaries so

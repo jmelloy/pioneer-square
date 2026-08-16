@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import database as database_module  # noqa: E402
 import main as main_module  # noqa: E402
 from _test_config import TEST_DATABASE_URL  # noqa: E402
-from helpers import insert_guild, insert_worker  # noqa: E402
+from helpers import insert_guild, insert_task, insert_worker  # noqa: E402
 from models import TaskLog  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from sqlmodel import col  # noqa: E402
@@ -122,6 +122,58 @@ def test_worker_only_terminal_output_uses_worker_id_only(client):
     assert row.agent_id is None
     assert row.task_id is None
     assert row.line == "[worker] Pulled repo"
+
+
+def test_task_scoped_agent_markdown_output_is_persisted(client):
+    """Default task-scoped agent output (markdown-rendered in the UI) is stored.
+
+    Claude assistant text is emitted as a normal task ``terminal-output`` line:
+    no special level, no detail, just the final markdown-ish text. The frontend
+    renders that path with markdown styling, so this verifies the same light-blue
+    final-output path still hits ``task_logs``.
+    """
+    test_client, db_url = client
+    guild_id, worker_id, agent_id, task_id = "gto-md", "w-gtomd", "a-gtomd", "t-gtomd"
+    _insert_guild_worker(db_url, guild_id=guild_id, worker_id=worker_id)
+    insert_task(db_url, guild_id, task_id, worker_id=worker_id, state="working")
+    line = "Implemented the fix with `ruff` passing."
+
+    with test_client.websocket_connect(f"/ws/{guild_id}") as ws_worker:
+        _join_ws(ws_worker, agent_id, worker_id)
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws_obs:
+            _join_ws(ws_obs, "a-obs-md")
+            ws_worker.receive_json()  # drain observer join broadcast
+
+            ws_worker.send_json(
+                {
+                    "type": "terminal-output",
+                    "workerId": worker_id,
+                    "agentId": agent_id,
+                    "taskId": task_id,
+                    "line": line,
+                }
+            )
+
+            msg = ws_obs.receive_json()
+            assert msg["type"] == "terminal-output"
+            assert msg["line"] == line
+            assert msg["taskId"] == task_id
+            assert msg.get("level") is None
+
+            from helpers import _sync_session
+
+            with _sync_session(db_url) as session:
+                row = session.execute(
+                    select(col(TaskLog.line), col(TaskLog.level), col(TaskLog.data))
+                    .where(col(TaskLog.task_id) == task_id)
+                    .order_by(col(TaskLog.id).desc())
+                    .limit(1)
+                ).first()
+
+    assert row is not None
+    assert row.line == line
+    assert row.level is None
+    assert row.data is None
 
 
 def test_terminal_output_level_is_persisted_and_broadcast(client):
