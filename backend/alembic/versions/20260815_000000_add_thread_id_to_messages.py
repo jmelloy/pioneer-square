@@ -1,7 +1,7 @@
 """Add thread_id column to messages table.
 
 Revision ID: 20260815_000000_add_thread_id_to_messages
-Revises: 20260813_000001_add_threads_and_conversations
+Revises: 20260814_000000_add_available_models_to_workers
 Create Date: 2026-08-15
 
 Adds a nullable ``thread_id`` FK column to ``messages`` so chat messages can be
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260815_000000_add_thread_id_to_messages"
-down_revision: str | Sequence[str] | None = "20260813_000001_add_threads_and_conversations"
+down_revision: str | Sequence[str] | None = "20260814_000000_add_available_models_to_workers"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
