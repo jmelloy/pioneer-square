@@ -1,7 +1,11 @@
 # ECS Fargate cluster, task definitions mirroring each docker-compose
 # service, and the long-running services (backend, foreman). The worker
 # task definition is registered but not run as a service — see the comment
-# above var.worker_cpu in variables.tf.
+# above var.worker_cpu in variables.tf. Baseline worker capacity now runs on
+# the t3g.medium Auto Scaling Group in asg_workers.tf; this on-demand Fargate
+# path remains as elastic overflow (foreman's spawn_worker tool / the
+# operator "spawn worker" UI action) for repos the ASG fleet isn't already
+# covering — see terraform/README.md "Worker fleet (ASG)".
 
 resource "aws_ecs_cluster" "main" {
   name = "${local.name_prefix}-cluster"
@@ -302,7 +306,9 @@ resource "aws_ecs_service" "foreman" {
 # Worker — registered task definition only (no aws_ecs_service). Launched
 # on demand by the backend via ecs:RunTask against this family, replacing
 # the docker.from_env()/containers.run() calls in
-# backend/foreman/tools.py and backend/routes/workers.py.
+# backend/foreman/tools.py and backend/routes/workers.py. This is the
+# elastic-overflow path; the always-on worker pool is the ASG in
+# asg_workers.tf.
 # -----------------------------------------------------------------------------
 
 resource "aws_ecs_task_definition" "worker" {

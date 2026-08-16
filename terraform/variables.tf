@@ -191,6 +191,60 @@ variable "worker_ephemeral_storage_gib" {
 }
 
 # -----------------------------------------------------------------------------
+# Worker fleet — Auto Scaling Group of ARM64 (Graviton2) t3g.medium EC2
+# instances running the worker image long-running (asg_workers.tf). See
+# terraform/README.md "Worker fleet (ASG)".
+# -----------------------------------------------------------------------------
+
+variable "worker_instance_type" {
+  description = "EC2 instance type for the worker Auto Scaling Group. Must be ARM64 (Graviton) to match the AL2023 arm64 AMI."
+  type        = string
+  default     = "t3g.medium"
+}
+
+variable "worker_asg_min_size" {
+  description = "Minimum number of worker instances. Keep >= 1 so CPU target tracking always has an instance to measure against (scale-to-zero needs a queue-depth-driven scheduled/step policy instead)."
+  type        = number
+  default     = 1
+}
+
+variable "worker_asg_max_size" {
+  description = "Maximum number of worker instances the ASG will scale out to."
+  type        = number
+  default     = 4
+}
+
+variable "worker_asg_desired_capacity" {
+  description = "Initial desired worker instance count (target tracking adjusts it afterward)."
+  type        = number
+  default     = 1
+}
+
+variable "worker_target_cpu_utilization" {
+  description = "Target average CPU utilization (%) for the worker ASG's target-tracking scaling policy."
+  type        = number
+  default     = 70
+}
+
+variable "worker_root_volume_gib" {
+  description = "Root EBS volume size (GiB) for worker instances — holds cloned repos and git worktrees, same purpose as worker_ephemeral_storage_gib for on-demand Fargate workers."
+  type        = number
+  default     = 40
+}
+
+variable "worker_repos" {
+  description = "Comma-separated \"owner/repo\" list the persistent worker fleet clones and operates on (PIONEER_REPOS). Defaults to var.github_repository."
+  type        = string
+  default     = ""
+}
+
+variable "worker_max_agents" {
+  description = "Concurrent agent slots (PIONEER_MAX_AGENTS) per worker instance."
+  type        = number
+  default     = 4
+}
+
+# -----------------------------------------------------------------------------
 # RDS (replaces the docker-compose `postgres` service)
 # -----------------------------------------------------------------------------
 
