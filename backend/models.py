@@ -153,6 +153,11 @@ class Message(SQLModel, table=True):
     # via discord/router.py), or "api" (posted directly through the REST
     # messages endpoint). Lets the frontend show where a message came from.
     source: str | None = Field(default="web")
+    # Foreman-owned conversation thread (#1167) this message belongs to. NULL for
+    # messages that predate message-to-thread linking or that aren't scoped to any
+    # conversation (e.g. GitHub webhook notices). Resolved best-effort, read-only,
+    # at persist time — see ``foreman.thread_service.resolve_thread_id``.
+    thread_id: str | None = Field(default=None, foreign_key="threads.id", index=True)
 
 
 class Conversation(SQLModel, table=True):

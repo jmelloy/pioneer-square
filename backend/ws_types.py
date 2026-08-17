@@ -100,6 +100,11 @@ class ChatMsg(_WS):
     # The frontend badges child-context messages so it's clear which are scoped
     # to a single task rather than the guild-wide Foreman conversation.
     taskId: str | None = None
+    # Foreman-owned conversation thread (#1167) this message belongs to, when
+    # resolvable — lets the frontend route a live message into the right
+    # thread pane in addition to the guild-wide comms pane. None for messages
+    # sent before any thread exists yet, or not scoped to a conversation.
+    threadId: str | None = None
 
 
 class TerminalOutputMsg(_WS):

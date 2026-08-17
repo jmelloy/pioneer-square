@@ -162,6 +162,10 @@ export interface ChatMessage {
   // present, the chat pane badges the line as scoped to that task rather than
   // the guild-wide Foreman conversation. See docs/foreman-per-task-context.md.
   taskId?: string | null
+  // Foreman-owned conversation thread (#1167) this message belongs to, when
+  // resolvable (#1175). Lets ThreadDetailPanel filter the shared message
+  // stream down to one thread's own history.
+  threadId?: string | null
   [key: string]: unknown
 }
 
