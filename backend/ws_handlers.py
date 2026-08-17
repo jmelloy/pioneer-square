@@ -172,13 +172,6 @@ async def _task_user_id(db, task_id: str | None) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-# Trigger events that concern a single task's review loop. When the embedded
-# foreman handles these (and a task_id is present), it runs in an isolated
-# per-task child context. All other events stay on the whole-guild parent
-# context. See docs/foreman-per-task-context.md.
-_CHILD_FOREMAN_EVENTS = frozenset({"task-complete", "followup-done", "needs-input", "task-error"})
-
-
 async def _trigger_foreman(
     guild_id: str,
     event: str,
@@ -204,11 +197,6 @@ async def _trigger_foreman(
     @-mention lands back where it was asked. None (every other caller) keeps
     the default routing in ``discord_notifier.notify_foreman_chat``.
     """
-    # Task-specific review events run in an isolated per-task child context
-    # (see docs/foreman-per-task-context.md); cross-cutting events (chat, worker
-    # lifecycle, periodic-check, claude-auth) stay on the parent whole-guild
-    # context.
-    child = bool(task_id) and event in _CHILD_FOREMAN_EVENTS
     # See foreman.classify for the human/automated event classification shared
     # with routes.tasks.create_task_followup's REST follow-up path.
     is_human = is_human_event(event)
@@ -229,7 +217,6 @@ async def _trigger_foreman(
             human_message,
             user_id=user_id,
             task_id=task_id,
-            child=child,
             is_human=is_human,
             reply_channel_id=reply_channel_id,
             trigger=event,

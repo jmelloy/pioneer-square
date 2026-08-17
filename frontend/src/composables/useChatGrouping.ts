@@ -8,7 +8,7 @@ export interface ToolUseGroup {
   from: string
   createdAt?: string
   created_at?: string
-  // Carried from the first tool_use in the group so a child-context turn's
+  // Carried from the first tool_use in the group so a task-scoped turn's
   // tool calls badge the same as its narration lines.
   taskId?: string | null
 }

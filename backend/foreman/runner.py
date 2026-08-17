@@ -42,15 +42,13 @@ from foreman.message_utils import (
     truncate_tool_result,
 )
 from foreman.prompt import (
-    build_child_state_preamble,
-    build_child_system_blocks,
     build_state_preamble,
     build_system_blocks,
     build_system_prompt,
 )
 from foreman.proxy import call_foreman_api_proxy, has_foreman_proxy
 from foreman.tools import exec_tools
-from foreman.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
+from foreman.tools_schema import FOREMAN_TOOLS
 from models import (
     Agent,
     ApiRequestLog,
@@ -126,25 +124,7 @@ class _GuildRunLock:
 _guild_locks: dict[tuple[str, str | None], _GuildRunLock] = {}
 
 
-def is_child_task_run_active(guild_id: str, task_id: str) -> bool:
-    """Return True if a per-task child Foreman run is currently in-flight for *task_id*.
-
-    Checks the same ``_guild_locks`` map used to serialise ``run_foreman_ai``
-    invocations, keyed on ``(guild_id, "task:<task_id>")`` — the lock key a
-    per-task child context claims for the duration of its run (see
-    ``run_foreman_ai``). A *parent* run's task-mutating tool handlers
-    (send_followup, redirect_task, cancel_task, finalize_task) call this
-    before acting on a specific task_id so they can detect that task's own
-    child context is mid-flight and skip rather than race it — closing the
-    cross-context lock gap from issue #927 (parent and child runs otherwise
-    key on different (guild_id, key) pairs and never serialise against each
-    other for the same task).
-    """
-    state = _guild_locks.get((guild_id, f"task:{task_id}"))
-    return bool(state and state.busy)
-
-
-# Max number of queued human messages per (guild, user)/(guild, task) key.
+# Max number of queued human messages per (guild, user) key.
 # Bounded so a guild nobody is watching can't grow this without limit; the
 # oldest entry is dropped (with a warning) once the cap is hit.
 _HUMAN_QUEUE_MAX = 50
@@ -163,7 +143,6 @@ class _QueuedHumanTurn:
     extra_context: str
     user_id: str | None
     task_id: str | None
-    child: bool
     queued_at: str
     reply_channel_id: str | None = None
     trigger: str | None = None
@@ -400,32 +379,13 @@ async def _get_guild_user_id(guild_id: str) -> str | None:
         await db.close()
 
 
-def _child_contexts_enabled() -> bool:
-    """Whether per-task child contexts are enabled for the embedded foreman.
-
-    Defaults on; set ``FOREMAN_CHILD_CONTEXTS`` to a falsy value
-    (0/false/no/off) to fall back to the legacy single whole-guild context.
-    See docs/foreman-per-task-context.md.
-    """
-    return os.environ.get("FOREMAN_CHILD_CONTEXTS", "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-        "",
-    )
-
-
-async def _load_history(guild_id: str, user_id: str, task_id: str | None = None) -> list[dict]:
+async def _load_history(guild_id: str, user_id: str) -> list[dict]:
     """Load the last _HUMAN_TURN_WINDOW non-tool-response turns (plus all tool exchange
     turns between them) as a list of Anthropic-API-compatible message dicts.
 
     Because the cutoff always lands on a human-initiated user turn, every
     assistant-turn / tool_result-user-turn pair that follows it is guaranteed to
     be included intact — no orphaned tool_use blocks, no synthetic repairs needed.
-
-    When ``task_id`` is set, only turns tagged with that task are loaded — the
-    isolated conversation thread for a per-task child context.
     """
     db = await get_db()
     try:
@@ -433,11 +393,6 @@ async def _load_history(guild_id: str, user_id: str, task_id: str | None = None)
         stmt = select(ForemanTurn).where(
             col(ForemanTurn.guild_id) == guild_pk_val, col(ForemanTurn.user_id) == user_id
         )
-        if task_id is not None:
-            stmt = stmt.where(col(ForemanTurn.task_id) == task_id)
-        else:
-            # Parent-mode reads must never re-absorb per-task child conversations.
-            stmt = stmt.where(col(ForemanTurn.task_id).is_(None))
         # Fetch only the most recent rows at the SQL level so query cost doesn't
         # scale with the table's total lifetime turn count; the Python-side
         # windowing below then trims this small set down further.
@@ -1134,8 +1089,7 @@ async def _emit_foreman_chat(
     content: str,
     created_at: str,
     *,
-    child_task_id: str | None = None,
-    discord_task_id: str | None = None,
+    task_id: str | None = None,
     discord_channel_id: str | None = None,
     user_id: str | None = None,
 ) -> None:
@@ -1145,24 +1099,19 @@ async def _emit_foreman_chat(
     traces) goes through here so the Discord thread mirror in discord_notifier
     stays in sync with the WS chat stream.
 
-    The two ids are deliberately separate (see docs/foreman-per-task-context.md):
-
-    - ``child_task_id`` tags the WS ``ChatMsg`` so the frontend can badge lines
-      produced inside a per-task child context. It is None for parent runs even
-      when the run concerns a task (e.g. a human chatting in a task's Discord
-      thread stays on the parent conversation).
-    - ``discord_task_id`` routes the Discord mirror to that task's thread. It is
-      set whenever the run concerns a task — including the parent-context reply
-      to a message posted in a task thread — so the reply always lands back in
-      the thread the human is talking in rather than the guild's main channel.
+    ``task_id`` is set whenever the run concerns a task (e.g. a task-complete
+    event, or a human reply posted in that task's Discord thread). It both
+    badges the WS ``ChatMsg`` so the frontend can show which task a line
+    concerns, and routes the Discord mirror to that task's thread so the
+    reply lands back where the human is talking.
 
     ``discord_channel_id`` pins the Discord mirror to one channel outright,
-    overriding both of the above. Set only for a run triggered by an @-mention
+    overriding ``task_id``. Set only for a run triggered by an @-mention
     (see ``discord/router.py``), so the answer goes back to the channel or DM
     the mention came from.
 
     ``user_id`` is passed through to ``notify_foreman_chat`` so ad-hoc chat
-    (no ``discord_task_id``/``discord_channel_id``) lands in that user's own
+    (no ``task_id``/``discord_channel_id``) lands in that user's own
     per-conversation Discord thread (#1161) instead of the flat main channel.
     """
     await broadcast_msg(
@@ -1172,14 +1121,14 @@ async def _emit_foreman_chat(
             to="user",
             content=content,
             createdAt=created_at,
-            taskId=child_task_id,
+            taskId=task_id,
         ),
     )
     spawn(
         discord_notifier.notify_foreman_chat(
             guild_id,
             content,
-            task_id=discord_task_id,
+            task_id=task_id,
             channel_id=discord_channel_id,
             user_id=user_id,
         ),
@@ -1194,12 +1143,11 @@ async def run_foreman_ai(
     user_id: str | None = None,
     task_id: str | None = None,
     *,
-    child: bool = False,
     is_human: bool = False,
     reply_channel_id: str | None = None,
     trigger: str | None = None,
 ) -> None:
-    """Serialise per-context and delegate to ``_run_foreman_ai``.
+    """Serialise per-guild runs and delegate to ``_run_foreman_ai``.
 
     Uses the ``busy`` flag on the ``_GuildRunLock`` stored in ``_guild_locks``.
     If a run is already in progress, automated invocations (``is_human=False``
@@ -1213,20 +1161,19 @@ async def run_foreman_ai(
     to a small bounded FIFO queue (``_human_queues``) and drained in order once
     the in-flight run for that key finishes, before the slot is freed.
 
-    Whole-guild (parent) runs key the lock on ``(guild_id, user_id)``.  Per-task
-    child runs (``child=True`` with a ``task_id``, gated by FOREMAN_CHILD_CONTEXTS)
-    key on ``(guild_id, task_id)`` so different tasks run concurrently while a
-    single task's review loop still serialises against itself.  See
-    docs/foreman-per-task-context.md.
+    Runs are keyed on ``(guild_id, user_id)`` — one whole-guild conversation
+    per user, regardless of whether the triggering event concerns a specific
+    task. Per-conversation isolation for Discord/web UI chat is handled by the
+    thread-per-conversation system (see foreman/thread_service.py), not by
+    this lock.
 
     See ``_GuildRunLock`` for why the busy-check and claim below are atomic.
     """
-    use_child = child and bool(task_id) and _child_contexts_enabled()
     # When user_id is None (system-triggered/poll runs), all such invocations
     # within the same guild share key (guild_id, None) and serialize against
     # each other.  This is intentional — system runs are per-guild work and
     # should not overlap with themselves.
-    lock_key = (guild_id, f"task:{task_id}") if use_child else (guild_id, user_id)
+    lock_key = (guild_id, user_id)
     state = _guild_locks.setdefault(lock_key, _GuildRunLock())
     if state.busy:
         if is_human:
@@ -1237,7 +1184,6 @@ async def run_foreman_ai(
                 extra_context,
                 user_id,
                 task_id,
-                use_child,
                 reply_channel_id,
                 trigger=trigger,
             )
@@ -1256,7 +1202,6 @@ async def run_foreman_ai(
             extra_context,
             user_id,
             task_id=task_id,
-            child=use_child,
             reply_channel_id=reply_channel_id,
             trigger=trigger,
         )
@@ -1276,7 +1221,6 @@ def _enqueue_human_turn(
     extra_context: str,
     user_id: str | None,
     task_id: str | None,
-    child: bool,
     reply_channel_id: str | None = None,
     trigger: str | None = None,
 ) -> None:
@@ -1304,7 +1248,6 @@ def _enqueue_human_turn(
             extra_context=extra_context,
             user_id=user_id,
             task_id=task_id,
-            child=child,
             queued_at=datetime.now(UTC).isoformat(),
             reply_channel_id=reply_channel_id,
             trigger=trigger,
@@ -1357,7 +1300,6 @@ async def _drain_human_queue(lock_key: tuple[str, str | None]) -> None:
                     turn.extra_context,
                     turn.user_id,
                     task_id=turn.task_id,
-                    child=turn.child,
                     reply_channel_id=turn.reply_channel_id,
                     trigger=turn.trigger,
                 )
@@ -1390,8 +1332,7 @@ async def _notify_queued_turn_failure(
             turn.guild_id,
             f"Sorry, something went wrong processing your message: {exc}",
             datetime.now(UTC).isoformat(),
-            child_task_id=turn.task_id if turn.child else None,
-            discord_task_id=turn.task_id,
+            task_id=turn.task_id,
             discord_channel_id=turn.reply_channel_id,
             user_id=turn.user_id,
         )
@@ -1410,21 +1351,19 @@ async def _run_foreman_ai(
     user_id: str | None = None,
     task_id: str | None = None,
     *,
-    child: bool = False,
     reply_channel_id: str | None = None,
     trigger: str | None = None,
 ):
     """Process a human message (or system escalation) through the Claude foreman AI.
 
-    When ``child`` is True (with a ``task_id``) the run is scoped to a single task:
-    worker/task rows, system prompt, state preamble, tool set, and loaded history
-    are all narrowed to that one task. See docs/foreman-per-task-context.md.
+    Every run shares the same whole-guild system prompt, tool set, and
+    conversation history for a given (guild_id, user_id) — there is no
+    per-task scoping of the LLM conversation. ``task_id``, when set, only
+    tags outgoing chat lines/messages so the frontend can badge them and so
+    the Discord mirror routes into that task's thread (e.g. a task-complete
+    event, or a human reply posted in a task's Discord thread); it never
+    narrows the workers/tasks visible in this turn or the history loaded.
     """
-    # Initialized up front (rather than only inside the child/parent branches
-    # below) so it's always bound — including on any early return before task
-    # scoping runs — for every ``task_id=_task_id`` use further down.
-    _task_id: str | None = None
-
     proxy_available = has_foreman_proxy(guild_id)
     if not HAS_ANTHROPIC and not proxy_available:
         now = datetime.now(UTC).isoformat()
@@ -1485,34 +1424,6 @@ async def _run_foreman_ai(
             {**dict(r._mapping), "description": dict(r._mapping).get("description") or ""}
             for r in task_result.all()
         ]
-        # Per-task child context: narrow worker/task rows to just this task and
-        # its assigned worker. Falls back to a minimal stub if the task is no
-        # longer in the active set (e.g. just finalized).
-        child_task_row: dict | None = None
-        if child and task_id:
-            child_task_row = next((t for t in task_rows if t.get("id") == task_id), None)
-            child_worker_id = child_task_row.get("worker_id") if child_task_row else None
-            worker_rows = [r for r in worker_rows if r["id"] == child_worker_id]
-            task_rows = [child_task_row] if child_task_row else []
-            _task_id = task_id
-        elif child:
-            _task_id = task_rows[0]["id"] if len(task_rows) == 1 else None
-        else:
-            # Parent runs (periodic-check, worker lifecycle, human chat) must
-            # never tag turns with a child task_id, even when exactly one
-            # non-terminal task happens to exist — those turns must stay
-            # untagged (task_id IS NULL) so they don't pollute that task's
-            # isolated child context on its next run.
-            _task_id = None
-
-        # Discord routing target for narration mirrored back to the human.
-        # ``_task_id`` (history tag) is None for parent runs, but a parent run
-        # can still concern a task — e.g. a human message posted in that task's
-        # Discord thread arrives as an ``event="chat"`` trigger with a task_id
-        # that stays on the parent conversation. Route the reply back into that
-        # thread using the incoming ``task_id`` even though the turn isn't
-        # tagged as child history. See docs/foreman-per-task-context.md.
-        _discord_task_id: str | None = _task_id or task_id
     except Exception:
         await db.close()
         raise
@@ -1538,24 +1449,11 @@ async def _run_foreman_ai(
             s for row in task_rows if (s := _summarize_task(row, cutoff_ts)) is not None
         ]
         tasks_block = json.dumps(summarized_tasks, indent=2, default=_json_default)
-        if child and task_id:
-            _t = child_task_row or {}
-            tools = CHILD_FOREMAN_TOOLS
-            system_blocks = build_child_system_blocks(
-                task_id=task_id,
-                task_name=_t.get("name") or task_id,
-                worker_id=_t.get("worker_id"),
-                phase=_t.get("phase"),
-                repo=_t.get("issue_repo") or primary_repo,
-                system_prompt_suffix=cfg_system_prompt_suffix,
-            )
-            state_preamble = build_child_state_preamble(workers_block, tasks_block, extra_context)
-        else:
-            tools = FOREMAN_TOOLS
-            system_blocks = build_system_blocks(
-                primary_repo=primary_repo, system_prompt_suffix=cfg_system_prompt_suffix
-            )
-            state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
+        tools = FOREMAN_TOOLS
+        system_blocks = build_system_blocks(
+            primary_repo=primary_repo, system_prompt_suffix=cfg_system_prompt_suffix
+        )
+        state_preamble = build_state_preamble(workers_block, tasks_block, extra_context)
         # Legacy single-string render — persisted for audit only, not sent to the API.
         audit_system = build_system_prompt(
             workers_block,
@@ -1584,9 +1482,9 @@ async def _run_foreman_ai(
 
         # Persist the rendered prompt + human turn for auditing; the API receives
         # `system_blocks` (cacheable) and the state preamble injected at send time.
-        await _save_turn(guild_id, user_id, "system", audit_system, task_id=_task_id)
-        await _save_turn(guild_id, user_id, "user", human_message, task_id=_task_id)
-        messages = await _load_history(guild_id, user_id, task_id=_task_id if child else None)
+        await _save_turn(guild_id, user_id, "system", audit_system, task_id=task_id)
+        await _save_turn(guild_id, user_id, "user", human_message, task_id=task_id)
+        messages = await _load_history(guild_id, user_id)
 
         logger.info(
             "guild=%s run_foreman_ai: %d messages loaded from history; human_message_chars=%d",
@@ -1624,7 +1522,7 @@ async def _run_foreman_ai(
                 system_blocks=system_blocks,
                 messages=messages,
                 extra={"max_tokens": 1024, "tools": tools},
-                task_id=_task_id,
+                task_id=task_id,
                 guild_id=guild_id,
                 user_id=user_id,
                 trigger=trigger,
@@ -1678,7 +1576,7 @@ async def _run_foreman_ai(
                 "assistant",
                 resp.content,
                 api_log_id=api_log_id,
-                task_id=_task_id,
+                task_id=task_id,
             )
             messages.append({"role": "assistant", "content": _serialize_content(resp.content)})
             # Re-parse so messages stays as plain dicts (not SDK objects)
@@ -1694,8 +1592,7 @@ async def _run_foreman_ai(
                         guild_id,
                         b.text.strip(),
                         _now.isoformat(),
-                        child_task_id=_task_id,
-                        discord_task_id=_discord_task_id,
+                        task_id=task_id,
                         discord_channel_id=reply_channel_id,
                         user_id=user_id,
                     )
@@ -1719,15 +1616,13 @@ async def _run_foreman_ai(
                         toolInput=dict(tu.input) if tu.input else {},
                         toolId=tu.id,
                         createdAt=_now.isoformat(),
-                        taskId=_task_id,
+                        taskId=task_id,
                     ),
                 )
 
             _tool_use_ts = _now  # capture before exec_tools may raise
 
-            tool_results = await exec_tools(
-                guild_id, tool_uses, user_id=user_id, own_task_id=_task_id
-            )
+            tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
             # Truncate verbose results; filter to only IDs in the current batch so
             # stale results that survived history trimming are never persisted.
             current_tool_use_ids = {tu.id for tu in tool_uses}
@@ -1754,7 +1649,7 @@ async def _run_foreman_ai(
                         toolOutput=result.get("content", ""),
                         isError=result.get("is_error", False),
                         createdAt=_now.isoformat(),
-                        taskId=_task_id,
+                        taskId=task_id,
                     ),
                 )
 
@@ -1778,7 +1673,7 @@ async def _run_foreman_ai(
                                 }
                             ),
                             created_at=_tool_use_ts,
-                            task_id=_task_id,
+                            task_id=task_id,
                         )
                     )
                 for result in trimmed:
@@ -1797,7 +1692,7 @@ async def _run_foreman_ai(
                                 }
                             ),
                             created_at=_now,
-                            task_id=_task_id,
+                            task_id=task_id,
                         )
                     )
                 await db.commit()
@@ -1813,7 +1708,7 @@ async def _run_foreman_ai(
                 trimmed,
                 is_tool_response=True,
                 parent_id=asst_turn_id,
-                task_id=_task_id,
+                task_id=task_id,
             )
             logger.info(
                 "guild=%s round %d: %d tool call(s) dispatched: %s",
@@ -1849,7 +1744,7 @@ async def _run_foreman_ai(
                     "tools": tools,
                     "tool_choice": {"type": "none"},
                 },
-                task_id=_task_id,
+                task_id=task_id,
                 guild_id=guild_id,
                 user_id=user_id,
                 trigger=trigger,
@@ -1900,7 +1795,7 @@ async def _run_foreman_ai(
                 "assistant",
                 wrap_resp.content,
                 api_log_id=_wrap_api_log_id,
-                task_id=_task_id,
+                task_id=task_id,
             )
             _now = datetime.now(UTC).isoformat()
             for b in wrap_resp.content:
@@ -1910,8 +1805,7 @@ async def _run_foreman_ai(
                         guild_id,
                         b.text.strip(),
                         _now,
-                        child_task_id=_task_id,
-                        discord_task_id=_discord_task_id,
+                        task_id=task_id,
                         discord_channel_id=reply_channel_id,
                         user_id=user_id,
                     )
@@ -1921,8 +1815,7 @@ async def _run_foreman_ai(
                 guild_id,
                 cap_note,
                 _now,
-                child_task_id=_task_id,
-                discord_task_id=_discord_task_id,
+                task_id=task_id,
                 discord_channel_id=reply_channel_id,
                 user_id=user_id,
             )
@@ -1938,7 +1831,7 @@ async def _run_foreman_ai(
                     content=response_text,
                     message_type="chat",
                     created_at=now,
-                    task_id=_task_id,
+                    task_id=task_id,
                     user_id=user_id,
                     source="a2a" if user_id and "." in user_id else "web",
                 )

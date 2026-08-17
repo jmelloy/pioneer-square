@@ -209,6 +209,14 @@ definitions), and `prompt.py` (system prompt); the package has grown to include 
 LLM-provider helpers too. Currently uses `claude-sonnet-4-6` (`FOREMAN_MODEL` env var). Conversation
 history is DB-backed (loaded per guild/user from the `messages`/`foreman_turns` tables), windowed
 to the last few human turns and capped at `MAX_HISTORY_MESSAGES` (currently 20) before each call.
+There is a single unified system prompt (`FOREMAN_SYSTEM`) and one whole-guild conversation per
+user — the foreman never runs a task-scoped LLM conversation. A `task_id` passed into a run (e.g.
+a `task-complete` event, or a human reply in a task's Discord thread) only tags outgoing chat
+lines/messages for the frontend badge and Discord-thread routing; it never narrows the tools,
+system prompt, or history used for that turn. Per-conversation isolation for humans is instead
+provided by the thread-per-conversation system (`foreman/thread_service.py`,
+`foreman/thread_maintenance.py`, the `threads`/`conversations` tables): each human conversation
+gets its own `Thread`, independent of any task.
 The foreman is triggered by:
 1. Human chat messages addressed to `foreman`
 2. `task-complete` WS messages from workers

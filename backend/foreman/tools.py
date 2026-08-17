@@ -1504,8 +1504,6 @@ async def exec_tools(
     guild_id: str,
     tool_uses: list,
     user_id: str | None = None,
-    *,
-    own_task_id: str | None = None,
 ) -> list:
     """Execute tool calls from the foreman AI and return tool-result blocks.
 
@@ -1519,15 +1517,8 @@ async def exec_tools(
     *user_id* identifies the human whose foreman session is running. It's
     stamped onto any tasks created by ``create_task`` / ``assign_task`` so
     worker-driven events later route back to the same user thread.
-
-    *own_task_id* is the task_id of the per-task child context this batch is
-    running in (None for parent/whole-guild runs). Passed through to
-    task-mutating handlers (send_followup, redirect_task, cancel_task,
-    finalize_task) so they can tell whether they're a task's own child
-    context (never conflicts with itself) versus a parent run reaching into a
-    task that a child run currently owns — see ``_task_mutation_blocked``.
     """
-    coros = [_exec_one_tool(guild_id, tu, user_id, own_task_id=own_task_id) for tu in tool_uses]
+    coros = [_exec_one_tool(guild_id, tu, user_id) for tu in tool_uses]
     return list(await asyncio.gather(*coros))
 
 
@@ -1552,31 +1543,6 @@ def _full_log_content(data_json: str | None) -> str | None:
             return val
         if val is not None:
             return json.dumps(val, default=_json_default)
-    return None
-
-
-def _task_mutation_blocked(guild_id: str, task_id: str, own_task_id: str | None) -> str | None:
-    """Return a user-facing message if *task_id* is owned by a different in-flight
-    Foreman context right now, else None.
-
-    ``own_task_id`` is the task_id of the per-task child context this tool
-    call is itself running in (None for a parent/whole-guild run). A run
-    never conflicts with its own per-task lock — this only fires when a
-    *different* context holds it, which in practice means a parent run
-    (periodic-check or human chat) reaching into a task whose own child run
-    is currently mutating it. See issue #927: parent and child runs key on
-    different (guild_id, key) pairs and would otherwise never serialise
-    against each other for the same task.
-    """
-    if own_task_id == task_id:
-        return None
-    from foreman.runner import is_child_task_run_active  # noqa: PLC0415 — avoids circular import
-
-    if is_child_task_run_active(guild_id, task_id):
-        return (
-            f"Task {task_id} has an in-flight child Foreman run right now — "
-            "skipping this action to avoid racing it. Retry shortly once it completes."
-        )
     return None
 
 
@@ -1610,9 +1576,7 @@ async def _resolve_bedrock_model_id(db, provider: str | None, model: str | None)
     return model
 
 
-async def _exec_one_tool(
-    guild_id: str, tu, user_id: str | None = None, *, own_task_id: str | None = None
-) -> dict:
+async def _exec_one_tool(guild_id: str, tu, user_id: str | None = None) -> dict:
     """Execute a single tool call and return its tool_result block."""
     inp = tu.input
     result_text = ""
@@ -2080,305 +2044,293 @@ async def _exec_one_tool(
                 requested_tier: str | None = inp.get("tier") or None
                 requested_provider: str | None = inp.get("provider") or None
                 requested_create_pr = bool(inp.get("create_pr", False))
-                _blocked = _task_mutation_blocked(guild_id, task_id, own_task_id)
-                if _blocked:
-                    result_text = _blocked
-                    is_error = True
+                result = await db.exec(
+                    select(
+                        col(Task.worker_id),
+                        col(Task.state),
+                        col(Task.branch),
+                        col(Task.description),
+                        col(Task.name),
+                        col(Task.tool),
+                        col(Task.model),
+                        col(Task.model_tier),
+                        col(Task.provider),
+                        col(Task.issue_number),
+                        col(Task.issue_repo),
+                        col(Task.claude_session_id),
+                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+                )
+                row = result.one_or_none()
+                if not row:
+                    result_text = f"Task {task_id} not found."
                 else:
-                    result = await db.exec(
-                        select(
-                            col(Task.worker_id),
-                            col(Task.state),
-                            col(Task.branch),
-                            col(Task.description),
-                            col(Task.name),
-                            col(Task.tool),
-                            col(Task.model),
-                            col(Task.model_tier),
-                            col(Task.provider),
-                            col(Task.issue_number),
-                            col(Task.issue_repo),
-                            col(Task.claude_session_id),
-                        ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+                    (
+                        original_worker_id,
+                        prior_state,
+                        branch,
+                        task_desc,
+                        task_name,
+                        task_tool,
+                        task_model,
+                        task_model_tier,
+                        task_provider,
+                        task_issue_number,
+                        task_issue_repo,
+                        task_session_id,
+                    ) = row
+                    target_worker_id = await _select_followup_worker(
+                        db,
+                        guild_id=guild_id,
+                        original_worker_id=original_worker_id,
+                        preferred_worker_id=preferred_worker_id,
                     )
-                    row = result.one_or_none()
-                    if not row:
-                        result_text = f"Task {task_id} not found."
-                    else:
-                        (
-                            original_worker_id,
-                            prior_state,
-                            branch,
-                            task_desc,
-                            task_name,
-                            task_tool,
-                            task_model,
-                            task_model_tier,
-                            task_provider,
-                            task_issue_number,
-                            task_issue_repo,
-                            task_session_id,
-                        ) = row
-                        target_worker_id = await _select_followup_worker(
-                            db,
-                            guild_id=guild_id,
-                            original_worker_id=original_worker_id,
-                            preferred_worker_id=preferred_worker_id,
+                    if not target_worker_id:
+                        result_text = (
+                            f"No idle worker available to continue task {task_id} on branch "
+                            f"{branch or '<unknown>'}. Wait for one to come online or shut "
+                            "down a busy worker before retrying."
                         )
-                        if not target_worker_id:
-                            result_text = (
-                                f"No idle worker available to continue task {task_id} on branch "
-                                f"{branch or '<unknown>'}. Wait for one to come online or shut "
-                                "down a busy worker before retrying."
+                        is_error = True
+                    elif not branch:
+                        result_text = (
+                            f"Task {task_id} has no branch recorded — can't dispatch a "
+                            "follow-up. The task may have failed before its first push."
+                        )
+                        is_error = True
+                    else:
+                        followup_worker_result = await db.exec(
+                            select(col(Worker.tools), col(Worker.provider)).where(
+                                col(Worker.id) == target_worker_id
                             )
-                            is_error = True
-                        elif not branch:
+                        )
+                        followup_worker_row = followup_worker_result.one_or_none()
+                        followup_worker_tools_json = (
+                            followup_worker_row[0] if followup_worker_row else None
+                        )
+                        followup_worker_provider = (
+                            followup_worker_row[1] if followup_worker_row else None
+                        )
+                        if isinstance(followup_worker_tools_json, str):
+                            followup_worker_tools: list[str] = json.loads(
+                                followup_worker_tools_json or "[]"
+                            )
+                        else:
+                            followup_worker_tools = followup_worker_tools_json or []
+
+                        if (
+                            requested_tool
+                            and followup_worker_tools
+                            and requested_tool not in followup_worker_tools
+                        ):
+                            available = ", ".join(followup_worker_tools)
                             result_text = (
-                                f"Task {task_id} has no branch recorded — can't dispatch a "
-                                "follow-up. The task may have failed before its first push."
+                                f"Worker {target_worker_id} does not support tool "
+                                f"{requested_tool!r}. Available tools: {available}"
                             )
                             is_error = True
                         else:
-                            followup_worker_result = await db.exec(
-                                select(col(Worker.tools), col(Worker.provider)).where(
-                                    col(Worker.id) == target_worker_id
-                                )
+                            effective_tool = (
+                                requested_tool
+                                or task_tool
+                                or (followup_worker_tools[0] if followup_worker_tools else "claude")
                             )
-                            followup_worker_row = followup_worker_result.one_or_none()
-                            followup_worker_tools_json = (
-                                followup_worker_row[0] if followup_worker_row else None
-                            )
-                            followup_worker_provider = (
-                                followup_worker_row[1] if followup_worker_row else None
-                            )
-                            if isinstance(followup_worker_tools_json, str):
-                                followup_worker_tools: list[str] = json.loads(
-                                    followup_worker_tools_json or "[]"
-                                )
+                            if requested_model is not None:
+                                effective_model = requested_model
+                            elif requested_tier:
+                                # Explicit tier bump/de-escalation — drop the pinned
+                                # model so it's re-resolved from the new tier below.
+                                effective_model = None
+                            elif requested_tool and requested_tool != task_tool:
+                                # Switching tools invalidates the previous model choice
+                                # (e.g. a claude model id is meaningless to codex/pi) —
+                                # drop it and let the worker pick its own default.
+                                effective_model = None
                             else:
-                                followup_worker_tools = followup_worker_tools_json or []
+                                effective_model = task_model
+                            effective_provider = (
+                                requested_provider
+                                if requested_provider is not None
+                                else task_provider
+                                if task_provider is not None
+                                else followup_worker_provider
+                            )
+                            # Pi has no authenticating built-in default — fall
+                            # back to the guild's configured pi default (#1040).
+                            if effective_tool == "pi" and (
+                                effective_provider is None or effective_model is None
+                            ):
+                                effective_provider, effective_model = _apply_pi_defaults(
+                                    effective_tool,
+                                    effective_provider,
+                                    effective_model,
+                                    await _guild_foreman_config(db, guild_pk),
+                                )
+
+                            from util.model_tiers import (  # noqa: PLC0415
+                                select_model_tier as _select_tier,
+                            )
+
+                            if requested_tier:
+                                effective_tier = _select_tier(
+                                    "followup", complexity_hint=requested_tier
+                                )
+                            elif requested_tool and requested_tool != task_tool:
+                                effective_tier = _select_tier("followup")
+                            else:
+                                effective_tier = task_model_tier or _select_tier("followup")
 
                             if (
-                                requested_tool
-                                and followup_worker_tools
-                                and requested_tool not in followup_worker_tools
+                                requested_tier
+                                and requested_model is None
+                                and effective_provider
+                                and not is_error
                             ):
-                                available = ", ".join(followup_worker_tools)
-                                result_text = (
-                                    f"Worker {target_worker_id} does not support tool "
-                                    f"{requested_tool!r}. Available tools: {available}"
-                                )
-                                is_error = True
-                            else:
-                                effective_tool = (
-                                    requested_tool
-                                    or task_tool
-                                    or (
-                                        followup_worker_tools[0]
-                                        if followup_worker_tools
-                                        else "claude"
-                                    )
-                                )
-                                if requested_model is not None:
-                                    effective_model = requested_model
-                                elif requested_tier:
-                                    # Explicit tier bump/de-escalation — drop the pinned
-                                    # model so it's re-resolved from the new tier below.
-                                    effective_model = None
-                                elif requested_tool and requested_tool != task_tool:
-                                    # Switching tools invalidates the previous model choice
-                                    # (e.g. a claude model id is meaningless to codex/pi) —
-                                    # drop it and let the worker pick its own default.
-                                    effective_model = None
-                                else:
-                                    effective_model = task_model
-                                effective_provider = (
-                                    requested_provider
-                                    if requested_provider is not None
-                                    else task_provider
-                                    if task_provider is not None
-                                    else followup_worker_provider
-                                )
-                                # Pi has no authenticating built-in default — fall
-                                # back to the guild's configured pi default (#1040).
-                                if effective_tool == "pi" and (
-                                    effective_provider is None or effective_model is None
-                                ):
-                                    effective_provider, effective_model = _apply_pi_defaults(
-                                        effective_tool,
-                                        effective_provider,
-                                        effective_model,
-                                        await _guild_foreman_config(db, guild_pk),
-                                    )
-
                                 from util.model_tiers import (  # noqa: PLC0415
-                                    select_model_tier as _select_tier,
+                                    get_model_for_tier as _get_model_for_tier,
+                                )
+                                from util.models_dev import (  # noqa: PLC0415
+                                    get_providers_from_db as _get_providers_from_db,
                                 )
 
-                                if requested_tier:
-                                    effective_tier = _select_tier(
-                                        "followup", complexity_hint=requested_tier
-                                    )
-                                elif requested_tool and requested_tool != task_tool:
-                                    effective_tier = _select_tier("followup")
-                                else:
-                                    effective_tier = task_model_tier or _select_tier("followup")
+                                _catalog = await _get_providers_from_db(db)
+                                effective_model = _get_model_for_tier(
+                                    effective_tier, effective_provider, _catalog
+                                )
+                            if effective_model and effective_provider:
+                                from models import ModelCatalog  # noqa: PLC0415
 
-                                if (
-                                    requested_tier
-                                    and requested_model is None
-                                    and effective_provider
-                                    and not is_error
-                                ):
-                                    from util.model_tiers import (  # noqa: PLC0415
-                                        get_model_for_tier as _get_model_for_tier,
+                                catalog_check = await db.exec(
+                                    select(col(ModelCatalog.model_id)).where(
+                                        col(ModelCatalog.provider) == effective_provider,
+                                        col(ModelCatalog.model_id) == effective_model,
                                     )
-                                    from util.models_dev import (  # noqa: PLC0415
-                                        get_providers_from_db as _get_providers_from_db,
+                                )
+                                if catalog_check.one_or_none() is None:
+                                    result_text = (
+                                        f"Model {effective_model!r} is not available for "
+                                        f"provider {effective_provider!r}. Use GET "
+                                        "/api/models to see available models for each provider."
                                     )
-
-                                    _catalog = await _get_providers_from_db(db)
-                                    effective_model = _get_model_for_tier(
-                                        effective_tier, effective_provider, _catalog
-                                    )
-                                if effective_model and effective_provider:
-                                    from models import ModelCatalog  # noqa: PLC0415
-
-                                    catalog_check = await db.exec(
-                                        select(col(ModelCatalog.model_id)).where(
-                                            col(ModelCatalog.provider) == effective_provider,
-                                            col(ModelCatalog.model_id) == effective_model,
-                                        )
-                                    )
-                                    if catalog_check.one_or_none() is None:
-                                        result_text = (
-                                            f"Model {effective_model!r} is not available for "
-                                            f"provider {effective_provider!r}. Use GET "
-                                            "/api/models to see available models for each provider."
-                                        )
-                                        is_error = True
-                                # Validation matches on the short models.dev ID, so
-                                # swap to the Bedrock inference-profile ARN only after
-                                # it passes (no-op for non-Bedrock providers).
-                                if not is_error:
-                                    effective_model = await _resolve_bedrock_model_id(
-                                        db, effective_provider, effective_model
-                                    )
-
+                                    is_error = True
+                            # Validation matches on the short models.dev ID, so
+                            # swap to the Bedrock inference-profile ARN only after
+                            # it passes (no-op for non-Bedrock providers).
                             if not is_error:
-                                # Atomically acquire the follow-up lock to prevent two
-                                # concurrent foreman runs from both dispatching a worker.
-                                lock_id = "".join(
-                                    random.choices(string.ascii_lowercase + string.digits, k=8)
+                                effective_model = await _resolve_bedrock_model_id(
+                                    db, effective_provider, effective_model
                                 )
-                                lock_acquired = await LockService(db).acquire(
-                                    f"task:{task_id}", owner=lock_id
+
+                        if not is_error:
+                            # Atomically acquire the follow-up lock to prevent two
+                            # concurrent foreman runs from both dispatching a worker.
+                            lock_id = "".join(
+                                random.choices(string.ascii_lowercase + string.digits, k=8)
+                            )
+                            lock_acquired = await LockService(db).acquire(
+                                f"task:{task_id}", owner=lock_id
+                            )
+                            await db.commit()
+                            if not lock_acquired:
+                                # Task already locked by a concurrent follow-up —
+                                # queue this request for replay when the lock releases.
+                                db.add(
+                                    TaskEvent(
+                                        task_id=task_id,
+                                        event_type="pending-followup",
+                                        payload_json=json.dumps(
+                                            {
+                                                "instructions": instructions,
+                                                "preferred_worker_id": preferred_worker_id,
+                                                "tool": requested_tool,
+                                                "model": requested_model,
+                                                "tier": requested_tier,
+                                                "provider": requested_provider,
+                                                "create_pr": requested_create_pr,
+                                            }
+                                        ),
+                                        created_at=datetime.now(UTC),
+                                    )
                                 )
                                 await db.commit()
-                                if not lock_acquired:
-                                    # Task already locked by a concurrent follow-up —
-                                    # queue this request for replay when the lock releases.
-                                    db.add(
-                                        TaskEvent(
-                                            task_id=task_id,
-                                            event_type="pending-followup",
-                                            payload_json=json.dumps(
-                                                {
-                                                    "instructions": instructions,
-                                                    "preferred_worker_id": preferred_worker_id,
-                                                    "tool": requested_tool,
-                                                    "model": requested_model,
-                                                    "tier": requested_tier,
-                                                    "provider": requested_provider,
-                                                    "create_pr": requested_create_pr,
-                                                }
-                                            ),
-                                            created_at=datetime.now(UTC),
-                                        )
-                                    )
-                                    await db.commit()
+                                result_text = (
+                                    f"Task {task_id} is locked by an in-progress follow-up. "
+                                    "Instructions have been queued and will be passed to the "
+                                    "foreman when the current follow-up completes."
+                                )
+                            else:
+                                update_vals: dict = {
+                                    "state": "working",
+                                    "phase": "followup",
+                                    "worker_id": target_worker_id,
+                                    "tool": effective_tool,
+                                    "model": effective_model,
+                                    "model_tier": effective_tier,
+                                    "provider": effective_provider,
+                                }
+                                if prior_state in ("done", "failed", "cancelled"):
+                                    # Re-opening a terminal task: clear soft-delete so it
+                                    # reappears in the live task list and isn't auto-purged.
+                                    update_vals["deleted_at"] = None
+                                await db.exec(
+                                    update(Task)
+                                    .where(col(Task.id) == task_id)
+                                    .values(**update_vals)
+                                )
+                                await db.commit()
+                                await broadcast(
+                                    guild_id,
+                                    TaskUpdateMsg(
+                                        taskId=task_id,
+                                        state="working",
+                                        workerId=target_worker_id,
+                                        deletedAt=None,
+                                    ).model_dump(by_alias=True, exclude_none=True),
+                                )
+                                # Only resume the prior agent session when the follow-up
+                                # stays on the same worker — a different machine won't
+                                # have the session data on disk (see _select_followup_worker).
+                                followup_session_id = (
+                                    task_session_id
+                                    if target_worker_id == original_worker_id
+                                    else None
+                                )
+                                await broadcast(
+                                    guild_id,
+                                    TaskFollowupMsg(
+                                        workerId=target_worker_id,
+                                        taskId=task_id,
+                                        name=task_name or "",
+                                        description=task_desc or "",
+                                        tool=effective_tool,
+                                        model=effective_model,
+                                        modelTier=effective_tier,
+                                        provider=effective_provider,
+                                        branch=branch,
+                                        instructions=instructions,
+                                        issueNumber=task_issue_number,
+                                        issueRepo=task_issue_repo,
+                                        sessionId=followup_session_id,
+                                    ).model_dump(by_alias=True, exclude_none=True),
+                                )
+                                spawn(
+                                    notify_discord_followup(
+                                        task_issue_repo,
+                                        task_issue_number,
+                                        task_id,
+                                        instructions,
+                                    ),
+                                    name=f"discord.followup:{task_id}",
+                                )
+                                if target_worker_id != original_worker_id and original_worker_id:
                                     result_text = (
-                                        f"Task {task_id} is locked by an in-progress follow-up. "
-                                        "Instructions have been queued and will be passed to the "
-                                        "foreman when the current follow-up completes."
+                                        f"Follow-up reassigned from {original_worker_id} "
+                                        f"to {target_worker_id} (task {task_id} on branch {branch})."
                                     )
                                 else:
-                                    update_vals: dict = {
-                                        "state": "working",
-                                        "phase": "followup",
-                                        "worker_id": target_worker_id,
-                                        "tool": effective_tool,
-                                        "model": effective_model,
-                                        "model_tier": effective_tier,
-                                        "provider": effective_provider,
-                                    }
-                                    if prior_state in ("done", "failed", "cancelled"):
-                                        # Re-opening a terminal task: clear soft-delete so it
-                                        # reappears in the live task list and isn't auto-purged.
-                                        update_vals["deleted_at"] = None
-                                    await db.exec(
-                                        update(Task)
-                                        .where(col(Task.id) == task_id)
-                                        .values(**update_vals)
+                                    result_text = (
+                                        f"Follow-up sent to {target_worker_id} for task {task_id} "
+                                        f"on branch {branch}."
                                     )
-                                    await db.commit()
-                                    await broadcast(
-                                        guild_id,
-                                        TaskUpdateMsg(
-                                            taskId=task_id,
-                                            state="working",
-                                            workerId=target_worker_id,
-                                            deletedAt=None,
-                                        ).model_dump(by_alias=True, exclude_none=True),
-                                    )
-                                    # Only resume the prior agent session when the follow-up
-                                    # stays on the same worker — a different machine won't
-                                    # have the session data on disk (see _select_followup_worker).
-                                    followup_session_id = (
-                                        task_session_id
-                                        if target_worker_id == original_worker_id
-                                        else None
-                                    )
-                                    await broadcast(
-                                        guild_id,
-                                        TaskFollowupMsg(
-                                            workerId=target_worker_id,
-                                            taskId=task_id,
-                                            name=task_name or "",
-                                            description=task_desc or "",
-                                            tool=effective_tool,
-                                            model=effective_model,
-                                            modelTier=effective_tier,
-                                            provider=effective_provider,
-                                            branch=branch,
-                                            instructions=instructions,
-                                            issueNumber=task_issue_number,
-                                            issueRepo=task_issue_repo,
-                                            sessionId=followup_session_id,
-                                        ).model_dump(by_alias=True, exclude_none=True),
-                                    )
-                                    spawn(
-                                        notify_discord_followup(
-                                            task_issue_repo,
-                                            task_issue_number,
-                                            task_id,
-                                            instructions,
-                                        ),
-                                        name=f"discord.followup:{task_id}",
-                                    )
-                                    if (
-                                        target_worker_id != original_worker_id
-                                        and original_worker_id
-                                    ):
-                                        result_text = (
-                                            f"Follow-up reassigned from {original_worker_id} "
-                                            f"to {target_worker_id} (task {task_id} on branch {branch})."
-                                        )
-                                    else:
-                                        result_text = (
-                                            f"Follow-up sent to {target_worker_id} for task {task_id} "
-                                            f"on branch {branch}."
-                                        )
 
             elif tu.name == "finalize_task":
                 task_id = inp["task_id"]
@@ -2388,81 +2340,68 @@ async def _exec_one_tool(
                     logger.warning(
                         "finalize_task: unknown outcome %r, defaulting to 'done'", raw_outcome
                     )
-                _blocked = _task_mutation_blocked(guild_id, task_id, own_task_id)
-                if _blocked:
-                    result_text = _blocked
-                    is_error = True
+                result = await db.exec(
+                    select(Task)
+                    .where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+                    .with_for_update()
+                )
+                task = result.one_or_none()
+                if not task:
+                    result_text = f"Task {task_id} not found."
                 else:
-                    result = await db.exec(
-                        select(Task)
-                        .where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
-                        .with_for_update()
+                    deleted_at = finalize_soft_delete_at(
+                        outcome, task.issue_number, task.issue_state, task.phase
                     )
-                    task = result.one_or_none()
-                    if not task:
-                        result_text = f"Task {task_id} not found."
-                    else:
-                        deleted_at = finalize_soft_delete_at(
-                            outcome, task.issue_number, task.issue_state, task.phase
+                    await db.exec(
+                        update(Task)
+                        .where(col(Task.id) == task_id)
+                        .values(
+                            state=outcome,
+                            deleted_at=deleted_at,
                         )
-                        await db.exec(
-                            update(Task)
-                            .where(col(Task.id) == task_id)
-                            .values(
-                                state=outcome,
-                                deleted_at=deleted_at,
-                            )
-                        )
-                        # Discard any queued follow-up events — the task is closed.
-                        await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
-                        await LockService(db).release(f"task:{task_id}")
+                    )
+                    # Discard any queued follow-up events — the task is closed.
+                    await db.exec(delete(TaskEvent).where(col(TaskEvent.task_id) == task_id))
+                    await LockService(db).release(f"task:{task_id}")
 
-                        # phase='issue' root tasks own an entire GitHub issue's worth of
-                        # work — cascade the soft-delete to descendants that already
-                        # finished, but never force-close in-progress/pending ones (a
-                        # human decides whether to cancel in-flight work).
-                        descendants: list[Task] = []
-                        if task.phase == "issue":
-                            descendants = await find_descendant_tasks(db, task_id)
-                            await cascade_soft_delete_terminal_descendants(
-                                db, descendants, deleted_at
-                            )
+                    # phase='issue' root tasks own an entire GitHub issue's worth of
+                    # work — cascade the soft-delete to descendants that already
+                    # finished, but never force-close in-progress/pending ones (a
+                    # human decides whether to cancel in-flight work).
+                    descendants: list[Task] = []
+                    if task.phase == "issue":
+                        descendants = await find_descendant_tasks(db, task_id)
+                        await cascade_soft_delete_terminal_descendants(db, descendants, deleted_at)
 
-                        await db.commit()
-                        await broadcast_msg(
-                            guild_id,
-                            TaskFinalizeMsg(workerId=task.worker_id, taskId=task_id),
+                    await db.commit()
+                    await broadcast_msg(
+                        guild_id,
+                        TaskFinalizeMsg(workerId=task.worker_id, taskId=task_id),
+                    )
+                    await broadcast_msg(
+                        guild_id,
+                        TaskUpdateMsg(
+                            taskId=task_id,
+                            state=outcome,
+                            deletedAt=deleted_at.isoformat() if deleted_at is not None else None,
+                        ),
+                    )
+                    if task.phase == "issue" and task.issue_repo and task.issue_number is not None:
+                        await post_issue_close_summary_comment(
+                            guild_id, task.issue_repo, task.issue_number, descendants
                         )
-                        await broadcast_msg(
-                            guild_id,
-                            TaskUpdateMsg(
-                                taskId=task_id,
-                                state=outcome,
-                                deletedAt=deleted_at.isoformat()
-                                if deleted_at is not None
-                                else None,
+                    if outcome == "failed":
+                        spawn(
+                            notify_discord_task_finalized(
+                                task.issue_repo, task.issue_number, task_id, "failed"
                             ),
+                            name=f"discord.finalize:{task_id}",
                         )
-                        if (
-                            task.phase == "issue"
-                            and task.issue_repo
-                            and task.issue_number is not None
-                        ):
-                            await post_issue_close_summary_comment(
-                                guild_id, task.issue_repo, task.issue_number, descendants
-                            )
-                        if outcome == "failed":
-                            spawn(
-                                notify_discord_task_finalized(
-                                    task.issue_repo, task.issue_number, task_id, "failed"
-                                ),
-                                name=f"discord.finalize:{task_id}",
-                            )
-                        result_text = f"Task {task_id} finalized as {outcome}; " + (
-                            f"soft-deleted at {deleted_at.isoformat()}."
-                            if deleted_at is not None
-                            else "kept live until its issue closes."
-                        )
+                    result_text = f"Task {task_id} finalized as {outcome}; " + (
+                        f"soft-deleted at {deleted_at.isoformat()}."
+                        if deleted_at is not None
+                        else "kept live until its issue closes."
+                    )
 
             elif tu.name == "message_worker":
                 wid = inp["worker_id"]
@@ -2485,114 +2424,104 @@ async def _exec_one_tool(
             elif tu.name == "redirect_task":
                 task_id = inp["task_id"]
                 instructions = inp["instructions"]
-                _blocked = _task_mutation_blocked(guild_id, task_id, own_task_id)
-                if _blocked:
-                    result_text = _blocked
-                    is_error = True
+                result = await db.exec(
+                    select(
+                        col(Task.worker_id),
+                        col(Task.state),
+                        col(Task.issue_number),
+                        col(Task.issue_repo),
+                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+                )
+                row = result.one_or_none()
+                if not row:
+                    result_text = f"Task {task_id} not found."
                 else:
-                    result = await db.exec(
-                        select(
-                            col(Task.worker_id),
-                            col(Task.state),
-                            col(Task.issue_number),
-                            col(Task.issue_repo),
-                        ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
-                    )
-                    row = result.one_or_none()
-                    if not row:
-                        result_text = f"Task {task_id} not found."
+                    worker_id_val, state, redirect_issue_number, redirect_issue_repo = row
+                    if state in ("done", "failed", "cancelled"):
+                        result_text = f"Task {task_id} is {state} — cannot redirect."
                     else:
-                        worker_id_val, state, redirect_issue_number, redirect_issue_repo = row
-                        if state in ("done", "failed", "cancelled"):
-                            result_text = f"Task {task_id} is {state} — cannot redirect."
-                        else:
-                            await db.exec(
-                                update(Task).where(col(Task.id) == task_id).values(state="working")
-                            )
-                            await db.commit()
-                            await broadcast_msg(
-                                guild_id,
-                                TaskRedirectMsg(
-                                    workerId=worker_id_val,
-                                    taskId=task_id,
-                                    instructions=instructions,
+                        await db.exec(
+                            update(Task).where(col(Task.id) == task_id).values(state="working")
+                        )
+                        await db.commit()
+                        await broadcast_msg(
+                            guild_id,
+                            TaskRedirectMsg(
+                                workerId=worker_id_val,
+                                taskId=task_id,
+                                instructions=instructions,
+                            ),
+                        )
+                        await broadcast_msg(
+                            guild_id, TaskUpdateMsg(taskId=task_id, state="working")
+                        )
+                        if redirect_issue_number is not None and redirect_issue_repo:
+                            spawn(
+                                notify_discord_redirect(
+                                    redirect_issue_repo,
+                                    redirect_issue_number,
+                                    task_id,
+                                    instructions,
                                 ),
+                                name=f"discord.redirect:{task_id}",
                             )
-                            await broadcast_msg(
-                                guild_id, TaskUpdateMsg(taskId=task_id, state="working")
-                            )
-                            if redirect_issue_number is not None and redirect_issue_repo:
-                                spawn(
-                                    notify_discord_redirect(
-                                        redirect_issue_repo,
-                                        redirect_issue_number,
-                                        task_id,
-                                        instructions,
-                                    ),
-                                    name=f"discord.redirect:{task_id}",
-                                )
-                            result_text = f"Redirect sent to {worker_id_val} for task {task_id}."
+                        result_text = f"Redirect sent to {worker_id_val} for task {task_id}."
 
             elif tu.name == "cancel_task":
                 task_id = inp["task_id"]
                 reason = inp.get("reason", "")
-                _blocked = _task_mutation_blocked(guild_id, task_id, own_task_id)
-                if _blocked:
-                    result_text = _blocked
-                    is_error = True
+                result = await db.exec(
+                    select(
+                        col(Task.worker_id),
+                        col(Task.state),
+                        col(Task.issue_repo),
+                        col(Task.issue_number),
+                    ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
+                )
+                row = result.one_or_none()
+                if not row:
+                    result_text = f"Task {task_id} not found."
                 else:
-                    result = await db.exec(
-                        select(
-                            col(Task.worker_id),
-                            col(Task.state),
-                            col(Task.issue_repo),
-                            col(Task.issue_number),
-                        ).where(col(Task.id) == task_id, col(Task.guild_id) == guild_pk)
-                    )
-                    row = result.one_or_none()
-                    if not row:
-                        result_text = f"Task {task_id} not found."
+                    worker_id_val, state, cancel_issue_repo, cancel_issue_number = row
+                    if state in ("done", "failed", "cancelled"):
+                        result_text = f"Task {task_id} is already {state}."
                     else:
-                        worker_id_val, state, cancel_issue_repo, cancel_issue_number = row
-                        if state in ("done", "failed", "cancelled"):
-                            result_text = f"Task {task_id} is already {state}."
-                        else:
-                            deleted_at = datetime.now(UTC)
-                            await db.exec(
-                                update(Task)
-                                .where(col(Task.id) == task_id)
-                                .values(
-                                    state="cancelled",
-                                    deleted_at=deleted_at,
-                                )
+                        deleted_at = datetime.now(UTC)
+                        await db.exec(
+                            update(Task)
+                            .where(col(Task.id) == task_id)
+                            .values(
+                                state="cancelled",
+                                deleted_at=deleted_at,
                             )
-                            await LockService(db).release(f"task:{task_id}")
-                            await db.commit()
-                            await broadcast_msg(
-                                guild_id,
-                                TaskCancelMsg(workerId=worker_id_val, taskId=task_id),
-                            )
-                            await broadcast_msg(
-                                guild_id,
-                                TaskUpdateMsg(
-                                    taskId=task_id,
-                                    state="cancelled",
-                                    deletedAt=deleted_at.isoformat(),
-                                ),
-                            )
-                            spawn(
-                                notify_discord_task_finalized(
-                                    cancel_issue_repo,
-                                    cancel_issue_number,
-                                    task_id,
-                                    "cancelled",
-                                    reason=reason or None,
-                                ),
-                                name=f"discord.cancel:{task_id}",
-                            )
-                            result_text = f"Task {task_id} cancelled." + (
-                                f" Reason: {reason}" if reason else ""
-                            )
+                        )
+                        await LockService(db).release(f"task:{task_id}")
+                        await db.commit()
+                        await broadcast_msg(
+                            guild_id,
+                            TaskCancelMsg(workerId=worker_id_val, taskId=task_id),
+                        )
+                        await broadcast_msg(
+                            guild_id,
+                            TaskUpdateMsg(
+                                taskId=task_id,
+                                state="cancelled",
+                                deletedAt=deleted_at.isoformat(),
+                            ),
+                        )
+                        spawn(
+                            notify_discord_task_finalized(
+                                cancel_issue_repo,
+                                cancel_issue_number,
+                                task_id,
+                                "cancelled",
+                                reason=reason or None,
+                            ),
+                            name=f"discord.cancel:{task_id}",
+                        )
+                        result_text = f"Task {task_id} cancelled." + (
+                            f" Reason: {reason}" if reason else ""
+                        )
 
             elif tu.name == "shutdown_worker":
                 wid = inp["worker_id"]

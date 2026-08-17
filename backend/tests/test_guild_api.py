@@ -65,7 +65,7 @@ def test_get_guild_found(client):
 
 
 def test_message_dict_exposes_task_id_as_camelcase():
-    """History reload must carry the child-context id under `taskId` (the key
+    """History reload must carry the task-scoped id under `taskId` (the key
     the live WS broadcast and the frontend badge use), not the raw `task_id`
     column name row_to_dict would otherwise emit."""
     from models import Message
@@ -101,7 +101,7 @@ def test_message_dict_parent_message_has_null_task_id():
 
 
 def test_message_dict_merges_meta_and_keeps_task_badge():
-    """A child-context tool_use row keeps both its merged meta (toolName/toolId)
+    """A task-scoped tool_use row keeps both its merged meta (toolName/toolId)
     and its camelCase taskId badge after serialization."""
     import json
 

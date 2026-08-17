@@ -272,7 +272,7 @@ class TestBuildSystemPrompt:
         notifications now that there is no issue-root anchor task."""
         from foreman.prompt import FOREMAN_SYSTEM
 
-        section_start = FOREMAN_SYSTEM.index("Periodic devReady issue pickup")
+        section_start = FOREMAN_SYSTEM.index("## devReady pickup")
         section = FOREMAN_SYSTEM[section_start:]
         assert "issue_repo on both calls" in section
 

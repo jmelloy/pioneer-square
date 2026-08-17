@@ -206,14 +206,14 @@ class DebounceQueue:
             next((uid for _, uid, _ in items if uid), None),
         )
         # All events buffered under one key share a task (key is "{guild}:{task_id}");
-        # github events for a known task run in that task's isolated child context.
+        # task_id tags the run so the resulting chat lines/Discord mirror route
+        # back to that task's thread.
         task_id = next((tid for _, _, tid in items if tid), None)
         await run_foreman_ai(
             guild_id,
             combined,
             user_id=user_id,
             task_id=task_id,
-            child=bool(task_id),
             trigger="github-event",
         )
         # Automated github churn (CI check/status especially) fired its run above;

@@ -116,9 +116,8 @@ function senderLabel(msg: ChatMessage): string {
   return sender.toUpperCase()
 }
 
-// A Foreman line produced inside a per-task child context carries a taskId
-// (see docs/foreman-per-task-context.md). Badge it so it's clear the line is
-// scoped to a single task rather than the guild-wide Foreman conversation.
+// A Foreman line produced by a run that concerns a specific task carries a
+// taskId. Badge it so it's clear which task the line is about.
 function taskBadge(msg: GroupedMessage): string | null {
   const taskId = (msg as { taskId?: string | null }).taskId
   return taskId ? taskId : null
