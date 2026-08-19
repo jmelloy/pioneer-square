@@ -2,7 +2,7 @@
 # the `worker` container long-running (mirrors the
 # docker-compose `worker` service), replacing a fixed always-on pool that
 # would otherwise have to be provisioned as on-demand ECS Fargate tasks. See
-# terraform/README.md "Worker fleet (ASG)" for the design and the tradeoff
+# terraform/README.md "Worker capacity" for the design and the tradeoff
 # against the on-demand `ecs:RunTask` dispatch path that remains in ecs.tf.
 
 # -----------------------------------------------------------------------------

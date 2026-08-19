@@ -11,17 +11,19 @@ and Amazon Bedrock access.
 | `postgres` | RDS Postgres (`rds.tf`) — Fargate has no persistent volumes, so the DB moves to a managed instance |
 | `backend` | ECS service `*-backend`, fronted by the ALB (`ecs.tf`, `alb.tf`) |
 | `foreman` | ECS service `*-foreman`, `desired_count = 0` by default (compose's `profiles: [foreman]`) |
-| `worker` | Auto Scaling Group of t3.medium EC2 instances, **plus** an ECS task definition for elastic overflow — see "Worker fleet (ASG)" below |
+| `worker` | ECS task definition for on-demand workers, plus an optional Auto Scaling Group baseline (defaults to zero instances) — see "Worker capacity" below |
 | `pgweb` (Metabase, `profiles: [tools]`) | Not migrated; run locally against the RDS endpoint if needed |
 | `postgres-test` (`profiles: [test]`) | Not migrated; test-only |
 | (backend's inline `alembic upgrade head`) | One-off `*-migrate` task definition, run at deploy time — see "Database migrations" below |
 
-### Worker fleet (ASG)
+### Worker capacity
 
-`asg_workers.tf` provisions the baseline worker pool as an EC2 Auto Scaling Group instead
-of always-on ECS Fargate tasks: `t3.medium` instances running Amazon
-Linux 2023's `x86_64` AMI, each running the same `worker` image as docker-compose
-long-running via plain `docker run` (not ECS) — no per-task container churn.
+Worker capacity is primarily on-demand ECS Fargate: the backend/foreman `spawn_worker`
+path launches one-off worker tasks with `ecs:RunTask`, and the idle reaper shuts them down
+after inactivity. `asg_workers.tf` also provisions an optional EC2 Auto Scaling Group for a
+warm persistent worker host, but it defaults to zero instances (`worker_asg_min_size = 0`,
+`worker_asg_desired_capacity = 0`). Raise desired capacity manually only when you want
+pre-warmed worker slots with no Fargate cold start.
 
 | Piece | Resource | Notes |
 | --- | --- | --- |
@@ -38,10 +40,10 @@ per-guild GitHub/Claude/provider tokens itself from the backend after connecting
 the launch template or user data.
 
 **Sizing.** `worker_asg_min_size`/`worker_asg_max_size`/`worker_asg_desired_capacity`
-(default `1`/`4`/`1`) control the fleet, and `worker_max_agents` defaults to `2` per
-`t3.medium` instance. `worker_asg_min_size` is kept `>= 1` by default:
-target tracking needs at least one running instance to compute `ASGAverageCPUUtilization`
-against, so scaling out from zero isn't possible with CPU-only target tracking. Automatic
+(default `0`/`4`/`0`) control the optional warm fleet, and `worker_max_agents` defaults to `2` per
+`t3.medium` instance. With the default desired capacity of zero, the ASG is idle and does not
+scale out automatically: target tracking needs at least one running instance to compute
+`ASGAverageCPUUtilization` against. Automatic
 scale-in is disabled because EC2 ASG scale-in has no app-level knowledge of active coding
 tasks; reduce desired capacity or terminate instances manually when you know they are safe
 to replace. A queue-depth metric plus lifecycle drain hook would allow safer automatic
@@ -52,7 +54,7 @@ implemented here.
 
 **Capacity.** A `t3.medium` is intended as one small always-on worker host, not a combined
 backend/foreman/multi-worker box. It has 2 vCPU / 4 GiB total, so run at most 1-2 concurrent
-agent slots on it for typical repo/test workloads; use `t3g.large`/`t4g.large` or multiple
+agent slots on it for typical repo/test workloads; use `t3.large`/`t3a.large` or multiple
 instances for 2-3 busy workers plus any LLM proxy/foreman process.
 
 **Termination draining.** The ASG has an `autoscaling:EC2_INSTANCE_TERMINATING` lifecycle hook.
@@ -63,11 +65,10 @@ so the backend can map a termination event to the worker row via `workers.hostna
 
 **Cost.** A single `t3.medium` (2 vCPU / 4 GiB, x86) runs roughly ~40% cheaper per
 vCPU-hour than the equivalent on-demand x86 Fargate `worker` task definition
-(`var.worker_cpu = 1024` / `var.worker_memory = 2048`, i.e. 1 vCPU / 2 GiB), while running
-continuously rather than only while a task is in flight. Whether the ASG is cheaper than
+(`var.worker_cpu = 1024` / `var.worker_memory = 2048`, i.e. 1 vCPU / 2 GiB), but only when you opt into running it continuously. Whether the ASG is cheaper than
 the previous architecture in practice depends on how much of the day workers were actually
 busy: an idle Fargate fleet costs $0, so a `min_size = 1` always-on ASG has a real cost
-floor (roughly one `t3g.medium` running 24/7, ~$0.03/hr on-demand in `us-east-1` at time of
+floor (roughly one `t3.medium` running 24/7, ~$0.04/hr on-demand in `us-east-1` at time of
 writing — check current pricing before relying on this) in exchange for zero cold-start
 latency on the first task of a burst. Set `worker_asg_min_size = 0` and accept ECS-only
 dispatch (disable/remove this module) if the workload is bursty enough that an always-on

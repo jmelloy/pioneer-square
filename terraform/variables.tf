@@ -191,9 +191,9 @@ variable "worker_ephemeral_storage_gib" {
 }
 
 # -----------------------------------------------------------------------------
-# Worker fleet — Auto Scaling Group of t3.medium EC2 instances running the
-# worker image long-running (asg_workers.tf). See
-# terraform/README.md "Worker fleet (ASG)".
+# Worker fleet — optional Auto Scaling Group of t3.medium EC2 instances running
+# the worker image long-running (asg_workers.tf). See
+# terraform/README.md "Worker capacity".
 # -----------------------------------------------------------------------------
 
 variable "worker_instance_type" {
@@ -203,9 +203,9 @@ variable "worker_instance_type" {
 }
 
 variable "worker_asg_min_size" {
-  description = "Minimum number of worker instances. Keep >= 1 so CPU target tracking always has an instance to measure against (scale-to-zero needs a queue-depth-driven scheduled/step policy instead)."
+  description = "Minimum number of worker ASG instances. Defaults to 0 because normal worker capacity is spawned on demand via ECS RunTask; CPU target tracking cannot scale out from zero without a queue-depth metric."
   type        = number
-  default     = 1
+  default     = 0
 }
 
 variable "worker_asg_max_size" {
@@ -215,9 +215,9 @@ variable "worker_asg_max_size" {
 }
 
 variable "worker_asg_desired_capacity" {
-  description = "Initial desired worker instance count (target tracking adjusts it afterward)."
+  description = "Desired worker ASG instance count. Defaults to 0; raise manually only when you want a warm persistent worker host."
   type        = number
-  default     = 1
+  default     = 0
 }
 
 variable "worker_target_cpu_utilization" {
@@ -239,7 +239,7 @@ variable "worker_repos" {
 }
 
 variable "worker_max_agents" {
-  description = "Concurrent agent slots (PIONEER_MAX_AGENTS) per worker instance. Keep low on t3g.medium (2 vCPU / 4 GiB) so coding-agent subprocesses and repo test runs do not fight for memory/CPU."
+  description = "Concurrent agent slots (PIONEER_MAX_AGENTS) per worker instance. Keep low on t3.medium (2 vCPU / 4 GiB) so coding-agent subprocesses and repo test runs do not fight for memory/CPU."
   type        = number
   default     = 2
 }
