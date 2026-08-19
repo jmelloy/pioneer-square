@@ -34,7 +34,7 @@ data "aws_ami" "worker_arm" {
 # InstanceType", so restrict the ASG to private subnets in AZs that offer the
 # configured worker instance type.
 data "aws_ec2_instance_type_offerings" "worker" {
-  location_type = "availability-zone"
+  location_type = "availability-zone-id"
 
   filter {
     name   = "instance-type"
@@ -281,7 +281,7 @@ resource "aws_autoscaling_group" "worker" {
   name = "${local.name_prefix}-worker-asg"
   vpc_zone_identifier = [
     for subnet in aws_subnet.private : subnet.id
-    if contains(data.aws_ec2_instance_type_offerings.worker.locations, subnet.availability_zone)
+    if contains(data.aws_ec2_instance_type_offerings.worker.locations, subnet.availability_zone_id)
   ]
 
   min_size         = var.worker_asg_min_size
