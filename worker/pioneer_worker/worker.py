@@ -223,6 +223,15 @@ class Worker:
         self._tool_env: dict[str, dict[str, str]] = {}
 
     # ------------------------------------------------------------------ HTTP
+    def _hostname(self) -> str:
+        """Return the host identity reported to the backend.
+
+        Containers normally see their container id as socket.gethostname(). ASG
+        workers set PIONEER_HOSTNAME to the EC2 instance id so infrastructure
+        lifecycle hooks can map an instance termination back to a worker row.
+        """
+        return os.environ.get("PIONEER_HOSTNAME") or socket.gethostname()
+
     async def _http(self, *, authed: bool = False) -> httpx.AsyncClient:
         """Return an httpx client. With ``authed=True`` the worker's bearer
         token is attached so secret-fetching endpoints (claude creds, github
@@ -250,7 +259,7 @@ class Worker:
                     "repos": self.cfg.repos,
                     "org": self.cfg.org,
                     "github_token": None,
-                    "hostname": socket.gethostname(),
+                    "hostname": self._hostname(),
                     "user": self.cfg.user,
                 },
             )
@@ -1026,7 +1035,7 @@ class Worker:
             "repos": self._broadcast_repos,
             "tools": self._available_tools,
             "models": self._tool_models,
-            "hostname": socket.gethostname(),
+            "hostname": self._hostname(),
         }
         if self.cfg.user:
             msg["user"] = self.cfg.user
@@ -1671,7 +1680,7 @@ class Worker:
                 "workerId": self.cfg.worker_id,
                 "repos": self._broadcast_repos,
                 "tools": self._available_tools,
-                "hostname": socket.gethostname(),
+                "hostname": self._hostname(),
             }
             if self.cfg.user:
                 refresh_msg["user"] = self.cfg.user

@@ -55,6 +55,12 @@ backend/foreman/multi-worker box. It has 2 vCPU / 4 GiB total, so run at most 1-
 agent slots on it for typical repo/test workloads; use `t3g.large`/`t4g.large` or multiple
 instances for 2-3 busy workers plus any LLM proxy/foreman process.
 
+**Termination draining.** The ASG has an `autoscaling:EC2_INSTANCE_TERMINATING` lifecycle hook.
+EventBridge invokes a Lambda that calls the backend's internal drain endpoint, heartbeats the
+hook while the worker finishes current work, and completes the lifecycle action once the worker
+reports offline (or after the timeout). ASG workers set `PIONEER_HOSTNAME` to the EC2 instance id,
+so the backend can map a termination event to the worker row via `workers.hostname`.
+
 **Cost.** A single `t3g.medium` (2 vCPU / 4 GiB, ARM) runs roughly ~40% cheaper per
 vCPU-hour than the equivalent on-demand x86 Fargate `worker` task definition
 (`var.worker_cpu = 1024` / `var.worker_memory = 2048`, i.e. 1 vCPU / 2 GiB), while running

@@ -151,6 +151,11 @@ resource "aws_cloudwatch_log_group" "worker_asg" {
   }
 }
 
+resource "random_password" "asg_lifecycle_token" {
+  length  = 48
+  special = false
+}
+
 # -----------------------------------------------------------------------------
 # Networking — outbound-only; workers connect out to the backend over the
 # ALB/NAT, never accept inbound traffic.
@@ -309,4 +314,130 @@ resource "aws_autoscaling_policy" "worker_cpu" {
     # a long-lived coding task. Scale-in remains an explicit operator action.
     disable_scale_in = true
   }
+}
+
+# -----------------------------------------------------------------------------
+# ASG termination drain — pause EC2 termination, ask the backend to gracefully
+# drain the matching worker (hostname == EC2 instance id), then continue.
+# -----------------------------------------------------------------------------
+
+resource "aws_autoscaling_lifecycle_hook" "worker_terminating" {
+  name                   = "${local.name_prefix}-worker-drain"
+  autoscaling_group_name = aws_autoscaling_group.worker.name
+  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+  heartbeat_timeout      = 900
+  default_result         = "CONTINUE"
+}
+
+resource "aws_cloudwatch_log_group" "asg_lifecycle_drain" {
+  name              = "/aws/lambda/${local.name_prefix}-asg-lifecycle-drain"
+  retention_in_days = var.log_retention_days
+
+  tags = {
+    Name    = "${local.name_prefix}-asg-lifecycle-drain-logs"
+    Service = "worker-asg"
+  }
+}
+
+data "aws_iam_policy_document" "asg_lifecycle_lambda_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "asg_lifecycle_lambda" {
+  name               = "${local.name_prefix}-asg-lifecycle-drain"
+  assume_role_policy = data.aws_iam_policy_document.asg_lifecycle_lambda_assume.json
+
+  tags = {
+    Name = "${local.name_prefix}-asg-lifecycle-drain"
+  }
+}
+
+data "aws_iam_policy_document" "asg_lifecycle_lambda" {
+  statement {
+    sid    = "Logs"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+    ]
+    resources = ["${aws_cloudwatch_log_group.asg_lifecycle_drain.arn}:*"]
+  }
+
+  statement {
+    sid    = "CompleteLifecycleHook"
+    effect = "Allow"
+    actions = [
+      "autoscaling:CompleteLifecycleAction",
+      "autoscaling:RecordLifecycleActionHeartbeat",
+    ]
+    resources = ["*"] # Auto Scaling lifecycle APIs have limited resource-level support.
+  }
+}
+
+resource "aws_iam_role_policy" "asg_lifecycle_lambda" {
+  name   = "${local.name_prefix}-asg-lifecycle-drain"
+  role   = aws_iam_role.asg_lifecycle_lambda.id
+  policy = data.aws_iam_policy_document.asg_lifecycle_lambda.json
+}
+
+resource "aws_lambda_function" "asg_lifecycle_drain" {
+  function_name    = "${local.name_prefix}-asg-lifecycle-drain"
+  role             = aws_iam_role.asg_lifecycle_lambda.arn
+  handler          = "asg_lifecycle_drain.handler"
+  runtime          = "python3.11"
+  filename         = "${path.module}/lambda/asg_lifecycle_drain.zip"
+  source_code_hash = filebase64sha256("${path.module}/lambda/asg_lifecycle_drain.zip")
+  timeout          = 900
+
+  environment {
+    variables = {
+      PIONEER_BACKEND_URL         = local.worker_backend_url
+      PIONEER_GUILD_ID            = var.guild_id
+      PIONEER_ASG_LIFECYCLE_TOKEN = random_password.asg_lifecycle_token.result
+      DRAIN_TIMEOUT_SECONDS       = "780"
+      DRAIN_POLL_SECONDS          = "15"
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.asg_lifecycle_drain]
+
+  tags = {
+    Name    = "${local.name_prefix}-asg-lifecycle-drain"
+    Service = "worker-asg"
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "asg_worker_terminating" {
+  name        = "${local.name_prefix}-worker-asg-terminating"
+  description = "Drain Pioneer worker before ASG instance termination"
+
+  event_pattern = jsonencode({
+    source        = ["aws.autoscaling"]
+    "detail-type" = ["EC2 Instance-terminate Lifecycle Action"]
+    detail = {
+      AutoScalingGroupName = [aws_autoscaling_group.worker.name]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "asg_worker_terminating" {
+  rule      = aws_cloudwatch_event_rule.asg_worker_terminating.name
+  target_id = "asg-lifecycle-drain"
+  arn       = aws_lambda_function.asg_lifecycle_drain.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_asg_lifecycle" {
+  statement_id  = "AllowExecutionFromEventBridgeAsgLifecycle"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.asg_lifecycle_drain.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.asg_worker_terminating.arn
 }
