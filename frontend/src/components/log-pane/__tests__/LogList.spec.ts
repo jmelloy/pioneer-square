@@ -87,7 +87,11 @@ describe('LogList turn grouping', () => {
     // thinking, tool_use, tool_result, thinking, tool_use, tool_result, ...
     const logs: LogEntry[] = []
     for (let i = 0; i < 5; i++) {
-      logs.push(thinkingLog(`step ${i}`), toolLog('Bash', 'tool_use'), toolLog('Bash', 'tool_result'))
+      logs.push(
+        thinkingLog(`step ${i}`),
+        toolLog('Bash', 'tool_use'),
+        toolLog('Bash', 'tool_result'),
+      )
     }
     const wrapper = mount(LogList, { props: { logs } })
 
@@ -120,11 +124,36 @@ describe('LogList turn grouping', () => {
     expect(summaries[0].text()).toContain('Turn 1')
     expect(summaries[1].text()).toContain('Turn 2')
   })
+
+  it('hides content-free system thinking token bookkeeping rows', () => {
+    const logs: LogEntry[] = [
+      textLog('before'),
+      {
+        line: '[claude-json] system:thinking_tokens',
+        timestamp: '2026-01-01T00:00:00Z',
+        detail: {
+          toolType: 'claude_json',
+          event: { type: 'system', subtype: 'thinking_tokens', tokens: 123 },
+        },
+      },
+      textLog('after'),
+    ]
+    const wrapper = mount(LogList, { props: { logs } })
+
+    expect(wrapper.text()).toContain('before')
+    expect(wrapper.text()).toContain('after')
+    expect(wrapper.text()).not.toContain('system:thinking_tokens')
+    expect(wrapper.findAll('.log-line')).toHaveLength(2)
+  })
 })
 
 function setScrollMetrics(
   el: HTMLElement,
-  { scrollTop, scrollHeight, clientHeight }: { scrollTop: number; scrollHeight: number; clientHeight: number },
+  {
+    scrollTop,
+    scrollHeight,
+    clientHeight,
+  }: { scrollTop: number; scrollHeight: number; clientHeight: number },
 ) {
   Object.defineProperty(el, 'scrollHeight', { value: scrollHeight, configurable: true })
   Object.defineProperty(el, 'clientHeight', { value: clientHeight, configurable: true })

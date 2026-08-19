@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useUiStore } from './ui'
 import { api } from '../utils/api'
+import { isVisibleLogEntry } from '../utils/logs'
 import type { LogEntry, Task, TaskState, WSInbound } from '../types'
 
 // Cap on setTimeout delay to avoid the 32-bit overflow that fires the timer
@@ -90,12 +91,14 @@ export const useTasksStore = defineStore('tasks', () => {
       const raw = await api<
         Array<{ line: string; timestamp: string; detail?: unknown; level?: unknown }>
       >(`/guilds/${guildId}/tasks/${taskId}/logs`)
-      const logs: LogEntry[] = raw.map((r) => ({
-        line: r.line,
-        timestamp: r.timestamp,
-        detail: (r.detail as LogEntry['detail']) || null,
-        level: (r.level as LogEntry['level']) || null,
-      }))
+      const logs: LogEntry[] = raw
+        .map((r) => ({
+          line: r.line,
+          timestamp: r.timestamp,
+          detail: (r.detail as LogEntry['detail']) || null,
+          level: (r.level as LogEntry['level']) || null,
+        }))
+        .filter(isVisibleLogEntry)
       taskLogs.value[taskId] = logs
       return logs
     } catch (e) {
@@ -208,13 +211,15 @@ export const useTasksStore = defineStore('tasks', () => {
     } else if (data.type === 'terminal-output' && data.taskId) {
       const { taskId, line, timestamp, detail, level } = data
       if (line) {
-        if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
-        taskLogs.value[taskId].push({
+        const entry = {
           line,
           timestamp,
           detail: detail || null,
           level: level || null,
-        })
+        }
+        if (!isVisibleLogEntry(entry)) return
+        if (!taskLogs.value[taskId]) taskLogs.value[taskId] = []
+        taskLogs.value[taskId].push(entry)
         if (taskLogs.value[taskId].length > 2000) taskLogs.value[taskId].shift()
       }
     }
