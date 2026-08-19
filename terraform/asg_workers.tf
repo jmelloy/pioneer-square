@@ -29,6 +29,19 @@ data "aws_ami" "worker_arm" {
   }
 }
 
+# Some EC2 instance families are not available in every AZ even within a region.
+# Launching an ASG across an unsupported subnet fails with "Invalid value for
+# InstanceType", so restrict the ASG to private subnets in AZs that offer the
+# configured worker instance type.
+data "aws_ec2_instance_type_offerings" "worker" {
+  location_type = "availability-zone"
+
+  filter {
+    name   = "instance-type"
+    values = [var.worker_instance_type]
+  }
+}
+
 # -----------------------------------------------------------------------------
 # IAM - EC2 instance role. Narrower than the ECS task role (iam.tf): no
 # worker-dispatch or Bedrock permissions, since these instances only ever run
@@ -265,8 +278,11 @@ resource "aws_launch_template" "worker" {
 }
 
 resource "aws_autoscaling_group" "worker" {
-  name                = "${local.name_prefix}-worker-asg"
-  vpc_zone_identifier = aws_subnet.private[*].id
+  name = "${local.name_prefix}-worker-asg"
+  vpc_zone_identifier = [
+    for subnet in aws_subnet.private : subnet.id
+    if contains(data.aws_ec2_instance_type_offerings.worker.locations, subnet.availability_zone)
+  ]
 
   min_size         = var.worker_asg_min_size
   max_size         = var.worker_asg_max_size
