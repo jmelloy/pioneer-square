@@ -418,6 +418,11 @@ def test_parse_system_other_subtype_forwarded_as_json_detail():
     assert pairs[0][1]["event"] == event
 
 
+def test_parse_system_thinking_tokens_is_hidden():
+    event = {"type": "system", "subtype": "thinking_tokens", "tokens": 123}
+    assert parse_claude_event(event) == []
+
+
 # ---------------------------------------------------------------------------
 # parse_claude_event — unknown types
 # ---------------------------------------------------------------------------

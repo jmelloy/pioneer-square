@@ -222,6 +222,7 @@ import type { Task, LogEntry } from '../types'
 import { api } from '../utils/api'
 import { renderMarkdown } from '../utils/markdown'
 import { formatRelative } from '../utils/format'
+import { isVisibleLogEntry } from '../utils/logs'
 
 const props = defineProps<{
   owner: string
@@ -290,12 +291,14 @@ async function toggleTask(taskId: string) {
     const raw = await api<
       Array<{ line: string; timestamp: string; detail?: unknown; level?: unknown }>
     >(`/guilds/${guildId}/tasks/${taskId}/logs`)
-    taskLogsMap.value[taskId] = raw.map((r) => ({
-      line: r.line,
-      timestamp: r.timestamp,
-      detail: (r.detail as LogEntry['detail']) || null,
-      level: (r.level as LogEntry['level']) || null,
-    }))
+    taskLogsMap.value[taskId] = raw
+      .map((r) => ({
+        line: r.line,
+        timestamp: r.timestamp,
+        detail: (r.detail as LogEntry['detail']) || null,
+        level: (r.level as LogEntry['level']) || null,
+      }))
+      .filter(isVisibleLogEntry)
   } catch (e) {
     console.error('Failed to fetch task logs', e)
     taskLogsMap.value[taskId] = []

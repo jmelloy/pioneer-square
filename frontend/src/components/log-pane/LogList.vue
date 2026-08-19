@@ -1,9 +1,12 @@
 <template>
   <div class="pane-body" ref="bodyEl">
-    <div v-if="logs.length === 0" class="logs-empty">
+    <div v-if="visibleLogs.length === 0" class="logs-empty">
       <span class="cursor-blink">_</span> Waiting for output…
     </div>
-    <template v-for="item in groupedLogs" :key="item.type === 'turn' ? `turn-${item.turnNumber}` : `line-${item.index}`">
+    <template
+      v-for="item in groupedLogs"
+      :key="item.type === 'turn' ? `turn-${item.turnNumber}` : `line-${item.index}`"
+    >
       <LogLine
         v-if="item.type === 'line'"
         :log="item.log"
@@ -11,14 +14,15 @@
         @toggle="toggleLineDetail(item.index)"
       />
       <div v-else class="turn-group">
-        <div
-          class="turn-summary"
-          @click="toggleTurn(item.turnNumber)"
-        >
-          <span class="turn-summary-icon">{{ expandedTurns.has(item.turnNumber) ? '▾' : '▸' }}</span>
+        <div class="turn-summary" @click="toggleTurn(item.turnNumber)">
+          <span class="turn-summary-icon">{{
+            expandedTurns.has(item.turnNumber) ? '▾' : '▸'
+          }}</span>
           <span class="turn-summary-text">
-            Turn {{ item.turnNumber }} — {{ formatTurnCounts(item.counts) }}
-            ({{ item.toolCallCount }} tool call{{ item.toolCallCount === 1 ? '' : 's' }})
+            Turn {{ item.turnNumber }} — {{ formatTurnCounts(item.counts) }} ({{
+              item.toolCallCount
+            }}
+            tool call{{ item.toolCallCount === 1 ? '' : 's' }})
           </span>
         </div>
         <div v-if="expandedTurns.has(item.turnNumber)" class="turn-body">
@@ -39,6 +43,7 @@
 import { ref, computed, watch, nextTick } from 'vue'
 import LogLine from './LogLine.vue'
 import type { LogEntry } from '../../types'
+import { isVisibleLogEntry } from '../../utils/logs'
 
 const props = defineProps<{ logs: LogEntry[] }>()
 
@@ -83,6 +88,10 @@ function isToolLine(log: LogEntry): boolean {
 // backend/discord_notifier.py's _format_stream_entries). Non-tool lines
 // (assistant text, status) pass through individually and break the current
 // turn.
+const visibleLogs = computed(() =>
+  props.logs.map((log, index) => ({ log, index })).filter(({ log }) => isVisibleLogEntry(log)),
+)
+
 const groupedLogs = computed<(LineItem | TurnItem)[]>(() => {
   const result: (LineItem | TurnItem)[] = []
   let turnNumber = 0
@@ -116,7 +125,7 @@ const groupedLogs = computed<(LineItem | TurnItem)[]>(() => {
     current = []
   }
 
-  props.logs.forEach((log, index) => {
+  visibleLogs.value.forEach(({ log, index }) => {
     if (isToolLine(log)) {
       current.push({ log, index })
     } else {

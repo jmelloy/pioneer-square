@@ -4,6 +4,7 @@ import { useGuildStore } from './guild'
 import { useUiStore } from './ui'
 import { api } from '../utils/api'
 import { formatWorkerId } from '../utils/format'
+import { isVisibleLogEntry } from '../utils/logs'
 import type {
   Agent,
   AgentActivity,
@@ -138,7 +139,9 @@ export const useAgentsStore = defineStore('agents', () => {
     const agent = agents.value.find((a) => a.id === agentId)
     if (agent && line) {
       const ts = timestamp || new Date().toISOString()
-      agent.logs.push({ line, timestamp: ts, detail: detail || null, level: level || null })
+      const entry = { line, timestamp: ts, detail: detail || null, level: level || null }
+      if (!isVisibleLogEntry(entry)) return
+      agent.logs.push(entry)
       if (agent.logs.length > 500) agent.logs.shift()
     }
   }
@@ -153,12 +156,14 @@ export const useAgentsStore = defineStore('agents', () => {
     if (!line) return
     if (!workerLogs.value[workerId]) workerLogs.value[workerId] = []
     const ts = timestamp || new Date().toISOString()
-    workerLogs.value[workerId].push({
+    const entry = {
       line,
       timestamp: ts,
       detail: detail || null,
       level: level || null,
-    })
+    }
+    if (!isVisibleLogEntry(entry)) return
+    workerLogs.value[workerId].push(entry)
     if (workerLogs.value[workerId].length > 500) workerLogs.value[workerId].shift()
   }
 
@@ -245,17 +250,18 @@ export const useAgentsStore = defineStore('agents', () => {
     uiStore.resetWorkerAgentSelection()
   }
 
-  type RawLog = { line: string; timestamp: string; detail?: unknown }
+  type RawLog = { line: string; timestamp: string; detail?: unknown; level?: unknown }
   const _toLogEntry = (r: RawLog): LogEntry => ({
     line: r.line,
     timestamp: r.timestamp,
     detail: (r.detail as LogEntry['detail']) || null,
+    level: (r.level as LogEntry['level']) || null,
   })
 
   async function fetchWorkerLogs(guildId: string, workerId: string) {
     try {
       const raw = await api<RawLog[]>(`/guilds/${guildId}/logs?worker_id=${workerId}`)
-      workerLogs.value[workerId] = raw.map(_toLogEntry)
+      workerLogs.value[workerId] = raw.map(_toLogEntry).filter(isVisibleLogEntry)
     } catch (e) {
       console.error('Failed to fetch worker logs', e)
     }
@@ -266,7 +272,7 @@ export const useAgentsStore = defineStore('agents', () => {
       const raw = await api<RawLog[]>(`/guilds/${guildId}/logs?agent_id=${agentId}`)
       const agent = agents.value.find((a) => a.id === agentId)
       if (agent) {
-        const historical = raw.map(_toLogEntry)
+        const historical = raw.map(_toLogEntry).filter(isVisibleLogEntry)
         agent.logs = historical.length > 2000 ? historical.slice(-2000) : historical
       }
     } catch (e) {

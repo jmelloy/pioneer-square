@@ -227,6 +227,11 @@ def parse_claude_event(event: dict) -> list[tuple[str, dict | None]]:
     if t == "system" and event.get("subtype") == "init":
         tools = event.get("tools", [])
         return [(f"[claude] tools: {', '.join(tools[:6])}", None)]
+    # Claude Code emits bookkeeping-only thinking token updates. They do not
+    # contain displayable content, so avoid persisting noisy `[claude-json]`
+    # fallback lines for future runs. Historical rows are hidden in the UI.
+    if t == "system" and event.get("subtype") == "thinking_tokens":
+        return []
     return [(_claude_json_summary(event), _claude_json_detail(event))]
 
 
