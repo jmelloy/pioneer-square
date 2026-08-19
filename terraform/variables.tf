@@ -191,15 +191,15 @@ variable "worker_ephemeral_storage_gib" {
 }
 
 # -----------------------------------------------------------------------------
-# Worker fleet — Auto Scaling Group of ARM64 (Graviton2) t3g.medium EC2
-# instances running the worker image long-running (asg_workers.tf). See
+# Worker fleet — Auto Scaling Group of t3.medium EC2 instances running the
+# worker image long-running (asg_workers.tf). See
 # terraform/README.md "Worker fleet (ASG)".
 # -----------------------------------------------------------------------------
 
 variable "worker_instance_type" {
-  description = "EC2 instance type for the worker Auto Scaling Group. Must be ARM64 (Graviton) to match the AL2023 arm64 AMI."
+  description = "EC2 instance type for the worker Auto Scaling Group."
   type        = string
-  default     = "t3g.medium"
+  default     = "t3.medium"
 }
 
 variable "worker_asg_min_size" {

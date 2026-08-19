@@ -1,26 +1,26 @@
-# Worker fleet - Auto Scaling Group of ARM64 (Graviton2) t3g.medium EC2
-# instances, each running the `worker` container long-running (mirrors the
+# Worker fleet - Auto Scaling Group of t3.medium EC2 instances, each running
+# the `worker` container long-running (mirrors the
 # docker-compose `worker` service), replacing a fixed always-on pool that
 # would otherwise have to be provisioned as on-demand ECS Fargate tasks. See
 # terraform/README.md "Worker fleet (ASG)" for the design and the tradeoff
 # against the on-demand `ecs:RunTask` dispatch path that remains in ecs.tf.
 
 # -----------------------------------------------------------------------------
-# AMI - latest Amazon Linux 2023 arm64 (Graviton), owned by Amazon.
+# AMI - latest Amazon Linux 2023 x86_64, owned by Amazon.
 # -----------------------------------------------------------------------------
 
-data "aws_ami" "worker_arm" {
+data "aws_ami" "worker" {
   most_recent = true
   owners      = ["amazon"]
 
   filter {
     name   = "name"
-    values = ["al2023-ami-*-arm64"]
+    values = ["al2023-ami-*-x86_64"]
   }
 
   filter {
     name   = "architecture"
-    values = ["arm64"]
+    values = ["x86_64"]
   }
 
   filter {
@@ -209,9 +209,9 @@ locals {
 
 resource "aws_launch_template" "worker" {
   name_prefix = "${local.name_prefix}-worker-"
-  description = "Pioneer Square worker - t3g.medium ARM64, runs the worker container long-running"
+  description = "Pioneer Square worker - t3.medium, runs the worker container long-running"
 
-  image_id      = data.aws_ami.worker_arm.id
+  image_id      = data.aws_ami.worker.id
   instance_type = var.worker_instance_type
 
   iam_instance_profile {

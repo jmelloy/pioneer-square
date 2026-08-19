@@ -11,7 +11,7 @@ and Amazon Bedrock access.
 | `postgres` | RDS Postgres (`rds.tf`) — Fargate has no persistent volumes, so the DB moves to a managed instance |
 | `backend` | ECS service `*-backend`, fronted by the ALB (`ecs.tf`, `alb.tf`) |
 | `foreman` | ECS service `*-foreman`, `desired_count = 0` by default (compose's `profiles: [foreman]`) |
-| `worker` | Auto Scaling Group of t3g.medium (ARM64) EC2 instances, **plus** an ECS task definition for elastic overflow — see "Worker fleet (ASG)" below |
+| `worker` | Auto Scaling Group of t3.medium EC2 instances, **plus** an ECS task definition for elastic overflow — see "Worker fleet (ASG)" below |
 | `pgweb` (Metabase, `profiles: [tools]`) | Not migrated; run locally against the RDS endpoint if needed |
 | `postgres-test` (`profiles: [test]`) | Not migrated; test-only |
 | (backend's inline `alembic upgrade head`) | One-off `*-migrate` task definition, run at deploy time — see "Database migrations" below |
@@ -19,13 +19,13 @@ and Amazon Bedrock access.
 ### Worker fleet (ASG)
 
 `asg_workers.tf` provisions the baseline worker pool as an EC2 Auto Scaling Group instead
-of always-on ECS Fargate tasks: `t3g.medium` (ARM64/Graviton2) instances running Amazon
-Linux 2023's `arm64` AMI, each running the same `worker` image as docker-compose
+of always-on ECS Fargate tasks: `t3.medium` instances running Amazon
+Linux 2023's `x86_64` AMI, each running the same `worker` image as docker-compose
 long-running via plain `docker run` (not ECS) — no per-task container churn.
 
 | Piece | Resource | Notes |
 | --- | --- | --- |
-| AMI | `data.aws_ami.worker_arm` | Latest `al2023-ami-*-arm64`, refreshed on every `apply`. |
+| AMI | `data.aws_ami.worker_arm` | Latest `al2023-ami-*-x86_64`, refreshed on every `apply`. |
 | Bootstrap | `templates/worker_user_data.sh.tpl` | Installs Docker, `docker login`s to ECR, pulls `<worker repo>:var.container_image_tag`, and `docker run -d --restart unless-stopped` with an env file (`PIONEER_BACKEND_URL`, `PIONEER_GUILD_ID`, `PIONEER_REPOS`, `PIONEER_MAX_AGENTS`, S3 session-log vars) and the `awslogs` log driver. Deploy builds publish a multi-arch image manifest so the same tag runs on both x86 Fargate and ARM64 ASG instances. |
 | Identity | `aws_iam_role.asg_worker` | EC2 (not ECS) trust policy — scoped to ECR pull (worker repo only), the assets S3 bucket, its own CloudWatch log group, and `AmazonSSMManagedInstanceCore` for Session Manager shell access (no SSH key pair). |
 | Networking | `aws_security_group.asg_worker` | Egress-only — the worker never accepts inbound connections, it dials out to the backend over the ALB. Instances launch into private subnets whose AZs offer `var.worker_instance_type`. |
@@ -39,7 +39,7 @@ the launch template or user data.
 
 **Sizing.** `worker_asg_min_size`/`worker_asg_max_size`/`worker_asg_desired_capacity`
 (default `1`/`4`/`1`) control the fleet, and `worker_max_agents` defaults to `2` per
-`t3g.medium` instance. `worker_asg_min_size` is kept `>= 1` by default:
+`t3.medium` instance. `worker_asg_min_size` is kept `>= 1` by default:
 target tracking needs at least one running instance to compute `ASGAverageCPUUtilization`
 against, so scaling out from zero isn't possible with CPU-only target tracking. Automatic
 scale-in is disabled because EC2 ASG scale-in has no app-level knowledge of active coding
@@ -50,7 +50,7 @@ scale-in later — no such aggregate-count endpoint exists in the backend today 
 the issue's primary ask; queue-depth-based scaling is a documented follow-up, not
 implemented here.
 
-**Capacity.** A `t3g.medium` is intended as one small always-on worker host, not a combined
+**Capacity.** A `t3.medium` is intended as one small always-on worker host, not a combined
 backend/foreman/multi-worker box. It has 2 vCPU / 4 GiB total, so run at most 1-2 concurrent
 agent slots on it for typical repo/test workloads; use `t3g.large`/`t4g.large` or multiple
 instances for 2-3 busy workers plus any LLM proxy/foreman process.
@@ -61,7 +61,7 @@ hook while the worker finishes current work, and completes the lifecycle action 
 reports offline (or after the timeout). ASG workers set `PIONEER_HOSTNAME` to the EC2 instance id,
 so the backend can map a termination event to the worker row via `workers.hostname`.
 
-**Cost.** A single `t3g.medium` (2 vCPU / 4 GiB, ARM) runs roughly ~40% cheaper per
+**Cost.** A single `t3.medium` (2 vCPU / 4 GiB, x86) runs roughly ~40% cheaper per
 vCPU-hour than the equivalent on-demand x86 Fargate `worker` task definition
 (`var.worker_cpu = 1024` / `var.worker_memory = 2048`, i.e. 1 vCPU / 2 GiB), while running
 continuously rather than only while a task is in flight. Whether the ASG is cheaper than
