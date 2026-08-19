@@ -666,7 +666,13 @@ async def _select_followup_worker(
             return False
         result = await db.exec(
             select(col(Agent.id))
-            .where(col(Agent.worker_id) == worker_id, col(Agent.state) == "idle")
+            .join(Worker, col(Worker.id) == col(Agent.worker_id))
+            .where(
+                col(Agent.worker_id) == worker_id,
+                col(Agent.state) == "idle",
+                col(Worker.disabled).is_(False),
+                col(Worker.drain_requested_at).is_(None),
+            )
             .limit(1)
         )
         return result.one_or_none() is not None
@@ -684,10 +690,13 @@ async def _select_followup_worker(
         guild_pk = await get_guild_pk(db, guild_id)
     result = await db.exec(
         select(col(Agent.worker_id))
+        .join(Worker, col(Worker.id) == col(Agent.worker_id))
         .where(
             col(Agent.guild_id) == guild_pk,
             col(Agent.state) == "idle",
             col(Agent.worker_id).is_not(None),
+            col(Worker.disabled).is_(False),
+            col(Worker.drain_requested_at).is_(None),
         )
         .limit(1)
     )
@@ -1867,6 +1876,8 @@ async def _exec_one_tool(
                                 .where(
                                     col(Worker.id) == wid,
                                     col(Worker.state) != "offline",
+                                    col(Worker.disabled).is_(False),
+                                    col(Worker.drain_requested_at).is_(None),
                                 )
                                 .limit(1)
                             )

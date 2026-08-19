@@ -70,3 +70,18 @@ output "ecs_task_role_arn" {
   description = "IAM role ARN assumed by application code inside ECS tasks (S3 + Bedrock + worker-dispatch policies)."
   value       = aws_iam_role.ecs_task.arn
 }
+
+output "worker_asg_name" {
+  description = "Name of the worker Auto Scaling Group (t3g.medium ARM64 instances running the worker image long-running)."
+  value       = aws_autoscaling_group.worker.name
+}
+
+output "worker_launch_template_id" {
+  description = "ID of the worker launch template."
+  value       = aws_launch_template.worker.id
+}
+
+output "worker_asg_log_group" {
+  description = "CloudWatch log group the worker ASG's containers log to (docker awslogs driver)."
+  value       = aws_cloudwatch_log_group.worker_asg.name
+}

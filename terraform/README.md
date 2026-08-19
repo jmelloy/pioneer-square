@@ -1,8 +1,8 @@
-# Pioneer Square — Terraform (AWS ECS Fargate)
+# Pioneer Square — Terraform (AWS)
 
-Migrates the `docker-compose.yml` stack (postgres, backend, foreman, worker) to AWS ECS
-Fargate: VPC/ALB/ECS/ECR/RDS/S3/SSM, with IAM policies granting the ECS task role S3 and
-Amazon Bedrock access.
+Migrates the `docker-compose.yml` stack to AWS: VPC/ALB/ECS/ECR/RDS/S3/SSM, plus an EC2
+Auto Scaling Group for baseline workers, with IAM policies granting the runtime roles S3
+and Amazon Bedrock access.
 
 ## Architecture at a glance
 
@@ -11,12 +11,69 @@ Amazon Bedrock access.
 | `postgres` | RDS Postgres (`rds.tf`) — Fargate has no persistent volumes, so the DB moves to a managed instance |
 | `backend` | ECS service `*-backend`, fronted by the ALB (`ecs.tf`, `alb.tf`) |
 | `foreman` | ECS service `*-foreman`, `desired_count = 0` by default (compose's `profiles: [foreman]`) |
-| `worker` | ECS task definition only, **no service** — see "Worker dispatch" below |
+| `worker` | Auto Scaling Group of t3g.medium (ARM64) EC2 instances, **plus** an ECS task definition for elastic overflow — see "Worker fleet (ASG)" below |
 | `pgweb` (Metabase, `profiles: [tools]`) | Not migrated; run locally against the RDS endpoint if needed |
 | `postgres-test` (`profiles: [test]`) | Not migrated; test-only |
 | (backend's inline `alembic upgrade head`) | One-off `*-migrate` task definition, run at deploy time — see "Database migrations" below |
 
-### Worker dispatch
+### Worker fleet (ASG)
+
+`asg_workers.tf` provisions the baseline worker pool as an EC2 Auto Scaling Group instead
+of always-on ECS Fargate tasks: `t3g.medium` (ARM64/Graviton2) instances running Amazon
+Linux 2023's `arm64` AMI, each running the same `worker` image as docker-compose
+long-running via plain `docker run` (not ECS) — no per-task container churn.
+
+| Piece | Resource | Notes |
+| --- | --- | --- |
+| AMI | `data.aws_ami.worker_arm` | Latest `al2023-ami-*-arm64`, refreshed on every `apply`. |
+| Bootstrap | `templates/worker_user_data.sh.tpl` | Installs Docker, `docker login`s to ECR, pulls `<worker repo>:var.container_image_tag`, and `docker run -d --restart unless-stopped` with an env file (`PIONEER_BACKEND_URL`, `PIONEER_GUILD_ID`, `PIONEER_REPOS`, `PIONEER_MAX_AGENTS`, S3 session-log vars) and the `awslogs` log driver. Deploy builds publish a multi-arch image manifest so the same tag runs on both x86 Fargate and ARM64 ASG instances. |
+| Identity | `aws_iam_role.asg_worker` | EC2 (not ECS) trust policy — scoped to ECR pull (worker repo only), the assets S3 bucket, its own CloudWatch log group, and `AmazonSSMManagedInstanceCore` for Session Manager shell access (no SSH key pair). |
+| Networking | `aws_security_group.asg_worker` | Egress-only — the worker never accepts inbound connections, it dials out to the backend over the ALB. Instances launch into the private subnets, same as ECS tasks. |
+| Scaling | `aws_autoscaling_policy.worker_cpu` | `TargetTrackingScaling` on `ASGAverageCPUUtilization`, target `var.worker_target_cpu_utilization` (default 70), with automatic scale-in disabled so active workers are not terminated by CPU dips. Scale-in is explicit/manual. |
+| Rollout | Launch template only, no automatic `instance_refresh` | A new `container_image_tag` changes the launch template version for future scale-out/replacement instances, but Terraform does **not** recycle existing ASG instances during ordinary deploys. Existing workers keep running their current image until an operator terminates the EC2 instance or the ASG scales it in. |
+
+Credentials work the same way as the on-demand path below: the worker fetches its
+per-guild GitHub/Claude/provider tokens itself from the backend after connecting
+(`/auth/github/token`, `/guilds/{id}/foreman/env-vars`) — nothing sensitive is baked into
+the launch template or user data.
+
+**Sizing.** `worker_asg_min_size`/`worker_asg_max_size`/`worker_asg_desired_capacity`
+(default `1`/`4`/`1`) control the fleet, and `worker_max_agents` defaults to `2` per
+`t3g.medium` instance. `worker_asg_min_size` is kept `>= 1` by default:
+target tracking needs at least one running instance to compute `ASGAverageCPUUtilization`
+against, so scaling out from zero isn't possible with CPU-only target tracking. Automatic
+scale-in is disabled because EC2 ASG scale-in has no app-level knowledge of active coding
+tasks; reduce desired capacity or terminate instances manually when you know they are safe
+to replace. A queue-depth metric plus lifecycle drain hook would allow safer automatic
+scale-in later — no such aggregate-count endpoint exists in the backend today (see
+`backend/routes/tasks.py`), so this module ships CPU target tracking scale-out only, per
+the issue's primary ask; queue-depth-based scaling is a documented follow-up, not
+implemented here.
+
+**Capacity.** A `t3g.medium` is intended as one small always-on worker host, not a combined
+backend/foreman/multi-worker box. It has 2 vCPU / 4 GiB total, so run at most 1-2 concurrent
+agent slots on it for typical repo/test workloads; use `t3g.large`/`t4g.large` or multiple
+instances for 2-3 busy workers plus any LLM proxy/foreman process.
+
+**Termination draining.** The ASG has an `autoscaling:EC2_INSTANCE_TERMINATING` lifecycle hook.
+EventBridge invokes a Lambda that calls the backend's internal drain endpoint, heartbeats the
+hook while the worker finishes current work, and completes the lifecycle action once the worker
+reports offline (or after the timeout). ASG workers set `PIONEER_HOSTNAME` to the EC2 instance id,
+so the backend can map a termination event to the worker row via `workers.hostname`.
+
+**Cost.** A single `t3g.medium` (2 vCPU / 4 GiB, ARM) runs roughly ~40% cheaper per
+vCPU-hour than the equivalent on-demand x86 Fargate `worker` task definition
+(`var.worker_cpu = 1024` / `var.worker_memory = 2048`, i.e. 1 vCPU / 2 GiB), while running
+continuously rather than only while a task is in flight. Whether the ASG is cheaper than
+the previous architecture in practice depends on how much of the day workers were actually
+busy: an idle Fargate fleet costs $0, so a `min_size = 1` always-on ASG has a real cost
+floor (roughly one `t3g.medium` running 24/7, ~$0.03/hr on-demand in `us-east-1` at time of
+writing — check current pricing before relying on this) in exchange for zero cold-start
+latency on the first task of a burst. Set `worker_asg_min_size = 0` and accept ECS-only
+dispatch (disable/remove this module) if the workload is bursty enough that an always-on
+floor isn't worth the latency win; the on-demand path below remains available either way.
+
+### On-demand overflow dispatch (ECS Fargate)
 
 In docker-compose, the `backend` container spawns one `worker` container per spawn request
 via the Docker socket. Fargate tasks have no shared Docker socket, so on ECS the backend
@@ -26,6 +83,10 @@ injected into the backend task definition by `ecs.tf`, alongside `ECS_WORKER_SUB
 `ECS_WORKER_SECURITY_GROUPS` for the worker task's awsvpc network interface). This module
 registers the `worker` task definition and grants the backend's task role
 `ecs:RunTask`/`ecs:StopTask`/`ecs:DescribeTasks` scoped to this cluster (see `iam.tf`).
+With the ASG fleet above providing baseline capacity, this path now mainly covers the
+foreman's `spawn_worker` tool and the operator "spawn worker" UI action reaching for repos
+the ASG fleet doesn't already have checked out — kept rather than removed so that
+capability doesn't regress.
 
 Spawned worker tasks connect back to the backend through the ALB (`WORKER_BACKEND_URL`),
 carry per-spawn configuration as container env overrides (static secrets like
@@ -161,6 +222,15 @@ aws dynamodb create-table \
    aws ecs update-service --cluster pioneer-square-staging-cluster \
      --service pioneer-square-staging-backend --force-new-deployment
    ```
+
+   The worker ASG's launch template renders `var.container_image_tag` (not `latest`) into
+   its user data, so on a first apply — before any image has been pushed at that tag — its
+   instances will boot, fail the `docker pull` in `worker_user_data.sh.tpl`, and simply have
+   no worker container running (check `/var/log/pioneer-worker-init.log` on the instance via
+   SSM Session Manager). Once an image exists at that tag, either wait for the next
+   `terraform apply -var container_image_tag=<sha>` (which rolls a fresh launch template
+   version and refreshes the instances) or terminate the instances manually to let the ASG
+   replace them.
 
 4. Point `var.domain_name`'s DNS record at the `alb_dns_name` output (or set
    `var.route53_zone_id` so Terraform manages the ACM validation + you manage the apex

@@ -21,8 +21,8 @@ import worker_runtime
 from auth_deps import get_guild_pk, require_member
 from database import get_db_dep
 from events import broadcast_msg, emit_terminal_line
-from fastapi import APIRouter, Depends, HTTPException
-from models import Task, Worker, live_tasks_filter
+from fastapi import APIRouter, Depends, Header, HTTPException
+from models import Agent, Task, Worker, live_tasks_filter
 from pydantic import BaseModel, field_validator
 from spawn_config import SpawnLayer, get_spawn_row, resolve_spawn, row_to_layer, upsert_spawn_row
 from sqlalchemy import update
@@ -145,6 +145,11 @@ class WorkerMessage(BaseModel):
     # Optional target task. A worker runs several agents at once, so a message
     # without one is only delivered when exactly one of them is running.
     task_id: str | None = None
+
+
+class AsgDrainRequest(BaseModel):
+    instance_id: str
+    reason: str | None = None
 
 
 @router.post("/guilds/{guild_id}/workers")
@@ -371,10 +376,15 @@ async def assign_task(
     if guild_pk is None:
         raise HTTPException(status_code=404, detail="Guild not found")
     result = await db.exec(
-        select(col(Worker.id)).where(col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk)
+        select(col(Worker.disabled), col(Worker.drain_requested_at)).where(
+            col(Worker.id) == worker_id, col(Worker.guild_id) == guild_pk
+        )
     )
-    if not result.one_or_none():
+    worker_row = result.one_or_none()
+    if not worker_row:
         raise HTTPException(status_code=404, detail="Worker not found")
+    if worker_row[0] or worker_row[1] is not None:
+        raise HTTPException(status_code=409, detail="Worker is draining and cannot accept tasks")
     name = data.name or data.description[:60]
     db.add(
         Task(
@@ -634,6 +644,101 @@ async def message_worker(
     )
     # "sent", not "delivered": the worker decides whether a running agent matches.
     return {"status": "sent"}
+
+
+@router.post("/internal/asg-lifecycle/{guild_id}/drain")
+async def drain_asg_worker_for_lifecycle(
+    guild_id: str,
+    data: AsgDrainRequest,
+    x_pioneer_lifecycle_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db_dep),
+):
+    """Drain the worker running on an EC2 instance before ASG termination.
+
+    This endpoint is intentionally token-authenticated rather than member-authenticated:
+    it is called by the ASG lifecycle Lambda, not a browser user. ASG worker
+    containers report PIONEER_HOSTNAME=<EC2 instance id>, so the backend can map
+    the lifecycle event's instance id to the corresponding worker row.
+    """
+    expected = os.environ.get("PIONEER_ASG_LIFECYCLE_TOKEN")
+    if not expected or not x_pioneer_lifecycle_token:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not secrets.compare_digest(x_pioneer_lifecycle_token, expected):
+        raise HTTPException(status_code=403, detail="Invalid lifecycle token")
+
+    guild_pk = await get_guild_pk(db, guild_id)
+    if guild_pk is None:
+        raise HTTPException(status_code=404, detail="Guild not found")
+
+    worker = (
+        await db.exec(
+            select(Worker)
+            .where(col(Worker.guild_id) == guild_pk, col(Worker.hostname) == data.instance_id)
+            .order_by(col(Worker.created_at).desc())
+        )
+    ).first()
+    if worker is None:
+        # Nothing to drain; let the lifecycle hook complete instead of wedging
+        # termination for an instance whose worker never registered.
+        return {"status": "not-found", "ready": True, "worker_id": None}
+
+    now = datetime.now(UTC)
+    if worker.drain_requested_at is None:
+        await db.exec(
+            update(Worker)
+            .where(col(Worker.id) == worker.id)
+            .values(disabled=True, drain_requested_at=now)
+        )
+        await db.commit()
+        await emit_terminal_line(
+            guild_id,
+            worker.id,
+            f"[asg-lifecycle] graceful drain requested for instance {data.instance_id}",
+        )
+        await broadcast_msg(
+            guild_id,
+            WorkerShutdownMsg(workerId=worker.id, reason=data.reason or "asg-lifecycle"),
+        )
+    else:
+        await db.exec(update(Worker).where(col(Worker.id) == worker.id).values(disabled=True))
+        await db.commit()
+
+    active_task = (
+        await db.exec(
+            select(col(Task.id))
+            .where(
+                col(Task.worker_id) == worker.id,
+                col(Task.state).in_(("pending", "working")),
+                live_tasks_filter(),
+            )
+            .limit(1)
+        )
+    ).first()
+    busy_agent = (
+        await db.exec(
+            select(col(Agent.id))
+            .where(
+                col(Agent.worker_id) == worker.id,
+                col(Agent.state).in_(("working", "thinking", "busy")),
+            )
+            .limit(1)
+        )
+    ).first()
+    worker_state = (
+        await db.exec(select(col(Worker.state)).where(col(Worker.id) == worker.id))
+    ).one_or_none()
+    # Complete only after the worker has actually disconnected. We still report
+    # active_task/busy_agent for observability while the Lambda heartbeats the
+    # lifecycle hook; on timeout Lambda continues termination as the ASG backstop.
+    ready = worker_state in (None, "offline")
+    return {
+        "status": "draining" if not ready else "ready",
+        "ready": ready,
+        "worker_id": worker.id,
+        "worker_state": worker_state,
+        "active_task_id": active_task,
+        "busy_agent_id": busy_agent,
+    }
 
 
 @router.post("/guilds/{guild_id}/workers/{worker_id}/shutdown")
