@@ -14,7 +14,7 @@ resource "aws_s3_bucket_versioning" "assets" {
   bucket = aws_s3_bucket.assets.id
 
   versioning_configuration {
-    status = "Suspended"  # worker-session logs don't need versioning
+    status = "Suspended" # worker-session logs don't need versioning
   }
 }
 

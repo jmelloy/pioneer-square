@@ -1,8 +1,8 @@
-# Pioneer Square — Terraform (AWS ECS Fargate)
+# Pioneer Square — Terraform (AWS)
 
-Migrates the `docker-compose.yml` stack (postgres, backend, foreman, worker) to AWS ECS
-Fargate: VPC/ALB/ECS/ECR/RDS/S3/SSM, with IAM policies granting the ECS task role S3 and
-Amazon Bedrock access.
+Migrates the `docker-compose.yml` stack to AWS: VPC/ALB/ECS/ECR/RDS/S3/SSM, plus an EC2
+Auto Scaling Group for baseline workers, with IAM policies granting the runtime roles S3
+and Amazon Bedrock access.
 
 ## Architecture at a glance
 
@@ -26,11 +26,11 @@ long-running via plain `docker run` (not ECS) — no per-task container churn.
 | Piece | Resource | Notes |
 | --- | --- | --- |
 | AMI | `data.aws_ami.worker_arm` | Latest `al2023-ami-*-arm64`, refreshed on every `apply`. |
-| Bootstrap | `templates/worker_user_data.sh.tpl` | Installs Docker, `docker login`s to ECR, pulls `<worker repo>:var.container_image_tag`, and `docker run -d --restart unless-stopped` with an env file (`PIONEER_BACKEND_URL`, `PIONEER_GUILD_ID`, `PIONEER_REPOS`, `PIONEER_MAX_AGENTS`, S3 session-log vars) and the `awslogs` log driver. |
+| Bootstrap | `templates/worker_user_data.sh.tpl` | Installs Docker, `docker login`s to ECR, pulls `<worker repo>:var.container_image_tag`, and `docker run -d --restart unless-stopped` with an env file (`PIONEER_BACKEND_URL`, `PIONEER_GUILD_ID`, `PIONEER_REPOS`, `PIONEER_MAX_AGENTS`, S3 session-log vars) and the `awslogs` log driver. Deploy builds publish a multi-arch image manifest so the same tag runs on both x86 Fargate and ARM64 ASG instances. |
 | Identity | `aws_iam_role.asg_worker` | EC2 (not ECS) trust policy — scoped to ECR pull (worker repo only), the assets S3 bucket, its own CloudWatch log group, and `AmazonSSMManagedInstanceCore` for Session Manager shell access (no SSH key pair). |
 | Networking | `aws_security_group.asg_worker` | Egress-only — the worker never accepts inbound connections, it dials out to the backend over the ALB. Instances launch into the private subnets, same as ECS tasks. |
-| Scaling | `aws_autoscaling_policy.worker_cpu` | `TargetTrackingScaling` on `ASGAverageCPUUtilization`, target `var.worker_target_cpu_utilization` (default 70). |
-| Rollout | `aws_autoscaling_group.worker`'s `instance_refresh` block | A new `container_image_tag` changes the rendered `user_data`, which changes the launch template version, which triggers a rolling instance refresh — same "new revision, old one drains" shape as an ECS service deploy. |
+| Scaling | `aws_autoscaling_policy.worker_cpu` | `TargetTrackingScaling` on `ASGAverageCPUUtilization`, target `var.worker_target_cpu_utilization` (default 70), with automatic scale-in disabled so active workers are not terminated by CPU dips. Scale-in is explicit/manual. |
+| Rollout | Launch template only, no automatic `instance_refresh` | A new `container_image_tag` changes the launch template version for future scale-out/replacement instances, but Terraform does **not** recycle existing ASG instances during ordinary deploys. Existing workers keep running their current image until an operator terminates the EC2 instance or the ASG scales it in. |
 
 Credentials work the same way as the on-demand path below: the worker fetches its
 per-guild GitHub/Claude/provider tokens itself from the backend after connecting
@@ -38,14 +38,22 @@ per-guild GitHub/Claude/provider tokens itself from the backend after connecting
 the launch template or user data.
 
 **Sizing.** `worker_asg_min_size`/`worker_asg_max_size`/`worker_asg_desired_capacity`
-(default `1`/`4`/`1`) control the fleet. `worker_asg_min_size` is kept `>= 1` by default:
+(default `1`/`4`/`1`) control the fleet, and `worker_max_agents` defaults to `2` per
+`t3g.medium` instance. `worker_asg_min_size` is kept `>= 1` by default:
 target tracking needs at least one running instance to compute `ASGAverageCPUUtilization`
-against, so scaling out from zero isn't possible with CPU-only target tracking. A
-queue-depth metric (e.g. count of `pending`/`working` tasks) would allow true
-scale-to-zero via a step-scaling policy and CloudWatch alarms instead — no such
-aggregate-count endpoint exists in the backend today (see `backend/routes/tasks.py`), so
-this module ships CPU target tracking only, per the issue's primary ask; queue-depth-based
-scaling is a documented follow-up, not implemented here.
+against, so scaling out from zero isn't possible with CPU-only target tracking. Automatic
+scale-in is disabled because EC2 ASG scale-in has no app-level knowledge of active coding
+tasks; reduce desired capacity or terminate instances manually when you know they are safe
+to replace. A queue-depth metric plus lifecycle drain hook would allow safer automatic
+scale-in later — no such aggregate-count endpoint exists in the backend today (see
+`backend/routes/tasks.py`), so this module ships CPU target tracking scale-out only, per
+the issue's primary ask; queue-depth-based scaling is a documented follow-up, not
+implemented here.
+
+**Capacity.** A `t3g.medium` is intended as one small always-on worker host, not a combined
+backend/foreman/multi-worker box. It has 2 vCPU / 4 GiB total, so run at most 1-2 concurrent
+agent slots on it for typical repo/test workloads; use `t3g.large`/`t4g.large` or multiple
+instances for 2-3 busy workers plus any LLM proxy/foreman process.
 
 **Cost.** A single `t3g.medium` (2 vCPU / 4 GiB, ARM) runs roughly ~40% cheaper per
 vCPU-hour than the equivalent on-demand x86 Fargate `worker` task definition

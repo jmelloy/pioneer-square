@@ -275,17 +275,11 @@ resource "aws_autoscaling_group" "worker" {
     version = "$Latest"
   }
 
-  # Rolls instances gradually onto the newest launch template version (e.g. a
-  # new container_image_tag baked into user_data) instead of the default
-  # "leave existing instances alone" behavior.
-  instance_refresh {
-    strategy = "Rolling"
-
-    preferences {
-      min_healthy_percentage = 50
-      instance_warmup        = 120
-    }
-  }
+  # Intentionally no instance_refresh: changing container_image_tag creates a
+  # new launch template version for replacement/scale-out instances, but it
+  # must not terminate a busy long-running worker during an ordinary deploy.
+  # Existing ASG workers keep running their current image until explicitly
+  # terminated or scaled in.
 
   tag {
     key                 = "Name"
@@ -310,7 +304,9 @@ resource "aws_autoscaling_policy" "worker_cpu" {
       predefined_metric_type = "ASGAverageCPUUtilization"
     }
 
-    target_value     = var.worker_target_cpu_utilization
-    disable_scale_in = false
+    target_value = var.worker_target_cpu_utilization
+    # Do not let CPU target tracking terminate an instance that may be running
+    # a long-lived coding task. Scale-in remains an explicit operator action.
+    disable_scale_in = true
   }
 }

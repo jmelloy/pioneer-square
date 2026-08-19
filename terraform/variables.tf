@@ -239,9 +239,9 @@ variable "worker_repos" {
 }
 
 variable "worker_max_agents" {
-  description = "Concurrent agent slots (PIONEER_MAX_AGENTS) per worker instance."
+  description = "Concurrent agent slots (PIONEER_MAX_AGENTS) per worker instance. Keep low on t3g.medium (2 vCPU / 4 GiB) so coding-agent subprocesses and repo test runs do not fight for memory/CPU."
   type        = number
-  default     = 4
+  default     = 2
 }
 
 # -----------------------------------------------------------------------------
