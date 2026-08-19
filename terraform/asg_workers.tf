@@ -1,4 +1,4 @@
-# Worker fleet — Auto Scaling Group of ARM64 (Graviton2) t3g.medium EC2
+# Worker fleet - Auto Scaling Group of ARM64 (Graviton2) t3g.medium EC2
 # instances, each running the `worker` container long-running (mirrors the
 # docker-compose `worker` service), replacing a fixed always-on pool that
 # would otherwise have to be provisioned as on-demand ECS Fargate tasks. See
@@ -6,7 +6,7 @@
 # against the on-demand `ecs:RunTask` dispatch path that remains in ecs.tf.
 
 # -----------------------------------------------------------------------------
-# AMI — latest Amazon Linux 2023 arm64 (Graviton), owned by Amazon.
+# AMI - latest Amazon Linux 2023 arm64 (Graviton), owned by Amazon.
 # -----------------------------------------------------------------------------
 
 data "aws_ami" "worker_arm" {
@@ -30,7 +30,7 @@ data "aws_ami" "worker_arm" {
 }
 
 # -----------------------------------------------------------------------------
-# IAM — EC2 instance role. Narrower than the ECS task role (iam.tf): no
+# IAM - EC2 instance role. Narrower than the ECS task role (iam.tf): no
 # worker-dispatch or Bedrock permissions, since these instances only ever run
 # the worker image, not the backend/foreman.
 # -----------------------------------------------------------------------------
@@ -157,13 +157,13 @@ resource "random_password" "asg_lifecycle_token" {
 }
 
 # -----------------------------------------------------------------------------
-# Networking — outbound-only; workers connect out to the backend over the
+# Networking - outbound-only; workers connect out to the backend over the
 # ALB/NAT, never accept inbound traffic.
 # -----------------------------------------------------------------------------
 
 resource "aws_security_group" "asg_worker" {
   name        = "${local.name_prefix}-asg-worker-sg"
-  description = "Pioneer Square worker ASG instances — outbound only, no inbound listeners"
+  description = "Pioneer Square worker ASG instances - outbound only, no inbound listeners"
   vpc_id      = aws_vpc.main.id
 
   egress {
@@ -196,7 +196,7 @@ locals {
 
 resource "aws_launch_template" "worker" {
   name_prefix = "${local.name_prefix}-worker-"
-  description = "Pioneer Square worker — t3g.medium ARM64, runs the worker container long-running"
+  description = "Pioneer Square worker - t3g.medium ARM64, runs the worker container long-running"
 
   image_id      = data.aws_ami.worker_arm.id
   instance_type = var.worker_instance_type
@@ -317,7 +317,7 @@ resource "aws_autoscaling_policy" "worker_cpu" {
 }
 
 # -----------------------------------------------------------------------------
-# ASG termination drain — pause EC2 termination, ask the backend to gracefully
+# ASG termination drain - pause EC2 termination, ask the backend to gracefully
 # drain the matching worker (hostname == EC2 instance id), then continue.
 # -----------------------------------------------------------------------------
 
