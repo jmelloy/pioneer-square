@@ -89,7 +89,7 @@ def test_load_overrides_defaults_preserved(tmp_path):
         overrides={"backend_url": "ws://x:1", "guild_id": "g"},
     )
     assert cfg.pull_interval == 300.0
-    assert cfg.claude_max_turns == 50
+    assert cfg.claude_max_turns is None
     assert cfg.max_agents == 4
 
 

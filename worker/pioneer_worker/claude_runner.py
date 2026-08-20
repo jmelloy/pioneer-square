@@ -364,7 +364,7 @@ async def run_claude_auto(
     description: str,
     cwd: str,
     *,
-    max_turns: int,
+    max_turns: int | None,
     emit: EmitFn,
     on_proc: Callable[[ClaudeProcess], None] | None = None,
     on_usage: UsageFn | None = None,
@@ -389,10 +389,10 @@ async def run_claude_auto(
         "--output-format",
         "stream-json",
         "--verbose",
-        "--max-turns",
-        str(max_turns),
         "--dangerously-skip-permissions",
     ]
+    if max_turns is not None:
+        cmd += ["--max-turns", str(max_turns)]
     if model:
         cmd += ["--model", model]
     if resume_session_id:

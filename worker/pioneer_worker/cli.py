@@ -113,7 +113,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pull-interval", type=float, help="Seconds between repo pulls (default: 300)."
     )
     parser.add_argument(
-        "--claude-max-turns", type=int, help="Max turns for claude runs (default: 50)."
+        "--claude-max-turns", type=int, help="Max turns for claude runs (unset by default)."
     )
 
     env_log_level = os.environ.get("PIONEER_WORKER_LOG_LEVEL", "").strip().upper()

@@ -583,6 +583,29 @@ async def test_run_claude_auto_emits_per_call_and_result_usage():
     assert results[0]["stop_reason"] == "success"
 
 
+async def test_run_claude_auto_omits_max_turns_when_unset():
+    events = [{"type": "result", "subtype": "success", "num_turns": 1}]
+    lines = [(json.dumps(e) + "\n").encode() for e in events]
+    captured_args: tuple = ()
+
+    async def _emit(text, detail=None):
+        return None
+
+    async def _fake_exec(*args, **kwargs):
+        nonlocal captured_args
+        captured_args = args
+        return _FakeProc(lines)
+
+    with patch("asyncio.create_subprocess_exec", _fake_exec):
+        success, stop_reason, _last, _sid = await run_claude_auto(
+            "do it", "/tmp", max_turns=None, emit=_emit
+        )
+
+    assert success is True
+    assert stop_reason == "success"
+    assert "--max-turns" not in captured_args
+
+
 async def test_run_claude_auto_no_usage_callback_is_optional():
     events = [
         {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
