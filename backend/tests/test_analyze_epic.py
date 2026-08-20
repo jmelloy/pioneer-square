@@ -46,13 +46,19 @@ def test_analyze_epic_description_mentions_two_levels():
     assert "Level 2" in desc or "deep_epic_analysis" in desc or "trigger_deep_analysis" in desc
 
 
-def test_analyze_epic_file_gap_issues_default_false():
-    """file_gap_issues should default to false in Level 1 (lightweight mode)."""
+def test_analyze_epic_file_gap_issues_is_deprecated_noop():
+    """file_gap_issues no longer files issues; the schema must say so.
+
+    Gap detection uses naive substring matching against PR titles/bodies and
+    is prone to false positives, so it must not drive automatic issue
+    creation. The parameter is kept for backward compatibility only.
+    """
     from backend.foreman.tools_schema import FOREMAN_TOOLS
 
     tool = next(t for t in FOREMAN_TOOLS if t["name"] == "analyze_epic")
     desc = tool["input_schema"]["properties"]["file_gap_issues"]["description"]
-    assert "Default: false" in desc
+    assert "Deprecated" in desc
+    assert "no longer creates issues" in desc
 
 
 async def test_analyze_epic_dispatches(monkeypatch):
