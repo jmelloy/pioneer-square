@@ -9,11 +9,11 @@
     </div>
     <div class="item-body">
       <div class="item-title-row">
-        <span class="item-name">{{ thread.name || 'Unnamed thread' }}</span>
+        <span class="item-name">{{ thread.name || 'Unnamed conversation' }}</span>
         <code class="item-id">{{ thread.id }}</code>
       </div>
       <div class="item-meta">
-        <span class="meta-conversation">conv #{{ thread.conversation_id }}</span>
+        <span class="meta-conversation">conversation #{{ thread.conversation_id }}</span>
         <span v-if="thread.discord_thread_id" class="meta-discord">
           <span class="discord-icon">⌘</span> linked
         </span>

@@ -1,10 +1,10 @@
 <template>
   <div class="thread-detail">
-    <div v-if="!thread" class="empty-state">Loading thread…</div>
+    <div v-if="!thread" class="empty-state">Loading conversation…</div>
     <template v-else>
       <div class="pane-header">
         <div class="pane-title">
-          <span class="title-icon">✉</span>
+          <span class="title-icon">💬</span>
           <span class="title-text">{{ thread.name || thread.id }}</span>
           <code class="entity-id-chip">{{ thread.id }}</code>
         </div>
@@ -20,9 +20,7 @@
         <span v-if="thread.discord_thread_id" class="sub-field discord-chip">
           discord thread: {{ thread.discord_thread_id }}
         </span>
-        <span v-else class="sub-field discord-pending">
-          discord thread not yet created
-        </span>
+        <span v-else class="sub-field discord-pending"> discord thread not yet created </span>
         <span class="sub-time-group">
           <span class="sub-time">created {{ formatRelative(thread.created_at) }}</span>
           <span class="sub-time">updated {{ formatRelative(thread.updated_at) }}</span>
@@ -32,20 +30,31 @@
       <div class="body chat-messages" ref="messagesEl">
         <div v-if="loadingMessages" class="chat-empty">Loading messages…</div>
         <div v-else-if="groupedMessages.length === 0" class="chat-empty">
-          No messages in this thread yet.
+          No messages in this conversation yet.
         </div>
         <div
           v-for="(msg, i) in groupedMessages"
           :key="i"
           class="chat-message"
-          :class="isToolUseGroup(msg) ? 'from-foreman msg-tool' : messageClasses(msg as ChatMessage)"
+          :class="
+            isToolUseGroup(msg) ? 'from-foreman msg-tool' : messageClasses(msg as ChatMessage)
+          "
         >
           <div class="msg-header">
             <span
               class="msg-from"
-              :class="'msg-from--' + (isToolUseGroup(msg) ? msg.from : msgSender(msg as ChatMessage))"
+              :class="
+                'msg-from--' + (isToolUseGroup(msg) ? msg.from : msgSender(msg as ChatMessage))
+              "
               >{{ isToolUseGroup(msg) ? '⚙ FOREMAN' : senderLabel(msg as ChatMessage) }}</span
             >
+            <span
+              v-if="taskBadge(msg)"
+              class="msg-task-badge"
+              :title="'References task ' + taskBadge(msg)"
+            >
+              ⛬ {{ taskBadge(msg) }}
+            </span>
             <span v-if="!isToolUseGroup(msg) && sourceLabel(msg as ChatMessage)" class="msg-source">
               via {{ sourceLabel(msg as ChatMessage) }}
             </span>
@@ -113,6 +122,7 @@ import { useThreadsStore } from '../stores/threads'
 import { formatClock, formatRelative } from '../utils/format'
 import { renderMarkdown } from '../utils/markdown'
 import { useChatGrouping, isToolUseGroup } from '../composables/useChatGrouping'
+import type { GroupedMessage } from '../composables/useChatGrouping'
 import type { ChatMessage } from '../types'
 
 const props = defineProps<{
@@ -192,6 +202,11 @@ function sourceLabel(msg: ChatMessage): string | null {
 }
 
 const formatTime = (iso?: string) => formatClock(iso)
+
+function taskBadge(msg: GroupedMessage): string | null {
+  const taskId = (msg as { taskId?: string | null }).taskId
+  return taskId ? taskId : null
+}
 
 async function load() {
   const guildId = guildStore.currentGuild?.id
@@ -542,6 +557,19 @@ watch(
   color: var(--color-text-dim);
   font-style: italic;
   flex-shrink: 0;
+}
+
+.msg-task-badge {
+  font-family: var(--font-pixel);
+  font-size: 6px;
+  letter-spacing: 0.5px;
+  color: var(--color-amber);
+  background: rgba(232, 170, 0, 0.12);
+  border: 1px solid rgba(232, 170, 0, 0.4);
+  border-radius: 2px;
+  padding: 1px 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .msg-time {
