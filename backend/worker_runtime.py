@@ -5,19 +5,20 @@ Two runtimes are supported, selected automatically from the environment:
 - **docker** — the docker-compose / local-dev model: the backend talks to the
   mounted Docker socket (``docker.from_env()``) and runs one worker container
   per spawn on its own network.
-- **ecs** — the AWS Fargate model: the backend calls ``ecs.run_task`` against
-  the pre-registered worker task definition family. Fargate tasks have no
-  shared Docker socket, so this is the only way to launch workers there. The
-  Terraform module in ``terraform/`` registers the task definition, grants the
-  backend's task role ``ecs:RunTask``/``ecs:StopTask``/``ecs:DescribeTasks``,
-  and injects the env vars below into the backend service.
+- **ecs** — the AWS ECS model: the backend calls ``ecs.run_task`` against
+  the pre-registered worker task definition family. Terraform places these
+  tasks on an ASG-backed ECS capacity provider, grants the backend's task role
+  ``ecs:RunTask``/``ecs:StopTask``/``ecs:DescribeTasks``, and injects the env
+  vars below into the backend service.
 
 ECS mode is enabled when both ``ECS_CLUSTER_NAME`` and
 ``ECS_WORKER_TASK_DEFINITION`` are set (as they are in the ECS task definition
 rendered by terraform/ecs.tf). Additional ECS configuration:
 
+- ``ECS_WORKER_CAPACITY_PROVIDER`` — optional ECS capacity provider name. When
+  set, RunTask uses ``capacityProviderStrategy`` instead of ``launchType=FARGATE``.
 - ``ECS_WORKER_SUBNETS`` — comma-separated subnet IDs for the worker task's
-  awsvpc network interface (required to run on Fargate).
+  awsvpc network interface.
 - ``ECS_WORKER_SECURITY_GROUPS`` — comma-separated security group IDs.
 - ``ECS_WORKER_ASSIGN_PUBLIC_IP`` — "true" to give worker tasks a public IP
   (default false; private subnets with a NAT gateway don't need one).
@@ -226,10 +227,10 @@ async def _start_worker_ecs(*, env: dict[str, str], guild_id: str) -> SpawnedWor
     task_definition = os.environ["ECS_WORKER_TASK_DEFINITION"]
     container_name = os.environ.get("ECS_WORKER_CONTAINER_NAME", "worker")
 
+    capacity_provider = os.environ.get("ECS_WORKER_CAPACITY_PROVIDER", "").strip()
     run_kwargs: dict = dict(
         cluster=cluster,
         taskDefinition=task_definition,
-        launchType="FARGATE",
         count=1,
         # startedBy is capped at 36 chars; guild slugs are 6 chars.
         startedBy=f"pioneer-backend/{guild_id}"[:36],
@@ -250,6 +251,13 @@ async def _start_worker_ecs(*, env: dict[str, str], guild_id: str) -> SpawnedWor
             ]
         },
     )
+    if capacity_provider:
+        run_kwargs["capacityProviderStrategy"] = [
+            {"capacityProvider": capacity_provider, "weight": 1}
+        ]
+    else:
+        run_kwargs["launchType"] = "FARGATE"
+
     subnets = _csv_env("ECS_WORKER_SUBNETS")
     if subnets:
         assign_public_ip = os.environ.get("ECS_WORKER_ASSIGN_PUBLIC_IP", "").lower() in (
@@ -266,12 +274,12 @@ async def _start_worker_ecs(*, env: dict[str, str], guild_id: str) -> SpawnedWor
             vpc_config["securityGroups"] = security_groups
         run_kwargs["networkConfiguration"] = {"awsvpcConfiguration": vpc_config}
     else:
-        # awsvpc-mode task definitions (all Fargate ones) can't launch without
-        # a network configuration — fail with a pointer at the missing config
-        # rather than an opaque boto3 ClientError.
+        # awsvpc-mode task definitions can't launch without a network
+        # configuration — fail with a pointer at the missing config rather than
+        # an opaque boto3 ClientError.
         raise WorkerSpawnError(
             "ECS worker dispatch is enabled but ECS_WORKER_SUBNETS is not set — "
-            "the Fargate worker task needs at least one subnet ID"
+            "the awsvpc worker task needs at least one subnet ID"
         )
 
     response = await asyncio.wait_for(

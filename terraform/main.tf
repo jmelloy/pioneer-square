@@ -1,9 +1,9 @@
-# Pioneer Square — AWS ECS Fargate infrastructure.
+# Pioneer Square — AWS ECS infrastructure.
 #
 # Migrates the docker-compose stack (postgres, backend, foreman, worker) to
-# ECS Fargate behind an ALB, with ECR for images, S3 for asset/log storage,
-# RDS for the database, SSM Parameter Store for secrets, and IAM policies
-# granting the task role Bedrock + S3 access.
+# ECS on an ASG-backed EC2 capacity provider behind an ALB, with ECR for images,
+# S3 for asset/log storage, RDS for the database, SSM Parameter Store for
+# secrets, and IAM policies granting the task role Bedrock + S3 access.
 
 terraform {
   required_version = ">= 1.6.0"
