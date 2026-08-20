@@ -693,8 +693,8 @@ FOREMAN_TOOLS = [
                 "file_gap_issues": {
                     "type": "boolean",
                     "description": (
-                        "If true, file new GitHub issues for any gaps/bugs found "
-                        "and link them to the epic. Default: false."
+                        "Deprecated. This parameter no longer creates issues. "
+                        "Kept for backward compatibility."
                     ),
                 },
                 "force": {
