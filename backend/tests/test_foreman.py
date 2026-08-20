@@ -2281,6 +2281,7 @@ class TestSpawnWorker:
 
         monkeypatch.setenv("ECS_CLUSTER_NAME", "ps-test-cluster")
         monkeypatch.setenv("ECS_WORKER_TASK_DEFINITION", "ps-test-worker")
+        monkeypatch.setenv("ECS_WORKER_CAPACITY_PROVIDER", "ps-test-asg")
         monkeypatch.setenv("ECS_WORKER_SUBNETS", "subnet-aaa, subnet-bbb")
         monkeypatch.setenv("ECS_WORKER_SECURITY_GROUPS", "sg-ccc")
 
@@ -2307,7 +2308,10 @@ class TestSpawnWorker:
         kwargs = fake_ecs.run_task.call_args.kwargs
         assert kwargs["cluster"] == "ps-test-cluster"
         assert kwargs["taskDefinition"] == "ps-test-worker"
-        assert kwargs["launchType"] == "FARGATE"
+        assert kwargs["capacityProviderStrategy"] == [
+            {"capacityProvider": "ps-test-asg", "weight": 1}
+        ]
+        assert "launchType" not in kwargs
         net = kwargs["networkConfiguration"]["awsvpcConfiguration"]
         assert net["subnets"] == ["subnet-aaa", "subnet-bbb"]
         assert net["securityGroups"] == ["sg-ccc"]

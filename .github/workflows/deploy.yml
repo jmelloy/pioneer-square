@@ -56,9 +56,9 @@ jobs:
   # alongside the old one — ECS tears the old task down only after the new
   # one passes health checks, and neither of them races a schema upgrade.
   #
-  # The targeted apply registers only the migrate task-definition revision at
-  # the new image tag; the services keep their previous revisions until the
-  # full apply below.
+  # The targeted apply registers the migrate task-definition revision at the
+  # new image tag and ensures the ASG-backed ECS capacity provider exists; the
+  # services keep their previous revisions until the full apply below.
   migrate:
     needs: build
     runs-on: ubuntu-latest
@@ -84,10 +84,11 @@ jobs:
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="region=${{ secrets.AWS_REGION }}"
 
-      - name: Register migrate task definition
+      - name: Register migrate task definition and ECS capacity provider
         run: |
           terraform apply -auto-approve \
             -target=aws_ecs_task_definition.migrate \
+            -target=aws_ecs_cluster_capacity_providers.main \
             -var="container_image_tag=${{ github.sha }}"
 
       - name: Run migration task and wait for completion
@@ -96,11 +97,12 @@ jobs:
           FAMILY=$(terraform output -raw ecs_migrate_task_definition_family)
           SUBNETS=$(terraform output -json private_subnet_ids | jq -r 'join(",")')
           SG=$(terraform output -raw ecs_tasks_security_group_id)
+          CAPACITY_PROVIDER=$(terraform output -raw ecs_capacity_provider_name)
 
           RESULT=$(aws ecs run-task \
             --cluster "$CLUSTER" \
             --task-definition "$FAMILY" \
-            --launch-type FARGATE \
+            --capacity-provider-strategy "capacityProvider=$CAPACITY_PROVIDER,weight=1" \
             --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}")
 
           TASK_ARN=$(echo "$RESULT" | jq -r '.tasks[0].taskArn // empty')

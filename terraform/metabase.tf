@@ -1,7 +1,7 @@
 # Metabase — on-demand BI tool, fronted by the existing ALB on a subdomain.
 #
 # "Scaled to nothing" by default: metabase_desired_count = 0, so there is no
-# running task (and no Fargate cost) at rest. Start it on demand by setting the
+# running task at rest. Start it on demand by setting the
 # count to 1 (see the `metabase-up`/`metabase-down` note in README / the CLI
 # one-liners), stop it by setting it back to 0. The ALB rule, target group,
 # cert, and log group are all free while idle.
@@ -9,7 +9,7 @@
 # It reuses the existing RDS instance (a separate `metabase` database created
 # out-of-band) for its own metadata, so there is no second database to run.
 #
-# ponytail: no request-driven wake-from-zero — ECS/Fargate can't natively
+# ponytail: no request-driven wake-from-zero — ECS can't natively
 # scale UP from 0 tasks (nothing exists to trip a metric), so start/stop is a
 # manual count toggle. Add a scheduled scale-down (nightly -> 0) or an
 # EventBridge "wake" lambda only if the manual toggle proves annoying.
@@ -125,7 +125,7 @@ resource "aws_cloudwatch_log_group" "metabase" {
 
 resource "aws_ecs_task_definition" "metabase" {
   family                   = "${local.name_prefix}-metabase"
-  requires_compatibilities = ["FARGATE"]
+  requires_compatibilities = ["EC2"]
   network_mode             = "awsvpc"
   cpu                      = 1024 # ponytail: 1 vCPU / 2GB is Metabase's comfortable floor; bump if it OOMs.
   memory                   = 2048
@@ -172,7 +172,11 @@ resource "aws_ecs_service" "metabase" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.metabase.arn
   desired_count   = var.metabase_desired_count
-  launch_type     = "FARGATE"
+
+  capacity_provider_strategy {
+    capacity_provider = aws_ecs_capacity_provider.asg.name
+    weight            = 1
+  }
 
   # Metabase takes ~1-2 min to boot before /api/health passes.
   health_check_grace_period_seconds = 180
@@ -188,6 +192,8 @@ resource "aws_ecs_service" "metabase" {
     container_name   = "metabase"
     container_port   = 3000
   }
+
+  depends_on = [aws_ecs_cluster_capacity_providers.main]
 
   # desired_count is the on/off toggle, flipped 0<->1 via `aws ecs
   # update-service` on demand. Ignore it here so a later `terraform apply`

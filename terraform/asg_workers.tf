@@ -1,9 +1,8 @@
-# Worker fleet - Auto Scaling Group of t3.medium EC2 instances, each running
-# the `worker` container long-running (mirrors the
-# docker-compose `worker` service), replacing a fixed always-on pool that
-# would otherwise have to be provisioned as on-demand ECS Fargate tasks. See
-# terraform/README.md "Worker capacity" for the design and the tradeoff
-# against the on-demand `ecs:RunTask` dispatch path that remains in ecs.tf.
+# Warm worker fleet - Auto Scaling Group of EC2 instances, each running the
+# `worker` container long-running (mirrors the docker-compose `worker` service).
+# This is separate from the ASG-backed ECS capacity provider in ecs_capacity.tf:
+# it provides pre-connected worker slots, while ecs:RunTask handles on-demand
+# workers as ordinary ECS tasks on the shared capacity provider.
 
 # -----------------------------------------------------------------------------
 # AMI - latest Amazon Linux 2023 x86_64, owned by Amazon.

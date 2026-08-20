@@ -94,6 +94,46 @@ variable "log_retention_days" {
 }
 
 # -----------------------------------------------------------------------------
+# ECS EC2 capacity provider — Auto Scaling Group backing all ECS tasks
+# -----------------------------------------------------------------------------
+
+variable "ecs_capacity_instance_type" {
+  description = "EC2 instance type for the ECS capacity provider Auto Scaling Group. All ECS services and one-off tasks are placed here instead of Fargate."
+  type        = string
+  default     = "t3.medium"
+}
+
+variable "ecs_capacity_min_size" {
+  description = "Minimum ECS capacity provider instance count. Keep at least 1 so the backend service has somewhere to run."
+  type        = number
+  default     = 1
+}
+
+variable "ecs_capacity_max_size" {
+  description = "Maximum ECS capacity provider instance count. ECS managed scaling raises capacity as task demand grows."
+  type        = number
+  default     = 4
+}
+
+variable "ecs_capacity_desired_capacity" {
+  description = "Initial desired ECS capacity provider instance count. ECS managed scaling may adjust it within min/max."
+  type        = number
+  default     = 1
+}
+
+variable "ecs_capacity_target_capacity" {
+  description = "ECS managed scaling target capacity percentage for the ASG capacity provider. 100 packs tasks tightly; lower values keep headroom."
+  type        = number
+  default     = 80
+}
+
+variable "ecs_capacity_root_volume_gib" {
+  description = "Root EBS volume size (GiB) for ECS capacity provider instances. Container writable layers and on-demand worker worktrees live here."
+  type        = number
+  default     = 80
+}
+
+# -----------------------------------------------------------------------------
 # ECS — backend service (HTTP API + SPA, exposed via ALB)
 # -----------------------------------------------------------------------------
 
@@ -104,13 +144,13 @@ variable "backend_container_port" {
 }
 
 variable "backend_cpu" {
-  description = "Fargate task CPU units for the backend service."
+  description = "ECS task CPU units for the backend service."
   type        = number
   default     = 512
 }
 
 variable "backend_memory" {
-  description = "Fargate task memory (MiB) for the backend service."
+  description = "ECS task memory (MiB) for the backend service."
   type        = number
   default     = 1024
 }
@@ -126,13 +166,13 @@ variable "backend_desired_count" {
 # -----------------------------------------------------------------------------
 
 variable "foreman_cpu" {
-  description = "Fargate task CPU units for the foreman service."
+  description = "ECS task CPU units for the foreman service."
   type        = number
   default     = 256
 }
 
 variable "foreman_memory" {
-  description = "Fargate task memory (MiB) for the foreman service."
+  description = "ECS task memory (MiB) for the foreman service."
   type        = number
   default     = 512
 }
@@ -166,26 +206,24 @@ variable "foreman_bedrock_model" {
 # -----------------------------------------------------------------------------
 # The worker is NOT deployed as a long-running ECS service: in docker-compose
 # the backend spawns one worker container per task via the Docker socket
-# (backend/foreman/tools.py, backend/routes/workers.py). Fargate tasks have no
-# shared Docker socket, so this task definition is provided for the backend
-# to launch on demand via the ECS RunTask API (ecs:RunTask — see iam.tf)
-# instead of `docker.from_env()`. Wiring that call up is an application change
-# tracked separately; this module only provides the infrastructure side.
+# (backend/foreman/tools.py, backend/routes/workers.py). In AWS, this task
+# definition is launched on demand via the ECS RunTask API (ecs:RunTask — see
+# iam.tf) and placed on the ASG-backed ECS capacity provider.
 
 variable "worker_cpu" {
-  description = "Fargate task CPU units for on-demand worker tasks."
+  description = "ECS task CPU units for on-demand worker tasks."
   type        = number
   default     = 1024
 }
 
 variable "worker_memory" {
-  description = "Fargate task memory (MiB) for on-demand worker tasks."
+  description = "ECS task memory (MiB) for on-demand worker tasks."
   type        = number
   default     = 2048
 }
 
 variable "worker_ephemeral_storage_gib" {
-  description = "Ephemeral storage (GiB) for worker tasks — holds cloned repos and git worktrees (docker-compose's worker-repos/worker-worktrees volumes), which can exceed the 20 GiB Fargate default."
+  description = "Deprecated for EC2-backed ECS worker tasks. Worker repos and worktrees now live on the ECS capacity instance root volume."
   type        = number
   default     = 40
 }
@@ -227,7 +265,7 @@ variable "worker_target_cpu_utilization" {
 }
 
 variable "worker_root_volume_gib" {
-  description = "Root EBS volume size (GiB) for worker instances — holds cloned repos and git worktrees, same purpose as worker_ephemeral_storage_gib for on-demand Fargate workers."
+  description = "Root EBS volume size (GiB) for warm worker instances — holds cloned repos and git worktrees."
   type        = number
   default     = 40
 }

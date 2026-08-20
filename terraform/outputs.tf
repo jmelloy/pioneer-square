@@ -19,15 +19,21 @@ output "s3_bucket_name" {
 }
 
 output "ecs_cluster_name" {
-  description = "Name of the ECS Fargate cluster."
+  description = "Name of the ECS cluster. Tasks run on the ASG-backed capacity provider."
   value       = aws_ecs_cluster.main.name
+}
+
+output "ecs_capacity_provider_name" {
+  description = "ASG-backed ECS capacity provider used by services and one-off RunTask launches."
+  value       = aws_ecs_capacity_provider.asg.name
 }
 
 output "ecs_service_names" {
   description = "Names of the long-running ECS services."
   value = {
-    backend = aws_ecs_service.backend.name
-    foreman = aws_ecs_service.foreman.name
+    backend  = aws_ecs_service.backend.name
+    foreman  = aws_ecs_service.foreman.name
+    metabase = aws_ecs_service.metabase.name
   }
 }
 
@@ -71,8 +77,13 @@ output "ecs_task_role_arn" {
   value       = aws_iam_role.ecs_task.arn
 }
 
+output "ecs_capacity_asg_name" {
+  description = "Name of the Auto Scaling Group that backs the ECS capacity provider."
+  value       = aws_autoscaling_group.ecs_capacity.name
+}
+
 output "worker_asg_name" {
-  description = "Name of the worker Auto Scaling Group (t3g.medium ARM64 instances running the worker image long-running)."
+  description = "Name of the warm worker Auto Scaling Group (EC2 instances running the worker image long-running, separate from ECS cluster capacity)."
   value       = aws_autoscaling_group.worker.name
 }
 

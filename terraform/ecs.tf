@@ -1,11 +1,8 @@
-# ECS Fargate cluster, task definitions mirroring each docker-compose
-# service, and the long-running services (backend, foreman). The worker
-# task definition is registered but not run as a service — see the comment
-# above var.worker_cpu in variables.tf. Baseline worker capacity now runs on
-# the t3g.medium Auto Scaling Group in asg_workers.tf; this on-demand Fargate
-# path remains as elastic overflow (foreman's spawn_worker tool / the
-# operator "spawn worker" UI action) for repos the ASG fleet isn't already
-# covering — see terraform/README.md "Worker fleet (ASG)".
+# ECS cluster, task definitions mirroring each docker-compose service, and the
+# long-running services (backend, foreman). ECS tasks are placed on the EC2 Auto
+# Scaling Group capacity provider in ecs_capacity.tf rather than Fargate. The
+# worker task definition is registered but not run as a service: backend-spawned
+# workers use ecs:RunTask against the same ASG-backed capacity provider.
 
 resource "aws_ecs_cluster" "main" {
   name = "${local.name_prefix}-cluster"
@@ -38,7 +35,7 @@ resource "aws_cloudwatch_log_group" "service" {
 
 resource "aws_ecs_task_definition" "backend" {
   family                   = "${local.name_prefix}-backend"
-  requires_compatibilities = ["FARGATE"]
+  requires_compatibilities = ["EC2"]
   network_mode             = "awsvpc"
   cpu                      = var.backend_cpu
   memory                   = var.backend_memory
@@ -72,8 +69,8 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "GITHUB_APP_ID", value = var.github_app_id },
         { name = "GITHUB_APP_SLUG", value = var.github_app_slug },
         { name = "GITHUB_APP_INSTALLATION_ID", value = var.github_app_installation_id },
-        # Spawned workers run as separate Fargate tasks, so "localhost" would
-        # never reach the backend — they connect back through the ALB.
+        # Spawned workers run as separate ECS tasks, so "localhost" would never
+        # reach the backend — they connect back through the ALB.
         { name = "WORKER_BACKEND_URL", value = "${local.has_certificate ? "https" : "http"}://${var.domain_name != "" ? var.domain_name : aws_lb.main.dns_name}" },
         { name = "LOG_LEVEL", value = var.log_level },
         { name = "PIONEER_S3_BUCKET", value = aws_s3_bucket.assets.bucket },
@@ -81,10 +78,13 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "PIONEER_ASG_LIFECYCLE_TOKEN", value = random_password.asg_lifecycle_token.result },
         { name = "AWS_DEFAULT_REGION", value = local.region },
         # Worker dispatch via ECS RunTask (backend/worker_runtime.py): the
-        # first two select ECS mode; the subnet/SG pair is the awsvpc network
-        # configuration each spawned worker task launches with.
+        # first two select ECS mode; the capacity provider keeps spawned
+        # workers on the same ASG-backed ECS cluster as every other task; the
+        # subnet/SG pair is the awsvpc network configuration each spawned
+        # worker task launches with.
         { name = "ECS_CLUSTER_NAME", value = aws_ecs_cluster.main.name },
         { name = "ECS_WORKER_TASK_DEFINITION", value = "${local.name_prefix}-worker" },
+        { name = "ECS_WORKER_CAPACITY_PROVIDER", value = aws_ecs_capacity_provider.asg.name },
         { name = "ECS_WORKER_SUBNETS", value = join(",", aws_subnet.private[*].id) },
         { name = "ECS_WORKER_SECURITY_GROUPS", value = aws_security_group.ecs_tasks.id },
         # The embedded foreman (backend/foreman/runner.py) makes LLM calls from
@@ -146,7 +146,11 @@ resource "aws_ecs_service" "backend" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.backend.arn
   desired_count   = var.backend_desired_count
-  launch_type     = "FARGATE"
+
+  capacity_provider_strategy {
+    capacity_provider = aws_ecs_capacity_provider.asg.name
+    weight            = 1
+  }
 
   network_configuration {
     subnets          = aws_subnet.private[*].id
@@ -160,7 +164,7 @@ resource "aws_ecs_service" "backend" {
     container_port   = var.backend_container_port
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_lb_listener.http, aws_ecs_cluster_capacity_providers.main]
 
   tags = {
     Name    = "${local.name_prefix}-backend"
@@ -188,7 +192,7 @@ resource "aws_cloudwatch_log_group" "migrate" {
 
 resource "aws_ecs_task_definition" "migrate" {
   family                   = "${local.name_prefix}-migrate"
-  requires_compatibilities = ["FARGATE"]
+  requires_compatibilities = ["EC2"]
   network_mode             = "awsvpc"
   cpu                      = 256
   memory                   = 512
@@ -232,7 +236,7 @@ resource "aws_ecs_task_definition" "migrate" {
 
 resource "aws_ecs_task_definition" "foreman" {
   family                   = "${local.name_prefix}-foreman"
-  requires_compatibilities = ["FARGATE"]
+  requires_compatibilities = ["EC2"]
   network_mode             = "awsvpc"
   cpu                      = var.foreman_cpu
   memory                   = var.foreman_memory
@@ -289,13 +293,19 @@ resource "aws_ecs_service" "foreman" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.foreman.arn
   desired_count   = var.foreman_desired_count
-  launch_type     = "FARGATE"
+
+  capacity_provider_strategy {
+    capacity_provider = aws_ecs_capacity_provider.asg.name
+    weight            = 1
+  }
 
   network_configuration {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]
     assign_public_ip = false
   }
+
+  depends_on = [aws_ecs_cluster_capacity_providers.main]
 
   tags = {
     Name    = "${local.name_prefix}-foreman"
@@ -306,27 +316,23 @@ resource "aws_ecs_service" "foreman" {
 # -----------------------------------------------------------------------------
 # Worker — registered task definition only (no aws_ecs_service). Launched
 # on demand by the backend via ecs:RunTask against this family, replacing
-# the docker.from_env()/containers.run() calls in
-# backend/foreman/tools.py and backend/routes/workers.py. This is the
-# elastic-overflow path; the always-on worker pool is the ASG in
-# asg_workers.tf.
+# the docker.from_env()/containers.run() calls in backend/foreman/tools.py and
+# backend/routes/workers.py. RunTask uses the same ASG-backed ECS capacity
+# provider as backend/foreman/metabase/migrate.
 # -----------------------------------------------------------------------------
 
 resource "aws_ecs_task_definition" "worker" {
   family                   = "${local.name_prefix}-worker"
-  requires_compatibilities = ["FARGATE"]
+  requires_compatibilities = ["EC2"]
   network_mode             = "awsvpc"
   cpu                      = var.worker_cpu
   memory                   = var.worker_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
-  # Above the 20 GiB Fargate default: cloned repos + git worktrees
-  # (/work/repos, /work/worktrees in docker-compose) share this with the
-  # worker image itself (Node/Go/build-essential toolchains).
-  ephemeral_storage {
-    size_in_gib = var.worker_ephemeral_storage_gib
-  }
+  # Cloned repos + git worktrees live on the ECS capacity instance's root EBS
+  # volume (var.ecs_capacity_root_volume_gib). Fargate-only ephemeral_storage
+  # is intentionally not set for this EC2 task definition.
 
   container_definitions = jsonencode([
     {
