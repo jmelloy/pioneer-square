@@ -3211,7 +3211,6 @@ async def _exec_one_tool(
                         repo = inp["repo"]
                         num = int(inp["issue_number"])
                         force = inp.get("force", False)
-                        file_gap_issues = inp.get("file_gap_issues", False)
                         trigger_deep = inp.get("trigger_deep_analysis", False)
 
                         # Fetch the epic issue
@@ -3365,38 +3364,13 @@ async def _exec_one_tool(
                             except urllib.error.HTTPError:
                                 pass  # label may already exist or lack permission
 
-                            # File gap issues if requested
+                            # Gap issue auto-filing is intentionally disabled: the gap
+                            # detection above uses naive substring matching against PR
+                            # titles/bodies, which is prone to false positives and isn't
+                            # reliable enough to drive automatic issue creation. The
+                            # `file_gap_issues` parameter is kept for backward
+                            # compatibility but no longer files anything.
                             filed_issues: list = []
-                            if file_gap_issues and gaps:
-                                for gap in gaps[:5]:  # cap at 5 new issues
-                                    gap_payload = {
-                                        "title": f"[Epic #{num}] {gap[:80]}",
-                                        "body": (
-                                            f"Identified during epic analysis of #{num}.\n\n"
-                                            f"**Gap:** {gap}\n\n"
-                                            f"Parent epic: #{num}"
-                                        ),
-                                        "labels": ["bug", "epic-gap"],
-                                    }
-                                    try:
-                                        new_issue = await _to_thread(
-                                            _gh_api_post,
-                                            f"/repos/{repo}/issues",
-                                            token,
-                                            gap_payload,
-                                        )
-                                        filed_issues.append(
-                                            {
-                                                "number": new_issue["number"],
-                                                "title": new_issue["title"],
-                                                "url": new_issue["html_url"],
-                                            }
-                                        )
-                                    except urllib.error.HTTPError as exc:
-                                        logger.warning(
-                                            "analyze_epic: failed to file gap issue: %s",
-                                            exc,
-                                        )
 
                             # Build deep analysis task description if triggered
                             deep_analysis_task_id = None
