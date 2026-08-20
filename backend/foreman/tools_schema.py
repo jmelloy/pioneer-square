@@ -61,7 +61,7 @@ FOREMAN_TOOLS = [
     {
         "name": "assign_task",
         "description": (
-            "Queue a coding task — the worker host process (w-xxx) spawns an agent subprocess to execute it. "
+            "Assign a coding task to an idle worker slot — the worker host process (w-xxx) spawns an agent subprocess to execute it. "
             "The worker creates a git worktree, runs the chosen coding agent on the description, "
             "and pushes its work, then parks in awaiting-foreman-review — it does NOT open a "
             "PR automatically. Once you've reviewed the pushed branch and decided it's ready, "
@@ -81,7 +81,7 @@ FOREMAN_TOOLS = [
             "properties": {
                 "worker_id": {
                     "type": "string",
-                    "description": "Worker host-process ID (e.g. w-abc123). Must be idle.",
+                    "description": "Worker host-process ID (e.g. w-abc123). Must have an idle agent slot; workers do not queue backlog tasks.",
                 },
                 "description": {
                     "type": "string",

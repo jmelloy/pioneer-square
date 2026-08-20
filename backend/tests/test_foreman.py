@@ -587,6 +587,29 @@ class TestExecToolsDispatching:
         assert "does not support" not in content
         assert "w-worker1" in content
 
+    async def test_assign_task_rejects_worker_with_no_free_agent_slots(self, db_session):
+        insert_guild(db_session, "g-assign-full")
+        insert_worker(db_session, "g-assign-full", "w-full", state="online")
+        _insert_agent(db_session, "g-assign-full", "w-full", "a-full1", state="working")
+        _insert_task(db_session, "t-full1", "g-assign-full", "w-full", state="working")
+
+        with patch("foreman.tools.broadcast", new_callable=AsyncMock) as mock_broadcast:
+            results = await exec_tools(
+                "g-assign-full",
+                [
+                    _fake_tool_use(
+                        "assign_task",
+                        {"worker_id": "w-full", "description": "Do not queue this"},
+                    )
+                ],
+            )
+
+        content = results[0]["content"].lower()
+        assert results[0].get("is_error")
+        assert "cannot accept work" in content
+        assert "task not assigned" in content
+        mock_broadcast.assert_not_awaited()
+
     async def test_assign_task_with_existing_task_id(self, db_session):
         insert_guild(db_session, "g-assign-existing")
         _insert_worker(db_session, "g-assign-existing", "w-wkr2")
