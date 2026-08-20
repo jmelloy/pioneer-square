@@ -2,7 +2,7 @@
   <div class="thread-view">
     <div v-if="!thread" class="loading-state">
       <span v-if="loading" class="spinner">⟳</span>
-      <span v-else>Thread not found</span>
+      <span v-else>Conversation not found</span>
     </div>
 
     <template v-else>
@@ -10,9 +10,9 @@
       <div class="view-header">
         <div class="header-left">
           <button class="back-btn" @click="$emit('back')" title="Back to list">←</button>
-          <span class="thread-icon">✉</span>
+          <span class="thread-icon">💬</span>
           <div class="header-info">
-            <span class="thread-name">{{ thread.name || 'Unnamed thread' }}</span>
+            <span class="thread-name">{{ thread.name || 'Unnamed conversation' }}</span>
             <code class="thread-id-chip">{{ thread.id }}</code>
           </div>
         </div>
@@ -50,8 +50,8 @@
       <div class="view-body">
         <div class="conversation-placeholder">
           <p class="placeholder-text">
-            Thread messages will appear here once message-to-thread linking is implemented.
-            Use the Foreman comms pane for the full conversation history.
+            Conversation messages appear here when this panel is wired into the active shell. Use
+            the Foreman comms pane for the full conversation history.
           </p>
           <div class="foreman-badge">
             <span class="foreman-icon">⚙</span>
@@ -115,7 +115,7 @@ async function load() {
   try {
     await threadsStore.fetchThread(guildId, props.threadId)
   } catch (e) {
-    console.error('Failed to load thread', e)
+    console.error('Failed to load conversation', e)
   } finally {
     loading.value = false
   }

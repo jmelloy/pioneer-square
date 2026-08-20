@@ -21,8 +21,8 @@
         :class="{ active: activeTab === 'threads' }"
         @click="activeTab = 'threads'"
       >
-        <span class="tab-label">Threads</span>
-        <span v-if="activeThreadCount" class="tab-count">{{ activeThreadCount }}</span>
+        <span class="tab-label">Conversations</span>
+        <span v-if="activeConversationCount" class="tab-count">{{ activeConversationCount }}</span>
       </button>
       <button
         v-if="ghStore.isConfigured"
@@ -80,7 +80,7 @@ const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {
 const isConnected = computed(() => guildStore.isConnected)
 const workerCount = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline').length)
 const openIssueCount = computed(() => ghStore.issues.filter((i) => i.state === 'open').length)
-const activeThreadCount = computed(
+const activeConversationCount = computed(
   () => threadsStore.threads.filter((t) => t.status === 'active').length,
 )
 const activeTab = ref<'tasks' | 'workers' | 'threads' | 'issues'>('tasks')
