@@ -112,15 +112,16 @@ resource "aws_ecs_task_definition" "backend" {
 
       secrets = [
         for key, param in {
-          DATABASE_URL           = aws_ssm_parameter.database_url
-          GITHUB_CLIENT_ID       = aws_ssm_parameter.secret["github_client_id"]
-          GITHUB_CLIENT_SECRET   = aws_ssm_parameter.secret["github_client_secret"]
-          GITHUB_TOKEN           = aws_ssm_parameter.secret["github_token"]
-          GITHUB_APP_PRIVATE_KEY = aws_ssm_parameter.secret["github_app_private_key"]
-          ANTHROPIC_API_KEY      = aws_ssm_parameter.secret["anthropic_api_key"]
-          PIONEER_FOREMAN_KEY    = aws_ssm_parameter.secret["pioneer_foreman_key"]
-          DISCORD_BOT_TOKEN      = aws_ssm_parameter.secret["discord_bot_token"]
-          DEBUG_TOKEN            = aws_ssm_parameter.secret["debug_token"]
+          DATABASE_URL             = aws_ssm_parameter.database_url
+          GITHUB_CLIENT_ID         = aws_ssm_parameter.secret["github_client_id"]
+          GITHUB_CLIENT_SECRET     = aws_ssm_parameter.secret["github_client_secret"]
+          GITHUB_TOKEN             = aws_ssm_parameter.secret["github_token"]
+          GITHUB_APP_PRIVATE_KEY   = aws_ssm_parameter.secret["github_app_private_key"]
+          ANTHROPIC_API_KEY        = aws_ssm_parameter.secret["anthropic_api_key"]
+          AWS_BEARER_TOKEN_BEDROCK = aws_ssm_parameter.secret["aws_bearer_token_bedrock"]
+          PIONEER_FOREMAN_KEY      = aws_ssm_parameter.secret["pioneer_foreman_key"]
+          DISCORD_BOT_TOKEN        = aws_ssm_parameter.secret["discord_bot_token"]
+          DEBUG_TOKEN              = aws_ssm_parameter.secret["debug_token"]
         } : { name = key, valueFrom = param.arn }
       ]
 
