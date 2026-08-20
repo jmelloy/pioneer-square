@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 from helpers import _sync_session, insert_guild, insert_member, make_auth_token
-from models import Agent, Guild, GuildSpawnDefaults, User, Worker
+from models import Agent, Guild, GuildSpawnDefaults, SpawnSettings, User, Worker
 from sqlalchemy import select, update
 from sqlmodel import col  # noqa: E402
 
@@ -22,11 +22,10 @@ def _auth(db_url: str) -> dict:
 
 
 def _set_guild_env(test_client, db_url: str, slug: str, env_vars: list[dict]) -> None:
-    """Set a guild's env vars via the real PATCH endpoint.
+    """Set a guild's foreman-only env vars via the real PATCH endpoint.
 
-    Routes through PATCH /guilds/{slug}, which merges/dedups and syncs the
-    forwarded worker-slice into the spawn_settings baseline (the source the spawn
-    path resolves from). ``env_vars`` items are {key, value, forward} dicts.
+    ``forward`` is accepted for backwards-compatible request parsing but is now
+    ignored by the backend: foreman_config does not populate worker spawn env.
     """
     resp = test_client.patch(
         f"/api/guilds/{slug}/foreman-config", headers=_auth(db_url), json={"env_vars": env_vars}
@@ -39,6 +38,33 @@ def _workers_for_guild(db_url: str, guild_id: str) -> list[Worker]:
     with _sync_session(db_url) as session:
         guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == guild_id))
         return list(session.scalars(select(Worker).where(col(Worker.guild_id) == guild_pk)).all())
+
+
+def _set_guild_spawn_env(
+    db_url: str,
+    slug: str,
+    *,
+    env_vars: dict[str, str] | None = None,
+    tool_env_vars: dict[str, dict[str, str]] | None = None,
+) -> None:
+    """Set the worker-facing guild baseline directly in spawn_settings."""
+    with _sync_session(db_url) as session:
+        guild_pk = session.scalar(select(col(Guild.id)).where(col(Guild.slug) == slug))
+        assert guild_pk is not None
+        row = session.scalar(
+            select(SpawnSettings).where(
+                col(SpawnSettings.guild_id) == guild_pk,
+                col(SpawnSettings.user_id).is_(None),
+            )
+        )
+        if row is None:
+            row = SpawnSettings(guild_id=guild_pk, user_id=None, updated_at=datetime.now(UTC))
+            session.add(row)
+        if env_vars is not None:
+            row.env_vars = env_vars
+        if tool_env_vars is not None:
+            row.tool_env_vars = tool_env_vars
+        session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -396,14 +422,13 @@ def test_get_spawn_credentials_empty(client):
 
 
 def test_get_spawn_credentials_masks_guild_env_var_values(client):
-    """Guild foreman env var values are never returned in the clear from this endpoint."""
+    """Guild worker env var values are never returned in the clear from this endpoint."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred2")
-    _set_guild_env(
-        test_client,
+    _set_guild_spawn_env(
         db_url,
         "guild-cred2",
-        [{"key": "ANTHROPIC_API_KEY", "value": "sk-ant-supersecretvalue", "forward": True}],
+        env_vars={"ANTHROPIC_API_KEY": "sk-ant-supersecretvalue"},
     )
     resp = test_client.get("/guilds/guild-cred2/spawn-credentials", headers=_auth(db_url))
     assert resp.status_code == 200
@@ -416,14 +441,10 @@ def test_spawn_worker_excludes_selected_guild_env_keys(client, monkeypatch):
     """exclude_env_keys drops those guild-level credentials from this spawn only."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred4")
-    _set_guild_env(
-        test_client,
+    _set_guild_spawn_env(
         db_url,
         "guild-cred4",
-        [
-            {"key": "ANTHROPIC_API_KEY", "value": "keep-me", "forward": True},
-            {"key": "OPENAI_API_KEY", "value": "drop-me", "forward": True},
-        ],
+        env_vars={"ANTHROPIC_API_KEY": "keep-me", "OPENAI_API_KEY": "drop-me"},
     )
 
     import worker_runtime
@@ -466,14 +487,10 @@ def test_spawn_worker_exclusion_survives_the_workers_env_refetch(client, monkeyp
     """
     test_client, db_url = client
     insert_guild(db_url, "guild-cred4b")
-    _set_guild_env(
-        test_client,
+    _set_guild_spawn_env(
         db_url,
         "guild-cred4b",
-        [
-            {"key": "ANTHROPIC_API_KEY", "value": "keep-me", "forward": True},
-            {"key": "OPENAI_API_KEY", "value": "drop-me", "forward": True},
-        ],
+        env_vars={"ANTHROPIC_API_KEY": "keep-me", "OPENAI_API_KEY": "drop-me"},
     )
 
     import worker_runtime
@@ -514,12 +531,7 @@ def test_spawn_worker_explicit_env_var_beats_an_exclusion_of_the_same_key(client
     removal — the caller's value is the more specific instruction."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred4c")
-    _set_guild_env(
-        test_client,
-        db_url,
-        "guild-cred4c",
-        [{"key": "OPENAI_API_KEY", "value": "guild-value", "forward": True}],
-    )
+    _set_guild_spawn_env(db_url, "guild-cred4c", env_vars={"OPENAI_API_KEY": "guild-value"})
 
     import worker_runtime
 
@@ -561,12 +573,7 @@ def test_get_spawn_credentials_returns_the_guild_baseline_not_the_callers_own_va
     masked guild list hid them from the form entirely."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred5")
-    _set_guild_env(
-        test_client,
-        db_url,
-        "guild-cred5",
-        [{"key": "GUILD_KEY", "value": "guild-value", "forward": True}],
-    )
+    _set_guild_spawn_env(db_url, "guild-cred5", env_vars={"GUILD_KEY": "guild-value"})
     resp = test_client.put(
         "/guilds/guild-cred5/spawn-settings",
         headers=_auth(db_url),
@@ -578,9 +585,9 @@ def test_get_spawn_credentials_returns_the_guild_baseline_not_the_callers_own_va
     assert [e["key"] for e in body["guild_env_vars"]] == ["GUILD_KEY"]
 
 
-def test_get_spawn_credentials_reports_guild_per_tool_env_keys(client):
-    """Per-tool guild vars are listed (masked) so the form can show what the
-    guild already gives each tool before the user adds an override."""
+def test_foreman_config_tool_env_vars_do_not_reach_spawn_credentials(client):
+    """foreman_config tool_env_vars are foreman config only; worker tool env
+    must come from spawn_settings, not this legacy/deprecated field."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred6")
     resp = test_client.patch(
@@ -591,15 +598,13 @@ def test_get_spawn_credentials_reports_guild_per_tool_env_keys(client):
     assert resp.status_code == 200, resp.text
 
     resp = test_client.get("/guilds/guild-cred6/spawn-credentials", headers=_auth(db_url))
-    assert resp.json()["guild_tool_env_vars"] == {
-        "claude": [{"key": "TOOL_KEY", "masked_value": "to…alue"}]
-    }
+    assert resp.json()["guild_tool_env_vars"] == {}
     assert "tool-secret-value" not in resp.text
 
 
-def test_spawn_worker_only_forwards_flagged_guild_env_vars(client, monkeypatch):
-    """A guild env var without forward=True stays with the foreman and must not
-    reach the spawned worker; a forwarded one does."""
+def test_spawn_worker_ignores_foreman_config_forward_flag(client, monkeypatch):
+    """foreman_config env_vars are never worker env, even if an old client sends
+    forward=True. Worker-facing env must be stored in spawn_settings."""
     test_client, db_url = client
     insert_guild(db_url, "guild-fwd")
     _set_guild_env(
@@ -634,7 +639,7 @@ def test_spawn_worker_only_forwards_flagged_guild_env_vars(client, monkeypatch):
         json={"repos": ["a/b"]},
     )
     assert resp.status_code == 200
-    assert captured_env.get("SHARED_TOKEN") == "yes"
+    assert "SHARED_TOKEN" not in captured_env
     assert "FOREMAN_ONLY" not in captured_env
 
 
@@ -643,11 +648,10 @@ def test_spawn_worker_empty_user_value_does_not_clobber_guild_credential(client,
     must not blank out the credential's real value (the value wins)."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred-clob")
-    _set_guild_env(
-        test_client,
+    _set_guild_spawn_env(
         db_url,
         "guild-cred-clob",
-        [{"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token", "forward": True}],
+        env_vars={"AWS_BEARER_TOKEN_BEDROCK": "real-token"},
     )
 
     import worker_runtime
@@ -675,20 +679,14 @@ def test_spawn_worker_empty_user_value_does_not_clobber_guild_credential(client,
     assert captured_env.get("AWS_BEARER_TOKEN_BEDROCK") == "real-token"
 
 
-def test_spawn_worker_guild_duplicate_key_prefers_nonempty(client, monkeypatch):
-    """Submitting the same key twice (one real value, one blank) must collapse to
-    the real value on write, so the container boots with the real value — not
-    whichever entry came last."""
+def test_spawn_worker_guild_baseline_env_reaches_container(client, monkeypatch):
+    """Worker-facing guild baseline env comes from spawn_settings."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred-dup")
-    _set_guild_env(
-        test_client,
+    _set_guild_spawn_env(
         db_url,
         "guild-cred-dup",
-        [
-            {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "real-token", "forward": True},
-            {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "", "forward": True},
-        ],
+        env_vars={"AWS_BEARER_TOKEN_BEDROCK": "real-token"},
     )
 
     import worker_runtime
@@ -1075,20 +1073,12 @@ def test_foreman_env_vars_layers_user_tool_override_over_guild_baseline(client):
     insert_guild(db_url, "guild-lyr")
     headers = _auth(db_url)
 
-    # Guild baseline: claude gets BASE_ONLY + SHARED=guild (via foreman-config).
-    resp = test_client.patch(
-        "/api/guilds/guild-lyr/foreman-config",
-        headers=headers,
-        json={
-            "tool_env_vars": {
-                "claude": [
-                    {"key": "BASE_ONLY", "value": "base"},
-                    {"key": "SHARED", "value": "guild"},
-                ]
-            }
-        },
+    # Guild baseline: claude gets BASE_ONLY + SHARED=guild from spawn_settings.
+    _set_guild_spawn_env(
+        db_url,
+        "guild-lyr",
+        tool_env_vars={"claude": {"BASE_ONLY": "base", "SHARED": "guild"}},
     )
-    assert resp.status_code == 200, resp.text
 
     # This user's override: claude SHARED=user + USER_ONLY.
     resp = test_client.put(
