@@ -110,9 +110,8 @@ class EnvVarItem(BaseModel):
     # None → keep the currently stored value. Kept for API compatibility; the UI
     # now sends actual values since env vars are returned in clear text.
     value: str | None = None
-    # Shared env_vars only: True → also forward this var to worker tools. Default
-    # (None/False) keeps it with the foreman's own LLM and does NOT leak it to
-    # workers. Ignored for tool_env_vars (those are always scoped to their tool).
+    # Deprecated/no-op. Kept for backwards-compatible request parsing only:
+    # foreman_config env vars are foreman-only and are never forwarded to workers.
     forward: bool | None = None
 
 
@@ -181,10 +180,11 @@ class ForemanConfigUpdate(BaseModel):
     codex_default_model: str | None = Field(default=None, max_length=200)
     # None (field absent) → leave existing env_vars unchanged.
     # Empty list → clear all env_vars.
-    # Shared env vars: applied to every worker tool AND the foreman's own LLM.
+    # Foreman-only env vars for the orchestrator LLM. The deprecated per-item
+    # forward flag is ignored; worker env belongs in spawn_settings.
     env_vars: list[EnvVarItem] | None = None
-    # Per-tool env vars: each tool's runner receives only its own set (plus the
-    # shared env_vars), so e.g. Pi's Bedrock token never reaches the Claude CLI.
+    # Deprecated/no-op on this endpoint. Kept for backwards compatibility while
+    # worker tool env moves fully to spawn_settings.
     # None → leave unchanged; a tool mapped to [] clears that tool's vars.
     tool_env_vars: dict[str, list[EnvVarItem]] | None = None
 
@@ -635,35 +635,6 @@ async def update_foreman_config(
     guild.foreman_config = config
     await db.commit()
 
-    # Keep the spawn_settings guild baseline in sync with foreman_config's
-    # worker-facing slice: resolve_spawn reads spawn_settings, but the guild
-    # settings UI still edits foreman_config (until its own cutover). Forwarded
-    # env vars, per-tool scoped vars, and the pi provider/model defaults are the
-    # bits that reach a worker; the foreman's own credentials stay behind.
-    from spawn_config import upsert_spawn_row  # noqa: PLC0415
-
-    worker_env = {
-        e["key"]: e["value"]
-        for e in (config.get("env_vars") or [])
-        if e.get("forward") and e.get("key") and e.get("value") is not None
-    }
-    worker_tool_env = {
-        tool: {
-            i["key"]: i["value"]
-            for i in (items or [])
-            if i.get("key") and i.get("value") is not None
-        }
-        for tool, items in (config.get("tool_env_vars") or {}).items()
-    }
-    await upsert_spawn_row(
-        db,
-        guild.id,
-        None,
-        env_vars=worker_env,
-        tool_env_vars={t: kv for t, kv in worker_tool_env.items() if kv},
-        provider=config.get("pi_default_provider"),
-        model=config.get("pi_default_model"),
-    )
     return config
 
 
