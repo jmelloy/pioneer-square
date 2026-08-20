@@ -1189,7 +1189,7 @@ class Worker:
             self.cfg.worker_id or "<unregistered>",
         )
         logger.info(
-            "Paths: repos_dir=%s work_dir=%s pull_interval=%.1fs max_turns=%d"
+            "Paths: repos_dir=%s work_dir=%s pull_interval=%.1fs max_turns=%s"
             " max_agents=%d claude=%s codex=%s codex_args=%s pi=%s",
             self.cfg.repos_dir,
             self.cfg.work_dir,
@@ -2485,7 +2485,7 @@ class Worker:
                 else:
                     _claude_model = task.get("model") or None
                     logger.info(
-                        "Task %s: launching claude in %s (max_turns=%d, resume=%s, model=%s)",
+                        "Task %s: launching claude in %s (max_turns=%s, resume=%s, model=%s)",
                         task_id,
                         primary_wt,
                         self.cfg.claude_max_turns,

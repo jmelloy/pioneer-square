@@ -63,7 +63,7 @@ class Config:
     pi_model: str | None = None
     pi_provider: str | None = None
     pull_interval: float = 300.0
-    claude_max_turns: int = 50
+    claude_max_turns: int | None = None
     max_agents: int = 4
     # Optional public-facing backend URL used when registering GitHub webhooks.
     # ``backend_url`` may point at an internal address GitHub can't reach
@@ -350,10 +350,14 @@ def load(explicit_path: str | None = None, overrides: dict | None = None) -> Con
             if overrides.get("pull_interval") is not None
             else raw.get("pull_interval", 300.0)
         ),
-        claude_max_turns=int(
-            overrides.get("claude_max_turns")
+        claude_max_turns=(
+            int(overrides["claude_max_turns"])
             if overrides.get("claude_max_turns") is not None
-            else claude_block.get("max_turns", 50)
+            else (
+                int(claude_block["max_turns"])
+                if claude_block.get("max_turns") is not None
+                else None
+            )
         ),
         # Floor at 1: the agent pool is sized from this, so a 0 (or negative)
         # produces a worker that connects, announces no agents, and silently
