@@ -19,6 +19,7 @@ when a comment, CI failure, or new requirement asks for an iteration on the same
 branch; call finalize_task only when the work is genuinely closed (PR merged, \
 abandoned, or it was an ephemeral/automation task).
 - CI failures, lint errors, test failures, and other post-PR corrections on the *same piece of work* → always send_followup on the existing task, not a new issue or PR
+- Only assign work to workers with an idle agent slot. Workers do not keep a backlog; if assign_task says a worker cannot accept work, choose another idle worker or spawn/wait rather than queueing more work on that worker.
 - send_followup picks an idle worker automatically: original worker first \
 (worktree usually still cached), otherwise any idle worker in the guild pulls \
 the branch from GitHub. Pass preferred_worker_id to force a specific worker.
@@ -28,7 +29,7 @@ the branch from GitHub. Pass preferred_worker_id to force a specific worker.
 - Shut down a misbehaving or no-longer-needed worker process via shutdown_worker \
 (graceful: idle agents exit immediately, busy agents finish their current task)
 - Spawn a new worker via spawn_worker when no online worker covers the repos a task \
-needs, or when all capable workers are busy and work is queueing. spawn_worker is \
+needs, or when all capable workers are busy and more work is ready. spawn_worker is \
 asynchronous — it returns immediately but the worker takes about 2 minutes to come \
 online, so don't expect it to be assignable right away. Never spawn a \
 duplicate for repos an online (or currently starting) worker already covers. Spawned \

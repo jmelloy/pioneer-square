@@ -642,6 +642,54 @@ async def _guild_private_key_pem(guild_id: str) -> str | None:
         await db.close()
 
 
+async def _worker_can_accept_task(
+    db,
+    *,
+    guild_pk: int | None,
+    worker_id: str,
+    exclude_task_id: str | None = None,
+) -> tuple[bool, str]:
+    """Return whether a worker has immediate capacity for one more task.
+
+    Workers do not own a backlog.  Capacity is the number of live, non-offline
+    agents minus tasks already assigned and not yet picked up/finished
+    (``pending``/``working``).  If the worker has no Agent rows (legacy tests or
+    a worker that has registered in the DB but has not joined a socket yet), keep
+    the historical behavior and let the caller's online/offline check decide.
+    """
+    agent_result = await db.exec(
+        select(col(Agent.id), col(Agent.state), col(Agent.current_task_id)).where(
+            col(Agent.worker_id) == worker_id,
+            col(Agent.guild_id) == guild_pk,
+            col(Agent.state) != "offline",
+        )
+    )
+    agents = list(agent_result.all())
+    if not agents:
+        return True, "legacy worker has no live agent rows"
+
+    task_filters = [
+        col(Task.worker_id) == worker_id,
+        col(Task.guild_id) == guild_pk,
+        col(Task.state).in_(["pending", "working"]),
+    ]
+    if exclude_task_id:
+        task_filters.append(col(Task.id) != exclude_task_id)
+    task_result = await db.exec(select(col(Task.id)).where(*task_filters))
+    reserved_or_running = len(list(task_result.all()))
+    capacity = len(agents)
+    idle_agents = [a for a in agents if a[1] == "idle" and a[2] is None]
+    if reserved_or_running >= capacity:
+        return (
+            False,
+            f"all {capacity} agent slot(s) are already reserved or working "
+            f"({reserved_or_running} pending/working task(s))",
+        )
+    if not idle_agents:
+        return False, "no idle agent slot is available"
+    return True, f"{capacity - reserved_or_running} slot(s) available"
+
+
 async def _select_followup_worker(
     db,
     *,
@@ -1888,6 +1936,22 @@ async def _exec_one_tool(
                                     "Pick a different worker and retry."
                                 )
                                 is_error = True
+                            else:
+                                can_accept, capacity_reason = await _worker_can_accept_task(
+                                    db,
+                                    guild_pk=guild_pk,
+                                    worker_id=wid,
+                                    exclude_task_id=existing_task_id,
+                                )
+                                if not can_accept:
+                                    result_text = (
+                                        f"Worker {wid} cannot accept work right now: "
+                                        f"{capacity_reason}. Task NOT assigned; pick an idle "
+                                        "worker or retry after this worker reports idle."
+                                    )
+                                    is_error = True
+                            if is_error:
+                                pass
                             elif existing_task_id:
                                 name_override = inp.get("name")
                                 update_values: dict = {
