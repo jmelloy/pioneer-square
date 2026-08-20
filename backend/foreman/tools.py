@@ -3147,7 +3147,6 @@ async def _exec_one_tool(
                         repo = inp["repo"]
                         num = int(inp["issue_number"])
                         force = inp.get("force", False)
-                        file_gap_issues = inp.get("file_gap_issues", False)
                         trigger_deep = inp.get("trigger_deep_analysis", False)
 
                         # Fetch the epic issue
