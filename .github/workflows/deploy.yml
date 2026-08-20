@@ -57,8 +57,9 @@ jobs:
   # one passes health checks, and neither of them races a schema upgrade.
   #
   # The targeted apply registers the migrate task-definition revision at the
-  # new image tag and ensures the ASG-backed ECS capacity provider exists; the
-  # services keep their previous revisions until the full apply below.
+  # new image tag and ensures the ASG-backed ECS capacity provider and its EC2
+  # instance-role policy attachments exist; the services keep their previous
+  # revisions until the full apply below.
   migrate:
     needs: build
     runs-on: ubuntu-latest
@@ -88,6 +89,8 @@ jobs:
         run: |
           terraform apply -auto-approve \
             -target=aws_ecs_task_definition.migrate \
+            -target=aws_iam_role_policy_attachment.ecs_capacity_ecs \
+            -target=aws_iam_role_policy_attachment.ecs_capacity_ssm \
             -target=aws_ecs_cluster_capacity_providers.main \
             -var="container_image_tag=${{ github.sha }}"
 
@@ -98,6 +101,23 @@ jobs:
           SUBNETS=$(terraform output -json private_subnet_ids | jq -r 'join(",")')
           SG=$(terraform output -raw ecs_tasks_security_group_id)
           CAPACITY_PROVIDER=$(terraform output -raw ecs_capacity_provider_name)
+
+          echo "Waiting for ASG-backed ECS capacity to register..."
+          for i in {1..40}; do
+            REGISTERED=$(aws ecs describe-clusters \
+              --clusters "$CLUSTER" \
+              --query 'clusters[0].registeredContainerInstancesCount' \
+              --output text)
+            if [ "${REGISTERED:-0}" -gt 0 ]; then
+              echo "Registered ECS container instances: $REGISTERED"
+              break
+            fi
+            if [ "$i" = 40 ]; then
+              echo "No ECS container instances registered after waiting. Capacity provider bootstrap failed."
+              exit 1
+            fi
+            sleep 15
+          done
 
           RESULT=$(aws ecs run-task \
             --cluster "$CLUSTER" \
