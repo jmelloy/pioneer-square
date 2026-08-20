@@ -8,6 +8,7 @@ export interface EnvVarRow {
   id: number
   key: string
   value: string
+  inherited?: boolean
 }
 
 /**
@@ -84,6 +85,15 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
   function addEnvRow(rows: EnvVarRow[]) {
     rows.push({ id: ++envRowSeq, key: '', value: '' })
   }
+
+  function addInheritedForemanEnvRows() {
+    const existing = new Set(foremanEnvRows.value.map((r) => r.key))
+    for (const key of envDefaultKeys.value) {
+      if (!existing.has(key)) {
+        foremanEnvRows.value.push({ id: ++envRowSeq, key, value: '', inherited: true })
+      }
+    }
+  }
   function removeEnvRow(rows: EnvVarRow[], row: EnvVarRow) {
     const i = rows.indexOf(row)
     if (i >= 0) rows.splice(i, 1)
@@ -138,6 +148,7 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
           const target = e.forward ? workerEnvRows : foremanEnvRows
           target.value.push({ id: ++envRowSeq, key: e.key, value: e.value ?? '' })
         }
+        addInheritedForemanEnvRows()
         const toolEnv = cfg.tool_env_vars ?? {}
         for (const tool of ['claude', 'pi', 'codex']) {
           toolEnvRows[tool] = (toolEnv[tool] ?? []).map((e: { key: string; value?: string }) => ({
@@ -189,6 +200,7 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
         for (const r of rows) {
           const key = r.key.trim()
           if (!key) continue
+          if (r.inherited && r.value === '') continue
           const existing = envByKey.get(key)
           if (existing && r.value === '' && existing.value !== '') continue
           envByKey.set(key, { value: r.value, forward: forward || !!existing?.forward })
@@ -231,6 +243,7 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
           const target = e.forward ? workerEnvRows : foremanEnvRows
           target.value.push({ id: ++envRowSeq, key: e.key, value: e.value ?? '' })
         }
+        addInheritedForemanEnvRows()
         const savedToolEnv = saved.tool_env_vars ?? {}
         for (const tool of ['claude', 'pi', 'codex']) {
           toolEnvRows[tool] = (savedToolEnv[tool] ?? []).map(

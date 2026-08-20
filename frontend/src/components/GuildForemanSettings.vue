@@ -1,7 +1,7 @@
 <template>
   <p class="foreman-hint">
-    These configure the foreman's own orchestrator LLM (the AI itself). Fields left blank fall
-    back to the server defaults shown below.
+    These configure the foreman's own orchestrator LLM (the AI itself). Fields left blank fall back
+    to the server defaults shown below.
   </p>
   <div class="foreman-field">
     <label class="foreman-field-label">Provider</label>
@@ -76,12 +76,12 @@
     <label class="foreman-field-label">Environment Variables</label>
     <p class="foreman-hint">
       Used only by the foreman's own LLM (credentials, base URLs, etc.) — these are
-      <em>not</em> sent to workers. To give a variable to every worker, add it under Worker
-      Settings → General; to scope it to one tool, use the Claude / Pi / Codex tabs.
+      <em>not</em> sent to workers. To give a variable to every worker, add it under Worker Settings
+      → General; to scope it to one tool, use the Claude / Pi / Codex tabs.
     </p>
     <p v-if="envDefaultKeys.length" class="foreman-hint">
-      From the server environment (masked, always available to the foreman):
-      {{ envDefaultsSummary }}
+      Container-provided values are shown below as inherited rows. Enter a value in an inherited row
+      to save a guild override; stored overrides are marked when they shadow a container value.
     </p>
     <div class="env-var-list">
       <div class="env-var-row env-var-head">
@@ -89,30 +89,42 @@
         <span class="env-var-value">Value</span>
         <span class="env-var-spacer"></span>
       </div>
-      <div v-for="row in foremanEnvRows" :key="row.id" class="env-var-row">
-        <input
-          v-model="row.key"
-          class="settings-input env-var-key"
-          list="foreman-env-keys"
-          placeholder="KEY_NAME"
-          spellcheck="false"
-          autocomplete="off"
-        />
+      <div
+        v-for="row in foremanEnvRows"
+        :key="row.id"
+        class="env-var-row"
+        :class="{ 'env-var-row-inherited': row.inherited }"
+      >
+        <div class="env-var-key-wrap">
+          <input
+            v-model="row.key"
+            class="settings-input env-var-key"
+            list="foreman-env-keys"
+            placeholder="KEY_NAME"
+            spellcheck="false"
+            autocomplete="off"
+            :disabled="row.inherited"
+          />
+          <span v-if="row.inherited" class="env-var-source">from container</span>
+          <span v-else-if="envDefaults[row.key]" class="env-var-source">overrides container</span>
+        </div>
         <input
           v-model="row.value"
           type="text"
           class="settings-input env-var-value"
-          placeholder="value"
+          :placeholder="row.inherited ? `${envDefaults[row.key]} · from container` : 'value'"
           spellcheck="false"
           autocomplete="off"
         />
         <button
+          v-if="!row.inherited"
           class="env-var-delete-btn"
           @click="removeEnvRow(foremanEnvRows, row)"
           title="Remove variable"
         >
           ✕
         </button>
+        <span v-else class="env-var-spacer"></span>
       </div>
       <datalist id="foreman-env-keys">
         <option v-for="k in FOREMAN_ENV_KEYS" :key="k" :value="k" />
@@ -124,7 +136,11 @@
   </div>
 
   <div class="foreman-actions">
-    <button class="pixel-btn settings-save-btn" :disabled="foremanSaving" @click="saveForemanConfig">
+    <button
+      class="pixel-btn settings-save-btn"
+      :disabled="foremanSaving"
+      @click="saveForemanConfig"
+    >
       {{ foremanSaving ? 'Saving…' : 'Save' }}
     </button>
     <span v-if="foremanStatus" class="save-status" :class="'save-status-' + foremanStatus">
@@ -153,8 +169,8 @@ const {
   foremanPollMax,
   foremanSaving,
   foremanStatus,
+  envDefaults,
   envDefaultKeys,
-  envDefaultsSummary,
   providerDefaultLabel,
   foremanModelPlaceholder,
   foremanEnvRows,
@@ -296,10 +312,35 @@ const FOREMAN_ENV_KEYS = [
   gap: 4px;
 }
 
+.env-var-key-wrap {
+  flex: 0 0 160px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .env-var-key {
   flex: 0 0 160px;
   min-width: 0;
   font-size: 10px;
+}
+
+.env-var-key-wrap .env-var-key {
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.env-var-source {
+  font-family: var(--font-mono, monospace);
+  font-size: 8px;
+  color: var(--color-brass-dark);
+  opacity: 0.85;
+}
+
+.env-var-row-inherited .settings-input:disabled {
+  color: var(--color-text-dim);
+  opacity: 0.8;
 }
 
 .env-var-value {
