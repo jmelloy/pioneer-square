@@ -497,6 +497,7 @@ class SaveSpawnSettingsRequest(BaseModel):
     # because it affects spawned worker behavior.
     provider: str | None = None
     model: str | None = None
+    toolDefaults: dict[str, dict[str, str | None]] = {}
     # Per-tool env overrides, {tool: [{key, value}, ...]}. Same shape as the guild
     # settings tool_env_vars; merged in only when that tool spawns for this user.
     toolEnvVars: dict[str, list[EnvVarPair]] = {}
@@ -535,6 +536,7 @@ async def get_spawn_settings(
         "envVars": [{"key": k, "value": v} for k, v in (row.env_vars or {}).items()],
         "provider": row.provider,
         "model": row.model,
+        "toolDefaults": row.tool_defaults or {},
         "toolEnvVars": {
             tool: [{"key": k, "value": v} for k, v in (kv or {}).items()]
             for tool, kv in (row.tool_env_vars or {}).items()
@@ -562,6 +564,19 @@ async def save_spawn_settings(
     }
     # Drop tools that resolved to no vars so the stored map stays clean.
     tool_env_vars = {t: kv for t, kv in tool_env_vars.items() if kv}
+    tool_defaults = {
+        tool: {k: str(v) for k, v in defaults.items() if v not in (None, "")}
+        for tool, defaults in data.toolDefaults.items()
+        if tool in _SPAWN_TOOLS
+    }
+    tool_defaults = {tool: defaults for tool, defaults in tool_defaults.items() if defaults}
+    # Back-compat: older clients send generic provider/model for Pi defaults.
+    if data.provider or data.model:
+        tool_defaults.setdefault("pi", {})
+        if data.provider:
+            tool_defaults["pi"]["provider"] = data.provider
+        if data.model:
+            tool_defaults["pi"]["model"] = data.model
     await upsert_spawn_row(
         db,
         guild_pk,
@@ -572,6 +587,7 @@ async def save_spawn_settings(
         tool_env_vars=tool_env_vars,
         provider=data.provider or None,
         model=data.model or None,
+        tool_defaults=tool_defaults,
     )
     return {"status": "saved"}
 

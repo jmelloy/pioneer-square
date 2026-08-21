@@ -136,16 +136,21 @@ async def _apply_spawn_tool_defaults(
     spawned worker/task, not the foreman's own LLM. Legacy foreman_config Pi
     defaults are kept as a fallback while old guild rows are migrated by use.
     """
-    if tool != "pi" or guild_pk is None or (provider is not None and model is not None):
+    if (
+        tool not in {"pi", "codex"}
+        or guild_pk is None
+        or (provider is not None and model is not None)
+    ):
         return provider, model
     from spawn_config import resolve_spawn  # noqa: PLC0415
 
     resolved = await resolve_spawn(db, guild_pk, user_id)
+    defaults = resolved.tool_defaults.get(tool, {})
     if provider is None:
-        provider = resolved.provider
+        provider = defaults.get("provider") or resolved.provider
     if model is None:
-        model = resolved.model
-    if provider is None or model is None:
+        model = defaults.get("model") or resolved.model
+    if tool == "pi" and (provider is None or model is None):
         provider, model = _apply_pi_defaults(
             tool, provider, model, await _guild_foreman_config(db, guild_pk)
         )
@@ -1858,9 +1863,8 @@ async def _exec_one_tool(
                         # worker is legacy (no tools registered) — accept it as-is.
                         tool = requested_tool
 
-                    # Pi has no built-in default that authenticates — fall back to
-                    # the resolved spawn_settings provider/model for this worker.
-                    if tool == "pi" and (provider is None or model is None):
+                    # Worker-tool defaults live in spawn_settings, not foreman_config.
+                    if tool in {"pi", "codex"} and (provider is None or model is None):
                         provider, model = await _apply_spawn_tool_defaults(
                             db,
                             guild_pk=guild_pk,
@@ -2302,9 +2306,8 @@ async def _exec_one_tool(
                                     if task_provider is not None
                                     else followup_worker_provider
                                 )
-                                # Pi has no authenticating built-in default — fall
-                                # back to spawn_settings for this worker.
-                                if effective_tool == "pi" and (
+                                # Worker-tool defaults live in spawn_settings.
+                                if effective_tool in {"pi", "codex"} and (
                                     effective_provider is None or effective_model is None
                                 ):
                                     (

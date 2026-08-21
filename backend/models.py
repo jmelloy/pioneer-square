@@ -950,9 +950,14 @@ class SpawnSettings(SQLModel, table=True):
     tool_env_vars: dict = Field(
         default_factory=dict, sa_column=Column(JSON, nullable=False, server_default=text("'{}'"))
     )
-    # Default provider/model for tool runs (was foreman_config.pi_default_*).
+    # Legacy generic default provider/model for tool runs (superseded by tool_defaults).
     provider: str | None = None
     model: str | None = None
+    # Per-tool defaults, e.g. {"pi": {"provider": "bedrock", "model": "..."},
+    # "codex": {"model": "gpt-5-codex"}}. Worker-facing, so it belongs here.
+    tool_defaults: dict = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False, server_default=text("'{}'"))
+    )
     updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
 
 

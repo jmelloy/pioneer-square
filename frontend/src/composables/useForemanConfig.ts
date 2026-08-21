@@ -131,7 +131,6 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
         // provider toggle can restore this model.
         prevProvider = foremanProvider.value
         modelByProvider.value = { [foremanProvider.value]: foremanModel.value }
-        codexDefaultModel.value = cfg.codex_default_model ?? ''
         foremanSystemSuffix.value = cfg.system_prompt_suffix ?? ''
         foremanMaxRounds.value = cfg.max_rounds ?? ''
         foremanPollMin.value = cfg.poll_min_interval ?? ''
@@ -159,8 +158,10 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
         const cfg = await workerRes.json()
         workerRepos.value = cfg.repos ?? []
         workerTools.value = cfg.tools ?? []
-        piDefaultModel.value = cfg.model ?? ''
-        piDefaultProvider.value = cfg.provider ?? ''
+        const defaults = cfg.toolDefaults ?? {}
+        piDefaultModel.value = defaults.pi?.model ?? cfg.model ?? ''
+        piDefaultProvider.value = defaults.pi?.provider ?? cfg.provider ?? ''
+        codexDefaultModel.value = defaults.codex?.model ?? ''
         workerEnvRows.value = (cfg.envVars ?? []).map((e: { key: string; value?: string }) => ({
           id: ++envRowSeq,
           key: e.key,
@@ -190,8 +191,6 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
       else body.model = null
       if (foremanProvider.value) body.provider = foremanProvider.value
       else body.provider = null
-      if (codexDefaultModel.value) body.codex_default_model = codexDefaultModel.value
-      else body.codex_default_model = null
       if (foremanSystemSuffix.value) body.system_prompt_suffix = foremanSystemSuffix.value
       else body.system_prompt_suffix = null
       if (foremanMaxRounds.value !== '') body.max_rounds = foremanMaxRounds.value
@@ -232,14 +231,22 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
         }
         toolEnvVars[tool] = [...byKey].map(([key, value]) => ({ key, value }))
       }
+      const toolDefaults: Record<string, Record<string, string>> = {}
+      if (piDefaultProvider.value || piDefaultModel.value) {
+        toolDefaults.pi = {}
+        if (piDefaultProvider.value) toolDefaults.pi.provider = piDefaultProvider.value
+        if (piDefaultModel.value) toolDefaults.pi.model = piDefaultModel.value
+      }
+      if (codexDefaultModel.value) toolDefaults.codex = { model: codexDefaultModel.value }
       const workerBody = {
         repos: workerRepos.value,
         tools: workerTools.value,
         envVars: workerEnvRows.value
           .filter((r) => r.key.trim())
           .map((r) => ({ key: r.key.trim(), value: r.value })),
-        provider: piDefaultProvider.value || null,
-        model: piDefaultModel.value || null,
+        provider: null,
+        model: null,
+        toolDefaults,
         toolEnvVars,
       }
       const workerRes = await fetch(
