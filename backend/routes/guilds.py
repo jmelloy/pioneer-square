@@ -19,6 +19,7 @@ from events import broadcast_msg
 from fastapi import APIRouter, Depends, HTTPException
 from models import Agent, Guild, GuildInvite, GuildMember, Message, User, Worker
 from pydantic import BaseModel, Field, field_validator
+from spawn_config import get_spawn_row, upsert_spawn_row
 from sqlalchemy import delete, func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
@@ -553,6 +554,87 @@ async def set_github_app_installation(
     return {"slug": guild_id, "github_app_installation_id": guild.github_app_installation_id}
 
 
+async def _move_worker_config_to_spawn_settings(db: AsyncSession, guild: Guild) -> dict:
+    """Move legacy worker-facing foreman_config keys into spawn_settings.
+
+    Foreman config should describe the orchestrator LLM only. Older rows may
+    still contain worker env vars (forward=true), per-tool env vars, and Pi/Codex
+    defaults; migrate those into the guild baseline spawn_settings row on read
+    or write so the UI can edit/delete them in Worker Settings.
+    """
+    config = dict(guild.foreman_config or {})
+    worker_env: dict[str, str] = {}
+    foreman_env: list[dict] = []
+    changed = False
+    for item in config.get("env_vars") or []:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key")
+        if not key:
+            continue
+        if item.get("forward"):
+            worker_env[key] = item.get("value") or ""
+            changed = True
+        else:
+            foreman_env.append({"key": key, "value": item.get("value") or ""})
+    if changed:
+        if foreman_env:
+            config["env_vars"] = foreman_env
+        else:
+            config.pop("env_vars", None)
+
+    tool_env_vars = config.pop("tool_env_vars", None) or {}
+    if tool_env_vars:
+        changed = True
+    tool_defaults: dict[str, dict[str, str]] = {}
+    pi_provider = config.pop("pi_default_provider", None)
+    pi_model = config.pop("pi_default_model", None)
+    if pi_provider or pi_model:
+        changed = True
+        tool_defaults["pi"] = {}
+        if pi_provider:
+            tool_defaults["pi"]["provider"] = pi_provider
+        if pi_model:
+            tool_defaults["pi"]["model"] = pi_model
+    codex_model = config.pop("codex_default_model", None)
+    if codex_model:
+        changed = True
+        tool_defaults["codex"] = {"model": codex_model}
+
+    if changed:
+        row = await get_spawn_row(db, guild.id, None)
+        merged_env = dict((row.env_vars if row else {}) or {})
+        merged_env.update(worker_env)
+        merged_tool_env = dict((row.tool_env_vars if row else {}) or {})
+        for tool, pairs in tool_env_vars.items():
+            if isinstance(pairs, list):
+                current = dict(merged_tool_env.get(tool) or {})
+                for pair in pairs:
+                    if isinstance(pair, dict) and pair.get("key"):
+                        current[pair["key"]] = pair.get("value") or ""
+                merged_tool_env[tool] = current
+            elif isinstance(pairs, dict):
+                current = dict(merged_tool_env.get(tool) or {})
+                current.update({k: v for k, v in pairs.items() if k})
+                merged_tool_env[tool] = current
+        merged_defaults = dict((getattr(row, "tool_defaults", None) if row else {}) or {})
+        for tool, defaults in tool_defaults.items():
+            current = dict(merged_defaults.get(tool) or {})
+            current.update(defaults)
+            merged_defaults[tool] = current
+        await upsert_spawn_row(
+            db,
+            guild.id,
+            None,
+            env_vars=merged_env,
+            tool_env_vars=merged_tool_env,
+            tool_defaults=merged_defaults,
+        )
+        guild.foreman_config = config
+        await db.commit()
+    return config
+
+
 @router.get("/api/guilds/{guild_id}/foreman-config")
 async def get_foreman_config(
     guild_id: str,
@@ -568,7 +650,8 @@ async def get_foreman_config(
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    return {**(guild.foreman_config or {}), "env_defaults": _foreman_env_defaults()}
+    config = await _move_worker_config_to_spawn_settings(db, guild)
+    return {**config, "env_defaults": _foreman_env_defaults()}
 
 
 @router.patch("/api/guilds/{guild_id}/foreman-config")
@@ -588,7 +671,7 @@ async def update_foreman_config(
     guild = res.one_or_none()
     if not guild:
         raise HTTPException(status_code=404, detail="Guild not found")
-    config: dict = dict(guild.foreman_config or {})
+    config: dict = await _move_worker_config_to_spawn_settings(db, guild)
     for field in data.model_fields_set:
         value = getattr(data, field)
         if field == "env_vars":
@@ -615,6 +698,9 @@ async def update_foreman_config(
             config.pop(field, None)
         else:
             config[field] = value
+
+    guild.foreman_config = config
+    config = await _move_worker_config_to_spawn_settings(db, guild)
 
     # Bedrock inference-profile ARNs are AWS-account-scoped, so there is no safe
     # default model to fall back to at run time (see #817). Reject the save now

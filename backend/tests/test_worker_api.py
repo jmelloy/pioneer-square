@@ -585,9 +585,8 @@ def test_get_spawn_credentials_returns_the_guild_baseline_not_the_callers_own_va
     assert [e["key"] for e in body["guild_env_vars"]] == ["GUILD_KEY"]
 
 
-def test_foreman_config_tool_env_vars_do_not_reach_spawn_credentials(client):
-    """foreman_config tool_env_vars are foreman config only; worker tool env
-    must come from spawn_settings, not this legacy/deprecated field."""
+def test_foreman_config_tool_env_vars_migrate_to_spawn_credentials(client):
+    """Legacy foreman_config tool_env_vars are moved into spawn_settings."""
     test_client, db_url = client
     insert_guild(db_url, "guild-cred6")
     resp = test_client.patch(
@@ -598,13 +597,14 @@ def test_foreman_config_tool_env_vars_do_not_reach_spawn_credentials(client):
     assert resp.status_code == 200, resp.text
 
     resp = test_client.get("/guilds/guild-cred6/spawn-credentials", headers=_auth(db_url))
-    assert resp.json()["guild_tool_env_vars"] == {}
+    assert resp.json()["guild_tool_env_vars"] == {
+        "claude": [{"key": "TOOL_KEY", "masked_value": "to…alue"}]
+    }
     assert "tool-secret-value" not in resp.text
 
 
-def test_spawn_worker_ignores_foreman_config_forward_flag(client, monkeypatch):
-    """foreman_config env_vars are never worker env, even if an old client sends
-    forward=True. Worker-facing env must be stored in spawn_settings."""
+def test_spawn_worker_migrates_legacy_foreman_config_forward_flag(client, monkeypatch):
+    """Legacy foreman_config forward=True env vars are moved into spawn_settings."""
     test_client, db_url = client
     insert_guild(db_url, "guild-fwd")
     _set_guild_env(
@@ -639,7 +639,7 @@ def test_spawn_worker_ignores_foreman_config_forward_flag(client, monkeypatch):
         json={"repos": ["a/b"]},
     )
     assert resp.status_code == 200
-    assert "SHARED_TOKEN" not in captured_env
+    assert captured_env["SHARED_TOKEN"] == "yes"
     assert "FOREMAN_ONLY" not in captured_env
 
 
