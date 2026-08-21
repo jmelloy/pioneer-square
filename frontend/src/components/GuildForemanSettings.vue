@@ -80,8 +80,8 @@
       → General; to scope it to one tool, use the Claude / Pi / Codex tabs.
     </p>
     <p v-if="envDefaultKeys.length" class="foreman-hint">
-      Container-provided values are shown below as inherited rows. Enter a value in an inherited row
-      to save a guild override; stored overrides are marked when they shadow a container value.
+      Container defaults: {{ envDefaultsSummary }}. Add a row with the same key to override one for
+      this guild; delete the row to fall back to the container default.
     </p>
     <div class="env-var-list">
       <div class="env-var-row env-var-head">
@@ -89,12 +89,7 @@
         <span class="env-var-value">Value</span>
         <span class="env-var-spacer"></span>
       </div>
-      <div
-        v-for="row in foremanEnvRows"
-        :key="row.id"
-        class="env-var-row"
-        :class="{ 'env-var-row-inherited': row.inherited }"
-      >
+      <div v-for="row in foremanEnvRows" :key="row.id" class="env-var-row">
         <div class="env-var-key-wrap">
           <input
             v-model="row.key"
@@ -103,28 +98,24 @@
             placeholder="KEY_NAME"
             spellcheck="false"
             autocomplete="off"
-            :disabled="row.inherited"
           />
-          <span v-if="row.inherited" class="env-var-source">from container</span>
-          <span v-else-if="envDefaults[row.key]" class="env-var-source">overrides container</span>
+          <span v-if="envDefaults[row.key]" class="env-var-source">overrides container</span>
         </div>
         <input
           v-model="row.value"
           type="text"
           class="settings-input env-var-value"
-          :placeholder="row.inherited ? `${envDefaults[row.key]} · from container` : 'value'"
+          :placeholder="envDefaults[row.key] ? `${envDefaults[row.key]} · from container` : 'value'"
           spellcheck="false"
           autocomplete="off"
         />
         <button
-          v-if="!row.inherited"
           class="env-var-delete-btn"
           @click="removeEnvRow(foremanEnvRows, row)"
           title="Remove variable"
         >
           ✕
         </button>
-        <span v-else class="env-var-spacer"></span>
       </div>
       <datalist id="foreman-env-keys">
         <option v-for="k in FOREMAN_ENV_KEYS" :key="k" :value="k" />
@@ -171,6 +162,7 @@ const {
   foremanStatus,
   envDefaults,
   envDefaultKeys,
+  envDefaultsSummary,
   providerDefaultLabel,
   foremanModelPlaceholder,
   foremanEnvRows,
@@ -336,11 +328,6 @@ const FOREMAN_ENV_KEYS = [
   font-size: 8px;
   color: var(--color-brass-dark);
   opacity: 0.85;
-}
-
-.env-var-row-inherited .settings-input:disabled {
-  color: var(--color-text-dim);
-  opacity: 0.8;
 }
 
 .env-var-value {
