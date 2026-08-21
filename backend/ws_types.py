@@ -175,6 +175,15 @@ class TaskUpdateMsg(_WS):
     phase: str | None = None
 
 
+class TaskRejectedMsg(_WS):
+    """Worker -> backend: assignment could not be accepted immediately."""
+
+    type: Literal["task-rejected"] = "task-rejected"
+    taskId: str
+    workerId: str
+    reason: str = "worker has no idle agent slot"
+
+
 class TaskCompleteMsg(_WS):
     """Echoed outbound from inbound worker message."""
 
@@ -484,6 +493,7 @@ OutboundWSMessage = Annotated[
     | TaskAssignedMsg
     | TaskCreatedMsg
     | TaskUpdateMsg
+    | TaskRejectedMsg
     | TaskCompleteMsg
     | TaskFollowupMsg
     | TaskFollowupDoneMsg
@@ -522,6 +532,7 @@ InboundWSMessage = Annotated[
     | WorkerDisconnectMsg
     | WorkerPongMsg
     | TaskUpdateMsg
+    | TaskRejectedMsg
     | TaskCompleteMsg
     | TaskFollowupDoneMsg
     | NeedsInputMsg

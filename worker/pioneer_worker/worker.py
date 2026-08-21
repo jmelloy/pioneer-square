@@ -829,6 +829,41 @@ class Worker:
             task["followup_branch"] = body["followupBranch"]
         return task
 
+    def _assignment_capacity_reason(self, task: dict) -> str | None:
+        """Return None if a pushed assignment can run now, else the rejection reason."""
+        task_id = task.get("id")
+        target_agent_id = task.get("target_agent_id")
+        queued = self.task_queue.qsize()
+        active = sum(1 for slot in self.agents if slot.current_task_id is not None)
+        if target_agent_id:
+            slot = next((s for s in self.agents if s.agent_id == target_agent_id), None)
+            if slot is None:
+                return f"target agent {target_agent_id} is not part of this worker"
+            if slot.current_task_id is not None or slot.state != "idle":
+                return f"target agent {target_agent_id} is busy"
+            if queued:
+                return f"worker already has {queued} queued task(s)"
+            return None
+        capacity = len(self.agents)
+        reserved = active + queued
+        if reserved >= capacity:
+            return f"all {capacity} agent slot(s) are busy or reserved ({active} active, {queued} queued)"
+        if task_id in self._cancelled_tasks:
+            return f"task {task_id} is cancelled"
+        return None
+
+    async def _reject_assignment(self, task_id: str, reason: str) -> None:
+        logger.warning("Rejecting task %s: %s", task_id, reason)
+        self._known_task_ids.discard(task_id)
+        await self._send(
+            {
+                "type": "task-rejected",
+                "workerId": self.cfg.worker_id,
+                "taskId": task_id,
+                "reason": reason,
+            }
+        )
+
     async def _inject_task(self, body: dict) -> dict:
         """Enqueue a task supplied over the control API (foreman bypass)."""
         if not body.get("description") and not body.get("followupInstructions"):
@@ -1063,17 +1098,10 @@ class Worker:
         for slot in self.agents:
             if slot.state and slot.state != "idle":
                 await self._emit_agent_state(slot)
-        # Re-fetch any tasks that were assigned while the WS was down; without
-        # this they'd be missed until the idle puller fires (up to 300s later).
-        try:
-            missed = await self._fetch_pending_tasks()
-            for task in missed:
-                if task["id"] not in self._known_task_ids:
-                    logger.info("Reconnect: queuing missed task %s", task["id"])
-                    self._known_task_ids.add(task["id"])
-                    await self.task_queue.put(task)
-        except Exception as exc:
-            logger.warning("Reconnect: pending-task fetch failed: %s", exc)
+        # Do not pull tasks from REST here. The backend replays assigned
+        # pending/working tasks as task-assigned messages during join, and the
+        # worker should not maintain its own backlog source that can race WS
+        # delivery and enqueue the same task twice.
 
     async def _task_update(
         self, task_id: str, *, agent: Agent | None = None, **fields: object
@@ -1279,13 +1307,10 @@ class Worker:
         for slot in self.agents:
             await self._set_state("idle", slot)
 
-        initial = await self._fetch_pending_tasks()
-        logger.info("Initial pending-task fetch: %d task(s)", len(initial))
-        for task in initial:
-            logger.info("Queuing task %s: %s", task.get("id"), task.get("description", "")[:80])
-            self._known_task_ids.add(task["id"])
-            await self.task_queue.put(task)
-
+        # Task delivery is server-push only: the backend replays any already
+        # assigned pending/working tasks during join. Avoid an initial REST pull
+        # here; it can race the WS replay/assignment and duplicate work across
+        # multiple local agent slots.
         runners = [asyncio.create_task(self._agent_loop(slot)) for slot in self.agents]
         puller = asyncio.create_task(self._idle_puller())
         sweeper = asyncio.create_task(self._worktree_sweeper())
@@ -1402,34 +1427,36 @@ class Worker:
                         msg.get("prUrl"),
                         msg.get("headSha"),
                     )
+                    task = {
+                        "id": task_id,
+                        "worker_id": self.cfg.worker_id,
+                        "guild_id": self.cfg.guild_id,
+                        "name": msg.get("name", ""),
+                        "description": msg.get("description", ""),
+                        "tool": msg.get("tool", "claude"),
+                        "task_type": msg.get("taskType") or msg.get("task_type") or "standard",
+                        "target_agent_id": msg.get("targetAgentId"),
+                        "model": msg.get("model"),
+                        "provider": msg.get("provider"),
+                        "phase": msg.get("phase", "execute"),
+                        "issue_number": msg.get("issueNumber"),
+                        "issue_repo": msg.get("issueRepo"),
+                        "pr_number": msg.get("prNumber"),
+                        "pr_repo": msg.get("prRepo"),
+                        # PR head ref/URL/SHA as known at assignment time — informational
+                        # only. Review checkout still re-resolves the head branch live via
+                        # pr_repo/pr_number (see _execute_task) rather than trusting these,
+                        # since the PR may have moved since the webhook fired.
+                        "pr_head_ref": msg.get("branch"),
+                        "pr_url": msg.get("prUrl"),
+                        "head_sha": msg.get("headSha"),
+                        "repos": msg.get("repos") or [],
+                    }
+                    if reason := self._assignment_capacity_reason(task):
+                        await self._reject_assignment(task_id, reason)
+                        continue
                     self._known_task_ids.add(task_id)
-                    await self.task_queue.put(
-                        {
-                            "id": task_id,
-                            "worker_id": self.cfg.worker_id,
-                            "guild_id": self.cfg.guild_id,
-                            "name": msg.get("name", ""),
-                            "description": msg.get("description", ""),
-                            "tool": msg.get("tool", "claude"),
-                            "task_type": msg.get("taskType") or msg.get("task_type") or "standard",
-                            "target_agent_id": msg.get("targetAgentId"),
-                            "model": msg.get("model"),
-                            "provider": msg.get("provider"),
-                            "phase": msg.get("phase", "execute"),
-                            "issue_number": msg.get("issueNumber"),
-                            "issue_repo": msg.get("issueRepo"),
-                            "pr_number": msg.get("prNumber"),
-                            "pr_repo": msg.get("prRepo"),
-                            # PR head ref/URL/SHA as known at assignment time — informational
-                            # only. Review checkout still re-resolves the head branch live via
-                            # pr_repo/pr_number (see _execute_task) rather than trusting these,
-                            # since the PR may have moved since the webhook fired.
-                            "pr_head_ref": msg.get("branch"),
-                            "pr_url": msg.get("prUrl"),
-                            "head_sha": msg.get("headSha"),
-                            "repos": msg.get("repos") or [],
-                        }
-                    )
+                    await self.task_queue.put(task)
 
                 elif mtype == "worker-message":
                     if msg.get("workerId") != self.cfg.worker_id:
@@ -1465,33 +1492,31 @@ class Worker:
                         task_id,
                         instructions[:80],
                     )
-                    # Remember the id so the idle puller doesn't queue this task a
-                    # second time alongside the copy we're about to enqueue (it is
-                    # already known unless this worker restarted since the original
-                    # assignment).
+                    task = {
+                        "id": task_id,
+                        "worker_id": self.cfg.worker_id,
+                        "guild_id": self.cfg.guild_id,
+                        "name": msg.get("name", ""),
+                        "description": msg.get("description", "") or instructions,
+                        "tool": msg.get("tool", "claude"),
+                        "model": msg.get("model"),
+                        "provider": msg.get("provider"),
+                        "phase": msg.get("phase", "execute"),
+                        "issue_number": msg.get("issueNumber"),
+                        "issue_repo": msg.get("issueRepo"),
+                        "pr_number": msg.get("prNumber"),
+                        "pr_repo": msg.get("prRepo"),
+                        "repos": msg.get("repos") or [],
+                        "followup_instructions": instructions,
+                        "followup_branch": msg.get("branch", ""),
+                        "session_id": msg.get("sessionId"),
+                        "create_pr": bool(msg.get("createPr")),
+                    }
+                    if reason := self._assignment_capacity_reason(task):
+                        await self._reject_assignment(task_id, reason)
+                        continue
                     self._known_task_ids.add(task_id)
-                    await self.task_queue.put(
-                        {
-                            "id": task_id,
-                            "worker_id": self.cfg.worker_id,
-                            "guild_id": self.cfg.guild_id,
-                            "name": msg.get("name", ""),
-                            "description": msg.get("description", "") or instructions,
-                            "tool": msg.get("tool", "claude"),
-                            "model": msg.get("model"),
-                            "provider": msg.get("provider"),
-                            "phase": msg.get("phase", "execute"),
-                            "issue_number": msg.get("issueNumber"),
-                            "issue_repo": msg.get("issueRepo"),
-                            "pr_number": msg.get("prNumber"),
-                            "pr_repo": msg.get("prRepo"),
-                            "repos": msg.get("repos") or [],
-                            "followup_instructions": instructions,
-                            "followup_branch": msg.get("branch", ""),
-                            "session_id": msg.get("sessionId"),
-                            "create_pr": bool(msg.get("createPr")),
-                        }
-                    )
+                    await self.task_queue.put(task)
 
                 elif mtype == "task-finalize":
                     # The worker no longer parks waiting for finalize; foreman
@@ -1839,19 +1864,9 @@ class Worker:
                 break  # shutdown event fired
             except TimeoutError:
                 pass  # normal interval elapsed
-            try:
-                pending = await self._fetch_pending_tasks()
-                new_count = 0
-                for task in pending:
-                    if task["id"] in self._known_task_ids:
-                        continue
-                    new_count += 1
-                    logger.info("Picked up missed task %s via poll", task["id"])
-                    self._known_task_ids.add(task["id"])
-                    await self.task_queue.put(task)
-                logger.debug("Poll: %d known, %d new", len(pending), new_count)
-            except Exception as exc:
-                logger.warning("Pending-task poll failed: %s", exc)
+            # Do not poll REST for tasks. Task assignment/replay is owned by
+            # the backend over WebSocket; polling here creates a second queueing
+            # path inside the worker and can duplicate assignments.
             now = asyncio.get_event_loop().time()
             if (
                 self._github_token_dynamic

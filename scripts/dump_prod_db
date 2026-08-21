@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# Dump the live Pioneer Square PostgreSQL database through the temporary
+# dump-loader EC2 instance using AWS SSM port forwarding.
+#
+# The RDS instance is private, so this script expects terraform's
+# dump_loader_enabled=true helper instance to exist. It opens an SSM tunnel from
+# localhost to RDS, then runs pg_dump locally (or via the postgres Docker image).
+#
+# Usage:
+#   terraform -chdir=terraform apply -var dump_loader_enabled=true
+#   scripts/dump_prod_db
+#   scripts/dump_prod_db --out /tmp/pioneer.dump
+#   scripts/dump_prod_db --format plain --out /tmp/pioneer.sql
+#   scripts/dump_prod_db --load-test   # dump, then restore into postgres-test
+#
+# Environment overrides:
+#   AWS_REGION / AWS_PROFILE
+#   DB_NAME             default: pioneer_square
+#   DB_USER             default: pioneer
+#   DB_PASSWORD_PARAM   default: /pioneer-square/staging/db_password
+#   LOCAL_PORT          default: 15432
+#   PG_DUMP_IMAGE       default: postgres:18
+#   TEST_DATABASE_URL   default: postgresql://pioneer:pioneer_password@localhost:5433/pioneer_test
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tf_dir="$repo_root/terraform"
+
+out=""
+format="custom"
+load_test=0
+use_docker="auto"
+
+usage() {
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --out) out="$2"; shift 2 ;;
+    --format) format="$2"; shift 2 ;;
+    --load-test) load_test=1; shift ;;
+    --docker) use_docker=1; shift ;;
+    --no-docker) use_docker=0; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$format" in
+  custom|plain) ;;
+  *) echo "--format must be 'custom' or 'plain'" >&2; exit 2 ;;
+esac
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "missing required command: $1" >&2
+    exit 1
+  fi
+}
+
+need aws
+need terraform
+need python3
+
+region="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+db_name="${DB_NAME:-pioneer_square}"
+db_user="${DB_USER:-pioneer}"
+db_password_param="${DB_PASSWORD_PARAM:-/pioneer-square/staging/db_password}"
+local_port="${LOCAL_PORT:-15432}"
+pg_dump_image="${PG_DUMP_IMAGE:-postgres:18}"
+
+if [[ -z "$out" ]]; then
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  ext="dump"
+  [[ "$format" == "plain" ]] && ext="sql"
+  out="$repo_root/tmp/prod-db-$ts.$ext"
+fi
+mkdir -p "$(dirname "$out")"
+
+rds_endpoint="$(terraform -chdir="$tf_dir" output -raw rds_endpoint 2>/dev/null || true)"
+dump_loader_instance_id="$(terraform -chdir="$tf_dir" output -raw dump_loader_instance_id 2>/dev/null || true)"
+
+if [[ -z "$rds_endpoint" || "$rds_endpoint" == "null" ]]; then
+  echo "could not read terraform output rds_endpoint" >&2
+  exit 1
+fi
+if [[ -z "$dump_loader_instance_id" || "$dump_loader_instance_id" == "null" ]]; then
+  cat >&2 <<EOF
+No dump-loader instance is enabled in terraform.
+Create the temporary instance first:
+
+  terraform -chdir=terraform apply -var dump_loader_enabled=true
+
+Then rerun this script. Remember to disable it when done:
+
+  terraform -chdir=terraform apply
+EOF
+  exit 1
+fi
+
+rds_host="${rds_endpoint%:*}"
+rds_port="${rds_endpoint##*:}"
+if [[ "$rds_host" == "$rds_port" ]]; then
+  rds_port=5432
+fi
+
+password="$(aws ssm get-parameter \
+  --name "$db_password_param" \
+  --with-decryption \
+  --query Parameter.Value \
+  --output text \
+  --region "$region")"
+
+params="$(python3 - "$rds_host" "$rds_port" "$local_port" <<'PY'
+import json, sys
+host, remote_port, local_port = sys.argv[1:]
+print(json.dumps({"host": [host], "portNumber": [remote_port], "localPortNumber": [local_port]}))
+PY
+)"
+
+log_file="$(mktemp -t pioneer-ssm-tunnel.XXXXXX.log)"
+echo "Opening SSM tunnel via $dump_loader_instance_id: localhost:$local_port -> $rds_host:$rds_port" >&2
+aws ssm start-session \
+  --target "$dump_loader_instance_id" \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "$params" \
+  --region "$region" >"$log_file" 2>&1 &
+tunnel_pid=$!
+
+cleanup() {
+  if kill -0 "$tunnel_pid" >/dev/null 2>&1; then
+    kill "$tunnel_pid" >/dev/null 2>&1 || true
+    wait "$tunnel_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+
+python3 - "$local_port" "$tunnel_pid" "$log_file" <<'PY'
+import os, socket, sys, time
+port = int(sys.argv[1])
+pid = int(sys.argv[2])
+log_file = sys.argv[3]
+deadline = time.time() + 30
+while time.time() < deadline:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        print(open(log_file).read(), file=sys.stderr)
+        raise SystemExit("SSM tunnel exited before opening")
+    with socket.socket() as s:
+        s.settimeout(0.3)
+        try:
+            s.connect(("127.0.0.1", port))
+            raise SystemExit(0)
+        except OSError:
+            time.sleep(0.5)
+print(open(log_file).read(), file=sys.stderr)
+raise SystemExit("timed out waiting for SSM tunnel")
+PY
+
+echo "Dumping $db_name to $out" >&2
+pg_args=(--host 127.0.0.1 --port "$local_port" --username "$db_user" --dbname "$db_name" --no-owner --no-acl --verbose)
+if [[ "$format" == "custom" ]]; then
+  pg_args+=(--format custom)
+else
+  pg_args+=(--format plain)
+fi
+
+run_with_docker=0
+if [[ "$use_docker" == "1" ]]; then
+  run_with_docker=1
+elif [[ "$use_docker" == "auto" ]] && ! command -v pg_dump >/dev/null 2>&1; then
+  run_with_docker=1
+fi
+
+if [[ "$run_with_docker" == "1" ]]; then
+  need docker
+  out_dir="$(cd "$(dirname "$out")" && pwd)"
+  out_base="$(basename "$out")"
+  docker_host="host.docker.internal"
+  docker_net=()
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    docker_host="127.0.0.1"
+    docker_net=(--network host)
+  fi
+  docker run --rm "${docker_net[@]}" \
+    -e PGPASSWORD="$password" \
+    -v "$out_dir:/dump" \
+    "$pg_dump_image" \
+    pg_dump "${pg_args[@]/127.0.0.1/$docker_host}" --file "/dump/$out_base"
+else
+  PGPASSWORD="$password" pg_dump "${pg_args[@]}" --file "$out"
+fi
+
+echo "Wrote $out" >&2
+
+if [[ "$load_test" == "1" ]]; then
+  test_url="${TEST_DATABASE_URL:-postgresql://pioneer:pioneer_password@localhost:5433/pioneer_test}"
+  echo "Restoring into test database: $test_url" >&2
+  if [[ "$format" != "custom" ]]; then
+    echo "--load-test requires --format custom (default)" >&2
+    exit 2
+  fi
+  if [[ "$run_with_docker" == "1" ]]; then
+    out_dir="$(cd "$(dirname "$out")" && pwd)"
+    out_base="$(basename "$out")"
+    # Use host networking on Linux; on Docker Desktop use host.docker.internal.
+    docker_net=()
+    docker_url="$test_url"
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      docker_net=(--network host)
+    else
+      docker_url="${test_url/localhost/host.docker.internal}"
+      docker_url="${docker_url/127.0.0.1/host.docker.internal}"
+    fi
+    docker run --rm "${docker_net[@]}" -v "$out_dir:/dump" "$pg_dump_image" \
+      pg_restore --clean --if-exists --no-owner --no-acl --dbname "$docker_url" "/dump/$out_base"
+  else
+    need pg_restore
+    pg_restore --clean --if-exists --no-owner --no-acl --dbname "$test_url" "$out"
+  fi
+fi
