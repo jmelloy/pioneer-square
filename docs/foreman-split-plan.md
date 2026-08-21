@@ -3,16 +3,17 @@
 **Status:** Current architecture. The backend owns the Foreman loop; the optional
 standalone process is a thin LLM API proxy.
 
-For how the embedded Foreman splits parent-guild vs. per-task child turns, see
-[foreman-per-task-context.md](foreman-per-task-context.md) — that split is
-internal to the backend and orthogonal to the proxy boundary described here.
+For how the embedded Foreman scopes a run's conversation history to a thread
+and treats task_id as metadata rather than a separate context, see
+[foreman-per-task-context.md](foreman-per-task-context.md) — that's internal
+to the backend and orthogonal to the proxy boundary described here.
 
 ---
 
 ## Architecture
 
 The embedded Foreman in `backend/foreman/` handles triggers, state snapshots,
-history, tool execution, broadcasts, child-context locking, and periodic polling.
+history, tool execution, broadcasts, per-(guild, user) run locking, and periodic polling.
 When a standalone proxy is connected, only the low-level LLM API call crosses the
 WebSocket boundary.
 
@@ -147,7 +148,7 @@ run — `ws_handlers._trigger_foreman()` always spawns the embedded
 `backend.foreman.runner.run_foreman_ai()` path, and a connected proxy is only
 ever asked to execute a single LLM API call. Accordingly, the standalone
 process holds no REST client, JWT helper, tool executor, message-history
-loader, task locks, or child-context supervisor of its own.
+loader, or run-lock supervisor of its own.
 
 **Provider normalization.** Request/response translation for each provider —
 the Anthropic SDK client factory/call and the OpenAI-compatible

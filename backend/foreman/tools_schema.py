@@ -802,13 +802,3 @@ FOREMAN_TOOLS = [
         },
     },
 ]
-
-# Tools excluded from per-task child contexts. Child contexts manage a single,
-# already-assigned task; creating or assigning new tasks — and standing up new
-# workers — remains the parent foreman's responsibility.
-# See docs/foreman-per-task-context.md.
-_CHILD_EXCLUDED_TOOLS = frozenset({"create_task", "assign_task", "spawn_worker"})
-
-# Tool set handed to a per-task child context (FOREMAN_TOOLS minus the
-# create/assign pair). Same JSON schemas, narrowed scope.
-CHILD_FOREMAN_TOOLS = [t for t in FOREMAN_TOOLS if t["name"] not in _CHILD_EXCLUDED_TOOLS]

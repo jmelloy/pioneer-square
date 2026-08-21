@@ -1577,12 +1577,11 @@ async def exec_tools(
     stamped onto any tasks created by ``create_task`` / ``assign_task`` so
     worker-driven events later route back to the same user thread.
 
-    *own_task_id* is the task_id of the per-task child context this batch is
-    running in (None for parent/whole-guild runs). Passed through to
+    *own_task_id* is the task_id the current Foreman run's trigger concerns
+    (None when the trigger isn't about a specific task). Passed through to
     task-mutating handlers (send_followup, redirect_task, cancel_task,
-    finalize_task) so they can tell whether they're a task's own child
-    context (never conflicts with itself) versus a parent run reaching into a
-    task that a child run currently owns — see ``_task_mutation_blocked``.
+    finalize_task) via ``_task_mutation_blocked``, now a no-op kept for
+    call-site stability — see its docstring (issue #1200).
     """
     coros = [_exec_one_tool(guild_id, tu, user_id, own_task_id=own_task_id) for tu in tool_uses]
     return list(await asyncio.gather(*coros))
@@ -1613,27 +1612,15 @@ def _full_log_content(data_json: str | None) -> str | None:
 
 
 def _task_mutation_blocked(guild_id: str, task_id: str, own_task_id: str | None) -> str | None:
-    """Return a user-facing message if *task_id* is owned by a different in-flight
-    Foreman context right now, else None.
+    """Always returns None — kept as a call-site no-op rather than removed.
 
-    ``own_task_id`` is the task_id of the per-task child context this tool
-    call is itself running in (None for a parent/whole-guild run). A run
-    never conflicts with its own per-task lock — this only fires when a
-    *different* context holds it, which in practice means a parent run
-    (periodic-check or human chat) reaching into a task whose own child run
-    is currently mutating it. See issue #927: parent and child runs key on
-    different (guild_id, key) pairs and would otherwise never serialise
-    against each other for the same task.
+    Previously guarded against a parent run mutating a task while that task's
+    own per-task child Foreman run held a separate lock (issue #927). Issue
+    #1200 removed per-task child contexts: every Foreman run for a given
+    (guild, user) now shares a single ``_guild_locks`` entry
+    (``foreman.runner.run_foreman_ai``), so two runs can no longer race on the
+    same task via independent locks and this guard has nothing left to check.
     """
-    if own_task_id == task_id:
-        return None
-    from foreman.runner import is_child_task_run_active  # noqa: PLC0415 — avoids circular import
-
-    if is_child_task_run_active(guild_id, task_id):
-        return (
-            f"Task {task_id} has an in-flight child Foreman run right now — "
-            "skipping this action to avoid racing it. Retry shortly once it completes."
-        )
     return None
 
 

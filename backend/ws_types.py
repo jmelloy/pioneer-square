@@ -95,10 +95,10 @@ class ChatMsg(_WS):
     # Origin of the message: "web", "discord", "api". Omitted (None) means
     # "web" — the frontend only renders an origin label for non-web sources.
     source: str | None = None
-    # Set on Foreman → user messages produced inside a per-task child context
-    # (see docs/foreman-per-task-context.md). None for parent/whole-guild runs.
-    # The frontend badges child-context messages so it's clear which are scoped
-    # to a single task rather than the guild-wide Foreman conversation.
+    # Set on Foreman -> user messages that concern a specific task (issue
+    # #1200: task_id is metadata on the run's conversation, not a separate
+    # Foreman context). None when the run isn't about any particular task.
+    # The frontend badges these so it's clear which task a line concerns.
     taskId: str | None = None
     # Foreman-owned conversation thread (#1167) this message belongs to, when
     # resolvable — lets the frontend route a live message into the right

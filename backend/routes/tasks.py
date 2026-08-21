@@ -231,7 +231,6 @@ async def create_task_followup(
             "branch from GitHub.",
             user_id=github_user_id,
             task_id=task_id,
-            child=True,
             # See foreman.classify — REST follow-ups have no dispatch "event"
             # string of their own, so they tag "user-followup" purely to
             # share the same human/automated classifier as ws_handlers.
