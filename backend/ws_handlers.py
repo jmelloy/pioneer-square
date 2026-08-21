@@ -60,6 +60,7 @@ from ws_types import (
     TaskAssignedMsg,
     TaskCompleteMsg,
     TaskFollowupDoneMsg,
+    TaskRejectedMsg,
     TaskUpdateMsg,
     TerminalOutputMsg,
     parse_inbound_message,
@@ -803,6 +804,75 @@ async def handle_worker_disconnect(ctx: WSContext, data: dict) -> None:
     ensure_poll_loop(ctx.guild_id)
 
 
+async def handle_task_rejected(ctx: WSContext, data: dict) -> None:
+    """Handle a worker refusing an assignment because it has no free slot.
+
+    This is a defensive backstop for races/stale state. The foreman should only
+    assign to workers with idle agent capacity, but if an assignment reaches a
+    full worker, the worker must not silently backlog it locally.
+    """
+    task_id = data.get("taskId")
+    worker_id = data.get("workerId")
+    reason = data.get("reason") or "worker has no idle agent slot"
+    if not task_id or not worker_id:
+        return
+    result = await ctx.db.exec(
+        select(Task).where(
+            col(Task.id) == task_id,
+            col(Task.guild_id) == ctx.guild_pk,
+            col(Task.worker_id) == worker_id,
+            col(Task.state).in_(["pending", "working"]),
+        )
+    )
+    task = result.one_or_none()
+    if task is None:
+        logger.warning(
+            "task-rejected: ignoring stale rejection task=%s worker=%s guild=%s reason=%s",
+            task_id,
+            worker_id,
+            ctx.guild_id,
+            reason,
+        )
+        return
+    await ctx.db.exec(
+        update(Task)
+        .where(col(Task.id) == task_id, col(Task.guild_id) == ctx.guild_pk)
+        .values(worker_id=None, state="pending")
+    )
+    ctx.db.add(
+        TaskLog(
+            task_id=task_id,
+            timestamp=datetime.now(UTC),
+            line=f"Worker {worker_id} rejected assignment: {reason}",
+            worker_id=worker_id,
+            level="worker",
+        )
+    )
+    await LockService(ctx.db).release(f"task:{task_id}")
+    await ctx.db.commit()
+    await broadcast_msg(
+        ctx.guild_id,
+        TaskUpdateMsg(taskId=task_id, state="pending", workerId=None),
+        exclude=ctx.websocket,
+    )
+    await broadcast_msg(
+        ctx.guild_id,
+        TaskRejectedMsg(taskId=task_id, workerId=worker_id, reason=reason),
+        exclude=ctx.websocket,
+    )
+    task_uid = await _task_user_id(ctx.db, task_id)
+    await _trigger_foreman(
+        ctx.guild_id,
+        "task-rejected",
+        f"[task-rejected] Worker {worker_id} rejected task {task_id}: {reason}. "
+        "The task was returned to pending/unassigned. Pick another idle worker or spawn one.",
+        user_id=task_uid,
+        task_id=task_id,
+        task_name=f"foreman.task-rejected:{task_id}",
+    )
+    reset_foreman_poll(ctx.guild_id)
+
+
 async def handle_task_update(ctx: WSContext, data: dict) -> None:
     task_id = data.get("taskId")
     if not task_id:
@@ -1211,6 +1281,7 @@ HANDLERS: dict[str, Any] = {
     "worker-disconnect": handle_worker_disconnect,
     "worker-pong": handle_worker_pong,
     "task-update": handle_task_update,
+    "task-rejected": handle_task_rejected,
     "task-complete": handle_task_complete,
     "task-followup-done": handle_task_followup_done,
     "needs-input": handle_needs_input,
