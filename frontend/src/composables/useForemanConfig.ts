@@ -47,6 +47,8 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
     piDefaultProvider.value ? modelsStore.modelsForProvider(piDefaultProvider.value) : [],
   )
   const codexDefaultModel = ref('')
+  const workerRepos = ref<string[]>([])
+  const workerTools = ref<string[]>([])
   const foremanSystemSuffix = ref('')
   const foremanMaxRounds = ref<number | ''>('')
   const foremanPollMin = ref<number | ''>('')
@@ -129,27 +131,42 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
         // provider toggle can restore this model.
         prevProvider = foremanProvider.value
         modelByProvider.value = { [foremanProvider.value]: foremanModel.value }
-        piDefaultModel.value = cfg.pi_default_model ?? ''
-        piDefaultProvider.value = cfg.pi_default_provider ?? ''
         codexDefaultModel.value = cfg.codex_default_model ?? ''
         foremanSystemSuffix.value = cfg.system_prompt_suffix ?? ''
         foremanMaxRounds.value = cfg.max_rounds ?? ''
         foremanPollMin.value = cfg.poll_min_interval ?? ''
         foremanPollMax.value = cfg.poll_max_interval ?? ''
-        // Env var values are returned in clear text so they can be verified/edited.
-        // Split by forward: forwarded → worker (General) list, rest → foreman list.
-        workerEnvRows.value = []
         foremanEnvRows.value = []
         for (const e of (cfg.env_vars ?? []) as {
           key: string
           value?: string
           forward?: boolean
         }[]) {
-          const target = e.forward ? workerEnvRows : foremanEnvRows
-          target.value.push({ id: ++envRowSeq, key: e.key, value: e.value ?? '' })
+          if (!e.forward) {
+            foremanEnvRows.value.push({ id: ++envRowSeq, key: e.key, value: e.value ?? '' })
+          }
         }
         addInheritedForemanEnvRows()
-        const toolEnv = cfg.tool_env_vars ?? {}
+      }
+
+      // Worker-facing settings live in spawn_settings, not foreman_config, so
+      // credentials/default models are visible here for editing/deleting.
+      const workerRes = await fetch(
+        `${API_BASE}/api/guilds/${encodeURIComponent(guildId.value)}/spawn-settings`,
+        { headers: authStore.authHeaders() },
+      )
+      if (workerRes.ok) {
+        const cfg = await workerRes.json()
+        workerRepos.value = cfg.repos ?? []
+        workerTools.value = cfg.tools ?? []
+        piDefaultModel.value = cfg.model ?? ''
+        piDefaultProvider.value = cfg.provider ?? ''
+        workerEnvRows.value = (cfg.envVars ?? []).map((e: { key: string; value?: string }) => ({
+          id: ++envRowSeq,
+          key: e.key,
+          value: e.value ?? '',
+        }))
+        const toolEnv = cfg.toolEnvVars ?? {}
         for (const tool of ['claude', 'pi', 'codex']) {
           toolEnvRows[tool] = (toolEnv[tool] ?? []).map((e: { key: string; value?: string }) => ({
             id: ++envRowSeq,
@@ -173,10 +190,6 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
       else body.model = null
       if (foremanProvider.value) body.provider = foremanProvider.value
       else body.provider = null
-      if (piDefaultModel.value) body.pi_default_model = piDefaultModel.value
-      else body.pi_default_model = null
-      if (piDefaultProvider.value) body.pi_default_provider = piDefaultProvider.value
-      else body.pi_default_provider = null
       if (codexDefaultModel.value) body.codex_default_model = codexDefaultModel.value
       else body.codex_default_model = null
       if (foremanSystemSuffix.value) body.system_prompt_suffix = foremanSystemSuffix.value
@@ -187,27 +200,26 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
       else body.poll_min_interval = null
       if (foremanPollMax.value !== '') body.poll_max_interval = foremanPollMax.value
       else body.poll_max_interval = null
-      // Combine both destination lists into the wire format: worker rows carry
-      // forward=true, foreman-only rows forward=false. Skip empty keys; collapse
-      // duplicate keys, keeping a non-empty value over a blank one. If the same
-      // key appears in both lists, worker (forward=true) wins so it still reaches
-      // workers.
-      const envByKey = new Map<string, { value: string; forward: boolean }>()
-      for (const { rows, forward } of [
-        { rows: foremanEnvRows.value, forward: false },
-        { rows: workerEnvRows.value, forward: true },
-      ]) {
-        for (const r of rows) {
-          const key = r.key.trim()
-          if (!key) continue
-          if (r.inherited && r.value === '') continue
-          const existing = envByKey.get(key)
-          if (existing && r.value === '' && existing.value !== '') continue
-          envByKey.set(key, { value: r.value, forward: forward || !!existing?.forward })
-        }
+      // Foreman config now stores only foreman-only env vars. Worker-facing
+      // env/defaults are saved to spawn_settings below.
+      const envByKey = new Map<string, string>()
+      for (const r of foremanEnvRows.value) {
+        const key = r.key.trim()
+        if (!key) continue
+        if (r.inherited && r.value === '') continue
+        const existing = envByKey.get(key)
+        if (existing && r.value === '' && existing !== '') continue
+        envByKey.set(key, r.value)
       }
-      body.env_vars = [...envByKey].map(([key, { value, forward }]) => ({ key, value, forward }))
-      // Per-tool env vars: send all three tools so an emptied tab clears its set.
+      body.env_vars = [...envByKey].map(([key, value]) => ({ key, value, forward: false }))
+      const res = await fetch(
+        `${API_BASE}/api/guilds/${encodeURIComponent(guildId.value)}/foreman-config`,
+        {
+          method: 'PATCH',
+          headers: { ...authStore.authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      )
       const toolEnvVars: Record<string, { key: string; value: string }[]> = {}
       for (const tool of ['claude', 'pi', 'codex']) {
         const byKey = new Map<string, string>()
@@ -220,40 +232,27 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
         }
         toolEnvVars[tool] = [...byKey].map(([key, value]) => ({ key, value }))
       }
-      body.tool_env_vars = toolEnvVars
-      const res = await fetch(
-        `${API_BASE}/api/guilds/${encodeURIComponent(guildId.value)}/foreman-config`,
+      const workerBody = {
+        repos: workerRepos.value,
+        tools: workerTools.value,
+        envVars: workerEnvRows.value
+          .filter((r) => r.key.trim())
+          .map((r) => ({ key: r.key.trim(), value: r.value })),
+        provider: piDefaultProvider.value || null,
+        model: piDefaultModel.value || null,
+        toolEnvVars,
+      }
+      const workerRes = await fetch(
+        `${API_BASE}/api/guilds/${encodeURIComponent(guildId.value)}/spawn-settings`,
         {
-          method: 'PATCH',
+          method: 'PUT',
           headers: { ...authStore.authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify(workerBody),
         },
       )
-      if (res.ok) {
+      if (res.ok && workerRes.ok) {
         foremanStatus.value = 'saved'
-        // Re-sync with the server's canonical config (clear-text values).
-        const saved = await res.json()
-        workerEnvRows.value = []
-        foremanEnvRows.value = []
-        for (const e of (saved.env_vars ?? []) as {
-          key: string
-          value?: string
-          forward?: boolean
-        }[]) {
-          const target = e.forward ? workerEnvRows : foremanEnvRows
-          target.value.push({ id: ++envRowSeq, key: e.key, value: e.value ?? '' })
-        }
-        addInheritedForemanEnvRows()
-        const savedToolEnv = saved.tool_env_vars ?? {}
-        for (const tool of ['claude', 'pi', 'codex']) {
-          toolEnvRows[tool] = (savedToolEnv[tool] ?? []).map(
-            (e: { key: string; value?: string }) => ({
-              id: ++envRowSeq,
-              key: e.key,
-              value: e.value ?? '',
-            }),
-          )
-        }
+        await loadForemanConfig()
       } else {
         foremanStatus.value = 'error'
       }

@@ -492,6 +492,11 @@ class SaveSpawnSettingsRequest(BaseModel):
     repos: list[str] = []
     tools: list[str] = []
     envVars: list[EnvVarPair] = []
+    # Default worker-tool provider/model (currently used by Pi when task assignment
+    # omits explicit provider/model). Stored in spawn_settings, not foreman_config,
+    # because it affects spawned worker behavior.
+    provider: str | None = None
+    model: str | None = None
     # Per-tool env overrides, {tool: [{key, value}, ...]}. Same shape as the guild
     # settings tool_env_vars; merged in only when that tool spawns for this user.
     toolEnvVars: dict[str, list[EnvVarPair]] = {}
@@ -528,6 +533,8 @@ async def get_spawn_settings(
         "repos": json.loads(row.repos or "[]"),
         "tools": json.loads(row.tools or "[]"),
         "envVars": [{"key": k, "value": v} for k, v in (row.env_vars or {}).items()],
+        "provider": row.provider,
+        "model": row.model,
         "toolEnvVars": {
             tool: [{"key": k, "value": v} for k, v in (kv or {}).items()]
             for tool, kv in (row.tool_env_vars or {}).items()
@@ -563,6 +570,8 @@ async def save_spawn_settings(
         tools=json.dumps(data.tools),
         env_vars=env_vars,
         tool_env_vars=tool_env_vars,
+        provider=data.provider or None,
+        model=data.model or None,
     )
     return {"status": "saved"}
 
