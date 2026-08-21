@@ -219,56 +219,16 @@ def test_exec_tools_partial_failure_still_returns_all():
 
 
 # ---------------------------------------------------------------------------
-# Cross-context task lock tests (issue #927)
+# _task_mutation_blocked (issue #1200)
 #
-# Parent (whole-guild) runs and per-task child runs used to key their
-# `_guild_locks` serialisation entries differently — (guild_id, user_id) for
-# parents vs. (guild_id, "task:<id>") for children — so the two never
-# serialised against each other even when targeting the very same task. These
-# tests exercise the gate added to send_followup/redirect_task/cancel_task/
-# finalize_task that checks the other context's lock before mutating.
+# Per-task child contexts (and the #927 cross-context lock race they caused)
+# were removed — every Foreman run for a (guild, user) now shares one
+# `_guild_locks` entry, so there is no separate context left to race. The
+# send_followup/redirect_task/cancel_task/finalize_task gate is kept as a
+# permanent no-op for call-site stability; this test locks in that behaviour.
 # ---------------------------------------------------------------------------
 
 
-def test_is_child_task_run_active_reflects_guild_locks_state():
-    """is_child_task_run_active must track the same (guild, "task:<id>") lock
-    entries run_foreman_ai uses to serialise per-task child runs."""
-    from foreman.runner import _guild_locks, _GuildRunLock, is_child_task_run_active
-
-    guild_id = "g-lockcheck"
-    task_id = "t-lockcheck1"
-    key = (guild_id, f"task:{task_id}")
-
-    assert is_child_task_run_active(guild_id, task_id) is False
-
-    _guild_locks[key] = _GuildRunLock(busy=True)
-    try:
-        assert is_child_task_run_active(guild_id, task_id) is True
-        _guild_locks[key].busy = False
-        assert is_child_task_run_active(guild_id, task_id) is False
-    finally:
-        _guild_locks.pop(key, None)
-
-
-def _with_child_lock_busy(guild_id: str, task_id: str):
-    """Context manager marking (guild_id, "task:<task_id>") busy in _guild_locks,
-    mimicking an in-flight per-task child Foreman run."""
-    from contextlib import contextmanager
-
-    from foreman.runner import _guild_locks, _GuildRunLock
-
-    @contextmanager
-    def _cm():
-        key = (guild_id, f"task:{task_id}")
-        _guild_locks[key] = _GuildRunLock(busy=True)
-        try:
-            yield
-        finally:
-            _guild_locks.pop(key, None)
-
-    return _cm()
-
-
 @pytest.mark.parametrize(
     "tool_name,extra_input",
     [
@@ -278,63 +238,18 @@ def _with_child_lock_busy(guild_id: str, task_id: str):
         ("finalize_task", {}),
     ],
 )
-def test_parent_run_blocked_when_child_run_active(tool_name, extra_input):
-    """A parent-context tool call (own_task_id=None) targeting a task whose
-    own child run currently holds the lock must be skipped, not executed."""
-    from foreman.tools import exec_tools
-
-    guild_id = "g-parent-vs-child"
-    task_id = "t-race1"
-    tu = _mock_tool_use(tool_name, f"toolu_{tool_name}", {"task_id": task_id, **extra_input})
-
-    with _with_child_lock_busy(guild_id, task_id):
-        with patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())):
-            results = _run(exec_tools(guild_id, [tu], own_task_id=None))
-
-    r = results[0]
-    assert r.get("is_error") is True
-    assert "in-flight child" in r["content"]
-
-
-@pytest.mark.parametrize(
-    "tool_name,extra_input",
-    [
-        ("send_followup", {"instructions": "fix ci"}),
-        ("redirect_task", {"instructions": "do something else"}),
-        ("cancel_task", {"reason": "no longer needed"}),
-        ("finalize_task", {}),
-    ],
-)
-def test_child_run_not_blocked_by_its_own_lock(tool_name, extra_input):
-    """A child run mutating its own task must never be blocked by the very
-    lock entry it holds — own_task_id == task_id must skip the gate."""
-    from foreman.tools import exec_tools
-
-    guild_id = "g-child-self"
-    task_id = "t-self1"
-    tu = _mock_tool_use(tool_name, f"toolu_{tool_name}", {"task_id": task_id, **extra_input})
-
-    with _with_child_lock_busy(guild_id, task_id):
-        with patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())):
-            results = _run(exec_tools(guild_id, [tu], own_task_id=task_id))
-
-    r = results[0]
-    assert "in-flight child" not in r["content"]
-
-
-def test_parent_run_not_blocked_when_no_child_run_active():
-    """Baseline: with no competing lock held, the parent gate is a no-op."""
+def test_task_mutation_never_blocked(tool_name, extra_input):
     from foreman.tools import exec_tools
 
     guild_id = "g-no-race"
     task_id = "t-norace1"
-    tu = _mock_tool_use("cancel_task", "toolu_norace", {"task_id": task_id})
+    tu = _mock_tool_use(tool_name, f"toolu_{tool_name}", {"task_id": task_id, **extra_input})
 
     with patch("foreman.tools.get_db", AsyncMock(return_value=_mock_session())):
         results = _run(exec_tools(guild_id, [tu], own_task_id=None))
 
     r = results[0]
-    assert "in-flight child" not in r["content"]
+    assert "in-flight" not in r["content"]
 
 
 def test_exec_tools_github_http_error_sets_is_error():

@@ -28,14 +28,6 @@ def test_analyze_epic_schema_has_required_fields():
     assert "trigger_deep_analysis" in props
 
 
-def test_analyze_epic_in_child_tools():
-    """analyze_epic should be available to child contexts (not excluded)."""
-    from backend.foreman.tools_schema import CHILD_FOREMAN_TOOLS
-
-    child_names = [t["name"] for t in CHILD_FOREMAN_TOOLS]
-    assert "analyze_epic" in child_names
-
-
 def test_analyze_epic_description_mentions_two_levels():
     """Tool description should reference the two-tier architecture."""
     from backend.foreman.tools_schema import FOREMAN_TOOLS

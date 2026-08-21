@@ -158,9 +158,9 @@ export interface ChatMessage {
   from_agent?: string
   // Origin of the message: "web", "discord", "api". Missing/undefined means "web".
   source?: string
-  // Set on Foreman messages produced inside a per-task child context. When
-  // present, the chat pane badges the line as scoped to that task rather than
-  // the guild-wide Foreman conversation. See docs/foreman-per-task-context.md.
+  // Set on Foreman messages that concern a specific task (issue #1200:
+  // task_id is metadata on the run's conversation, not a separate Foreman
+  // context). When present, the chat pane badges the line with that task.
   taskId?: string | null
   // Foreman-owned conversation thread (#1167) this message belongs to, when
   // resolvable (#1175). Lets ThreadDetailPanel filter the shared message

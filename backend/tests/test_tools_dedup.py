@@ -18,13 +18,8 @@ def test_foreman_tools_canonical_is_list():
     assert "assign_task" in names
 
 
-def test_spawn_worker_in_foreman_tools_but_not_child_contexts():
-    """spawn_worker is exposed to the parent foreman only — child contexts manage a
-    single already-assigned task and must not stand up new workers."""
-    from backend.foreman.tools_schema import CHILD_FOREMAN_TOOLS, FOREMAN_TOOLS
+def test_spawn_worker_in_foreman_tools():
+    from backend.foreman.tools_schema import FOREMAN_TOOLS
 
     names = [t["name"] for t in FOREMAN_TOOLS]
     assert "spawn_worker" in names
-
-    child_names = [t["name"] for t in CHILD_FOREMAN_TOOLS]
-    assert "spawn_worker" not in child_names

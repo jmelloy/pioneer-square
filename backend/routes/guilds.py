@@ -43,11 +43,11 @@ def _message_dict(m: Message) -> dict:
         except json.JSONDecodeError:
             logger.warning("guild messages: failed to parse meta JSON for message id=%s", m.id)
             d["metaParseError"] = True
-    # Expose the per-task child-context id under the same camelCase key the live
-    # WS broadcast (ChatMsg.taskId) and the frontend badge read. row_to_dict
-    # yields the raw column name `task_id`, which the chat pane doesn't look at,
-    # so a child-context Foreman line loaded from history would otherwise render
-    # without its task badge. See docs/foreman-per-task-context.md.
+    # Expose the referenced task id under the same camelCase key the live WS
+    # broadcast (ChatMsg.taskId) and the frontend badge read. row_to_dict yields
+    # the raw column name `task_id`, which the chat pane doesn't look at, so a
+    # task-scoped Foreman line loaded from history would otherwise render
+    # without its task badge (issue #1200).
     d["taskId"] = d.pop("task_id", None)
     return d
 

@@ -1,103 +1,81 @@
-# Per-Task Context Splitting for the Foreman
+# Foreman Conversation Context
 
 **Status:** Implemented in the embedded backend Foreman.
-**Issue:** [#649](https://github.com/jmelloy/pioneer-square/issues/649)
-**Updated:** 2026-07-07
+**Issue:** [#1200](https://github.com/jmelloy/pioneer-square/issues/1200) (supersedes the
+per-task child context model from [#649](https://github.com/jmelloy/pioneer-square/issues/649))
+**Updated:** 2026-08-21
 
 ---
 
 ## Current Model
 
-The backend Foreman can run task-scoped child turns for review-loop events while
-keeping cross-cutting work in the parent guild context.
+The Foreman has a single context per (guild, user): their conversation. There is no
+separate per-task history.
 
-- **Task-scoped events:** `task-complete`, `followup-done`, `needs-input`, `task-error`.
-- **Parent-context events:** human chat, worker lifecycle, periodic checks,
-  Claude/auth events, task creation and assignment.
-
-`ws_handlers._trigger_foreman()` decides which path a trigger takes:
-
-```python
-child = bool(task_id) and event in _CHILD_FOREMAN_EVENTS
-spawn(run_foreman_ai(guild_id, message, task_id=task_id, child=child))
+```text
+thread_id = conversational context / Foreman memory scope
+task_id   = optional referenced task/work item (metadata, not a context boundary)
 ```
 
-This decision is made entirely in `backend/foreman/runner.py` and
-`backend/ws_handlers.py`, independent of whether a standalone proxy is
-connected — the proxy, when present, is only used later by
-`backend.foreman.runner` to execute the concrete LLM API call. See
-[foreman-split-plan.md](foreman-split-plan.md) for how the proxy fits in.
+- A human message to the Foreman runs in the user's conversation (`thread_id` resolved to
+  their active thread; `task_id` is null).
+- When the Foreman creates a task, `Task.thread_id` is stamped to the current thread, so
+  the task stays linked to the conversation it came from.
+- When a worker completes/errors on a task, the triggering event resolves `user_id` to the
+  task's owner (`Task.user_id`) and runs in *that user's* conversation — the same
+  `ForemanTurn` history as their other Foreman turns — with `task_id` attached purely as
+  metadata (message badges, tool-context, Discord routing).
+- `ws_handlers._trigger_foreman()` no longer branches on event type or task_id to pick a
+  context; every trigger goes through `foreman.runner.run_foreman_ai()` the same way:
+
+```python
+await run_foreman_ai(guild_id, message, user_id=user_id, task_id=task_id, ...)
+```
 
 ---
 
-## How Isolation Works
+## Run Locking
 
-There are no long-lived child supervisor objects. A child context is an ephemeral
-single Foreman turn with three pieces of isolation:
+`_guild_locks` in `backend/foreman/runner.py` serialises concurrent runs, keyed on
+`(guild_id, user_id)` — never on `task_id`. This means:
 
-1. `task_id`-filtered history in `_load_history(..., task_id=...)`.
-2. Child-mode prompt, state preamble, and tool set via
-   `run_foreman_ai(child=True, task_id=...)`.
-3. A per-task `asyncio.Lock` keyed as `(guild_id, "task:<id>")` in `_guild_locks`.
-
-If a task-scoped run is already active for the same task, a new automated
-invocation (task-complete, followup-done, needs-input) is dropped rather than
-queued; the poll/re-trigger mechanism recovers stale or missed work on a later
-tick. A human-originated invocation (e.g. a follow-up posted from the web UI)
-is instead appended to a small FIFO queue (`_enqueue_human_turn`/
-`_drain_human_queue` in `runner.py`) and drained once the in-flight run for
-that task finishes. Different tasks run concurrently.
-
-Parent runs are keyed by `(guild_id, user_id)` and never read task-tagged child
-history, even if the incoming parent trigger includes a `task_id` for Discord
-thread routing.
+- A task-triggered event (task-complete, followup-done, needs-input, task-error) and that
+  task owner's own chat naturally serialise against each other instead of racing on
+  independent locks (this closes the cross-context race from issue #927 by construction —
+  there's only one context left to race with).
+- Two different tasks owned by different users still run concurrently.
+- Automated (non-human) invocations are dropped, not queued, when the lock is busy — the
+  poll loop re-triggers on the next tick. Human-originated invocations are queued
+  (`_human_queues`) and drained in order once the in-flight run finishes.
 
 ---
 
-## Prompt And History
+## History And Thread Resolution
 
-Child runs use `build_child_system_blocks(...)`, `build_child_state_preamble(...)`,
-and `CHILD_FOREMAN_TOOLS`.
-
-`CHILD_FOREMAN_TOOLS` excludes `create_task` and `assign_task`, so child turns can
-review, follow up, finalize, cancel, redirect, or inspect their task but do not
-create or assign new work. The child state preamble includes only the relevant
-task and assigned worker, keeping review context small and free of unrelated
-task history.
-
----
-
-## Operational Notes
-
-- No child queue, respawn, or teardown path exists today.
-- There is no standalone `TaskContext` class.
-- Continuity comes from database-backed `ForemanTurn.task_id` history.
-- Frontend/Discord messages produced inside a child turn are tagged with that
-  `task_id`; parent messages can still route to a task's Discord thread without
-  being stored in that task's child history.
+- `_load_history(guild_id, user_id)` always loads the whole (guild, user) conversation —
+  there is no `task_id`-filtered slice. `ForemanTurn.task_id` is still stamped on each row
+  (mirrors `ApiRequestLog.task_id`) purely as metadata, e.g. for the debug view; it is never
+  used to filter reads.
+- `resolve_thread_id(db, guild_pk, task_id=task_id, user_id=user_id)`
+  (`foreman/thread_service.py`) is called early in `_run_foreman_ai`, before history is
+  loaded. It prefers the referenced task's thread (`Task.thread_id`, stamped once at
+  task-creation time) and falls back to the user's current active thread. It never creates
+  a thread — an automated task event for a task with no thread degrades gracefully (the
+  turn just isn't attached to a thread) rather than spinning up an unrelated conversation.
+- Prompt context (system prompt, tool set, state preamble) is always the full whole-guild
+  view (`FOREMAN_TOOLS`, `build_system_blocks`, `build_state_preamble`) — task-specific
+  detail (description, state, branch/PR, worker) is already included via the
+  `tasks_block`/`workers_block` state preamble, same as for any other trigger.
 
 ---
 
-## Toggling Child Contexts
+## Message Metadata
 
-Set `FOREMAN_CHILD_CONTEXTS=0` (or `false`/`no`/`off`) to disable per-task child
-contexts entirely; every trigger then falls back to the legacy whole-guild
-parent context. See `_child_contexts_enabled()` in `backend/foreman/runner.py`.
-It defaults on (`1`).
+`task_id` is still carried through to `Message.task_id`, `ForemanTurn.task_id`, and the WS
+`ChatMsg.taskId` field, and the frontend still badges lines that concern a specific task —
+none of that changed. What changed is that `task_id` no longer selects a different
+*history*: it's metadata on a turn that otherwise belongs to the same conversation as
+everything else for that user.
 
-## Evaluating Effectiveness
-
-Two standalone scripts under `scripts/` use the `/debug/query` endpoint
-(`DEBUG_TOKEN`-gated) to measure this feature:
-
-- `scripts/evaluate_child_context_tokens.py` — compares per-turn token usage
-  (input/output/cache read/cache write) between child (`task_id IS NOT NULL`)
-  and parent (`task_id IS NULL`) `foreman_turns` rows, to answer whether
-  `FOREMAN_CHILD_CONTEXTS` is actually reducing token spend.
-- `scripts/eval_foreman_metrics.py` — broader child-foreman health metrics:
-  worker spawn success rate, task assignment/completion, worker lifecycle,
-  queue depth, and worker utilization.
-
-Both require `DEBUG_TOKEN` (and optionally `PIONEER_BACKEND_URL`, default
-`http://localhost:8000`) and print a formatted report; run with `--help` for
-options.
+Discord routing (`_emit_foreman_chat`'s `discord_task_id`) mirrors the run's narration into
+the referenced task's Discord thread when one exists, same as before.
