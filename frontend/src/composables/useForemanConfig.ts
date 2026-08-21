@@ -8,7 +8,6 @@ export interface EnvVarRow {
   id: number
   key: string
   value: string
-  inherited?: boolean
 }
 
 /**
@@ -58,9 +57,8 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
   let foremanStatusTimer: ReturnType<typeof setTimeout> | null = null
 
   // Masked foreman defaults supplied by the server's process environment (see
-  // GET foreman-config). Shown so an unset field reads as "inherited from env"
-  // rather than blank/unconfigured. Non-secret values (provider/model/region)
-  // come through in the clear; secrets are already masked server-side.
+  // GET foreman-config). Shown read-only as fallback context; editable rows are
+  // only values explicitly stored on the guild.
   const envDefaults = ref<Record<string, string>>({})
   const envDefaultKeys = computed(() => Object.keys(envDefaults.value))
   const envDefaultsSummary = computed(() =>
@@ -88,14 +86,6 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
     rows.push({ id: ++envRowSeq, key: '', value: '' })
   }
 
-  function addInheritedForemanEnvRows() {
-    const existing = new Set(foremanEnvRows.value.map((r) => r.key))
-    for (const key of envDefaultKeys.value) {
-      if (!existing.has(key)) {
-        foremanEnvRows.value.push({ id: ++envRowSeq, key, value: '', inherited: true })
-      }
-    }
-  }
   function removeEnvRow(rows: EnvVarRow[], row: EnvVarRow) {
     const i = rows.indexOf(row)
     if (i >= 0) rows.splice(i, 1)
@@ -145,7 +135,6 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
             foremanEnvRows.value.push({ id: ++envRowSeq, key: e.key, value: e.value ?? '' })
           }
         }
-        addInheritedForemanEnvRows()
       }
 
       // Worker-facing settings live in spawn_settings, not foreman_config, so
@@ -205,7 +194,6 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
       for (const r of foremanEnvRows.value) {
         const key = r.key.trim()
         if (!key) continue
-        if (r.inherited && r.value === '') continue
         const existing = envByKey.get(key)
         if (existing && r.value === '' && existing !== '') continue
         envByKey.set(key, r.value)
