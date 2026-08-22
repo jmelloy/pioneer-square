@@ -395,9 +395,9 @@ def test_foreman_config_env_vars_round_trip_in_clear(client):
     }
 
 
-def test_foreman_config_tool_env_vars_round_trip_and_scope(client):
-    """Per-tool env vars round-trip under tool_env_vars, isolated per tool, and
-    merge independently of the shared env_vars list."""
+def test_legacy_foreman_config_tool_env_vars_migrate_to_spawn_settings(client):
+    """Legacy per-tool env vars sent to foreman-config move into spawn_settings,
+    isolated per tool, and merge independently of the shared env_vars list."""
     test_client, db_url = client
     token = make_auth_token(db_url)  # owner of g-ftool
     insert_guild(db_url, "g-ftool")
@@ -416,27 +416,22 @@ def test_foreman_config_tool_env_vars_round_trip_and_scope(client):
         },
     )
     assert patch.status_code == 200
-    cfg = patch.json()
-    assert cfg["tool_env_vars"]["claude"] == [
-        {"key": "CLAUDE_CODE_OAUTH_TOKEN", "value": "claude-tok"}
-    ]
-    assert cfg["tool_env_vars"]["pi"] == [
-        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "pi-bedrock"}
-    ]
-    assert cfg["tool_env_vars"]["codex"] == []
+    cfg = test_client.get("/guilds/g-ftool/spawn-credentials", headers=headers).json()
+    assert [e["key"] for e in cfg["guild_tool_env_vars"]["claude"]] == ["CLAUDE_CODE_OAUTH_TOKEN"]
+    assert [e["key"] for e in cfg["guild_tool_env_vars"]["pi"]] == ["AWS_BEARER_TOKEN_BEDROCK"]
+    assert cfg["guild_tool_env_vars"].get("codex", []) == []
+    assert patch.json()["env_vars"] == [{"key": "GITHUB_TOKEN", "value": "shared"}]
 
-    # A later PATCH touching only claude leaves pi's scoped vars intact.
+    # A later legacy PATCH touching only claude leaves pi's scoped vars intact.
     patch2 = test_client.patch(
         "/api/guilds/g-ftool/foreman-config",
         headers=headers,
         json={"tool_env_vars": {"claude": [{"key": "ANTHROPIC_API_KEY", "value": "sk-x"}]}},
     )
     assert patch2.status_code == 200
-    cfg2 = patch2.json()
-    assert cfg2["tool_env_vars"]["pi"] == [
-        {"key": "AWS_BEARER_TOKEN_BEDROCK", "value": "pi-bedrock"}
-    ]
-    assert {e["key"] for e in cfg2["tool_env_vars"]["claude"]} == {"ANTHROPIC_API_KEY"}
+    cfg2 = test_client.get("/guilds/g-ftool/spawn-credentials", headers=headers).json()
+    assert [e["key"] for e in cfg2["guild_tool_env_vars"]["pi"]] == ["AWS_BEARER_TOKEN_BEDROCK"]
+    assert {e["key"] for e in cfg2["guild_tool_env_vars"]["claude"]} == {"ANTHROPIC_API_KEY"}
 
 
 def test_foreman_config_tool_env_vars_rejects_unknown_tool(client):

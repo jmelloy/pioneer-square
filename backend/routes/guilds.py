@@ -607,16 +607,17 @@ async def _move_worker_config_to_spawn_settings(db: AsyncSession, guild: Guild) 
         merged_env.update(worker_env)
         merged_tool_env = dict((row.tool_env_vars if row else {}) or {})
         for tool, pairs in tool_env_vars.items():
+            # Preserve the legacy foreman-config PATCH semantics: tools absent
+            # from the payload keep their stored vars, while a submitted tool
+            # replaces that tool's list (and [] clears it).
             if isinstance(pairs, list):
-                current = dict(merged_tool_env.get(tool) or {})
-                for pair in pairs:
-                    if isinstance(pair, dict) and pair.get("key"):
-                        current[pair["key"]] = pair.get("value") or ""
-                merged_tool_env[tool] = current
+                merged_tool_env[tool] = {
+                    pair["key"]: pair.get("value") or ""
+                    for pair in pairs
+                    if isinstance(pair, dict) and pair.get("key")
+                }
             elif isinstance(pairs, dict):
-                current = dict(merged_tool_env.get(tool) or {})
-                current.update({k: v for k, v in pairs.items() if k})
-                merged_tool_env[tool] = current
+                merged_tool_env[tool] = {k: v for k, v in pairs.items() if k}
         merged_defaults = dict((getattr(row, "tool_defaults", None) if row else {}) or {})
         for tool, defaults in tool_defaults.items():
             current = dict(merged_defaults.get(tool) or {})
