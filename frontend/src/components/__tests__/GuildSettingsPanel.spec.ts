@@ -100,6 +100,28 @@ describe('GuildSettingsPanel worker tool tabs', () => {
     vi.restoreAllMocks()
   })
 
+  it('fetches spawn-settings at the un-prefixed /guilds path the backend actually serves', async () => {
+    // Regression test: this composable previously called /api/guilds/.../spawn-settings,
+    // but that route is registered (in backend/routes/workers.py) without an /api
+    // prefix, so the request 404'd and env vars silently never loaded or saved.
+    const fetchSpy = mockFetch({}, { envVars: [{ key: 'ANTHROPIC_API_KEY', value: 'sk' }] })
+    const guild = useGuildStore()
+    guild.currentGuild = { id: 'g1', name: 'Test Guild' }
+    const auth = useAuthStore()
+    auth.loginToken = 'tok'
+    mount(GuildSettingsPanel)
+    await flushPromises()
+
+    const spawnSettingsCalls = fetchSpy.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.includes('spawn-settings'))
+    expect(spawnSettingsCalls.length).toBeGreaterThan(0)
+    for (const url of spawnSettingsCalls) {
+      expect(url).not.toContain('/api/guilds')
+      expect(url).toContain('/guilds/g1/spawn-settings')
+    }
+  })
+
   it('defaults to the General sub-tab; the foreman LLM fields stay in the Foreman tab', async () => {
     const wrapper = await openWorkerTab({})
     const toolTabs = wrapper.findAll('.foreman-tool-tab')
