@@ -121,6 +121,42 @@ async def _guild_foreman_config(db, guild_pk: int | None) -> dict:
     return cfg if isinstance(cfg, dict) else {}
 
 
+async def _apply_spawn_tool_defaults(
+    db,
+    *,
+    guild_pk: int | None,
+    user_id: str | None,
+    tool: str | None,
+    provider: str | None,
+    model: str | None,
+) -> tuple[str | None, str | None]:
+    """Fill worker-tool defaults from spawn_settings.
+
+    Worker-facing defaults belong with spawn_settings because they affect the
+    spawned worker/task, not the foreman's own LLM. Legacy foreman_config Pi
+    defaults are kept as a fallback while old guild rows are migrated by use.
+    """
+    if (
+        tool not in {"pi", "codex"}
+        or guild_pk is None
+        or (provider is not None and model is not None)
+    ):
+        return provider, model
+    from spawn_config import resolve_spawn  # noqa: PLC0415
+
+    resolved = await resolve_spawn(db, guild_pk, user_id)
+    defaults = resolved.tool_defaults.get(tool, {})
+    if provider is None:
+        provider = defaults.get("provider") or resolved.provider
+    if model is None:
+        model = defaults.get("model") or resolved.model
+    if tool == "pi" and (provider is None or model is None):
+        provider, model = _apply_pi_defaults(
+            tool, provider, model, await _guild_foreman_config(db, guild_pk)
+        )
+    return provider, model
+
+
 def _apply_pi_defaults(
     tool: str | None,
     provider: str | None,
@@ -1796,6 +1832,7 @@ async def _exec_one_tool(
                         col(Worker.org),
                         col(Worker.tools),
                         col(Worker.provider),
+                        col(Worker.user_id),
                     ).where(col(Worker.id) == wid, col(Worker.guild_id) == guild_pk)
                 )
                 worker_row = worker_result.one_or_none()
@@ -1805,6 +1842,7 @@ async def _exec_one_tool(
                 else:
                     worker_tools: list[str] = json.loads(worker_row.tools or "[]")
                     worker_provider: str | None = worker_row.provider
+                    worker_user_id: str | None = worker_row.user_id
 
                     # Resolve the tool FIRST — before computing the model tier or
                     # auto-selecting a model — so both are derived from the tool the
@@ -1825,11 +1863,15 @@ async def _exec_one_tool(
                         # worker is legacy (no tools registered) — accept it as-is.
                         tool = requested_tool
 
-                    # Pi has no built-in default that authenticates — fall back to
-                    # the guild's configured pi default provider/model (#1040).
-                    if tool == "pi" and (provider is None or model is None):
-                        provider, model = _apply_pi_defaults(
-                            tool, provider, model, await _guild_foreman_config(db, guild_pk)
+                    # Worker-tool defaults live in spawn_settings, not foreman_config.
+                    if tool in {"pi", "codex"} and (provider is None or model is None):
+                        provider, model = await _apply_spawn_tool_defaults(
+                            db,
+                            guild_pk=guild_pk,
+                            user_id=worker_user_id,
+                            tool=tool,
+                            provider=provider,
+                            model=model,
                         )
 
                     from util.model_tiers import select_model_tier as _select_tier  # noqa: PLC0415
@@ -2202,9 +2244,9 @@ async def _exec_one_tool(
                             is_error = True
                         else:
                             followup_worker_result = await db.exec(
-                                select(col(Worker.tools), col(Worker.provider)).where(
-                                    col(Worker.id) == target_worker_id
-                                )
+                                select(
+                                    col(Worker.tools), col(Worker.provider), col(Worker.user_id)
+                                ).where(col(Worker.id) == target_worker_id)
                             )
                             followup_worker_row = followup_worker_result.one_or_none()
                             followup_worker_tools_json = (
@@ -2212,6 +2254,9 @@ async def _exec_one_tool(
                             )
                             followup_worker_provider = (
                                 followup_worker_row[1] if followup_worker_row else None
+                            )
+                            followup_worker_user_id = (
+                                followup_worker_row[2] if followup_worker_row else None
                             )
                             if isinstance(followup_worker_tools_json, str):
                                 followup_worker_tools: list[str] = json.loads(
@@ -2261,16 +2306,20 @@ async def _exec_one_tool(
                                     if task_provider is not None
                                     else followup_worker_provider
                                 )
-                                # Pi has no authenticating built-in default — fall
-                                # back to the guild's configured pi default (#1040).
-                                if effective_tool == "pi" and (
+                                # Worker-tool defaults live in spawn_settings.
+                                if effective_tool in {"pi", "codex"} and (
                                     effective_provider is None or effective_model is None
                                 ):
-                                    effective_provider, effective_model = _apply_pi_defaults(
-                                        effective_tool,
+                                    (
                                         effective_provider,
                                         effective_model,
-                                        await _guild_foreman_config(db, guild_pk),
+                                    ) = await _apply_spawn_tool_defaults(
+                                        db,
+                                        guild_pk=guild_pk,
+                                        user_id=followup_worker_user_id,
+                                        tool=effective_tool,
+                                        provider=effective_provider,
+                                        model=effective_model,
                                     )
 
                                 from util.model_tiers import (  # noqa: PLC0415

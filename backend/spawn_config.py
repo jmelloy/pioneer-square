@@ -8,7 +8,7 @@ call args. Merge rules per field type:
   - lists (repos, tools): the highest layer that provides a NON-EMPTY list wins
     (replace, not concatenate).
   - scalars (agent_count, provider, model): highest layer with a non-None value.
-  - maps (env_vars, tool_env_vars): key-by-key overlay, higher layer wins — but
+  - maps (env_vars, tool_env_vars, tool_defaults): key-by-key overlay, higher layer wins — but
     an empty-string value never blanks a real value set by a lower layer (the
     one place that guard lives).
 
@@ -33,6 +33,7 @@ class SpawnLayer:
     tool_env_vars: dict[str, dict[str, str]] | None = None
     provider: str | None = None
     model: str | None = None
+    tool_defaults: dict[str, dict[str, str]] | None = None
 
 
 @dataclass
@@ -44,6 +45,7 @@ class ResolvedSpawn:
     tool_env_vars: dict[str, dict[str, str]] = field(default_factory=dict)
     provider: str | None = None
     model: str | None = None
+    tool_defaults: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 def _merge_env(base: dict[str, str], over: dict[str, str]) -> dict[str, str]:
@@ -74,6 +76,9 @@ def merge_layers(layers: list[SpawnLayer | None]) -> ResolvedSpawn:
             r.model = layer.model
         if layer.env_vars:
             r.env_vars = _merge_env(r.env_vars, layer.env_vars)
+        if layer.tool_defaults:
+            for tool, defaults in layer.tool_defaults.items():
+                r.tool_defaults[tool] = _merge_env(r.tool_defaults.get(tool, {}), defaults or {})
         if layer.tool_env_vars:
             for tool, kv in layer.tool_env_vars.items():
                 r.tool_env_vars[tool] = _merge_env(r.tool_env_vars.get(tool, {}), kv or {})
@@ -99,6 +104,9 @@ def row_to_layer(row) -> SpawnLayer | None:
         tool_env_vars={t: dict(kv or {}) for t, kv in (row.tool_env_vars or {}).items()},
         provider=row.provider,
         model=row.model,
+        tool_defaults={
+            t: dict(v or {}) for t, v in (getattr(row, "tool_defaults", None) or {}).items()
+        },
     )
 
 

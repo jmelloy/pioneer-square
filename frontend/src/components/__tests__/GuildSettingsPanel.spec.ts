@@ -19,7 +19,10 @@ function jsonResponse(body: unknown, status = 200) {
 
 // Route fetches by URL so the test doesn't depend on call ordering (the
 // useModels composable caches its result across calls).
-function mockFetch(foremanConfig: Record<string, unknown>) {
+function mockFetch(
+  foremanConfig: Record<string, unknown>,
+  workerConfig: Record<string, unknown> = {},
+) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
     const url = String(input)
     if (url.includes('/api/models')) {
@@ -31,12 +34,17 @@ function mockFetch(foremanConfig: Record<string, unknown>) {
       )
     }
     if (url.includes('/foreman-config')) return Promise.resolve(jsonResponse(foremanConfig))
+    if (url.includes('/spawn-settings')) return Promise.resolve(jsonResponse(workerConfig))
     return Promise.resolve(jsonResponse({}))
   })
 }
 
-async function openTab(label: string, foremanConfig: Record<string, unknown>) {
-  mockFetch(foremanConfig)
+async function openTab(
+  label: string,
+  foremanConfig: Record<string, unknown>,
+  workerConfig: Record<string, unknown> = {},
+) {
+  mockFetch(foremanConfig, workerConfig)
   const guild = useGuildStore()
   guild.currentGuild = { id: 'g1', name: 'Test Guild' }
   const auth = useAuthStore()
@@ -49,8 +57,10 @@ async function openTab(label: string, foremanConfig: Record<string, unknown>) {
   return wrapper
 }
 
-const openForemanTab = (cfg: Record<string, unknown>) => openTab('Foreman', cfg)
-const openWorkerTab = (cfg: Record<string, unknown>) => openTab('Worker Settings', cfg)
+const openForemanTab = (cfg: Record<string, unknown>, workerCfg: Record<string, unknown> = {}) =>
+  openTab('Foreman', cfg, workerCfg)
+const openWorkerTab = (workerCfg: Record<string, unknown>) =>
+  openTab('Worker Settings', {}, workerCfg)
 
 describe('GuildSettingsPanel foreman provider/model', () => {
   beforeEach(() => {
@@ -100,7 +110,7 @@ describe('GuildSettingsPanel worker tool tabs', () => {
   })
 
   it('lets the Pi default model be set and saved', async () => {
-    const wrapper = await openWorkerTab({ pi_default_model: 'claude-sonnet-4-6' })
+    const wrapper = await openWorkerTab({ toolDefaults: { pi: { model: 'claude-sonnet-4-6' } } })
 
     const piTab = wrapper.findAll('.foreman-tool-tab').find((t) => t.text() === 'Pi')
     await piTab!.trigger('click')
@@ -114,22 +124,20 @@ describe('GuildSettingsPanel worker tool tabs', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ pi_default_model: 'claude-opus-4-8' }),
+      json: async () => ({ toolDefaults: { pi: { model: 'claude-opus-4-8' } } }),
     } as Response)
     const saveBtn = wrapper.findAll('button').find((b) => b.text() === 'Save')
     await saveBtn!.trigger('click')
     await flushPromises()
 
-    const patchCall = fetchSpy.mock.calls.find(
-      ([, init]) => (init as RequestInit)?.method === 'PATCH',
-    )
-    expect(patchCall).toBeTruthy()
-    const body = JSON.parse((patchCall![1] as RequestInit).body as string)
-    expect(body.pi_default_model).toBe('claude-opus-4-8')
+    const putCall = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PUT')
+    expect(putCall).toBeTruthy()
+    const body = JSON.parse((putCall![1] as RequestInit).body as string)
+    expect(body.toolDefaults.pi.model).toBe('claude-opus-4-8')
   })
 
   it('lets the Pi default provider be set to Bedrock and saved', async () => {
-    const wrapper = await openWorkerTab({ pi_default_provider: 'anthropic' })
+    const wrapper = await openWorkerTab({ toolDefaults: { pi: { provider: 'anthropic' } } })
 
     const piTab = wrapper.findAll('.foreman-tool-tab').find((t) => t.text() === 'Pi')
     await piTab!.trigger('click')
@@ -145,18 +153,16 @@ describe('GuildSettingsPanel worker tool tabs', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ pi_default_provider: 'bedrock' }),
+      json: async () => ({ toolDefaults: { pi: { provider: 'bedrock' } } }),
     } as Response)
     const saveBtn = wrapper.findAll('button').find((b) => b.text() === 'Save')
     await saveBtn!.trigger('click')
     await flushPromises()
 
-    const patchCall = fetchSpy.mock.calls.find(
-      ([, init]) => (init as RequestInit)?.method === 'PATCH',
-    )
-    expect(patchCall).toBeTruthy()
-    const body = JSON.parse((patchCall![1] as RequestInit).body as string)
-    expect(body.pi_default_provider).toBe('bedrock')
+    const putCall = fetchSpy.mock.calls.find(([, init]) => (init as RequestInit)?.method === 'PUT')
+    expect(putCall).toBeTruthy()
+    const body = JSON.parse((putCall![1] as RequestInit).body as string)
+    expect(body.toolDefaults.pi.provider).toBe('bedrock')
   })
 })
 
@@ -172,13 +178,11 @@ describe('GuildSettingsPanel worker vs foreman env split', () => {
     wrapper.findAll('input.env-var-key').map((i) => (i.element as HTMLInputElement).value)
 
   it('splits env by destination (no forward checkbox) and saves the right flags', async () => {
-    // One forwarded (worker/General) var and one foreman-only var.
-    const wrapper = await openForemanTab({
-      env_vars: [
-        { key: 'ANTHROPIC_API_KEY', value: 'sk', forward: true },
-        { key: 'FOREMAN_ONLY', value: 'x', forward: false },
-      ],
-    })
+    // Worker env lives in spawn-settings; foreman env lives in foreman-config.
+    const wrapper = await openForemanTab(
+      { env_vars: [{ key: 'FOREMAN_ONLY', value: 'x', forward: false }] },
+      { envVars: [{ key: 'ANTHROPIC_API_KEY', value: 'sk' }] },
+    )
 
     // The per-row forward checkbox is gone.
     expect(wrapper.find('input[type="checkbox"].env-var-fwd').exists()).toBe(false)
@@ -201,19 +205,27 @@ describe('GuildSettingsPanel worker vs foreman env split', () => {
     const valInputs = wrapper.findAll('input.env-var-value')
     await valInputs[valInputs.length - 1].setValue('v')
 
-    // Save (Worker Settings tab) → forwarded vars carry forward=true, foreman-only false.
+    // Save (Worker Settings tab) → foreman-only vars and worker vars go to separate APIs.
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ env_vars: [] }))
     const saveBtn = wrapper.findAll('.foreman-actions button').find((b) => b.text() === 'Save')
     await saveBtn!.trigger('click')
     await flushPromises()
 
     const patchCall = fetchSpy.mock.calls.find(
-      ([, init]) => (init as RequestInit)?.method === 'PATCH',
+      ([url, init]) =>
+        String(url).includes('/foreman-config') && (init as RequestInit)?.method === 'PATCH',
     )
-    const body = JSON.parse((patchCall![1] as RequestInit).body as string)
-    const byKey = Object.fromEntries(
-      body.env_vars.map((e: { key: string; forward: boolean }) => [e.key, e.forward]),
+    const foremanBody = JSON.parse((patchCall![1] as RequestInit).body as string)
+    expect(foremanBody.env_vars).toEqual([{ key: 'FOREMAN_ONLY', value: 'x', forward: false }])
+
+    const putCall = fetchSpy.mock.calls.find(
+      ([url, init]) =>
+        String(url).includes('/spawn-settings') && (init as RequestInit)?.method === 'PUT',
     )
-    expect(byKey).toEqual({ ANTHROPIC_API_KEY: true, WORKER_NEW: true, FOREMAN_ONLY: false })
+    const workerBody = JSON.parse((putCall![1] as RequestInit).body as string)
+    expect(workerBody.envVars).toEqual([
+      { key: 'ANTHROPIC_API_KEY', value: 'sk' },
+      { key: 'WORKER_NEW', value: 'v' },
+    ])
   })
 })
