@@ -148,6 +148,34 @@ resource "aws_iam_role_policy" "asg_worker_logs" {
   policy = data.aws_iam_policy_document.asg_worker_logs.json
 }
 
+# --- Auto Scaling: let the worker protect its own instance from scale-in
+# while it has a task in flight (see worker/pioneer_worker/asg_protection.py).
+# The termination lifecycle hook below already pauses termination of an
+# instance picked for scale-in until it drains, but without this permission
+# nothing stops the ASG from picking a busy instance over an idle one in the
+# first place.
+data "aws_iam_policy_document" "asg_worker_autoscaling" {
+  statement {
+    sid    = "SetOwnInstanceProtection"
+    effect = "Allow"
+    actions = [
+      "autoscaling:SetInstanceProtection",
+    ]
+    # SetInstanceProtection's resource-level permissions require the ASG's
+    # opaque group id, which isn't known until the group is created; wildcard
+    # it and scope by name instead, matching CompleteLifecycleHook below.
+    resources = [
+      "arn:${local.partition}:autoscaling:${local.region}:${local.account_id}:autoScalingGroup:*:autoScalingGroupName/${local.worker_asg_name}"
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "asg_worker_autoscaling" {
+  name   = "${local.name_prefix}-asg-worker-autoscaling"
+  role   = aws_iam_role.asg_worker.id
+  policy = data.aws_iam_policy_document.asg_worker_autoscaling.json
+}
+
 resource "aws_iam_instance_profile" "asg_worker" {
   name = "${local.name_prefix}-asg-worker"
   role = aws_iam_role.asg_worker.name
@@ -202,6 +230,12 @@ locals {
 
   worker_backend_url = "${local.has_certificate ? "https" : "http"}://${var.domain_name != "" ? var.domain_name : aws_lb.main.dns_name}"
 
+  # Named here (rather than read back off aws_autoscaling_group.worker.name)
+  # so the launch template's user-data can know its own ASG's name without
+  # creating a cycle: the ASG's launch_template block already depends on the
+  # launch template, so the launch template can't also depend on the ASG.
+  worker_asg_name = "${local.name_prefix}-worker-asg"
+
   # Falls back to the repo this stack deploys from when var.worker_repos is unset.
   worker_repos = var.worker_repos != "" ? var.worker_repos : var.github_repository
 }
@@ -252,6 +286,7 @@ resource "aws_launch_template" "worker" {
     s3_bucket        = aws_s3_bucket.assets.bucket
     s3_prefix        = "worker-sessions"
     log_group        = aws_cloudwatch_log_group.worker_asg.name
+    asg_name         = local.worker_asg_name
   }))
 
   tag_specifications {
@@ -277,7 +312,7 @@ resource "aws_launch_template" "worker" {
 }
 
 resource "aws_autoscaling_group" "worker" {
-  name = "${local.name_prefix}-worker-asg"
+  name = local.worker_asg_name
   vpc_zone_identifier = [
     for subnet in aws_subnet.private : subnet.id
     if contains(data.aws_ec2_instance_type_offerings.worker.locations, subnet.availability_zone_id)

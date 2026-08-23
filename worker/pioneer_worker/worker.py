@@ -16,6 +16,7 @@ import anyio
 import httpx
 
 from . import (
+    asg_protection,
     claude_runner,
     codex_runner,
     git_ops,
@@ -221,6 +222,14 @@ class Worker:
         # credentials never leak into another's subprocess; merged over os.environ
         # only when spawning that specific tool. See _env_for_tool.
         self._tool_env: dict[str, dict[str, str]] = {}
+
+        # ── ASG scale-in protection (warm worker fleet only) ────────────────
+        # Tracks the protection state we last asked AWS for, so _set_state only
+        # calls out on an actual busy/idle transition. Applied through a lock
+        # so overlapping transitions reach AWS in the order they happened,
+        # instead of racing and possibly leaving protection in the wrong state.
+        self._scale_in_protected: bool = False
+        self._scale_in_protection_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ HTTP
     def _hostname(self) -> str:
@@ -1048,6 +1057,32 @@ class Worker:
         if state in ("idle", "offline"):
             agent.current_task_id = None
         await self._emit_agent_state(agent)
+        self._sync_scale_in_protection()
+
+    def _sync_scale_in_protection(self) -> asyncio.Task | None:
+        """Protect this instance from ASG scale-in while any agent is busy.
+
+        Fires on every _set_state call but only actually calls out to AWS on
+        a busy/idle transition: enabled the moment the first agent picks up a
+        task, released once every agent is idle/offline again. No-op off the
+        warm ASG worker fleet (see asg_protection.is_asg_worker).
+
+        Returns the background task doing the actual AWS call (or None if this
+        was a no-op) purely so tests can await it deterministically; real
+        callers fire-and-forget this.
+        """
+        if not asg_protection.is_asg_worker():
+            return None
+        busy = any(a.state not in ("idle", "offline") for a in self.agents)
+        if busy == self._scale_in_protected:
+            return None
+        self._scale_in_protected = busy
+
+        async def _apply() -> None:
+            async with self._scale_in_protection_lock:
+                await asg_protection.set_scale_in_protection(self._hostname(), busy)
+
+        return asyncio.create_task(_apply(), name=f"asg-protection-{busy}")
 
     async def _join(self) -> None:
         for agent in self.agents:
