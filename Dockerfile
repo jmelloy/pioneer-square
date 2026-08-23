@@ -101,6 +101,31 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && rm -rf /var/lib/apt/lists/* \
     && corepack enable
 
+# Chromium + the shared libraries headless-browser automation needs (e.g.
+# Puppeteer/Playwright driving a locally installed or self-downloaded
+# Chromium), so coding agents can exercise browser-based tests/tools without
+# apt access at task runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        chromium \
+        fonts-liberation \
+        libasound2 \
+        libatk-bridge2.0-0 \
+        libatk1.0-0 \
+        libcups2 \
+        libdrm2 \
+        libgbm1 \
+        libgtk-3-0 \
+        libnspr4 \
+        libnss3 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxfixes1 \
+        libxkbcommon0 \
+        libxrandr2 \
+        libxss1 \
+        xdg-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
