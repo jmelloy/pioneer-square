@@ -140,7 +140,7 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
       // Worker-facing settings live in spawn_settings, not foreman_config, so
       // credentials/default models are visible here for editing/deleting.
       const workerRes = await fetch(
-        `${API_BASE}/api/guilds/${encodeURIComponent(guildId.value)}/spawn-settings`,
+        `${API_BASE}/guilds/${encodeURIComponent(guildId.value)}/spawn-settings`,
         { headers: authStore.authHeaders() },
       )
       if (workerRes.ok) {
@@ -238,7 +238,7 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
         toolEnvVars,
       }
       const workerRes = await fetch(
-        `${API_BASE}/api/guilds/${encodeURIComponent(guildId.value)}/spawn-settings`,
+        `${API_BASE}/guilds/${encodeURIComponent(guildId.value)}/spawn-settings`,
         {
           method: 'PUT',
           headers: { ...authStore.authHeaders(), 'Content-Type': 'application/json' },
