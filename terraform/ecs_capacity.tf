@@ -1,8 +1,6 @@
 # ECS EC2 capacity provider — all ECS services and one-off tasks run on this
-# Auto Scaling Group instead of Fargate. The separate worker ASG in
-# asg_workers.tf remains the long-running warm worker fleet; this ASG is ECS
-# cluster capacity for backend/foreman/metabase/migrate and on-demand worker
-# RunTask launches.
+# Auto Scaling Group instead of Fargate. This ASG is ECS cluster capacity for
+# backend/foreman/metabase/migrate and on-demand worker RunTask launches.
 
 # Latest ECS-optimized Amazon Linux 2023 AMI for x86_64 instances.
 data "aws_ssm_parameter" "ecs_optimized_ami" {

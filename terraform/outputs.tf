@@ -82,17 +82,3 @@ output "ecs_capacity_asg_name" {
   value       = aws_autoscaling_group.ecs_capacity.name
 }
 
-output "worker_asg_name" {
-  description = "Name of the warm worker Auto Scaling Group (EC2 instances running the worker image long-running, separate from ECS cluster capacity)."
-  value       = aws_autoscaling_group.worker.name
-}
-
-output "worker_launch_template_id" {
-  description = "ID of the worker launch template."
-  value       = aws_launch_template.worker.id
-}
-
-output "worker_asg_log_group" {
-  description = "CloudWatch log group the worker ASG's containers log to (docker awslogs driver)."
-  value       = aws_cloudwatch_log_group.worker_asg.name
-}

@@ -1,9 +1,8 @@
 # Pioneer Square — Terraform (AWS)
 
 Migrates the `docker-compose.yml` stack to AWS: VPC/ALB/ECS/ECR/RDS/S3/SSM, with ECS
-services and one-off tasks placed on an EC2 Auto Scaling Group capacity provider. A separate
-optional warm-worker ASG can keep pre-connected worker slots online. IAM policies grant the
-runtime roles S3 and Amazon Bedrock access.
+services and one-off tasks placed on an EC2 Auto Scaling Group capacity provider. IAM
+policies grant the runtime roles S3 and Amazon Bedrock access.
 
 ## Architecture at a glance
 
@@ -12,7 +11,7 @@ runtime roles S3 and Amazon Bedrock access.
 | `postgres` | RDS Postgres (`rds.tf`) — the DB stays managed and outside ECS capacity |
 | `backend` | ECS service `*-backend`, fronted by the ALB (`ecs.tf`, `alb.tf`), placed on the ASG capacity provider |
 | `foreman` | ECS service `*-foreman`, `desired_count = 0` by default (compose's `profiles: [foreman]`), placed on the ASG capacity provider |
-| `worker` | ECS task definition for on-demand workers placed on the ASG capacity provider, plus an optional warm worker ASG (defaults to zero instances) — see "Worker capacity" below |
+| `worker` | ECS task definition for on-demand workers placed on the ASG capacity provider |
 | `pgweb` (Metabase, `profiles: [tools]`) | Metabase ECS service (`metabase.tf`), fronted by the ALB and placed on the ASG capacity provider |
 | `postgres-test` (`profiles: [test]`) | Not migrated; test-only |
 | (backend's inline `alembic upgrade head`) | One-off `*-migrate` task definition, run at deploy time — see "Database migrations" below |
@@ -40,43 +39,6 @@ Sizing is controlled by `ecs_capacity_instance_type`, `ecs_capacity_min_size`,
 and `ecs_capacity_root_volume_gib`. Keep `ecs_capacity_min_size >= 1` for the backend; ECS
 managed scaling can add instances for extra service tasks, migrations, Metabase, and
 on-demand workers.
-
-### Warm worker capacity
-
-Worker capacity can also include a separate warm worker Auto Scaling Group in
-`asg_workers.tf`. Those instances run the `worker` container directly (outside ECS service
-placement) so they connect immediately and keep repo checkouts warm. The warm fleet defaults
-to zero instances (`worker_asg_min_size = 0`, `worker_asg_desired_capacity = 0`). Raise
-desired capacity manually only when you want pre-warmed worker slots.
-
-| Piece | Resource | Notes |
-| --- | --- | --- |
-| AMI | `data.aws_ami.worker` | Latest `al2023-ami-*-x86_64`, refreshed on every `apply`. |
-| Bootstrap | `templates/worker_user_data.sh.tpl` | Installs Docker, `docker login`s to ECR, pulls `<worker repo>:var.container_image_tag`, and `docker run -d --restart unless-stopped` with an env file (`PIONEER_BACKEND_URL`, `PIONEER_GUILD_ID`, `PIONEER_REPOS`, `PIONEER_MAX_AGENTS`, S3 session-log vars) and the `awslogs` log driver. |
-| Identity | `aws_iam_role.asg_worker` | EC2 (not ECS) trust policy — scoped to ECR pull (worker repo only), the assets S3 bucket, its own CloudWatch log group, and `AmazonSSMManagedInstanceCore` for Session Manager shell access (no SSH key pair). |
-| Networking | `aws_security_group.asg_worker` | Egress-only — the worker never accepts inbound connections, it dials out to the backend over the ALB. Instances launch into private subnets whose AZs offer `var.worker_instance_type`. |
-| Scaling | `aws_autoscaling_policy.worker_cpu` | `TargetTrackingScaling` on `ASGAverageCPUUtilization`, target `var.worker_target_cpu_utilization` (default 70), with automatic scale-in disabled so active workers are not terminated by CPU dips. Scale-in is explicit/manual. |
-| Rollout | Launch template only, no automatic `instance_refresh` | A new `container_image_tag` changes the launch template version for future scale-out/replacement instances, but Terraform does **not** recycle existing warm workers during ordinary deploys. |
-
-Credentials work the same way as the on-demand path below: the worker fetches its
-per-guild GitHub/Claude/provider tokens itself from the backend after connecting
-(`/auth/github/token`, `/guilds/{id}/foreman/env-vars`) — nothing sensitive is baked into
-the launch template or user data.
-
-**Sizing.** `worker_asg_min_size`/`worker_asg_max_size`/`worker_asg_desired_capacity`
-(default `0`/`4`/`0`) control the optional warm fleet, and `worker_max_agents` defaults to
-`2` per `t3.medium` instance. With the default desired capacity of zero, the ASG is idle and
-does not scale out automatically: target tracking needs at least one running instance to
-compute `ASGAverageCPUUtilization` against. Automatic scale-in is disabled because EC2 ASG
-scale-in has no app-level knowledge of active coding tasks; reduce desired capacity or
-terminate instances manually when you know they are safe to replace.
-
-**Termination draining.** The warm worker ASG has an
-`autoscaling:EC2_INSTANCE_TERMINATING` lifecycle hook. EventBridge invokes a Lambda that
-calls the backend's internal drain endpoint, heartbeats the hook while the worker finishes
-current work, and completes the lifecycle action once the worker reports offline (or after
-the timeout). ASG workers set `PIONEER_HOSTNAME` to the EC2 instance id, so the backend can
-map a termination event to the worker row via `workers.hostname`.
 
 ### On-demand worker dispatch (ECS on ASG capacity)
 
@@ -221,15 +183,6 @@ aws dynamodb create-table \
    aws ecs update-service --cluster pioneer-square-staging-cluster \
      --service pioneer-square-staging-backend --force-new-deployment
    ```
-
-   The worker ASG's launch template renders `var.container_image_tag` (not `latest`) into
-   its user data, so on a first apply — before any image has been pushed at that tag — its
-   instances will boot, fail the `docker pull` in `worker_user_data.sh.tpl`, and simply have
-   no worker container running (check `/var/log/pioneer-worker-init.log` on the instance via
-   SSM Session Manager). Once an image exists at that tag, either wait for the next
-   `terraform apply -var container_image_tag=<sha>` (which rolls a fresh launch template
-   version and refreshes the instances) or terminate the instances manually to let the ASG
-   replace them.
 
 4. Point `var.domain_name`'s DNS record at the `alb_dns_name` output (or set
    `var.route53_zone_id` so Terraform manages the ACM validation + you manage the apex

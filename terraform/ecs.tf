@@ -75,7 +75,6 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "LOG_LEVEL", value = var.log_level },
         { name = "PIONEER_S3_BUCKET", value = aws_s3_bucket.assets.bucket },
         { name = "PIONEER_S3_PREFIX", value = "worker-sessions" },
-        { name = "PIONEER_ASG_LIFECYCLE_TOKEN", value = random_password.asg_lifecycle_token.result },
         { name = "AWS_DEFAULT_REGION", value = local.region },
         # Worker dispatch via ECS RunTask (backend/worker_runtime.py): the
         # first two select ECS mode; the capacity provider keeps spawned
