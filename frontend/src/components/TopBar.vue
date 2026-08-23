@@ -20,8 +20,8 @@
     <button
       v-if="authStore.isLoggedIn"
       class="user-pill"
-      :title="'GitHub settings for ' + authStore.user?.login"
-      @click="showGitHubModal = true"
+      :title="'Preferences for ' + authStore.user?.login"
+      @click="showUserPreferences = true"
     >
       <img
         v-if="authStore.user?.avatar_url"
@@ -54,7 +54,7 @@
   </header>
 
   <GuildSettingsPanel v-if="showSettings && currentGuild" @close="showSettings = false" />
-  <GitHubConfigModal v-if="showGitHubModal" @close="showGitHubModal = false" />
+  <UserPreferencesModal v-if="showUserPreferences" @close="showUserPreferences = false" />
 </template>
 
 <script setup lang="ts">
@@ -62,7 +62,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGuildStore } from '../stores/guild'
 import { useAuthStore } from '../stores/auth'
-import GitHubConfigModal from './GitHubConfigModal.vue'
+import UserPreferencesModal from './UserPreferencesModal.vue'
 import GuildSettingsPanel from './GuildSettingsPanel.vue'
 
 defineProps<{ debugActive?: boolean }>()
@@ -74,7 +74,7 @@ const authStore = useAuthStore()
 
 const currentGuild = computed(() => guildStore.currentGuild)
 
-const showGitHubModal = ref(false)
+const showUserPreferences = ref(false)
 const showSettings = ref(false)
 
 function goHome() {
