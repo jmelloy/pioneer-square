@@ -229,60 +229,6 @@ variable "worker_ephemeral_storage_gib" {
 }
 
 # -----------------------------------------------------------------------------
-# Worker fleet — optional Auto Scaling Group of t3.medium EC2 instances running
-# the worker image long-running (asg_workers.tf). See
-# terraform/README.md "Worker capacity".
-# -----------------------------------------------------------------------------
-
-variable "worker_instance_type" {
-  description = "EC2 instance type for the worker Auto Scaling Group."
-  type        = string
-  default     = "t3.medium"
-}
-
-variable "worker_asg_min_size" {
-  description = "Minimum number of worker ASG instances. Defaults to 0 because normal worker capacity is spawned on demand via ECS RunTask; CPU target tracking cannot scale out from zero without a queue-depth metric."
-  type        = number
-  default     = 0
-}
-
-variable "worker_asg_max_size" {
-  description = "Maximum number of worker instances the ASG will scale out to."
-  type        = number
-  default     = 4
-}
-
-variable "worker_asg_desired_capacity" {
-  description = "Desired worker ASG instance count. Defaults to 0; raise manually only when you want a warm persistent worker host."
-  type        = number
-  default     = 0
-}
-
-variable "worker_target_cpu_utilization" {
-  description = "Target average CPU utilization (%) for the worker ASG's target-tracking scaling policy."
-  type        = number
-  default     = 70
-}
-
-variable "worker_root_volume_gib" {
-  description = "Root EBS volume size (GiB) for warm worker instances — holds cloned repos and git worktrees."
-  type        = number
-  default     = 40
-}
-
-variable "worker_repos" {
-  description = "Comma-separated \"owner/repo\" list the persistent worker fleet clones and operates on (PIONEER_REPOS). Defaults to var.github_repository."
-  type        = string
-  default     = ""
-}
-
-variable "worker_max_agents" {
-  description = "Concurrent agent slots (PIONEER_MAX_AGENTS) per worker instance. Keep low on t3.medium (2 vCPU / 4 GiB) so coding-agent subprocesses and repo test runs do not fight for memory/CPU."
-  type        = number
-  default     = 2
-}
-
-# -----------------------------------------------------------------------------
 # RDS (replaces the docker-compose `postgres` service)
 # -----------------------------------------------------------------------------
 
