@@ -119,7 +119,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libnss3 \
         libxcomposite1 \
         libxdamage1 \
-        libxfixes1 \
+        libxfixes3 \
         libxkbcommon0 \
         libxrandr2 \
         libxss1 \
