@@ -311,6 +311,7 @@ class TestToolsCLIFlag:
 
     def test_no_tools_flag_gives_none(self, tmp_path, monkeypatch):
         """Omitting --tools must leave cfg.tools as None (auto-detect mode)."""
+        monkeypatch.delenv("PIONEER_TOOLS", raising=False)
         toml_path = self._write_toml(
             tmp_path,
             'backend_url = "ws://x:1"\nguild_id = "g"\n[github]\nrepos = ["owner/repo"]\n',

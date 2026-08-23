@@ -83,7 +83,9 @@ def test_load_overrides_no_file(tmp_path):
     assert cfg.guild_id == "testguild"
 
 
-def test_load_overrides_defaults_preserved(tmp_path):
+def test_load_overrides_defaults_preserved(tmp_path, monkeypatch):
+    monkeypatch.delenv("PIONEER_MAX_AGENTS", raising=False)
+    monkeypatch.delenv("PIONEER_TOOLS", raising=False)
     cfg = load(
         str(tmp_path / "missing.toml"),
         overrides={"backend_url": "ws://x:1", "guild_id": "g"},
