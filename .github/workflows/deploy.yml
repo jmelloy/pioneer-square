@@ -59,9 +59,10 @@ jobs:
   # one passes health checks, and neither of them races a schema upgrade.
   #
   # The targeted apply registers the migrate task-definition revision at the
-  # new image tag. Keep this targeted apply limited to the one-off migration
-  # task wiring; broader ECS capacity-provider changes are applied only after
-  # migrations pass so capacity tuning cannot block schema deployment.
+  # new image tag. It also applies the ECS capacity launch template / ASG so
+  # architecture changes (for example x86_64 -> Graviton/ARM64) have capacity
+  # available before the one-off migration task is placed. Broader capacity-
+  # provider tuning is applied only after migrations pass.
   migrate:
     needs: build
     runs-on: ubuntu-latest
@@ -87,9 +88,11 @@ jobs:
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="region=${{ secrets.AWS_REGION }}"
 
-      - name: Register migrate task definition
+      - name: Register migrate task definition and capacity launch template
         run: |
           terraform apply -auto-approve \
+            -target=aws_launch_template.ecs_capacity \
+            -target=aws_autoscaling_group.ecs_capacity \
             -target=aws_ecs_task_definition.migrate \
             -var="container_image_tag=${{ github.sha }}"
 

@@ -2,9 +2,9 @@
 # Auto Scaling Group instead of Fargate. This ASG is ECS cluster capacity for
 # backend/foreman/metabase/migrate and on-demand worker RunTask launches.
 
-# Latest ECS-optimized Amazon Linux 2023 AMI for x86_64 instances.
+# Latest ECS-optimized Amazon Linux 2023 AMI for Graviton/ARM64 instances.
 data "aws_ssm_parameter" "ecs_optimized_ami" {
-  name = "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id"
+  name = "/aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended/image_id"
 }
 
 data "aws_iam_policy_document" "ec2_assume_role" {
@@ -139,6 +139,15 @@ resource "aws_autoscaling_group" "ecs_capacity" {
   launch_template {
     id      = aws_launch_template.ecs_capacity.id
     version = "$Latest"
+  }
+
+  instance_refresh {
+    strategy = "Rolling"
+
+    preferences {
+      instance_warmup        = 300
+      min_healthy_percentage = 50
+    }
   }
 
   tag {
