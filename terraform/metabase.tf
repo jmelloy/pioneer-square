@@ -178,6 +178,11 @@ resource "aws_ecs_service" "metabase" {
     weight            = 1
   }
 
+  ordered_placement_strategy {
+    type  = "binpack"
+    field = "memory"
+  }
+
   # Metabase takes ~1-2 min to boot before /api/health passes.
   health_check_grace_period_seconds = 180
 

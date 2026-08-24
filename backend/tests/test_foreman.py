@@ -2334,6 +2334,7 @@ class TestSpawnWorker:
         assert kwargs["capacityProviderStrategy"] == [
             {"capacityProvider": "ps-test-asg", "weight": 1}
         ]
+        assert kwargs["placementStrategy"] == [{"type": "binpack", "field": "memory"}]
         assert "launchType" not in kwargs
         net = kwargs["networkConfiguration"]["awsvpcConfiguration"]
         assert net["subnets"] == ["subnet-aaa", "subnet-bbb"]

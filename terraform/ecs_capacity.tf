@@ -165,6 +165,7 @@ resource "aws_ecs_capacity_provider" "asg" {
 
   auto_scaling_group_provider {
     auto_scaling_group_arn         = aws_autoscaling_group.ecs_capacity.arn
+    managed_draining               = "ENABLED"
     managed_termination_protection = "ENABLED"
 
     managed_scaling {

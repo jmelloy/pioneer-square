@@ -22,6 +22,7 @@ def ecs_env(monkeypatch):
     monkeypatch.setenv("ECS_WORKER_TASK_DEFINITION", "my-worker-taskdef")
     monkeypatch.setenv("ECS_WORKER_SUBNETS", "subnet-1,subnet-2")
     monkeypatch.setenv("ECS_WORKER_SECURITY_GROUPS", "sg-1")
+    monkeypatch.setenv("ECS_WORKER_CAPACITY_PROVIDER", "my-asg")
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +95,9 @@ async def test_start_worker_ecs(ecs_env):
     assert kwargs["cluster"] == "my-cluster"
     assert kwargs["taskDefinition"] == "my-worker-taskdef"
     assert kwargs["count"] == 1
+    assert kwargs["capacityProviderStrategy"] == [{"capacityProvider": "my-asg", "weight": 1}]
+    assert kwargs["placementStrategy"] == [{"type": "binpack", "field": "memory"}]
+    assert "launchType" not in kwargs
     net = kwargs["networkConfiguration"]["awsvpcConfiguration"]
     assert net["subnets"] == ["subnet-1", "subnet-2"]
     assert net["securityGroups"] == ["sg-1"]
