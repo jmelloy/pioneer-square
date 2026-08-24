@@ -57,9 +57,9 @@ jobs:
   # one passes health checks, and neither of them races a schema upgrade.
   #
   # The targeted apply registers the migrate task-definition revision at the
-  # new image tag and ensures the ASG-backed ECS capacity provider and its EC2
-  # instance-role policy attachments exist; the services keep their previous
-  # revisions until the full apply below.
+  # new image tag. Keep this targeted apply limited to the one-off migration
+  # task wiring; broader ECS capacity-provider changes are applied only after
+  # migrations pass so capacity tuning cannot block schema deployment.
   migrate:
     needs: build
     runs-on: ubuntu-latest
@@ -85,13 +85,10 @@ jobs:
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
             -backend-config="region=${{ secrets.AWS_REGION }}"
 
-      - name: Register migrate task definition and ECS capacity provider
+      - name: Register migrate task definition
         run: |
           terraform apply -auto-approve \
             -target=aws_ecs_task_definition.migrate \
-            -target=aws_iam_role_policy_attachment.ecs_capacity_ecs \
-            -target=aws_iam_role_policy_attachment.ecs_capacity_ssm \
-            -target=aws_ecs_cluster_capacity_providers.main \
             -var="container_image_tag=${{ github.sha }}"
 
       - name: Run migration task and wait for completion
