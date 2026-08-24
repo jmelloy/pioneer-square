@@ -130,7 +130,11 @@ resource "aws_autoscaling_group" "ecs_capacity" {
   health_check_type         = "EC2"
   health_check_grace_period = 300
 
-  protect_from_scale_in = true
+  # Do not blanket-protect every EC2 host from ASG scale-in. ECS managed
+  # draining handles graceful task shutdown during termination; blanket
+  # protection leaves idle instances stuck forever when managed scaling lowers
+  # desired capacity.
+  protect_from_scale_in = false
 
   launch_template {
     id      = aws_launch_template.ecs_capacity.id
@@ -165,7 +169,8 @@ resource "aws_ecs_capacity_provider" "asg" {
 
   auto_scaling_group_provider {
     auto_scaling_group_arn         = aws_autoscaling_group.ecs_capacity.arn
-    managed_termination_protection = "ENABLED"
+    managed_draining               = "ENABLED"
+    managed_termination_protection = "DISABLED"
 
     managed_scaling {
       status                    = "ENABLED"

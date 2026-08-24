@@ -124,7 +124,7 @@ variable "ecs_capacity_desired_capacity" {
 variable "ecs_capacity_target_capacity" {
   description = "ECS managed scaling target capacity percentage for the ASG capacity provider. 100 packs tasks tightly; lower values keep headroom."
   type        = number
-  default     = 80
+  default     = 100
 }
 
 variable "ecs_capacity_root_volume_gib" {
@@ -146,13 +146,13 @@ variable "backend_container_port" {
 variable "backend_cpu" {
   description = "ECS task CPU units for the backend service."
   type        = number
-  default     = 512
+  default     = 256
 }
 
 variable "backend_memory" {
   description = "ECS task memory (MiB) for the backend service."
   type        = number
-  default     = 1024
+  default     = 384
 }
 
 variable "backend_desired_count" {
@@ -213,13 +213,13 @@ variable "foreman_bedrock_model" {
 variable "worker_cpu" {
   description = "ECS task CPU units for on-demand worker tasks."
   type        = number
-  default     = 1024
+  default     = 768
 }
 
 variable "worker_memory" {
   description = "ECS task memory (MiB) for on-demand worker tasks."
   type        = number
-  default     = 2048
+  default     = 1536
 }
 
 variable "worker_ephemeral_storage_gib" {

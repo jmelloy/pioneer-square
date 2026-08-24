@@ -255,6 +255,10 @@ async def _start_worker_ecs(*, env: dict[str, str], guild_id: str) -> SpawnedWor
         run_kwargs["capacityProviderStrategy"] = [
             {"capacityProvider": capacity_provider, "weight": 1}
         ]
+        # Prefer filling already-running ECS capacity before spreading work to
+        # additional instances. This leaves whole instances empty so ECS managed
+        # scaling can terminate them when demand falls.
+        run_kwargs["placementStrategy"] = [{"type": "binpack", "field": "memory"}]
     else:
         run_kwargs["launchType"] = "FARGATE"
 

@@ -151,6 +151,11 @@ resource "aws_ecs_service" "backend" {
     weight            = 1
   }
 
+  ordered_placement_strategy {
+    type  = "binpack"
+    field = "memory"
+  }
+
   network_configuration {
     subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.ecs_tasks.id]
@@ -296,6 +301,11 @@ resource "aws_ecs_service" "foreman" {
   capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.asg.name
     weight            = 1
+  }
+
+  ordered_placement_strategy {
+    type  = "binpack"
+    field = "memory"
   }
 
   network_configuration {
