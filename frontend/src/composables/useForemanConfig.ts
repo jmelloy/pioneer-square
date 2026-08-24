@@ -1,6 +1,7 @@
 import { ref, computed, reactive, type ComputedRef } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useModels } from './useModels'
+import { loadSpawnPipeline, saveSpawnSettings } from './useSpawnPipeline'
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? ''
 
@@ -137,26 +138,23 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
         }
       }
 
-      // Worker-facing settings live in spawn_settings, not foreman_config, so
-      // credentials/default models are visible here for editing/deleting.
-      const workerRes = await fetch(
-        `${API_BASE}/guilds/${encodeURIComponent(guildId.value)}/spawn-settings`,
-        { headers: authStore.authHeaders() },
-      )
-      if (workerRes.ok) {
-        const cfg = await workerRes.json()
-        workerRepos.value = cfg.repos ?? []
-        workerTools.value = cfg.tools ?? []
-        const defaults = cfg.toolDefaults ?? {}
-        piDefaultModel.value = defaults.pi?.model ?? cfg.model ?? ''
-        piDefaultProvider.value = defaults.pi?.provider ?? cfg.provider ?? ''
+      // Worker-facing settings live in spawn_settings, not foreman_config. Use
+      // the same spawn pipeline as User Preferences and the Launch surface so
+      // model/env/default fields normalize identically everywhere.
+      const workerCfg = (await loadSpawnPipeline(guildId.value)).settings
+      if (workerCfg) {
+        workerRepos.value = workerCfg.repos
+        workerTools.value = workerCfg.tools
+        const defaults = workerCfg.toolDefaults
+        piDefaultModel.value = defaults.pi?.model ?? ''
+        piDefaultProvider.value = defaults.pi?.provider ?? ''
         codexDefaultModel.value = defaults.codex?.model ?? ''
-        workerEnvRows.value = (cfg.envVars ?? []).map((e: { key: string; value?: string }) => ({
+        workerEnvRows.value = workerCfg.envVars.map((e: { key: string; value?: string }) => ({
           id: ++envRowSeq,
           key: e.key,
           value: e.value ?? '',
         }))
-        const toolEnv = cfg.toolEnvVars ?? {}
+        const toolEnv = workerCfg.toolEnvVars
         for (const tool of ['claude', 'pi', 'codex']) {
           toolEnvRows[tool] = (toolEnv[tool] ?? []).map((e: { key: string; value?: string }) => ({
             id: ++envRowSeq,
@@ -237,15 +235,14 @@ export function useForemanConfig(guildId: ComputedRef<string | undefined>) {
         toolDefaults,
         toolEnvVars,
       }
-      const workerRes = await fetch(
-        `${API_BASE}/guilds/${encodeURIComponent(guildId.value)}/spawn-settings`,
-        {
-          method: 'PUT',
-          headers: { ...authStore.authHeaders(), 'Content-Type': 'application/json' },
-          body: JSON.stringify(workerBody),
-        },
-      )
-      if (res.ok && workerRes.ok) {
+      let workerOk = false
+      try {
+        await saveSpawnSettings(guildId.value, workerBody)
+        workerOk = true
+      } catch {
+        workerOk = false
+      }
+      if (res.ok && workerOk) {
         foremanStatus.value = 'saved'
         await loadForemanConfig()
       } else {

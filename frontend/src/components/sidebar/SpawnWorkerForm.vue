@@ -283,6 +283,43 @@
                   Passed only to the {{ envToolTab }} CLI — never the other tools. Overrides an Env
                   Var above for this tool.
                 </p>
+                <template v-if="envToolTab === 'pi'">
+                  <div class="spawn-env-row spawn-model-row">
+                    <select v-model="piDefaultProvider" class="spawn-input spawn-env-input">
+                      <option value="">default (anthropic)</option>
+                      <option v-for="p in modelsStore.providers" :key="p.id" :value="p.id">
+                        {{ p.name }}
+                      </option>
+                    </select>
+                    <input
+                      v-model="piDefaultModel"
+                      class="spawn-input spawn-env-input spawn-env-val"
+                      list="spawn-pi-model-hints"
+                      :placeholder="
+                        piDefaultProvider === 'bedrock' ? 'inference-profile ARN' : 'model override'
+                      "
+                      type="text"
+                    />
+                    <datalist id="spawn-pi-model-hints">
+                      <option
+                        v-for="m in piProviderModels"
+                        :key="m.id"
+                        :value="m.id"
+                        :label="m.name"
+                      />
+                    </datalist>
+                  </div>
+                </template>
+                <template v-else-if="envToolTab === 'codex'">
+                  <div class="spawn-env-row spawn-model-row">
+                    <input
+                      v-model="codexDefaultModel"
+                      class="spawn-input spawn-env-input spawn-env-val"
+                      placeholder="model override (e.g. gpt-5-codex)"
+                      type="text"
+                    />
+                  </div>
+                </template>
                 <div v-if="guildToolEnv.length" class="spawn-cred-list spawn-tool-guild-list">
                   <div
                     v-for="cred in guildToolEnv"
@@ -352,6 +389,17 @@ import { useGuildStore } from '../../stores/guild'
 import { useGitHubStore } from '../../stores/github'
 import { api } from '../../utils/api'
 import { groupAndSortRepos } from '../../utils/repoGroups'
+import { useModels } from '../../composables/useModels'
+import {
+  SPAWN_TOOLS,
+  loadSpawnPipeline,
+  saveSpawnSettings as persistSpawnSettings,
+  type EnvPair,
+  type SpawnSettings,
+  type GuildSpawnDefaults,
+  type GuildEnvVarStatus,
+  type SpawnCredentials,
+} from '../../composables/useSpawnPipeline'
 
 const emit = defineEmits<{ (e: 'launched'): void; (e: 'close'): void }>()
 
@@ -359,6 +407,7 @@ const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 
 const currentGuild = computed(() => guildStore.currentGuild)
+const modelsStore = reactive(useModels())
 
 const TABS = [
   { id: 'general', label: 'General' },
@@ -369,37 +418,7 @@ const activeTab = ref<(typeof TABS)[number]['id']>('general')
 
 const panelRef = ref<HTMLElement | null>(null)
 
-const AVAILABLE_TOOLS = ['claude', 'codex', 'pi'] as const
-
-interface EnvPair {
-  key: string
-  value: string
-}
-
-interface SpawnSettings {
-  repos?: string[]
-  tools?: string[]
-  envVars?: EnvPair[]
-  toolEnvVars?: Record<string, EnvPair[]>
-}
-
-interface GuildSpawnDefaults {
-  repos: string[]
-  tools: string[]
-  agent_count: number | null
-}
-
-interface GuildEnvVarStatus {
-  key: string
-  masked_value: string
-}
-
-interface SpawnCredentials {
-  // The guild baseline only — the caller's own vars come back in clear text
-  // from /spawn-settings so they stay editable here.
-  guild_env_vars: GuildEnvVarStatus[]
-  guild_tool_env_vars?: Record<string, GuildEnvVarStatus[]>
-}
+const AVAILABLE_TOOLS = SPAWN_TOOLS
 
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
 
@@ -415,10 +434,16 @@ const name = ref('')
 const selectedTools = ref<string[]>([])
 const agentCount = ref<number | null>(null)
 const envVars = ref<EnvPair[]>([])
+const piDefaultProvider = ref('')
+const piDefaultModel = ref('')
+const codexDefaultModel = ref('')
 // Per-tool override env, keyed by tool. Reaches only that tool's runner via the
 // worker's /foreman/env-vars fetch (resolved against this user's spawn row).
 const toolEnvVars = reactive<Record<string, EnvPair[]>>({ claude: [], codex: [], pi: [] })
 const envToolTab = ref<(typeof AVAILABLE_TOOLS)[number]>('claude')
+const piProviderModels = computed(() =>
+  piDefaultProvider.value ? modelsStore.modelsForProvider(piDefaultProvider.value) : [],
+)
 const spawning = ref(false)
 const error = ref('')
 const loadingRepos = ref(false)
@@ -473,41 +498,10 @@ const hasSavedSettings = computed(() => {
     s.repos?.length ||
     s.tools?.length ||
     s.envVars?.length ||
+    Object.values(s.toolDefaults ?? {}).some((d) => d.provider || d.model) ||
     Object.values(s.toolEnvVars ?? {}).some((p) => p.length)
   )
 })
-
-async function loadSavedSettings(guildId: string): Promise<SpawnSettings | null> {
-  try {
-    return await api<SpawnSettings>(`/guilds/${guildId}/spawn-settings`)
-  } catch {
-    return null
-  }
-}
-
-async function loadGuildDefaults(guildId: string): Promise<GuildSpawnDefaults | null> {
-  try {
-    return await api<GuildSpawnDefaults>(`/guilds/${guildId}/spawn-defaults`)
-  } catch {
-    return null
-  }
-}
-
-async function loadCredentials(guildId: string) {
-  credentialsLoading.value = true
-  credentialsError.value = ''
-  try {
-    const result = await api<SpawnCredentials>(`/guilds/${guildId}/spawn-credentials`)
-    credentials.value = result
-    for (const cred of result.guild_env_vars) {
-      if (!(cred.key in includedKeys.value)) includedKeys.value[cred.key] = true
-    }
-  } catch (e: unknown) {
-    credentialsError.value = e instanceof Error ? e.message : 'Failed to load credentials'
-  } finally {
-    credentialsLoading.value = false
-  }
-}
 
 function toggleCredential(key: string) {
   includedKeys.value[key] = includedKeys.value[key] === false ? true : false
@@ -570,6 +564,10 @@ function applySavedSettings(saved: SpawnSettings) {
   else selectedTools.value = [...(guildDefaults.value?.tools ?? [])]
   agentCount.value = guildDefaults.value?.agent_count ?? null
   envVars.value = (saved.envVars ?? []).map((p) => ({ ...p }))
+  const defaults = saved.toolDefaults ?? {}
+  piDefaultProvider.value = defaults.pi?.provider ?? ''
+  piDefaultModel.value = defaults.pi?.model ?? ''
+  codexDefaultModel.value = defaults.codex?.model ?? ''
   for (const tool of AVAILABLE_TOOLS) {
     toolEnvVars[tool] = (saved.toolEnvVars?.[tool] ?? []).map((p) => ({ ...p }))
   }
@@ -609,22 +607,27 @@ const sourceLabel = computed(() => {
 
 async function saveSettings(guildId: string) {
   try {
-    await api(`/guilds/${guildId}/spawn-settings`, {
-      method: 'PUT',
-      json: {
-        repos: selectedRepos.value,
-        tools: selectedTools.value,
-        // Persist only meaningful pairs so a stale blank row can't reappear.
-        // A pair whose key matches a guild credential is kept on purpose: it is
-        // this user's deliberate override and must survive to the next launch.
-        envVars: envVars.value.filter((e) => e.key.trim() !== '' && e.value.trim() !== ''),
-        toolEnvVars: Object.fromEntries(
-          AVAILABLE_TOOLS.map((tool) => [
-            tool,
-            toolEnvVars[tool].filter((e) => e.key.trim() !== '' && e.value.trim() !== ''),
-          ]),
-        ),
-      },
+    const toolDefaults: Record<string, Record<string, string>> = {}
+    if (piDefaultProvider.value || piDefaultModel.value) {
+      toolDefaults.pi = {}
+      if (piDefaultProvider.value) toolDefaults.pi.provider = piDefaultProvider.value
+      if (piDefaultModel.value) toolDefaults.pi.model = piDefaultModel.value
+    }
+    if (codexDefaultModel.value) toolDefaults.codex = { model: codexDefaultModel.value }
+    await persistSpawnSettings(guildId, {
+      repos: selectedRepos.value,
+      tools: selectedTools.value,
+      // Persist only meaningful pairs so a stale blank row can't reappear.
+      // A pair whose key matches a guild credential is kept on purpose: it is
+      // this user's deliberate override and must survive to the next launch.
+      envVars: envVars.value.filter((e) => e.key.trim() !== '' && e.value.trim() !== ''),
+      toolDefaults,
+      toolEnvVars: Object.fromEntries(
+        AVAILABLE_TOOLS.map((tool) => [
+          tool,
+          toolEnvVars[tool].filter((e) => e.key.trim() !== '' && e.value.trim() !== ''),
+        ]),
+      ),
     })
   } catch {
     // Settings persistence failure is non-fatal — the spawn already succeeded.
@@ -646,12 +649,20 @@ function onKeydown(e: KeyboardEvent) {
 // moment a field like Name or an env var is focused. Tracking
 // visualViewport's size/offset keeps the overlay matched to what's
 // actually visible so the footer stays above the keyboard.
-const viewportStyle = ref<{ height: string; top: string } | undefined>(undefined)
+const viewportStyle = ref<
+  { height: string; top: string; bottom: string; left: string; width: string } | undefined
+>(undefined)
 
 function syncViewport() {
   const vv = window.visualViewport
   if (!vv) return
-  viewportStyle.value = { height: `${vv.height}px`, top: `${vv.offsetTop}px` }
+  viewportStyle.value = {
+    height: `${vv.height}px`,
+    top: `${vv.offsetTop}px`,
+    bottom: 'auto',
+    left: `${vv.offsetLeft}px`,
+    width: `${vv.width}px`,
+  }
 }
 
 onMounted(async () => {
@@ -673,25 +684,31 @@ onMounted(async () => {
     }
   }
 
-  const [saved, defaults] = guild
-    ? await Promise.all([loadSavedSettings(guild.id), loadGuildDefaults(guild.id)])
-    : [null, null]
-  guildDefaults.value = defaults
+  modelsStore.loadModels()
 
   if (guild) {
-    // Fire-and-forget: credential status isn't needed to render the rest of the form.
-    loadCredentials(guild.id)
+    credentialsLoading.value = true
+    const pipeline = await loadSpawnPipeline(guild.id)
+    guildDefaults.value = pipeline.defaults
+    credentials.value = pipeline.credentials
+    credentialsError.value = pipeline.credentials ? '' : 'Failed to load credentials'
+    for (const cred of pipeline.credentials?.guild_env_vars ?? []) {
+      if (!(cred.key in includedKeys.value)) includedKeys.value[cred.key] = true
+    }
+    credentialsLoading.value = false
+    savedSettings.value = pipeline.settings
+  } else {
+    guildDefaults.value = null
+    savedSettings.value = null
   }
 
-  savedSettings.value = saved
-
-  if (hasSavedSettings.value) {
+  if (hasSavedSettings.value && savedSettings.value) {
     // The user has settings from a previous launch — those win over the guild
     // baseline, and "Reset to guild defaults" undoes that.
-    applySavedSettings(saved!)
-  } else if (defaults && hasGuildDefaults.value) {
+    applySavedSettings(savedSettings.value)
+  } else if (guildDefaults.value && hasGuildDefaults.value) {
     // Nothing saved yet — start from the guild's spawn defaults.
-    applyGuildDefaults(defaults)
+    applyGuildDefaults(guildDefaults.value)
   } else {
     selectedRepos.value = repoFetchFailed.value ? [] : [...ghStore.selectedRepos]
     formSource.value = 'custom'
@@ -989,7 +1006,11 @@ async function launch() {
   gap: 10px;
   padding: 10px 16px;
   border-top: 1px solid var(--color-brass-dark);
+  background: var(--color-bg-secondary);
   flex-shrink: 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
 }
 
 .spawn-panel-footer .spawn-error {
@@ -1371,11 +1392,10 @@ async function launch() {
 @media (max-width: 720px) {
   .settings-overlay {
     padding: 0;
+    right: auto;
     /* Fill the overlay instead of centring a fixed-height panel inside it. The
-       old panel sized itself with 100dvh while the overlay is sized by the
-       fixed-position viewport; on iOS Safari those two are not the same box, so
-       a centred panel overflowed top AND bottom and took the footer — with the
-       Launch button — off screen. Sizing off the overlay can't disagree. */
+       inline visualViewport dimensions above track iOS Safari's changing
+       visible area so the footer stays above browser/app chrome. */
     align-items: stretch;
     justify-content: stretch;
   }
@@ -1412,6 +1432,7 @@ async function launch() {
     padding-bottom: max(10px, env(safe-area-inset-bottom));
     padding-left: max(16px, env(safe-area-inset-left));
     padding-right: max(16px, env(safe-area-inset-right));
+    box-shadow: 0 -8px 16px rgba(24, 12, 0, 0.85);
   }
 
   .settings-panel-header {
