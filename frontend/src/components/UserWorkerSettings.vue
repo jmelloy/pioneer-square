@@ -19,7 +19,10 @@
       </div>
       <div v-else class="uws-repo-list">
         <template v-for="group in groupedRepos" :key="group.owner">
-          <label class="uws-repo-row uws-org-row" :class="{ selected: orgAllSelected(group.owner) }">
+          <label
+            class="uws-repo-row uws-org-row"
+            :class="{ selected: orgAllSelected(group.owner) }"
+          >
             <input
               type="checkbox"
               :ref="(el) => setOrgCheckboxRef(el as HTMLInputElement | null, group.owner)"
@@ -217,13 +220,19 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { api, ApiError } from '../utils/api'
+import { ApiError } from '../utils/api'
 import { useGitHubStore } from '../stores/github'
 import { groupAndSortRepos } from '../utils/repoGroups'
 import { useModels } from '../composables/useModels'
 import type { EnvVarRow } from '../composables/useForemanConfig'
+import {
+  SPAWN_TOOLS,
+  loadSpawnPipeline,
+  saveSpawnSettings,
+  type SpawnSettings,
+} from '../composables/useSpawnPipeline'
 
-const AVAILABLE_TOOLS = ['claude', 'codex', 'pi'] as const
+const AVAILABLE_TOOLS = SPAWN_TOOLS
 
 const WORKER_SUBTABS = [
   { id: 'general', label: 'General' },
@@ -231,14 +240,6 @@ const WORKER_SUBTABS = [
   { id: 'pi', label: 'Pi' },
   { id: 'codex', label: 'Codex' },
 ] as const
-
-interface SpawnSettings {
-  repos: string[]
-  tools: string[]
-  envVars: { key: string; value?: string }[]
-  toolDefaults: Record<string, { provider?: string; model?: string }>
-  toolEnvVars: Record<string, { key: string; value?: string }[]>
-}
 
 const props = defineProps<{ guildId?: string }>()
 
@@ -325,21 +326,19 @@ async function load() {
     if (ghStore.repos.length === 0 && ghStore.token) {
       await ghStore.fetchRepos().catch(() => {})
     }
-    const cfg = await api<SpawnSettings>(
-      `/guilds/${encodeURIComponent(props.guildId)}/spawn-settings`,
-    )
-    repos.value = cfg.repos ?? []
-    tools.value = cfg.tools ?? []
-    const defaults = cfg.toolDefaults ?? {}
+    const cfg = (await loadSpawnPipeline(props.guildId)).settings
+    repos.value = cfg?.repos ?? []
+    tools.value = cfg?.tools ?? []
+    const defaults = cfg?.toolDefaults ?? {}
     piDefaultProvider.value = defaults.pi?.provider ?? ''
     piDefaultModel.value = defaults.pi?.model ?? ''
     codexDefaultModel.value = defaults.codex?.model ?? ''
-    workerEnvRows.value = (cfg.envVars ?? []).map((e) => ({
+    workerEnvRows.value = (cfg?.envVars ?? []).map((e) => ({
       id: ++envRowSeq,
       key: e.key,
       value: e.value ?? '',
     }))
-    const toolEnv = cfg.toolEnvVars ?? {}
+    const toolEnv = cfg?.toolEnvVars ?? {}
     for (const tool of ['claude', 'pi', 'codex']) {
       toolEnvRows[tool] = (toolEnv[tool] ?? []).map((e) => ({
         id: ++envRowSeq,
@@ -376,17 +375,14 @@ async function save() {
         .map((r) => ({ key: r.key.trim(), value: r.value }))
     }
 
-    await api(`/guilds/${encodeURIComponent(props.guildId)}/spawn-settings`, {
-      method: 'PUT',
-      json: {
-        repos: repos.value,
-        tools: tools.value,
-        envVars: workerEnvRows.value
-          .filter((r) => r.key.trim())
-          .map((r) => ({ key: r.key.trim(), value: r.value })),
-        toolDefaults,
-        toolEnvVars,
-      },
+    await saveSpawnSettings(props.guildId, {
+      repos: repos.value,
+      tools: tools.value,
+      envVars: workerEnvRows.value
+        .filter((r) => r.key.trim())
+        .map((r) => ({ key: r.key.trim(), value: r.value })),
+      toolDefaults,
+      toolEnvVars,
     })
     status.value = 'saved'
   } catch (e) {
