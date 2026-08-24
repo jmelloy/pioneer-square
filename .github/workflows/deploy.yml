@@ -104,18 +104,19 @@ jobs:
           SG=$(terraform output -raw ecs_tasks_security_group_id)
           CAPACITY_PROVIDER=$(terraform output -raw ecs_capacity_provider_name)
 
-          echo "Waiting for ASG-backed ECS capacity to register..."
-          for i in {1..40}; do
-            REGISTERED=$(aws ecs describe-clusters \
-              --clusters "$CLUSTER" \
-              --query 'clusters[0].registeredContainerInstancesCount' \
+          echo "Waiting for ARM64 ASG-backed ECS capacity to register..."
+          for i in {1..80}; do
+            ARM64_INSTANCES=$(aws ecs list-container-instances \
+              --cluster "$CLUSTER" \
+              --filter 'attribute:ecs.cpu-architecture == arm64' \
+              --query 'length(containerInstanceArns)' \
               --output text)
-            if [ "${REGISTERED:-0}" -gt 0 ]; then
-              echo "Registered ECS container instances: $REGISTERED"
+            if [ "${ARM64_INSTANCES:-0}" -gt 0 ]; then
+              echo "Registered ARM64 ECS container instances: $ARM64_INSTANCES"
               break
             fi
-            if [ "$i" = 40 ]; then
-              echo "No ECS container instances registered after waiting. Capacity provider bootstrap failed."
+            if [ "$i" = 80 ]; then
+              echo "No ARM64 ECS container instances registered after waiting. Capacity provider bootstrap failed."
               exit 1
             fi
             sleep 15
@@ -125,6 +126,7 @@ jobs:
             --cluster "$CLUSTER" \
             --task-definition "$FAMILY" \
             --capacity-provider-strategy "capacityProvider=$CAPACITY_PROVIDER,weight=1" \
+            --placement-strategy type=binpack,field=memory \
             --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SG],assignPublicIp=DISABLED}")
 
           TASK_ARN=$(echo "$RESULT" | jq -r '.tasks[0].taskArn // empty')
@@ -135,9 +137,26 @@ jobs:
           fi
           echo "Migration task: $TASK_ARN"
 
-          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+          TASK=""
+          for i in {1..120}; do
+            TASK=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN")
+            LAST_STATUS=$(echo "$TASK" | jq -r '.tasks[0].lastStatus // empty')
+            DESIRED_STATUS=$(echo "$TASK" | jq -r '.tasks[0].desiredStatus // empty')
+            STOP_REASON=$(echo "$TASK" | jq -r '.tasks[0].stoppedReason // empty')
+            if [ "$LAST_STATUS" = "STOPPED" ]; then
+              break
+            fi
+            if [ $((i % 4)) -eq 0 ]; then
+              echo "Migration task still running: last=$LAST_STATUS desired=$DESIRED_STATUS reason=${STOP_REASON:-none}"
+            fi
+            if [ "$i" = 120 ]; then
+              echo "Migration task did not stop within 30 minutes; describing current task before failing."
+              echo "$TASK" | jq '.tasks[0] | {lastStatus, desiredStatus, stoppedReason, containers}'
+              exit 1
+            fi
+            sleep 15
+          done
 
-          TASK=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN")
           EXIT_CODE=$(echo "$TASK" | jq -r '.tasks[0].containers[0].exitCode // empty')
           STOP_REASON=$(echo "$TASK" | jq -r '.tasks[0].stoppedReason // empty')
 
@@ -152,6 +171,7 @@ jobs:
 
           if [ "$EXIT_CODE" != "0" ]; then
             echo "Migration failed (exit code: ${EXIT_CODE:-none}, stopped reason: $STOP_REASON)"
+            echo "$TASK" | jq '.tasks[0] | {lastStatus, desiredStatus, stoppedReason, containers}'
             exit 1
           fi
 
