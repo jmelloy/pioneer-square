@@ -177,9 +177,13 @@ resource "aws_ecs_capacity_provider" "asg" {
   name = "${local.name_prefix}-asg"
 
   auto_scaling_group_provider {
-    auto_scaling_group_arn         = aws_autoscaling_group.ecs_capacity.arn
-    managed_draining               = "ENABLED"
-    managed_termination_protection = "DISABLED"
+    auto_scaling_group_arn = aws_autoscaling_group.ecs_capacity.arn
+    managed_draining       = "ENABLED"
+    # Leave ECS managed termination protection at the live value for now. AWS is
+    # returning UPDATE_FAILED when modifying the managed scaling policy attached
+    # to this capacity provider; the scale-in blocker was the ASG's blanket
+    # protect_from_scale_in default above, not this capacity-provider setting.
+    managed_termination_protection = "ENABLED"
 
     managed_scaling {
       status                    = "ENABLED"
