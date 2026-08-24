@@ -153,6 +153,7 @@ _DISCORD_API_BASE = "https://discord.com/api/v10"
 _COLOURS: dict[str, int] = {
     "task-complete": 0x2ECC71,  # green
     "task-failed": 0xE74C3C,  # red
+    "task-error": 0xE74C3C,  # red
     "task-cancelled": 0xE74C3C,  # red
     "task-assigned": 0x1ABC9C,  # teal
     "task-followup": 0xF1C40F,  # yellow

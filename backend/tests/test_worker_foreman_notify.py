@@ -709,6 +709,89 @@ def test_task_update_cancelled_notifies_discord(client):
     assert kwargs["task_id"] == task_id
 
 
+def test_task_update_error_notifies_discord_and_foreman(client):
+    """A worker-reported task-update with state=error (an agent run that
+    finished without succeeding — max-turns, push failure, no commits, etc.)
+    must post a Discord notification carrying the error summary/branch/issue
+    link, and must trigger the foreman with a [task-error] message (#1171).
+
+    Previously the worker sent this as a bare ``type: "error"`` message with
+    no backend handler at all, so it was silently dropped — persisted no
+    state, notified nobody."""
+    test_client, db_url = client
+    guild_id = "nfy023"
+    worker_id = "w-nfy023"
+    task_id = "t-nfy023"
+    agent_id = "a-nfy023"
+
+    insert_guild(db_url, guild_id, owner_user_id=None)
+    insert_worker(db_url, guild_id, worker_id, state="online")
+    insert_task(
+        db_url,
+        guild_id,
+        task_id,
+        worker_id=worker_id,
+        state="working",
+        branch="ps/some-branch",
+        issue_repo="acme/widgets",
+        issue_number=42,
+    )
+
+    triggered, fake_trigger = _make_trigger_spy()
+
+    with (
+        patch.object(ws_handlers, "_trigger_foreman", new=fake_trigger),
+        patch.object(discord_notifier, "notify_existing_thread", new=AsyncMock()) as mock_notify,
+    ):
+        with test_client.websocket_connect(f"/ws/{guild_id}") as ws:
+            ws.send_json(
+                {
+                    "type": "join",
+                    "agentId": agent_id,
+                    "agentName": "Test Worker",
+                    "agentType": "worker",
+                    "workerId": worker_id,
+                }
+            )
+            ws.receive_json()  # task-assigned replay
+            ws.receive_json()  # agent-joined broadcast
+
+            ws.send_json(
+                {
+                    "type": "task-update",
+                    "taskId": task_id,
+                    "workerId": worker_id,
+                    "state": "error",
+                    "branch": "ps/some-branch",
+                    "stopReason": "max_turns",
+                    "lastText": "Ran out of turns before finishing.",
+                }
+            )
+            # No receive here: handle_task_update's broadcast excludes the
+            # sender's own connection. The ping/pong round-trip below proves
+            # the (async) handler has finished.
+            ws.send_json({"type": "ping"})
+            ws.receive_json()  # pong — ensures handler is done
+
+    mock_notify.assert_called_once()
+    args, kwargs = mock_notify.call_args
+    assert args[0] == "task-error"
+    assert kwargs["task_id"] == task_id
+    assert kwargs["issue_repo"] == "acme/widgets"
+    assert kwargs["issue_number"] == 42
+    description = kwargs["description"]
+    assert "max_turns" in description
+    assert "Ran out of turns" in description
+    assert "ps/some-branch" in description
+    assert "acme/widgets#42" in description
+
+    error_triggers = [(e, m) for e, m in triggered if e == "task-error"]
+    assert error_triggers, f"Expected a task-error trigger, got: {triggered}"
+    _event, msg = error_triggers[0]
+    assert "max_turns" in msg
+    assert "Ran out of turns" in msg
+
+
 def test_task_update_working_does_not_notify_discord(client):
     """A non-terminal task-update (e.g. state=working) must not post a Discord notification."""
     test_client, db_url = client
