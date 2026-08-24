@@ -910,24 +910,58 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
             name=f"discord.stream-flush:{task_id}",
         )
     # Worker-reported terminal failures (bad tool config, unresolvable PR
-    # branch, push errors, etc.) bypass the foreman's finalize_task/cancel_task
-    # tools entirely — the worker sets state directly via this task-update
-    # message. Unlike the success path (handle_task_complete's "task-complete"
-    # notification below), nothing else notifies Discord for these, so they
-    # were silently dropped (#920). Mirrors task-complete's routing: post into
-    # the task's existing thread when one exists, else the flat channel.
-    if update_values.get("state") in ("failed", "cancelled"):
+    # branch, push errors, an agent run that didn't succeed, etc.) bypass the
+    # foreman's finalize_task/cancel_task tools entirely — the worker sets
+    # state directly via this task-update message. Unlike the success path
+    # (handle_task_complete's "task-complete" notification below), nothing
+    # else notifies Discord for these, so they were silently dropped (#920,
+    # #1171). Mirrors task-complete's routing: post into the task's existing
+    # thread when one exists, else the flat channel. "error" (a worker's
+    # agent run that finished without succeeding — max-turns, push failure,
+    # no commits, etc.) is included here as well as being handed to the
+    # foreman below (#1171) — the foreman may take a while to act, or decide
+    # to retry, so the operator still gets an immediate heads-up.
+    if update_values.get("state") in ("failed", "cancelled", "error"):
         state_label = update_values["state"]
         worker_id_msg = data.get("workerId", "")
+        stop_reason_msg = data.get("stopReason", "")
+        last_text_msg = data.get("lastText", "")
+        pr_url_msg = data.get("prUrl", "")
+        task_row = (
+            await ctx.db.exec(
+                select(Task.name, Task.description, Task.issue_repo, Task.issue_number).where(
+                    col(Task.id) == task_id
+                )
+            )
+        ).one_or_none()
+        task_label = ((task_row[0] or task_row[1] or task_id) if task_row else task_id)[:80]
+        issue_repo = task_row[2] if task_row else None
+        issue_number = task_row[3] if task_row else None
+
+        description_parts = [
+            f"Worker `{worker_id_msg}` reported task `{task_id}` ({task_label}) as {state_label}."
+            if worker_id_msg
+            else f"Task `{task_id}` ({task_label}) was marked {state_label}."
+        ]
+        if stop_reason_msg:
+            description_parts.append(f"Stop reason: {stop_reason_msg}.")
+        if last_text_msg:
+            description_parts.append(f'Last output: "{_format_last_output(last_text_msg, 500)}"')
+        if update_values.get("branch"):
+            description_parts.append(f"Branch: {update_values['branch']}.")
+        if pr_url_msg:
+            description_parts.append(f"PR: {pr_url_msg}")
+        if issue_repo and issue_number is not None:
+            description_parts.append(f"Issue: {issue_repo}#{issue_number}")
+
         spawn(
             discord_notifier.notify_existing_thread(
                 f"task-{state_label}",
-                title=f"Task {state_label}: {task_id}",
-                description=(
-                    f"Worker `{worker_id_msg}` reported task `{task_id}` as {state_label}."
-                    if worker_id_msg
-                    else f"Task `{task_id}` was marked {state_label}."
-                ),
+                title=f"Task {state_label}: {task_label}",
+                description=" ".join(description_parts)[:2000],
+                issue_repo=issue_repo,
+                issue_number=issue_number,
+                url=pr_url_msg or None,
                 task_id=task_id,
             ),
             name=f"discord.task-{state_label}:{task_id}",
@@ -962,8 +996,13 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
                 "outcome='failed' to mark it failed."
             )
         else:
+            stop_reason_upd = data.get("stopReason", "")
+            last_text_upd = data.get("lastText", "")
+            detail = f" Stop reason: {stop_reason_upd}." if stop_reason_upd else ""
+            if last_text_upd:
+                detail += f' Last output: "{_format_last_output(last_text_upd)}"'
             human_msg = (
-                f"[task-error] Worker {worker_id_upd} reported task {task_id} as errored. "
+                f"[task-error] Worker {worker_id_upd} reported task {task_id} as errored.{detail} "
                 "Decide: call send_followup to retry the task, or call finalize_task with "
                 "outcome='failed' to mark it failed."
             )

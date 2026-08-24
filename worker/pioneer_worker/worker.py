@@ -2684,13 +2684,19 @@ class Worker:
 
             else:
                 logger.warning("Task %s failed: %s", task_id, stop_reason)
-                await self._task_update(
-                    task_id,
-                    agent=agent,
-                    type="needs-input" if stop_reason == "needs_input" else "error",
-                    state="error",
-                    **msg,
-                )
+                if stop_reason == "needs_input":
+                    # Human-escalation path: a dedicated message type so the
+                    # backend can surface it distinctly (handle_needs_input).
+                    await self._task_update(
+                        task_id, agent=agent, type="needs-input", state="error", **msg
+                    )
+                else:
+                    # Plain task-update (default type) so this reaches
+                    # handle_task_update, which persists state="error", posts
+                    # a Discord notification, and triggers the foreman (#1171)
+                    # — a bare type="error" override used to have no backend
+                    # handler at all and was silently dropped.
+                    await self._task_update(task_id, agent=agent, state="error", **msg)
                 await self._set_state("error", agent)
 
             # The slot returns to idle here. Worktrees stay on disk so the
