@@ -100,7 +100,7 @@ variable "log_retention_days" {
 variable "ecs_capacity_instance_type" {
   description = "EC2 instance type for the ECS capacity provider Auto Scaling Group. All ECS services and one-off tasks are placed here instead of Fargate."
   type        = string
-  default     = "t3.medium"
+  default     = "t4g.medium"
 }
 
 variable "ecs_capacity_min_size" {
