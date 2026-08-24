@@ -1,95 +1,104 @@
 # Pioneer Square
 
-A real-time multi-agent workspace with a colorful pixel-art factory floor UI.
+A real-time multi-agent workspace where a Foreman AI coordinates worker processes that clone
+repos, run coding agents, and open GitHub PRs — presented as a pixel-art steampunk factory floor.
 
-![Factory Floor](screenshots/factory-floor.png)
+![Factory floor](screenshots/factory-floor.png)
+
+## Screenshots
+
+| Factory | Sidebar | Foreman chat |
+| --- | --- | --- |
+| ![Factory floor closeup](screenshots/agents-closeup.png) | ![Task and worker sidebar](screenshots/sidebar.png) | ![Foreman chat pane](screenshots/chat-pane.png) |
 
 ## Features
 
-- 🏭 Pixel-art steampunk factory floor with animated gears, steam, and furnaces
-- 🤖 Agent avatars with state-based animations (idle/thinking/working/busy/error)
-- 💬 Real-time chat with the Foreman agent
-- 🖥️ Terminal log panes per agent
-- 📡 WebSocket signaling for real-time updates (the backend also relays WebRTC
-  offer/answer/ICE messages, though no client currently establishes peer connections)
-- 🔑 Short 6-char guild URLs for sharing
+- 🏭 Pixel-art factory workspace with live worker avatars and state animations
+- 🤖 Worker slots backed by real processes; workers can run `claude`, `codex`, or `pi`
+- 🧠 Foreman AI that plans work, assigns tasks, reviews completions, and requests follow-ups
+- 🌳 GitHub issue/PR-oriented task tree with plan / execute / review / follow-up phases
+- 💬 Real-time Foreman chat, conversation threads, task logs, and per-agent log tabs
+- 🔌 WebSocket protocol for workers, browser clients, and optional external Foreman API proxy
+- 🔐 GitHub OAuth login; workers can use stored OAuth tokens or configured tokens to push PRs
+- 🐳 Docker Compose quickstart with PostgreSQL, backend + built SPA, optional worker/foreman/tools profiles
+- 🔔 Optional Discord notifications, Foreman chat mirror, and `/ps` commands
 
-## Setup
-
-### Docker Compose (quickstart)
+## Quickstart with Docker Compose
 
 ```bash
 cp .env.example .env
-# fill in GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, ANTHROPIC_API_KEY
+# Fill at least POSTGRES_PASSWORD, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, ANTHROPIC_API_KEY
 docker compose up --build
 ```
 
-App (backend + SPA): http://localhost:8056. PostgreSQL data is persisted in the `postgres-data` volume.
+Open http://localhost:8056.
 
-`docker compose up` starts a `postgres:18` container automatically, waits for its health-check,
-then runs `alembic upgrade head` before the backend accepts connections.
+`docker compose up` starts PostgreSQL, waits for its health check, runs `alembic upgrade head`, and
+then serves the FastAPI backend plus the built Vue SPA. PostgreSQL data lives in the
+`postgres-data` volume.
 
-The worker is opt-in (it needs a `pioneer-worker.toml`):
+### Optional Docker profiles
+
+Worker container (requires `worker/pioneer-worker.toml`):
 
 ```bash
 cp worker/pioneer-worker.toml.example worker/pioneer-worker.toml
-# edit guild_id, repos. Use backend_url = "http://backend:8000"
+# edit guild_id and repos; for Docker use backend_url = "http://backend:8000"
 docker compose --profile worker up --build worker
 ```
 
-The standalone foreman process is also opt-in — it offloads Foreman LLM API calls out of the
-backend process, e.g. to scale or restart the foreman independently. As of this writing it
-authenticates with a short-lived JWT signed using a shared secret, set as `PIONEER_FOREMAN_KEY`
-on both sides (generate one with `openssl rand -hex 32`):
+Standalone Foreman API proxy:
 
 ```bash
-# Backend:
-PIONEER_FOREMAN_KEY=<your-secret>
-
-# Foreman (docker compose):
-GUILD_ID=abc123 PIONEER_FOREMAN_KEY=<your-secret> docker compose --profile foreman up --build foreman
+GUILD_ID=<your-6-char-guild-id> docker compose --profile foreman up --build foreman
 ```
 
-See [Standalone Foreman](#standalone-foreman-local-no-docker) below for the non-Docker setup.
+Metabase/PostgreSQL inspection tools:
 
-### GitHub OAuth App
-
-Pioneer Square authenticates users via GitHub OAuth rather than personal access tokens. Create an
-OAuth App at **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
-(https://github.com/settings/applications/new) with:
-
-- **Homepage URL**: `http://localhost:5173`
-- **Authorization callback URL**: `http://localhost:8000/auth/github/callback`
-
-Then generate a client secret and set both in `backend/.env` (or the shell environment) before
-starting the backend:
-
+```bash
+METABASE_DB_PASSWORD=<password> docker compose --profile tools up pgweb
 ```
+
+## GitHub OAuth App
+
+Create an OAuth App at **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**:
+
+- **Homepage URL**: `http://localhost:8056`
+- **Authorization callback URL**: `http://localhost:8056/auth/github/callback`
+
+Set these in `.env`:
+
+```dotenv
 GITHUB_CLIENT_ID=your_client_id_here
 GITHUB_CLIENT_SECRET=your_client_secret_here
-# Optional overrides (defaults shown):
-# GITHUB_REDIRECT_URI=http://localhost:8000/auth/github/callback
-# FRONTEND_URL=http://localhost:5173
 ```
 
-### Install the CLI
+For local source development with Vite, run the backend on `8000` and frontend on `5173`; the
+backend defaults are:
 
-The HTTP server, foreman, and worker all install from one package and run through a single
-`pioneer` command:
+```dotenv
+GITHUB_REDIRECT_URI=http://localhost:5173/
+FRONTEND_URL=http://localhost:5173
+```
+
+## Local development
+
+Install the unified CLI package once; it provides all Python runtimes:
 
 ```bash
-uv venv                              # creates .venv/
-source .venv/bin/activate            # Windows: .venv\Scripts\activate
-uv pip install -e "cli[test]"        # one install for all modes
+uv venv
+source .venv/bin/activate
+uv pip install -e "cli[test]"
 ```
 
-### Backend (HTTP server)
+Backend:
 
 ```bash
-pioneer serve --port 8000            # --reload for auto-reload in dev
+# DATABASE_URL must point at PostgreSQL; Docker Compose's postgres service is fine.
+pioneer serve --port 8000 --reload
 ```
 
-### Frontend
+Frontend:
 
 ```bash
 cd frontend
@@ -97,109 +106,93 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 — a new guild will be created automatically.
-
-### Worker
-
-Worker agents run as standalone processes (one per worker) and connect to the
-backend over WebSocket. They can run on any machine that has `claude`, `git`,
-and access to the configured repos.
+Worker:
 
 ```bash
 cp worker/pioneer-worker.toml.example worker/pioneer-worker.toml
-# edit pioneer-worker.toml: backend_url, guild_id, repos
-# github_token is optional — if omitted, the worker fetches the OAuth token
-# stored in the backend DB (set after the user connects via GitHub OAuth)
-pioneer worker --config worker/pioneer-worker.toml
+# edit backend_url, guild_id, [github] repos/org, and optional token
+pioneer worker --config worker/pioneer-worker.toml --log-level DEBUG
 ```
 
-See [`worker/README.md`](worker/README.md) for details.
-
-### Standalone Foreman (local, no Docker)
-
-As of this writing, the backend-owned foreman loop remains responsible for state, history,
-tools, and task coordination; the standalone process is only an optional LLM API proxy for
-calling Anthropic, Bedrock, or an OpenAI-compatible endpoint from a different network environment.
+Standalone Foreman API proxy:
 
 ```bash
 cp foreman-proxy/pioneer-foreman.toml.example foreman-proxy/pioneer-foreman.toml
-# edit pioneer-foreman.toml: backend_url, guild_id, [llm] provider/model/base_url/api_key
+# edit backend_url, guild_id, and [llm] provider/model credentials
 pioneer foreman --config foreman-proxy/pioneer-foreman.toml
 ```
 
-Or with environment variables only (no config file):
+Environment-only example for an OpenAI-compatible local endpoint:
 
 ```bash
 PIONEER_BACKEND_URL=ws://localhost:8000 \
-PIONEER_GUILD_ID=<your-guild-id> \
-FOREMAN_PROVIDER=anthropic \
-ANTHROPIC_API_KEY=<key> \
+PIONEER_GUILD_ID=<your-6-char-guild-id> \
+FOREMAN_PROVIDER=openai \
+FOREMAN_MODEL=llama3.1 \
+FOREMAN_BASE_URL=http://localhost:11434/v1 \
 pioneer foreman
 ```
 
-When the proxy is connected the backend sends `foreman-api-request` messages to it
-for provider calls. If it disconnects, the backend falls back to local provider calls
-from the embedded foreman.
+The external Foreman process is only an LLM API proxy. The backend still owns trigger handling,
+conversation history, tool execution, task state, and polling. If the proxy disconnects, the backend
+falls back to its direct provider configuration.
 
-### Discord integration (optional)
+## Testing and formatting
 
-As of this writing, Pioneer Square can post event notifications, per-PR/issue discussion threads,
-a live Foreman chat mirror, and `/ps` slash commands into a Discord server. It's entirely
-opt-in — with no `DISCORD_*` env vars set, nothing changes. See
-[`docs/discord.md`](docs/discord.md) for setup.
+```bash
+ruff check . --fix && ruff format .
+cd backend && python -m pytest
+cd worker && python -m pytest
+cd frontend && npm test && npm run type-check
+```
+
+Backend and worker tests expect a PostgreSQL test database; the compose file includes one:
+
+```bash
+docker compose --profile test up -d postgres-test
+```
 
 ## Migrating from SQLite
 
-If you have an existing Pioneer Square SQLite database (`pioneer_square.db`)
-and want to move its data to PostgreSQL, use the included migration script:
+Older installs used `pioneer_square.db`. To migrate it into PostgreSQL:
 
 ```bash
-# Ensure the target PostgreSQL schema is up-to-date first:
 cd backend && alembic upgrade head && cd ..
-
 pip install psycopg2-binary
-
 python scripts/migrate_sqlite_to_postgres.py \
-    --sqlite-path /path/to/pioneer_square.db \
-    --postgres-url postgresql://pioneer:pioneer_password@localhost/pioneer_square
+  --sqlite-path /path/to/pioneer_square.db \
+  --postgres-url postgresql://pioneer:pioneer_password@localhost/pioneer_square
 ```
 
-The script accepts `SQLITE_PATH` and `DATABASE_URL` env vars as alternatives
-to the flags. It is idempotent — running it multiple times is safe; rows that
-already exist in PostgreSQL are silently skipped.
+The script is idempotent; rows that already exist are skipped.
 
 ## Architecture
 
-Three processes as of this writing: a FastAPI backend (WebSocket + REST, PostgreSQL via asyncpg),
-a Vue 3/Pinia frontend, and standalone worker processes that run Claude on assigned tasks and
-open GitHub PRs. A fourth, opt-in standalone foreman can offload LLM API calls from the backend.
-See [AGENTS.md](AGENTS.md) for the full reference (terminology, task lifecycle, WebSocket
-protocol, database schema, and store layout).
+Pioneer Square normally runs three independent processes:
 
-## Connecting Agents
-
-Agents connect via WebSocket at `ws://localhost:8000/ws/{guild_id}` and send messages such as:
-
-```json
-{ "type": "join", "agentId": "agent-1", "agentName": "Builder", "agentType": "worker" }
-{ "type": "agent-state", "agentId": "agent-1", "state": "working" }
+```text
+Browser ──WebSocket/REST──► Backend (FastAPI + PostgreSQL)
+Worker  ──WebSocket/REST──► Backend
 ```
 
-States: `idle` | `thinking` | `working` | `busy` | `error`. See AGENTS.md for the full message
-protocol table.
+The optional fourth process, `pioneer foreman`, connects as an external Foreman API proxy. See
+[AGENTS.md](AGENTS.md) for the full reference: terminology, task lifecycle, WebSocket protocol,
+database schema, worker internals, frontend stores, and model-provider notes.
+
+## Discord integration (optional)
+
+Pioneer Square can post event notifications, per-PR/issue discussion threads, a live Foreman chat
+mirror, and `/ps` slash commands into a Discord server. With no `DISCORD_*` environment variables
+set, it is disabled. See [`docs/discord.md`](docs/discord.md).
 
 ## A2A AgentCard
 
-Pioneer Square currently implements the [A2A (Agent-to-Agent) protocol](https://google.github.io/A2A/)
-AgentCard discovery document. Each guild exposes its identity at:
+Each guild exposes an A2A AgentCard:
 
+```text
+GET /.well-known/agent.json        # subdomain routed
+GET /guilds/{guild_id}/agent-card  # direct REST, requires auth
 ```
-GET /.well-known/agent.json        # subdomain-routed (e.g. myguild.pioneer-square.melloy.life)
-GET /guilds/{guild_id}/agent-card  # direct REST (requires auth)
-```
 
-The card describes the guild's Foreman AI and lists currently-online workers as skills
-(`name`, `description`, `url`, `version`, `capabilities`, `skills[]`, `provider`).
-
-Guild-level fields are editable via `PATCH /guilds/{guild_id}` with a JSON body of
-`description`, `url`, and/or `version` (all optional; unset fields fall back to defaults).
+The card describes the guild Foreman and currently-online workers as skills. Guild-level fields are
+editable with `PATCH /guilds/{guild_id}`.
