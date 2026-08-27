@@ -15,13 +15,20 @@ import time
 from pathlib import Path
 
 import pytest
-from pioneer_worker.task_worktree import TaskWorktree
+from pioneer_worker.task_worktree import AcquireResult, TaskWorktree
 
 pytestmark = pytest.mark.asyncio
 
 
 def _git(args: list[str], cwd: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+    }
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True, env=env)
 
 
 def _init_origin(path: Path) -> None:
@@ -86,6 +93,11 @@ def _tw(tmp_path, *, ttl_seconds: float = 3600.0, clock=None) -> TaskWorktree:
     )
 
 
+def _primary(result: AcquireResult) -> str:
+    assert result.primary is not None
+    return result.primary
+
+
 # ── acquire: fresh ──────────────────────────────────────────────────────────
 
 
@@ -95,9 +107,9 @@ async def test_acquire_fresh_creates_worktree(tmp_path, repo_path):
         "t-1", [("acme/widgets", str(repo_path))], mode="fresh", branch="ps/do-thing-t-1"
     )
     assert result.failed == []
-    assert result.primary is not None
-    assert os.path.isdir(os.path.join(result.primary, ".git")) or os.path.isfile(
-        os.path.join(result.primary, ".git")
+    primary = _primary(result)
+    assert os.path.isdir(os.path.join(primary, ".git")) or os.path.isfile(
+        os.path.join(primary, ".git")
     )
     assert result.entries[0].repo_full == "acme/widgets"
     assert "t-1" in tw
@@ -108,7 +120,7 @@ async def test_acquire_reuses_existing_worktree_without_recreating(tmp_path, rep
     first = await tw.acquire(
         "t-2", [("acme/widgets", str(repo_path))], mode="fresh", branch="ps/x-t-2"
     )
-    marker = Path(first.primary) / "marker.txt"
+    marker = Path(_primary(first)) / "marker.txt"
     marker.write_text("still here")
 
     second = await tw.acquire(
@@ -155,7 +167,7 @@ async def test_acquire_followup_attaches_existing_branch(tmp_path, origin, repo_
         "t-4", [("acme/widgets", str(repo_path))], mode="followup", branch="feature/foo"
     )
     assert result.failed == []
-    assert (Path(result.primary) / "feature.txt").read_text() == "v1"
+    assert (Path(_primary(result)) / "feature.txt").read_text() == "v1"
 
 
 async def test_acquire_followup_falls_back_to_create_when_branch_missing(tmp_path, repo_path):
@@ -178,7 +190,7 @@ async def test_acquire_followup_reuse_pulls_latest_from_origin(tmp_path, origin,
     first = await tw.acquire(
         "t-6", [("acme/widgets", str(repo_path))], mode="followup", branch="feature/bar"
     )
-    assert (Path(first.primary) / "feature.txt").read_text() == "v1"
+    assert (Path(_primary(first)) / "feature.txt").read_text() == "v1"
 
     # A second worker (or the same one) pushes a follow-up commit.
     import tempfile
@@ -196,7 +208,7 @@ async def test_acquire_followup_reuse_pulls_latest_from_origin(tmp_path, origin,
         "t-6", [("acme/widgets", str(repo_path))], mode="followup", branch="feature/bar"
     )
     assert second.primary == first.primary
-    assert (Path(second.primary) / "feature.txt").read_text() == "v2"
+    assert (Path(_primary(second)) / "feature.txt").read_text() == "v2"
 
 
 # ── release ──────────────────────────────────────────────────────────────────
@@ -207,12 +219,13 @@ async def test_release_removes_worktree_and_forgets_task(tmp_path, repo_path):
     result = await tw.acquire(
         "t-7", [("acme/widgets", str(repo_path))], mode="fresh", branch="ps/z-t-7"
     )
-    assert os.path.isdir(result.primary)
+    primary = _primary(result)
+    assert os.path.isdir(primary)
 
     await tw.release("t-7")
 
     assert "t-7" not in tw
-    assert not os.path.isdir(result.primary)
+    assert not os.path.isdir(primary)
 
 
 async def test_release_of_unknown_task_is_a_noop(tmp_path):
@@ -249,7 +262,7 @@ async def test_sweep_releases_worktrees_past_ttl(tmp_path, repo_path):
 
     assert released == ["t-9"]
     assert "t-9" not in tw
-    assert not os.path.isdir(result.primary)
+    assert not os.path.isdir(_primary(result))
 
 
 async def test_sweep_skips_tasks_still_active(tmp_path, repo_path):
@@ -288,7 +301,7 @@ async def test_reclaim_startup_re_registers_fresh_dirs(tmp_path, repo_path):
 
     assert removed == []
     assert "t-11" in fresh_tw
-    assert os.path.isdir(result.primary)
+    assert os.path.isdir(_primary(result))
 
     # It should behave as if it had been active `age` seconds ago: sweeping
     # with less than (ttl - age) more elapsed leaves it, past it retires it.
@@ -318,7 +331,7 @@ async def test_reclaim_startup_removes_stale_dirs(tmp_path, repo_path):
     assert removed == ["t-12"]
     assert "t-12" not in fresh_tw
     assert not os.path.isdir(task_dir)
-    assert not os.path.isdir(result.primary)
+    assert not os.path.isdir(_primary(result))
 
 
 async def test_reclaim_startup_on_missing_base_dir_is_a_noop(tmp_path):
