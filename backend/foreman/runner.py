@@ -53,6 +53,7 @@ from foreman.tools_schema import FOREMAN_TOOLS
 from models import (
     Agent,
     ApiRequestLog,
+    Conversation,
     ForemanTurn,
     GithubIssue,
     GithubPullRequest,
@@ -60,6 +61,7 @@ from models import (
     GuildMember,
     Message,
     Task,
+    Thread,
     Worker,
     live_tasks_filter,
 )
@@ -892,6 +894,19 @@ async def _poll_loop(guild_id: str) -> None:
                 )
                 active_tasks = [dict(r._mapping) for r in result.all()]
 
+                conversation_result = await db.exec(
+                    select(col(Conversation.user_id))
+                    .join(Thread, col(Thread.conversation_id) == col(Conversation.id))
+                    .where(
+                        col(Conversation.guild_id) == guild_pk_val,
+                        col(Conversation.user_id).is_not(None),
+                        col(Thread.status) == "active",
+                        col(Thread.deleted_at).is_(None),
+                    )
+                    .distinct()
+                )
+                conversation_user_ids = [u for u in conversation_result.all() if u]
+
                 # Kept-alive done tasks (issue still open ⇒ deleted_at left NULL)
                 # rely on the issue-close sweep to ever be stamped; a dropped
                 # issues webhook would otherwise strand them live forever. Gather
@@ -1000,9 +1015,19 @@ async def _poll_loop(guild_id: str) -> None:
             # create a circular import.
             from ws_handlers import _trigger_foreman
 
-            await _trigger_foreman(
-                guild_id, "periodic-check", msg, task_name=f"foreman.poll:{guild_id}"
-            )
+            if conversation_user_ids:
+                for user_id in conversation_user_ids:
+                    await _trigger_foreman(
+                        guild_id,
+                        "periodic-check",
+                        msg,
+                        user_id=user_id,
+                        task_name=f"foreman.poll:{guild_id}:{user_id}",
+                    )
+            else:
+                await _trigger_foreman(
+                    guild_id, "periodic-check", msg, task_name=f"foreman.poll:{guild_id}"
+                )
 
             # Announce next check interval so the UI can display a countdown.
             interval = next_interval

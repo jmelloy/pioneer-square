@@ -17,14 +17,6 @@
         <span v-if="workerCount" class="tab-count">{{ workerCount }}</span>
       </button>
       <button
-        class="tab-btn"
-        :class="{ active: activeTab === 'threads' }"
-        @click="activeTab = 'threads'"
-      >
-        <span class="tab-label">Conversations</span>
-        <span v-if="activeConversationCount" class="tab-count">{{ activeConversationCount }}</span>
-      </button>
-      <button
         v-if="ghStore.isConfigured"
         class="tab-btn"
         :class="{ active: activeTab === 'issues' }"
@@ -38,7 +30,6 @@
     <div class="tab-content">
       <TaskTree v-if="activeTab === 'tasks'" />
       <WorkerList v-if="activeTab === 'workers'" />
-      <ThreadList v-if="activeTab === 'threads'" />
       <IssuesTab
         v-if="activeTab === 'issues' && ghStore.isConfigured"
         @select-issue="onSelectIssue"
@@ -60,11 +51,9 @@ import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useGuildStore } from '../stores/guild'
 import { useGitHubStore } from '../stores/github'
 import { useAgentsStore } from '../stores/agents'
-import { useThreadsStore } from '../stores/threads'
 import { useUiStore } from '../stores/ui'
 import TaskTree from './sidebar/TaskTree.vue'
 import WorkerList from './sidebar/WorkerList.vue'
-import ThreadList from './sidebar/ThreadList.vue'
 import IssuesTab from './chat-pane/IssuesTab.vue'
 import CostSummary from './sidebar/CostSummary.vue'
 import type { GitHubIssue } from '../types'
@@ -72,7 +61,6 @@ import type { GitHubIssue } from '../types'
 const guildStore = useGuildStore()
 const ghStore = useGitHubStore()
 const agentsStore = useAgentsStore()
-const threadsStore = useThreadsStore()
 const uiStore = useUiStore()
 
 const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {})
@@ -80,10 +68,7 @@ const switchMobileTab = inject<(tab: string) => void>('switchMobileTab', () => {
 const isConnected = computed(() => guildStore.isConnected)
 const workerCount = computed(() => agentsStore.workers.filter((w) => w.state !== 'offline').length)
 const openIssueCount = computed(() => ghStore.issues.filter((i) => i.state === 'open').length)
-const activeConversationCount = computed(
-  () => threadsStore.threads.filter((t) => t.status === 'active').length,
-)
-const activeTab = ref<'tasks' | 'workers' | 'threads' | 'issues'>('tasks')
+const activeTab = ref<'tasks' | 'workers' | 'issues'>('tasks')
 
 onMounted(async () => {
   if (ghStore.repos.length === 0 && ghStore.token) {

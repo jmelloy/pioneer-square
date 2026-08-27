@@ -50,6 +50,7 @@ def _message_dict(m: Message) -> dict:
     # task-scoped Foreman line loaded from history would otherwise render
     # without its task badge (issue #1200).
     d["taskId"] = d.pop("task_id", None)
+    d["threadId"] = d.pop("thread_id", None)
     return d
 
 
