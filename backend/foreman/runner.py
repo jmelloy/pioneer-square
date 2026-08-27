@@ -1671,9 +1671,7 @@ async def _run_foreman_ai(
 
             _tool_use_ts = _now  # capture before exec_tools may raise
 
-            tool_results = await exec_tools(
-                guild_id, tool_uses, user_id=user_id, own_task_id=task_id
-            )
+            tool_results = await exec_tools(guild_id, tool_uses, user_id=user_id)
             # Truncate verbose results; filter to only IDs in the current batch so
             # stale results that survived history trimming are never persisted.
             current_tool_use_ids = {tu.id for tu in tool_uses}

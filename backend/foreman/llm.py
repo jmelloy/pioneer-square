@@ -16,17 +16,6 @@ Anthropic SDK can reach itself (`ANTHROPIC_SDK_PROVIDERS`); for anything else
 (currently just `"openai"`) it requires a connected foreman API proxy rather
 than calling `call_openai_compatible` locally — see the FOREMAN_PROVIDER check
 in `backend/foreman/runner.py`.
-
-Unified provider shim (see issue #940): `backend/foreman/llm_providers/`
-formalizes the provider-string dispatch below into a class per provider
-(`AnthropicProvider`/`BedrockProvider`/`OpenAIProvider`, all implementing the
-common `LLMProvider` interface — create a client, run a chat completion,
-stream one, raise a normalized error). `make_anthropic_client` below now
-builds its client by calling into that package instead of branching inline;
-`call_anthropic`/`call_openai_compatible` remain the shared request/response
-translation both the adapters and the two runners call, unchanged. New code
-should prefer `foreman.llm_providers.get_provider(...)` over the free
-functions in this module.
 """
 
 from __future__ import annotations
@@ -88,6 +77,22 @@ FOREMAN_BEDROCK_MODEL = os.environ.get("FOREMAN_BEDROCK_MODEL")
 # Requires: pip install "anthropic[bedrock]"  +  AWS credentials in env / IAM role.
 FOREMAN_PROVIDER = os.environ.get("FOREMAN_PROVIDER", "anthropic").lower()
 _BEDROCK_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
+# Deployments sometimes set ANTHROPIC_API_KEY=placeholder as a non-empty
+# stand-in (e.g. to satisfy tooling that requires the var to be present)
+# without intending it as a real credential. Passing it to the SDK produces a
+# confusing 401 instead of the "no key configured" fallback callers expect.
+_PLACEHOLDER_API_KEY_VALUES = {"placeholder"}
+
+
+def _real_api_key(value: str | None) -> str | None:
+    """Return *value* unless it's blank or a known placeholder string."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped or stripped.lower() in _PLACEHOLDER_API_KEY_VALUES:
+        return None
+    return stripped
 
 
 def get_foreman_model(
@@ -282,43 +287,157 @@ def make_anthropic_client(
     # Explicit args still win over both.
     env: Mapping[str, str] = {**os.environ, **(extra_env or {})}
 
-    # Client construction is delegated to the formal provider shim (see the
-    # module docstring, issue #940) — this function now only resolves the
-    # provider name and forwards this module's own patchable module-level
-    # state (`_anthropic_mod`, `_BEDROCK_REGION`, `_log_bedrock_credentials`)
-    # into the adapter, rather than importing/reading any of that itself, so
-    # tests that monkeypatch those names on this module keep working
-    # unchanged.
-    try:
-        from foreman.llm_providers import AnthropicProvider, BedrockProvider
-        from foreman.llm_providers.errors import ProviderConfigError
-    except ImportError:  # pragma: no cover - exercised under the proxy's import layout
-        from backend.foreman.llm_providers import AnthropicProvider, BedrockProvider
-        from backend.foreman.llm_providers.errors import ProviderConfigError
-
     if resolved_provider == "bedrock":
-        try:
-            return BedrockProvider().create_client(
-                env=env,
-                model=model,
-                anthropic_module=_anthropic_mod,
-                region=region,
-                aws_profile=aws_profile,
-                default_region=_BEDROCK_REGION,
-                credential_logger=_log_bedrock_credentials,
-            )
-        except ProviderConfigError as exc:
-            # Preserve the historical exception type (and its ValueError
-            # ancestry) for existing callers/tests -- see
-            # BedrockModelNotConfiguredError's docstring above.
-            raise BedrockModelNotConfiguredError(str(exc)) from exc
+        return _make_bedrock_client(env=env, model=model, region=region, aws_profile=aws_profile)
 
     # Any provider value other than "bedrock" (including an unrecognized one)
     # falls through to the direct Anthropic API, matching this function's
     # historical behavior.
-    return AnthropicProvider().create_client(
-        env=env, model=model, anthropic_module=_anthropic_mod, api_key=api_key
+    kwargs: dict[str, Any] = {}
+    if env.get("ANTHROPIC_AUTH_TOKEN"):
+        kwargs["auth_token"] = env["ANTHROPIC_AUTH_TOKEN"]
+    else:
+        resolved_api_key = _real_api_key(api_key) or _real_api_key(env.get("ANTHROPIC_API_KEY"))
+        if resolved_api_key:
+            kwargs["api_key"] = resolved_api_key
+    if env.get("ANTHROPIC_BASE_URL"):
+        kwargs["base_url"] = env["ANTHROPIC_BASE_URL"]
+    logger.info(
+        "Foreman using Anthropic API (auth=%s, base_url=%s)",
+        "auth-token"
+        if kwargs.get("auth_token")
+        else ("api-key" if kwargs.get("api_key") else "default"),
+        kwargs.get("base_url", "default"),
     )
+    return _anthropic_mod.AsyncAnthropic(**kwargs)
+
+
+def _make_bedrock_client(
+    *,
+    env: Mapping[str, str],
+    model: str | None,
+    region: str | None,
+    aws_profile: str | None,
+):
+    """Build a Bedrock client for `make_anthropic_client`.
+
+    Returns a ``BedrockResponsesClient`` (OpenAI Responses API, via
+    bedrock-mantle) for models that speak it, a ``BedrockNativeClient``
+    (Converse API) for other non-Anthropic foundation models (Amazon Nova,
+    Kimi K2, ...; see `foreman/providers/bedrock.py`), otherwise an
+    ``AsyncAnthropicBedrock`` (Messages API).
+
+    Raises `BedrockModelNotConfiguredError` if no model/inference-profile is
+    configured -- Bedrock inference-profile ARNs are AWS-account-scoped, so
+    there is no safe default to fall back to.
+    """
+    try:
+        from foreman.providers.bedrock import (
+            BedrockNativeClient,
+            BedrockResponsesClient,
+            is_native_bedrock_model,
+            is_responses_api_model,
+        )
+    except ImportError:  # pragma: no cover - exercised under the proxy's import layout
+        from backend.foreman.providers.bedrock import (
+            BedrockNativeClient,
+            BedrockResponsesClient,
+            is_native_bedrock_model,
+            is_responses_api_model,
+        )
+
+    resolved_model = model or env.get("FOREMAN_BEDROCK_MODEL")
+    if not resolved_model:
+        raise BedrockModelNotConfiguredError(
+            "Bedrock provider selected but no model is configured. Unlike AWS "
+            "credentials, which boto3 can resolve on its own (IAM role, profile, "
+            "env vars) and report clearly if missing, there is no discoverable "
+            "default model or inference profile — the Bedrock API call itself "
+            "requires one to be passed explicitly, and an account-scoped ARN "
+            "guessed here could silently send requests to the wrong AWS account. "
+            "Set a model (inference-profile ARN or model ID) in the guild's "
+            "foreman settings, or set the FOREMAN_BEDROCK_MODEL environment "
+            "variable."
+        )
+    resolved_region = (
+        region or env.get("AWS_DEFAULT_REGION") or env.get("AWS_REGION") or _BEDROCK_REGION
+    )
+    resolved_profile = aws_profile or env.get("AWS_PROFILE") or None
+
+    if is_responses_api_model(resolved_model):
+        logger.info(
+            "Foreman using Amazon Bedrock Responses API (bedrock-mantle, region=%s, "
+            "profile=%s, auth=%s, model=%s)",
+            resolved_region,
+            resolved_profile,
+            "bearer-token" if env.get("AWS_BEARER_TOKEN_BEDROCK") else "sigv4",
+            resolved_model,
+        )
+        return BedrockResponsesClient(
+            region=resolved_region, extra_env=env, aws_profile=resolved_profile
+        )
+
+    if is_native_bedrock_model(resolved_model):
+        logger.info(
+            "Foreman using Amazon Bedrock Converse API (region=%s, profile=%s, auth=%s, model=%s)",
+            resolved_region,
+            resolved_profile,
+            "bearer-token"
+            if env.get("AWS_BEARER_TOKEN_BEDROCK")
+            else (
+                "explicit-keys"
+                if (env.get("AWS_ACCESS_KEY_ID") and env.get("AWS_SECRET_ACCESS_KEY"))
+                else "sigv4"
+            ),
+            resolved_model,
+        )
+        return BedrockNativeClient(region=resolved_region, profile=resolved_profile, extra_env=env)
+
+    access_key = env.get("AWS_ACCESS_KEY_ID")
+    secret_key = env.get("AWS_SECRET_ACCESS_KEY")
+    session_token = env.get("AWS_SESSION_TOKEN")
+    # Bearer-token auth (AWS_BEARER_TOKEN_BEDROCK) bypasses SigV4/boto3
+    # entirely. The SDK reads it into `api_key` and *raises* if you also
+    # pass any AWS credential, so when a token is present we must not
+    # pass any AWS credential and we skip the boto3 probe.
+    bearer_token = env.get("AWS_BEARER_TOKEN_BEDROCK")
+    logger.info(
+        "Foreman using Amazon Bedrock (region=%s, profile=%s, auth=%s, model=%s)",
+        resolved_region,
+        resolved_profile,
+        "bearer-token"
+        if bearer_token
+        else ("explicit-keys" if (access_key and secret_key) else "sigv4"),
+        resolved_model,
+    )
+    bedrock_kwargs: dict[str, Any] = {"aws_region": resolved_region}
+    if bearer_token:
+        logger.info(
+            "Bedrock credential probe: AWS_BEARER_TOKEN_BEDROCK is set "
+            "(len=%d); using bearer-token auth, skipping boto3 SigV4 "
+            "resolution.",
+            len(bearer_token),
+        )
+        bedrock_kwargs["api_key"] = bearer_token
+    else:
+        _log_bedrock_credentials(
+            resolved_region,
+            resolved_profile,
+            access_key=access_key,
+            secret_key=secret_key,
+            session_token=session_token,
+            env=env,
+        )
+        # Explicit keys (from guild env_vars) take priority over a
+        # profile, mirroring boto3's own precedence.
+        if access_key and secret_key:
+            bedrock_kwargs["aws_access_key"] = access_key
+            bedrock_kwargs["aws_secret_key"] = secret_key
+            if session_token:
+                bedrock_kwargs["aws_session_token"] = session_token
+        elif resolved_profile:
+            bedrock_kwargs["aws_profile"] = resolved_profile
+    return _anthropic_mod.AsyncAnthropicBedrock(**bedrock_kwargs)
 
 
 # ---------------------------------------------------------------------------
