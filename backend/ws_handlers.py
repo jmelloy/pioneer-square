@@ -128,6 +128,14 @@ def _format_queued_followup(index: int, payload: dict) -> str:
     return f"  {index + 1}. {payload.get('instructions', '')}{suffix}"
 
 
+def _load_event_payload(raw: str | None) -> dict:
+    try:
+        value = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _format_last_output(text: str, max_chars: int = 4000) -> str:
     """Truncate worker output before it's embedded in a Foreman trigger message.
 
@@ -274,7 +282,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     agent_type = data.get("agentType", "worker")
     worker_id = data.get("workerId")
     joined_at = datetime.now(UTC)
-    is_external_foreman = agent_type == "foreman" and data.get("external") is True
+    is_external_foreman = agent_type == "foreman" and bool(data.get("external"))
     # Validate that the worker actually belongs to this guild before proceeding.
     # A misconfigured or misbehaving worker could connect to the wrong guild's
     # WebSocket; without this check it would create agent rows and broadcast
@@ -406,7 +414,7 @@ async def handle_join(ctx: WSContext, data: dict) -> None:
     # the legacy browser join still carries agentType="foreman" but must NOT
     # be registered in foreman_connections. The external client signals its
     # intent with `external: true`.
-    if agent_type == "foreman" and data.get("external") is True:
+    if agent_type == "foreman" and bool(data.get("external")):
         # Register as the active external API proxy for this guild.
         # Evict any previously connected proxy so there is never more than one
         # active provider-call endpoint at a time.
@@ -598,7 +606,21 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
     # the get-or-create call ``_trigger_foreman`` makes further down for
     # routing purposes; both share the same idempotent entry point.
     thread_id: str | None = None
-    if from_agent == "user" and to_agent == "foreman" and content and ctx.ws_user_id:
+    if from_agent == "user" and to_agent == "foreman" and content:
+        if not ctx.ws_user_id:
+            logger.warning("guild=%s unauthenticated user->foreman WS chat rejected", ctx.guild_id)
+            await send_ws_message(
+                ctx.websocket,
+                ChatMsg.model_validate(
+                    {
+                        "from": "system",
+                        "to": "user",
+                        "content": "Not authenticated — reconnect or sign in again before messaging the Foreman.",
+                        "createdAt": created_at.isoformat(),
+                    }
+                ),
+            )
+            return
         thread = await ensure_conversation_thread(ctx.guild_id, ctx.ws_user_id, content)
         thread_id = thread.id if thread else None
 
@@ -617,13 +639,15 @@ async def handle_chat(ctx: WSContext, data: dict) -> None:
     await ctx.db.commit()
     await broadcast_msg(
         ctx.guild_id,
-        ChatMsg(
-            **{"from": from_agent},
-            to=to_agent,
-            content=content,
-            createdAt=created_at.isoformat(),
-            userId=ctx.ws_user_id if ctx.ws_user_id and from_agent == "user" else None,
-            threadId=thread_id,
+        ChatMsg.model_validate(
+            {
+                "from": from_agent,
+                "to": to_agent,
+                "content": content,
+                "createdAt": created_at.isoformat(),
+                "userId": ctx.ws_user_id if from_agent == "user" else None,
+                "threadId": thread_id,
+            }
         ),
     )
     if not (from_agent == "user" and to_agent == "foreman" and content):
@@ -971,15 +995,15 @@ async def handle_task_update(ctx: WSContext, data: dict) -> None:
     if update_values.get("state") == "error" and task_id:
         queued_payloads: list[dict] = []
         result = await ctx.db.exec(
-            select(TaskEvent.id, TaskEvent.payload_json)
+            select(col(TaskEvent.id), col(TaskEvent.payload_json))
             .where(TaskEvent.task_id == task_id, TaskEvent.event_type == "pending-followup")
-            .order_by(TaskEvent.id)
+            .order_by(col(TaskEvent.id))
         )
         rows = result.all()
         if rows:
-            event_ids = [r[0] for r in rows]
-            queued_payloads = [json.loads(r[1]) for r in rows]
-            await ctx.db.exec(delete(TaskEvent).where(TaskEvent.id.in_(event_ids)))
+            event_ids = [r[0] for r in rows if r[0] is not None]
+            queued_payloads = [_load_event_payload(r[1]) for r in rows]
+            await ctx.db.exec(delete(TaskEvent).where(col(TaskEvent.id).in_(event_ids)))
             await ctx.db.commit()
         worker_id_upd = data.get("workerId", "a worker")
         task_uid = await _task_user_id(ctx.db, task_id)
@@ -1066,7 +1090,7 @@ async def handle_task_complete(ctx: WSContext, data: dict) -> None:
             discord_notifier.flush_task_stream(task_id),
             name=f"discord.stream-flush:{task_id}",
         )
-        _pr_repo_disc, _pr_num_disc = _parse_pr_url(pr_url) if pr_url else (None, None)
+        _pr_num_disc, _pr_repo_disc = _parse_pr_url(pr_url) if pr_url else (None, None)
         spawn(
             discord_notifier.notify_event(
                 "task-complete",
@@ -1198,8 +1222,8 @@ async def handle_task_followup_done(ctx: WSContext, data: dict) -> None:
     )
     rows = result.all()
     if rows:
-        event_ids = [r[0] for r in rows]
-        queued_payloads = [json.loads(r[1]) for r in rows]
+        event_ids = [r[0] for r in rows if r[0] is not None]
+        queued_payloads = [_load_event_payload(r[1]) for r in rows]
         await ctx.db.exec(delete(TaskEvent).where(col(TaskEvent.id).in_(event_ids)))
         await ctx.db.commit()
 
